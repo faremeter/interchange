@@ -20,43 +20,12 @@ import type {
   RepoId,
   ValidatePushResult,
 } from "./repo-store";
+import { validatePushArgs } from "./repo-store/validate-push.test-helpers";
 import { type } from "arktype";
 
 const REF = "refs/heads/main";
 
 const HUB_PRINCIPAL: Principal = { kind: "hub" };
-const noPriorBlob = async (): Promise<Uint8Array | null> => null;
-const noPriorDir = async (): Promise<string[]> => [];
-
-function makeReadBlob(
-  files: Record<string, string>,
-): (path: string) => Promise<Uint8Array> {
-  return async (path) => {
-    const body = files[path];
-    if (body === undefined) {
-      throw new Error(`readBlob: ${path} not found`);
-    }
-    return new TextEncoder().encode(body);
-  };
-}
-
-function makeListDir(
-  files: Record<string, string>,
-): (path: string) => Promise<string[]> {
-  return async (path) => {
-    const prefix = path === "" ? "" : `${path}/`;
-    const names = new Set<string>();
-    for (const p of Object.keys(files)) {
-      if (prefix !== "" && !p.startsWith(prefix)) continue;
-      const rest = p.slice(prefix.length);
-      if (rest.length === 0) continue;
-      const slash = rest.indexOf("/");
-      names.add(slash === -1 ? rest : rest.substring(0, slash));
-    }
-    return Array.from(names);
-  };
-}
-
 function skillMd(frontmatter: Record<string, unknown>, body = ""): string {
   const lines = ["---"];
   for (const [k, v] of Object.entries(frontmatter)) {
@@ -165,16 +134,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "Greets the user.",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["greet"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(true);
 
     await skillKindHandler.onRefUpdated({
@@ -207,16 +174,14 @@ describe("skillKindHandler.validatePush", () => {
         when_to_use: "at end of session",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["greet", "farewell"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(true);
 
     await skillKindHandler.onRefUpdated({
@@ -238,16 +203,14 @@ describe("skillKindHandler.validatePush", () => {
 
   test("accepts an empty asset (no skill subdirectories)", async () => {
     const repoId = uniqueRepoId("empty");
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [],
-      readBlob: makeReadBlob({}),
-      listDir: makeListDir({}),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files: {},
+      }),
+    );
     expect(result.ok).toBe(true);
 
     await skillKindHandler.onRefUpdated({
@@ -269,16 +232,14 @@ describe("skillKindHandler.validatePush", () => {
     const files = {
       "greet/README.md": "no SKILL.md here",
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["greet"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toMatch(/missing SKILL\.md/);
@@ -292,16 +253,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "Mismatch.",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["greet"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toMatch(/does not match directory name/);
@@ -315,16 +274,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "ok",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["BadName"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toMatch(/frontmatter is invalid/);
@@ -339,16 +296,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "ok",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [longName],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
   });
 
@@ -360,16 +315,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "ok",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["anthropic"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
   });
 
@@ -381,16 +334,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "ok",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["claude"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
   });
 
@@ -402,16 +353,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["ok"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
   });
 
@@ -423,16 +372,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "a".repeat(1025),
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["ok"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
   });
 
@@ -444,16 +391,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "has a <tag>",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["ok"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
   });
 
@@ -466,16 +411,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "Greets the user.",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [".gitignore", "greet"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(true);
 
     await skillKindHandler.onRefUpdated({
@@ -498,16 +441,14 @@ describe("skillKindHandler.validatePush", () => {
     const files = {
       ".gitignore": "node_modules\n",
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [".gitignore"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(true);
 
     await skillKindHandler.onRefUpdated({
@@ -528,16 +469,14 @@ describe("skillKindHandler.validatePush", () => {
         description: "ok",
       }),
     };
-    const result = await skillKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: ["ok"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await skillKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
 
     // The substrate does not call onRefUpdated when validatePush

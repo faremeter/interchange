@@ -292,21 +292,26 @@ export interface KindHandler {
    * prior commit's tree (git trees are content-addressed, so the listing
    * already carries the OID). A handler that validates a large retained
    * subtree by its per-commit delta uses it to prove a retained entry is
-   * byte-unchanged by OID equality instead of re-reading the blob. It is
-   * `undefined` when no prior commit exists.
+   * byte-unchanged by OID equality instead of re-reading the blob. It
+   * returns an empty array in the same cases as `priorListDir`.
    *
    * `listDirOids` is the prospective-side mirror of `priorListDirOids`:
    * each child entry's OID read straight from the prospective tree's
    * listing, so a handler comparing a retained subtree by OID gets the
-   * prospective OID without re-reading and hashing every entry's bytes.
-   * It is `undefined` on paths that do not surface it (a hand-built
-   * validatePush in a test), in which case the handler falls back to
-   * hashing the prospective bytes.
+   * prospective OID without re-reading the entry's bytes.
    *
    * Both listings carry each entry's `type`. A handler that needs a blob
    * at a path treats an entry of another type as absent, as
    * `priorReadBlob` does, because a tree can carry the same OID on both
    * sides.
+   *
+   * `validationScope` identifies a set of validatePush calls whose
+   * results a handler may share. A pack receive passes one object for
+   * every commit of the pack, and a write passes a new object. A handler
+   * may key a cache of parsed blobs on it (for example in a `WeakMap`),
+   * so a blob that many commits of one pack carry is parsed once. Such a
+   * cache must key each entry by the blob's OID, because the bytes at a
+   * path change between commits.
    */
   validatePush: (args: {
     repoId: RepoId;
@@ -315,11 +320,12 @@ export interface KindHandler {
     topLevelTreePaths: string[];
     readBlob: (path: string) => Promise<Uint8Array>;
     listDir: (path: string) => Promise<string[]>;
-    listDirOids?: (path: string) => Promise<CommittedTreeEntry[]>;
+    listDirOids: (path: string) => Promise<CommittedTreeEntry[]>;
     priorReadBlob: (path: string) => Promise<Uint8Array | null>;
     priorListDir: (path: string) => Promise<string[]>;
-    priorListDirOids?: (path: string) => Promise<CommittedTreeEntry[]>;
+    priorListDirOids: (path: string) => Promise<CommittedTreeEntry[]>;
     changedPathPrefixes?: ReadonlySet<string> | undefined;
+    validationScope: object;
   }) => Promise<ValidatePushResult> | ValidatePushResult;
   /**
    * Fired after a successful ref update from any operation. `oldSha`

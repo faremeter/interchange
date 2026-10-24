@@ -67,14 +67,14 @@
 //   - Terminal-phase lock: once a run's events include a `RunCompleted`,
 //     `RunFailed`, or `RunCancelled` entry, no event with a strictly
 //     greater seq may appear for the same run.
-//   - Append-only via prior-tree byte comparison: every event blob
+//   - Append-only via prior-tree blob OID comparison: every event blob
 //     that exists at the same path in the parent commit's tree must
-//     match the prospective blob byte-for-byte. Newly-added event
-//     paths (those absent from the prior tree) are accepted. The
-//     substrate exposes the prior tree via `priorReadBlob` /
-//     `priorListDir` on the validatePush args so the constraint is
-//     owned by this handler rather than relying on caller-layer
-//     discipline.
+//     carry the same blob OID as the prospective blob, which proves
+//     the bytes equal. Newly-added event paths (those absent from the
+//     prior tree) are accepted. The substrate exposes both trees'
+//     listings via `listDirOids` / `priorListDirOids` on the
+//     validatePush args so the constraint is owned by this handler
+//     rather than relying on caller-layer discipline.
 //   - A `CancelRequested` event must carry an `origin` in the known
 //     set (`self`, `supervisor-drain`, `supervisor-operator`,
 //     `hub-admin`) and a non-empty `reason`.
@@ -117,10 +117,11 @@
 //     processing+consumed.
 //   - `consumed/<messageId>.json` bytes are immutable: a prospective
 //     commit that mutates the bytes of a consumed entry RETAINED from
-//     the prior tree is rejected by the same prior-tree byte-equality
-//     guard used for run events. A retained consumed entry may be
-//     DELETED only as a watermark-consistent retention prune (see the
-//     watermark invariants below); any other deletion is rejected.
+//     the prior tree is rejected by the same blob OID comparison with
+//     the prior tree used for run events. A retained consumed entry
+//     may be DELETED only as a watermark-consistent retention prune
+//     (see the watermark invariants below); any other deletion is
+//     rejected.
 //   - Retention prune (the bounded-`consumed/` contract): the consumed
 //     dedup index may shrink only by a watermark-passed prune. A
 //     consumed entry present in the prior tree may be absent from the
@@ -163,7 +164,6 @@
 //     used by the other kinds.
 
 import fs from "node:fs";
-import git from "isomorphic-git";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy/addresses";
@@ -316,7 +316,7 @@ export const WORKFLOW_RUN_AGENT_STATE_PREFIX = "agent-state";
  *
  *   - `mailbox/INBOX/index.json` — the mailbox index. MUTABLE: the
  *     backing rewrites it on every flush, so it is exempt from the
- *     retained-blob byte-equality walk the `<uid>.eml` blobs are subject
+ *     retained-blob OID comparison the `<uid>.eml` blobs are subject
  *     to. It must nonetheless PERSIST once it existed: dropping it drops
  *     the whole mailbox and resets uidValidity/uidNext on the next open.
  *   - `mailbox/INBOX/<uid>.eml` — one message per file, carrying the
@@ -463,7 +463,8 @@ const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
   WORKFLOW_RUN_GRANTS_FILE,
   // Inbound-mail mail part bytes committed as real files. See
   // WORKFLOW_RUN_PARTS_DIR; validated by enumerateRunParts and
-  // held immutable by the same prior-tree byte-equality walk as blobs.
+  // held immutable by the same blob OID comparison with the prior tree
+  // as blobs.
   WORKFLOW_RUN_PARTS_DIR,
 ]);
 
@@ -604,9 +605,9 @@ export function classifyTerminalEvent(
  */
 async function blobIsNewlyAdded(
   blobPath: string,
-  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+  prior: TreeListing,
 ): Promise<boolean> {
-  return (await priorReadBlob(blobPath)) === null;
+  return (await blobOidAt(prior, blobPath)) === null;
 }
 
 /**
@@ -849,6 +850,8 @@ async function validateCombinedEventRuns(
   readBlob: (path: string) => Promise<Uint8Array>,
   priorListDir: (path: string) => Promise<string[]>,
   priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+  prospectiveListing: TreeListing,
+  priorListing: TreeListing,
   scopeRunIds: ReadonlySet<string> | undefined,
 ): Promise<
   { ok: true; combinedRunIds: Set<string> } | { ok: false; reason: string }
@@ -863,19 +866,36 @@ async function validateCombinedEventRuns(
     const children = await listDir(runDirPath);
     if (!children.includes(WORKFLOW_RUN_EVENTS_FILE)) continue;
     const combinedPath = `${runDirPath}/${WORKFLOW_RUN_EVENTS_FILE}`;
-    const combinedBytes = await readBlob(combinedPath);
-    const content = new TextDecoder().decode(combinedBytes);
 
     const priorChildren = await priorListDir(runDirPath);
     if (priorChildren.includes(WORKFLOW_RUN_EVENTS_FILE)) {
+      // The sealed file is one blob. A tree on either side has no bytes
+      // to hold immutable, and the retained-blob check below would pass
+      // it as newly added.
+      for (const [side, listing] of [
+        ["prospective", prospectiveListing],
+        ["prior", priorListing],
+      ] as const) {
+        const entry = await entryAt(listing, combinedPath);
+        if (entry?.type !== "blob") {
+          return {
+            ok: false,
+            reason: `combined event log ${combinedPath} for run ${runId} is ${describeEntry(entry)} in the ${side} tree; a sealed event log is one blob`,
+          };
+        }
+      }
       // Sealed once, immutable thereafter.
-      const immutable = await checkPriorByteEquality(
+      const immutable = await checkRetainedBlobUnchanged(
         combinedPath,
-        readBlob,
-        priorReadBlob,
+        prospectiveListing,
+        priorListing,
+        "event",
+        "event blobs are append-only",
       );
       if (!immutable.ok) return immutable;
     } else if (priorChildren.includes(WORKFLOW_RUN_EVENTS_DIR)) {
+      const combinedBytes = await readBlob(combinedPath);
+      const content = new TextDecoder().decode(combinedBytes);
       const structure = checkCombinedStructure(runId, combinedPath, content);
       if (!structure.ok) return structure;
       const fold = await checkCompactionFold(
@@ -887,6 +907,7 @@ async function validateCombinedEventRuns(
       );
       if (!fold.ok) return fold;
     } else {
+      const content = new TextDecoder().decode(await readBlob(combinedPath));
       const structure = checkCombinedStructure(runId, combinedPath, content);
       if (!structure.ok) return structure;
     }
@@ -1197,12 +1218,8 @@ async function enumerateRunParts(
 async function validateRunPartsSubtree(args: {
   listDir: (path: string) => Promise<string[]>;
   priorListDir: (path: string) => Promise<string[]>;
-  readBlob: (path: string) => Promise<Uint8Array>;
-  priorReadBlob: (path: string) => Promise<Uint8Array | null>;
-  listDirOids: ((path: string) => Promise<CommittedTreeEntry[]>) | undefined;
-  priorListDirOids:
-    | ((path: string) => Promise<CommittedTreeEntry[]>)
-    | undefined;
+  prospectiveListing: TreeListing;
+  priorListing: TreeListing;
   scopeRunIds: ReadonlySet<string> | undefined;
 }): Promise<ValidatePushResult> {
   const prospective = await enumerateRunParts(args.listDir, args.scopeRunIds);
@@ -1217,22 +1234,9 @@ async function validateRunPartsSubtree(args: {
 
   const prospectiveOid = makeListingOidResolver(
     "prospective",
-    args.listDirOids,
-    async (p) => (await git.hashBlob({ object: await args.readBlob(p) })).oid,
+    args.prospectiveListing,
   );
-  const priorOid = makeListingOidResolver(
-    "prior",
-    args.priorListDirOids,
-    async (p) => {
-      const bytes = await args.priorReadBlob(p);
-      if (bytes === null) {
-        throw new Error(
-          `mail parts: prior entry ${p} was enumerated but its bytes could not be read`,
-        );
-      }
-      return (await git.hashBlob({ object: bytes })).oid;
-    },
-  );
+  const priorOid = makeListingOidResolver("prior", args.priorListing);
 
   const prospectivePaths = new Set(prospective.parts.map((e) => e.blobPath));
   const priorPaths = new Set(prior.parts.map((e) => e.blobPath));
@@ -1261,49 +1265,44 @@ async function validateRunPartsSubtree(args: {
 }
 
 /**
- * Enforce blob immutability via prior-tree byte equality. The blob
- * value itself is opaque bytes (no JSON envelope, no arktype
- * validation); the only structural rule beyond filename shape is that
- * a blob entry present in the prior tree must carry byte-identical
- * contents in the prospective tree. Mirrors the consumed-entry
- * discipline in the claim-check subtree.
+ * Hold a blob retained from the prior tree unchanged. Git trees are
+ * content addressed, so the blob OIDs that the two listings carry prove
+ * the bytes equal or different without a read of either blob. A path
+ * the prior tree does not hold as a blob is newly added and passes: the
+ * prior tree has no bytes there for the commit to change, and
+ * `priorReadBlob` returns null for it. `subject` and `rule` name the
+ * entry kind and its invariant in the rejection.
  */
-async function checkBlobPriorByteEquality(
+async function checkRetainedBlobUnchanged(
   blobPath: string,
-  readBlob: (path: string) => Promise<Uint8Array>,
-  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+  prospective: TreeListing,
+  prior: TreeListing,
+  subject: string,
+  rule: string,
 ): Promise<ValidatePushResult> {
-  const prior = await priorReadBlob(blobPath);
-  if (prior === null) return { ok: true };
-  const prospective = await readBlob(blobPath);
-  if (prior.byteLength !== prospective.byteLength) {
-    return {
-      ok: false,
-      reason: `blob ${blobPath} bytes diverge from the prior tree (lengths ${String(prior.byteLength)} vs ${String(prospective.byteLength)}); blob entries are immutable once written`,
-    };
-  }
-  for (let i = 0; i < prior.byteLength; i++) {
-    if (prior[i] !== prospective[i]) {
-      return {
-        ok: false,
-        reason: `blob ${blobPath} bytes diverge from the prior tree at offset ${String(i)}; blob entries are immutable once written`,
-      };
-    }
-  }
-  return { ok: true };
+  const before = await blobOidAt(prior, blobPath);
+  if (before === null) return { ok: true };
+  const entry = await entryAt(prospective, blobPath);
+  if (entry?.type === "blob" && entry.oid === before) return { ok: true };
+  const next =
+    entry?.type === "blob" ? `blob OID ${entry.oid}` : describeEntry(entry);
+  return {
+    ok: false,
+    reason: `${subject} ${blobPath} bytes diverge from the prior tree (${next} vs blob OID ${before}); ${rule}`,
+  };
 }
 
-type ParsedEventBlob = {
-  entry: RunEventBlob;
-  body: { type: string; seq: number; [k: string]: unknown };
-};
+/**
+ * The fields of a valid event blob that the per-run checks read. A
+ * `CancelRequested` event carries its validated `origin`; every other
+ * event carries none.
+ */
+type EventSummary = { type: string; origin: string | undefined };
 
 async function parseEventBlob(
   entry: RunEventBlob,
   readBlob: (path: string) => Promise<Uint8Array>,
-): Promise<
-  { ok: true; parsed: ParsedEventBlob } | { ok: false; reason: string }
-> {
+): Promise<{ ok: true; event: EventSummary } | { ok: false; reason: string }> {
   let raw: Uint8Array;
   try {
     raw = await readBlob(entry.blobPath);
@@ -1353,42 +1352,37 @@ async function parseEventBlob(
         reason: `event ${entry.blobPath} CancelRequested origin ${JSON.stringify(cancelFields.origin)} is not a recognised CancelOrigin`,
       };
     }
+    return {
+      ok: true,
+      event: { type: validated.type, origin: cancelFields.origin },
+    };
   }
-  return { ok: true, parsed: { entry, body: validated } };
+  return { ok: true, event: { type: validated.type, origin: undefined } };
 }
 
 /**
- * Compare the prospective bytes of `blobPath` against the bytes at
- * the same path in the prior tree. Returns `{ ok: true }` when the
- * blob is newly added (no prior entry) or when the prior and
- * prospective bytes are byte-identical; returns a rejection otherwise.
- * Surfaces append-only at the handler scope: the event log invariant
- * lives here rather than relying on caller-layer discipline at
- * `writeTreePreservingPrefix`.
+ * Parse an event blob through the scope's cache. The parse depends on
+ * the bytes and on the path (the filename carries the seq), so the key
+ * is the blob OID and the path. The OID comes from the commit's own
+ * listing, so a hit is for the same bytes at the same path. A failed
+ * parse is not cached: it rejects the push.
  */
-async function checkPriorByteEquality(
-  blobPath: string,
+async function parseEventBlobCached(
+  entry: RunEventBlob,
   readBlob: (path: string) => Promise<Uint8Array>,
-  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
-): Promise<ValidatePushResult> {
-  const prior = await priorReadBlob(blobPath);
-  if (prior === null) return { ok: true };
-  const prospective = await readBlob(blobPath);
-  if (prior.byteLength !== prospective.byteLength) {
-    return {
-      ok: false,
-      reason: `event ${blobPath} bytes diverge from the prior tree (lengths ${String(prior.byteLength)} vs ${String(prospective.byteLength)}); event blobs are append-only`,
-    };
-  }
-  for (let i = 0; i < prior.byteLength; i++) {
-    if (prior[i] !== prospective[i]) {
-      return {
-        ok: false,
-        reason: `event ${blobPath} bytes diverge from the prior tree at offset ${String(i)}; event blobs are append-only`,
-      };
-    }
-  }
-  return { ok: true };
+  prospective: TreeListing,
+  cache: ParseCache,
+): Promise<{ ok: true; event: EventSummary } | { ok: false; reason: string }> {
+  const oid = await blobOidAt(prospective, entry.blobPath);
+  // An entry that is not a blob has no OID to key on, and its read
+  // fails the parse.
+  if (oid === null) return parseEventBlob(entry, readBlob);
+  const key = parseCacheKey(oid, entry.blobPath);
+  const hit = cache.events.get(key);
+  if (hit !== undefined) return { ok: true, event: hit };
+  const parsed = await parseEventBlob(entry, readBlob);
+  if (parsed.ok) cache.events.set(key, parsed.event);
+  return parsed;
 }
 
 /**
@@ -1786,80 +1780,113 @@ async function parseQueueBlob(
 }
 
 /**
- * Compute the git blob OID of a consumed entry from a byte reader,
- * used only when the delta-scoped path lacks a substrate-provided prior
- * OID listing (e.g. a hand-built test validatePush). `git.hashBlob`
- * reproduces the same content-addressed OID a `git.readTree` listing
- * carries, so the delta path's intersection compare is identical
- * whether the OID came from the tree listing or from hashing the bytes.
+ * One side's directory listings for one validatePush call: a directory
+ * path maps to its entries by name. Each directory is listed once per
+ * call, so the checks that resolve many entries of one directory share
+ * one listing and each entry costs one lookup.
  */
-async function hashConsumedBlobOid(bytes: Uint8Array): Promise<string> {
-  const { oid } = await git.hashBlob({ object: bytes });
-  return oid;
-}
+type TreeListing = (
+  dir: string,
+) => Promise<ReadonlyMap<string, CommittedTreeEntry>>;
 
-/**
- * Resolve each consumed entry's git blob OID for the delta-scoped path.
- * When the substrate supplies a directory OID listing (`listDirOids`) the
- * OID comes straight from the tree — one `readTree` per consumed
- * directory, cached — so that side is not re-read blob-by-blob. When the
- * listing is absent (a hand-built validatePush in a unit test) each OID
- * falls back to hashing the entry's bytes, which preserves identical
- * semantics at O(retained) cost. Both the prior and prospective sides use
- * this; `sideLabel` distinguishes them in the missing-OID error.
- *
- * Every caller resolves a path that must hold a blob, so a listed entry
- * of another type counts as absent and the resolve throws, as the hash
- * fallback does when it reads a tree path. If a tree counted, a tree at
- * a blob path with the same OID on both sides would pass as an unchanged
- * blob.
- */
-function makeListingOidResolver(
-  sideLabel: string,
-  listDirOids: ((path: string) => Promise<CommittedTreeEntry[]>) | undefined,
-  hashFallback: (blobPath: string) => Promise<string>,
-): (blobPath: string) => Promise<string> {
-  const dirOidCache = new Map<string, Map<string, string>>();
-  return async (blobPath) => {
-    if (listDirOids !== undefined) {
-      const slash = blobPath.lastIndexOf("/");
-      const dir = blobPath.slice(0, slash);
-      const name = blobPath.slice(slash + 1);
-      let byName = dirOidCache.get(dir);
-      if (byName === undefined) {
-        byName = new Map<string, string>();
-        for (const entry of await listDirOids(dir)) {
-          if (entry.type === "blob") byName.set(entry.name, entry.oid);
-        }
-        dirOidCache.set(dir, byName);
-      }
-      const oid = byName.get(name);
-      if (oid === undefined) {
-        throw new Error(
-          `delta claim-check: ${sideLabel} tree listing has no OID for enumerated consumed entry ${blobPath}`,
-        );
-      }
-      return oid;
+function makeTreeListing(
+  listDirOids: (path: string) => Promise<CommittedTreeEntry[]>,
+): TreeListing {
+  const byDir = new Map<string, Promise<Map<string, CommittedTreeEntry>>>();
+  return (dir) => {
+    let listing = byDir.get(dir);
+    if (listing === undefined) {
+      listing = listDirOids(dir).then(
+        (entries) => new Map(entries.map((e) => [e.name, e])),
+      );
+      byDir.set(dir, listing);
     }
-    return hashFallback(blobPath);
+    return listing;
   };
 }
 
-function makePriorConsumedOidResolver(
-  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
-  priorListDirOids:
-    | ((path: string) => Promise<CommittedTreeEntry[]>)
-    | undefined,
+/** The listing's entry at `entryPath`, or undefined when it has none. */
+async function entryAt(
+  listing: TreeListing,
+  entryPath: string,
+): Promise<CommittedTreeEntry | undefined> {
+  const slash = entryPath.lastIndexOf("/");
+  const dir = slash === -1 ? "" : entryPath.slice(0, slash);
+  return (await listing(dir)).get(entryPath.slice(slash + 1));
+}
+
+/** Name what a listing holds at a path, for a rejection reason. */
+function describeEntry(entry: CommittedTreeEntry | undefined): string {
+  return entry === undefined ? "absent" : `a ${entry.type}`;
+}
+
+/**
+ * The blob OID at `blobPath`, or null when the listing has no entry
+ * there or the entry is not a blob. A tree counts as absent because a
+ * tree can carry the same OID on both sides.
+ */
+async function blobOidAt(
+  listing: TreeListing,
+  blobPath: string,
+): Promise<string | null> {
+  const entry = await entryAt(listing, blobPath);
+  return entry?.type === "blob" ? entry.oid : null;
+}
+
+/**
+ * Resolve the blob OID of an enumerated entry from one side's listing.
+ * Every caller resolves a path that its enumeration found and that must
+ * hold a blob, so an absent entry or one of another type throws. If a
+ * tree counted, a tree at a blob path with the same OID on both sides
+ * would pass as an unchanged blob. `sideLabel` names the side in the
+ * error.
+ */
+function makeListingOidResolver(
+  sideLabel: string,
+  listing: TreeListing,
 ): (blobPath: string) => Promise<string> {
-  return makeListingOidResolver("prior", priorListDirOids, async (blobPath) => {
-    const bytes = await priorReadBlob(blobPath);
-    if (bytes === null) {
+  return async (blobPath) => {
+    const oid = await blobOidAt(listing, blobPath);
+    if (oid === null) {
       throw new Error(
-        `delta claim-check: consumed entry ${blobPath} was enumerated in the prior tree but its bytes could not be read`,
+        `delta claim-check: ${sideLabel} tree listing has no OID for enumerated consumed entry ${blobPath}`,
       );
     }
-    return hashConsumedBlobOid(bytes);
-  });
+    return oid;
+  };
+}
+
+/**
+ * Parsed results that one validation scope shares across its
+ * validatePush calls (see `validationScope` on the KindHandler). A pack
+ * receive validates each commit against the whole run, so without the
+ * cache each commit parses every event of the run again. Keys come from
+ * `parseCacheKey`.
+ *
+ * `events` holds the summary of each valid event blob. `queueEntries`
+ * holds the inbox and processing entries whose envelope is valid; the
+ * checks read nothing from a valid envelope.
+ */
+type ParseCache = {
+  events: Map<string, EventSummary>;
+  queueEntries: Set<string>;
+};
+
+const parseCaches = new WeakMap<object, ParseCache>();
+
+function parseCacheFor(validationScope: object): ParseCache {
+  let cache = parseCaches.get(validationScope);
+  if (cache === undefined) {
+    cache = { events: new Map(), queueEntries: new Set() };
+    parseCaches.set(validationScope, cache);
+  }
+  return cache;
+}
+
+// A blob OID is 40 hex characters, so the OID and the path joined with
+// no separator name one (bytes, path) pair.
+function parseCacheKey(oid: string, blobPath: string): string {
+  return `${oid}${blobPath}`;
 }
 
 /**
@@ -1875,30 +1902,24 @@ function makePriorConsumedOidResolver(
  * retained entries (same filename, same blob OID) are skipped as
  * already-validated-and-immutable, added entries are parsed and
  * validated, and removed entries are checked against the retention
- * watermark. `priorListDirOids` and `listDirOids`, when supplied by the
- * substrate, surface the prior and prospective consumed OIDs straight
- * from their tree listings so neither side is re-read blob-by-blob.
+ * watermark. The two listings surface the prior and prospective
+ * consumed OIDs straight from their trees, so neither side is re-read
+ * blob-by-blob.
  */
 async function validateClaimCheckSubtree(
   listDir: (path: string) => Promise<string[]>,
   readBlob: (path: string) => Promise<Uint8Array>,
   priorReadBlob: (path: string) => Promise<Uint8Array | null>,
   priorListDir: (path: string) => Promise<string[]>,
-  priorListDirOids?: (path: string) => Promise<CommittedTreeEntry[]>,
-  listDirOids?: (path: string) => Promise<CommittedTreeEntry[]>,
+  prospectiveListing: TreeListing,
+  priorListing: TreeListing,
+  cache: ParseCache,
 ): Promise<ValidatePushResult> {
-  // Surface each consumed entry's git blob OID during enumeration
-  // straight from the tree listing on both sides when the substrate
-  // provides it, falling back to hashing the bytes otherwise.
   const prospectiveConsumedOid = makeListingOidResolver(
     "prospective",
-    listDirOids,
-    async (blobPath) => hashConsumedBlobOid(await readBlob(blobPath)),
+    prospectiveListing,
   );
-  const priorConsumedOid = makePriorConsumedOidResolver(
-    priorReadBlob,
-    priorListDirOids,
-  );
+  const priorConsumedOid = makeListingOidResolver("prior", priorListing);
 
   const enumerated = await enumerateClaimCheckBlobs(
     listDir,
@@ -1959,8 +1980,17 @@ async function validateClaimCheckSubtree(
       { kind: "inbox" | "processing" | "consumed"; filename: string }[]
     >();
     for (const entry of [...bucket.inbox, ...bucket.processing]) {
-      const parsed = await parseQueueBlob(entry, readBlob);
-      if (!parsed.ok) return parsed;
+      // Every entry is parsed on every commit, so a valid envelope is
+      // cached by (OID, path); the parse reads the filename and the
+      // address segment from the path. An entry that is not a blob has
+      // no OID, and its read fails the parse.
+      const oid = await blobOidAt(prospectiveListing, entry.blobPath);
+      const key = oid === null ? null : parseCacheKey(oid, entry.blobPath);
+      if (key === null || !cache.queueEntries.has(key)) {
+        const parsed = await parseQueueBlob(entry, readBlob);
+        if (!parsed.ok) return parsed;
+        if (key !== null) cache.queueEntries.add(key);
+      }
       const list = messageIdToLocations.get(entry.messageIdFromFilename) ?? [];
       list.push({ kind: entry.kind, filename: entry.filename });
       messageIdToLocations.set(entry.messageIdFromFilename, list);
@@ -2352,39 +2382,6 @@ async function validateAgentStateSubtree(
 }
 
 /**
- * Enforce mailbox `<uid>.eml` immutability via prior-tree byte equality.
- * A message blob RETAINED from the prior tree (present in both) must carry
- * byte-identical contents in the prospective tree. A prior blob absent
- * from the prospective tree is a legal expunge and never reaches here
- * (the caller only checks retained paths). Mirrors the blob-immutability
- * discipline (`checkBlobPriorByteEquality`) with mailbox-specific wording.
- */
-async function checkMailboxEmlPriorByteEquality(
-  emlPath: string,
-  readBlob: (path: string) => Promise<Uint8Array>,
-  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
-): Promise<ValidatePushResult> {
-  const prior = await priorReadBlob(emlPath);
-  if (prior === null) return { ok: true };
-  const prospective = await readBlob(emlPath);
-  if (prior.byteLength !== prospective.byteLength) {
-    return {
-      ok: false,
-      reason: `mailbox message ${emlPath} bytes diverge from the prior tree (lengths ${String(prior.byteLength)} vs ${String(prospective.byteLength)}); a retained mailbox message is immutable`,
-    };
-  }
-  for (let i = 0; i < prior.byteLength; i++) {
-    if (prior[i] !== prospective[i]) {
-      return {
-        ok: false,
-        reason: `mailbox message ${emlPath} bytes diverge from the prior tree at offset ${String(i)}; a retained mailbox message is immutable`,
-      };
-    }
-  }
-  return { ok: true };
-}
-
-/**
  * Walk the `mailbox/INBOX/` subtree and validate its shape. The only
  * entry permitted directly under `mailbox/` is the `INBOX/` directory;
  * the only entries permitted under `mailbox/INBOX/` are the mutable
@@ -2459,10 +2456,10 @@ async function enumerateMailboxInbox(
 /**
  * Validate the `mailbox/INBOX/` subtree (design conversational-mailbox).
  * Enforces the subtree shape via `enumerateMailboxInbox`, then holds a
- * RETAINED `<uid>.eml` message blob byte-identical against the prior tree.
- * A prior `<uid>.eml` absent from the prospective tree is a legal expunge:
- * the warm agent physically removes a message from the live INBOX. The raw
- * bytes are not lost -- they stay reachable through the parent commit, and
+ * RETAINED `<uid>.eml` message blob byte-identical against the prior tree
+ * by its blob OID. A prior `<uid>.eml` absent from the prospective tree is
+ * a legal expunge: the warm agent physically removes a message from the
+ * live INBOX. The raw bytes are not lost -- they stay reachable through the parent commit, and
  * a `workflow-run` repo's objects are never GC'd (its kind is excluded
  * from the GC allow-list; see `DEFAULT_GC_KINDS` in `agent-repo`), so the
  * expunged message survives in history for the life of the run repo. The
@@ -2479,9 +2476,9 @@ async function enumerateMailboxInbox(
  */
 async function validateMailboxSubtree(
   listDir: (path: string) => Promise<string[]>,
-  readBlob: (path: string) => Promise<Uint8Array>,
   priorListDir: (path: string) => Promise<string[]>,
-  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+  prospectiveListing: TreeListing,
+  priorListing: TreeListing,
 ): Promise<ValidatePushResult> {
   const prospective = await enumerateMailboxInbox(listDir);
   if (!prospective.ok) return prospective;
@@ -2494,10 +2491,12 @@ async function validateMailboxSubtree(
   }
   for (const emlPath of prospective.emlPaths) {
     if (!prior.emlPaths.has(emlPath)) continue; // newly added
-    const immutable = await checkMailboxEmlPriorByteEquality(
+    const immutable = await checkRetainedBlobUnchanged(
       emlPath,
-      readBlob,
-      priorReadBlob,
+      prospectiveListing,
+      priorListing,
+      "mailbox message",
+      "a retained mailbox message is immutable",
     );
     if (!immutable.ok) return immutable;
   }
@@ -2525,7 +2524,11 @@ export const workflowRunKindHandler: KindHandler = {
     priorListDir,
     priorListDirOids,
     changedPathPrefixes,
+    validationScope,
   }): Promise<ValidatePushResult> {
+    const prospectiveListing = makeTreeListing(listDirOids);
+    const priorListing = makeTreeListing(priorListDirOids);
+    const cache = parseCacheFor(validationScope);
     // Bound the per-run event/blob walks to the runs this commit could
     // have touched. The substrate guarantees a prefix-preserving commit
     // mutates only paths under `changedPathPrefixes`; every run outside
@@ -2592,8 +2595,9 @@ export const workflowRunKindHandler: KindHandler = {
         readBlob,
         priorReadBlob,
         priorListDir,
-        priorListDirOids,
-        listDirOids,
+        prospectiveListing,
+        priorListing,
+        cache,
       );
       if (!claimCheck.ok) {
         logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${claimCheck.reason}`;
@@ -2613,9 +2617,9 @@ export const workflowRunKindHandler: KindHandler = {
       // mailbox is not).
       const mailboxCheck = await validateMailboxSubtree(
         listDir,
-        readBlob,
         priorListDir,
-        priorReadBlob,
+        prospectiveListing,
+        priorListing,
       );
       if (!mailboxCheck.ok) {
         logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${mailboxCheck.reason}`;
@@ -2673,22 +2677,29 @@ export const workflowRunKindHandler: KindHandler = {
       let terminalSeq: number | null = null;
       let terminalType: string | null = null;
       for (const entry of entries) {
-        const priorCheck = await checkPriorByteEquality(
+        const priorCheck = await checkRetainedBlobUnchanged(
           entry.blobPath,
-          readBlob,
-          priorReadBlob,
+          prospectiveListing,
+          priorListing,
+          "event",
+          "event blobs are append-only",
         );
         if (!priorCheck.ok) {
           logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${priorCheck.reason}`;
           return priorCheck;
         }
-        const parsed = await parseEventBlob(entry, readBlob);
+        const parsed = await parseEventBlobCached(
+          entry,
+          readBlob,
+          prospectiveListing,
+          cache,
+        );
         if (!parsed.ok) {
           logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${parsed.reason}`;
           return { ok: false, reason: parsed.reason };
         }
-        if (parsed.parsed.body.type === "CancelRequested") {
-          const origin = parsed.parsed.body.origin;
+        if (parsed.event.type === "CancelRequested") {
+          const origin = parsed.event.origin;
           if (typeof origin !== "string") {
             return {
               ok: false,
@@ -2703,13 +2714,13 @@ export const workflowRunKindHandler: KindHandler = {
           // RunCancelled, which re-lists the whole events prefix -- must not be
           // rejected because the carried-forward cancel was authored under a
           // different (supervisor) signer. Re-checking it protects nothing: the
-          // byte-equality check above already proves a carried-forward blob is
+          // blob OID check above already proves a carried-forward blob is
           // unchanged, and the deletion-direction check proves it cannot be
           // dropped. A tampered (byte-diverged) blob never reaches here --
-          // checkPriorByteEquality rejects it first. Mirrors the newly-terminal
-          // gate below, which likewise acts only on a blob absent from the
-          // prior tree.
-          if (await blobIsNewlyAdded(entry.blobPath, priorReadBlob)) {
+          // checkRetainedBlobUnchanged rejects it first. Mirrors the
+          // newly-terminal gate below, which likewise acts only on a blob
+          // absent from the prior tree.
+          if (await blobIsNewlyAdded(entry.blobPath, priorListing)) {
             const principalCheck = checkCancelOriginPrincipal(
               entry.blobPath,
               origin,
@@ -2727,10 +2738,10 @@ export const workflowRunKindHandler: KindHandler = {
             reason: `run ${runId} has event at seq ${String(entry.filenameSeq)} after terminal ${terminalType} at seq ${String(terminalSeq)}`,
           };
         }
-        const classified = classifyTerminalEvent(parsed.parsed.body.type);
+        const classified = classifyTerminalEvent(parsed.event.type);
         if (classified.terminal) {
           terminalSeq = entry.filenameSeq;
-          terminalType = parsed.parsed.body.type;
+          terminalType = parsed.event.type;
           // Surface the run as newly terminal only when this commit is
           // the one that ADDS the terminal event -- i.e. the terminal
           // blob is absent from the prior tree. A commit that carries an
@@ -2739,7 +2750,7 @@ export const workflowRunKindHandler: KindHandler = {
           // terminal blob already present in the prior tree and emits no
           // signal, so a downstream consumer keyed on the signal does
           // not double-fire.
-          if (await blobIsNewlyAdded(entry.blobPath, priorReadBlob)) {
+          if (await blobIsNewlyAdded(entry.blobPath, priorListing)) {
             const terminalBytes = await readBlob(entry.blobPath);
             newlyTerminalRuns.push({
               runId,
@@ -2756,6 +2767,8 @@ export const workflowRunKindHandler: KindHandler = {
       readBlob,
       priorListDir,
       priorReadBlob,
+      prospectiveListing,
+      priorListing,
       scopeRunIds,
     );
     if (!combinedRuns.ok) {
@@ -2769,10 +2782,12 @@ export const workflowRunKindHandler: KindHandler = {
       return { ok: false, reason: blobsEnumerated.reason };
     }
     for (const blob of blobsEnumerated.blobs) {
-      const immutability = await checkBlobPriorByteEquality(
+      const immutability = await checkRetainedBlobUnchanged(
         blob.blobPath,
-        readBlob,
-        priorReadBlob,
+        prospectiveListing,
+        priorListing,
+        "blob",
+        "blob entries are immutable once written",
       );
       if (!immutability.ok) {
         logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${immutability.reason}`;
@@ -2838,10 +2853,8 @@ export const workflowRunKindHandler: KindHandler = {
     const partsCheck = await validateRunPartsSubtree({
       listDir,
       priorListDir,
-      readBlob,
-      priorReadBlob,
-      listDirOids,
-      priorListDirOids,
+      prospectiveListing,
+      priorListing,
       scopeRunIds,
     });
     if (!partsCheck.ok) {

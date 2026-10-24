@@ -227,12 +227,21 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     if (entry !== undefined && entry.cache === cache) entry.ops += ops;
   }
 
+  // A parsed tree with its entries also keyed by name, so a path
+  // segment resolves by one lookup instead of a scan of the entries. A
+  // flat directory such as `runs/<runId>/events/` grows by one entry per
+  // commit, and a receive resolves many paths through it.
+  type ParsedTree = {
+    entries: TreeEntry[];
+    byName: ReadonlyMap<string, TreeEntry>;
+  };
+
   // The object reads that the tree resolvers and closure builders below
   // go through. `cache` gives the isomorphic-git cache for one call.
   type ObjectReads = {
     cache: () => object;
     readCommit: (oid: string) => Promise<CommitObject>;
-    readTree: (oid: string) => Promise<TreeEntry[]>;
+    readTree: (oid: string) => Promise<ParsedTree>;
     readBlob: (oid: string) => Promise<Uint8Array>;
   };
 
@@ -241,8 +250,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       cache,
       readCommit: async (oid) =>
         (await git.readCommit({ fs, dir, cache: cache(), oid })).commit,
-      readTree: async (oid) =>
-        (await git.readTree({ fs, dir, cache: cache(), oid })).tree,
+      readTree: async (oid) => {
+        const { tree } = await git.readTree({ fs, dir, cache: cache(), oid });
+        return {
+          entries: tree,
+          byName: new Map(tree.map((e) => [e.path, e])),
+        };
+      },
       readBlob: async (oid) =>
         (await git.readBlob({ fs, dir, cache: cache(), oid })).blob,
     };
@@ -766,8 +780,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       const segment = segments[i];
       if (segment === undefined) throw new Error("unreachable");
       const isLast = i === segments.length - 1;
-      const tree = await reads.readTree(currentOid);
-      const entry = tree.find((e) => e.path === segment);
+      const entry = (await reads.readTree(currentOid)).byName.get(segment);
       if (entry === undefined) return null;
       if (isLast) {
         if (entry.type !== expectedType) return null;
@@ -812,7 +825,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       const root = await rootTreeOid();
       const oid = await resolveTreeOid(reads, root, relPath, "tree");
       if (oid === null) return [];
-      return reads.readTree(oid);
+      return (await reads.readTree(oid)).entries;
     };
     return { blobAt, entriesAt };
   }
@@ -883,7 +896,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const oid = await resolveTreeOid(reads, rootTreeOid, relPath, "tree");
     if (oid === null) return null;
     const out = new Map<string, string>();
-    for (const e of await reads.readTree(oid)) out.set(e.path, e.oid);
+    for (const e of (await reads.readTree(oid)).entries) out.set(e.path, e.oid);
     return out;
   }
 
@@ -894,22 +907,34 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   const GIT_MODE_SUBMODULE = "160000";
 
   // Walk a commit's tree and return the first entry whose mode is disallowed
-  // (a symlink or a submodule), or null when the tree is clean. This mirrors
-  // the materialization backstop in `writeTreeToDisk`, but at the PUSH boundary
-  // so a directory-escaping symlink (or a dangling gitlink) is refused at
-  // admission rather than only caught later at checkout. It reads trees only,
-  // never blobs; `seen` deduplicates shared subtree oids across the commits of
-  // one pack so a subtree is walked once.
+  // (a symlink or a submodule), or the first name that a tree repeats, or
+  // null when the tree is clean. This mirrors the materialization backstop in
+  // `writeTreeToDisk`, but at the PUSH boundary so a directory-escaping
+  // symlink (or a dangling gitlink) is refused at admission rather than only
+  // caught later at checkout. A repeated name is refused because readers
+  // resolve it to different entries: a name lookup keeps one entry and a
+  // scan keeps another, so validation could pass one entry while a reader
+  // serves the other. It reads trees only, never blobs; `seen` deduplicates
+  // shared subtree oids across the commits of one pack so a subtree is
+  // walked once.
   async function findDisallowedTreeMode(
     reads: ObjectReads,
     treeOid: string,
     seen: Set<string>,
     prefix = "",
-  ): Promise<{ path: string; kind: "symlink" | "submodule" } | null> {
+  ): Promise<{
+    path: string;
+    kind: "symlink" | "submodule" | "repeated name";
+  } | null> {
     if (seen.has(treeOid)) return null;
     seen.add(treeOid);
-    for (const entry of await reads.readTree(treeOid)) {
+    const names = new Set<string>();
+    for (const entry of (await reads.readTree(treeOid)).entries) {
       const entryPath = prefix === "" ? entry.path : `${prefix}/${entry.path}`;
+      if (names.has(entry.path)) {
+        return { path: entryPath, kind: "repeated name" };
+      }
+      names.add(entry.path);
       if (entry.mode === GIT_MODE_SYMLINK) {
         return { path: entryPath, kind: "symlink" };
       }
@@ -1289,7 +1314,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   } {
     const paths = treePathReads(reads, async () => rootTreeOid);
     const topLevelTreePaths = async (): Promise<string[]> =>
-      (await reads.readTree(rootTreeOid)).map((e) => e.path);
+      (await reads.readTree(rootTreeOid)).entries.map((e) => e.path);
     const readBlob = async (relPath: string): Promise<Uint8Array> => {
       const blob = await paths.blobAt(relPath);
       if (blob === null) {
@@ -1427,6 +1452,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       priorListDir,
       priorListDirOids,
       changedPathPrefixes,
+      // A write validates one commit, so its parse cache lasts one call.
+      validationScope: {},
     });
     if (!validation.ok) {
       // Nothing was staged and no ref advanced: the assembly wrote only
@@ -1558,51 +1585,19 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     if (!repoExists) return out;
     const commitSha = await resolveRefSha(dir, ref);
     if (commitSha === null) return out;
-    const { commit } = await git.readCommit({
-      fs,
-      dir,
-      cache: cacheFor(dir),
-      oid: commitSha,
-    });
-    let currentOid = commit.tree;
-    const segments = prefix
-      .replace(/\/$/, "")
-      .split("/")
-      .filter((s) => s !== "");
-    for (const segment of segments) {
-      const { tree } = await git.readTree({
-        fs,
-        dir,
-        cache: cacheFor(dir),
-        oid: currentOid,
-      });
-      const entry = tree.find((e) => e.path === segment);
-      if (entry === undefined || entry.type !== "tree") {
-        return out;
-      }
-      currentOid = entry.oid;
-    }
-    const { tree } = await git.readTree({
-      fs,
-      dir,
-      cache: cacheFor(dir),
-      oid: currentOid,
-    });
-    // N+1 isomorphic-git round-trips: one tree read plus one
-    // readBlob per blob entry. Acceptable at the current scale
-    // (single-digit tarballs per registry); when a registry grows
-    // to hundreds of entries this becomes the obvious optimization
-    // target — readBlob can take the entry oid directly, avoiding
-    // the per-call path resolution.
-    for (const entry of tree) {
+    const reads = dirReads(dir);
+    const treeOid = await resolveTreeEntry(
+      reads,
+      commitSha,
+      prefix.replace(/\/$/, ""),
+      "tree",
+    );
+    if (treeOid === null) return out;
+    // One tree read plus one blob read per blob entry, each blob read by
+    // its oid from the listing.
+    for (const entry of (await reads.readTree(treeOid)).entries) {
       if (entry.type !== "blob") continue;
-      const { blob } = await git.readBlob({
-        fs,
-        dir,
-        cache: cacheFor(dir),
-        oid: commitSha,
-        filepath: `${prefix}${entry.path}`,
-      });
+      const blob = await reads.readBlob(entry.oid);
       out.set(`${prefix}${entry.path}`, blob);
     }
     return out;
@@ -1773,6 +1768,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
             // Shared across the pack's commits so a subtree common to several is
             // walked once by the disallowed-mode gate below.
             const seenTreeOids = new Set<string>();
+            // One scope for every commit of the pack, so a handler parses
+            // a blob that many commits carry once per receive.
+            const validationScope = {};
             for (const newCommit of newCommits) {
               // The memo window now holds this commit and its parent.
               receive.advance();
@@ -1855,6 +1853,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
                 priorListDir,
                 priorListDirOids,
                 changedPathPrefixes,
+                validationScope,
               });
               if (!result.ok) {
                 logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref} at commit ${newCommit}: ${result.reason}`;

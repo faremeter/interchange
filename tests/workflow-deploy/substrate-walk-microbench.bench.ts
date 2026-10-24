@@ -32,6 +32,7 @@ import {
   markConsumed,
   WORKFLOW_RUN_ADDRESSES_PREFIX,
   WORKFLOW_RUN_CONSUMED_DIR,
+  type CommittedTreeEntry,
   type KindHandler,
   type Principal,
   type RepoId,
@@ -64,6 +65,18 @@ async function makeTempDir(prefix: string): Promise<string> {
 
 function eventBody(seq: number, type: string): string {
   return JSON.stringify({ seq, type });
+}
+
+async function listTreeOids(
+  dir: string,
+  oid: string | null,
+): Promise<CommittedTreeEntry[]> {
+  if (oid === null) return [];
+  return (await git.readTree({ fs, dir, oid })).tree.map((e) => ({
+    name: e.path,
+    oid: e.oid,
+    type: e.type,
+  }));
 }
 
 // Re-validate the prospective tree of the repo's current tip via the
@@ -109,6 +122,11 @@ async function timeValidatePush(
     if (oid === null) return [];
     return (await git.readTree({ fs, dir, oid })).tree.map((e) => e.path);
   };
+  const listDirOids = async (relPath: string): Promise<CommittedTreeEntry[]> =>
+    listTreeOids(
+      dir,
+      relPath === "" ? commit.tree : await resolve(relPath, "tree"),
+    );
   // The prior tree is this commit's parent; the per-run scoping's
   // deletion-direction walk reads it. For a steady run-event append the
   // parent carries the same runs, so the cost profile matches production.
@@ -131,7 +149,9 @@ async function timeValidatePush(
     }
     return null;
   };
-  const priorListDir = async (relPath: string): Promise<string[]> => {
+  const priorListDirOids = async (
+    relPath: string,
+  ): Promise<CommittedTreeEntry[]> => {
     if (parent === null) return [];
     const pc = (await git.readCommit({ fs, dir, oid: parent })).commit;
     const segs = relPath.split("/").filter((s) => s !== "");
@@ -143,8 +163,10 @@ async function timeValidatePush(
       if (entry.type !== "tree") return [];
       oid = entry.oid;
     }
-    return (await git.readTree({ fs, dir, oid })).tree.map((e) => e.path);
+    return listTreeOids(dir, oid);
   };
+  const priorListDir = async (relPath: string): Promise<string[]> =>
+    (await priorListDirOids(relPath)).map((e) => e.name);
 
   const changedPathPrefixes = forceValidateAll
     ? undefined
@@ -157,9 +179,12 @@ async function timeValidatePush(
     topLevelTreePaths,
     readBlob,
     listDir,
+    listDirOids,
     priorReadBlob,
     priorListDir,
+    priorListDirOids,
     changedPathPrefixes,
+    validationScope: {},
   });
   const elapsed = performance.now() - t0;
   if (!r.ok) throw new Error(`validatePush unexpectedly rejected: ${r.reason}`);
@@ -358,6 +383,22 @@ async function timeClaimCheckValidate(
     if (oid === null) return [];
     return (await git.readTree({ fs, dir, oid })).tree.map((e) => e.path);
   };
+  const listDirOids = async (relPath: string): Promise<CommittedTreeEntry[]> =>
+    listTreeOids(
+      dir,
+      relPath === ""
+        ? commit.tree
+        : await resolve(relPath, "tree", commit.tree),
+    );
+  const priorListDirOids = async (
+    relPath: string,
+  ): Promise<CommittedTreeEntry[]> => {
+    if (parentTree === null) return [];
+    return listTreeOids(
+      dir,
+      relPath === "" ? parentTree : await resolve(relPath, "tree", parentTree),
+    );
+  };
   const t0 = performance.now();
   const r = await handler.validatePush({
     repoId: { kind: "workflow-run", id: "bench" },
@@ -366,8 +407,11 @@ async function timeClaimCheckValidate(
     topLevelTreePaths,
     readBlob,
     listDir,
+    listDirOids,
     priorReadBlob,
     priorListDir,
+    priorListDirOids,
+    validationScope: {},
     changedPathPrefixes: new Set([
       `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${BENCH_ADDRESS_SEG}/`,
     ]),
