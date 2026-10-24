@@ -185,6 +185,37 @@ export function whenRunFlushFails(runId: string): Promise<void> {
   });
 }
 
+// The highest seq this process has written durably for a run, and who waits
+// for one, behind `whenRunDurable`.
+const durableSeqs = new Map<string, number>();
+const durableWaiters = new Map<
+  string,
+  { seq: number; resolve: () => void }[]
+>();
+
+/** Resolves once this run's events up to `seq` are durable. */
+export function whenRunDurable(runId: string, seq: number): Promise<void> {
+  if ((durableSeqs.get(runId) ?? -1) >= seq) return Promise.resolve();
+  return new Promise((resolve) => {
+    const list = durableWaiters.get(runId) ?? [];
+    list.push({ seq, resolve });
+    durableWaiters.set(runId, list);
+  });
+}
+
+function noteDurable(runId: string, seq: number): void {
+  durableSeqs.set(runId, Math.max(durableSeqs.get(runId) ?? -1, seq));
+  const list = durableWaiters.get(runId);
+  if (list === undefined) return;
+  const waiting = list.filter((waiter) => {
+    if (waiter.seq > seq) return true;
+    waiter.resolve();
+    return false;
+  });
+  if (waiting.length === 0) durableWaiters.delete(runId);
+  else durableWaiters.set(runId, waiting);
+}
+
 function throwIfFlushFailed(runId: string): void {
   const cause = failedFlushes.get(runId);
   if (cause !== undefined) throw cause;
@@ -231,6 +262,8 @@ async function flushBuffer(env: CommitEnv, runId: string): Promise<void> {
     }
     throw cause;
   }
+  const last = events.at(-1);
+  if (last !== undefined) noteDurable(runId, last.seq);
 }
 
 /**
@@ -433,4 +466,6 @@ export function dropChain(runId: string): void {
   failedFlushes.delete(runId);
   flushWaiters.delete(runId);
   bufferWaiters.delete(runId);
+  durableSeqs.delete(runId);
+  durableWaiters.delete(runId);
 }
