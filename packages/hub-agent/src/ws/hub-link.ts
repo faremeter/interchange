@@ -49,11 +49,7 @@ import {
 } from "@intx/types/sidecar";
 import { RepoId } from "@intx/types/repo";
 import type { SignalKind } from "@intx/types";
-import {
-  createPackReceiver,
-  createPackSender,
-  PackRejectedError,
-} from "@intx/pack-transport";
+import { createPackReceiver, createPackSender } from "@intx/pack-transport";
 import { createFrameLanes } from "./frame-lanes";
 import {
   createRegisterAcker,
@@ -290,8 +286,7 @@ const SENDER_KEYS = Symbol("sender keys");
 /**
  * The reason a workflow-run push fails when no welcomed connection can carry
  * it: the one that carried it closed, or none is welcomed yet. It is not a
- * rejection by the Hub, so the push path does not fast-retry it (see
- * `runWithBootstrap`), and the pushing store keeps the push for the re-drive
+ * rejection by the Hub, so the pushing store keeps the push for the re-drive
  * on the next `welcome` instead of failing a write with it.
  */
 const CONNECTION_LOST_REASON = "Connection lost";
@@ -1202,24 +1197,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }
     }
 
-    // Prune `workflowRunPackBootstrapped` entries recorded under this
-    // address so a future workflow-run-repo reset for the same
-    // `(kind, id, ref)` triple re-runs the bootstrap-retry arm. Without
-    // the prune the flag survives across the deployment's lifetime,
-    // grows unbounded over the link's lifetime, and a hub-side rotation
-    // / disaster-recovery reset surfaces as a `non_fast_forward` on the
-    // first post-reset push (the link skips the retry on the stale
-    // flag).
-    const bootstrapped = workflowRunPackBootstrappedByAddress.get(
-      frame.agentAddress,
-    );
-    if (bootstrapped !== undefined) {
-      for (const key of bootstrapped) {
-        workflowRunPackBootstrapped.delete(key);
-      }
-      workflowRunPackBootstrappedByAddress.delete(frame.agentAddress);
-    }
-
     keyStore.forgetAgent(frame.agentAddress);
     forgetIncarnation(frame.agentAddress, frame.generation);
 
@@ -1420,39 +1397,20 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
-  // Per-(repoId.id, ref) flag tracking whether at least one workflow-run
-  // pack push has been accepted by the hub, and a per-(repoId.id, ref)
-  // serialization queue.
+  // A per-(repoId.id, ref) serialization queue for workflow-run pack
+  // pushes.
   //
   // The hub's workflow-run receive reads the ref's tip under its own
   // per-repo lock and decides there whether a pack moves the ref; it
   // takes no expected old tip from the sender. A pack whose tip the
-  // ref already holds is accepted with no change, so neither a push
-  // that races the hub's creation of the repository nor two
-  // overlapping pushes are rejected for the tip they saw.
+  // ref already holds is accepted with no change.
   //
-  // The sender still serializes every push per `(repoId, ref)`, so the
-  // second push only fires after the first has been acked or rejected
-  // and the hub receives the pushes in the order they were made. It also
-  // retries the FIRST push once when the hub answers `corrupt`. The
-  // retry is bounded to the first push per `(repoId, ref)` so a
-  // genuine corruption surfaces verbatim once the repo has been
-  // bootstrapped.
-  const workflowRunPackBootstrapped = new Set<string>();
+  // The sender serializes every push per `(repoId, ref)`, so the second
+  // push only fires after the first has been acked or rejected and the
+  // hub receives the pushes in the order they were made. The pushing
+  // store's re-drive on `welcome` relies on this to never overlap two
+  // transfers for one ref.
   const workflowRunPackQueues = new Map<string, Promise<void>>();
-  // Reverse index: agentAddress -> bootstrap keys recorded under that
-  // address. `handleAgentUndeploy` consults this to prune
-  // `workflowRunPackBootstrapped` entries owned by the just-undeployed
-  // deployment so a future workflow-run-repo reset for the same
-  // `(kind, id, ref)` triple re-runs the bootstrap-retry arm instead of
-  // skipping it on the stale flag.
-  // Indexed by `agentAddress` (not `anchorRunId`) because the link
-  // does not own the address->anchorRunId derivation -- the sidecar's
-  // deploy router does. Every workflow-run push the link sees carries
-  // the originating address explicitly, so the index closes the gap
-  // structurally without leaking the derivation across the package
-  // boundary.
-  const workflowRunPackBootstrappedByAddress = new Map<string, Set<string>>();
   function workflowRunPackKey(repoId: RepoId, ref: string): string {
     return `${repoId.kind}:${repoId.id}:${ref}`;
   }
@@ -1940,59 +1898,22 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   }): Promise<void> {
     const key = workflowRunPackKey(opts.repoId, opts.ref);
 
-    async function sendOnce(): Promise<void> {
-      await packSender.send({
-        agentAddress: opts.agentAddress,
-        generation: opts.generation,
-        repoId: opts.repoId,
-        transferId: `workflow-run-${crypto.randomUUID()}`,
-        pack: opts.pack,
-        ref: opts.ref,
-        commitSha: opts.commitSha,
-      });
-    }
-
-    async function runWithBootstrap(): Promise<void> {
-      if (workflowRunPackBootstrapped.has(key)) {
-        await sendOnce();
-        return;
-      }
-      try {
-        await sendOnce();
-      } catch (first) {
-        // Only a `corrupt` rejection of the first push retries here. Anything
-        // else re-throws for the caller to latch, including a transfer refused
-        // or cancelled because the link is not welcomed (the pushing store
-        // re-drives it on `welcome`) and a push the Hub does not route, which
-        // a resend would only have rejected again. Real corruption is also
-        // `corrupt`, so it gets this one retry too.
-        if (
-          !(first instanceof PackRejectedError && first.reason === "corrupt")
-        ) {
-          throw first;
-        }
-        // The first push to a never-bootstrapped (repoId, ref) failed
-        // (see the comment on `workflowRunPackBootstrapped` above). The
-        // retry sends the same pack once more.
-        const reason = first instanceof Error ? first.message : String(first);
-        logger.warn`Workflow-run pack push bootstrap retry for ${opts.repoId.id}/${opts.ref}: ${reason}`;
-        await sendOnce();
-      }
-      workflowRunPackBootstrapped.add(key);
-      let perAddress = workflowRunPackBootstrappedByAddress.get(
-        opts.agentAddress,
-      );
-      if (perAddress === undefined) {
-        perAddress = new Set<string>();
-        workflowRunPackBootstrappedByAddress.set(opts.agentAddress, perAddress);
-      }
-      perAddress.add(key);
-    }
-
     // Serialize pushes per (repoId, ref). Chaining through this queue
     // keeps the receive ordering consistent end-to-end.
     const prior = workflowRunPackQueues.get(key) ?? Promise.resolve();
-    const next = prior.catch(() => undefined).then(() => runWithBootstrap());
+    const next = prior
+      .catch(() => undefined)
+      .then(() =>
+        packSender.send({
+          agentAddress: opts.agentAddress,
+          generation: opts.generation,
+          repoId: opts.repoId,
+          transferId: `workflow-run-${crypto.randomUUID()}`,
+          pack: opts.pack,
+          ref: opts.ref,
+          commitSha: opts.commitSha,
+        }),
+      );
     workflowRunPackQueues.set(key, next);
     try {
       await next;
