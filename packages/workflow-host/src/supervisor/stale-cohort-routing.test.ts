@@ -214,7 +214,7 @@ function createMemoryInbox(): InboxPrimitives & {
         s.inbox.set(key, value);
       }
       s.processing.clear();
-      return { commitSha: "memory", replayedKeys: [] };
+      return { commitSha: "memory", replayedKeys: [], retainedIdentities: [] };
     },
     seedProcessing(address, messageId, receivedAt) {
       const s = get(address);
