@@ -13,6 +13,7 @@ import {
   enqueueInbox,
   dequeueToProcessing,
   markConsumed,
+  NotInProcessingError,
   parseEventSeq,
   readCommittedWorkflowRunLifecycle,
   scanRunsForBoot,
@@ -3084,7 +3085,29 @@ describe("claim-check API — markConsumed", () => {
         runId: "run-X",
         consumedAt: 500,
       }),
-    ).rejects.toThrow(/claim_check_processing_not_found/);
+    ).rejects.toThrow(NotInProcessingError);
+  });
+
+  test("rejects a second consume of the same message", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-mark-twice-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 100,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    const args = {
+      address: ADDRESS,
+      messageId: "msg-1",
+      runId: "run-X",
+      consumedAt: 500,
+    };
+    await markConsumed(store, principal, repoId, args);
+    await expect(markConsumed(store, principal, repoId, args)).rejects.toThrow(
+      NotInProcessingError,
+    );
   });
 });
 
@@ -3282,6 +3305,57 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     expect(owned.has("done")).toBe(false);
   });
 
+  test("scanRunsForBoot limited to one run reads only that run", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-owned-one-");
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/other/events/0.json`]:
+          runStartedBody("other"),
+      },
+      message: "seed two live runs",
+    });
+    const { ownedMessageIds } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+      {
+        runId: "live",
+      },
+    );
+    expect(ownedMessageIds).toEqual(new Set(["live"]));
+  });
+
+  test("scanRunsForBoot counts each turn a live run received as owned", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-owned-turns-");
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/1.json`]: JSON.stringify({
+          type: "SignalReceived",
+          seq: 1,
+          at: "2026-01-01T00:00:01.000Z",
+          signalName: "input",
+          signalId: "follow-up",
+          payload: null,
+        }),
+      },
+      message: "seed a live run that received a follow-up turn",
+    });
+    const { ownedMessageIds } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
+    expect(ownedMessageIds).toEqual(new Set(["live", "follow-up"]));
+  });
+
   test("scanRunsForBoot ignores events the checkout holds that never committed", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore(
       "cc-owned-uncommitted-",
@@ -3298,6 +3372,17 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     const runsDir = path.join(
       store.getRepoDir(repoId),
       WORKFLOW_RUN_RUNS_PREFIX,
+    );
+    await fs.promises.writeFile(
+      path.join(runsDir, "live", "events", "1.json"),
+      JSON.stringify({
+        type: "SignalReceived",
+        seq: 1,
+        at: "2026-01-01T00:00:01.000Z",
+        signalName: "input",
+        signalId: "follow-up",
+        payload: null,
+      }),
     );
     await fs.promises.mkdir(path.join(runsDir, "lost", "events"), {
       recursive: true,
@@ -3700,6 +3785,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     );
     // Only the orphan is re-admitted; the owned entry stays in processing.
     expect(replay.replayedKeys).toEqual(["200-orphan"]);
+    expect(replay.retainedMessageIds).toEqual(["live"]);
 
     const repoDir = store.getRepoDir(repoId);
     const processingDir = path.join(

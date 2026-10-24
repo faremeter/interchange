@@ -3567,7 +3567,8 @@ export const workflowRunAuthorize: AuthorizeFn = (
 //                           consumed/<messageId>.json dedup index
 //                           entry.
 //   replayProcessingToInbox — recovery path that moves every
-//                           processing entry back to inbox preserving
+//                           processing entry no live run owns back to
+//                           inbox preserving
 //                           its `<receivedAt>-<messageId>` filename
 //                           key so FIFO ordering survives a crash.
 //
@@ -4126,12 +4127,24 @@ export type MarkConsumedResult = {
 };
 
 /**
+ * `markConsumed` found no processing entry for the message: it is in the
+ * consumed index already, or was never dequeued. Retrying cannot succeed.
+ */
+export class NotInProcessingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotInProcessingError";
+  }
+}
+
+/**
  * Atomically remove the processing entry for `messageId` at `address`,
  * write the canonical `consumed/<messageId>.json` dedup index entry,
  * advance the per-address retention watermark, and prune consumed
  * entries the watermark has passed. The caller is expected to have
  * called `dequeueToProcessing` for this messageId; calling
- * `markConsumed` without a matching processing entry throws.
+ * `markConsumed` without a matching processing entry throws
+ * `NotInProcessingError`.
  *
  * The consumed envelope preserves the original `receivedAt` and
  * `mailAuditRef` from the processing entry so the dedup index doubles
@@ -4167,7 +4180,7 @@ export async function markConsumed(
       const consumedFull = consumedPath(addressSegment, args.messageId);
       const consumedFname = `${args.messageId}.json`;
       if (listing.consumed.some((e) => e.name === consumedFname)) {
-        throw new Error(
+        throw new NotInProcessingError(
           `claim_check_already_consumed: ${consumedFull} already in the dedup index`,
         );
       }
@@ -4176,7 +4189,7 @@ export async function markConsumed(
         e.name.endsWith(`-${args.messageId}.json`),
       );
       if (processingEntry === undefined) {
-        throw new Error(
+        throw new NotInProcessingError(
           `claim_check_processing_not_found: address ${args.address} message ${args.messageId} has no processing entry`,
         );
       }
@@ -4254,6 +4267,8 @@ export async function markConsumed(
 export type ReplayProcessingToInboxResult = {
   commitSha: string;
   replayedKeys: string[];
+  /** Owned entries left in processing/ for their live run to consume. */
+  retainedMessageIds: string[];
 };
 
 export type ScanRunsForBootResult = {
@@ -4265,13 +4280,16 @@ export type ScanRunsForBootResult = {
  * Walk `runs/` once and return the two boot-recovery inputs the supervisor's
  * spawn needs, from one snapshot of the committed history at `ref`:
  *
- * - `ownedMessageIds`: the `consumedMessageId`s of NON-terminal runs -- the
- *   messages a live run still owns. Spawn feeds this into
- *   `replayProcessingToInbox`'s `ownedMessageIds` so a parked run's message is
- *   not re-admitted to inbox and dispatched a second time while the run is
- *   recovered by re-driving its durable log. Without this, the re-drive AND the
- *   re-triggered fresh run both re-park the same awaitSignal gate on the same
- *   runId, and the two concurrent runtime bodies race to a corrupt terminal.
+ * - `ownedMessageIds`: the `consumedMessageId`s and `SignalReceived` signal
+ *   ids of NON-terminal runs -- the messages a live run still owns, the one
+ *   that started it and each follow-up turn's. Spawn and every respawn feed
+ *   this into `replayProcessingToInbox`'s `ownedMessageIds` so a parked run's
+ *   message is not re-admitted to inbox and dispatched a second time while the
+ *   run is recovered by re-driving its durable log. Without this, the re-drive
+ *   AND the re-triggered fresh run both re-park the same awaitSignal gate on
+ *   the same runId, and the two concurrent runtime bodies race to a corrupt
+ *   terminal; a follow-up turn redelivered to a run that already received it is
+ *   ignored, and its dispatch waits for a turn that never comes.
  * - `pendingSealRunIds`: runs that are terminal but still in per-event form --
  *   an interrupted fold left them unsealed. Spawn hands these to the recovery
  *   sweep, which re-runs the idempotent fold. A terminal event is a *proposal*:
@@ -4287,21 +4305,27 @@ export type ScanRunsForBootResult = {
  * rather than inside `replayProcessingToInbox`'s single-ref delta. A run whose
  * log is sealed (combined `events.jsonl`, only permitted for a terminated run)
  * contributes to neither set; an absent `runs/` directory yields empty
- * results.
+ * results. `runId` limits the walk to that one run: a respawn needs only the
+ * top-level run, the one mail reaches.
  */
 export async function scanRunsForBoot(
   store: RepoStore,
   principal: Principal,
   repoId: RepoId,
   ref: string,
+  opts: { readonly runId?: string } = {},
 ): Promise<ScanRunsForBootResult> {
   const owned = new Set<string>();
   const pendingSealRunIds: string[] = [];
   const reads = await store.openCommittedReads(principal, repoId, ref);
   if (reads === null) return { ownedMessageIds: owned, pendingSealRunIds };
-  const runIds = (await reads.listDir(WORKFLOW_RUN_RUNS_PREFIX)).flatMap(
+  let runIds = (await reads.listDir(WORKFLOW_RUN_RUNS_PREFIX)).flatMap(
     (entry) => (entry.type === "tree" ? [entry.name] : []),
   );
+  if (opts.runId !== undefined) {
+    const only = opts.runId;
+    runIds = runIds.filter((runId) => runId === only);
+  }
   const decoder = new TextDecoder();
   for (const runId of runIds) {
     const runPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
@@ -4334,7 +4358,10 @@ export async function scanRunsForBoot(
       continue;
     }
     let terminal = false;
-    let consumedMessageId: string | undefined;
+    // The message that started the run, and the mail of each turn it took
+    // since: a follow-up message is delivered with its message id as the
+    // signal id.
+    const taken: string[] = [];
     for (const entry of eventEntries) {
       if (entry.type !== "blob" || !entry.name.endsWith(".json")) continue;
       let parsed: unknown;
@@ -4365,14 +4392,18 @@ export async function scanRunsForBoot(
       }
       if (type === "RunStarted" && "consumedMessageId" in parsed) {
         const mid = parsed.consumedMessageId;
-        if (typeof mid === "string") consumedMessageId = mid;
+        if (typeof mid === "string") taken.push(mid);
+      }
+      if (type === "SignalReceived" && "signalId" in parsed) {
+        const signalId = parsed.signalId;
+        if (typeof signalId === "string") taken.push(signalId);
       }
     }
     if (terminal) {
       pendingSealRunIds.push(runId);
       continue;
     }
-    if (consumedMessageId !== undefined) owned.add(consumedMessageId);
+    for (const messageId of taken) owned.add(messageId);
   }
   return { ownedMessageIds: owned, pendingSealRunIds };
 }
@@ -4531,25 +4562,27 @@ export async function readWorkflowRunLifecycle(
 
 export type ReplayProcessingToInboxOpts = {
   /**
-   * MessageIds whose run is still LIVE (non-terminal) and therefore owns
-   * its inbound message: recovery re-drives that run against the durable
-   * log, so re-admitting the message to `inbox/` would dispatch a SECOND
-   * run for it, colliding with the re-drive on the shared runId. Entries
-   * in this set are left in `processing/` untouched; the run's eventual
-   * `markConsumed` clears them. The caller computes this by reading the
-   * run event logs, which live on a DIFFERENT ref (`refs/heads/main`)
-   * than the claim-check subtree this operation commits to
-   * (`refs/heads/events`). Empty/absent means replay every processing
-   * entry (the pre-existing behaviour: recover all orphans).
+   * MessageIds a LIVE (non-terminal) run already took: the mail that started
+   * it, each follow-up turn's, and the signals it received. Recovery
+   * re-drives that run against the durable log, so re-admitting one to
+   * `inbox/` would dispatch a SECOND run on the shared runId, or a turn the
+   * run already has. Entries in this set are left in `processing/` and
+   * returned as `retainedMessageIds`, which the supervisor consumes once the
+   * run reaches a new park or ends. The caller computes this by reading the
+   * run event logs, which live on a DIFFERENT ref (`refs/heads/main`) than
+   * the claim-check subtree this operation commits to (`refs/heads/events`).
+   * Empty/absent means replay every processing entry (the pre-existing
+   * behaviour: recover all orphans).
    */
   ownedMessageIds?: ReadonlySet<string>;
 };
 
 /**
- * Recovery path: move every processing entry at `address` back to
- * inbox preserving the original `<receivedAt>-<messageId>` filename
- * key so FIFO ordering survives a workflow-process crash. Returns
- * the set of keys that were moved; when nothing was in processing
+ * Recovery path: move every processing entry at `address` that no live
+ * run owns back to inbox preserving the original
+ * `<receivedAt>-<messageId>` filename key so FIFO ordering survives a
+ * workflow-process crash. Returns the set of keys that were moved and
+ * the ids of the owned entries left in place; when nothing was moved
  * the returned `replayedKeys` is empty (and the commit is a no-op
  * rewrite of the same tree).
  *
@@ -4579,6 +4612,7 @@ export async function replayProcessingToInbox(
   const ref = claimCheckCommitRef();
   const ownedMessageIds = opts.ownedMessageIds ?? new Set<string>();
   const replayedKeys: string[] = [];
+  const retainedMessageIds: string[] = [];
   const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
     message: `replay processing ${address}`,
@@ -4595,8 +4629,8 @@ export async function replayProcessingToInbox(
         // log) is owned by the recovery re-drive of that same run. Re-
         // admitting the message to inbox would dispatch a SECOND run for
         // it, colliding with the re-drive on the shared runId. Leave such
-        // an entry in processing untouched; the run's eventual
-        // `markConsumed` clears it. Only genuinely orphaned entries (no
+        // an entry in processing; the supervisor consumes it once the run
+        // reaches a new park or ends. Only genuinely orphaned entries (no
         // run, or a terminal run) are replayed. The run logs live on a
         // different ref, so the caller precomputes the owned set.
         const envelope = decodeQueueEnvelopeOrThrow(
@@ -4604,6 +4638,7 @@ export async function replayProcessingToInbox(
           `${processingDir}${entry.name}`,
         );
         if (ownedMessageIds.has(envelope.messageId)) {
+          retainedMessageIds.push(envelope.messageId);
           continue;
         }
         const inboxFull = `${inboxDir}${entry.name}`;
@@ -4624,5 +4659,5 @@ export async function replayProcessingToInbox(
       return { puts, deletes };
     },
   });
-  return { commitSha, replayedKeys };
+  return { commitSha, replayedKeys, retainedMessageIds };
 }

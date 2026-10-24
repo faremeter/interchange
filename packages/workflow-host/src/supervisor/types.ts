@@ -346,6 +346,17 @@ export interface WorkflowSupervisorBindings {
     reason: string;
   }) => void;
   /**
+   * Test seam, unset in production. Called each time a shutdown waits for
+   * work it owns before it resolves: `writes` for repository writes started
+   * off the control pump.
+   */
+  onShutdownWait?: (waiting: "writes") => void;
+  /**
+   * Test seam, unset in production. Called each time a respawn waits for
+   * repository writes started off the control pump before it scans `runs/`.
+   */
+  onRespawnWait?: () => void;
+  /**
    * Per-run grants source. The dispatch loop consults it before it forwards a
    * `trigger.fire`, and every new child (spawn, crash-respawn, recycle) gets
    * its result in the `authority.set` frame before it resumes any run. It

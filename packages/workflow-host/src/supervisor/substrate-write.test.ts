@@ -314,7 +314,7 @@ function createMemoryInboxPrimitives(opts: {
         replayedKeys.push(k);
       }
       s.processing.clear();
-      return { commitSha: "memory", replayedKeys };
+      return { commitSha: "memory", replayedKeys, retainedMessageIds: [] };
     },
   };
 }

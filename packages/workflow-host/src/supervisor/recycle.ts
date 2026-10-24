@@ -59,13 +59,15 @@
 // loop dequeues in arrival order (the envelope's `receivedAt` prefix
 // preserves FIFO discipline across the gap).
 //
-// Before the kill lands the recycle path calls
+// Once the old child is gone the recycle path calls
 // `ctx.replayProcessingToInbox()` so any in-flight `processing/`
 // entries that the dying cohort's dispatch loop did not reach
 // `markConsumed` for get moved back to `inbox/` under their original
 // `<receivedAt>-<messageId>` keys. Without this step the dying child
 // would leave an orphaned processing entry that no live dispatch
-// loop owns.
+// loop owns. Mail a live run already took stays in `processing/`
+// instead: the resumed run carries on with it, and the supervisor
+// consumes it once the run next parks or ends.
 //
 // Three trigger origins funnel through `triggerRecycle(reason, ctx)`:
 //
@@ -194,11 +196,12 @@ export interface RecycleContext {
   /** Supervisor-side drain primitive; sends the existing drain mail. */
   readonly drain: (deadlineMs: number) => Promise<void>;
   /**
-   * Replay any `processing/` claim-check entries for the deployment's
-   * mail address back to `inbox/` so the FIFO ordering survives the
-   * recycle. Invoked AFTER the drain step settles and BEFORE the kill
-   * step lands, which eliminates the race window where a processing
-   * entry would exist with no owner. The supervisor closes this
+   * Replay the `processing/` claim-check entries for the deployment's
+   * mail address that no live run took back to `inbox/` so the FIFO
+   * ordering survives the recycle, and leave the ones a live run took
+   * for it. Invoked AFTER the kill, once the old child can no longer
+   * take mail, and BEFORE the new child is spawned, so its dispatch
+   * loop finds every entry back in place. The supervisor closes this
    * callback over its `inboxPrimitives.replayProcessingToInbox` plus
    * the deployment's substrate principal and repo identity.
    */
@@ -206,9 +209,9 @@ export interface RecycleContext {
   /**
    * Abort the prior cohort's terminal source and wake the dispatch
    * loop so it exits before the kill step lands. Invoked AFTER drain
-   * and replay settle and BEFORE the kill -- earlier would starve the
-   * drain step's accumulators of live terminal events; later would
-   * race the kill against the dispatch loop's next iteration.
+   * settles and BEFORE the kill -- earlier would starve the drain
+   * step's accumulators of live terminal events; later would race the
+   * kill against the dispatch loop's next iteration.
    */
   readonly abortPriorCohort: () => void;
   /**
@@ -308,23 +311,8 @@ export async function triggerRecycle(
   // through the existing supervisor-drain origin.
   await ctx.drain(drainDeadlineMs);
 
-  // After drain settles and BEFORE the kill lands, replay any
-  // in-flight `processing/` entries back to `inbox/`. Without this
-  // replay, a child whose run was mid-dispatch when drain expired
-  // would leave its `processing/` entry orphaned -- the dispatch
-  // loop for the dying cohort already aborted on cohort teardown
-  // and will not reach its `markConsumed` step. The new child's
-  // dispatch loop dequeues the recovered entries in arrival order
-  // (the envelope's `receivedAt` prefix preserves FIFO discipline).
-  try {
-    await ctx.replayProcessingToInbox();
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    logger.warn`recycle: replayProcessingToInbox before kill failed: ${message}`;
-  }
-
-  // Abort the prior cohort here -- after drain and replay have run
-  // against a live cohort, before the kill drops the child. Aborting
+  // Abort the prior cohort here -- after drain has run against a live
+  // cohort, before the kill drops the child. Aborting
   // up front (in the supervisor wrapper) would starve drain
   // accumulators of live terminal events and force every recycle to
   // pay the full drainTimeout budget. Aborting after the kill would
@@ -341,6 +329,23 @@ export async function triggerRecycle(
     ...(ctx.setTimer !== undefined ? { setTimer: ctx.setTimer } : {}),
     ...(ctx.clearTimer !== undefined ? { clearTimer: ctx.clearTimer } : {}),
   });
+
+  // Replay the in-flight `processing/` entries no live run took back to
+  // `inbox/`. Without this replay, a child whose run was mid-dispatch
+  // when drain expired would leave its `processing/` entry orphaned --
+  // the dispatch loop for the dying cohort already aborted on cohort
+  // teardown and will not reach its `markConsumed` step. It runs after
+  // the kill: a live child could still take mail between the scan of
+  // what its runs took and the replay, and that mail would come back as
+  // new. The new child's dispatch loop dequeues the recovered entries in
+  // arrival order (the envelope's `receivedAt` prefix preserves FIFO
+  // discipline).
+  try {
+    await ctx.replayProcessingToInbox();
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    logger.warn`recycle: replayProcessingToInbox after kill failed: ${message}`;
+  }
 
   // Step 3: respawn. Fresh channelId, fresh HMAC key, fresh Ed25519
   // IPC keypair. The new child gets the run's current grants and

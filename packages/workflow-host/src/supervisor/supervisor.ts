@@ -59,6 +59,7 @@ import {
   readWorkflowRunLifecycle,
   replayProcessingToInbox as defaultReplayProcessingToInbox,
   StaleInboxEnqueueError,
+  NotInProcessingError,
   DEFAULT_CONSUMED_RETENTION_MS,
   type Principal,
   type WorkflowRunSupervisorPrincipal,
@@ -248,6 +249,10 @@ export const DEFAULT_PARKED_QUERY_WATCHDOG_MS = 30_000;
  * on the assumption the run made progress), not silently swallowed.
  */
 export const TERMINAL_OR_PARK_BACKSTOP_MS = 300_000;
+
+// Attempts to consume mail a resumed run took, a second and then four apart.
+const OWNED_CONSUME_ATTEMPTS = 3;
+const OWNED_CONSUME_BACKOFF_MS = 1_000;
 
 /**
  * Public surface returned by `createWorkflowSupervisor`. Each method
@@ -1429,8 +1434,8 @@ export function createWorkflowSupervisor(
       priorContext,
       // The child is already dead: there is nothing to drain, and
       // `runRespawn`'s kill step is a no-op on a dead handle. The replay
-      // step still runs, moving any mail stranded mid-flight back to the
-      // inbox tail before dispatch resumes.
+      // step still runs, moving mail stranded mid-flight that no live run
+      // took back to the inbox tail before dispatch resumes.
       drain: async () => undefined,
     });
     // The respawned child is now the running cohort. Arm the stable-run
@@ -1848,6 +1853,7 @@ export function createWorkflowSupervisor(
         const event = terminalEventFromPayload(payload.data);
         cohortBroadcaster.notify(payload.data.runId, event);
         terminalRunIds.add(payload.data.runId);
+        consumeOwnedMessages(payload.data.runId);
         // Clean up cohort tracking for the terminated run. Self-discovered
         // runs have no dispatch-loop entry, so their cleanup happens here.
         cohortRunIds.delete(payload.data.runId);
@@ -1912,6 +1918,7 @@ export function createWorkflowSupervisor(
         );
         // Wake any dispatch loop waiting for this run to park.
         resolveParkNotifyWaiter(payload.data.runId);
+        consumeOwnedMessages(payload.data.runId);
         continue;
       }
       if (payload.type === "parked-correlations.response") {
@@ -1960,9 +1967,18 @@ export function createWorkflowSupervisor(
   >();
   let cancellationSeq = 0;
   const cancellationCommits = new Set<Promise<CancelCommitInfo>>();
+  // Mail a resumed run took before its child was replaced. The dispatch that
+  // took it is gone, so it is consumed when the run next parks or ends.
+  const ownedMessages = new Set<string>();
+  // Retries of a failed consume, which a run that has ended would not
+  // trigger again.
+  const ownedConsumeRetries = new Set<unknown>();
   // Repository writes started off the control pump. Each promise settles
   // without rejecting; its handler logs any failure.
   const detachedWrites = new Set<Promise<unknown>>();
+  // Set once shutdown has waited for the last of them. A write started after
+  // that would land after the host may have removed the run's repository.
+  let detachedWritesClosed = false;
 
   function ownDetachedWrite(write: Promise<unknown>): void {
     detachedWrites.add(write);
@@ -2630,8 +2646,8 @@ export function createWorkflowSupervisor(
   async function handleSubstrateWriteRequest(
     data: Extract<ControlPayload, { type: "substrate.write.request" }>["data"],
   ): Promise<void> {
-    const controlSender = activeControlSender();
-    if (controlSender === null) {
+    const cohort = activeCohort();
+    if (cohort === null) {
       // The request arrived after `activeControlSender()` was
       // cleared (the supervisor is in `recycling` mid-swap, or
       // `draining`/`stopping`/`stopped`). The child's read end of
@@ -2646,6 +2662,7 @@ export function createWorkflowSupervisor(
       logger.warn`substrate.write.request received outside running phase; requestId=${data.requestId} dropped (child waiter will fail on pipe close)`;
       return;
     }
+    const controlSender = cohort.controlSender;
     const validatedRepoId = RepoId(data.repoId);
     if (validatedRepoId instanceof type.errors) {
       onChildCrash(
@@ -2722,10 +2739,16 @@ export function createWorkflowSupervisor(
             preservePrefix: data.preservePrefix,
             message: data.message,
             merge: async (existing) => {
-              const sender = activeControlSender();
-              if (sender === null) {
+              // Only the child that asked for the write can compute its merge.
+              // One cut off from its cohort may already be dead, and a send to
+              // a dead child's pipe succeeds without an answer ever coming.
+              const sender = controlSender;
+              if (
+                cohort.terminalCohortAbort.signal.aborted ||
+                activeControlSender() !== sender
+              ) {
                 throw new Error(
-                  "supervisor substrate.write.request: control channel unavailable for merge round-trip",
+                  "supervisor substrate.write.request: the workflow child that asked for this write is gone",
                 );
               }
               const result = await new Promise<
@@ -2827,15 +2850,22 @@ export function createWorkflowSupervisor(
     }
   }
 
-  function activeControlSender(): ControlChannelSender | null {
+  function activeCohort(): Extract<
+    SupervisorState,
+    { phase: "starting" | "running" | "recycling" }
+  > | null {
     if (
       state.phase === "starting" ||
       state.phase === "running" ||
       state.phase === "recycling"
     ) {
-      return state.controlSender;
+      return state;
     }
     return null;
+  }
+
+  function activeControlSender(): ControlChannelSender | null {
+    return activeCohort()?.controlSender ?? null;
   }
 
   async function wireChild(args: {
@@ -3147,7 +3177,8 @@ export function createWorkflowSupervisor(
             { ownedMessageIds },
           ),
         )
-        .then(() => {
+        .then(({ retainedMessageIds }) => {
+          keepOwnedMessages(retainedMessageIds, { childRunning: true });
           wakeDispatch();
         })
         .catch((cause) => {
@@ -3838,10 +3869,11 @@ export function createWorkflowSupervisor(
               // commit lands -- so the substrate subscription IS the ack, and a
               // failed deliver commit is observed by nothing, never re-parks, and
               // never releases markConsumed (the mail stays reclaimable). A crash
-              // before the re-park/terminal leaves the claim-check entry in
-              // processing/, so replayProcessingToInbox re-delivers the signal on
-              // restart. On cohort abort the wait returns and the post-loop guard
-              // skips markConsumed.
+              // before the child commits the signal leaves the claim-check entry
+              // in processing/ for replayProcessingToInbox to re-deliver; after
+              // it, the resumed run owns the mail and the supervisor consumes it
+              // once the run next parks or ends. On cohort abort the wait returns
+              // and the post-loop guard skips markConsumed.
               waitEntered = true;
               await waitForRunTerminalOrPark(
                 iter,
@@ -4306,6 +4338,8 @@ export function createWorkflowSupervisor(
   async function performShutdown(opts: ShutdownOptions): Promise<void> {
     const prior = state;
     state = { phase: "stopping" };
+    for (const retry of ownedConsumeRetries) readyClearTimer(retry);
+    ownedConsumeRetries.clear();
     // shutdownInternal is designed to be TOTAL: when a child is up it must
     // always kill it and always reach `stopped`, no matter which teardown
     // step throws. Rather than depend on every step being individually
@@ -4400,11 +4434,6 @@ export function createWorkflowSupervisor(
       // An already-started signed append may finish after the child exits.
       // Own that write through teardown before the host releases its bindings.
       await Promise.allSettled([...cancellationCommits]);
-      // Own the pump's detached writes the same way, so every write the child
-      // requested lands before shutdown resolves. New merges fail once
-      // stopping, so what remains is local I/O. A finishing write can start a
-      // fold.
-      while (detachedWrites.size > 0) await Promise.all([...detachedWrites]);
       // Await every accumulator's `disposed()` so a pending escalation
       // commit or terminal-event watcher coroutine cannot outlive the
       // supervisor and fire against torn-down bindings.
@@ -4454,6 +4483,15 @@ export function createWorkflowSupervisor(
              the in-flight fold's substrate commit to settle. */
         });
       }
+      // Own the detached writes last, so every write lands before shutdown
+      // resolves: the child's, and the consumes the waits above can start. New
+      // merges fail once stopping, so what remains is local I/O. A finishing
+      // write can start a fold.
+      while (detachedWrites.size > 0) {
+        bindings.onShutdownWait?.("writes");
+        await Promise.all([...detachedWrites]);
+      }
+      detachedWritesClosed = true;
       if (recyclePolicy !== null) {
         try {
           recyclePolicy.stop();
@@ -4701,12 +4739,12 @@ export function createWorkflowSupervisor(
     respawnInProgress = true;
     const { origin, reason, prior, priorContext, drain } = args;
     // The cohort abort no longer fires up-front. triggerRecycle drives
-    // the drain and replay steps against a LIVE cohort first, then
-    // invokes `abortPriorCohort` (the callback below) between replay
-    // and the kill step. Aborting up-front would starve drain
-    // accumulators of live terminal events; aborting after the kill
-    // would race the dispatch loop's next iteration against the
-    // controlSender that's about to disappear.
+    // the drain step against a LIVE cohort first, then invokes
+    // `abortPriorCohort` (the callback below) between the drain and the
+    // kill, and replays the processing mail after the kill. Aborting
+    // up-front would starve drain accumulators of live terminal events;
+    // aborting after the kill would race the dispatch loop's next
+    // iteration against the controlSender that's about to disappear.
     const priorDispatchLoop = prior.dispatchLoop;
     // Transition to `recycling`. Inbound mail continues to flow through
     // `enqueueInbox` unchanged; the prior dispatch loop is still alive
@@ -4761,15 +4799,36 @@ export function createWorkflowSupervisor(
           },
           drain,
           replayProcessingToInbox: async () => {
-            await inboxPrimitives.replayProcessingToInbox(
+            // Mail a live run already took stays in processing/, as on spawn:
+            // the resumed run carries on with it. Redelivered, its start mail
+            // would reach it again as a new turn, and a turn it already has
+            // would stall the dispatch on a re-park that never comes. The old
+            // child is gone: its round-trips end, and the writes it asked for
+            // settle before the scan.
+            rejectCohortAwaiters("recycle");
+            while (detachedWrites.size > 0) {
+              bindings.onRespawnWait?.();
+              await Promise.all([...detachedWrites]);
+            }
+            const { ownedMessageIds } = await scanRunsForBoot(
               bindings.repoStore,
-              inboxWritePrincipal,
+              bindings.readPrincipal,
               bindings.workflowRunRepoId,
-              bindings.deploymentMailAddress,
+              bindings.workflowRunRef,
+              { runId: deriveWorkflowRunId(bindings.deploymentMailAddress) },
             );
+            const { retainedMessageIds } =
+              await inboxPrimitives.replayProcessingToInbox(
+                bindings.repoStore,
+                inboxWritePrincipal,
+                bindings.workflowRunRepoId,
+                bindings.deploymentMailAddress,
+                { ownedMessageIds },
+              );
+            keepOwnedMessages(retainedMessageIds, { childRunning: false });
           },
           abortPriorCohort: () => {
-            // Fired by triggerRecycle between drain/replay and kill.
+            // Fired by triggerRecycle between the drain and the kill.
             // The prior dispatch loop notices the abort on its next
             // wake and exits before the kill drops the child.
             prior.terminalCohortAbort.abort();
@@ -4812,8 +4871,8 @@ export function createWorkflowSupervisor(
               return;
             }
             // The previous cohort was aborted inside triggerRecycle
-            // by the `abortPriorCohort` callback (after drain and
-            // replay, before kill) so the prior dispatch loop did not
+            // by the `abortPriorCohort` callback (after drain, before
+            // kill) so the prior dispatch loop did not
             // race the kill/respawn gap. Stop every armed accumulator
             // (they were tracking runs that lived inside the killed
             // child); the resumed child re-discovers any survivors
@@ -5049,6 +5108,73 @@ export function createWorkflowSupervisor(
           : {}),
       },
     });
+  }
+
+  // Mail a replay left with the run that took it. A run that parked or ended
+  // while the replay ran is already past that mail, so it is consumed now. Only
+  // a first spawn's child runs during the replay; a respawn replays before its
+  // child starts, while the park generations are still the old child's.
+  function keepOwnedMessages(
+    messageIds: readonly string[],
+    opts: { childRunning: boolean },
+  ): void {
+    for (const messageId of messageIds) ownedMessages.add(messageId);
+    const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
+    const parked = opts.childRunning && parkGenerations.has(runId);
+    if (parked || terminalRunIds.has(runId)) consumeOwnedMessages(runId);
+  }
+
+  function consumeOwnedMessages(runId: string): void {
+    if (runId !== deriveWorkflowRunId(bindings.deploymentMailAddress)) return;
+    // The mail stays in processing/, and the next boot's scan keeps it for the
+    // run.
+    if (detachedWritesClosed) return;
+    for (const messageId of [...ownedMessages]) {
+      ownedMessages.delete(messageId);
+      consumeOwnedMessage(runId, messageId, 1);
+    }
+  }
+
+  function consumeOwnedMessage(
+    runId: string,
+    messageId: string,
+    attempt: number,
+  ): void {
+    ownDetachedWrite(
+      inboxPrimitives
+        .markConsumed(
+          bindings.repoStore,
+          inboxWritePrincipal,
+          bindings.workflowRunRepoId,
+          {
+            address: bindings.deploymentMailAddress,
+            messageId,
+            runId,
+            consumedAt: Date.now(),
+            retentionHorizonMs: consumedRetentionMs,
+          },
+        )
+        .catch((cause: unknown) => {
+          // Something else consumed it already; a retry cannot find it either.
+          if (cause instanceof NotInProcessingError) return;
+          if (state.phase === "stopping" || state.phase === "stopped") return;
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          if (attempt >= OWNED_CONSUME_ATTEMPTS) {
+            logger.error`gave up consuming ${messageId}, which the resumed run ${runId} took, after ${String(attempt)} attempts; it stays in processing/ until the next respawn: ${message}`;
+            return;
+          }
+          logger.warn`consuming ${messageId}, which the resumed run ${runId} took, failed; retrying: ${message}`;
+          const retry = readySetTimer(
+            () => {
+              ownedConsumeRetries.delete(retry);
+              consumeOwnedMessage(runId, messageId, attempt + 1);
+            },
+            OWNED_CONSUME_BACKOFF_MS * 4 ** (attempt - 1),
+          );
+          ownedConsumeRetries.add(retry);
+        }),
+    );
   }
 
   async function deliverSources(opts: DeliverSourcesOpts): Promise<void> {

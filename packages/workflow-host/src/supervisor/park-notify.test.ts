@@ -52,7 +52,7 @@ function createNoopInboxPrimitives(): InboxPrimitives {
       throw new Error("markConsumed not exercised in the park test");
     },
     async replayProcessingToInbox() {
-      return { commitSha: "noop", replayedKeys: [] };
+      return { commitSha: "noop", replayedKeys: [], retainedMessageIds: [] };
     },
   };
 }
