@@ -447,7 +447,7 @@ export type SidecarLookups = {
   readWorkflowRunRefTips?: (
     agentAddress: string,
   ) => Promise<WorkflowRunRefTips>;
-  /** The terminal anchor's admission cutoff is closed and earlier receives settled. */
+  /** The terminal anchor's admission cutoff is closed and the receives that can still move Git have ended. */
   isWorkflowRunHistoryFinal?: (
     source: WorkflowRunPackSource,
   ) => Promise<boolean>;

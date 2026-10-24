@@ -202,6 +202,13 @@ nothing. Reconciliation that cannot read Git backs off and retries; an explicit
 release retries the read and answers 503 while accepted history remains
 unreconciled.
 
+The Hub validates a workflow-run pack before it takes the deployment's
+allocation row, and it holds that row only while it decides and writes the
+ref. A pack that is validating therefore does not hold off a release or a stop.
+Under the row, the Hub checks again that the sending worker owns the current
+allocation and that the deployment is live. A pack that loses the race to a
+release or a recorded stop is rejected, and Git does not change.
+
 A missed sidecar connect deadline is a different decision from that capacity-loss
 record. When the committed run log is one the workflow runtime would continue,
 and it contains a park the runtime would re-attach, the Hub replaces the worker

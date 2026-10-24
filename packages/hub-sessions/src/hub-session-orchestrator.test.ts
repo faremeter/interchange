@@ -219,9 +219,6 @@ function createRepoStoreStub(): {
       async receiveAgentStatePack() {
         throw new Error("mock: receiveAgentStatePack not implemented");
       },
-      async receiveWorkflowRunPack() {
-        throw new Error("mock: receiveWorkflowRunPack not implemented");
-      },
       async prepareWorkflowRunPack() {
         throw new Error("mock: prepareWorkflowRunPack not implemented");
       },

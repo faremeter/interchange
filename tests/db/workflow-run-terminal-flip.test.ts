@@ -17,7 +17,6 @@ import { eq, inArray, sql } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
 import { configureSync, getConfig } from "@intx/log";
-import { collectReachableObjects } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
 import type { DB } from "@intx/db";
 import {
@@ -44,7 +43,6 @@ import {
   dequeueToProcessing,
   markConsumed,
   type RepoStore,
-  WORKFLOW_RUN_RUNS_PREFIX,
 } from "@intx/hub-sessions";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import {
@@ -60,6 +58,12 @@ import {
   seedRunToken,
 } from "@intx/test-harness/seed";
 
+import { applyWorkflowRunPack } from "../hub-agent/lib/deploy-flow-env";
+import {
+  buildWorkflowRunLine,
+  type WorkflowRunPackRun,
+} from "./workflow-run-pack-test-helpers";
+
 const TENANT = "tnt";
 const ASSET = "ast";
 const DEPLOYMENT = "dep";
@@ -71,10 +75,6 @@ const FOREIGN_DEPLOYMENT = "dep-foreign";
 const FOREIGN_DEPLOYMENT_ADDRESS = "run_dep_foreign@tnt.example";
 const WFR_REF = "refs/heads/main";
 const MANIFEST_DIGEST = "1".repeat(64);
-
-function eventBody(seq: number, type: string, at?: string): string {
-  return JSON.stringify({ seq, type, ...(at !== undefined ? { at } : {}) });
-}
 
 // Route the package logger's error-level records into `sink` until the
 // returned restore is called, so a test can assert the terminal seam surfaces
@@ -175,113 +175,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return d;
     }
 
-    // Build a workflow-run pack whose tip commit adds each run's event log.
-    // The genesis commit carries a
-    // `.gitignore`-only tree (the kind handler's accepted initial commit); the
-    // tip adds every requested event in one commit.
+    // Build a workflow-run pack whose tip commit adds each run's event log
+    // in one commit over the genesis.
     async function buildPack(
-      runs: {
-        runId: string;
-        terminalType?: string;
-        terminalAt?: string;
-        signalId?: string;
-        consumedMessageId?: string;
-        // When true, omit the seq-0 RunStarted and emit the terminal event
-        // alone at seq 1 -- the exact artifact the crash-loop guard's
-        // supervisor-authored RunFailed produces on an anchor run whose event
-        // log is otherwise empty.
-        terminalOnlyAtSeq1?: boolean;
-      }[],
+      runs: WorkflowRunPackRun[],
     ): Promise<{ pack: Uint8Array; tip: string }> {
-      const srcDir = await makeTempDir("wfr-terminal-src-");
-      await git.init({ fs, dir: srcDir, defaultBranch: "main" });
-
-      const author = { name: "probe", email: "probe@example.com" };
-      await fs.promises.writeFile(path.join(srcDir, ".gitignore"), "");
-      await git.add({ fs, dir: srcDir, filepath: ".gitignore" });
-      const genesis = await git.commit({
-        fs,
-        dir: srcDir,
-        message: "genesis",
-        author,
-        ref: WFR_REF,
-      });
-
-      const files: Record<string, string> = {};
-      for (const {
-        runId,
-        terminalType,
-        terminalAt,
-        signalId,
-        consumedMessageId,
-        terminalOnlyAtSeq1,
-      } of runs) {
-        if (terminalOnlyAtSeq1 === true) {
-          if (terminalType === undefined) {
-            throw new Error("terminalOnlyAtSeq1 requires a terminalType");
-          }
-          if (signalId !== undefined) {
-            throw new Error(
-              "terminalOnlyAtSeq1 cannot be combined with a signalId",
-            );
-          }
-          files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/1.json`] =
-            eventBody(1, terminalType, terminalAt);
-          continue;
-        }
-        files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/0.json`] =
-          JSON.stringify({
-            seq: 0,
-            type: "RunStarted",
-            ...(consumedMessageId === undefined ? {} : { consumedMessageId }),
-          });
-        let seq = 1;
-        if (signalId !== undefined) {
-          files[
-            `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`
-          ] = JSON.stringify({ seq, type: "SignalReceived", signalId });
-          seq += 1;
-        }
-        if (terminalType !== undefined) {
-          files[
-            `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`
-          ] = eventBody(seq, terminalType, terminalAt);
-        }
-      }
-      for (const [rel, body] of Object.entries(files)) {
-        const full = path.join(srcDir, rel);
-        await fs.promises.mkdir(path.dirname(full), { recursive: true });
-        await fs.promises.writeFile(full, body);
-        await git.add({ fs, dir: srcDir, filepath: rel });
-      }
-      const tip = await git.commit({
-        fs,
-        dir: srcDir,
-        message: "runs reach terminal",
-        author,
-        parent: [genesis],
-        ref: WFR_REF,
-      });
-
-      const oids = Array.from(
-        new Set(
-          (
-            await Promise.all(
-              [genesis, tip].map((s) => collectReachableObjects(srcDir, s)),
-            )
-          ).flat(),
-        ),
+      const line = await buildWorkflowRunLine(
+        await makeTempDir("wfr-terminal-src-"),
+        WFR_REF,
+        [runs],
       );
-      const packResult = await git.packObjects({
-        fs,
-        dir: srcDir,
-        oids,
-        write: false,
-      });
-      if (packResult.packfile === undefined) {
-        throw new Error("git.packObjects returned no packfile");
-      }
-      return { pack: packResult.packfile, tip };
+      const tip = line.commits[0];
+      if (tip === undefined) throw new Error("buildWorkflowRunLine");
+      return { pack: await line.packAt(tip), tip };
     }
 
     // Receive a pack through the real lookups seam wired to `db` (the real
@@ -673,7 +579,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           kind: "workflow-run",
           id: DEPLOYMENT_REPO_ID,
         });
-        await store.receiveWorkflowRunPack(
+        await applyWorkflowRunPack(
+          store,
           { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
           pack,
           WFR_REF,
@@ -742,7 +649,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         kind: "workflow-run",
         id: DEPLOYMENT_REPO_ID,
       });
-      await store.receiveWorkflowRunPack(
+      await applyWorkflowRunPack(
+        store,
         { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
         pack,
         WFR_REF,
@@ -778,7 +686,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const repoId = { kind: "workflow-run", id: DEPLOYMENT_REPO_ID } as const;
       await store.repoStore.initRepo(repoId);
-      await store.receiveWorkflowRunPack(repoId, pack, WFR_REF, tip);
+      await applyWorkflowRunPack(store, repoId, pack, WFR_REF, tip);
       // The terminal status flip has not landed, so the worker can still push
       // the events ref that records how it handled the mail.
       const projection = createWorkflowDispatchProjection({
@@ -877,7 +785,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             id: DEPLOYMENT_REPO_ID,
           } as const;
           await store.repoStore.initRepo(repoId);
-          await store.receiveWorkflowRunPack(repoId, pack, WFR_REF, tip);
+          await applyWorkflowRunPack(store, repoId, pack, WFR_REF, tip);
         }
         await h.db.update(workflowRun).set({ status: "cancelled" });
         await h.db.update(sidecarAllocation).set({ status: "released" });
@@ -970,7 +878,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await recordMailRejection(store.repoStore, "rejected-mail");
         // Git was accepted before the crash, but delivery outcomes have not
         // been projected when capacity is released.
-        await store.receiveWorkflowRunPack(
+        await applyWorkflowRunPack(
+          store,
           { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
           pack,
           WFR_REF,
@@ -1075,7 +984,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           id: DEPLOYMENT_REPO_ID,
         } as const;
         await store.repoStore.initRepo(repoId);
-        await store.receiveWorkflowRunPack(repoId, pack, WFR_REF, tip);
+        await applyWorkflowRunPack(store, repoId, pack, WFR_REF, tip);
         await h.db.insert(sidecar).values({
           id: "stop-worker",
           tokenHashSha256: new Uint8Array(32),
@@ -1189,7 +1098,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const repoId = { kind: "workflow-run", id: DEPLOYMENT_REPO_ID } as const;
       await store.repoStore.initRepo(repoId);
-      await store.receiveWorkflowRunPack(repoId, pack, WFR_REF, tip);
+      await applyWorkflowRunPack(store, repoId, pack, WFR_REF, tip);
       const projection = createWorkflowDispatchProjection({
         db: h.db,
         repoStore: store.repoStore,
@@ -1367,7 +1276,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         kind: "workflow-run",
         id: DEPLOYMENT_REPO_ID,
       });
-      await store.receiveWorkflowRunPack(
+      await applyWorkflowRunPack(
+        store,
         { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
         pack,
         WFR_REF,
@@ -1464,7 +1374,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         kind: "workflow-run",
         id: DEPLOYMENT_REPO_ID,
       });
-      await store.receiveWorkflowRunPack(
+      await applyWorkflowRunPack(
+        store,
         { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
         pack,
         WFR_REF,

@@ -253,10 +253,11 @@ export function createWorkflowLifecycleService({
       (repoId === null || !(await runReader.hasRepository(repoId)))
     )
       throw new Error("Accepted workflow history is missing from the Hub");
-    // Only the allocation row is locked: pack ingestion holds it while
-    // advancing Git, so an unchanged tip under it proves the read covered every
-    // claimed receive. Locking the anchor row as well would deadlock against a
-    // receive minting a child row, whose foreign key needs it.
+    // Only the allocation row is locked: pack ingestion moves Git only
+    // while it holds this row, so an unchanged tip under it proves the read
+    // covered every claimed receive. Locking the anchor row as well would
+    // deadlock against a receive minting a child row, whose foreign key
+    // needs it.
     return db.transaction(async (tx) => {
       await tx
         .select({ id: sidecarAllocation.id })
@@ -534,8 +535,9 @@ export function createWorkflowLifecycleService({
     runId: string,
     reason: string,
   ): Promise<"pending" | "terminal" | "not_found"> {
-    // Not `withRun`: a pack receive can hold the allocation row for its
-    // whole receive, and a request must not wait on it. The anchor lock
+    // Not `withRun`: a pack receive holds the allocation row while it
+    // writes the ref, the sweep holds it too, and a request must not wait
+    // on either. The anchor lock
     // alone orders this against every `withRun` and admission, which
     // lock the anchor FOR UPDATE, and against the allocation store's
     // capacity failures, which lock it before they check for a request.
@@ -655,9 +657,10 @@ export function createWorkflowLifecycleService({
     );
   }
 
-  // Pack ingestion holds a live run's allocation lock for a whole receive, so
-  // a live run with nothing due skips the locked pass. Retention confirmation
-  // also needs no write; terminal runs lock only to derive or begin release.
+  // Pack ingestion holds a live run's allocation lock while it moves the
+  // ref, so a live run with nothing due skips the locked pass instead of
+  // waiting behind a receive. Retention confirmation also needs no write;
+  // terminal runs lock only to derive or begin release.
   async function needsLockedPass(
     tenantId: string,
     runId: string,
