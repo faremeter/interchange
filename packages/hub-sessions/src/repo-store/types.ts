@@ -302,6 +302,11 @@ export interface KindHandler {
    * It is `undefined` on paths that do not surface it (a hand-built
    * validatePush in a test), in which case the handler falls back to
    * hashing the prospective bytes.
+   *
+   * Both listings carry each entry's `type`. A handler that needs a blob
+   * at a path treats an entry of another type as absent, as
+   * `priorReadBlob` does, because a tree can carry the same OID on both
+   * sides.
    */
   validatePush: (args: {
     repoId: RepoId;
@@ -310,12 +315,10 @@ export interface KindHandler {
     topLevelTreePaths: string[];
     readBlob: (path: string) => Promise<Uint8Array>;
     listDir: (path: string) => Promise<string[]>;
-    listDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>;
+    listDirOids?: (path: string) => Promise<CommittedTreeEntry[]>;
     priorReadBlob: (path: string) => Promise<Uint8Array | null>;
     priorListDir: (path: string) => Promise<string[]>;
-    priorListDirOids?: (
-      path: string,
-    ) => Promise<{ name: string; oid: string }[]>;
+    priorListDirOids?: (path: string) => Promise<CommittedTreeEntry[]>;
     changedPathPrefixes?: ReadonlySet<string> | undefined;
   }) => Promise<ValidatePushResult> | ValidatePushResult;
   /**
@@ -331,7 +334,8 @@ export interface KindHandler {
 }
 
 /**
- * A single child entry returned by `CommittedReads.listDir`. `name` is
+ * A single child entry returned by `CommittedReads.listDir` and by the
+ * `listDirOids` and `priorListDirOids` closures of `validatePush`. `name` is
  * the entry's own path segment (no parent prefix); `oid` is its git
  * object id; `type` is the git tree-entry kind. `oid` lets a consumer
  * read a blob's bytes via `readBlobByOid` without re-resolving the path,

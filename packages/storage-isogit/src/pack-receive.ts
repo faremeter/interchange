@@ -521,6 +521,14 @@ export async function publishPackAtomically(
   return oids;
 }
 
+/**
+ * Publish a received pack, run `validateTree` on its tip, and move `ref`
+ * to `expectedSha`. `cache` is an isomorphic-git cache for the reads made
+ * here. A caller that reads the same repo around this call passes its own
+ * cache, so the new pack and every existing .idx load once for all of
+ * those reads, not again on each call. By default the reads here share a
+ * fresh cache.
+ */
 export async function receivePackObjects(
   runtime: StorageRuntime,
   dir: string,
@@ -530,6 +538,7 @@ export async function receivePackObjects(
   transferId: string,
   expectedOldSha: string | null,
   validateTree?: TreeValidator,
+  cache: object = {},
 ): Promise<string | null> {
   const oids = await publishPackAtomically(runtime, dir, pack, transferId);
   let currentOldSha: string | null = null;
@@ -564,11 +573,13 @@ export async function receivePackObjects(
       const { commit } = await git.readCommit({
         fs: runtime.fs.git,
         dir,
+        cache,
         oid: expectedSha,
       });
       const { tree } = await git.readTree({
         fs: runtime.fs.git,
         dir,
+        cache,
         oid: commit.tree,
       });
       // Surface every top-level tree entry — directories and files —
@@ -595,6 +606,7 @@ export async function receivePackObjects(
           const next = await git.readTree({
             fs: runtime.fs.git,
             dir,
+            cache,
             oid: entry.oid,
           });
           currentTree = next.tree;
@@ -609,6 +621,7 @@ export async function receivePackObjects(
         const { blob } = await git.readBlob({
           fs: runtime.fs.git,
           dir,
+          cache,
           oid: blobEntry.oid,
         });
         return blob;
@@ -628,6 +641,7 @@ export async function receivePackObjects(
           const next = await git.readTree({
             fs: runtime.fs.git,
             dir,
+            cache,
             oid: entry.oid,
           });
           currentTree = next.tree;

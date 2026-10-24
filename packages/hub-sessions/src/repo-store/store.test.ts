@@ -3173,3 +3173,459 @@ describe("RepoStore", () => {
     ).rejects.toThrow("authorize_denied: no committed reads");
   });
 });
+
+describe("RepoStore pack receive reads", () => {
+  // More git calls than the store's per-repo cache budget (8192 calls
+  // between rebuilds), so one receive of this many reads would cross a
+  // rebuild if the receive took the cache per call.
+  const READS_OVER_BUDGET = 8300;
+
+  // A handler that reads one blob `count` times in each validatePush, so
+  // a test controls how many git calls a receive makes.
+  function readingHandler(count: number): KindHandler {
+    return {
+      kind: "agent-state",
+      directoryPrefix: "repos-under-test",
+      async validatePush({ readBlob }): Promise<ValidatePushResult> {
+        for (let i = 0; i < count; i++) {
+          await readBlob("deploy/payload.txt");
+        }
+        return { ok: true };
+      },
+      onRefUpdated() {
+        return;
+      },
+    };
+  }
+
+  async function sourcePack(): Promise<{
+    pack: Uint8Array;
+    commitSha: string;
+  }> {
+    const sourceStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-reads-source-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "deploy/payload.txt": "payload" },
+      message: "payload",
+    });
+    const { pack } = await sourceStore.createPack(principal, repoId, REF);
+    return { pack, commitSha };
+  }
+
+  async function receivingStore(
+    prefix: string,
+    count: number,
+  ): Promise<{ store: ReturnType<typeof createRepoStore>; repoDir: string }> {
+    const dataDir = await makeTempDir(prefix);
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": readingHandler(count) },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+    return {
+      store,
+      repoDir: path.join(dataDir, "repos-under-test", repoId.id),
+    };
+  }
+
+  // Count the reads of each .idx and .pack file in `repoDir`'s pack
+  // directory while `fn` runs. isomorphic-git reads a pack file only
+  // when its cache has no entry for that pack.
+  async function countPackLoads(
+    repoDir: string,
+    fn: () => Promise<unknown>,
+  ): Promise<Map<string, number>> {
+    const packDir = path.join(repoDir, ".git", "objects", "pack") + path.sep;
+    const spy = spyOn(fs.promises, "readFile");
+    const loads = new Map<string, number>();
+    try {
+      await fn();
+      for (const [target] of spy.mock.calls) {
+        const name = String(target);
+        if (
+          name.startsWith(packDir) &&
+          (name.endsWith(".idx") || name.endsWith(".pack"))
+        ) {
+          loads.set(name, (loads.get(name) ?? 0) + 1);
+        }
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    return loads;
+  }
+
+  async function readPayload(
+    store: ReturnType<typeof createRepoStore>,
+  ): Promise<string> {
+    const committed = await store.openCommittedReads(principal, repoId, REF);
+    if (committed === null) throw new Error("expected committed reads");
+    const payload = (await committed.listDir("deploy")).find(
+      (e) => e.name === "payload.txt",
+    );
+    if (payload === undefined) throw new Error("expected deploy/payload.txt");
+    return new TextDecoder().decode(await committed.readBlobByOid(payload.oid));
+  }
+
+  test("one receive loads each pack once although its reads pass the cache budget", async () => {
+    const { pack, commitSha } = await sourcePack();
+    const { store, repoDir } = await receivingStore(
+      "repo-store-reads-budget-",
+      READS_OVER_BUDGET,
+    );
+
+    const loads = await countPackLoads(repoDir, async () => {
+      await store.receivePack(principal, repoId, REF, pack, commitSha, null);
+    });
+
+    const names = [...loads.keys()];
+    expect(names.some((n) => n.endsWith(".idx"))).toBe(true);
+    expect(names.some((n) => n.endsWith(".pack"))).toBe(true);
+    for (const [name, count] of loads) {
+      expect({ name, count }).toEqual({ name, count: 1 });
+    }
+  });
+
+  test("a receive keeps the cache, so a read after it loads no pack", async () => {
+    const { pack, commitSha } = await sourcePack();
+    const { store, repoDir } = await receivingStore(
+      "repo-store-reads-kept-",
+      1,
+    );
+    await store.receivePack(principal, repoId, REF, pack, commitSha, null);
+
+    const loads = await countPackLoads(repoDir, () => readPayload(store));
+    expect([...loads.entries()]).toEqual([]);
+  });
+
+  test("a receive charges its reads to the cache budget, so the next read rebuilds the cache", async () => {
+    const { pack, commitSha } = await sourcePack();
+    const { store, repoDir } = await receivingStore(
+      "repo-store-reads-charged-",
+      READS_OVER_BUDGET,
+    );
+    await store.receivePack(principal, repoId, REF, pack, commitSha, null);
+
+    const loads = await countPackLoads(repoDir, () => readPayload(store));
+    const idxLoads = [...loads.entries()].filter(([n]) => n.endsWith(".idx"));
+    expect(idxLoads.length).toBeGreaterThan(0);
+    for (const [name, count] of idxLoads) {
+      expect({ name, count }).toEqual({ name, count: 1 });
+    }
+  });
+
+  test("a rejected receive still charges its reads to the budget", async () => {
+    const sourceStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-reads-rejected-source-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const first = await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "deploy/payload.txt": "payload 0" },
+      message: "payload 0",
+    });
+    const firstPack = await sourceStore.createPack(principal, repoId, REF);
+    const second = await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "deploy/payload.txt": "payload 1" },
+      message: "payload 1",
+    });
+    const secondPack = await sourceStore.createPack(principal, repoId, REF);
+
+    let reads = 1;
+    let accept = true;
+    const dataDir = await makeTempDir("repo-store-reads-rejected-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "agent-state": {
+          kind: "agent-state",
+          directoryPrefix: "repos-under-test",
+          async validatePush({ readBlob }): Promise<ValidatePushResult> {
+            for (let i = 0; i < reads; i++) {
+              await readBlob("deploy/payload.txt");
+            }
+            return accept ? { ok: true } : { ok: false, reason: "rejected" };
+          },
+          onRefUpdated() {
+            return;
+          },
+        },
+      },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+    await store.receivePack(
+      principal,
+      repoId,
+      REF,
+      firstPack.pack,
+      first.commitSha,
+      null,
+    );
+
+    reads = READS_OVER_BUDGET;
+    accept = false;
+    await expect(
+      store.receivePack(
+        principal,
+        repoId,
+        REF,
+        secondPack.pack,
+        second.commitSha,
+        first.commitSha,
+      ),
+    ).rejects.toThrow("rejected");
+
+    // The rejected receive spent more calls than the budget, so the
+    // next read rebuilds the cache and loads the pack index again.
+    let payload: string | undefined;
+    const loads = await countPackLoads(
+      path.join(dataDir, "repos-under-test", repoId.id),
+      async () => {
+        payload = await readPayload(store);
+      },
+    );
+    expect(payload).toBe("payload 0");
+    expect([...loads.keys()].some((n) => n.endsWith(".idx"))).toBe(true);
+  });
+
+  test("reads stay correct across GC repacks between receives", async () => {
+    const RECEIVES = 6;
+    const sourceStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-reads-gc-source-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+
+    const priors: (string | null)[] = [];
+    const dataDir = await makeTempDir("repo-store-reads-gc-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "agent-state": {
+          kind: "agent-state",
+          directoryPrefix: "repos-under-test",
+          async validatePush({
+            readBlob,
+            priorReadBlob,
+          }): Promise<ValidatePushResult> {
+            await readBlob("deploy/payload.txt");
+            const prior = await priorReadBlob("deploy/payload.txt");
+            priors.push(
+              prior === null ? null : new TextDecoder().decode(prior),
+            );
+            return { ok: true };
+          },
+          onRefUpdated() {
+            return;
+          },
+        },
+      },
+      authorize: allowAll,
+      // A low pack threshold makes the receives repack several times,
+      // so later receives read objects from a GC pack.
+      gc: {
+        kinds: ["agent-state"],
+        packThreshold: 2,
+        looseThreshold: 1e6,
+        warnBytes: 1e12,
+        retention: "keep-history",
+      },
+    });
+    await store.initRepo(repoId);
+
+    let tip: string | null = null;
+    for (let i = 0; i < RECEIVES; i++) {
+      const { commitSha } = await sourceStore.writeTree(
+        principal,
+        repoId,
+        REF,
+        {
+          files: { "deploy/payload.txt": `payload ${String(i)}` },
+          message: `payload ${String(i)}`,
+        },
+      );
+      const { pack } = await sourceStore.createPack(principal, repoId, REF);
+      await store.receivePack(principal, repoId, REF, pack, commitSha, tip);
+      tip = commitSha;
+      expect(await readPayload(store)).toBe(`payload ${String(i)}`);
+    }
+
+    expect(priors).toEqual([
+      null,
+      ...Array.from({ length: RECEIVES - 1 }, (_, i) => `payload ${String(i)}`),
+    ]);
+    const packNames = await fs.promises.readdir(
+      path.join(
+        dataDir,
+        "repos-under-test",
+        repoId.id,
+        ".git",
+        "objects",
+        "pack",
+      ),
+    );
+    // A GC repack publishes its pack under the transfer id `gc-<uuid>`.
+    expect(packNames.some((n) => n.startsWith("pack-recv-gc-"))).toBe(true);
+  });
+
+  test("a multi-commit receive parses each commit and tree a bounded number of times", async () => {
+    // Each commit adds one file to `deploy/`, and validation reads every
+    // file on both sides. Without a memo, each path read parses the root
+    // and `deploy/` trees again, so the parses grow as the square of the
+    // commit count.
+    const COMMITS = 24;
+    const srcDir = await makeTempDir("repo-store-reads-memo-src-");
+    await git.init({ fs, dir: srcDir, defaultBranch: "test" });
+    const shas: string[] = [];
+    for (let i = 0; i < COMMITS; i++) {
+      const rel = `deploy/f${String(i)}.txt`;
+      await fs.promises.mkdir(path.join(srcDir, "deploy"), {
+        recursive: true,
+      });
+      await fs.promises.writeFile(path.join(srcDir, rel), `body ${String(i)}`);
+      await git.add({ fs, dir: srcDir, filepath: rel });
+      shas.push(
+        await git.commit({
+          fs,
+          dir: srcDir,
+          message: `commit ${String(i)}`,
+          author: { name: "t", email: "t@t.dev" },
+          ref: REF,
+        }),
+      );
+    }
+    const tip = shas.at(-1);
+    if (tip === undefined) throw new Error("unreachable");
+    const oids = new Set<string>();
+    for (const sha of shas) {
+      for (const oid of await collectReachableObjects(srcDir, sha)) {
+        oids.add(oid);
+      }
+    }
+    const { packfile } = await git.packObjects({
+      fs,
+      dir: srcDir,
+      oids: [...oids],
+    });
+    if (packfile === undefined) throw new Error("no packfile");
+
+    let validated = 0;
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-reads-memo-tgt-"),
+      signingKey,
+      handlers: {
+        "agent-state": {
+          kind: "agent-state",
+          directoryPrefix: "repos-under-test",
+          async validatePush({
+            listDir,
+            readBlob,
+            priorReadBlob,
+          }): Promise<ValidatePushResult> {
+            validated += 1;
+            for (const name of await listDir("deploy")) {
+              await readBlob(`deploy/${name}`);
+              await priorReadBlob(`deploy/${name}`);
+            }
+            return { ok: true };
+          },
+          onRefUpdated() {
+            return;
+          },
+        },
+      },
+      authorize: allowAll,
+    });
+
+    const readTree = spyOn(git, "readTree");
+    const readCommit = spyOn(git, "readCommit");
+    try {
+      await store.receivePack(principal, repoId, REF, packfile, tip, null);
+      expect(validated).toBe(COMMITS);
+      // Per commit: its root and `deploy/` trees, and its commit read by
+      // the walk and by validation. A few more reads come from the tip
+      // checks in the pack receive.
+      expect(readTree.mock.calls.length).toBeLessThanOrEqual(2 * COMMITS + 4);
+      expect(readCommit.mock.calls.length).toBeLessThanOrEqual(2 * COMMITS + 4);
+    } finally {
+      readTree.mockRestore();
+      readCommit.mockRestore();
+    }
+  });
+
+  test("a received pack's validatePush gets the same listDirOids as a writeTree of the same tree", async () => {
+    const listedPaths = ["", "deploy", "deploy/sub", "absent"];
+    type Listing = { name: string; oid: string; type: string }[];
+
+    function listingHandler(out: Map<string, Listing>): KindHandler {
+      return {
+        kind: "agent-state",
+        directoryPrefix: "repos-under-test",
+        async validatePush({ listDirOids }): Promise<ValidatePushResult> {
+          if (listDirOids === undefined) {
+            return { ok: false, reason: "no listDirOids" };
+          }
+          for (const p of listedPaths) out.set(p, await listDirOids(p));
+          return { ok: true };
+        },
+        onRefUpdated() {
+          return;
+        },
+      };
+    }
+
+    const written = new Map<string, Listing>();
+    const sourceStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-listing-source-"),
+      signingKey,
+      handlers: { "agent-state": listingHandler(written) },
+      authorize: allowAll,
+    });
+    const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
+      files: {
+        "top.txt": "top",
+        "deploy/a.txt": "a",
+        "deploy/sub/b.txt": "b",
+      },
+      message: "listing",
+    });
+    const { pack } = await sourceStore.createPack(principal, repoId, REF);
+
+    const received = new Map<string, Listing>();
+    const targetStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-listing-target-"),
+      signingKey,
+      handlers: { "agent-state": listingHandler(received) },
+      authorize: allowAll,
+    });
+    await targetStore.receivePack(
+      principal,
+      repoId,
+      REF,
+      pack,
+      commitSha,
+      null,
+    );
+
+    expect(received).toEqual(written);
+    expect(
+      received.get("deploy")?.map((e) => ({ name: e.name, type: e.type })),
+    ).toEqual([
+      { name: "a.txt", type: "blob" },
+      { name: "sub", type: "tree" },
+    ]);
+    expect(received.get("deploy/sub")?.map((e) => e.name)).toEqual(["b.txt"]);
+    expect(received.get("absent")).toEqual([]);
+  });
+});

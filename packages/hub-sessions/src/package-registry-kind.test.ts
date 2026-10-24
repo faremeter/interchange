@@ -448,12 +448,13 @@ describe("package-registry per-commit pack walk", () => {
     };
     await sourceStore.initRepo(repoId);
 
-    // Seed the first commit with a valid tarball under `tarballs/` so
-    // the kind handler's per-commit walk has a `tarballs` subtree to
-    // enumerate. Without one, `buildCommitTreeClosures.listDir`
-    // throws on a missing `tarballs/` directory and the handler's
-    // catch arm reports the underlying listDir failure rather than
-    // the top-level-entry violation we are pinning here.
+    // Seed both commits with a valid tarball under `tarballs/` so the
+    // first commit is a realistic registry that the per-commit walk
+    // accepts, and only the second commit's `stray.json` can cause the
+    // rejection. The seed is defensive: the handler skips
+    // `listDir("tarballs")` for a tree without `tarballs`, and the
+    // pack-path `listDir` returns `[]` for a missing directory, so a
+    // first commit without the seed also validates.
     const seedTarball = await makeTarball({
       name: "seed-pkg",
       version: "1.0.0",
@@ -543,11 +544,11 @@ describe("package-registry per-commit pack walk", () => {
     };
     await sourceStore.initRepo(repoId);
     // Pair the violating top-level entry with a valid tarballs subtree
-    // so the handler's allowlist for-loop catches `stray.json` before
-    // it falls through to the listDir("tarballs") path. Otherwise the
-    // missing `tarballs/` entry trips `buildCommitTreeClosures.listDir`
-    // first and the rejection reason describes the listDir failure
-    // rather than the allowlist violation.
+    // so `stray.json` is the only fault in the tree. The seed is
+    // defensive: the handler checks the top-level allowlist before it
+    // reads `tarballs`, and the pack-path `listDir` returns `[]` for a
+    // missing directory, so a tree without the seed also rejects on
+    // `stray.json`.
     const seedTarball = await makeTarball({
       name: "seed-pkg",
       version: "1.0.0",
@@ -593,15 +594,13 @@ describe("package-registry per-commit pack walk", () => {
   });
 
   test("accepts a pack whose tree omits the tarballs subtree entirely", async () => {
-    // The substrate's `buildCommitTreeClosures.listDir` throws on an
-    // absent path (the error has no `code: "NotFoundError"` — it is a
-    // plain `new Error("listDir: path tarballs is not a directory ...")`).
-    // The handler must gate the `listDir("tarballs")` call on
-    // `topLevelTreePaths.includes("tarballs")` so a tree without a
-    // `tarballs/` subtree (e.g. the genesis tree, which only writes
-    // `.gitignore`) validates cleanly. Without the gate the handler's
-    // catch arm reports "failed to list tarballs subtree" and the push
-    // is rejected even though no tarball-allowlist violation exists.
+    // A tree without a `tarballs/` subtree (e.g. the genesis tree,
+    // which only writes `.gitignore`) must validate cleanly through the
+    // pack path. The handler gates `listDir("tarballs")` on
+    // `topLevelTreePaths.includes("tarballs")`, so a throw from that
+    // call means a real fault. The pack-path `listDir` returns `[]` for
+    // a missing directory, so the push also accepts without the gate;
+    // the test guards the accept, not the gate.
     const sourceDataDir = await makeTempDir("pkg-reg-notarballs-src-");
     const sourceStore = createRepoStore({
       dataDir: sourceDataDir,
