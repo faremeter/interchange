@@ -209,7 +209,7 @@ function createGatedInboxPrimitives(): {
         resolveReplaySettled();
         resolveReplaySettled = null;
       }
-      return { commitSha: "memory", replayedKeys };
+      return { commitSha: "memory", replayedKeys, retainedMessageIds: [] };
     },
   };
   return {

@@ -964,7 +964,11 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       // await landing in between would not strand a waiter on `processing`
       // emptying.
       changes.notify();
-      return { commitSha: "memory-inbox", replayedKeys };
+      return {
+        commitSha: "memory-inbox",
+        replayedKeys,
+        retainedMessageIds: [],
+      };
     },
   };
 }
