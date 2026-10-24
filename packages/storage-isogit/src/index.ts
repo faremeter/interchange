@@ -7,7 +7,7 @@ import {
   switchBranch,
 } from "./history";
 import { initAgentRepo, initRepo } from "./init";
-import { applyPack, receivePackObjects } from "./pack-receive";
+import { applyPack, removeStagedPacks, stagePack } from "./pack-receive";
 import { createDeployPack, createNegotiatedPack } from "./pack-send";
 import { collectReachableObjects } from "./object-walk";
 import { writeTreeToDisk } from "./write-tree";
@@ -30,11 +30,7 @@ import {
 } from "./runtime";
 
 export type { ContextStore, AuditStore, CommitSigner };
-export type {
-  CommitVerifier,
-  TreeValidator,
-  TreeValidatorResult,
-} from "./pack-receive";
+export type { CommitVerifier, StagedPack } from "./pack-receive";
 export type { IncludeShaPredicate } from "./pack-send";
 export type { DurableMirrorReads };
 export type { InitRepoOpts } from "./init";
@@ -86,7 +82,8 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     listBranches: bindRepoDir(storageRuntime, listBranches),
     logHistory: bindRepoDir(storageRuntime, logHistory),
     applyPack: bindRepoDir(storageRuntime, applyPack),
-    receivePackObjects: bindRepoDir(storageRuntime, receivePackObjects),
+    stagePack: bindRepoDir(storageRuntime, stagePack),
+    removeStagedPacks: bindRepoDir(storageRuntime, removeStagedPacks),
     createDeployPack: bindRepoDir(storageRuntime, createDeployPack),
     createNegotiatedPack: bindRepoDir(storageRuntime, createNegotiatedPack),
     collectReachableObjects: bindRepoDir(

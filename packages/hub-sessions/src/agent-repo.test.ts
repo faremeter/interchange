@@ -497,15 +497,14 @@ describe("AgentRepoStore", () => {
       );
     });
 
-    test("a held tip is accepted even when the expected old tip is stale", async () => {
-      const dataDir = await makeTempDir("agent-repo-wfr-stale-cas-");
+    test("a held tip is answered at prepare, with nothing staged", async () => {
+      const dataDir = await makeTempDir("agent-repo-wfr-held-prepare-");
       const store = createAgentRepoStore({ dataDir, signingKey });
-      const repoId = { kind: "workflow-run" as const, id: "dep-wfr-cas" };
+      const repoId = { kind: "workflow-run" as const, id: "dep-wfr-held" };
       const repoDir = path.join(dataDir, "workflow-runs", repoId.id);
       const line = await sourceLine(3);
-      const [first, middle, last] = line.commits;
-      if (first === undefined || middle === undefined || last === undefined)
-        throw new Error("line");
+      const [, middle, last] = line.commits;
+      if (middle === undefined || last === undefined) throw new Error("line");
 
       await store.receiveWorkflowRunPack(
         repoId,
@@ -513,20 +512,50 @@ describe("AgentRepoStore", () => {
         wfrRef,
         last,
       );
-      const runs = await store.repoStore.receivePack(
-        supervisorOf(repoId.id),
+      const prepared = await store.prepareWorkflowRunPack(
         repoId,
-        wfrRef,
         await line.packAt(middle),
+        wfrRef,
         middle,
-        first,
-        { skipHeldTip: true },
       );
 
-      expect(runs).toEqual([]);
+      expect(prepared.kind).toBe("already_applied");
       expect(await git.resolveRef({ fs, dir: repoDir, ref: wfrRef })).toBe(
         last,
       );
+      expect(
+        await fs.promises
+          .readdir(path.join(repoDir, ".git", "objects", "pack-staging"))
+          .catch(() => []),
+      ).toEqual([]);
+    });
+
+    test("a held tip is answered at commit when another receive reached it first", async () => {
+      const dataDir = await makeTempDir("agent-repo-wfr-held-commit-");
+      const store = createAgentRepoStore({ dataDir, signingKey });
+      const repoId = { kind: "workflow-run" as const, id: "dep-wfr-raced" };
+      const repoDir = path.join(dataDir, "workflow-runs", repoId.id);
+      const line = await sourceLine(3);
+      const [first, , last] = line.commits;
+      if (first === undefined || last === undefined) throw new Error("line");
+      const olderPack = await line.packAt(first);
+      const newerPack = await line.packAt(last);
+
+      const prepared = await store.prepareWorkflowRunPack(
+        repoId,
+        olderPack,
+        wfrRef,
+        first,
+      );
+      if (prepared.kind !== "prepared") throw new Error("expected prepared");
+      await store.receiveWorkflowRunPack(repoId, newerPack, wfrRef, last);
+      const packsBefore = await packFiles(repoDir);
+
+      expect(await prepared.commit()).toEqual({ kind: "already_applied" });
+      expect(await git.resolveRef({ fs, dir: repoDir, ref: wfrRef })).toBe(
+        last,
+      );
+      expect(await packFiles(repoDir)).toEqual(packsBefore);
     });
 
     test("a held tip is recognized by a store that starts on existing data", async () => {
@@ -557,7 +586,7 @@ describe("AgentRepoStore", () => {
       );
     });
 
-    test("a receive that does not opt in still moves the ref to an older tip", async () => {
+    test("a one-call receive with its expected old tip still moves the ref to an older tip", async () => {
       const dataDir = await makeTempDir("agent-repo-wfr-no-opt-in-");
       const store = createAgentRepoStore({ dataDir, signingKey });
       const repoId = { kind: "workflow-run" as const, id: "dep-wfr-plain" };

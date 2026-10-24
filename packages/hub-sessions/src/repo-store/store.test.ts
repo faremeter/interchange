@@ -9,9 +9,12 @@ import type { KeyPair } from "@intx/types/runtime";
 import { waitUntil } from "@intx/types/testing";
 import { createRepoStore } from "./store";
 import { workflowAuthorize, workflowKindHandler } from "../workflow-kind";
+import { RepoRemovedDuringReceiveError } from "./types";
 import type {
   AuthorizeFn,
   KindHandler,
+  NewlyTerminalRun,
+  PackCommitResult,
   Principal,
   RepoAction,
   RepoId,
@@ -3257,9 +3260,13 @@ describe("RepoStore pack receive reads", () => {
 
   // A handler that reads one blob `count` times in each validatePush, so
   // a test controls how many git calls a receive makes.
-  function readingHandler(count: number): KindHandler {
+  function readingHandler(
+    kind: RepoId["kind"],
+    count: number,
+    onRefUpdated: () => void = () => undefined,
+  ): KindHandler {
     return {
-      kind: "agent-state",
+      kind,
       directoryPrefix: "repos-under-test",
       async validatePush({ readBlob }): Promise<ValidatePushResult> {
         for (let i = 0; i < count; i++) {
@@ -3267,79 +3274,135 @@ describe("RepoStore pack receive reads", () => {
         }
         return { ok: true };
       },
-      onRefUpdated() {
-        return;
-      },
+      onRefUpdated,
     };
   }
 
-  async function sourcePack(): Promise<{
+  async function sourcePack(id: RepoId): Promise<{
     pack: Uint8Array;
     commitSha: string;
   }> {
     const sourceStore = createRepoStore({
       dataDir: await makeTempDir("repo-store-reads-source-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { [id.kind]: { ...createTestHandler(), kind: id.kind } },
       authorize: allowAll,
     });
-    const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
+    const { commitSha } = await sourceStore.writeTree(principal, id, REF, {
       files: { "deploy/payload.txt": "payload" },
       message: "payload",
     });
-    const { pack } = await sourceStore.createPack(principal, repoId, REF);
+    const { pack } = await sourceStore.createPack(principal, id, REF);
     return { pack, commitSha };
   }
 
   async function receivingStore(
     prefix: string,
+    id: RepoId,
     count: number,
+    onRefUpdated?: () => void,
   ): Promise<{ store: ReturnType<typeof createRepoStore>; repoDir: string }> {
     const dataDir = await makeTempDir(prefix);
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": readingHandler(count) },
+      handlers: { [id.kind]: readingHandler(id.kind, count, onRefUpdated) },
       authorize: allowAll,
     });
-    await store.initRepo(repoId);
+    await store.initRepo(id);
     return {
       store,
-      repoDir: path.join(dataDir, "repos-under-test", repoId.id),
+      repoDir: path.join(dataDir, "repos-under-test", id.id),
     };
   }
 
-  // Count the reads of each .idx and .pack file in `repoDir`'s pack
-  // directory while `fn` runs. isomorphic-git reads a pack file only
-  // when its cache has no entry for that pack.
+  // The pack file a read in `repoDir` loads, by the name it has in
+  // objects/pack, or null for any other file. A receive reads a pack
+  // from its staging path until it publishes it, so a staged path maps
+  // to the published name: one pack counts under one name, staged or
+  // published.
+  function packFileOf(repoDir: string, target: string): string | null {
+    const objectsDir = path.join(repoDir, ".git", "objects");
+    const packDir = path.join(objectsDir, "pack") + path.sep;
+    if (
+      target.startsWith(packDir) &&
+      (target.endsWith(".idx") || target.endsWith(".pack"))
+    ) {
+      return target;
+    }
+    const stagingDir = path.join(objectsDir, "pack-staging") + path.sep;
+    if (!target.startsWith(stagingDir)) return null;
+    const [transferId, file] = target
+      .substring(stagingDir.length)
+      .split(path.sep);
+    if (
+      transferId === undefined ||
+      (file !== "pack.idx" && file !== "pack.pack")
+    )
+      return null;
+    return `${packDir}pack-recv-${transferId}${path.extname(file)}`;
+  }
+
+  // Record, in order, the pack file each pack read in `repoDir` loads
+  // while `fn` runs. isomorphic-git reads a pack file only when its cache
+  // has no entry for that pack. The receive's own index of a staged pack
+  // also reads the pack once, which is not a cache load, so reads during
+  // `git.indexPack` are left out. `fn` gets the loads so far.
+  async function recordPackLoads(
+    repoDir: string,
+    fn: (loadsSoFar: () => string[]) => Promise<unknown>,
+  ): Promise<string[]> {
+    // Ranges of readFile calls made while an index runs.
+    const indexingCalls: [number, number][] = [];
+    const readFileSpy = spyOn(fs.promises, "readFile");
+    const originalIndexPack = git.indexPack.bind(git);
+    const indexPackSpy = spyOn(git, "indexPack").mockImplementation(
+      async (args) => {
+        const start = readFileSpy.mock.calls.length;
+        try {
+          return await originalIndexPack(args);
+        } finally {
+          indexingCalls.push([start, readFileSpy.mock.calls.length]);
+        }
+      },
+    );
+    const loadsSoFar = (): string[] =>
+      readFileSpy.mock.calls.flatMap(([target], i) => {
+        const name = packFileOf(repoDir, String(target));
+        const indexing = indexingCalls.some(
+          ([start, end]) => i >= start && i < end,
+        );
+        return name === null || indexing ? [] : [name];
+      });
+    try {
+      await fn(loadsSoFar);
+      return loadsSoFar();
+    } finally {
+      readFileSpy.mockRestore();
+      indexPackSpy.mockRestore();
+    }
+  }
+
+  function countLoads(loads: readonly string[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const name of loads) counts.set(name, (counts.get(name) ?? 0) + 1);
+    return counts;
+  }
+
+  // Count the loads of each .idx and .pack file in `repoDir` while `fn`
+  // runs.
   async function countPackLoads(
     repoDir: string,
     fn: () => Promise<unknown>,
   ): Promise<Map<string, number>> {
-    const packDir = path.join(repoDir, ".git", "objects", "pack") + path.sep;
-    const spy = spyOn(fs.promises, "readFile");
-    const loads = new Map<string, number>();
-    try {
-      await fn();
-      for (const [target] of spy.mock.calls) {
-        const name = String(target);
-        if (
-          name.startsWith(packDir) &&
-          (name.endsWith(".idx") || name.endsWith(".pack"))
-        ) {
-          loads.set(name, (loads.get(name) ?? 0) + 1);
-        }
-      }
-    } finally {
-      spy.mockRestore();
-    }
-    return loads;
+    return countLoads(await recordPackLoads(repoDir, fn));
   }
 
   async function readPayload(
     store: ReturnType<typeof createRepoStore>,
+    id: RepoId,
   ): Promise<string> {
-    const committed = await store.openCommittedReads(principal, repoId, REF);
+    const committed = await store.openCommittedReads(principal, id, REF);
     if (committed === null) throw new Error("expected committed reads");
     const payload = (await committed.listDir("deploy")).find(
       (e) => e.name === "payload.txt",
@@ -3348,17 +3411,27 @@ describe("RepoStore pack receive reads", () => {
     return new TextDecoder().decode(await committed.readBlobByOid(payload.oid));
   }
 
-  test("one receive loads each pack once although its reads pass the cache budget", async () => {
-    const { pack, commitSha } = await sourcePack();
+  test("one receive's validation loads each pack once although its reads pass the cache budget", async () => {
+    const { pack, commitSha } = await sourcePack(repoId);
+    // The ref update comes after the validation, which ends with the
+    // charge of its reads to the budget.
+    let loadsSoFar: () => string[] = () => [];
+    let loadsAtRefUpdate: string[] = [];
     const { store, repoDir } = await receivingStore(
       "repo-store-reads-budget-",
+      repoId,
       READS_OVER_BUDGET,
+      () => {
+        loadsAtRefUpdate = loadsSoFar();
+      },
     );
 
-    const loads = await countPackLoads(repoDir, async () => {
+    await recordPackLoads(repoDir, async (soFar) => {
+      loadsSoFar = soFar;
       await store.receivePack(principal, repoId, REF, pack, commitSha, null);
     });
 
+    const loads = countLoads(loadsAtRefUpdate);
     const names = [...loads.keys()];
     expect(names.some((n) => n.endsWith(".idx"))).toBe(true);
     expect(names.some((n) => n.endsWith(".pack"))).toBe(true);
@@ -3368,31 +3441,66 @@ describe("RepoStore pack receive reads", () => {
   });
 
   test("a receive keeps the cache, so a read after it loads no pack", async () => {
-    const { pack, commitSha } = await sourcePack();
+    const { pack, commitSha } = await sourcePack(repoId);
     const { store, repoDir } = await receivingStore(
       "repo-store-reads-kept-",
+      repoId,
       1,
     );
     await store.receivePack(principal, repoId, REF, pack, commitSha, null);
 
-    const loads = await countPackLoads(repoDir, () => readPayload(store));
+    const loads = await countPackLoads(repoDir, () =>
+      readPayload(store, repoId),
+    );
     expect([...loads.entries()]).toEqual([]);
   });
 
-  test("a receive charges its reads to the cache budget, so the next read rebuilds the cache", async () => {
-    const { pack, commitSha } = await sourcePack();
+  test("a receive charges its validation reads to the cache budget, so a later read rebuilds the cache", async () => {
+    const { pack, commitSha } = await sourcePack(repoId);
     const { store, repoDir } = await receivingStore(
       "repo-store-reads-charged-",
+      repoId,
       READS_OVER_BUDGET,
     );
-    await store.receivePack(principal, repoId, REF, pack, commitSha, null);
 
-    const loads = await countPackLoads(repoDir, () => readPayload(store));
+    // The validation loads the pack once and spends more calls than the
+    // budget, so the first read after it rebuilds the cache and loads
+    // the pack index again, whether that read is the receive's own ref
+    // update or the read below.
+    const loads = await countPackLoads(repoDir, async () => {
+      await store.receivePack(principal, repoId, REF, pack, commitSha, null);
+      await readPayload(store, repoId);
+    });
     const idxLoads = [...loads.entries()].filter(([n]) => n.endsWith(".idx"));
     expect(idxLoads.length).toBeGreaterThan(0);
     for (const [name, count] of idxLoads) {
-      expect({ name, count }).toEqual({ name, count: 1 });
+      expect({ name, count }).toEqual({ name, count: 2 });
     }
+  });
+
+  test("a prepared receive keeps the cache, so a read after its commit loads no pack", async () => {
+    // prepareReceivePack accepts only the workflow-run kind.
+    const runRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+    const { pack, commitSha } = await sourcePack(runRepoId);
+    const { store, repoDir } = await receivingStore(
+      "repo-store-reads-prepared-kept-",
+      runRepoId,
+      1,
+    );
+    const prepared = await store.prepareReceivePack(
+      principal,
+      runRepoId,
+      REF,
+      pack,
+      commitSha,
+    );
+    if (prepared.kind !== "prepared") throw new Error("expected prepared");
+    expect((await prepared.commit()).kind).toBe("applied");
+
+    const loads = await countPackLoads(repoDir, () =>
+      readPayload(store, runRepoId),
+    );
+    expect([...loads.entries()]).toEqual([]);
   });
 
   test("a rejected receive still charges its reads to the budget", async () => {
@@ -3465,7 +3573,7 @@ describe("RepoStore pack receive reads", () => {
     const loads = await countPackLoads(
       path.join(dataDir, "repos-under-test", repoId.id),
       async () => {
-        payload = await readPayload(store);
+        payload = await readPayload(store, repoId);
       },
     );
     expect(payload).toBe("payload 0");
@@ -3533,7 +3641,7 @@ describe("RepoStore pack receive reads", () => {
       const { pack } = await sourceStore.createPack(principal, repoId, REF);
       await store.receivePack(principal, repoId, REF, pack, commitSha, tip);
       tip = commitSha;
-      expect(await readPayload(store)).toBe(`payload ${String(i)}`);
+      expect(await readPayload(store, repoId)).toBe(`payload ${String(i)}`);
     }
 
     expect(priors).toEqual([
@@ -3771,5 +3879,887 @@ describe("RepoStore pack receive reads", () => {
     ]);
     expect(received.get("deploy/sub")?.map((e) => e.name)).toEqual(["b.txt"]);
     expect(received.get("absent")).toEqual([]);
+  });
+});
+
+describe("RepoStore prepared pack receive", () => {
+  // prepareReceivePack accepts only the workflow-run kind.
+  const repoId: RepoId = { kind: "workflow-run", id: "subject" };
+  const decoder = new TextDecoder();
+
+  function runOf(content: string): NewlyTerminalRun {
+    return { runId: content, status: "completed", terminalEventJson: "{}" };
+  }
+
+  // A pack that carries every commit, tree and blob from the root up to
+  // `tip`, so a receive validates each commit against its own parent.
+  async function historyPack(dir: string, tip: string): Promise<Uint8Array> {
+    const oids = new Set<string>();
+    for (const entry of await git.log({ fs, dir, ref: tip })) {
+      for (const oid of await collectReachableObjects(dir, entry.oid)) {
+        oids.add(oid);
+      }
+    }
+    const { packfile } = await git.packObjects({ fs, dir, oids: [...oids] });
+    if (packfile === undefined) throw new Error("packObjects");
+    return packfile;
+  }
+
+  // Commits on one line of `REF`, each setting `deploy/a.md` to one of
+  // `contents`.
+  async function sourceLine(contents: readonly string[]): Promise<{
+    commits: string[];
+    packAt: (commitSha: string) => Promise<Uint8Array>;
+  }> {
+    const dataDir = await makeTempDir("repo-store-prepared-source-");
+    const source = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "workflow-run": { ...createTestHandler(), kind: "workflow-run" },
+      },
+      authorize: allowAll,
+    });
+    const commits: string[] = [];
+    for (const content of contents) {
+      const { commitSha } = await source.writeTree(principal, repoId, REF, {
+        files: { "deploy/a.md": content },
+        message: content,
+      });
+      commits.push(commitSha);
+    }
+    const dir = path.join(dataDir, "repos-under-test", repoId.id);
+    return { commits, packAt: (commitSha) => historyPack(dir, commitSha) };
+  }
+
+  // Holds the validation of the commit whose `deploy/a.md` is `content`
+  // until the test releases it, once. `release(false)` makes that
+  // validation reject.
+  function holdAt(content: string): {
+    reached: Promise<void>;
+    release: (accept: boolean) => void;
+    check: (text: string) => Promise<boolean>;
+  } {
+    let markReached: () => void = () => undefined;
+    const reached = new Promise<void>((resolve) => {
+      markReached = resolve;
+    });
+    let release: (accept: boolean) => void = () => undefined;
+    const released = new Promise<boolean>((resolve) => {
+      release = resolve;
+    });
+    let armed = true;
+    return {
+      reached,
+      release,
+      async check(text) {
+        if (!armed || text !== content) return true;
+        armed = false;
+        markReached();
+        return released;
+      },
+    };
+  }
+
+  // A handler that reports one run per commit, named by the commit's
+  // `deploy/a.md`. A commit without `deploy/a.md` carries no run. The
+  // source line's genesis is such a commit, and a pack carries it when
+  // it differs from the target's genesis: each store writes its own,
+  // and the two match only when written in the same second.
+  function runsHandler(
+    check: (text: string) => Promise<boolean> = async () => true,
+  ): TestHandler {
+    const onRefUpdatedCalls: RefUpdateRecord[] = [];
+    return {
+      kind: "workflow-run",
+      directoryPrefix: "repos-under-test",
+      async validatePush({ listDir, readBlob }): Promise<ValidatePushResult> {
+        if (!(await listDir("deploy")).includes("a.md")) {
+          return { ok: true, newlyTerminalRuns: [] };
+        }
+        const text = decoder.decode(await readBlob("deploy/a.md"));
+        if (!(await check(text))) {
+          return { ok: false, reason: `rejected ${text}` };
+        }
+        return { ok: true, newlyTerminalRuns: [runOf(text)] };
+      },
+      onRefUpdated(args) {
+        onRefUpdatedCalls.push(args);
+      },
+      onRefUpdatedCalls,
+    };
+  }
+
+  async function targetStore(handler: KindHandler): Promise<{
+    store: ReturnType<typeof createRepoStore>;
+    dataDir: string;
+    repoDirOf: (id: RepoId) => string;
+  }> {
+    const dataDir = await makeTempDir("repo-store-prepared-target-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "workflow-run": handler },
+      authorize: allowAll,
+    });
+    return {
+      store,
+      dataDir,
+      repoDirOf: (id) => path.join(dataDir, "repos-under-test", id.id),
+    };
+  }
+
+  async function prepare(
+    store: ReturnType<typeof createRepoStore>,
+    id: RepoId,
+    pack: Uint8Array,
+    commitSha: string,
+  ): Promise<{
+    commit: () => Promise<PackCommitResult>;
+    discard: () => Promise<void>;
+  }> {
+    const prepared = await store.prepareReceivePack(
+      principal,
+      id,
+      REF,
+      pack,
+      commitSha,
+    );
+    if (prepared.kind !== "prepared") throw new Error("expected prepared");
+    return prepared;
+  }
+
+  async function receivedPacks(repoDir: string): Promise<string[]> {
+    const entries = await fs.promises
+      .readdir(path.join(repoDir, ".git", "objects", "pack"))
+      .catch(() => []);
+    return entries
+      .filter((e) => e.startsWith("pack-recv-") && e.endsWith(".pack"))
+      .sort();
+  }
+
+  async function stagedPacks(repoDir: string): Promise<string[]> {
+    return fs.promises
+      .readdir(path.join(repoDir, ".git", "objects", "pack-staging"))
+      .catch(() => []);
+  }
+
+  test("prepare then commit moves the ref and returns each commit's runs", async () => {
+    const line = await sourceLine(["v1", "v2"]);
+    const [, tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const handler = runsHandler();
+    const { store, repoDirOf } = await targetStore(handler);
+
+    const prepared = await prepare(store, repoId, await line.packAt(tip), tip);
+    expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
+    expect(await receivedPacks(repoDirOf(repoId))).toEqual([]);
+
+    expect(await prepared.commit()).toEqual({
+      kind: "applied",
+      newlyTerminalRuns: [runOf("v1"), runOf("v2")],
+    });
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
+    expect(handler.onRefUpdatedCalls).toEqual([
+      { repoId, ref: REF, oldSha: null, newSha: tip },
+    ]);
+    expect(await receivedPacks(repoDirOf(repoId))).toHaveLength(1);
+    expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
+    await expect(prepared.commit()).rejects.toThrow(/already committed/);
+  });
+
+  test("a pack whose objects exist only in staging validates", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    let repoDir = "";
+    let unpublishedRead: unknown = null;
+    const handler = runsHandler(async () => {
+      // The validation reads the pack, yet a reader of the repo's own
+      // files cannot find its commit.
+      unpublishedRead = await git
+        .readCommit({ fs, dir: repoDir, oid: tip })
+        .then(
+          () => "found",
+          (err: unknown) => err,
+        );
+      return true;
+    });
+    const target = await targetStore(handler);
+    repoDir = target.repoDirOf(repoId);
+
+    const prepared = await prepare(
+      target.store,
+      repoId,
+      await line.packAt(tip),
+      tip,
+    );
+
+    expect(unpublishedRead).toBeInstanceOf(Error);
+    expect(await receivedPacks(repoDir)).toEqual([]);
+    expect(await stagedPacks(repoDir)).toHaveLength(1);
+    expect((await prepared.commit()).kind).toBe("applied");
+    expect((await git.readCommit({ fs, dir: repoDir, oid: tip })).oid).toBe(
+      tip,
+    );
+  });
+
+  test("while one prepare validates, another repo's commit and the same repo's one-call receive proceed", async () => {
+    const line = await sourceLine(["v1", "v2"]);
+    const [first, tip] = line.commits;
+    if (first === undefined || tip === undefined) throw new Error("line");
+    const hold = holdAt("v2");
+    const { store } = await targetStore(runsHandler(hold.check));
+    const other: RepoId = { kind: "workflow-run", id: "other" };
+
+    const preparing = store.prepareReceivePack(
+      principal,
+      repoId,
+      REF,
+      await line.packAt(tip),
+      tip,
+    );
+    await hold.reached;
+
+    // Neither of these can finish while the held validation keeps a
+    // lock they need; the lane timeout reports a hang.
+    const otherPrepared = await prepare(
+      store,
+      other,
+      await line.packAt(tip),
+      tip,
+    );
+    expect((await otherPrepared.commit()).kind).toBe("applied");
+    await store.receivePack(
+      principal,
+      repoId,
+      REF,
+      await line.packAt(first),
+      first,
+      null,
+    );
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(first);
+
+    hold.release(true);
+    const prepared = await preparing;
+    if (prepared.kind !== "prepared") throw new Error("expected prepared");
+    expect(await prepared.commit()).toEqual({
+      kind: "applied",
+      newlyTerminalRuns: [runOf("v2")],
+    });
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
+    expect(await store.resolveRef(principal, other, REF)).toBe(tip);
+  });
+
+  test("a ref moved to a commit in the prepared chain gets the rest and only the later runs", async () => {
+    const line = await sourceLine(["v1", "v2", "v3"]);
+    const [, middle, tip] = line.commits;
+    if (middle === undefined || tip === undefined) throw new Error("line");
+    const handler = runsHandler();
+    const { store } = await targetStore(handler);
+
+    const prepared = await prepare(store, repoId, await line.packAt(tip), tip);
+    await store.receivePack(
+      principal,
+      repoId,
+      REF,
+      await line.packAt(middle),
+      middle,
+      null,
+    );
+
+    expect(await prepared.commit()).toEqual({
+      kind: "applied",
+      newlyTerminalRuns: [runOf("v3")],
+    });
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
+    expect(handler.onRefUpdatedCalls.at(-1)).toEqual({
+      repoId,
+      ref: REF,
+      oldSha: middle,
+      newSha: tip,
+    });
+  });
+
+  test("a ref moved to a descendant of the pack tip answers already_applied", async () => {
+    const line = await sourceLine(["v1", "v2", "v3"]);
+    const [, middle, tip] = line.commits;
+    if (middle === undefined || tip === undefined) throw new Error("line");
+    const handler = runsHandler();
+    const { store, repoDirOf } = await targetStore(handler);
+
+    const prepared = await prepare(
+      store,
+      repoId,
+      await line.packAt(middle),
+      middle,
+    );
+    await store.receivePack(
+      principal,
+      repoId,
+      REF,
+      await line.packAt(tip),
+      tip,
+      null,
+    );
+    const packsBefore = await receivedPacks(repoDirOf(repoId));
+    const updatesBefore = handler.onRefUpdatedCalls.length;
+
+    expect(await prepared.commit()).toEqual({ kind: "already_applied" });
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
+    expect(await receivedPacks(repoDirOf(repoId))).toEqual(packsBefore);
+    expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
+    expect(handler.onRefUpdatedCalls).toHaveLength(updatesBefore);
+  });
+
+  test("a ref moved to an unrelated commit gets the pack tip and every run", async () => {
+    const line = await sourceLine(["v1", "v2"]);
+    const unrelated = await sourceLine(["u1"]);
+    const [, tip] = line.commits;
+    const [otherTip] = unrelated.commits;
+    if (tip === undefined || otherTip === undefined) throw new Error("line");
+    const { store } = await targetStore(runsHandler());
+
+    const prepared = await prepare(store, repoId, await line.packAt(tip), tip);
+    await store.receivePack(
+      principal,
+      repoId,
+      REF,
+      await unrelated.packAt(otherTip),
+      otherTip,
+      null,
+    );
+
+    expect(await prepared.commit()).toEqual({
+      kind: "applied",
+      newlyTerminalRuns: [runOf("v1"), runOf("v2")],
+    });
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
+  });
+
+  test("discard leaves no staged pack and nothing in objects/pack", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const { store, repoDirOf } = await targetStore(runsHandler());
+
+    const prepared = await prepare(store, repoId, await line.packAt(tip), tip);
+    expect(await stagedPacks(repoDirOf(repoId))).toHaveLength(1);
+    await prepared.discard();
+    await prepared.discard();
+
+    expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
+    expect(await receivedPacks(repoDirOf(repoId))).toEqual([]);
+    expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
+    await expect(prepared.commit()).rejects.toThrow(/already discarded/);
+  });
+
+  test("a discard called in the same tick as commit does nothing", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const { store, repoDirOf } = await targetStore(runsHandler());
+
+    const prepared = await prepare(store, repoId, await line.packAt(tip), tip);
+    const committing = prepared.commit();
+    await prepared.discard();
+
+    expect(await committing).toEqual({
+      kind: "applied",
+      newlyTerminalRuns: [runOf("v1")],
+    });
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
+    expect(await receivedPacks(repoDirOf(repoId))).toHaveLength(1);
+    expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
+  });
+
+  test("two prepares of one pack commit once and then answer already_applied", async () => {
+    const line = await sourceLine(["v1", "v2"]);
+    const [, tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const handler = runsHandler();
+    const { store, repoDirOf } = await targetStore(handler);
+    const pack = await line.packAt(tip);
+
+    const a = await prepare(store, repoId, pack, tip);
+    const b = await prepare(store, repoId, pack, tip);
+
+    expect(await a.commit()).toEqual({
+      kind: "applied",
+      newlyTerminalRuns: [runOf("v1"), runOf("v2")],
+    });
+    expect(await b.commit()).toEqual({ kind: "already_applied" });
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
+    expect(handler.onRefUpdatedCalls).toEqual([
+      { repoId, ref: REF, oldSha: null, newSha: tip },
+    ]);
+    expect(await receivedPacks(repoDirOf(repoId))).toHaveLength(1);
+    expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
+  });
+
+  test("a commit after removeRepo and initRepo reports the removed repo", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const { store, repoDirOf } = await targetStore(runsHandler());
+
+    const prepared = await prepare(store, repoId, await line.packAt(tip), tip);
+    await store.removeRepo(repoId);
+    await store.initRepo(repoId);
+
+    await expect(prepared.commit()).rejects.toBeInstanceOf(
+      RepoRemovedDuringReceiveError,
+    );
+    expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
+    expect(await receivedPacks(repoDirOf(repoId))).toEqual([]);
+    expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
+  });
+
+  test("a validation that fails after removeRepo reports the removed repo and recreates nothing", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const hold = holdAt("v1");
+    const { store, repoDirOf } = await targetStore(runsHandler(hold.check));
+
+    const preparing = store.prepareReceivePack(
+      principal,
+      repoId,
+      REF,
+      await line.packAt(tip),
+      tip,
+    );
+    await hold.reached;
+    // removeRepo takes the repo lock, so it finishing proves the
+    // validation holds none.
+    await store.removeRepo(repoId);
+    hold.release(false);
+
+    await expect(preparing).rejects.toBeInstanceOf(
+      RepoRemovedDuringReceiveError,
+    );
+    await expect(fs.promises.access(repoDirOf(repoId))).rejects.toThrow();
+  });
+
+  test("a validation that passes after removeRepo fails its commit and recreates nothing", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const hold = holdAt("v1");
+    const { store, repoDirOf } = await targetStore(runsHandler(hold.check));
+
+    const preparing = store.prepareReceivePack(
+      principal,
+      repoId,
+      REF,
+      await line.packAt(tip),
+      tip,
+    );
+    await hold.reached;
+    await store.removeRepo(repoId);
+    hold.release(true);
+
+    // The pack may still read from the cache after its files are gone, so
+    // the validation can pass; the commit then finds the repo removed.
+    const outcome = await preparing
+      .then(async (prepared) =>
+        prepared.kind === "prepared" ? prepared.commit() : prepared,
+      )
+      .catch((err: unknown) => err);
+    expect(outcome).toBeInstanceOf(RepoRemovedDuringReceiveError);
+    await expect(fs.promises.access(repoDirOf(repoId))).rejects.toThrow();
+  });
+
+  test("removeRepo during a stage waits for it and succeeds", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const { store, repoDirOf } = await targetStore(runsHandler());
+    const pack = await line.packAt(tip);
+
+    const originalIndexPack = git.indexPack.bind(git);
+    let markIndexing: () => void = () => undefined;
+    const indexing = new Promise<void>((resolve) => {
+      markIndexing = resolve;
+    });
+    let releaseIndexing: () => void = () => undefined;
+    const indexingReleased = new Promise<void>((resolve) => {
+      releaseIndexing = resolve;
+    });
+    const indexPackSpy = spyOn(git, "indexPack").mockImplementation(
+      async (args) => {
+        markIndexing();
+        await indexingReleased;
+        return originalIndexPack(args);
+      },
+    );
+    try {
+      const preparing = store.prepareReceivePack(
+        principal,
+        repoId,
+        REF,
+        pack,
+        tip,
+      );
+      await indexing;
+      const removing = store.removeRepo(repoId);
+      releaseIndexing();
+
+      await removing;
+      const outcome = await preparing
+        .then(async (prepared) =>
+          prepared.kind === "prepared" ? prepared.commit() : prepared,
+        )
+        .catch((err: unknown) => err);
+      expect(outcome).toBeInstanceOf(RepoRemovedDuringReceiveError);
+      await expect(fs.promises.access(repoDirOf(repoId))).rejects.toThrow();
+    } finally {
+      releaseIndexing();
+      indexPackSpy.mockRestore();
+    }
+  });
+
+  // Holds removeRepo's removal of `repoDir` until the test releases it.
+  // `touchedStaging` tells if a staged pack under `repoDir` was touched
+  // while the removal was held. A staged pack removal starts with an
+  // lstat of its dir.
+  function holdRepoRemoval(repoDir: string): {
+    reached: Promise<void>;
+    release: () => void;
+    touchedStaging: () => boolean;
+    restore: () => void;
+  } {
+    const stagingRoot = path.join(repoDir, ".git", "objects", "pack-staging");
+    let markReached: () => void = () => undefined;
+    const reached = new Promise<void>((resolve) => {
+      markReached = resolve;
+    });
+    let releaseRemoval: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    const lstatSpy = spyOn(fs.promises, "lstat");
+    let heldFrom: number | null = null;
+    let heldTo: number | null = null;
+    const rm = fs.promises.rm.bind(fs.promises);
+    const rmSpy = spyOn(fs.promises, "rm").mockImplementation(
+      async (target, options) => {
+        if (target === repoDir) {
+          heldFrom = lstatSpy.mock.calls.length;
+          markReached();
+          await released;
+          heldTo = lstatSpy.mock.calls.length;
+        }
+        return rm(target, options);
+      },
+    );
+    return {
+      reached,
+      release: releaseRemoval,
+      touchedStaging: () =>
+        heldFrom !== null &&
+        lstatSpy.mock.calls
+          .slice(heldFrom, heldTo ?? undefined)
+          .some(([target]) => String(target).startsWith(stagingRoot)),
+      restore: () => {
+        releaseRemoval();
+        rmSpy.mockRestore();
+        lstatSpy.mockRestore();
+      },
+    };
+  }
+
+  // Runs every queued microtask. A staged pack removal that does not
+  // wait for the repo lock starts within them, because no I/O comes
+  // before it.
+  function drainMicrotasks(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  test("the discard of a failed validation waits for removeRepo", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const hold = holdAt("v1");
+    const { store, repoDirOf } = await targetStore(runsHandler(hold.check));
+    const pack = await line.packAt(tip);
+
+    const removal = holdRepoRemoval(repoDirOf(repoId));
+    try {
+      const preparing = store.prepareReceivePack(
+        principal,
+        repoId,
+        REF,
+        pack,
+        tip,
+      );
+      await hold.reached;
+      const removing = store.removeRepo(repoId);
+      await removal.reached;
+      hold.release(false);
+      await drainMicrotasks();
+      removal.release();
+
+      await removing;
+      await expect(preparing).rejects.toBeInstanceOf(
+        RepoRemovedDuringReceiveError,
+      );
+      expect(removal.touchedStaging()).toBe(false);
+      await expect(fs.promises.access(repoDirOf(repoId))).rejects.toThrow();
+    } finally {
+      removal.restore();
+    }
+  });
+
+  test("discard waits for removeRepo", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const { store, repoDirOf } = await targetStore(runsHandler());
+    const prepared = await prepare(store, repoId, await line.packAt(tip), tip);
+
+    const removal = holdRepoRemoval(repoDirOf(repoId));
+    try {
+      const removing = store.removeRepo(repoId);
+      await removal.reached;
+      const discarding = prepared.discard();
+      await drainMicrotasks();
+      removal.release();
+
+      await removing;
+      await discarding;
+      expect(removal.touchedStaging()).toBe(false);
+      await expect(fs.promises.access(repoDirOf(repoId))).rejects.toThrow();
+    } finally {
+      removal.restore();
+    }
+  });
+
+  test("the first receive for a repo in a process removes leftover staged packs", async () => {
+    const line = await sourceLine(["v1", "v2"]);
+    const [first, tip] = line.commits;
+    if (first === undefined || tip === undefined) throw new Error("line");
+    const { store, repoDirOf } = await targetStore(runsHandler());
+    const stagingRoot = path.join(
+      repoDirOf(repoId),
+      ".git",
+      "objects",
+      "pack-staging",
+    );
+    await store.initRepo(repoId);
+    await fs.promises.mkdir(path.join(stagingRoot, "left-by-crash"), {
+      recursive: true,
+    });
+    await fs.promises.writeFile(
+      path.join(stagingRoot, "left-by-crash", "pack.pack"),
+      "partial",
+    );
+
+    await store.receivePack(
+      principal,
+      repoId,
+      REF,
+      await line.packAt(first),
+      first,
+      null,
+    );
+    expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
+
+    // A later receive leaves staged packs alone: in this process they
+    // can belong to a receive in flight.
+    await fs.promises.mkdir(path.join(stagingRoot, "in-flight"));
+    await store.receivePack(
+      principal,
+      repoId,
+      REF,
+      await line.packAt(tip),
+      tip,
+      first,
+    );
+    expect(await stagedPacks(repoDirOf(repoId))).toEqual(["in-flight"]);
+  });
+
+  test.each([
+    ["non_fast_forward", "stale"],
+    ["sha_mismatch", "bogus"],
+    ["path_violation", "rejected"],
+  ] as const)(
+    "a %s rejection on the one-call path never puts the pack in objects/pack",
+    async (prefix, variant) => {
+      const line = await sourceLine(["v1", "v2"]);
+      const [first, tip] = line.commits;
+      if (first === undefined || tip === undefined) throw new Error("line");
+      const { store, repoDirOf } = await targetStore(
+        runsHandler(async (text) => !(variant === "rejected" && text === "v2")),
+      );
+      await store.receivePack(
+        principal,
+        repoId,
+        REF,
+        await line.packAt(first),
+        first,
+        null,
+      );
+      const packDir = path.join(repoDirOf(repoId), ".git", "objects", "pack");
+      const packsBefore = await receivedPacks(repoDirOf(repoId));
+
+      const renameSpy = spyOn(fs.promises, "rename");
+      try {
+        await expect(
+          store.receivePack(
+            principal,
+            repoId,
+            REF,
+            await line.packAt(tip),
+            variant === "bogus" ? "0".repeat(40) : tip,
+            variant === "stale" ? null : first,
+          ),
+        ).rejects.toThrow(new RegExp(`^${prefix}:`));
+        const intoPackDir = renameSpy.mock.calls.filter(([, to]) =>
+          String(to).startsWith(packDir),
+        );
+        expect(intoPackDir).toEqual([]);
+      } finally {
+        renameSpy.mockRestore();
+      }
+      expect(await receivedPacks(repoDirOf(repoId))).toEqual(packsBefore);
+      expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
+      expect(await store.resolveRef(principal, repoId, REF)).toBe(first);
+    },
+  );
+
+  test("two first receives for a fresh repo leave the genesis branch at the pack tip", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    // The pack's history carries the source's genesis, which has no
+    // `deploy/a.md`, so the handler accepts every commit.
+    const { store, repoDirOf } = await targetStore({
+      ...createTestHandler(),
+      kind: "workflow-run",
+    });
+    const dir = path.resolve(repoDirOf(repoId));
+    const main = "refs/heads/main";
+    const pack = await line.packAt(tip);
+
+    // A receive as the Hub runs it: init the repo, then prepare and
+    // commit the pack outside that init.
+    async function receive(
+      commitSha: string,
+    ): Promise<PackCommitResult["kind"]> {
+      await store.initRepo(repoId);
+      const prepared = await store.prepareReceivePack(
+        principal,
+        repoId,
+        main,
+        pack,
+        commitSha,
+      );
+      if (prepared.kind !== "prepared") return prepared.kind;
+      return (await prepared.commit()).kind;
+    }
+
+    // Holds the first genesis commit of the target repo, after its
+    // `git.init` and `git.add`, until the test releases it.
+    const originalCommit = git.commit.bind(git);
+    let markGenesisHeld: () => void = () => undefined;
+    const genesisHeld = new Promise<void>((resolve) => {
+      markGenesisHeld = resolve;
+    });
+    let releaseGenesis: () => void = () => undefined;
+    const genesisReleased = new Promise<void>((resolve) => {
+      releaseGenesis = resolve;
+    });
+    let armed = true;
+    const commitSpy = spyOn(git, "commit").mockImplementation(async (args) => {
+      if (armed && args.dir === dir) {
+        armed = false;
+        markGenesisHeld();
+        await genesisReleased;
+      }
+      return originalCommit(args);
+    });
+    const mkdirSpy = spyOn(fs.promises, "mkdir");
+    const repoDirMkdirs = () =>
+      mkdirSpy.mock.calls.filter(([p]) => p === dir).length;
+
+    let first: Promise<PackCommitResult["kind"]> | undefined;
+    let second: Promise<PackCommitResult["kind"]> | undefined;
+    try {
+      first = receive(tip);
+      await genesisHeld;
+      const mkdirsAtHold = repoDirMkdirs();
+      second = receive(tip);
+      // No await separates this check from the call above. An init
+      // that takes the repo lock queues on it synchronously and
+      // touches no file. An init without the lock calls its first
+      // `mkdir` of the repo dir synchronously, before its first
+      // pending await, so the count would already be higher.
+      expect(repoDirMkdirs()).toBe(mkdirsAtHold);
+      releaseGenesis();
+
+      expect((await Promise.all([first, second])).sort()).toEqual([
+        "already_applied",
+        "applied",
+      ]);
+      expect(await store.resolveRef(principal, repoId, main)).toBe(tip);
+    } finally {
+      releaseGenesis();
+      await Promise.allSettled([first, second]);
+      commitSpy.mockRestore();
+      mkdirSpy.mockRestore();
+    }
+  });
+
+  test("prepareReceivePack refuses a kind that GC reclaims", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-prepared-gc-"),
+      signingKey,
+      handlers: { "workflow-run": runsHandler() },
+      authorize: allowAll,
+      gc: {
+        kinds: ["workflow-run"],
+        retention: "keep-history",
+        packThreshold: 1000,
+        looseThreshold: 1000,
+        warnBytes: Number.MAX_SAFE_INTEGER,
+      },
+    });
+
+    await expect(
+      store.prepareReceivePack(
+        principal,
+        repoId,
+        REF,
+        await line.packAt(tip),
+        tip,
+      ),
+    ).rejects.toThrow(/reclaimed by GC/);
+  });
+
+  test("prepareReceivePack refuses a kind other than workflow-run", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const skillRepoId: RepoId = { kind: "skill", id: "subject" };
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-prepared-kind-"),
+      signingKey,
+      handlers: { skill: { ...runsHandler(), kind: "skill" } },
+      authorize: allowAll,
+    });
+
+    await expect(
+      store.prepareReceivePack(
+        principal,
+        skillRepoId,
+        REF,
+        await line.packAt(tip),
+        tip,
+      ),
+    ).rejects.toThrow(/kind skill is not workflow-run/);
   });
 });

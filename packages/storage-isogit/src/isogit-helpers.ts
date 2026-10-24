@@ -1,4 +1,4 @@
-import git from "isomorphic-git";
+import git, { type FsClient } from "isomorphic-git";
 import { type } from "arktype";
 import type { StorageRuntime } from "./runtime";
 
@@ -34,13 +34,9 @@ export async function readTreeEntries(
   return TreeEntry.array().assert(object);
 }
 
-export async function readRawObject(
-  runtime: StorageRuntime,
-  dir: string,
-  oid: string,
-) {
+export async function readRawObject(gitFs: FsClient, dir: string, oid: string) {
   const { object } = await git.readObject({
-    fs: runtime.fs.git,
+    fs: gitFs,
     dir,
     oid,
     format: "content",

@@ -12,24 +12,13 @@ import { initAgentRepo } from "./node";
 import { createIsogitStorage } from "./index";
 import {
   applyPack,
-  receivePackObjects,
+  removeStagedPacks,
+  stagePack,
   type CommitVerifier,
-  type TreeValidator,
+  type StagedPack,
 } from "./node";
 import { collectReachableObjects } from "./node";
 import { createNodeIsogitRuntime } from "./node-runtime";
-import { publishPackAtomically as publishPackAtomicallyImpl } from "./pack-receive";
-import { normalizeRuntime } from "./runtime";
-
-const publishRuntime = normalizeRuntime(createNodeIsogitRuntime());
-
-function publishPackAtomically(
-  dir: string,
-  pack: Uint8Array,
-  transferId: string,
-): Promise<string[]> {
-  return publishPackAtomicallyImpl(publishRuntime, dir, pack, transferId);
-}
 
 const tempDirs: string[] = [];
 
@@ -422,13 +411,188 @@ describe("applyPack", () => {
   });
 });
 
-describe("publishPackAtomically", () => {
-  test("renames the completed pack before publishing its index", async () => {
+describe("stagePack", () => {
+  function stagingDirOf(targetDir: string, transferId: string): string {
+    return path.join(targetDir, ".git", "objects", "pack-staging", transferId);
+  }
+
+  async function packDirEntries(targetDir: string): Promise<string[]> {
+    return fs.promises.readdir(path.join(targetDir, ".git", "objects", "pack"));
+  }
+
+  test("the view reads the staged objects and the repo's own fs does not", async () => {
     const source = await makeSourceRepo();
     const pack = await createPackFromRepo(source.dir, source.oids);
     const targetDir = await tempDir();
     await initAgentRepo(targetDir);
 
+    const staged = await stagePack(targetDir, pack, "view");
+    try {
+      expect(staged.oids).toContain(source.commitSha);
+      const viaView = await git.readCommit({
+        fs: staged.fs,
+        dir: targetDir,
+        oid: source.commitSha,
+      });
+      expect(viaView.oid).toBe(source.commitSha);
+      await expect(
+        git.readCommit({ fs, dir: targetDir, oid: source.commitSha }),
+      ).rejects.toThrow();
+      expect(await packDirEntries(targetDir)).toEqual([]);
+    } finally {
+      await staged.discard();
+    }
+  });
+
+  test("the view finds the staged pack through a relative gitdir", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const staged = await stagePack(targetDir, pack, "relative");
+    try {
+      const viaView = await git.readCommit({
+        fs: staged.fs,
+        gitdir: path.relative(process.cwd(), path.join(targetDir, ".git")),
+        oid: source.commitSha,
+      });
+      expect(viaView.oid).toBe(source.commitSha);
+    } finally {
+      await staged.discard();
+    }
+  });
+
+  test("publish makes the objects readable through the repo's own fs", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const staged = await stagePack(targetDir, pack, "publish");
+    await staged.publish();
+
+    const commit = await git.readCommit({
+      fs,
+      dir: targetDir,
+      oid: source.commitSha,
+    });
+    expect(commit.oid).toBe(source.commitSha);
+    expect((await packDirEntries(targetDir)).sort()).toEqual([
+      "pack-recv-publish.idx",
+      "pack-recv-publish.pack",
+    ]);
+    await expect(
+      fs.promises.access(stagingDirOf(targetDir, "publish")),
+    ).rejects.toThrow();
+    // The view passes through after publish, so it lists the pack once.
+    const viaView = await git.readCommit({
+      fs: staged.fs,
+      dir: targetDir,
+      oid: source.commitSha,
+    });
+    expect(viaView.oid).toBe(source.commitSha);
+  });
+
+  test("a cache that loaded the staged pack through the view reuses it after publish", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+    const cache = {};
+
+    const staged = await stagePack(targetDir, pack, "cache-key");
+    await git.readCommit({
+      fs: staged.fs,
+      dir: targetDir,
+      cache,
+      oid: source.commitSha,
+    });
+    await staged.publish();
+
+    const packDir = path.join(targetDir, ".git", "objects", "pack");
+    const spy = spyOn(fs.promises, "readFile");
+    try {
+      await git.readCommit({
+        fs,
+        dir: targetDir,
+        cache,
+        oid: source.commitSha,
+      });
+      const packReads = spy.mock.calls.filter(([target]) =>
+        String(target).startsWith(packDir),
+      );
+      expect(packReads).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("discard leaves no staging directory and nothing in objects/pack", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const staged = await stagePack(targetDir, pack, "discard");
+    await staged.discard();
+    await staged.discard();
+
+    await expect(
+      fs.promises.access(stagingDirOf(targetDir, "discard")),
+    ).rejects.toThrow();
+    expect(await packDirEntries(targetDir)).toEqual([]);
+    await expect(
+      git.readCommit({ fs: staged.fs, dir: targetDir, oid: source.commitSha }),
+    ).rejects.toThrow();
+    await expect(staged.publish()).rejects.toThrow(/cannot be published/);
+    expect(await packDirEntries(targetDir)).toEqual([]);
+  });
+
+  test("discard after publish leaves the published pack in place", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const staged = await stagePack(targetDir, pack, "published");
+    await staged.publish();
+    await staged.discard();
+
+    expect((await packDirEntries(targetDir)).sort()).toEqual([
+      "pack-recv-published.idx",
+      "pack-recv-published.pack",
+    ]);
+    expect(
+      (await git.readCommit({ fs, dir: targetDir, oid: source.commitSha })).oid,
+    ).toBe(source.commitSha);
+  });
+
+  test("removeStagedPacks removes every staged pack", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    await stagePack(targetDir, pack, "left-one");
+    await stagePack(targetDir, pack, "left-two");
+    await removeStagedPacks(targetDir);
+
+    await expect(
+      fs.promises.access(
+        path.join(targetDir, ".git", "objects", "pack-staging"),
+      ),
+    ).rejects.toThrow();
+    expect(await packDirEntries(targetDir)).toEqual([]);
+  });
+
+  test("publish renames the completed pack before its index", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+
+    const staged = await stagePack(targetDir, pack, "rename-order");
     const originalRename = fs.promises.rename.bind(fs.promises);
     const renames: { from: string; to: string }[] = [];
     const renameSpy = spyOn(fs.promises, "rename").mockImplementation(
@@ -439,7 +603,7 @@ describe("publishPackAtomically", () => {
     );
 
     try {
-      await publishPackAtomically(targetDir, pack, "rename-order");
+      await staged.publish();
     } finally {
       renameSpy.mockRestore();
     }
@@ -454,34 +618,18 @@ describe("publishPackAtomically", () => {
     const finalIdx = finalPack.replace(/\.pack$/, ".idx");
     expect(renames).toEqual([
       {
-        from: path.join(
-          targetDir,
-          ".git",
-          "objects",
-          "pack-staging",
-          "rename-order",
-          "pack.pack",
-        ),
+        from: path.join(stagingDirOf(targetDir, "rename-order"), "pack.pack"),
         to: finalPack,
       },
       {
-        from: path.join(
-          targetDir,
-          ".git",
-          "objects",
-          "pack-staging",
-          "rename-order",
-          "pack.idx",
-        ),
+        from: path.join(stagingDirOf(targetDir, "rename-order"), "pack.idx"),
         to: finalIdx,
       },
     ]);
     await fs.promises.access(finalPack);
     await fs.promises.access(finalIdx);
     await expect(
-      fs.promises.access(
-        path.join(targetDir, ".git", "objects", "pack-staging", "rename-order"),
-      ),
+      fs.promises.access(stagingDirOf(targetDir, "rename-order")),
     ).rejects.toThrow();
   });
 
@@ -501,14 +649,14 @@ describe("publishPackAtomically", () => {
       await fs.promises.mkdir(packDir, { recursive: true });
       await fs.promises.writeFile(existingPath, "existing");
 
-      await expect(
-        publishPackAtomically(targetDir, pack, "duplicate"),
-      ).rejects.toThrow(/already published/);
+      await expect(stagePack(targetDir, pack, "duplicate")).rejects.toThrow(
+        /already published/,
+      );
       expect(await fs.promises.readFile(existingPath, "utf8")).toBe("existing");
     },
   );
 
-  test("rejects concurrent publishers using the same transfer ID", async () => {
+  test("rejects concurrent stages using the same transfer ID", async () => {
     const source = await makeSourceRepo();
     const pack = await createPackFromRepo(source.dir, source.oids);
     const targetDir = await tempDir();
@@ -535,21 +683,21 @@ describe("publishPackAtomically", () => {
       },
     );
 
-    let firstPublish: Promise<string[]> | undefined;
+    let firstStage: Promise<StagedPack> | undefined;
     try {
-      firstPublish = publishPackAtomically(targetDir, pack, "concurrent");
+      firstStage = stagePack(targetDir, pack, "concurrent");
       await indexingStarted;
 
-      await expect(
-        publishPackAtomically(targetDir, pack, "concurrent"),
-      ).rejects.toThrow(/already published or in progress/);
+      await expect(stagePack(targetDir, pack, "concurrent")).rejects.toThrow(
+        /already published or in progress/,
+      );
       expect(indexPackSpy).toHaveBeenCalledTimes(1);
 
       releaseIndexing();
-      await firstPublish;
+      await (await firstStage).publish();
     } finally {
       releaseIndexing();
-      await firstPublish?.catch(() => undefined);
+      await firstStage?.catch(() => undefined);
       indexPackSpy.mockRestore();
     }
   });
@@ -560,6 +708,7 @@ describe("publishPackAtomically", () => {
     const targetDir = await tempDir();
     await initAgentRepo(targetDir);
 
+    const staged = await stagePack(targetDir, pack, "partial");
     const originalRename = fs.promises.rename.bind(fs.promises);
     let renameCount = 0;
     const renameSpy = spyOn(fs.promises, "rename").mockImplementation(
@@ -571,9 +720,7 @@ describe("publishPackAtomically", () => {
     );
 
     try {
-      await expect(
-        publishPackAtomically(targetDir, pack, "partial"),
-      ).rejects.toThrow("index publish failed");
+      await expect(staged.publish()).rejects.toThrow("index publish failed");
     } finally {
       renameSpy.mockRestore();
     }
@@ -590,9 +737,7 @@ describe("publishPackAtomically", () => {
       fs.promises.access(finalPack.replace(/\.pack$/, ".idx")),
     ).rejects.toThrow();
     await expect(
-      fs.promises.access(
-        path.join(targetDir, ".git", "objects", "pack-staging", "partial"),
-      ),
+      fs.promises.access(stagingDirOf(targetDir, "partial")),
     ).rejects.toThrow();
   });
 });
@@ -732,365 +877,7 @@ describe("applyPack signature verification", () => {
   });
 });
 
-async function makeRepoWithPaths(
-  paths: { filepath: string; content: string }[],
-): Promise<{
-  dir: string;
-  commitSha: string;
-  oids: string[];
-}> {
-  const dir = await tempDir();
-  await git.init({ fs, dir, defaultBranch: "main" });
-
-  for (const { filepath, content } of paths) {
-    const fullPath = path.join(dir, filepath);
-    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
-    await fs.promises.writeFile(fullPath, content);
-    await git.add({ fs, dir, filepath });
-  }
-
-  const commitSha = await git.commit({
-    fs,
-    dir,
-    message: "Test tree",
-    author: { name: "Test", email: "test@test.dev" },
-  });
-
-  const oids = await collectReachableObjects(dir, commitSha);
-  return { dir, commitSha, oids };
-}
-
-describe("receivePackObjects tree validation", () => {
-  test("accepts a state-only tree when validator requires state", async () => {
-    const source = await makeRepoWithPaths([
-      { filepath: "state/turns.jsonl", content: "" },
-    ]);
-    const pack = await createPackFromRepo(source.dir, source.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    const validator: TreeValidator = (paths) =>
-      paths.every((p) => p === "state");
-
-    await receivePackObjects(
-      targetDir,
-      pack,
-      "refs/heads/state",
-      source.commitSha,
-      "state-ok",
-      null,
-      validator,
-    );
-
-    const resolved = await git.resolveRef({
-      fs,
-      dir: targetDir,
-      ref: "refs/heads/state",
-    });
-    expect(resolved).toBe(source.commitSha);
-  });
-
-  test("rejects a tree with deploy/ when validator requires state only", async () => {
-    const source = await makeRepoWithPaths([
-      { filepath: "state/turns.jsonl", content: "" },
-      { filepath: "deploy/prompt.md", content: "evil" },
-    ]);
-    const pack = await createPackFromRepo(source.dir, source.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    const validator: TreeValidator = (paths) =>
-      paths.every((p) => p === "state");
-
-    await expect(
-      receivePackObjects(
-        targetDir,
-        pack,
-        "refs/heads/state",
-        source.commitSha,
-        "state-bad",
-        null,
-        validator,
-      ),
-    ).rejects.toThrow("path_violation");
-  });
-
-  test("surfaces top-level files to the validator alongside directories", async () => {
-    // A push that injects a top-level file outside the kind handler's
-    // allowlist (e.g. an `evil.exe` next to legitimate asset subtrees)
-    // must be visible to the validator. The receivePack path used to
-    // filter to top-level directories only, which hid such files and
-    // silently admitted them past the allowlist.
-    const source = await makeRepoWithPaths([
-      { filepath: "tarballs/foo.tgz", content: "" },
-      { filepath: "package-registry.json", content: "{}" },
-      { filepath: "evil.exe", content: "bad" },
-    ]);
-    const pack = await createPackFromRepo(source.dir, source.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    const seenPaths: string[] = [];
-    const validator: TreeValidator = (paths) => {
-      seenPaths.push(...paths);
-      return paths.every(
-        (p) =>
-          p === "tarballs" ||
-          p === ".gitignore" ||
-          p === "package-registry.json",
-      );
-    };
-
-    await expect(
-      receivePackObjects(
-        targetDir,
-        pack,
-        "refs/heads/registry",
-        source.commitSha,
-        "extra-file",
-        null,
-        validator,
-      ),
-    ).rejects.toThrow("path_violation");
-    expect(seenPaths).toContain("evil.exe");
-    expect(seenPaths).toContain("tarballs");
-    expect(seenPaths).toContain("package-registry.json");
-  });
-
-  test("accepts any tree when no validator is provided", async () => {
-    const source = await makeRepoWithPaths([
-      { filepath: "state/turns.jsonl", content: "" },
-      { filepath: "deploy/prompt.md", content: "anything" },
-    ]);
-    const pack = await createPackFromRepo(source.dir, source.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    await receivePackObjects(
-      targetDir,
-      pack,
-      "refs/heads/mixed",
-      source.commitSha,
-      "no-validate",
-      null,
-    );
-
-    const resolved = await git.resolveRef({
-      fs,
-      dir: targetDir,
-      ref: "refs/heads/mixed",
-    });
-    expect(resolved).toBe(source.commitSha);
-  });
-});
-
-describe("receivePackObjects CAS", () => {
-  test("returns null when the ref did not previously exist", async () => {
-    const source = await makeSourceRepo();
-    const pack = await createPackFromRepo(source.dir, source.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    const oldSha = await receivePackObjects(
-      targetDir,
-      pack,
-      "refs/heads/state",
-      source.commitSha,
-      "cas-fresh",
-      null,
-    );
-
-    expect(oldSha).toBeNull();
-    const resolved = await git.resolveRef({
-      fs,
-      dir: targetDir,
-      ref: "refs/heads/state",
-    });
-    expect(resolved).toBe(source.commitSha);
-  });
-
-  test("returns the previous sha after a second update", async () => {
-    const sourceA = await makeRepoWithPaths([
-      { filepath: "state/v1.jsonl", content: "v1" },
-    ]);
-    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    const firstOld = await receivePackObjects(
-      targetDir,
-      packA,
-      "refs/heads/state",
-      sourceA.commitSha,
-      "cas-first",
-      null,
-    );
-    expect(firstOld).toBeNull();
-
-    const sourceB = await makeRepoWithPaths([
-      { filepath: "state/v2.jsonl", content: "v2" },
-    ]);
-    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
-
-    const secondOld = await receivePackObjects(
-      targetDir,
-      packB,
-      "refs/heads/state",
-      sourceB.commitSha,
-      "cas-second",
-      sourceA.commitSha,
-    );
-
-    expect(secondOld).toBe(sourceA.commitSha);
-  });
-
-  test("happy path: matching expectedOldSha advances the ref", async () => {
-    const sourceA = await makeRepoWithPaths([
-      { filepath: "state/v1.jsonl", content: "v1" },
-    ]);
-    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    await receivePackObjects(
-      targetDir,
-      packA,
-      "refs/heads/state",
-      sourceA.commitSha,
-      "cas-happy-first",
-      null,
-    );
-
-    const sourceB = await makeRepoWithPaths([
-      { filepath: "state/v2.jsonl", content: "v2" },
-    ]);
-    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
-
-    const oldSha = await receivePackObjects(
-      targetDir,
-      packB,
-      "refs/heads/state",
-      sourceB.commitSha,
-      "cas-happy-second",
-      sourceA.commitSha,
-    );
-
-    expect(oldSha).toBe(sourceA.commitSha);
-
-    const resolved = await git.resolveRef({
-      fs,
-      dir: targetDir,
-      ref: "refs/heads/state",
-    });
-    expect(resolved).toBe(sourceB.commitSha);
-  });
-
-  test("stale expectedOldSha throws non_fast_forward and leaves ref untouched", async () => {
-    const sourceA = await makeRepoWithPaths([
-      { filepath: "state/v1.jsonl", content: "v1" },
-    ]);
-    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    await receivePackObjects(
-      targetDir,
-      packA,
-      "refs/heads/state",
-      sourceA.commitSha,
-      "cas-stale-first",
-      null,
-    );
-
-    const sourceB = await makeRepoWithPaths([
-      { filepath: "state/v2.jsonl", content: "v2" },
-    ]);
-    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
-
-    const bogus = "0".repeat(40);
-    await expect(
-      receivePackObjects(
-        targetDir,
-        packB,
-        "refs/heads/state",
-        sourceB.commitSha,
-        "cas-stale-second",
-        bogus,
-      ),
-    ).rejects.toThrow("non_fast_forward");
-
-    const resolved = await git.resolveRef({
-      fs,
-      dir: targetDir,
-      ref: "refs/heads/state",
-    });
-    expect(resolved).toBe(sourceA.commitSha);
-  });
-
-  test("expectedOldSha null asserts ref absence and accepts a first write", async () => {
-    const source = await makeSourceRepo();
-    const pack = await createPackFromRepo(source.dir, source.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    const oldSha = await receivePackObjects(
-      targetDir,
-      pack,
-      "refs/heads/state",
-      source.commitSha,
-      "cas-null-ok",
-      null,
-    );
-
-    expect(oldSha).toBeNull();
-  });
-
-  test("expectedOldSha null rejects when the ref already exists", async () => {
-    const sourceA = await makeRepoWithPaths([
-      { filepath: "state/v1.jsonl", content: "v1" },
-    ]);
-    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    await receivePackObjects(
-      targetDir,
-      packA,
-      "refs/heads/state",
-      sourceA.commitSha,
-      "cas-null-first",
-      null,
-    );
-
-    const sourceB = await makeRepoWithPaths([
-      { filepath: "state/v2.jsonl", content: "v2" },
-    ]);
-    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
-
-    await expect(
-      receivePackObjects(
-        targetDir,
-        packB,
-        "refs/heads/state",
-        sourceB.commitSha,
-        "cas-null-stale",
-        null,
-      ),
-    ).rejects.toThrow("non_fast_forward");
-  });
-});
-
-// Helpers used by the unpublish-on-rejection tests below. The pack
+// Helpers used by the rejection and flush tests below. The pack
 // filename layout is derived from `transferId` per
 // `publishedPackPaths` in pack-receive.ts; replicate the derivation
 // here so the assertions stay decoupled from that helper's accessors
@@ -1145,46 +932,6 @@ function createStorageFailingPromotionFlush(
 }
 
 describe("post-promotion flush failures", () => {
-  test("receive retains the durable pack for the promoted ref", async () => {
-    const source = await makeRepoWithPaths([
-      { filepath: "state/v1.jsonl", content: "v1" },
-    ]);
-    const pack = await createPackFromRepo(source.dir, source.oids);
-    const targetDir = await tempDir();
-    const ref = "refs/heads/state";
-    const transferId = "receive-flush-failure";
-    const storage = createStorageFailingPromotionFlush(
-      targetDir,
-      ref,
-      source.commitSha,
-    );
-    await storage.initAgentRepo(targetDir);
-
-    await expect(
-      storage.receivePackObjects(
-        targetDir,
-        pack,
-        ref,
-        source.commitSha,
-        transferId,
-        null,
-      ),
-    ).rejects.toThrow("injected post-promotion flush failure");
-
-    expect(await fileExists(publishedPackFile(targetDir, transferId))).toBe(
-      true,
-    );
-    expect(await fileExists(publishedIdxFile(targetDir, transferId))).toBe(
-      true,
-    );
-    expect(await git.resolveRef({ fs, dir: targetDir, ref })).toBe(
-      source.commitSha,
-    );
-    expect(
-      (await git.readCommit({ fs, dir: targetDir, oid: source.commitSha })).oid,
-    ).toBe(source.commitSha);
-  });
-
   test("apply retains the durable pack and materialized tree for the promoted ref", async () => {
     const source = await makeSourceRepo();
     const pack = await createPackFromRepo(source.dir, source.oids);
@@ -1220,136 +967,8 @@ describe("post-promotion flush failures", () => {
   });
 });
 
-// These tests assert that post-publish validation rejections in
-// receivePackObjects and applyPack remove the published .pack + .idx
-// pair from objects/pack/. Without this, rejected packs would
-// accumulate as orphan files in objects/pack/ — iso-git does not run
-// periodic GC, and the hub does not invoke git gc on agent repos. The
-// CAS/sha/path_violation tests above verify the throw and ref state
-// but do not verify file cleanup; this section closes that gap.
-describe("receivePackObjects unpublishes on post-publish rejection", () => {
-  test("non_fast_forward removes .pack and .idx; the accepted earlier pack stays", async () => {
-    const sourceA = await makeRepoWithPaths([
-      { filepath: "state/v1.jsonl", content: "v1" },
-    ]);
-    const packA = await createPackFromRepo(sourceA.dir, sourceA.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    await receivePackObjects(
-      targetDir,
-      packA,
-      "refs/heads/state",
-      sourceA.commitSha,
-      "first-ok",
-      null,
-    );
-
-    const sourceB = await makeRepoWithPaths([
-      { filepath: "state/v2.jsonl", content: "v2" },
-    ]);
-    const packB = await createPackFromRepo(sourceB.dir, sourceB.oids);
-
-    const bogus = "0".repeat(40);
-    await expect(
-      receivePackObjects(
-        targetDir,
-        packB,
-        "refs/heads/state",
-        sourceB.commitSha,
-        "rejected-nff",
-        bogus,
-      ),
-    ).rejects.toThrow("non_fast_forward");
-
-    expect(await fileExists(publishedPackFile(targetDir, "rejected-nff"))).toBe(
-      false,
-    );
-    expect(await fileExists(publishedIdxFile(targetDir, "rejected-nff"))).toBe(
-      false,
-    );
-    expect(await fileExists(publishedPackFile(targetDir, "first-ok"))).toBe(
-      true,
-    );
-    expect(await fileExists(publishedIdxFile(targetDir, "first-ok"))).toBe(
-      true,
-    );
-  });
-
-  test("sha_mismatch removes .pack and .idx", async () => {
-    const source = await makeRepoWithPaths([
-      { filepath: "state/v1.jsonl", content: "v1" },
-    ]);
-    const pack = await createPackFromRepo(source.dir, source.oids);
-
-    const targetDir = await tempDir();
-    let flushes = 0;
-    const storage = createIsogitStorage({
-      ...createNodeIsogitRuntime(),
-      flush: () => {
-        flushes += 1;
-        return Promise.resolve();
-      },
-    });
-    await storage.initAgentRepo(targetDir);
-
-    const bogusExpected = "0".repeat(40);
-    await expect(
-      storage.receivePackObjects(
-        targetDir,
-        pack,
-        "refs/heads/state",
-        bogusExpected,
-        "rejected-sha",
-        null,
-      ),
-    ).rejects.toThrow("sha_mismatch");
-
-    expect(await fileExists(publishedPackFile(targetDir, "rejected-sha"))).toBe(
-      false,
-    );
-    expect(await fileExists(publishedIdxFile(targetDir, "rejected-sha"))).toBe(
-      false,
-    );
-    expect(flushes).toBe(2);
-  });
-
-  test("path_violation removes .pack and .idx", async () => {
-    const source = await makeRepoWithPaths([
-      { filepath: "deploy/prompt.md", content: "evil" },
-    ]);
-    const pack = await createPackFromRepo(source.dir, source.oids);
-
-    const targetDir = await tempDir();
-    await initAgentRepo(targetDir);
-
-    const stateOnly: TreeValidator = (paths) =>
-      paths.every((p) => p === "state");
-
-    await expect(
-      receivePackObjects(
-        targetDir,
-        pack,
-        "refs/heads/state",
-        source.commitSha,
-        "rejected-pv",
-        null,
-        stateOnly,
-      ),
-    ).rejects.toThrow("path_violation");
-
-    expect(await fileExists(publishedPackFile(targetDir, "rejected-pv"))).toBe(
-      false,
-    );
-    expect(await fileExists(publishedIdxFile(targetDir, "rejected-pv"))).toBe(
-      false,
-    );
-  });
-});
-
-describe("applyPack unpublishes on post-publish rejection", () => {
-  test("sha_mismatch removes .pack and .idx", async () => {
+describe("applyPack keeps a rejected pack out of objects/pack", () => {
+  test("sha_mismatch publishes nothing and leaves no staged pack", async () => {
     const source = await makeSourceRepo();
     const pack = await createPackFromRepo(source.dir, source.oids);
 
@@ -1363,6 +982,7 @@ describe("applyPack unpublishes on post-publish rejection", () => {
       },
     });
     await storage.initAgentRepo(targetDir);
+    const flushesBefore = flushes;
 
     const bogusExpected = "0".repeat(40);
     await expect(
@@ -1381,6 +1001,18 @@ describe("applyPack unpublishes on post-publish rejection", () => {
     expect(
       await fileExists(publishedIdxFile(targetDir, "apply-rejected-sha")),
     ).toBe(false);
-    expect(flushes).toBe(2);
+    expect(
+      await fileExists(
+        path.join(
+          targetDir,
+          ".git",
+          "objects",
+          "pack-staging",
+          "apply-rejected-sha",
+        ),
+      ),
+    ).toBe(false);
+    // Nothing reached objects/pack, so there is nothing to make durable.
+    expect(flushes).toBe(flushesBefore);
   });
 });

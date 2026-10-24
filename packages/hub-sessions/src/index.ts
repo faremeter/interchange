@@ -278,6 +278,8 @@ export type {
   InitRepoOpts,
   KindHandler,
   NewlyTerminalRun,
+  PackCommitResult,
+  PreparedReceivePack,
   Principal,
   RefEntry,
   RepoAction,
@@ -288,4 +290,9 @@ export type {
   ValidatePushResult,
   WriteResult,
 } from "./repo-store";
-export { createRepoStore, subscribeKind, UserPrincipal } from "./repo-store";
+export {
+  createRepoStore,
+  RepoRemovedDuringReceiveError,
+  subscribeKind,
+  UserPrincipal,
+} from "./repo-store";
