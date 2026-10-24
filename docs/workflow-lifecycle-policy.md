@@ -304,7 +304,12 @@ stopped cleanup's reason as `sidecar_cleanup_operator_released`. An allocation
 whose cleanup has not stopped, or whose generation changed, returns `409`.
 `DELETE /api/tenants/:tenantId/workflows/runs/:runId` requests
 cancellation of a live run and returns `202`; its cancellation retention
-policy then applies.
+policy then applies. The request takes only the anchor run's row lock, so it
+does not wait for a pack receive that holds the allocation row, and it reads
+no history. If accepted history holds a terminal event that the Hub has not
+recorded yet, DELETE therefore returns `202`. The Hub records the run's own
+outcome when it recovers that history, and it never records `cancelled` over
+an accepted terminal event.
 
 Beginning release removes workflow routes. The allocation reaches `released`
 only after the provider's hold is released and deployment cleanup is

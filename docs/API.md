@@ -489,7 +489,7 @@ Returns workflow run state including status, public key, and sidecar assignment.
 ### DELETE /api/tenants/:tenantId/workflows/runs/:runId
 Stop a run
 
-Durably requests cancellation of a live top-level run. Its saved cancellation retention policy controls subsequent capacity release. Poll the Location header for progress.
+Durably requests cancellation of a live top-level run. Its saved cancellation retention policy controls subsequent capacity release. A run whose accepted history holds a terminal event that the Hub has not recorded yet also gets 202, and the Hub then records the run's own outcome. Poll the Location header for progress.
 
 202: (no content) -- Cancellation requested
 404: ErrorResponse -- Run not found

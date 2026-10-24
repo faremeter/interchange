@@ -534,13 +534,34 @@ export function createWorkflowLifecycleService({
     runId: string,
     reason: string,
   ): Promise<"pending" | "terminal" | "not_found"> {
-    await recoverHistory(tenantId, runId, "request");
-    const result = await withRun(tenantId, runId, async (tx, run) => {
+    // Not `withRun`: a pack receive can hold the allocation row for its
+    // whole receive, and a request must not wait on it. The anchor lock
+    // alone orders this against every `withRun` and admission, which
+    // lock the anchor FOR UPDATE, and against the allocation store's
+    // capacity failures, which lock it before they check for a request.
+    // NO KEY UPDATE, not FOR UPDATE, so a foreign-key check from a child
+    // run insert does not block it.
+    // History is not recovered here either, because that also locks the
+    // allocation row; the sweep recovers it before it acts on the
+    // request, and never records `cancelled` over accepted history.
+    return db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(workflowRun)
+        .where(
+          and(
+            eq(workflowRun.id, runId),
+            eq(workflowRun.tenantId, tenantId),
+            eq(workflowRun.anchorRunId, runId),
+          ),
+        )
+        .for("no key update");
+      if (row === undefined) return "not_found" as const;
+      const run = parseWorkflowRunRow(row);
       if (!isLiveWorkflowRunStatus(run.status)) return "terminal" as const;
       await beginCancellation(tx, run, reason);
       return "pending" as const;
     });
-    return result ?? "not_found";
   }
 
   async function markStopped(tx: DBExecutor, run: Run): Promise<void> {
