@@ -6,7 +6,8 @@
 
 import type { BodyFailurePolicy } from "../definition/index";
 import {
-  resumeFromLog,
+  applyEvent,
+  emptyState,
   type RunState,
   type WorkflowEvent,
 } from "../state-machine/index";
@@ -17,7 +18,7 @@ import {
   onTriggerOccurrenceReattach,
   type OccurrenceReattach,
 } from "./run";
-import { loopBodyRunId } from "./step-scope";
+import { baseStepId, loopBodyRunId } from "./step-scope";
 
 export type ParkedRunVerdict = "parked" | "not-parked" | "unknown";
 
@@ -26,14 +27,21 @@ export type ParkedRunClassification = {
   readonly reason: string;
   /** Earliest pending timer of a live run, when the verdict is `parked`. */
   readonly wakeAt?: string;
+  /**
+   * In `park` mode, a run took an input -- its trigger, a signal, or a timer
+   * -- that it has not acted on yet. A stopped child would leave that input
+   * with nothing to wake it, so the park must not go ahead.
+   */
+  readonly pendingInput?: true;
 };
 
 /**
  * `replace` judges a worker that was lost wherever it was: a step it was
  * invoking settles as failed on resume, and the log is parked only when the
  * resume guard would re-attach at least one park. `park` judges a worker the
- * host is about to stop on purpose: nothing may be mid-invocation, and a run
- * that is not waiting on anything yet is parked too.
+ * host is about to stop on purpose: nothing may be mid-invocation, and no
+ * run may hold input it has not acted on (`pendingInput`). A run held between
+ * the steps of work it already began is parked too.
  */
 export type ParkedRunMode = "replace" | "park";
 
@@ -50,13 +58,14 @@ export async function classifyParkedRun(args: {
       ? { verdict: "parked", reason: "no run has started" }
       : { verdict: "not-parked", reason: "committed log is empty" };
   }
-  const state = resumeFromLog(args.anchorRunId, log);
+  const anchor = foldRun(args.anchorRunId, log, args.steps, true);
+  const state = anchor.state;
   if (state.phase !== "running") {
     return { verdict: "not-parked", reason: `anchor phase is ${state.phase}` };
   }
   const judged = await judgeRun(
     { readRun: args.readRun, mode: args.mode },
-    { steps: args.steps, state, log },
+    { steps: args.steps, ...anchor },
   );
   if (judged.verdict === "stop") return judged.classification;
   if (args.mode === "replace" && !judged.park) {
@@ -91,13 +100,29 @@ type JudgeContext = {
   readonly mode: ParkedRunMode;
 };
 
-type JudgedRun = {
-  readonly steps: Readonly<Record<string, unknown>>;
+// A run's log reduced once, with whether an input still waits for the run
+// to act on it.
+type FoldedRun = {
   readonly state: RunState;
   readonly log: readonly WorkflowEvent[];
+  readonly awaitsWork: boolean;
+};
+
+type JudgedRun = FoldedRun & {
+  readonly steps: Readonly<Record<string, unknown>>;
 };
 
 async function judgeRun(ctx: JudgeContext, run: JudgedRun): Promise<Judge> {
+  if (ctx.mode === "park" && run.awaitsWork) {
+    return {
+      verdict: "stop",
+      classification: {
+        verdict: "not-parked",
+        reason: `run ${run.state.runId} has input it has not acted on`,
+        pendingInput: true,
+      },
+    };
+  }
   const lookup = kindLookup(run.steps);
   let park = false;
   let wakeAt = earliestTimer(run.state);
@@ -174,23 +199,17 @@ async function judgeLoop(
   }
   if (frontier === undefined) return { park: false };
   const childRunId = loopBodyRunId(run.state.runId, stepId, frontier);
-  const childLog = await ctx.readRun(childRunId);
-  const childState = resumeFromLog(childRunId, childLog);
+  const body = loopBodySteps(raw);
+  const child = foldRun(childRunId, await ctx.readRun(childRunId), body, false);
   const reattach = await loopOccurrenceReattach({
     loopId: stepId,
     runId: run.state.runId,
     iteration: frontier,
     state: run.state,
     log: run.log,
-    childState,
+    childState: child.state,
   });
-  return finishReattach(
-    ctx,
-    reattach,
-    { log: childLog, state: childState },
-    loopBodySteps(raw),
-    stepId,
-  );
+  return finishReattach(ctx, reattach, child, body, stepId);
 }
 
 async function judgeOnTrigger(
@@ -210,7 +229,7 @@ async function judgeOnTrigger(
     ...onBodyFailure,
     state: run.state,
     log: run.log,
-    childState: resumeFromLog(stepId, []),
+    childState: emptyState(stepId),
   });
   // The planner reads the child only when the container is not already
   // parked. Load that child when the decision names one, and re-judge so
@@ -221,22 +240,21 @@ async function judgeOnTrigger(
   if (reattach.childRunId === undefined) {
     return finishReattach(ctx, reattach, undefined, undefined, stepId);
   }
-  const childLog = await ctx.readRun(reattach.childRunId);
-  const childState = resumeFromLog(reattach.childRunId, childLog);
+  const body = onTriggerBodySteps(raw);
+  const child = foldRun(
+    reattach.childRunId,
+    await ctx.readRun(reattach.childRunId),
+    body,
+    false,
+  );
   const again = await onTriggerOccurrenceReattach({
     sectionId: stepId,
     ...onBodyFailure,
     state: run.state,
     log: run.log,
-    childState,
+    childState: child.state,
   });
-  return finishReattach(
-    ctx,
-    again,
-    { log: childLog, state: childState },
-    onTriggerBodySteps(raw),
-    stepId,
-  );
+  return finishReattach(ctx, again, child, body, stepId);
 }
 
 // A spawn step's child resumes through the parent: the parent reattaches the
@@ -262,16 +280,20 @@ async function judgeChildWorkflow(
   if (steps === "ref" || steps === undefined) {
     return stop("unknown", `step ${stepId} child definition is not inline`);
   }
-  const childLog = await ctx.readRun(childRunId);
-  const childState = resumeFromLog(childRunId, childLog);
-  if (childState.phase !== "running") return { park: false };
-  return judgeRun(ctx, { steps, state: childState, log: childLog });
+  const child = foldRun(
+    childRunId,
+    await ctx.readRun(childRunId),
+    steps,
+    false,
+  );
+  if (child.state.phase !== "running") return { park: false };
+  return judgeRun(ctx, { steps, ...child });
 }
 
 async function finishReattach(
   ctx: JudgeContext,
   reattach: OccurrenceReattach,
-  child: { log: readonly WorkflowEvent[]; state: RunState } | undefined,
+  child: FoldedRun | undefined,
   body: Readonly<Record<string, unknown>> | "ref" | undefined,
   stepId: string,
 ): Promise<Judge> {
@@ -290,16 +312,144 @@ async function finishReattach(
   if (child === undefined) {
     return stop("unknown", `step ${stepId} body run was not read`);
   }
-  const judged = await judgeRun(ctx, {
-    steps: body,
-    state: child.state,
-    log: child.log,
-  });
+  const judged = await judgeRun(ctx, { steps: body, ...child });
   if (judged.verdict === "stop") return judged;
   return {
     park: reattach.kind === "parked",
     ...(judged.wakeAt !== undefined ? { wakeAt: judged.wakeAt } : {}),
   };
+}
+
+// Reduce a run's log, judging each event against the state it was applied
+// to, as the runtime saw it, for whether an input still waits for the run to
+// act on it. A body that is only a ref is not judged here.
+function foldRun(
+  runId: string,
+  log: readonly WorkflowEvent[],
+  steps: Readonly<Record<string, unknown>> | "ref" | undefined,
+  topLevel: boolean,
+): FoldedRun {
+  let state = emptyState(runId);
+  let pending: PendingInput | null = null;
+  for (const event of log) {
+    const before = state;
+    state = applyEvent(before, event);
+    if (typeof steps !== "object") continue;
+    pending = trackInput(steps, topLevel, before, state, event, pending);
+  }
+  if (typeof steps !== "object" || pending === null) {
+    return { state, log, awaitsWork: false };
+  }
+  if (pending.trigger) return { state, log, awaitsWork: true };
+  for (const stepId of pending.released.keys()) {
+    // A released step still running is judged by its own progress: a
+    // container by its body, an agent step as mid-invocation.
+    const running =
+      state.steps.get(stepId)?.phase === "in-flight" &&
+      !isLanding(steps, stepId);
+    if (!running) return { state, log, awaitsWork: true };
+  }
+  return { state, log, awaitsWork: false };
+}
+
+// Input the run has not acted on: its trigger, and the steps signals or
+// timers set running, each with whether it has landed.
+type PendingInput = {
+  readonly trigger: boolean;
+  readonly released: ReadonlyMap<string, boolean>;
+};
+
+// Input starts the top-level run or sets waiting steps running; a nested
+// run's start is its parent step's progress. A gate or sleep an input
+// released completing is only that input landing. A released step doing
+// anything else acts on its input. A step starting acts on the trigger and
+// on every input that has landed: a hold blocks every start but a skip, and
+// the scheduler starts every ready step together.
+function trackInput(
+  steps: Readonly<Record<string, unknown>>,
+  topLevel: boolean,
+  before: RunState,
+  after: RunState,
+  event: WorkflowEvent,
+  pending: PendingInput | null,
+): PendingInput | null {
+  switch (event.kind) {
+    case "RunStarted":
+      return topLevel ? { trigger: true, released: new Map() } : pending;
+    case "SignalReceived":
+    case "TimerFired": {
+      const resumed = resumedWaitingSteps(before, after);
+      return resumed.length === 0 ? pending : release(pending, resumed);
+    }
+    case "SignalAwaited":
+      // An await that took a signal queued before it goes straight on.
+      if (after.steps.get(event.stepId)?.phase === "in-flight") {
+        return release(pending, [event.stepId]);
+      }
+      break;
+    // A hold does not stop a cancelling run.
+    case "CancelRequested":
+    case "RunCompleted":
+    case "RunFailed":
+    case "RunCancelled":
+      return null;
+    default:
+      break;
+  }
+  if (pending === null) return null;
+  const stepId = "stepId" in event ? event.stepId : undefined;
+  if (stepId !== undefined && pending.released.has(stepId)) {
+    const released = new Map(pending.released);
+    const lands =
+      (event.kind === "StepCompleted" || event.kind === "StepFailed") &&
+      isLanding(steps, stepId);
+    if (lands) released.set(stepId, true);
+    else released.delete(stepId);
+    return pendingOf(pending.trigger, released);
+  }
+  if (event.kind === "StepStarted" && event.skip !== true) {
+    const unlanded = [...pending.released].filter(([, landed]) => !landed);
+    return pendingOf(false, new Map(unlanded));
+  }
+  return pending;
+}
+
+function release(
+  pending: PendingInput | null,
+  stepIds: readonly string[],
+): PendingInput {
+  const released = new Map(pending?.released ?? []);
+  for (const stepId of stepIds) released.set(stepId, false);
+  return { trigger: pending?.trigger ?? false, released };
+}
+
+function pendingOf(
+  trigger: boolean,
+  released: ReadonlyMap<string, boolean>,
+): PendingInput | null {
+  return trigger || released.size > 0 ? { trigger, released } : null;
+}
+
+function resumedWaitingSteps(before: RunState, after: RunState): string[] {
+  const resumed: string[] = [];
+  for (const [stepId, step] of after.steps) {
+    const was = before.steps.get(stepId)?.phase;
+    if (
+      step.phase === "in-flight" &&
+      (was === "awaiting-signal" || was === "awaiting-timer")
+    ) {
+      resumed.push(stepId);
+    }
+  }
+  return resumed;
+}
+
+function isLanding(
+  steps: Readonly<Record<string, unknown>>,
+  stepId: string,
+): boolean {
+  const kind = stepKind(steps[baseStepId(stepId)]);
+  return kind === "awaitSignal" || kind === "sleep";
 }
 
 function stop(verdict: ParkedRunVerdict, reason: string): Judge {
