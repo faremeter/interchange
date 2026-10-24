@@ -450,6 +450,12 @@ export interface RepoStore {
    * row, deactivate its principal) without re-deriving terminal-ness
    * from the committed path shape. Empty for kinds and packs that
    * produce none.
+   *
+   * With `skipHeldTip`, a pack whose tip the ref already holds (the
+   * ref's tip or a first-parent ancestor of it) is accepted without
+   * moving the ref, and yields no runs. A sender whose pushes can
+   * finish out of order sets it, so an older push that lands last
+   * cannot move the ref back.
    */
   receivePack(
     principal: Principal,
@@ -458,6 +464,7 @@ export interface RepoStore {
     pack: Uint8Array,
     commitSha: string,
     expectedOldSha: string | null,
+    opts?: { skipHeldTip?: boolean },
   ): Promise<NewlyTerminalRun[]>;
   createPack(
     principal: Principal,
