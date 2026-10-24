@@ -620,6 +620,29 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     }
   }
 
+  // Whether `commitSha` is `tipSha` or one of its first-parent
+  // ancestors. `existingCommits` alone cannot answer this: it also
+  // holds commits no ref reaches any more, such as a hub genesis that
+  // a sidecar's first push replaced.
+  async function refHoldsCommit(
+    dir: string,
+    tipSha: string | null,
+    commitSha: string,
+  ): Promise<boolean> {
+    let current = tipSha;
+    while (current !== null) {
+      if (current === commitSha) return true;
+      const { commit } = await git.readCommit({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid: current,
+      });
+      current = commit.parent[0] ?? null;
+    }
+    return false;
+  }
+
   // Walk from a tree object's root to the tree-or-blob entry at
   // `relPath`. Returns `null` when any path segment is missing, or when
   // the final entry does not match `expectedType`. `relPath === ""`
@@ -1689,6 +1712,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     pack: Uint8Array,
     commitSha: string,
     expectedOldSha: string | null,
+    opts: { skipHeldTip?: boolean } = {},
   ): Promise<NewlyTerminalRun[]> {
     gateAccess(principal, repoId, ref, "receivePack");
 
@@ -1711,6 +1735,18 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         existingCommits = await snapshotExistingCommits(dir);
         existingCommitsCache.set(existingKey, existingCommits);
       }
+      // The tip is read under the lock, not taken from `expectedOldSha`,
+      // which the caller read outside it. A held tip is accepted before
+      // the pack is published or checked against `commitSha`: the store
+      // already holds that commit, so the pack cannot change anything.
+      if (
+        opts.skipHeldTip === true &&
+        existingCommits.has(commitSha) &&
+        (await refHoldsCommit(dir, await resolveRefSha(dir, ref), commitSha))
+      ) {
+        return [];
+      }
+
       const newCommitsFromPack: string[] = [];
       const newlyTerminalRuns: NewlyTerminalRun[] = [];
 

@@ -89,6 +89,12 @@ export type AgentRepoStore = {
    * pack objects and updates the ref without materializing a working
    * tree.
    *
+   * The sidecar's pushes can land out of order, so a pack whose tip the
+   * ref already holds (its tip or a first-parent ancestor) changes
+   * nothing and returns no runs; the ref keeps the newer tip. Any other
+   * pack goes through the usual receive checks, and one on a new line
+   * of history is not rejected for that.
+   *
    * `repoId.kind` must be `"workflow-run"`. Stamps a
    * `WorkflowRunSupervisorPrincipal` whose `anchorRunId` equals
    * `repoId.id`; the workflow-run kind handler denies sidecar-kind
@@ -272,6 +278,7 @@ export function createAgentRepoStore(config: {
         pack,
         commitSha,
         expectedOldSha,
+        { skipHeldTip: true },
       );
     },
 
