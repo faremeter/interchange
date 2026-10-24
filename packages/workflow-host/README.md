@@ -230,7 +230,11 @@ On an unexpected exit the supervisor, with no external intervention:
    back into `inbox/` under their original `<receivedAt>-<messageId>`
    keys. Those keys sort ahead of any mail that arrived during the
    kill/respawn gap, so the stranded entry is re-dispatched first and
-   FIFO ordering holds across the respawn boundary.
+   FIFO ordering holds across the respawn boundary. Mail a live run
+   already took, its start mail or a turn it received, stays in
+   `processing/`: the resumed run carries on with it, and the supervisor
+   consumes it once the run next parks or ends, retrying a failed consume
+   a few times. A recycle replays the same way.
 2. Spawns a fresh workflow-process child against the same deploy tree
    (reusing the recycle path's respawn machinery) and resumes dispatch.
 

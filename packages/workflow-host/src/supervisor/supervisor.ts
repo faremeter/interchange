@@ -59,6 +59,7 @@ import {
   readWorkflowRunLifecycle,
   replayProcessingToInbox as defaultReplayProcessingToInbox,
   StaleInboxEnqueueError,
+  NotInProcessingError,
   DEFAULT_CONSUMED_RETENTION_MS,
   type Principal,
   type WorkflowRunSupervisorPrincipal,
@@ -239,6 +240,10 @@ export const DEFAULT_PARKED_QUERY_WATCHDOG_MS = 30_000;
  * on the assumption the run made progress), not silently swallowed.
  */
 export const TERMINAL_OR_PARK_BACKSTOP_MS = 300_000;
+
+// Attempts to consume mail a resumed run took, a second and then four apart.
+const OWNED_CONSUME_ATTEMPTS = 3;
+const OWNED_CONSUME_BACKOFF_MS = 1_000;
 
 /**
  * Public surface returned by `createWorkflowSupervisor`. Each method
@@ -1381,8 +1386,8 @@ export function createWorkflowSupervisor(
       priorContext,
       // The child is already dead: there is nothing to drain, and
       // `runRespawn`'s kill step is a no-op on a dead handle. The replay
-      // step still runs, moving any mail stranded mid-flight back to the
-      // inbox tail before dispatch resumes.
+      // step still runs, moving mail stranded mid-flight that no live run
+      // took back to the inbox tail before dispatch resumes.
       drain: async () => undefined,
     });
     // The respawned child is now the running cohort. Arm the stable-run
@@ -1800,6 +1805,7 @@ export function createWorkflowSupervisor(
         const event = terminalEventFromPayload(payload.data);
         cohortBroadcaster.notify(payload.data.runId, event);
         terminalRunIds.add(payload.data.runId);
+        consumeOwnedMessages(payload.data.runId);
         // Clean up cohort tracking for the terminated run. Self-discovered
         // runs have no dispatch-loop entry, so their cleanup happens here.
         cohortRunIds.delete(payload.data.runId);
@@ -1864,6 +1870,7 @@ export function createWorkflowSupervisor(
         );
         // Wake any dispatch loop waiting for this run to park.
         resolveParkNotifyWaiter(payload.data.runId);
+        consumeOwnedMessages(payload.data.runId);
         continue;
       }
       if (payload.type === "parked-correlations.response") {
@@ -1912,6 +1919,12 @@ export function createWorkflowSupervisor(
   >();
   let cancellationSeq = 0;
   const cancellationCommits = new Set<Promise<CancelCommitInfo>>();
+  // Mail a resumed run took before its child was replaced. The dispatch that
+  // took it is gone, so it is consumed when the run next parks or ends.
+  const ownedMessages = new Set<string>();
+  // Retries of a failed consume, which a run that has ended would not
+  // trigger again.
+  const ownedConsumeRetries = new Set<unknown>();
   // Repository writes started off the control pump. Each promise settles
   // without rejecting; its handler logs any failure.
   const detachedWrites = new Set<Promise<unknown>>();
@@ -2980,7 +2993,10 @@ export function createWorkflowSupervisor(
             { ownedMessageIds },
           ),
         )
-        .then(() => {
+        .then(({ retainedMessageIds }) => {
+          for (const messageId of retainedMessageIds) {
+            ownedMessages.add(messageId);
+          }
           wakeDispatch();
         })
         .catch((cause) => {
@@ -3730,10 +3746,11 @@ export function createWorkflowSupervisor(
               // commit lands -- so the substrate subscription IS the ack, and a
               // failed deliver commit is observed by nothing, never re-parks, and
               // never releases markConsumed (the mail stays reclaimable). A crash
-              // before the re-park/terminal leaves the claim-check entry in
-              // processing/, so replayProcessingToInbox re-delivers the signal on
-              // restart. On cohort abort the wait returns and the post-loop guard
-              // skips markConsumed.
+              // before the child commits the signal leaves the claim-check entry
+              // in processing/ for replayProcessingToInbox to re-deliver; after
+              // it, the resumed run owns the mail and the supervisor consumes it
+              // once the run next parks or ends. On cohort abort the wait returns
+              // and the post-loop guard skips markConsumed.
               waitEntered = true;
               await waitForRunTerminalOrPark(
                 iter,
@@ -4193,6 +4210,8 @@ export function createWorkflowSupervisor(
   async function performShutdown(opts: ShutdownOptions): Promise<void> {
     const prior = state;
     state = { phase: "stopping" };
+    for (const retry of ownedConsumeRetries) readyClearTimer(retry);
+    ownedConsumeRetries.clear();
     // shutdownInternal is designed to be TOTAL: when a child is up it must
     // always kill it and always reach `stopped`, no matter which teardown
     // step throws. Rather than depend on every step being individually
@@ -4649,12 +4668,26 @@ export function createWorkflowSupervisor(
           },
           drain,
           replayProcessingToInbox: async () => {
-            await inboxPrimitives.replayProcessingToInbox(
+            // Mail a live run already took stays in processing/, as on spawn:
+            // the resumed run carries on with it. Redelivered, its start mail
+            // would reach it again as a new turn, and a turn it already has
+            // would stall the dispatch on a re-park that never comes.
+            const { ownedMessageIds } = await scanRunsForBoot(
               bindings.repoStore,
-              inboxWritePrincipal,
               bindings.workflowRunRepoId,
-              bindings.deploymentMailAddress,
+              { runId: deriveWorkflowRunId(bindings.deploymentMailAddress) },
             );
+            const { retainedMessageIds } =
+              await inboxPrimitives.replayProcessingToInbox(
+                bindings.repoStore,
+                inboxWritePrincipal,
+                bindings.workflowRunRepoId,
+                bindings.deploymentMailAddress,
+                { ownedMessageIds },
+              );
+            for (const messageId of retainedMessageIds) {
+              ownedMessages.add(messageId);
+            }
           },
           abortPriorCohort: () => {
             // Fired by triggerRecycle between drain/replay and kill.
@@ -4921,6 +4954,56 @@ export function createWorkflowSupervisor(
           : {}),
       },
     });
+  }
+
+  function consumeOwnedMessages(runId: string): void {
+    if (runId !== deriveWorkflowRunId(bindings.deploymentMailAddress)) return;
+    for (const messageId of [...ownedMessages]) {
+      ownedMessages.delete(messageId);
+      consumeOwnedMessage(runId, messageId, 1);
+    }
+  }
+
+  function consumeOwnedMessage(
+    runId: string,
+    messageId: string,
+    attempt: number,
+  ): void {
+    ownDetachedWrite(
+      inboxPrimitives
+        .markConsumed(
+          bindings.repoStore,
+          inboxWritePrincipal,
+          bindings.workflowRunRepoId,
+          {
+            address: bindings.deploymentMailAddress,
+            messageId,
+            runId,
+            consumedAt: Date.now(),
+            retentionHorizonMs: consumedRetentionMs,
+          },
+        )
+        .catch((cause: unknown) => {
+          // Something else consumed it already; a retry cannot find it either.
+          if (cause instanceof NotInProcessingError) return;
+          if (state.phase === "stopping" || state.phase === "stopped") return;
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          if (attempt >= OWNED_CONSUME_ATTEMPTS) {
+            logger.error`gave up consuming ${messageId}, which the resumed run ${runId} took, after ${String(attempt)} attempts; it stays in processing/ until the next respawn: ${message}`;
+            return;
+          }
+          logger.warn`consuming ${messageId}, which the resumed run ${runId} took, failed; retrying: ${message}`;
+          const retry = readySetTimer(
+            () => {
+              ownedConsumeRetries.delete(retry);
+              consumeOwnedMessage(runId, messageId, attempt + 1);
+            },
+            OWNED_CONSUME_BACKOFF_MS * 4 ** (attempt - 1),
+          );
+          ownedConsumeRetries.add(retry);
+        }),
+    );
   }
 
   async function deliverSources(opts: DeliverSourcesOpts): Promise<void> {

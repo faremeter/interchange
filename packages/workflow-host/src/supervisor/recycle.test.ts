@@ -20,6 +20,7 @@ import { type } from "arktype";
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import type { RepoId } from "@intx/hub-sessions";
+import { NotInProcessingError } from "@intx/hub-sessions";
 import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
@@ -218,7 +219,13 @@ async function driveReady(
   return childSender;
 }
 
-function createMemoryInboxPrimitives(): InboxPrimitives {
+function createMemoryInboxPrimitives(): InboxPrimitives & {
+  messageIds(address: string): {
+    inbox: string[];
+    processing: string[];
+    consumed: string[];
+  };
+} {
   type Entry = {
     messageId: string;
     receivedAt: number;
@@ -311,8 +318,15 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
           break;
         }
       }
+      if (s.consumed.has(args.messageId)) {
+        throw new NotInProcessingError(
+          `claim_check_already_consumed: ${args.messageId}`,
+        );
+      }
       if (foundKey === null || envelope === null) {
-        throw new Error("processing entry not found");
+        throw new NotInProcessingError(
+          `claim_check_processing_not_found: ${args.messageId}`,
+        );
       }
       s.processing.delete(foundKey);
       s.consumed.set(args.messageId, envelope);
@@ -330,15 +344,30 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
         prunedMessageIds: [],
       };
     },
-    async replayProcessingToInbox(_store, _principal, _repoId, address) {
+    async replayProcessingToInbox(_store, _principal, _repoId, address, opts) {
       const s = getOrCreate(address);
       const replayedKeys: string[] = [];
+      const retainedMessageIds: string[] = [];
       for (const [k, value] of s.processing) {
+        if (opts?.ownedMessageIds?.has(value.messageId) === true) {
+          retainedMessageIds.push(value.messageId);
+          continue;
+        }
+        s.processing.delete(k);
         s.inbox.set(k, value);
         replayedKeys.push(k);
       }
-      s.processing.clear();
-      return { commitSha: "memory", replayedKeys };
+      return { commitSha: "memory", replayedKeys, retainedMessageIds };
+    },
+    messageIds(address) {
+      const s = getOrCreate(address);
+      const ids = (entries: Map<string, Entry>) =>
+        [...entries.values()].map((entry) => entry.messageId);
+      return {
+        inbox: ids(s.inbox),
+        processing: ids(s.processing),
+        consumed: [...s.consumed.keys()],
+      };
     },
   };
 }
@@ -392,6 +421,7 @@ async function spawnSupervisor(opts: {
   mailBus: MailBusBindings;
   ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
   recyclePolicy?: RecyclePolicyBounds;
+  overrides?: Partial<WorkflowSupervisorBindings>;
 }) {
   await seedStepGrants(
     opts.baseDir,
@@ -407,7 +437,10 @@ async function spawnSupervisor(opts: {
       ? { recyclePolicy: opts.recyclePolicy }
       : {}),
   });
-  const supervisor = createWorkflowSupervisor(bindings);
+  const supervisor = createWorkflowSupervisor({
+    ...bindings,
+    ...opts.overrides,
+  });
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
@@ -1303,7 +1336,11 @@ describe("supervisor recycle: drain-side processing replay", () => {
       ...createMemoryInboxPrimitives(),
       async replayProcessingToInbox(_store, _principal, _repoId, _address) {
         calls.push("replayProcessingToInbox");
-        return { commitSha: "memory", replayedKeys: [] };
+        return {
+          commitSha: "memory",
+          replayedKeys: [],
+          retainedMessageIds: [],
+        };
       },
     };
     await seedStepGrants(
@@ -1801,5 +1838,227 @@ describe("supervisor shutdown: teardown robustness", () => {
     // teardown (which would call the throwing kill again).
     await supervisor.shutdown();
     expect(child.killSignals.length).toBe(1);
+  });
+});
+
+const RUN = "run_deployment-x";
+const ADDRESS = "run_deployment-x@example.com";
+
+// The run's log in the store's working tree, which the supervisor reads
+// from disk.
+async function writeWorkingRunLog(
+  baseDir: string,
+  events: readonly Record<string, unknown>[],
+): Promise<void> {
+  const dir = path.join(baseDir, "workflow-run", RUN, "runs", RUN, "events");
+  await fs.mkdir(dir, { recursive: true });
+  for (const [index, event] of events.entries()) {
+    const seq = index + 1;
+    await fs.writeFile(
+      path.join(dir, `${String(seq)}.json`),
+      JSON.stringify({ seq, at: "2026-10-01T00:00:00.000Z", ...event }),
+    );
+  }
+}
+
+function runStarted(): Record<string, unknown> {
+  return {
+    type: "RunStarted",
+    runId: RUN,
+    definitionHash: "def-hash-abc",
+    trigger: { type: "manual", payload: null },
+  };
+}
+
+// A respawned child resumes the run from its log, so mail the run already
+// took stays in processing/ with it instead of being delivered again.
+describe("supervisor respawn: mail a resumed run took", () => {
+  // Move a mail to processing/, as a dispatch that took it would.
+  async function takeMail(
+    inbox: ReturnType<typeof createMemoryInboxPrimitives>,
+    baseDir: string,
+    messageId: string,
+    receivedAt: number,
+  ): Promise<void> {
+    const store = createStubRepoStore(baseDir);
+    const repoId = { kind: "workflow-run", id: RUN } as const;
+    const principal = { kind: "supervisor", anchorRunId: RUN } as const;
+    await inbox.enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId,
+      receivedAt,
+      mailAuditRef: { store: "memory", path: messageId },
+    });
+    await inbox.dequeueToProcessing(store, principal, repoId, ADDRESS);
+  }
+
+  async function setupOwned(opts: {
+    inbox: ReturnType<typeof createMemoryInboxPrimitives>;
+    inboxPrimitives?: Partial<InboxPrimitives>;
+    setTimer?: WorkflowSupervisorBindings["setTimer"];
+  }) {
+    const baseDir = await makeTempDir("owned-");
+    await writeWorkingRunLog(baseDir, [
+      { ...runStarted(), consumedMessageId: "mail-owned" },
+    ]);
+    await takeMail(opts.inbox, baseDir, "mail-owned", 1);
+    const replays: Awaited<
+      ReturnType<InboxPrimitives["replayProcessingToInbox"]>
+    >[] = [];
+    const replayed = createChangeNotifier();
+    const tracker = createSpawnTracker({});
+    const ipcKeypair = await generateKeyPair();
+    const harness = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      overrides: {
+        inboxPrimitives: {
+          ...opts.inbox,
+          async replayProcessingToInbox(...args) {
+            const result = await opts.inbox.replayProcessingToInbox(...args);
+            replays.push(result);
+            replayed.notify();
+            return result;
+          },
+          ...opts.inboxPrimitives,
+        },
+        ...(opts.setTimer !== undefined ? { setTimer: opts.setTimer } : {}),
+      },
+    });
+    await replayed.until(() => replays.length === 1);
+    return { ...harness, baseDir, tracker, ipcKeypair, replays };
+  }
+
+  test("stays in processing/ and is consumed when the run next parks", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const consumed = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender } = await setupOwned({
+      inbox,
+      inboxPrimitives: {
+        async markConsumed(...args) {
+          const result = await inbox.markConsumed(...args);
+          consumed.resolve(undefined);
+          return result;
+        },
+      },
+    });
+    expect(inbox.messageIds(ADDRESS).processing).toEqual(["mail-owned"]);
+
+    await firstSender.send({
+      type: "park.notify",
+      data: { runId: RUN, correlationId: "corr-next", parkKind: "input" },
+    });
+    await consumed.promise;
+    expect(inbox.messageIds(ADDRESS)).toEqual({
+      inbox: [],
+      processing: [],
+      consumed: ["mail-owned"],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("a turn the run took stays in processing/ across a recycle", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const { supervisor, baseDir, tracker, ipcKeypair, replays } =
+      await setupOwned({ inbox });
+    // The run took a follow-up mail as its next turn.
+    await writeWorkingRunLog(baseDir, [
+      { ...runStarted(), consumedMessageId: "mail-owned" },
+      {
+        type: "SignalReceived",
+        signalName: "turn",
+        signalId: "mail-turn",
+        payload: null,
+      },
+    ]);
+    await takeMail(inbox, baseDir, "mail-turn", 2);
+
+    const recycled = supervisor.recycle({ reason: "owned-mail" });
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recycled;
+    expect(replays.at(-1)).toMatchObject({
+      replayedKeys: [],
+      retainedMessageIds: ["mail-owned", "mail-turn"],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  // A run that has ended never parks again, so a failed consume is retried
+  // on a timer; one already consumed is dropped.
+  describe("a failed consume", () => {
+    async function setupFailing(
+      consumeWith: (
+        inbox: ReturnType<typeof createMemoryInboxPrimitives>,
+      ) => InboxPrimitives["markConsumed"],
+    ) {
+      const inbox = createMemoryInboxPrimitives();
+      const markConsumed = consumeWith(inbox);
+      const retries: (() => void)[] = [];
+      const retried = createChangeNotifier();
+      const harness = await setupOwned({
+        inbox,
+        inboxPrimitives: { markConsumed: (...args) => markConsumed(...args) },
+        // The retry backoffs are a second and then four; other timers stay
+        // real.
+        setTimer: (callback, ms) => {
+          if (ms !== 1_000 && ms !== 4_000) return setTimeout(callback, ms);
+          retries.push(callback);
+          retried.notify();
+          return callback;
+        },
+      });
+      await harness.firstSender.send({
+        type: "park.notify",
+        data: { runId: RUN, correlationId: "corr-next", parkKind: "input" },
+      });
+      return { ...harness, inbox, retries, retried };
+    }
+
+    test("is retried without the run parking again", async () => {
+      let calls = 0;
+      const consumed = Promise.withResolvers<undefined>();
+      const owned = await setupFailing((inbox) => async (...args) => {
+        calls += 1;
+        if (calls === 1) throw new Error("the claim-check write failed");
+        const result = await inbox.markConsumed(...args);
+        consumed.resolve(undefined);
+        return result;
+      });
+      await owned.retried.until(() => owned.retries.length === 1);
+      owned.retries[0]?.();
+      await consumed.promise;
+      expect(owned.inbox.messageIds(ADDRESS).consumed).toEqual(["mail-owned"]);
+
+      await owned.supervisor.shutdown();
+    });
+
+    test("is not retried for mail something else already consumed", async () => {
+      let calls = 0;
+      const called = Promise.withResolvers<undefined>();
+      const owned = await setupFailing((inbox) => async (...args) => {
+        calls += 1;
+        // Something else consumes it first.
+        await inbox.markConsumed(...args);
+        try {
+          return await inbox.markConsumed(...args);
+        } finally {
+          called.resolve(undefined);
+        }
+      });
+      await called.promise;
+      // The supervisor handles the failure before the next macrotask.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(calls).toBe(1);
+      expect(owned.retries).toEqual([]);
+
+      await owned.supervisor.shutdown();
+    });
   });
 });

@@ -21,6 +21,7 @@ export {
   dequeueToProcessing,
   enqueueInbox,
   markConsumed,
+  NotInProcessingError,
   parseEventSeq,
   scanRunsForBoot,
   readCommittedWorkflowRunLifecycle,

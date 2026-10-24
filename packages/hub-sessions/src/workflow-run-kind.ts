@@ -3526,7 +3526,8 @@ export const workflowRunAuthorize: AuthorizeFn = (
 //                           consumed/<messageId>.json dedup index
 //                           entry.
 //   replayProcessingToInbox — recovery path that moves every
-//                           processing entry back to inbox preserving
+//                           processing entry no live run owns back to
+//                           inbox preserving
 //                           its `<receivedAt>-<messageId>` filename
 //                           key so FIFO ordering survives a crash.
 //
@@ -4085,12 +4086,24 @@ export type MarkConsumedResult = {
 };
 
 /**
+ * `markConsumed` found no processing entry for the message: it is in the
+ * consumed index already, or was never dequeued. Retrying cannot succeed.
+ */
+export class NotInProcessingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotInProcessingError";
+  }
+}
+
+/**
  * Atomically remove the processing entry for `messageId` at `address`,
  * write the canonical `consumed/<messageId>.json` dedup index entry,
  * advance the per-address retention watermark, and prune consumed
  * entries the watermark has passed. The caller is expected to have
  * called `dequeueToProcessing` for this messageId; calling
- * `markConsumed` without a matching processing entry throws.
+ * `markConsumed` without a matching processing entry throws
+ * `NotInProcessingError`.
  *
  * The consumed envelope preserves the original `receivedAt` and
  * `mailAuditRef` from the processing entry so the dedup index doubles
@@ -4126,7 +4139,7 @@ export async function markConsumed(
       const consumedFull = consumedPath(addressSegment, args.messageId);
       const consumedFname = `${args.messageId}.json`;
       if (listing.consumed.some((e) => e.name === consumedFname)) {
-        throw new Error(
+        throw new NotInProcessingError(
           `claim_check_already_consumed: ${consumedFull} already in the dedup index`,
         );
       }
@@ -4135,7 +4148,7 @@ export async function markConsumed(
         e.name.endsWith(`-${args.messageId}.json`),
       );
       if (processingEntry === undefined) {
-        throw new Error(
+        throw new NotInProcessingError(
           `claim_check_processing_not_found: address ${args.address} message ${args.messageId} has no processing entry`,
         );
       }
@@ -4213,6 +4226,8 @@ export async function markConsumed(
 export type ReplayProcessingToInboxResult = {
   commitSha: string;
   replayedKeys: string[];
+  /** Owned entries left in processing/ for their live run to consume. */
+  retainedMessageIds: string[];
 };
 
 export type ScanRunsForBootResult = {
@@ -4224,13 +4239,16 @@ export type ScanRunsForBootResult = {
  * Walk `runs/` once and return the two boot-recovery inputs the supervisor's
  * spawn needs, from a single traversal of the working tree via `getRepoDir`:
  *
- * - `ownedMessageIds`: the `consumedMessageId`s of NON-terminal runs -- the
- *   messages a live run still owns. Spawn feeds this into
- *   `replayProcessingToInbox`'s `ownedMessageIds` so a parked run's message is
- *   not re-admitted to inbox and dispatched a second time while the run is
- *   recovered by re-driving its durable log. Without this, the re-drive AND the
- *   re-triggered fresh run both re-park the same awaitSignal gate on the same
- *   runId, and the two concurrent runtime bodies race to a corrupt terminal.
+ * - `ownedMessageIds`: the `consumedMessageId`s and `SignalReceived` signal
+ *   ids of NON-terminal runs -- the messages a live run still owns, the one
+ *   that started it and each follow-up turn's. Spawn and every respawn feed
+ *   this into `replayProcessingToInbox`'s `ownedMessageIds` so a parked run's
+ *   message is not re-admitted to inbox and dispatched a second time while the
+ *   run is recovered by re-driving its durable log. Without this, the re-drive
+ *   AND the re-triggered fresh run both re-park the same awaitSignal gate on
+ *   the same runId, and the two concurrent runtime bodies race to a corrupt
+ *   terminal; a follow-up turn redelivered to a run that already received it is
+ *   ignored, and its dispatch waits for a turn that never comes.
  * - `pendingSealRunIds`: runs that are terminal but still in per-event form --
  *   an interrupted fold left them unsealed. Spawn hands these to the recovery
  *   sweep, which re-runs the idempotent fold. A terminal event is a *proposal*:
@@ -4243,11 +4261,13 @@ export type ScanRunsForBootResult = {
  * at the caller rather than inside `replayProcessingToInbox`'s single-ref
  * delta. A run whose log is sealed (combined `events.jsonl`, only permitted for
  * a terminated run) contributes to neither set; an absent `runs/` directory
- * yields empty results.
+ * yields empty results. `runId` limits the walk to that one run: a respawn
+ * needs only the top-level run, the one mail reaches.
  */
 export async function scanRunsForBoot(
   store: RepoStore,
   repoId: RepoId,
+  opts: { readonly runId?: string } = {},
 ): Promise<ScanRunsForBootResult> {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
@@ -4261,6 +4281,10 @@ export async function scanRunsForBoot(
       return { ownedMessageIds: new Set(), pendingSealRunIds: [] };
     }
     throw cause;
+  }
+  if (opts.runId !== undefined) {
+    const only = opts.runId;
+    runIds = runIds.filter((runId) => runId === only);
   }
   const owned = new Set<string>();
   const pendingSealRunIds: string[] = [];
@@ -4310,7 +4334,10 @@ export async function scanRunsForBoot(
       continue;
     }
     let terminal = false;
-    let consumedMessageId: string | undefined;
+    // The message that started the run, and the mail of each turn it took
+    // since: a follow-up message is delivered with its message id as the
+    // signal id.
+    const taken: string[] = [];
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
       let parsed: unknown;
@@ -4348,14 +4375,18 @@ export async function scanRunsForBoot(
       }
       if (type === "RunStarted" && "consumedMessageId" in parsed) {
         const mid = parsed.consumedMessageId;
-        if (typeof mid === "string") consumedMessageId = mid;
+        if (typeof mid === "string") taken.push(mid);
+      }
+      if (type === "SignalReceived" && "signalId" in parsed) {
+        const signalId = parsed.signalId;
+        if (typeof signalId === "string") taken.push(signalId);
       }
     }
     if (terminal) {
       pendingSealRunIds.push(runId);
       continue;
     }
-    if (consumedMessageId !== undefined) owned.add(consumedMessageId);
+    for (const messageId of taken) owned.add(messageId);
   }
   return { ownedMessageIds: owned, pendingSealRunIds };
 }
@@ -4529,10 +4560,11 @@ export type ReplayProcessingToInboxOpts = {
 };
 
 /**
- * Recovery path: move every processing entry at `address` back to
- * inbox preserving the original `<receivedAt>-<messageId>` filename
- * key so FIFO ordering survives a workflow-process crash. Returns
- * the set of keys that were moved; when nothing was in processing
+ * Recovery path: move every processing entry at `address` that no live
+ * run owns back to inbox preserving the original
+ * `<receivedAt>-<messageId>` filename key so FIFO ordering survives a
+ * workflow-process crash. Returns the set of keys that were moved and
+ * the ids of the owned entries left in place; when nothing was moved
  * the returned `replayedKeys` is empty (and the commit is a no-op
  * rewrite of the same tree).
  *
@@ -4562,6 +4594,7 @@ export async function replayProcessingToInbox(
   const ref = claimCheckCommitRef();
   const ownedMessageIds = opts.ownedMessageIds ?? new Set<string>();
   const replayedKeys: string[] = [];
+  const retainedMessageIds: string[] = [];
   const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
     message: `replay processing ${address}`,
@@ -4587,6 +4620,7 @@ export async function replayProcessingToInbox(
           `${processingDir}${entry.name}`,
         );
         if (ownedMessageIds.has(envelope.messageId)) {
+          retainedMessageIds.push(envelope.messageId);
           continue;
         }
         const inboxFull = `${inboxDir}${entry.name}`;
@@ -4607,5 +4641,5 @@ export async function replayProcessingToInbox(
       return { puts, deletes };
     },
   });
-  return { commitSha, replayedKeys };
+  return { commitSha, replayedKeys, retainedMessageIds };
 }

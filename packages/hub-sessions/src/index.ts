@@ -199,6 +199,7 @@ export {
   dequeueToProcessing,
   readProcessingEntry,
   markConsumed,
+  NotInProcessingError,
   classifyTerminalEvent,
   scanRunsForBoot,
   readCommittedWorkflowRunLifecycle,

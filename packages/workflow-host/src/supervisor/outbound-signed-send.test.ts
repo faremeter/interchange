@@ -68,7 +68,7 @@ function createNoopInboxPrimitives(): InboxPrimitives {
       throw new Error("markConsumed not exercised in the outbound test");
     },
     async replayProcessingToInbox() {
-      return { commitSha: "noop", replayedKeys: [] };
+      return { commitSha: "noop", replayedKeys: [], retainedMessageIds: [] };
     },
   };
 }
