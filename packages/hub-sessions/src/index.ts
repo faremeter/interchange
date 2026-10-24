@@ -206,6 +206,7 @@ export {
   readProcessingEntry,
   markConsumed,
   claimCheckIdentity,
+  NotInProcessingError,
   classifyTerminalEvent,
   scanRunsForBoot,
   readCommittedWorkflowRunLifecycle,

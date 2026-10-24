@@ -14,6 +14,7 @@ import {
   enqueueInbox,
   dequeueToProcessing,
   markConsumed,
+  NotInProcessingError,
   parseEventSeq,
   readCommittedWorkflowRunLifecycle,
   readProcessingEntry,
@@ -3247,7 +3248,29 @@ describe("claim-check API — markConsumed", () => {
         runId: "run-X",
         consumedAt: 500,
       }),
-    ).rejects.toThrow(/claim_check_processing_not_found/);
+    ).rejects.toThrow(NotInProcessingError);
+  });
+
+  test("rejects a second consume of the same message", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-mark-twice-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      authenticatedSender: SENDER,
+      receivedAt: 100,
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    const args = {
+      address: ADDRESS,
+      identity: await keyOf("msg-1"),
+      runId: "run-X",
+      consumedAt: 500,
+    };
+    await markConsumed(store, principal, repoId, args);
+    await expect(markConsumed(store, principal, repoId, args)).rejects.toThrow(
+      NotInProcessingError,
+    );
   });
 });
 
@@ -3450,6 +3473,138 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     expect(owned.has("done")).toBe(false);
   });
 
+  test("scanRunsForBoot limited to one run reads only that run", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-owned-one-");
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/other/events/0.json`]:
+          runStartedBody("other"),
+      },
+      message: "seed two live runs",
+    });
+    const { ownedIdentities } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+      {
+        runId: "live",
+      },
+    );
+    expect(ownedIdentities).toEqual(new Set(["live"]));
+  });
+
+  // The store with committed reads that fail where `fails` says, as a faulty
+  // object store would.
+  function withFailingReads(
+    store: ReturnType<typeof createRepoStore>,
+    fails: { dir?: string; blobs?: boolean },
+  ): ReturnType<typeof createRepoStore> {
+    return {
+      ...store,
+      async openCommittedReads(...args) {
+        const reads = await store.openCommittedReads(...args);
+        if (reads === null) return null;
+        return {
+          ...reads,
+          async listDir(relPath) {
+            if (relPath === fails.dir) throw new Error("EIO: read failed");
+            return reads.listDir(relPath);
+          },
+          async readBlobByOid(oid) {
+            if (fails.blobs === true) throw new Error("EIO: read failed");
+            return reads.readBlobByOid(oid);
+          },
+        };
+      },
+    };
+  }
+
+  test("scanRunsForBoot skips a run it cannot read, and rejects when that run is the only one asked for", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore(
+      "cc-owned-unreadable-",
+    );
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/other/events/0.json`]:
+          runStartedBody("other"),
+      },
+      message: "seed two live runs",
+    });
+    const faulty = withFailingReads(store, {
+      dir: `${WORKFLOW_RUN_RUNS_PREFIX}/live`,
+    });
+
+    const { ownedIdentities } = await scanRunsForBoot(
+      faulty,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
+    expect(ownedIdentities).toEqual(new Set(["other"]));
+
+    await expect(
+      scanRunsForBoot(faulty, principal, repoId, "refs/heads/main", {
+        runId: "live",
+      }),
+    ).rejects.toThrow(/reading events for run live failed/);
+  });
+
+  test("scanRunsForBoot limited to one run rejects on an event it cannot read", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore(
+      "cc-owned-unreadable-event-",
+    );
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+      },
+      message: "seed one live run",
+    });
+
+    await expect(
+      scanRunsForBoot(
+        withFailingReads(store, { blobs: true }),
+        principal,
+        repoId,
+        "refs/heads/main",
+        { runId: "live" },
+      ),
+    ).rejects.toThrow(/reading event 0\.json for run live failed/);
+  });
+
+  test("scanRunsForBoot counts each turn a live run received as owned", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-owned-turns-");
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/1.json`]: JSON.stringify({
+          type: "SignalReceived",
+          seq: 1,
+          at: "2026-01-01T00:00:01.000Z",
+          signalName: "input",
+          signalId: "follow-up",
+          payload: null,
+        }),
+      },
+      message: "seed a live run that received a follow-up turn",
+    });
+    const { ownedIdentities } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
+    expect(ownedIdentities).toEqual(new Set(["live", "follow-up"]));
+  });
+
   test("scanRunsForBoot ignores events the checkout holds that never committed", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore(
       "cc-owned-uncommitted-",
@@ -3466,6 +3621,17 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     const runsDir = path.join(
       store.getRepoDir(repoId),
       WORKFLOW_RUN_RUNS_PREFIX,
+    );
+    await fs.promises.writeFile(
+      path.join(runsDir, "live", "events", "1.json"),
+      JSON.stringify({
+        type: "SignalReceived",
+        seq: 1,
+        at: "2026-01-01T00:00:01.000Z",
+        signalName: "input",
+        signalId: "follow-up",
+        payload: null,
+      }),
     );
     await fs.promises.mkdir(path.join(runsDir, "lost", "events"), {
       recursive: true,
@@ -3787,6 +3953,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     );
     // Only the orphan is re-admitted; the owned entry stays in processing.
     expect(replay.replayedKeys).toEqual([`200-${orphanKey}`]);
+    expect(replay.retainedIdentities).toEqual([liveKey]);
 
     const repoDir = store.getRepoDir(repoId);
     const processingDir = path.join(

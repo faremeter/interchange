@@ -10,7 +10,14 @@
 // re-seeds the workflow definition or mutates step credentials in a
 // way that would conflate the recycle path with a redeploy.
 
-import { describe, test, expect } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  test,
+  expect,
+} from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,12 +25,15 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import { deriveDeliveryKey } from "@intx/types/message-id";
 import { claimCheckIdentity } from "@intx/hub-sessions";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import type { RepoStore } from "@intx/hub-sessions";
+import { NotInProcessingError } from "@intx/hub-sessions";
 import {
+  createLogCapture,
   createMemoryFrameStream,
   createMemoryNdjsonStream,
   createMockMailBus,
@@ -230,7 +240,13 @@ async function driveReady(
   return childSender;
 }
 
-function createMemoryInboxPrimitives(): InboxPrimitives {
+function createMemoryInboxPrimitives(): InboxPrimitives & {
+  messageIds(address: string): {
+    inbox: string[];
+    processing: string[];
+    consumed: string[];
+  };
+} {
   type Entry = {
     messageId: string;
     authenticatedSender?: string;
@@ -335,8 +351,15 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
           break;
         }
       }
+      if (s.consumed.has(args.identity)) {
+        throw new NotInProcessingError(
+          `claim_check_already_consumed: ${args.identity}`,
+        );
+      }
       if (foundKey === null || envelope === null) {
-        throw new Error("processing entry not found");
+        throw new NotInProcessingError(
+          `claim_check_processing_not_found: ${args.identity}`,
+        );
       }
       s.processing.delete(foundKey);
       s.consumed.set(args.identity, envelope);
@@ -359,15 +382,30 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
         prunedIdentities: [],
       };
     },
-    async replayProcessingToInbox(_store, _principal, _repoId, address) {
+    async replayProcessingToInbox(_store, _principal, _repoId, address, opts) {
       const s = getOrCreate(address);
       const replayedKeys: string[] = [];
+      const retainedIdentities: string[] = [];
       for (const [k, value] of s.processing) {
+        if (opts?.ownedIdentities?.has(claimCheckIdentity(value)) === true) {
+          retainedIdentities.push(claimCheckIdentity(value));
+          continue;
+        }
+        s.processing.delete(k);
         s.inbox.set(k, value);
         replayedKeys.push(k);
       }
-      s.processing.clear();
-      return { commitSha: "memory", replayedKeys };
+      return { commitSha: "memory", replayedKeys, retainedIdentities };
+    },
+    messageIds(address) {
+      const s = getOrCreate(address);
+      const ids = (entries: Map<string, Entry>) =>
+        [...entries.values()].map((entry) => entry.messageId);
+      return {
+        inbox: ids(s.inbox),
+        processing: ids(s.processing),
+        consumed: ids(s.consumed),
+      };
     },
   };
 }
@@ -428,6 +466,7 @@ async function spawnSupervisor(opts: {
   recyclePolicy?: RecyclePolicyBounds;
   onRunStart?: WorkflowSupervisorBindings["onRunStart"];
   credentialDelivery?: WorkflowSupervisorBindings["credentialDelivery"];
+  overrides?: Partial<WorkflowSupervisorBindings>;
 }) {
   await seedStepGrants(opts.baseDir, "step-1", [
     { resource: "thing", action: "read" },
@@ -445,7 +484,10 @@ async function spawnSupervisor(opts: {
       ? { credentialDelivery: opts.credentialDelivery }
       : {}),
   });
-  const supervisor = createWorkflowSupervisor(bindings);
+  const supervisor = createWorkflowSupervisor({
+    ...bindings,
+    ...opts.overrides,
+  });
   const spawnPromise = supervisor.spawn({
     definitionHash: TEST_DEFINITION_HASH,
 
@@ -1375,21 +1417,27 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
 });
 
 describe("supervisor recycle: drain-side processing replay", () => {
-  test("triggerRecycle invokes replayProcessingToInbox between drain and kill", async () => {
+  test("triggerRecycle invokes replayProcessingToInbox after the kill", async () => {
     // This is a focused unit test against `triggerRecycle`'s ordering
-    // contract: the `replayProcessingToInbox` callback must fire after
-    // `drain` returns and before `killChildHandle` lands. The test
-    // observes the order via call recording.
+    // contract: the `replayProcessingToInbox` callback must fire once
+    // `killChildHandle` has landed, when the old child can no longer take
+    // mail. The test observes the order via call recording.
     const baseDir = await makeTempDir("recycle-replay-order-");
     const ipcKeypair = await generateKeyPair();
     const mailBus = createMockMailBus();
     const tracker = createSpawnTracker({});
     const calls: string[] = [];
+    const spawnReplayed = Promise.withResolvers<undefined>();
     const recordingInbox: InboxPrimitives = {
       ...createMemoryInboxPrimitives(),
       async replayProcessingToInbox(_store, _principal, _repoId, _address) {
         calls.push("replayProcessingToInbox");
-        return { commitSha: "memory", replayedKeys: [] };
+        spawnReplayed.resolve(undefined);
+        return {
+          commitSha: "memory",
+          replayedKeys: [],
+          retainedIdentities: [],
+        };
       },
     };
     await seedStepGrants(baseDir, "step-1", [
@@ -1429,8 +1477,9 @@ describe("supervisor recycle: drain-side processing replay", () => {
     if (first === undefined) throw new Error("first child missing");
     await driveReady(first, ipcKeypair);
     await spawnPromise;
-    // Clear out the spawn-time replay call so we can isolate the
-    // recycle-time one.
+    // Clear out the spawn-time replay call, which can land after the spawn
+    // resolves, so we can isolate the recycle-time one.
+    await spawnReplayed.promise;
     calls.length = 0;
 
     const recyclePromise = supervisor.recycle({ reason: "ordering-test" });
@@ -1439,13 +1488,167 @@ describe("supervisor recycle: drain-side processing replay", () => {
     if (second === undefined) throw new Error("second child missing");
     await driveReady(second, ipcKeypair);
     await recyclePromise;
-    // The recycle path invokes `replayProcessingToInbox` BEFORE the
-    // kill. The order recorded in `calls` reflects that.
+    // The recycle path invokes `replayProcessingToInbox` AFTER the kill.
+    // The order recorded in `calls` reflects that.
     const replayIdx = calls.indexOf("replayProcessingToInbox");
     const killIdx = calls.indexOf("kill");
     expect(replayIdx).toBeGreaterThanOrEqual(0);
     expect(killIdx).toBeGreaterThanOrEqual(0);
-    expect(replayIdx).toBeLessThan(killIdx);
+    expect(killIdx).toBeLessThan(replayIdx);
+    await supervisor.shutdown();
+  });
+});
+
+async function sendChildWrite(
+  childSender: ReturnType<typeof createControlChannelSender>,
+  requestId: string,
+): Promise<void> {
+  await childSender.send({
+    type: "substrate.write.request",
+    data: {
+      requestId,
+      repoId: { kind: "workflow-run", id: "run_deployment-x" },
+      ref: "refs/heads/main",
+      preservePrefix: "runs/",
+      message: `child write ${requestId}`,
+    },
+  });
+}
+
+describe("supervisor recycle: the old child's last writes", () => {
+  test.each([1, 2])(
+    "%d write(s) the old child left waiting on a merge do not hold up the replay",
+    async (writes) => {
+      const baseDir = await makeTempDir("recycle-merge-left-waiting-");
+      const ipcKeypair = await generateKeyPair();
+      const tracker = createSpawnTracker({});
+      await seedStepGrants(baseDir, "step-1", [
+        { resource: "thing", action: "read" },
+      ]);
+      const bindings = await buildBindings({
+        baseDir,
+        spawner: tracker.spawner,
+        mailBus: createMockMailBus(),
+        ipcKeypair,
+      });
+      // Writes run their merge, which the child computes, one at a time as
+      // under the repo lock.
+      let lock: Promise<unknown> = Promise.resolve();
+      const repoStore = new Proxy(bindings.repoStore, {
+        get(target, prop, receiver) {
+          if (prop !== "writeTreePreservingPrefix") {
+            return Reflect.get(target, prop, receiver);
+          }
+          return (
+            ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
+          ) => {
+            const write = lock.then(async () => {
+              await args[3].merge(new Map());
+              return target.writeTreePreservingPrefix(...args);
+            });
+            lock = write.catch(() => undefined);
+            return write;
+          };
+        },
+      });
+      const supervisor = createWorkflowSupervisor({ ...bindings, repoStore });
+      const spawned = supervisor.spawn({
+        definitionHash: TEST_DEFINITION_HASH,
+        onInferenceEvent: () => undefined,
+      });
+      await tracker.awaitChildren(1);
+      const first = tracker.children[0];
+      if (first === undefined) throw new Error("first child missing");
+      const firstSender = await driveReady(first, ipcKeypair);
+      await spawned;
+      for (let write = 0; write < writes; write++) {
+        await sendChildWrite(firstSender, `left-waiting-${String(write)}`);
+      }
+      await waitForUpstreamPayload(
+        first.supervisorToChild,
+        "substrate.merge.request",
+      );
+
+      const recycled = supervisor.recycle({ reason: "merge left waiting" });
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      await driveReady(second, ipcKeypair);
+      await recycled;
+      // A write that reached its merge after the old child was cut off never
+      // asked that child.
+      expect(
+        parseControlFrames(first.supervisorToChild.flushed()).filter(
+          (frame) => frame.type === "substrate.merge.request",
+        ),
+      ).toHaveLength(1);
+      await supervisor.shutdown();
+    },
+  );
+
+  test("a crash respawn is not held up by a boot replay queued behind the dead child's merge", async () => {
+    const baseDir = await makeTempDir("respawn-boot-lock-");
+    const inbox = createMemoryInboxPrimitives();
+    const tracker = createSpawnTracker({});
+    const ipcKeypair = await generateKeyPair();
+    // The boot replay's claim-check write and a child's write take the same
+    // repo lock, and the child's write holds it through its merge.
+    let lock: Promise<unknown> = Promise.resolve();
+    function withLock<T>(fn: () => Promise<T>): Promise<T> {
+      const run = lock.then(fn);
+      lock = run.catch(() => undefined);
+      return run;
+    }
+    const bootReplayHeld = Promise.withResolvers<undefined>();
+    let replays = 0;
+    const repoStore = createStubRepoStore(baseDir, { writeTree: true });
+    const { supervisor, firstSender } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      overrides: {
+        respawnBackoffInitialMs: 0,
+        repoStore: new Proxy(repoStore, {
+          get(target, prop, receiver) {
+            if (prop !== "writeTreePreservingPrefix") {
+              return Reflect.get(target, prop, receiver);
+            }
+            return (
+              ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
+            ) =>
+              withLock(async () => {
+                await args[3].merge(new Map());
+                return target.writeTreePreservingPrefix(...args);
+              });
+          },
+        }),
+        inboxPrimitives: {
+          ...inbox,
+          async replayProcessingToInbox(...args) {
+            replays += 1;
+            if (replays === 1) await bootReplayHeld.promise;
+            return withLock(() => inbox.replayProcessingToInbox(...args));
+          },
+        },
+      },
+    });
+    await sendChildWrite(firstSender, "dies-in-merge");
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "substrate.merge.request",
+    );
+    bootReplayHeld.resolve(undefined);
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(1);
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
     await supervisor.shutdown();
   });
 });
@@ -2554,5 +2757,820 @@ describe("supervisor recycle: the new child's authority", () => {
       await recyclePromise.catch(() => undefined);
       await supervisor.shutdown();
     }
+  });
+});
+
+const RUN = "run_deployment-x";
+const ADDRESS = "run_deployment-x@example.com";
+const SENDER = "sender@example.com";
+
+// The identity the inbox files a mail from `SENDER` under, and the run's log
+// names it by.
+function keyOf(messageId: string): Promise<string> {
+  return deriveDeliveryKey(SENDER, messageId);
+}
+
+// The run's log in the stub store's directory, which the stub serves as its
+// committed history.
+async function writeWorkingRunLog(
+  baseDir: string,
+  events: readonly Record<string, unknown>[],
+): Promise<void> {
+  const dir = path.join(baseDir, "workflow-run", RUN, "runs", RUN, "events");
+  await fs.mkdir(dir, { recursive: true });
+  for (const [index, event] of events.entries()) {
+    const seq = index + 1;
+    await fs.writeFile(
+      path.join(dir, `${String(seq)}.json`),
+      JSON.stringify({ seq, at: "2026-10-01T00:00:00.000Z", ...event }),
+    );
+  }
+}
+
+function runStarted(): Record<string, unknown> {
+  return {
+    type: "RunStarted",
+    runId: RUN,
+    definitionHash: "def-hash-abc",
+    trigger: { type: "manual", payload: null },
+  };
+}
+
+// A respawned child resumes the run from its log, so mail the run already
+// took stays in processing/ with it instead of being delivered again.
+describe("supervisor respawn: mail a resumed run took", () => {
+  // Move a mail to processing/, as a dispatch that took it would.
+  async function takeMail(
+    inbox: ReturnType<typeof createMemoryInboxPrimitives>,
+    baseDir: string,
+    messageId: string,
+    receivedAt: number,
+  ): Promise<void> {
+    const store = createStubRepoStore(baseDir);
+    const repoId = { kind: "workflow-run", id: RUN } as const;
+    const principal = { kind: "supervisor", anchorRunId: RUN } as const;
+    await inbox.enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId,
+      authenticatedSender: SENDER,
+      receivedAt,
+    });
+    await inbox.dequeueToProcessing(store, principal, repoId, ADDRESS);
+  }
+
+  async function setupOwned(opts: {
+    inbox: ReturnType<typeof createMemoryInboxPrimitives>;
+    inboxPrimitives?: Partial<InboxPrimitives>;
+    setTimer?: WorkflowSupervisorBindings["setTimer"];
+    onSuspensionRegister?: WorkflowSupervisorBindings["onSuspensionRegister"];
+    mailBus?: MailBusBindings;
+    sigtermExits?: boolean;
+    repoStore?: (baseDir: string) => RepoStore;
+    respawnBackoffInitialMs?: number;
+  }) {
+    const baseDir = await makeTempDir("owned-");
+    await writeWorkingRunLog(baseDir, [
+      { ...runStarted(), consumedDeliveryKey: await keyOf("mail-owned") },
+    ]);
+    await takeMail(opts.inbox, baseDir, "mail-owned", 1);
+    const replays: Awaited<
+      ReturnType<InboxPrimitives["replayProcessingToInbox"]>
+    >[] = [];
+    const replayed = createChangeNotifier();
+    const tracker = createSpawnTracker(
+      opts.sigtermExits !== undefined
+        ? { sigtermExits: opts.sigtermExits }
+        : {},
+    );
+    const ipcKeypair = await generateKeyPair();
+    const harness = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: opts.mailBus ?? createMockMailBus(),
+      ipcKeypair,
+      overrides: {
+        inboxPrimitives: {
+          ...opts.inbox,
+          async replayProcessingToInbox(...args) {
+            const result = await opts.inbox.replayProcessingToInbox(...args);
+            replays.push(result);
+            replayed.notify();
+            return result;
+          },
+          ...opts.inboxPrimitives,
+        },
+        ...(opts.setTimer !== undefined ? { setTimer: opts.setTimer } : {}),
+        ...(opts.onSuspensionRegister !== undefined
+          ? { onSuspensionRegister: opts.onSuspensionRegister }
+          : {}),
+        ...(opts.repoStore !== undefined
+          ? { repoStore: opts.repoStore(baseDir) }
+          : {}),
+        ...(opts.respawnBackoffInitialMs !== undefined
+          ? { respawnBackoffInitialMs: opts.respawnBackoffInitialMs }
+          : {}),
+      },
+    });
+    await replayed.until(() => replays.length === 1);
+    return { ...harness, baseDir, tracker, ipcKeypair, replays };
+  }
+
+  test("a respawn during the boot replay waits for it, so mail the replacement takes stays taken", async () => {
+    const baseDir = await makeTempDir("boot-replay-");
+    const inbox = createMemoryInboxPrimitives();
+    const tracker = createSpawnTracker({});
+    const ipcKeypair = await generateKeyPair();
+    const bootScanning = Promise.withResolvers<undefined>();
+    const releaseBoot = Promise.withResolvers<undefined>();
+    const respawnWaits = Promise.withResolvers<undefined>();
+    let opened = 0;
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      overrides: {
+        inboxPrimitives: inbox,
+        onRespawnWait: (waiting) => {
+          if (waiting === "replay") respawnWaits.resolve(undefined);
+        },
+        // The boot scan reads the history from before any run started, and
+        // stalls on it.
+        repoStore: new Proxy(
+          createStubRepoStore(baseDir, { writeTree: true }),
+          {
+            get(target, prop, receiver) {
+              if (prop !== "openCommittedReads") {
+                return Reflect.get(target, prop, receiver);
+              }
+              return async (
+                ...args: Parameters<RepoStore["openCommittedReads"]>
+              ) => {
+                const reads = await target.openCommittedReads(...args);
+                opened += 1;
+                if (opened !== 1 || reads === null) return reads;
+                return {
+                  ...reads,
+                  async listDir(relPath: string) {
+                    const entries = await reads.listDir(relPath);
+                    bootScanning.resolve(undefined);
+                    await releaseBoot.promise;
+                    return entries;
+                  },
+                };
+              };
+            },
+          },
+        ),
+      },
+    });
+    await bootScanning.promise;
+    const principal = { kind: "supervisor", anchorRunId: RUN } as const;
+    await inbox.enqueueInbox(
+      createStubRepoStore(baseDir),
+      principal,
+      { kind: "workflow-run", id: RUN },
+      {
+        address: ADDRESS,
+        messageId: "mail-during-boot",
+        authenticatedSender: SENDER,
+        receivedAt: 1,
+        rawMessage: base64Encode(
+          new TextEncoder().encode("Subject: during boot\r\n\r\ninput"),
+        ),
+      },
+    );
+    const recycling = supervisor.recycle({ reason: "during the boot replay" });
+    // A respawn that does not wait spawns the replacement first, which then
+    // takes mail the boot replay puts back.
+    expect(
+      await Promise.race([
+        respawnWaits.promise.then(() => "waited"),
+        tracker.awaitChildren(2).then(() => "spawned"),
+      ]),
+    ).toBe("waited");
+
+    releaseBoot.resolve(undefined);
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recycling;
+    await waitForUpstreamPayload(second.supervisorToChild, "trigger.fire");
+    expect(inbox.messageIds(ADDRESS)).toEqual({
+      inbox: [],
+      processing: ["mail-during-boot"],
+      consumed: [],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("stays in processing/ and is consumed when the run next parks", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const consumed = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender } = await setupOwned({
+      inbox,
+      inboxPrimitives: {
+        async markConsumed(...args) {
+          const result = await inbox.markConsumed(...args);
+          consumed.resolve(undefined);
+          return result;
+        },
+      },
+    });
+    expect(inbox.messageIds(ADDRESS).processing).toEqual(["mail-owned"]);
+
+    await firstSender.send({
+      type: "park.notify",
+      data: { runId: RUN, correlationId: "corr-next", parkKind: "input" },
+    });
+    await consumed.promise;
+    expect(inbox.messageIds(ADDRESS)).toEqual({
+      inbox: [],
+      processing: [],
+      consumed: ["mail-owned"],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("a park read once shutdown has waited for its writes starts no consume", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    let consumes = 0;
+    const markerRegistered = Promise.withResolvers<undefined>();
+    // Shutdown unregisters the address once it has waited for the last write.
+    const bus = createMockMailBus();
+    const unregistered = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, tracker } = await setupOwned({
+      inbox,
+      inboxPrimitives: {
+        async markConsumed(...args) {
+          consumes += 1;
+          return inbox.markConsumed(...args);
+        },
+      },
+      onSuspensionRegister: ({ correlationId }) => {
+        if (correlationId === "corr-marker")
+          markerRegistered.resolve(undefined);
+      },
+      mailBus: {
+        ...bus,
+        unregisterAddress(address) {
+          bus.unregisterAddress(address);
+          unregistered.resolve(undefined);
+        },
+      },
+      // A child that ignores SIGTERM keeps sending until shutdown's SIGKILL.
+      sigtermExits: false,
+    });
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+
+    const shuttingDown = supervisor.shutdown();
+    await unregistered.promise;
+    // The supervisor takes frames in order, so once it registers the park sent
+    // next, it has read the run's own.
+    await firstSender.send({
+      type: "park.notify",
+      data: { runId: RUN, correlationId: "corr-next", parkKind: "input" },
+    });
+    await firstSender.send({
+      type: "park.notify",
+      data: {
+        runId: "run-marker",
+        correlationId: "corr-marker",
+        parkKind: "approval",
+      },
+    });
+    await markerRegistered.promise;
+    expect(consumes).toBe(0);
+
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    await shuttingDown;
+    expect(inbox.messageIds(ADDRESS).processing).toEqual(["mail-owned"]);
+  });
+
+  test("is consumed when the run ended before the replay kept it", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const baseDir = await makeTempDir("owned-ended-");
+    await writeWorkingRunLog(baseDir, [
+      { ...runStarted(), consumedDeliveryKey: await keyOf("mail-owned") },
+    ]);
+    await takeMail(inbox, baseDir, "mail-owned", 1);
+    const replaying = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const registered = Promise.withResolvers<undefined>();
+    const consumed = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender } = await spawnSupervisor({
+      baseDir,
+      tracker: createSpawnTracker({}),
+      mailBus: createMockMailBus(),
+      ipcKeypair: await generateKeyPair(),
+      overrides: {
+        onSuspensionRegister: () => registered.resolve(undefined),
+        inboxPrimitives: {
+          ...inbox,
+          async replayProcessingToInbox(...args) {
+            replaying.resolve(undefined);
+            await release.promise;
+            return inbox.replayProcessingToInbox(...args);
+          },
+          async markConsumed(...args) {
+            const result = await inbox.markConsumed(...args);
+            consumed.resolve(undefined);
+            return result;
+          },
+        },
+      },
+    });
+    await replaying.promise;
+
+    // The run ends while the replay still decides what it took. The park sent
+    // next shows the supervisor has taken the end.
+    await firstSender.send({
+      type: "terminal.event",
+      data: { runId: RUN, seq: 1, kind: "RunCompleted", at: "test" },
+    });
+    await firstSender.send({
+      type: "park.notify",
+      data: {
+        runId: "run-marker",
+        correlationId: "corr-marker",
+        parkKind: "approval",
+      },
+    });
+    await registered.promise;
+    release.resolve(undefined);
+    await consumed.promise;
+    expect(inbox.messageIds(ADDRESS)).toEqual({
+      inbox: [],
+      processing: [],
+      consumed: ["mail-owned"],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("is consumed when the run parked before the replay kept it", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const baseDir = await makeTempDir("owned-parked-");
+    await writeWorkingRunLog(baseDir, [
+      { ...runStarted(), consumedDeliveryKey: await keyOf("mail-owned") },
+    ]);
+    await takeMail(inbox, baseDir, "mail-owned", 1);
+    const replaying = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const registered = Promise.withResolvers<undefined>();
+    const consumed = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender } = await spawnSupervisor({
+      baseDir,
+      tracker: createSpawnTracker({}),
+      mailBus: createMockMailBus(),
+      ipcKeypair: await generateKeyPair(),
+      overrides: {
+        onSuspensionRegister: () => registered.resolve(undefined),
+        inboxPrimitives: {
+          ...inbox,
+          async replayProcessingToInbox(...args) {
+            replaying.resolve(undefined);
+            await release.promise;
+            return inbox.replayProcessingToInbox(...args);
+          },
+          async markConsumed(...args) {
+            const result = await inbox.markConsumed(...args);
+            consumed.resolve(undefined);
+            return result;
+          },
+        },
+      },
+    });
+    await replaying.promise;
+
+    // The run parks while the replay still decides what it took, and the
+    // approval park sent next shows the supervisor has taken it.
+    await firstSender.send({
+      type: "park.notify",
+      data: { runId: RUN, correlationId: "corr-next", parkKind: "input" },
+    });
+    await firstSender.send({
+      type: "park.notify",
+      data: {
+        runId: "run-marker",
+        correlationId: "corr-marker",
+        parkKind: "approval",
+      },
+    });
+    await registered.promise;
+    release.resolve(undefined);
+    await consumed.promise;
+    expect(inbox.messageIds(ADDRESS)).toEqual({
+      inbox: [],
+      processing: [],
+      consumed: ["mail-owned"],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("a shutdown waits for the consume of mail a replay it waited for kept", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const baseDir = await makeTempDir("owned-shutdown-");
+    await writeWorkingRunLog(baseDir, [
+      { ...runStarted(), consumedDeliveryKey: await keyOf("mail-owned") },
+    ]);
+    await takeMail(inbox, baseDir, "mail-owned", 1);
+    const replaying = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const registered = Promise.withResolvers<undefined>();
+    const writesWaited = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender } = await spawnSupervisor({
+      baseDir,
+      tracker: createSpawnTracker({}),
+      mailBus: createMockMailBus(),
+      ipcKeypair: await generateKeyPair(),
+      overrides: {
+        onSuspensionRegister: () => registered.resolve(undefined),
+        onShutdownWait: (waiting) => {
+          if (waiting === "writes") writesWaited.resolve(undefined);
+        },
+        inboxPrimitives: {
+          ...inbox,
+          async replayProcessingToInbox(...args) {
+            replaying.resolve(undefined);
+            await release.promise;
+            return inbox.replayProcessingToInbox(...args);
+          },
+          async markConsumed(...args) {
+            // The consume lands only once the shutdown waits for it.
+            await writesWaited.promise;
+            return inbox.markConsumed(...args);
+          },
+        },
+      },
+    });
+    await replaying.promise;
+    await firstSender.send({
+      type: "terminal.event",
+      data: { runId: RUN, seq: 1, kind: "RunCompleted", at: "test" },
+    });
+    await firstSender.send({
+      type: "park.notify",
+      data: {
+        runId: "run-marker",
+        correlationId: "corr-marker",
+        parkKind: "approval",
+      },
+    });
+    await registered.promise;
+
+    const shutdown = supervisor.shutdown();
+    release.resolve(undefined);
+    await shutdown;
+    expect(inbox.messageIds(ADDRESS).consumed).toEqual(["mail-owned"]);
+  });
+
+  test("a turn the run took stays in processing/ across a recycle", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const { supervisor, baseDir, tracker, ipcKeypair, replays } =
+      await setupOwned({ inbox });
+    // The run took a follow-up mail as its next turn.
+    await writeWorkingRunLog(baseDir, [
+      { ...runStarted(), consumedDeliveryKey: await keyOf("mail-owned") },
+      {
+        type: "SignalReceived",
+        signalName: "turn",
+        signalId: await keyOf("mail-turn"),
+        payload: null,
+      },
+    ]);
+    await takeMail(inbox, baseDir, "mail-turn", 2);
+
+    const recycled = supervisor.recycle({ reason: "owned-mail" });
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recycled;
+    expect(replays.at(-1)).toMatchObject({
+      replayedKeys: [],
+      retainedIdentities: [await keyOf("mail-owned"), await keyOf("mail-turn")],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("a respawn that cannot read the run's log leaves the mail the run took in processing/", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    let readFails = false;
+    const { supervisor, tracker, ipcKeypair, replays } = await setupOwned({
+      inbox,
+      repoStore: (baseDir) =>
+        new Proxy(createStubRepoStore(baseDir, { writeTree: true }), {
+          get(target, prop, receiver) {
+            if (prop !== "openCommittedReads") {
+              return Reflect.get(target, prop, receiver);
+            }
+            return async (
+              ...args: Parameters<RepoStore["openCommittedReads"]>
+            ) => {
+              const reads = await target.openCommittedReads(...args);
+              if (reads === null) return null;
+              return {
+                ...reads,
+                async listDir(relPath: string) {
+                  if (readFails && relPath === `runs/${RUN}`) {
+                    throw new Error("EIO: read failed");
+                  }
+                  return reads.listDir(relPath);
+                },
+              };
+            };
+          },
+        }),
+    });
+
+    readFails = true;
+    const recycled = supervisor.recycle({ reason: "unreadable-run" });
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recycled;
+
+    // The replay runs before the replacement spawns, and it did not.
+    expect(replays).toHaveLength(1);
+    expect(inbox.messageIds(ADDRESS)).toMatchObject({
+      inbox: [],
+      processing: ["mail-owned"],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  const respawns: [
+    string,
+    (
+      supervisor: WorkflowSupervisor,
+      first: FakeChild,
+    ) => Promise<unknown> | undefined,
+  ][] = [
+    ["recycle", (supervisor) => supervisor.recycle({ reason: "owned-mail" })],
+    [
+      "crash",
+      (_supervisor, first) => {
+        first.eventChildToSupervisor.close();
+        first.childToSupervisor.close();
+        first.resolveExit?.(1);
+        return undefined;
+      },
+    ],
+  ];
+  test.each(respawns)(
+    "a turn kept across a %s is consumed when the run parks in the new child",
+    async (_case, respawn) => {
+      const inbox = createMemoryInboxPrimitives();
+      let consumed = 0;
+      const consumes = createChangeNotifier();
+      const { supervisor, baseDir, tracker, ipcKeypair } = await setupOwned({
+        inbox,
+        respawnBackoffInitialMs: 0,
+        inboxPrimitives: {
+          async markConsumed(...args) {
+            const result = await inbox.markConsumed(...args);
+            consumed += 1;
+            consumes.notify();
+            return result;
+          },
+        },
+      });
+      const first = tracker.children[0];
+      if (first === undefined) throw new Error("first child missing");
+      // Only the respawn's replay finds the turn the run took.
+      await writeWorkingRunLog(baseDir, [
+        { ...runStarted(), consumedDeliveryKey: await keyOf("mail-owned") },
+        {
+          type: "SignalReceived",
+          signalName: "turn",
+          signalId: await keyOf("mail-turn"),
+          payload: null,
+        },
+      ]);
+      await takeMail(inbox, baseDir, "mail-turn", 2);
+
+      const respawned = respawn(supervisor, first);
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      const secondSender = await driveReady(second, ipcKeypair);
+      await respawned;
+      await secondSender.send({
+        type: "park.notify",
+        data: { runId: RUN, correlationId: "corr-next", parkKind: "input" },
+      });
+      await consumes.until(() => consumed === 2);
+      expect(inbox.messageIds(ADDRESS)).toEqual({
+        inbox: [],
+        processing: [],
+        consumed: ["mail-owned", "mail-turn"],
+      });
+
+      await supervisor.shutdown();
+    },
+  );
+
+  test("a turn the crashed child's last write records stays in processing/", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const baseDir = await makeTempDir("owned-late-write-");
+    const writing = Promise.withResolvers<undefined>();
+    const land = Promise.withResolvers<undefined>();
+    const respawnWaits = Promise.withResolvers<undefined>();
+    const replays: Awaited<
+      ReturnType<InboxPrimitives["replayProcessingToInbox"]>
+    >[] = [];
+    const replayed = createChangeNotifier();
+    const tracker = createSpawnTracker({});
+    const ipcKeypair = await generateKeyPair();
+    const base = createStubRepoStore(baseDir, { writeTree: true });
+    const { supervisor, firstSender } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      overrides: {
+        respawnBackoffInitialMs: 0,
+        onRespawnWait: (waiting) => {
+          if (waiting === "writes") respawnWaits.resolve(undefined);
+        },
+        // The child's write that records the run took its next turn.
+        repoStore: new Proxy(base, {
+          get(target, prop, receiver) {
+            if (prop !== "writeTreePreservingPrefix")
+              return Reflect.get(target, prop, receiver);
+            return async () => {
+              writing.resolve(undefined);
+              await land.promise;
+              await writeWorkingRunLog(baseDir, [
+                runStarted(),
+                {
+                  type: "SignalReceived",
+                  signalName: "turn",
+                  signalId: await keyOf("mail-turn"),
+                  payload: null,
+                },
+              ]);
+              return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
+            };
+          },
+        }),
+        inboxPrimitives: {
+          ...inbox,
+          async replayProcessingToInbox(...args) {
+            const result = await inbox.replayProcessingToInbox(...args);
+            replays.push(result);
+            replayed.notify();
+            return result;
+          },
+        },
+      },
+    });
+    await replayed.until(() => replays.length === 1);
+    await takeMail(inbox, baseDir, "mail-turn", 1);
+    await sendChildWrite(firstSender, "turn-write");
+    await writing.promise;
+
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(1);
+    await respawnWaits.promise;
+    land.resolve(undefined);
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await replayed.until(() => replays.length === 2);
+    expect(replays[1]).toMatchObject({
+      replayedKeys: [],
+      retainedIdentities: [await keyOf("mail-turn")],
+    });
+    expect(inbox.messageIds(ADDRESS)).toEqual({
+      inbox: [],
+      processing: ["mail-turn"],
+      consumed: [],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  // A run that has ended never parks again, so a failed consume is retried
+  // on a timer; one already consumed is dropped.
+  describe("a failed consume", () => {
+    const logs = createLogCapture();
+    beforeAll(() => {
+      logs.install();
+    });
+    afterAll(() => {
+      logs.restore();
+    });
+    beforeEach(() => {
+      logs.reset();
+    });
+
+    async function setupFailing(
+      consumeWith: (
+        inbox: ReturnType<typeof createMemoryInboxPrimitives>,
+      ) => InboxPrimitives["markConsumed"],
+    ) {
+      const inbox = createMemoryInboxPrimitives();
+      const markConsumed = consumeWith(inbox);
+      const retries: (() => void)[] = [];
+      const retried = createChangeNotifier();
+      const harness = await setupOwned({
+        inbox,
+        inboxPrimitives: { markConsumed: (...args) => markConsumed(...args) },
+        // The retry backoffs are a second and then four; other timers stay
+        // real.
+        setTimer: (callback, ms) => {
+          if (ms !== 1_000 && ms !== 4_000) return setTimeout(callback, ms);
+          retries.push(callback);
+          retried.notify();
+          return callback;
+        },
+      });
+      await harness.firstSender.send({
+        type: "park.notify",
+        data: { runId: RUN, correlationId: "corr-next", parkKind: "input" },
+      });
+      return { ...harness, inbox, retries, retried };
+    }
+
+    test("is retried without the run parking again", async () => {
+      let calls = 0;
+      const consumed = Promise.withResolvers<undefined>();
+      const owned = await setupFailing((inbox) => async (...args) => {
+        calls += 1;
+        if (calls === 1) throw new Error("the claim-check write failed");
+        const result = await inbox.markConsumed(...args);
+        consumed.resolve(undefined);
+        return result;
+      });
+      await owned.retried.until(() => owned.retries.length === 1);
+      owned.retries[0]?.();
+      await consumed.promise;
+      expect(owned.inbox.messageIds(ADDRESS).consumed).toEqual(["mail-owned"]);
+
+      await owned.supervisor.shutdown();
+    });
+
+    test("gives up after its last retry and leaves the mail in processing/", async () => {
+      const owned = await setupFailing(() => async () => {
+        throw new Error("the claim-check write keeps failing");
+      });
+      await owned.retried.until(() => owned.retries.length === 1);
+      owned.retries[0]?.();
+      await owned.retried.until(() => owned.retries.length === 2);
+      owned.retries[1]?.();
+      await logs.waitForError(`gave up consuming ${await keyOf("mail-owned")}`);
+      expect(owned.retries).toHaveLength(2);
+      expect(owned.inbox.messageIds(ADDRESS)).toEqual({
+        inbox: [],
+        processing: ["mail-owned"],
+        consumed: [],
+      });
+
+      await owned.supervisor.shutdown();
+    });
+
+    test("is not retried for mail something else already consumed", async () => {
+      let calls = 0;
+      const called = Promise.withResolvers<undefined>();
+      const owned = await setupFailing((inbox) => async (...args) => {
+        calls += 1;
+        // Something else consumes it first.
+        await inbox.markConsumed(...args);
+        try {
+          return await inbox.markConsumed(...args);
+        } finally {
+          called.resolve(undefined);
+        }
+      });
+      await called.promise;
+      // A respawn replays, and so starts its child, only once the old child's
+      // writes, this consume among them, have settled.
+      const recycled = owned.supervisor.recycle({ reason: "consume settled" });
+      await owned.tracker.awaitChildren(2);
+      const second = owned.tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      expect(calls).toBe(1);
+      expect(owned.retries).toEqual([]);
+      await driveReady(second, owned.ipcKeypair);
+      await recycled;
+
+      await owned.supervisor.shutdown();
+    });
   });
 });
