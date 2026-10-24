@@ -5372,6 +5372,7 @@ function skipEvents(
       stepId: skip.stepId,
       attempt: 1,
       input: { ref: skip.inputRef },
+      skip: true,
     },
     completion(fresh.lastSeq + 2),
   ];

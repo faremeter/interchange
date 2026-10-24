@@ -194,4 +194,34 @@ describe("emitSkipClosure leaf-first ordering", () => {
     expect(invoked).not.toContain("e1");
     expect(invoked).not.toContain("e2");
   });
+
+  test("only a pruned step's start is marked a skip", async () => {
+    const def = defineWorkflow({
+      id: "gate-marked",
+      trigger: { type: "manual" },
+      steps: {
+        g: gate({
+          when: { from: "trigger.payload" },
+          then: "keep",
+          else: "e1",
+        }),
+        keep: step({ agent: agent("keep"), after: ["g"] }),
+        e1: step({ agent: agent("e1"), after: ["g"] }),
+        e2: step({ agent: agent("e2"), after: ["e1"] }),
+      },
+    });
+    const { env, repoStore } = buildEnv(def, async () => ({ output: null }));
+    const run = runtimeRun(def, env, { runId: "r", triggerPayload: true });
+    expect((await run.complete).terminalStatus).toBe("completed");
+
+    const starts = (await repoStore.read("r")).flatMap((event) =>
+      event.kind === "StepStarted" ? [[event.stepId, event.skip ?? false]] : [],
+    );
+    expect(Object.fromEntries(starts)).toEqual({
+      g: false,
+      keep: false,
+      e1: true,
+      e2: true,
+    });
+  });
 });

@@ -76,6 +76,11 @@ export interface StepStarted extends EventBase {
   stepId: StepId;
   attempt: AttemptId;
   input: { ref: string };
+  /**
+   * Set when a branch decision resolved the step without running it. A skip
+   * is written by the step that decided, so a host hold does not stop it.
+   */
+  skip?: true;
 }
 
 export interface StepCompleted extends EventBase {
