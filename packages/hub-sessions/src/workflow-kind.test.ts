@@ -22,42 +22,11 @@ import type {
   RepoId,
   ValidatePushResult,
 } from "./repo-store";
+import { validatePushArgs } from "./repo-store/validate-push.test-helpers";
 
 const REF = "refs/heads/main";
 
 const HUB_PRINCIPAL: Principal = { kind: "hub" };
-const noPriorBlob = async (): Promise<Uint8Array | null> => null;
-const noPriorDir = async (): Promise<string[]> => [];
-
-function makeReadBlob(
-  files: Record<string, string>,
-): (path: string) => Promise<Uint8Array> {
-  return async (path) => {
-    const body = files[path];
-    if (body === undefined) {
-      throw new Error(`readBlob: ${path} not found`);
-    }
-    return new TextEncoder().encode(body);
-  };
-}
-
-function makeListDir(
-  files: Record<string, string>,
-): (path: string) => Promise<string[]> {
-  return async (path) => {
-    const prefix = path === "" ? "" : `${path}/`;
-    const names = new Set<string>();
-    for (const p of Object.keys(files)) {
-      if (prefix !== "" && !p.startsWith(prefix)) continue;
-      const rest = p.slice(prefix.length);
-      if (rest.length === 0) continue;
-      const slash = rest.indexOf("/");
-      names.add(slash === -1 ? rest : rest.substring(0, slash));
-    }
-    return Array.from(names);
-  };
-}
-
 function uniqueRepoId(prefix: string): RepoId {
   const id = `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
   return { kind: "workflow", id };
@@ -80,16 +49,14 @@ describe("workflowKindHandler.validatePush", () => {
     const files = {
       ".gitignore": "",
     };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [".gitignore"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await workflowKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toMatch(
@@ -103,19 +70,14 @@ describe("workflowKindHandler.validatePush", () => {
       [WORKFLOW_JSON_PATH]: validWorkflowJSON(),
       [CAPABILITY_DECLARATIONS_JSON_PATH]: JSON.stringify({ declarations: [] }),
     };
-    const result = await workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths: [
-        WORKFLOW_JSON_PATH,
-        CAPABILITY_DECLARATIONS_JSON_PATH,
-      ],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await workflowKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toMatch(
@@ -540,16 +502,15 @@ describe("workflowKindHandler.validatePush codebase shape", () => {
     topLevelTreePaths: string[],
     files: Record<string, string>,
   ): Promise<ValidatePushResult> {
-    return workflowKindHandler.validatePush({
-      repoId,
-      ref: REF,
-      topLevelTreePaths,
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    return workflowKindHandler.validatePush(
+      validatePushArgs({
+        repoId,
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+        topLevelTreePaths,
+      }),
+    );
   }
 
   test("accepts a single-package codebase with a contained entry", async () => {

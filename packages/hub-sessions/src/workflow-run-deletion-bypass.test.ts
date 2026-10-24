@@ -11,65 +11,25 @@
 import { describe, test, expect } from "bun:test";
 import { workflowRunKindHandler } from "./workflow-run-kind";
 import type { Principal } from "./repo-store";
+import { validatePushArgs } from "./repo-store/validate-push.test-helpers";
 
 const REF = "refs/heads/events";
 const HUB: Principal = { kind: "hub" };
-
-function makeReadBlob(files: Record<string, string>) {
-  return async (path: string): Promise<Uint8Array> => {
-    const body = files[path];
-    if (body === undefined) throw new Error(`readBlob: ${path} not found`);
-    return new TextEncoder().encode(body);
-  };
-}
-
-function makeListDir(files: Record<string, string>) {
-  return async (path: string): Promise<string[]> => {
-    const prefix = path === "" ? "" : `${path}/`;
-    const names = new Set<string>();
-    for (const p of Object.keys(files)) {
-      if (prefix !== "" && !p.startsWith(prefix)) continue;
-      const rest = p.slice(prefix.length);
-      if (rest.length === 0) continue;
-      const slash = rest.indexOf("/");
-      names.add(slash === -1 ? rest : rest.substring(0, slash));
-    }
-    return Array.from(names);
-  };
-}
-
-function topLevels(files: Record<string, string>): string[] {
-  const names = new Set<string>();
-  for (const p of Object.keys(files)) {
-    const slash = p.indexOf("/");
-    names.add(slash === -1 ? p : p.substring(0, slash));
-  }
-  return Array.from(names);
-}
-
-function makePriorReadBlob(files: Record<string, string>) {
-  return async (path: string): Promise<Uint8Array | null> => {
-    const body = files[path];
-    if (body === undefined) return null;
-    return new TextEncoder().encode(body);
-  };
-}
 
 async function validate(
   prospective: Record<string, string>,
   prior: Record<string, string>,
   principal: Principal = HUB,
 ) {
-  return workflowRunKindHandler.validatePush({
-    repoId: { kind: "workflow-run", id: "dep-1" },
-    ref: REF,
-    principal,
-    topLevelTreePaths: topLevels(prospective),
-    readBlob: makeReadBlob(prospective),
-    listDir: makeListDir(prospective),
-    priorReadBlob: makePriorReadBlob(prior),
-    priorListDir: makeListDir(prior),
-  });
+  return workflowRunKindHandler.validatePush(
+    validatePushArgs({
+      repoId: { kind: "workflow-run", id: "dep-1" },
+      ref: REF,
+      principal,
+      files: prospective,
+      priorFiles: prior,
+    }),
+  );
 }
 
 describe("workflow-run validatePush: deletion-bypass surface", () => {

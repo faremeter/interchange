@@ -20,13 +20,11 @@ import type {
   Principal,
   ValidatePushResult,
 } from "./repo-store";
+import { validatePushArgs } from "./repo-store/validate-push.test-helpers";
 
 const REF = "refs/heads/main";
 
 const HUB_PRINCIPAL: Principal = { kind: "hub" };
-const noPriorBlob = async (): Promise<Uint8Array | null> => null;
-const noPriorDir = async (): Promise<string[]> => [];
-
 function uniqueRepoId(): RepoId {
   return {
     kind: "package-registry",
@@ -100,31 +98,6 @@ async function makeMultiPackageTarball(
 }
 
 type FileMap = Record<string, Uint8Array>;
-
-function makeReadBlob(
-  files: FileMap,
-): (relPath: string) => Promise<Uint8Array> {
-  return async (relPath) => {
-    const body = files[relPath];
-    if (body === undefined) throw new Error(`readBlob: ${relPath} not found`);
-    return body;
-  };
-}
-
-function makeListDir(files: FileMap): (path: string) => Promise<string[]> {
-  return async (relPath) => {
-    const prefix = relPath === "" ? "" : `${relPath}/`;
-    const names = new Set<string>();
-    for (const p of Object.keys(files)) {
-      if (prefix !== "" && !p.startsWith(prefix)) continue;
-      const rest = p.slice(prefix.length);
-      if (rest.length === 0) continue;
-      const slash = rest.indexOf("/");
-      names.add(slash === -1 ? rest : rest.substring(0, slash));
-    }
-    return Array.from(names);
-  };
-}
 
 describe("asTarballEntry", () => {
   test("accepts a safe filename", () => {
@@ -213,31 +186,27 @@ describe("packageRegistryKindHandler.validatePush", () => {
     const files: FileMap = {
       ".gitignore": new TextEncoder().encode("node_modules\n"),
     };
-    const result = await packageRegistryKindHandler.validatePush({
-      repoId: uniqueRepoId(),
-      ref: REF,
-      topLevelTreePaths: [".gitignore"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await packageRegistryKindHandler.validatePush(
+      validatePushArgs({
+        repoId: uniqueRepoId(),
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result).toEqual({ ok: true });
   });
 
   test("rejects an unexpected top-level entry", async () => {
     const files: FileMap = { "stray.json": new TextEncoder().encode("{}") };
-    const result = await packageRegistryKindHandler.validatePush({
-      repoId: uniqueRepoId(),
-      ref: REF,
-      topLevelTreePaths: ["stray.json"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await packageRegistryKindHandler.validatePush(
+      validatePushArgs({
+        repoId: uniqueRepoId(),
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
     expect(result.reason).toContain("unexpected top-level entry");
@@ -248,16 +217,14 @@ describe("packageRegistryKindHandler.validatePush", () => {
     const files: FileMap = {
       "tarballs/tool-a-2.0.0.tgz": bytes,
     };
-    const result = await packageRegistryKindHandler.validatePush({
-      repoId: uniqueRepoId(),
-      ref: REF,
-      topLevelTreePaths: ["tarballs"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await packageRegistryKindHandler.validatePush(
+      validatePushArgs({
+        repoId: uniqueRepoId(),
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result).toEqual({ ok: true });
   });
 
@@ -266,16 +233,14 @@ describe("packageRegistryKindHandler.validatePush", () => {
     const files: FileMap = {
       "tarballs/has spaces.tgz": bytes,
     };
-    const result = await packageRegistryKindHandler.validatePush({
-      repoId: uniqueRepoId(),
-      ref: REF,
-      topLevelTreePaths: ["tarballs"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await packageRegistryKindHandler.validatePush(
+      validatePushArgs({
+        repoId: uniqueRepoId(),
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
   });
 
@@ -289,16 +254,14 @@ describe("packageRegistryKindHandler.validatePush", () => {
       "tarballs/dup-1.0.0-a.tgz": aBytes,
       "tarballs/dup-1.0.0-b.tgz": bBytes,
     };
-    const result = await packageRegistryKindHandler.validatePush({
-      repoId: uniqueRepoId(),
-      ref: REF,
-      topLevelTreePaths: ["tarballs"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await packageRegistryKindHandler.validatePush(
+      validatePushArgs({
+        repoId: uniqueRepoId(),
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
     expect(result.reason).toContain("multiple tarballs publishing dup@1.0.0");
@@ -309,16 +272,14 @@ describe("packageRegistryKindHandler.validatePush", () => {
     const files: FileMap = {
       "tarballs/bad-1.0.0.tgz": bytes,
     };
-    const result = await packageRegistryKindHandler.validatePush({
-      repoId: uniqueRepoId(),
-      ref: REF,
-      topLevelTreePaths: ["tarballs"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await packageRegistryKindHandler.validatePush(
+      validatePushArgs({
+        repoId: uniqueRepoId(),
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
     expect(result.reason).toContain("package.json failed validation");
@@ -337,16 +298,14 @@ describe("packageRegistryKindHandler.validatePush", () => {
     const files: FileMap = {
       "tarballs/ambiguous-1.0.0.tgz": bytes,
     };
-    const result = await packageRegistryKindHandler.validatePush({
-      repoId: uniqueRepoId(),
-      ref: REF,
-      topLevelTreePaths: ["tarballs"],
-      readBlob: makeReadBlob(files),
-      listDir: makeListDir(files),
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
-    });
+    const result = await packageRegistryKindHandler.validatePush(
+      validatePushArgs({
+        repoId: uniqueRepoId(),
+        ref: REF,
+        principal: HUB_PRINCIPAL,
+        files,
+      }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");
     expect(result.reason).toContain("multiple top-level package.json entries");
@@ -364,23 +323,22 @@ describe("packageRegistryKindHandler.validatePush", () => {
     const files: FileMap = {
       "tarballs/tool-a-1.0.0.tgz": bytes,
     };
-    const realListDir = makeListDir(files);
-    const result = await packageRegistryKindHandler.validatePush({
+    const args = validatePushArgs({
       repoId: uniqueRepoId(),
       ref: REF,
-      topLevelTreePaths: ["tarballs"],
-      readBlob: makeReadBlob(files),
+      principal: HUB_PRINCIPAL,
+      files,
+    });
+    const result = await packageRegistryKindHandler.validatePush({
+      ...args,
       listDir: async (treePath) => {
         if (treePath === "tarballs") {
           const err = new Error("induced EACCES on tarballs subtree");
           Object.assign(err, { code: "EACCES" });
           throw err;
         }
-        return realListDir(treePath);
+        return args.listDir(treePath);
       },
-      principal: HUB_PRINCIPAL,
-      priorReadBlob: noPriorBlob,
-      priorListDir: noPriorDir,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected reject");

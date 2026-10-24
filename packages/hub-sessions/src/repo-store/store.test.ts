@@ -1205,6 +1205,81 @@ describe("RepoStore", () => {
     expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
   });
 
+  test("receivePack rejects a pushed tree that repeats an entry name and does not advance the ref", async () => {
+    // A repeated name lets a name lookup and a scan resolve different
+    // entries, so validation could check one while a reader serves the
+    // other. The handler accepts everything, so only the admission gate
+    // can reject.
+    const buildDir = await makeTempDir("repeated-name-build-");
+    await git.init({ fs, dir: buildDir, defaultBranch: "main" });
+    const firstOid = await git.writeBlob({
+      fs,
+      dir: buildDir,
+      blob: new TextEncoder().encode("first\n"),
+    });
+    const secondOid = await git.writeBlob({
+      fs,
+      dir: buildDir,
+      blob: new TextEncoder().encode("second\n"),
+    });
+    const subTreeOid = await git.writeTree({
+      fs,
+      dir: buildDir,
+      tree: [
+        { mode: "100644", path: "a.md", oid: firstOid, type: "blob" },
+        { mode: "100644", path: "a.md", oid: secondOid, type: "blob" },
+      ],
+    });
+    const rootTreeOid = await git.writeTree({
+      fs,
+      dir: buildDir,
+      tree: [{ mode: "040000", path: "deploy", oid: subTreeOid, type: "tree" }],
+    });
+    const commitSha = await git.writeCommit({
+      fs,
+      dir: buildDir,
+      commit: {
+        tree: rootTreeOid,
+        parent: [],
+        message: "repeated name",
+        author: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+        committer: {
+          name: "t",
+          email: "t@t.dev",
+          timestamp: 0,
+          timezoneOffset: 0,
+        },
+      },
+    });
+    const { packfile } = await git.packObjects({
+      fs,
+      dir: buildDir,
+      oids: [commitSha, rootTreeOid, subTreeOid, firstOid, secondOid],
+    });
+    if (packfile === undefined) {
+      throw new Error("repeated name: packObjects returned no packfile");
+    }
+
+    const storeDir = await makeTempDir("repeated-name-store-");
+    const store = createRepoStore({
+      dataDir: storeDir,
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    await expect(
+      store.receivePack(principal, repoId, REF, packfile, commitSha, null),
+    ).rejects.toThrow(
+      /^path_violation: repeated name at deploy\/a\.md is not allowed/,
+    );
+    expect(await store.resolveRef(principal, repoId, REF)).toBeNull();
+  });
+
   test("receivePack admits a legitimate tree with an exec bit and a subtree", async () => {
     const buildDir = await makeTempDir("legit-push-build-");
     await git.init({ fs, dir: buildDir, defaultBranch: "main" });
@@ -3564,6 +3639,78 @@ describe("RepoStore pack receive reads", () => {
     }
   });
 
+  test("a receive resolves each path in a wide directory with one lookup, not a scan", async () => {
+    // Validation reads every blob of one wide directory by path. A scan
+    // of the directory per path reads about WIDE^2 / 2 tree entries; a
+    // lookup by name reads each entry a fixed number of times.
+    const WIDE = 2000;
+    const files: Record<string, string> = {};
+    for (let i = 0; i < WIDE; i++) {
+      files[`wide/f${String(i)}.txt`] = `body ${String(i)}`;
+    }
+    const sourceStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-reads-wide-source-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
+      files,
+      message: "wide",
+    });
+    const { pack } = await sourceStore.createPack(principal, repoId, REF);
+
+    let read = 0;
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-reads-wide-target-"),
+      signingKey,
+      handlers: {
+        "agent-state": {
+          kind: "agent-state",
+          directoryPrefix: "repos-under-test",
+          async validatePush({
+            listDir,
+            readBlob,
+          }): Promise<ValidatePushResult> {
+            for (const name of await listDir("wide")) {
+              await readBlob(`wide/${name}`);
+              read += 1;
+            }
+            return { ok: true };
+          },
+          onRefUpdated() {
+            return;
+          },
+        },
+      },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+
+    // Count each access to an entry of a tree that git.readTree returns.
+    let entryReads = 0;
+    const readTree = git.readTree.bind(git);
+    const spy = spyOn(git, "readTree").mockImplementation(async (args) => {
+      const result = await readTree(args);
+      const counted = new Proxy(result.tree, {
+        get(target, key, receiver) {
+          if (typeof key === "string" && /^[0-9]+$/.test(key)) entryReads += 1;
+          return Reflect.get(target, key, receiver) as unknown;
+        },
+      });
+      return { ...result, tree: counted };
+    });
+    try {
+      await store.receivePack(principal, repoId, REF, pack, commitSha, null);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(read).toBe(WIDE);
+    // The wide tree is read once, then indexed by name and listed a few
+    // times; a scan per path would read about 2,000,000 entries.
+    expect(entryReads).toBeLessThanOrEqual(6 * WIDE);
+  });
+
   test("a received pack's validatePush gets the same listDirOids as a writeTree of the same tree", async () => {
     const listedPaths = ["", "deploy", "deploy/sub", "absent"];
     type Listing = { name: string; oid: string; type: string }[];
@@ -3573,9 +3720,6 @@ describe("RepoStore pack receive reads", () => {
         kind: "agent-state",
         directoryPrefix: "repos-under-test",
         async validatePush({ listDirOids }): Promise<ValidatePushResult> {
-          if (listDirOids === undefined) {
-            return { ok: false, reason: "no listDirOids" };
-          }
           for (const p of listedPaths) out.set(p, await listDirOids(p));
           return { ok: true };
         },
