@@ -614,9 +614,10 @@ export function createWorkflowRoutes({
             ) {
               return "allocation-unavailable" as const;
             }
-            // Pack receipt advances Git while holding this allocation lock. Read
-            // again after acquiring it so the preflight result cannot go stale
-            // while this transaction waits behind a terminal pack.
+            // Pack receipt moves the Git ref only while it holds this
+            // allocation lock; it validates the pack before it takes the lock.
+            // Read again after acquiring it so the preflight result cannot go
+            // stale while this transaction waits behind a terminal pack.
             if (
               (await readRunLifecycle(anchorRunId, tenant.domain, runId)) !==
               "live"

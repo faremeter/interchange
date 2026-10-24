@@ -210,7 +210,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       tempDirs.push(dataDir);
       const agentRepoStore: AgentRepoStore = {
         ...createAgentRepoStore({ dataDir, signingKey }),
-        receiveWorkflowRunPack: async () => [],
+        // A prepared pack, not an already_applied one, so the receive takes
+        // the allocation lock and runs its locked rechecks.
+        prepareWorkflowRunPack: async () => ({
+          kind: "prepared",
+          commit: async () => ({ kind: "applied", newlyTerminalRuns: [] }),
+          discard: () => Promise.resolve(),
+        }),
       };
       return createHubSessionLookups({
         db: h.db,

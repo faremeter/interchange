@@ -23,19 +23,70 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
+import type { PackRejectReason } from "@intx/types/sidecar";
 import { signalName } from "@intx/types/signals";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
-import type { SidecarLookups } from "./ws/sidecar-events";
+import { RepoRemovedDuringReceiveError } from "./repo-store";
+import type {
+  SidecarLookups,
+  WorkflowRunPackSource,
+} from "./ws/sidecar-events";
 import { createWorkflowDispatchProjection } from "./workflow-dispatch-projection";
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
 import { readWorkflowRunRefTips } from "./workflow-run-restore";
 import { projectTerminalRun } from "./workflow-run-terminal-projection";
 
 const logger = getLogger(["hub", "lookups"]);
+
+// The one definition of a source that owns the deployment's allocation. The
+// unlocked pre-check and the locked recheck of a workflow-run receive both
+// use it, so the two cannot disagree.
+function sourceOwnsAllocation(
+  allocation: typeof sidecarAllocation.$inferSelect | undefined,
+  source: WorkflowRunPackSource,
+  anchorRunId: string,
+): boolean {
+  return (
+    allocation !== undefined &&
+    allocation.id === source.allocationId &&
+    allocation.anchorRunId === source.anchorRunId &&
+    source.anchorRunId === anchorRunId &&
+    allocation.status === "allocated" &&
+    allocation.generation === source.generation &&
+    allocation.ensureAcceptedGeneration === source.generation
+  );
+}
+
+// Maps a failure from either step of a workflow-run receive, prepare or the
+// locked commit, to the reason the sidecar gets, and logs it.
+function packFailureReason(
+  workflowRunRepoId: string,
+  err: unknown,
+): PackRejectReason {
+  if (err instanceof RepoRemovedDuringReceiveError) {
+    // The repository was removed during the receive, so the pack is not
+    // at fault.
+    logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: the repository was removed during the receive`;
+    return "path_violation";
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.startsWith("path_violation")) {
+    logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${msg}`;
+    return "path_violation";
+  }
+  // Mirror the agent-state branch's catch-all: any other failure
+  // (transaction failures, filesystem races, a staged pack whose bytes do
+  // not match its tip, kind-handler diagnostics surfaced as Error messages,
+  // etc.) becomes a structured `corrupt` rejection so the sender can
+  // re-push, and the underlying error is logged so the cause stays traceable
+  // on the hub side.
+  logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: ${msg}`;
+  return "corrupt";
+}
 
 export type HubSessionLookupsDeps = {
   db: DB["db"];
@@ -82,8 +133,10 @@ export function createHubSessionLookups(
 
     async isWorkflowRunHistoryFinal(source) {
       return db.transaction(async (tx) => {
-        // Match receive admission: the allocation lock waits for any writer
-        // already advancing Git; a terminal anchor rejects every later receive.
+        // Match receive admission: a receive moves Git only while it holds
+        // the allocation lock, so this lock waits for any receive that is
+        // moving Git. A terminal anchor rejects every later receive at its
+        // locked recheck, including one that is still validating now.
         const [allocation] = await tx
           .select()
           .from(sidecarAllocation)
@@ -410,6 +463,19 @@ export function createHubSessionLookups(
         logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source address has no live deployment anchor`;
         return { accepted: false, reason: "path_violation" as const };
       }
+      // An unlocked read, so a fenced or stale source is turned away
+      // before it stages or validates anything. It decides nothing on its
+      // own: the same check runs again under the allocation lock before
+      // Git moves.
+      const [unlockedAllocation] = await db
+        .select()
+        .from(sidecarAllocation)
+        .where(eq(sidecarAllocation.anchorRunId, anchor.id))
+        .limit(1);
+      if (!sourceOwnsAllocation(unlockedAllocation, source, anchor.id)) {
+        logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source connection does not own the deployment's current allocation`;
+        return { accepted: false, reason: "path_violation" as const };
+      }
       // The repository must exist before the row does. Recovery reads a
       // missing repository as lost history and a ref-less one as a receive
       // that never advanced Git, so a crash between the two must leave the
@@ -421,6 +487,29 @@ export function createHubSessionLookups(
         logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: cannot initialize repository: ${msg}`;
         return { accepted: false, reason: "corrupt" as const };
       }
+      // Validation is the slow step, so it runs with no DB transaction open
+      // and no allocation lock held. It cannot move Git, so a failure here
+      // needs no pending row.
+      let prepared;
+      try {
+        prepared = await agentRepoStore.prepareWorkflowRunPack(
+          repoId,
+          pack,
+          ref,
+          commitSha,
+        );
+      } catch (err) {
+        return {
+          accepted: false,
+          reason: packFailureReason(workflowRunRepoId, err),
+        };
+      }
+      // The ref already holds this tip, so Git stays as it is. The receive
+      // that moved the ref to this tip runs both projections after its own
+      // ref write. When it fails after that write, recovery projects from
+      // Git.
+      if (prepared.kind === "already_applied") return { accepted: true };
+
       // Recorded before Git can advance: Git acceptance and the run-status
       // projection below are not atomic, and this row is the only durable
       // trace of a projection that fails after the ref moves. It is removed
@@ -428,10 +517,11 @@ export function createHubSessionLookups(
       // reached a final decision; otherwise lifecycle recovery reconciles the
       // deployment from Git and removes it.
       const pendingId = generateId("workflowPendingProjection");
-      historyReceives.begin(pendingId);
       let newlyTerminalRuns;
+      let applied;
       let reachedGit = false;
       try {
+        historyReceives.begin(pendingId);
         try {
           await pendingProjections.open(pendingId, anchor.id);
         } catch (err) {
@@ -446,19 +536,11 @@ export function createHubSessionLookups(
             .where(eq(sidecarAllocation.anchorRunId, anchor.id))
             .limit(1)
             .for("update");
-          if (
-            allocation === undefined ||
-            allocation.id !== source.allocationId ||
-            allocation.anchorRunId !== source.anchorRunId ||
-            source.anchorRunId !== anchor.id ||
-            allocation.status !== "allocated" ||
-            allocation.generation !== source.generation ||
-            allocation.ensureAcceptedGeneration !== source.generation
-          ) {
+          if (!sourceOwnsAllocation(allocation, source, anchor.id)) {
             await pendingProjections.close(pendingId, tx);
             return {
               rejected:
-                "source connection does not own the deployment's current allocation",
+                "source connection lost the deployment's current allocation after the unlocked check",
             } as const;
           }
           // Recheck under the lock: the lifecycle service records a run's
@@ -481,47 +563,45 @@ export function createHubSessionLookups(
             } as const;
           }
 
-          // A release advances this same row. Keep its lock until the
-          // repository ref has advanced so ownership cannot change after
-          // validation but before the old worker's pack becomes authoritative.
+          // A release advances this same row, and the lifecycle service
+          // records an outcome under its lock. Keep the lock until the ref
+          // decision is made, so ownership cannot change between the
+          // rechecks above and the ref write.
           reachedGit = true;
-          return {
-            runs: await agentRepoStore.receiveWorkflowRunPack(
-              { kind: "workflow-run", id: workflowRunRepoId },
-              pack,
-              ref,
-              commitSha,
-            ),
-          } as const;
+          return { committed: await prepared.commit() } as const;
         });
         if ("rejected" in received) {
           logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${received.rejected}`;
           return { accepted: false, reason: "path_violation" as const };
         }
-        newlyTerminalRuns = received.runs;
+        applied = received.committed.kind === "applied";
+        newlyTerminalRuns =
+          received.committed.kind === "applied"
+            ? received.committed.newlyTerminalRuns
+            : [];
       } catch (err) {
         // A receive that reached Git keeps its pending row: the ref may have
         // advanced before the failure, so only a Git read can prove nothing was
-        // lost. One that failed earlier provably left Git unchanged.
-        if (!reachedGit)
+        // lost. One that failed earlier provably left Git unchanged, and so
+        // did a commit that found its repository removed: that check runs
+        // before the publish. A row kept for a removed repository would make
+        // recovery report lost history on every pass.
+        if (!reachedGit || err instanceof RepoRemovedDuringReceiveError)
           await pendingProjections.close(pendingId).catch((cause: unknown) => {
             logger.warn`Cannot clear pending projection for ${anchor.id}: ${cause instanceof Error ? cause.message : String(cause)}`;
           });
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.startsWith("path_violation")) {
-          logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${msg}`;
-          return { accepted: false, reason: "path_violation" as const };
-        }
-        // Mirror the agent-state branch's catch-all: any other failure from
-        // the fenced receive (transaction failures, filesystem races,
-        // kind-handler diagnostics surfaced as Error messages, etc.) becomes
-        // a structured `corrupt` rejection so the sender can re-push, and the
-        // underlying error is logged so the cause stays traceable on the hub
-        // side.
-        logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: ${msg}`;
-        return { accepted: false, reason: "corrupt" as const };
+        return {
+          accepted: false,
+          reason: packFailureReason(workflowRunRepoId, err),
+        };
       } finally {
         historyReceives.end(pendingId);
+        // A no-op after a publish. A failed removal leaves only a staging
+        // directory, which the next receive for this repository in a new
+        // Hub process removes, so it must not change the verdict.
+        await prepared.discard().catch((cause: unknown) => {
+          logger.warn`Cannot discard the staged pack for ${workflowRunRepoId}: ${cause instanceof Error ? cause.message : String(cause)}`;
+        });
       }
 
       // The substrate has already durably advanced the git ref by the time it
@@ -565,6 +645,13 @@ export function createHubSessionLookups(
           logger.warn`Cannot clear pending projection for ${anchor.id}: ${msg}`;
         }
       }
+
+      // Another receive moved the ref to or past this tip while this one
+      // validated, so Git did not change here. That receive runs the dispatch
+      // projection after its own ref write, and the periodic dispatch
+      // projection pass retries any anchor that still has unsettled
+      // dispatches.
+      if (!applied) return { accepted: true };
 
       // Git acceptance survives projection failures. The terminal recovery pass
       // retries these outcomes even after the allocation has been released.

@@ -60,6 +60,7 @@ import {
   readWorkflowRunRefTips,
   type AgentRepoStore,
   type InstallAndApproveResult,
+  type NewlyTerminalRun,
   type RepoId,
   type SidecarCredentialIdentity,
   type SidecarLookups,
@@ -719,6 +720,34 @@ function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+/**
+ * Prepare and commit a workflow-run pack in one call, for a test that
+ * only needs the pack applied. Returns the runs the pack drove terminal,
+ * and none when the ref already held the pack tip at either step.
+ *
+ * Duplicated in packages/hub-sessions/src/agent-repo.test-helpers.ts:
+ * the composite tsconfig boundary between packages/hub-sessions and
+ * tests/ stops either tree from importing the other's test helpers.
+ * Change both.
+ */
+export async function applyWorkflowRunPack(
+  store: Pick<AgentRepoStore, "prepareWorkflowRunPack">,
+  repoId: RepoId,
+  pack: Uint8Array,
+  ref: string,
+  commitSha: string,
+): Promise<NewlyTerminalRun[]> {
+  const prepared = await store.prepareWorkflowRunPack(
+    repoId,
+    pack,
+    ref,
+    commitSha,
+  );
+  if (prepared.kind === "already_applied") return [];
+  const result = await prepared.commit();
+  return result.kind === "applied" ? result.newlyTerminalRuns : [];
+}
+
 export type HubEnv = {
   server: ReturnType<typeof Bun.serve>;
   router: ReturnType<typeof createSidecarRouter>;
@@ -949,7 +978,8 @@ export async function startHub(
           interrupt.armed = false;
           interrupt.interruptedRef = ref;
           interrupt.interruptedCommitSha = commitSha;
-          await agentRepoStore.receiveWorkflowRunPack(
+          await applyWorkflowRunPack(
+            agentRepoStore,
             repoId,
             pack,
             ref,
@@ -960,7 +990,8 @@ export async function startHub(
           return { accepted: true };
         }
         try {
-          await agentRepoStore.receiveWorkflowRunPack(
+          await applyWorkflowRunPack(
+            agentRepoStore,
             repoId,
             pack,
             ref,

@@ -6,7 +6,6 @@ import { createRepoStore } from "./repo-store";
 import type {
   AuthorizeFn,
   LocalRepoStore,
-  NewlyTerminalRun,
   PreparedReceivePack,
   RepoId,
 } from "./repo-store";
@@ -86,15 +85,17 @@ export type AgentRepoStore = {
   ): Promise<void>;
 
   /**
-   * Receive and store a workflow-run pack from a sidecar. Indexes the
-   * pack objects and updates the ref without materializing a working
-   * tree.
+   * Stage and validate a workflow-run pack from a sidecar, and return the
+   * prepared receive. The validation holds no repo lock, so a caller can
+   * take a lock of its own around `commit()` alone. `commit()` takes the
+   * repo lock, publishes the pack, and moves the ref without materializing
+   * a working tree.
    *
    * The sidecar's pushes can land out of order, so a pack whose tip the
    * ref already holds (its tip or a first-parent ancestor) changes
-   * nothing and returns no runs; the ref keeps the newer tip. Any other
-   * pack goes through the usual receive checks, and one on a new line
-   * of history is not rejected for that.
+   * nothing: prepare or `commit()` answers `already_applied`, and the ref
+   * keeps the newer tip. Any other pack goes through the usual receive
+   * checks, and one on a new line of history is not rejected for that.
    *
    * `repoId.kind` must be `"workflow-run"`. Stamps a
    * `WorkflowRunSupervisorPrincipal` whose `anchorRunId` equals
@@ -103,25 +104,9 @@ export type AgentRepoStore = {
    * sidecar-originated run-event commits (the supervisor lives on the
    * sidecar and is the actual signer of the run events).
    *
-   * Returns the runs the pack drove terminal, surfaced from the
-   * substrate's per-commit validation so a caller can flip the run's
-   * DB state without re-deriving terminal-ness.
-   */
-  receiveWorkflowRunPack(
-    repoId: RepoId,
-    pack: Uint8Array,
-    ref: string,
-    commitSha: string,
-  ): Promise<NewlyTerminalRun[]>;
-
-  /**
-   * Stage and validate a workflow-run pack from a sidecar, with no repo
-   * lock held while it validates, and return the prepared receive. Its
-   * `commit()` takes the repo lock, publishes the pack, and moves the
-   * ref. Because the validation holds no repo lock, a caller can take a
-   * lock of its own around `commit()` alone. The rules of
-   * `receiveWorkflowRunPack` for a tip the ref already holds apply at
-   * both steps, and the principal and `repoId.kind` rules are the same.
+   * An applied `commit()` returns the runs the pack drove terminal,
+   * surfaced from the substrate's per-commit validation so a caller can
+   * flip the run's DB state without re-deriving terminal-ness.
    */
   prepareWorkflowRunPack(
     repoId: RepoId,
@@ -299,23 +284,6 @@ export function createAgentRepoStore(config: {
         commitSha,
         expectedOldSha,
       );
-    },
-
-    async receiveWorkflowRunPack(incomingRepoId, pack, ref, commitSha) {
-      if (incomingRepoId.kind !== "workflow-run") {
-        throw new Error(
-          `AgentRepoStore.receiveWorkflowRunPack requires repoId.kind === "workflow-run", got ${JSON.stringify(incomingRepoId.kind)}`,
-        );
-      }
-      const prepared = await prepareWorkflowRunPack(
-        incomingRepoId,
-        pack,
-        ref,
-        commitSha,
-      );
-      if (prepared.kind === "already_applied") return [];
-      const result = await prepared.commit();
-      return result.kind === "applied" ? result.newlyTerminalRuns : [];
     },
 
     prepareWorkflowRunPack,

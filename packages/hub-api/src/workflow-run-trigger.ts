@@ -534,7 +534,8 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           return "allocation-unavailable" as const;
         }
         // The allocation lock serializes this read with authoritative pack
-        // advancement. An absent run is still valid for its first mail.
+        // advancement: a receive moves the Git ref only while it holds this
+        // lock. An absent run is still valid for its first mail.
         if (
           (await readRunLifecycle(anchorRunId, tenant.domain, runId)) ===
           "terminal"

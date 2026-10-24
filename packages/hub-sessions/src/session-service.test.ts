@@ -317,14 +317,6 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
     ) {
       calls.push({ method: "receiveAgentStatePack", args: [repoId.id] });
     },
-    async receiveWorkflowRunPack(
-      _repoId: { kind: "workflow-run"; id: string },
-      _pack: Uint8Array,
-      _ref: string,
-      _commitSha: string,
-    ) {
-      throw new Error("mock: receiveWorkflowRunPack not implemented");
-    },
     async prepareWorkflowRunPack() {
       throw new Error("mock: prepareWorkflowRunPack not implemented");
     },

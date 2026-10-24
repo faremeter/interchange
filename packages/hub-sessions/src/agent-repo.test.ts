@@ -6,6 +6,7 @@ import git from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
 import { createDeployPack } from "@intx/storage-isogit/node";
 import { createAgentRepoStore, DEFAULT_GC_KINDS } from "./agent-repo";
+import { applyWorkflowRunPack } from "./agent-repo.test-helpers";
 import type { WorkflowRunSupervisorPrincipal } from "./workflow-run-kind";
 import type { KeyPair } from "@intx/types/runtime";
 
@@ -305,7 +306,7 @@ describe("AgentRepoStore", () => {
     expect(stateExists).toBe(false);
   });
 
-  test("receiveWorkflowRunPack indexes a workflow-run genesis pack and updates the ref", async () => {
+  test("prepareWorkflowRunPack and commit index a workflow-run genesis pack and update the ref", async () => {
     const dataDir = await makeTempDir("agent-repo-wfr-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
@@ -328,12 +329,17 @@ describe("AgentRepoStore", () => {
 
     const wfrRef = "refs/heads/events";
     const anchorRunId = "dep-wfr-happy";
-    await store.receiveWorkflowRunPack(
+    const prepared = await store.prepareWorkflowRunPack(
       { kind: "workflow-run", id: anchorRunId },
       pack,
       wfrRef,
       wfrCommit,
     );
+    if (prepared.kind !== "prepared") throw new Error("expected prepared");
+    expect(await prepared.commit()).toEqual({
+      kind: "applied",
+      newlyTerminalRuns: [],
+    });
 
     const repoDir = path.join(dataDir, "workflow-runs", anchorRunId);
     const resolved = await git.resolveRef({
@@ -344,7 +350,7 @@ describe("AgentRepoStore", () => {
     expect(resolved).toBe(wfrCommit);
   });
 
-  describe("receiveWorkflowRunPack with a tip the ref already holds", () => {
+  describe("a workflow-run receive with a tip the ref already holds", () => {
     // Commits on one line over a `.gitignore`-only tree, which the
     // workflow-run kind handler accepts; `packAt` packs the line up to
     // one of them.
@@ -425,11 +431,12 @@ describe("AgentRepoStore", () => {
 
       const olderPack = await line.packAt(first);
       const newerPack = await line.packAt(last);
-      await store.receiveWorkflowRunPack(repoId, olderPack, wfrRef, first);
-      await store.receiveWorkflowRunPack(repoId, newerPack, wfrRef, last);
+      await applyWorkflowRunPack(store, repoId, olderPack, wfrRef, first);
+      await applyWorkflowRunPack(store, repoId, newerPack, wfrRef, last);
       const packsBefore = await packFiles(repoDir);
 
-      const runs = await store.receiveWorkflowRunPack(
+      const runs = await applyWorkflowRunPack(
+        store,
         repoId,
         olderPack,
         wfrRef,
@@ -453,15 +460,10 @@ describe("AgentRepoStore", () => {
       if (tip === undefined) throw new Error("line");
 
       const pack = await line.packAt(tip);
-      await store.receiveWorkflowRunPack(repoId, pack, wfrRef, tip);
+      await applyWorkflowRunPack(store, repoId, pack, wfrRef, tip);
       const packsBefore = await packFiles(repoDir);
 
-      const runs = await store.receiveWorkflowRunPack(
-        repoId,
-        pack,
-        wfrRef,
-        tip,
-      );
+      const runs = await applyWorkflowRunPack(store, repoId, pack, wfrRef, tip);
 
       expect(runs).toEqual([]);
       expect(await git.resolveRef({ fs, dir: repoDir, ref: wfrRef })).toBe(tip);
@@ -483,14 +485,15 @@ describe("AgentRepoStore", () => {
       if (oldTip === undefined || newTip === undefined) throw new Error("line");
 
       const oldPack = await oldLine.packAt(oldTip);
-      await store.receiveWorkflowRunPack(repoId, oldPack, wfrRef, oldTip);
-      await store.receiveWorkflowRunPack(
+      await applyWorkflowRunPack(store, repoId, oldPack, wfrRef, oldTip);
+      await applyWorkflowRunPack(
+        store,
         repoId,
         await newLine.packAt(newTip),
         wfrRef,
         newTip,
       );
-      await store.receiveWorkflowRunPack(repoId, oldPack, wfrRef, oldTip);
+      await applyWorkflowRunPack(store, repoId, oldPack, wfrRef, oldTip);
 
       expect(await git.resolveRef({ fs, dir: repoDir, ref: wfrRef })).toBe(
         oldTip,
@@ -506,7 +509,8 @@ describe("AgentRepoStore", () => {
       const [, middle, last] = line.commits;
       if (middle === undefined || last === undefined) throw new Error("line");
 
-      await store.receiveWorkflowRunPack(
+      await applyWorkflowRunPack(
+        store,
         repoId,
         await line.packAt(last),
         wfrRef,
@@ -548,7 +552,7 @@ describe("AgentRepoStore", () => {
         first,
       );
       if (prepared.kind !== "prepared") throw new Error("expected prepared");
-      await store.receiveWorkflowRunPack(repoId, newerPack, wfrRef, last);
+      await applyWorkflowRunPack(store, repoId, newerPack, wfrRef, last);
       const packsBefore = await packFiles(repoDir);
 
       expect(await prepared.commit()).toEqual({ kind: "already_applied" });
@@ -566,14 +570,15 @@ describe("AgentRepoStore", () => {
       const [first, , last] = line.commits;
       if (first === undefined || last === undefined) throw new Error("line");
 
-      await createAgentRepoStore({
-        dataDir,
-        signingKey,
-      }).receiveWorkflowRunPack(repoId, await line.packAt(last), wfrRef, last);
-      const runs = await createAgentRepoStore({
-        dataDir,
-        signingKey,
-      }).receiveWorkflowRunPack(
+      await applyWorkflowRunPack(
+        createAgentRepoStore({ dataDir, signingKey }),
+        repoId,
+        await line.packAt(last),
+        wfrRef,
+        last,
+      );
+      const runs = await applyWorkflowRunPack(
+        createAgentRepoStore({ dataDir, signingKey }),
         repoId,
         await line.packAt(first),
         wfrRef,
@@ -595,7 +600,8 @@ describe("AgentRepoStore", () => {
       const [first, , last] = line.commits;
       if (first === undefined || last === undefined) throw new Error("line");
 
-      await store.receiveWorkflowRunPack(
+      await applyWorkflowRunPack(
+        store,
         repoId,
         await line.packAt(last),
         wfrRef,
@@ -616,7 +622,7 @@ describe("AgentRepoStore", () => {
     });
   });
 
-  test("receiveWorkflowRunPack rejects packs whose repoId.kind is not workflow-run", async () => {
+  test("prepareWorkflowRunPack rejects packs whose repoId.kind is not workflow-run", async () => {
     const dataDir = await makeTempDir("agent-repo-wfr-wrong-kind-");
     const store = createAgentRepoStore({ dataDir, signingKey });
 
@@ -634,14 +640,14 @@ describe("AgentRepoStore", () => {
     const { pack } = await createDeployPack(sourceDir, "refs/heads/main");
 
     await expect(
-      store.receiveWorkflowRunPack(
+      store.prepareWorkflowRunPack(
         { kind: "agent-state", id: "agent-x" },
         pack,
         "refs/heads/events",
         commit,
       ),
     ).rejects.toThrow(
-      /receiveWorkflowRunPack requires repoId\.kind === "workflow-run"/,
+      /prepareWorkflowRunPack requires repoId\.kind === "workflow-run"/,
     );
   });
 

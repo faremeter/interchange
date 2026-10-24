@@ -269,9 +269,10 @@ export async function resolveApproval(
           "provisioned approval dispatch is missing its durable lifecycle reader",
         );
       }
-      // Pack receipt advances the committed Git ref while holding this same
-      // allocation lock. Re-read lifecycle evidence after acquiring the fence
-      // so a terminal pack cannot race between this check and the claim.
+      // Pack receipt moves the committed Git ref only while it holds this
+      // same allocation lock; it validates the pack before it takes the lock.
+      // Re-read lifecycle evidence after acquiring the fence so a terminal
+      // pack cannot race between this check and the claim.
       const lifecycles = await readRunLifecycles(
         approval.agentAddress,
         approval.anchorRunId,
