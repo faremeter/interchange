@@ -843,6 +843,13 @@ export interface WorkflowRun {
  */
 export interface RuntimeWorkflowRun extends WorkflowRun {
   /**
+   * Resolves `true` once the run's `RunStarted` is durable, at once for a run
+   * whose log already holds one, and `false` when the run settles without
+   * one. A host uses it to tell when the trigger it delivered can no longer
+   * be lost.
+   */
+  started: Promise<boolean>;
+  /**
    * Stop the run for a `CancelRequested` its log already holds. The request
    * is durable, so the run aborts even if the child cancellation cascade
    * fails; the run's cancelling branch retries that cascade.

@@ -58,6 +58,7 @@ import {
   isRunFlushFailure,
   markRepoWriteFailure,
   whenRunFlushFails,
+  whenRunDurable,
   reloadState as reloadStateInChain,
   runAfterDiscardingBuffer,
 } from "./commit-chain";
@@ -218,15 +219,25 @@ export function runtimeRun(
       cancelController.abort();
     });
   }
+  const started = Promise.withResolvers<boolean>();
+  const markStarted = (committed: boolean) => {
+    started.resolve(committed);
+  };
   const completePromise = executeRun(
     definition,
     env,
     runId,
     cancelController,
     options,
+    markStarted,
   );
+  const settled = () => {
+    markStarted(false);
+  };
+  void completePromise.then(settled, settled);
   return {
     runId,
+    started: started.promise,
     complete: completePromise,
     async cancel(origin, reason) {
       // Route through `commit` so cancel races against in-flight
@@ -303,6 +314,7 @@ async function executeRun(
   runId: string,
   cancelController: AbortController,
   options: RuntimeRunOptions,
+  onStarted: (committed: boolean) => void,
 ): Promise<RunResult> {
   try {
     return await executeRunBody(
@@ -311,6 +323,7 @@ async function executeRun(
       runId,
       cancelController,
       options,
+      onStarted,
     );
   } catch (cause) {
     // The body escaped. A nested `commitDurable` would wait on this
@@ -608,6 +621,7 @@ async function executeRunBody(
   runId: string,
   cancelController: AbortController,
   options: RuntimeRunOptions,
+  onStarted: (committed: boolean) => void,
 ): Promise<RunResult> {
   const initialEvents = options.resumeFromEvents ?? [];
 
@@ -947,6 +961,9 @@ async function executeRunBody(
     ]);
   }
 
+  // A log that already holds RunStarted is durable; one issued here becomes
+  // durable with the next flush.
+  let issuedStartSeq: number | undefined;
   // Issue RunStarted only if the state machine has not seen it.
   if (state.phase === "pending") {
     const event: WorkflowEvent = {
@@ -962,6 +979,7 @@ async function executeRunBody(
     };
     try {
       state = await commit(env, runId, event);
+      issuedStartSeq = state.lastSeq;
     } catch (cause) {
       // This block is reached only when canonical state was `pending`
       // (an empty or RunStarted-less log), so seedless recovery
@@ -981,6 +999,15 @@ async function executeRunBody(
         throw cause;
       }
     }
+  }
+  if (issuedStartSeq !== undefined) {
+    void whenRunDurable(runId, issuedStartSeq).then(() => {
+      onStarted(true);
+    });
+  } else {
+    // A log that held RunStarted already, unless a cancellation beat this
+    // one and the run settles cancelled without it.
+    onStarted(state.definitionHash !== undefined);
   }
 
   const inFlight = new Set<string>();
