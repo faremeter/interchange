@@ -7,6 +7,7 @@ import type {
   AuthorizeFn,
   LocalRepoStore,
   NewlyTerminalRun,
+  PreparedReceivePack,
   RepoId,
 } from "./repo-store";
 import {
@@ -113,6 +114,22 @@ export type AgentRepoStore = {
     commitSha: string,
   ): Promise<NewlyTerminalRun[]>;
 
+  /**
+   * Stage and validate a workflow-run pack from a sidecar, with no repo
+   * lock held while it validates, and return the prepared receive. Its
+   * `commit()` takes the repo lock, publishes the pack, and moves the
+   * ref. Because the validation holds no repo lock, a caller can take a
+   * lock of its own around `commit()` alone. The rules of
+   * `receiveWorkflowRunPack` for a tip the ref already holds apply at
+   * both steps, and the principal and `repoId.kind` rules are the same.
+   */
+  prepareWorkflowRunPack(
+    repoId: RepoId,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+  ): Promise<PreparedReceivePack>;
+
   /** Raw 32-byte Ed25519 public key used to sign deploy commits. */
   getSigningPublicKey(): Uint8Array;
 
@@ -202,6 +219,30 @@ export function createAgentRepoStore(config: {
 
   const hub: AgentStateHubPrincipal = { kind: "hub" };
 
+  async function prepareWorkflowRunPack(
+    incomingRepoId: RepoId,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+  ): Promise<PreparedReceivePack> {
+    if (incomingRepoId.kind !== "workflow-run") {
+      throw new Error(
+        `AgentRepoStore.prepareWorkflowRunPack requires repoId.kind === "workflow-run", got ${JSON.stringify(incomingRepoId.kind)}`,
+      );
+    }
+    const principal: WorkflowRunSupervisorPrincipal = {
+      kind: "supervisor",
+      anchorRunId: incomingRepoId.id,
+    };
+    return store.prepareReceivePack(
+      principal,
+      incomingRepoId,
+      ref,
+      pack,
+      commitSha,
+    );
+  }
+
   function repoId(agentId: string): RepoId {
     return { kind: "agent-state", id: agentId };
   }
@@ -266,21 +307,18 @@ export function createAgentRepoStore(config: {
           `AgentRepoStore.receiveWorkflowRunPack requires repoId.kind === "workflow-run", got ${JSON.stringify(incomingRepoId.kind)}`,
         );
       }
-      const principal: WorkflowRunSupervisorPrincipal = {
-        kind: "supervisor",
-        anchorRunId: incomingRepoId.id,
-      };
-      const expectedOldSha = await store.resolveRef(hub, incomingRepoId, ref);
-      return store.receivePack(
-        principal,
+      const prepared = await prepareWorkflowRunPack(
         incomingRepoId,
-        ref,
         pack,
+        ref,
         commitSha,
-        expectedOldSha,
-        { skipHeldTip: true },
       );
+      if (prepared.kind === "already_applied") return [];
+      const result = await prepared.commit();
+      return result.kind === "applied" ? result.newlyTerminalRuns : [];
     },
+
+    prepareWorkflowRunPack,
 
     getSigningPublicKey() {
       return signingKey.publicKey;

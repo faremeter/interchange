@@ -2,7 +2,7 @@ import git from "isomorphic-git";
 import { getLogger } from "@intx/log";
 import { hasCode } from "@intx/types/has-code";
 import { collectReachableObjects } from "./object-walk";
-import { publishPackAtomically } from "./pack-receive";
+import { stagePack } from "./pack-receive";
 import {
   gitBytes,
   listRepoRefs,
@@ -263,8 +263,9 @@ async function quarantineSupersededObjects(
  * callers not already under it use {@link runGC}, which acquires it. The
  * lock excludes concurrent writers, so the keep set computed from the refs
  * cannot be invalidated by a commit landing mid-pass. Retirement of a
- * superseded pack or loose object races only with unlocked readers, the same
- * window `unpublishPack` already accepts. Indexes are retired before their
+ * superseded pack or loose object races only with unlocked readers; a
+ * reader that already loaded a retired pack finishes against those bytes,
+ * and its next listing no longer finds it. Indexes are retired before their
  * packs, and every retired-but-reachable object is also in the freshly
  * published consolidated pack.
  *
@@ -313,7 +314,7 @@ export async function gcUnderLock(
     );
   }
   const transferId = `gc-${crypto.randomUUID().replace(/-/g, "")}`;
-  await publishPackAtomically(runtime, dir, result.packfile, transferId);
+  await (await stagePack(runtime, dir, result.packfile, transferId)).publish();
 
   const trashDir = await quarantineSupersededObjects(
     runtime,

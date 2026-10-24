@@ -5,6 +5,8 @@ export type {
   InitRepoOpts,
   KindHandler,
   NewlyTerminalRun,
+  PackCommitResult,
+  PreparedReceivePack,
   PriorDeltaReads,
   Principal,
   RefEntry,
@@ -18,7 +20,7 @@ export type {
   WriteResult,
   WriteTreePreservingPrefixArgs,
 } from "./types";
-export { UserPrincipal } from "./types";
+export { RepoRemovedDuringReceiveError, UserPrincipal } from "./types";
 export {
   authorizeUserPrincipal,
   type AuthorizeUserPrincipalArgs,

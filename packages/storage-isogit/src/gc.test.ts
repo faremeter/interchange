@@ -4,12 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { initAgentRepo } from "./node";
-import {
-  applyPack,
-  receivePackObjects,
-  type CommitVerifier,
-  type TreeValidator,
-} from "./node";
+import { applyPack, type CommitVerifier } from "./node";
 import { collectReachableObjects } from "./node";
 import {
   createIsogitStorage,
@@ -130,24 +125,6 @@ describe("runGC", () => {
       { "deploy/three.txt": "third deploy" },
       "deploy-3",
     );
-
-    const rejectAll: TreeValidator = () => ({ ok: false, reason: "nope" });
-    const rejectedSource = await sourceRepo({ "evil.txt": "bad" });
-    const rejectedPack = await packFor(
-      rejectedSource.dir,
-      rejectedSource.tipOids,
-    );
-    await expect(
-      receivePackObjects(
-        dir,
-        rejectedPack,
-        "refs/heads/main",
-        rejectedSource.tip,
-        "reject-1",
-        mainTip,
-        rejectAll,
-      ),
-    ).rejects.toThrow(/^path_violation/);
 
     const unsignedSource = await sourceRepo({ "deploy/x.txt": "unsigned" });
     const unsignedPack = await packFor(

@@ -461,11 +461,8 @@ export interface RepoStore {
    * from the committed path shape. Empty for kinds and packs that
    * produce none.
    *
-   * With `skipHeldTip`, a pack whose tip the ref already holds (the
-   * ref's tip or a first-parent ancestor of it) is accepted without
-   * moving the ref, and yields no runs. A sender whose pushes can
-   * finish out of order sets it, so an older push that lands last
-   * cannot move the ref back.
+   * The pack is validated before it enters the repo's pack directory, so
+   * a rejected pack is never visible to any reader.
    */
   receivePack(
     principal: Principal,
@@ -474,7 +471,6 @@ export interface RepoStore {
     pack: Uint8Array,
     commitSha: string,
     expectedOldSha: string | null,
-    opts?: { skipHeldTip?: boolean },
   ): Promise<NewlyTerminalRun[]>;
   createPack(
     principal: Principal,
@@ -635,3 +631,46 @@ export type RepoStoreSubscribeEvent = {
   readonly oldSha: string | null;
   readonly newSha: string;
 };
+
+/**
+ * The outcome of a prepared receive's `commit()`. `already_applied`
+ * means the ref already held the pack's tip, so nothing changed.
+ */
+export type PackCommitResult =
+  | { readonly kind: "already_applied" }
+  | {
+      readonly kind: "applied";
+      readonly newlyTerminalRuns: NewlyTerminalRun[];
+    };
+
+/**
+ * A pack that `prepareReceivePack` staged and validated. `commit()`
+ * publishes it and moves the ref; `discard()` removes it.
+ * `already_applied` means the ref already held the pack's tip when the
+ * receive began, so nothing was staged.
+ */
+export type PreparedReceivePack =
+  | { readonly kind: "already_applied" }
+  | {
+      readonly kind: "prepared";
+      commit(): Promise<PackCommitResult>;
+      discard(): Promise<void>;
+    };
+
+/**
+ * A prepared receive found that its repository was removed after the
+ * pack was staged. The pack is not at fault, and the error lets a caller
+ * tell this case apart from a fault in the pack.
+ */
+export class RepoRemovedDuringReceiveError extends Error {
+  readonly repoId: RepoId;
+
+  constructor(repoId: RepoId, options?: ErrorOptions) {
+    super(
+      `repo_removed: ${repoId.kind}/${repoId.id} was removed during a pack receive`,
+      options,
+    );
+    this.name = "RepoRemovedDuringReceiveError";
+    this.repoId = repoId;
+  }
+}

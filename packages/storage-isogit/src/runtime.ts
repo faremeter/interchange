@@ -105,6 +105,36 @@ function callFs(
   });
 }
 
+export type PromiseFsMethods = Record<
+  FsMethod,
+  (...args: unknown[]) => Promise<unknown>
+>;
+
+/**
+ * Promise-returning forms of every method isomorphic-git calls on `fs`,
+ * for a wrapper client that changes a few of them. Each call looks the
+ * method up on `fs` again, so the wrapper also sees a method that is
+ * replaced after the wrapper is made.
+ */
+export function promiseFsMethods(fs: FsClient): PromiseFsMethods {
+  const call =
+    (method: FsMethod) =>
+    (...args: unknown[]) =>
+      callFs(fs, method, args);
+  return {
+    lstat: call("lstat"),
+    mkdir: call("mkdir"),
+    readFile: call("readFile"),
+    readdir: call("readdir"),
+    readlink: call("readlink"),
+    rmdir: call("rmdir"),
+    stat: call("stat"),
+    symlink: call("symlink"),
+    unlink: call("unlink"),
+    writeFile: call("writeFile"),
+  };
+}
+
 function fileStat(value: unknown, method: FsMethod): FileSystemStat {
   if (typeof value !== "object" || value === null) {
     throw new TypeError(`Filesystem ${method} returned an invalid stat`);

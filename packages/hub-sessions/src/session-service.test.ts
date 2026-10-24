@@ -325,6 +325,9 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
     ) {
       throw new Error("mock: receiveWorkflowRunPack not implemented");
     },
+    async prepareWorkflowRunPack() {
+      throw new Error("mock: prepareWorkflowRunPack not implemented");
+    },
     getSigningPublicKey() {
       return new Uint8Array(32);
     },
@@ -345,6 +348,7 @@ function unusedRepoStore(): LocalRepoStore {
     writeTreePreservingPrefix: unused,
     writeTreeDelta: unused,
     receivePack: unused,
+    prepareReceivePack: unused,
     createPack: unused,
     commitPackedTip: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");

@@ -85,13 +85,21 @@ guarantee. Use absolute repository paths; relative browser paths resolve from
 runtime through the package root and own that runtime's recovery guarantees.
 
 The pack-send and pack-receive helpers (`createDeployPack`,
-`createNegotiatedPack`, `applyPack`, `receivePackObjects`) produce
+`createNegotiatedPack`, `applyPack`, `stagePack`) produce
 and consume the wire bytes that `@intx/pack-transport` chunks
 across the WebSocket. A `CommitSigner` is optional but required
 when the consumer needs every commit to carry a verifiable
 signature.
 
-Pack receivers flush an accepted pack before checkout or ref promotion. If a
+`stagePack` writes and indexes a received pack outside `objects/pack/` and
+returns a handle. The handle's `fs` reads the staged objects, so a receiver
+validates the pack before it publishes it; a rejected pack is discarded and
+never enters `objects/pack/`. A crash can leave a staged pack behind, which
+no reader scans; it stays until a caller runs `removeStagedPacks`. The hub's
+repo store does this before the first receive for a repository in each
+process.
+
+Pack receivers flush an accepted pack before ref promotion. If a
 later ref or persistence operation fails, the call rejects but retains the
 pack because the ref update may already be observable. Callers must treat that
 error as an uncertain promotion outcome rather than assuming the ref is
