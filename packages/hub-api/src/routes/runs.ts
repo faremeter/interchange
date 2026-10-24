@@ -817,7 +817,7 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "Stop a run",
       description:
-        "Durably requests cancellation of a live top-level run. Its saved cancellation retention policy controls subsequent capacity release. Poll the Location header for progress.",
+        "Durably requests cancellation of a live top-level run. Its saved cancellation retention policy controls subsequent capacity release. A run whose accepted history holds a terminal event that the Hub has not recorded yet also gets 202, and the Hub then records the run's own outcome. Poll the Location header for progress.",
       responses: {
         202: { description: "Cancellation requested" },
         404: jsonResponse("Run not found", ErrorResponse),

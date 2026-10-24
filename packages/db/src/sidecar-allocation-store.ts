@@ -671,19 +671,26 @@ function buildSidecarAllocationStore(
     );
   }
 
+  // Locks the anchor whether or not a cancellation is pending. A request
+  // takes only the anchor lock, so a caller that read without it could
+  // see no request, let one commit, and then fail the run under it.
   async function hasPendingCancellation(
     tx: DBExecutor,
     anchorRunId: string,
   ): Promise<boolean> {
-    const cancellation = await tx.query.workflowRun.findFirst({
-      columns: { id: true },
-      where: and(
-        eq(workflowRun.id, anchorRunId),
-        inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
-        isNotNull(workflowRun.cancellationRequestedAt),
-      ),
-    });
-    return cancellation !== undefined;
+    const [anchor] = await tx
+      .select({
+        status: workflowRun.status,
+        cancellationRequestedAt: workflowRun.cancellationRequestedAt,
+      })
+      .from(workflowRun)
+      .where(eq(workflowRun.id, anchorRunId))
+      .for("no key update");
+    return (
+      anchor !== undefined &&
+      isLiveWorkflowRunStatus(anchor.status) &&
+      anchor.cancellationRequestedAt !== null
+    );
   }
 
   async function failRunningRuns(

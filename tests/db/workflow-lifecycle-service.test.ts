@@ -1942,7 +1942,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await lifecycle.requestCancellation(tenantId, runId, "Stop")).toBe(
         "pending",
       );
-      expect(reads).toBe(3);
+      expect(reads).toBe(0);
       expect(
         await h.db.query.workflowRun.findFirst({
           where: eq(workflowRun.id, runId),
@@ -2901,6 +2901,222 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const second = await service().getStatus(tenantId, runId);
       expect(second?.cancellationDeadline).toBe(first?.cancellationDeadline);
       expect(second?.cancellationReason).toBe("Operator request");
+    });
+
+    // Bounds a request that must not wait on a lock, so a regression
+    // fails here instead of at the test runner's timeout.
+    async function withinSeconds<T>(work: Promise<T>): Promise<T> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          work,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              reject(new Error("The request waited on a lock"));
+            }, 5_000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    test("a cancellation request does not wait on a held allocation row", async () => {
+      // Old unclaimed rows are what a Hub restart finds after a receive
+      // whose projection did not finish.
+      await leavePending();
+      const locked = Promise.withResolvers<undefined>();
+      const unlock = Promise.withResolvers<undefined>();
+      // A receive holds the allocation row. The key-share lock on the
+      // anchor stands in for a child run insert's foreign-key check, which
+      // a FOR UPDATE request would wait on.
+      const blocker = h.db.transaction(async (tx) => {
+        await tx
+          .select()
+          .from(sidecarAllocation)
+          .where(eq(sidecarAllocation.id, allocationId))
+          .for("update");
+        await tx
+          .select()
+          .from(workflowRun)
+          .where(eq(workflowRun.id, runId))
+          .for("key share");
+        locked.resolve(undefined);
+        await unlock.promise;
+      });
+      void blocker.catch(locked.reject);
+      await locked.promise;
+      const lifecycle = service({
+        runReader: {
+          readLatestRunEvents: async () => {
+            throw new Error("A cancellation request read Git");
+          },
+        },
+      });
+      try {
+        expect(
+          await withinSeconds(
+            lifecycle.requestCancellation(tenantId, runId, "Operator request"),
+          ),
+        ).toBe("pending");
+      } finally {
+        unlock.resolve(undefined);
+        await blocker;
+      }
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, runId),
+        }),
+      ).toMatchObject({
+        status: "running",
+        cancellationReason: "Operator request",
+      });
+    });
+
+    test("a request for a run whose accepted history ended keeps that outcome", async () => {
+      complete("RunCompleted");
+      await leavePending();
+
+      expect(
+        await service().requestCancellation(
+          tenantId,
+          runId,
+          "Operator request",
+        ),
+      ).toBe("pending");
+      await service().reconcileNext();
+
+      expect((await service().getStatus(tenantId, runId))?.status).toBe(
+        "completed",
+      );
+    });
+
+    test("a request that waits on the anchor keeps an earlier cancellation", async () => {
+      const locked = Promise.withResolvers<number>();
+      const unlock = Promise.withResolvers<undefined>();
+      const expiredAt = new Date(current.getTime() - 500);
+      const blocker = h.db.transaction(async (tx) => {
+        await tx
+          .select()
+          .from(workflowRun)
+          .where(eq(workflowRun.id, runId))
+          .for("update");
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+        const pid = backend?.["pid"];
+        if (typeof pid !== "number") throw new Error("Missing backend PID");
+        locked.resolve(pid);
+        await unlock.promise;
+        await tx
+          .update(workflowRun)
+          .set({
+            cancellationRequestedAt: expiredAt,
+            cancellationDeadline: expiredAt,
+            cancellationReason: "Expired",
+          })
+          .where(eq(workflowRun.id, runId));
+      });
+      void blocker.catch(locked.reject);
+      const blockerPid = await locked.promise;
+      let settled = false;
+      const request = service()
+        .requestCancellation(tenantId, runId, "Operator request")
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        for (;;) {
+          const [waiters] = await h.db.execute(sql`
+            select count(*)::int as count from pg_stat_activity
+            where ${blockerPid} = any(pg_blocking_pids(pid))
+          `);
+          if (waiters?.["count"] === 1) break;
+          if (settled)
+            throw new Error("The request did not wait for the anchor lock");
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      } finally {
+        unlock.resolve(undefined);
+        await blocker;
+      }
+
+      expect(await request).toBe("pending");
+      expect(await service().getStatus(tenantId, runId)).toMatchObject({
+        cancellationReason: "Expired",
+        cancellationDeadline: expiredAt.toISOString(),
+      });
+    });
+
+    test("a capacity failure that meets a request in progress leaves the run to cancellation", async () => {
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "provisioning", ensureAcceptedGeneration: null })
+        .where(eq(sidecarAllocation.id, allocationId));
+      const locked = Promise.withResolvers<number>();
+      const unlock = Promise.withResolvers<undefined>();
+      // The request holds the anchor lock that requestCancellation takes,
+      // and commits its cancellation after the failure reaches the anchor.
+      const request = h.db.transaction(async (tx) => {
+        await tx
+          .select()
+          .from(workflowRun)
+          .where(eq(workflowRun.id, runId))
+          .for("no key update");
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+        const pid = backend?.["pid"];
+        if (typeof pid !== "number") throw new Error("Missing backend PID");
+        locked.resolve(pid);
+        await unlock.promise;
+        await tx
+          .update(workflowRun)
+          .set({
+            cancellationRequestedAt: current,
+            cancellationDeadline: current,
+            cancellationReason: "Operator request",
+          })
+          .where(eq(workflowRun.id, runId));
+      });
+      void request.catch(locked.reject);
+      const requestPid = await locked.promise;
+      const failure = createSidecarAllocationStore(
+        h.db,
+      ).failWithoutInfrastructure({
+        allocationId,
+        expectedStatus: "provisioning",
+        expectedGeneration: 1,
+        code: "capacity_failed",
+        message: "Capacity unavailable",
+        now: current,
+      });
+      let settled = false;
+      const failed = failure.finally(() => {
+        settled = true;
+      });
+      try {
+        for (;;) {
+          const [waiters] = await h.db.execute(sql`
+            select count(*)::int as count from pg_stat_activity
+            where ${requestPid} = any(pg_blocking_pids(pid))
+          `);
+          if (waiters?.["count"] === 1) break;
+          if (settled)
+            throw new Error("The capacity failure did not wait for the anchor");
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      } finally {
+        unlock.resolve(undefined);
+        await request;
+      }
+
+      expect((await failed)?.status).toBe("failed");
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, runId),
+        }),
+      ).toMatchObject({
+        status: "running",
+        failureCode: null,
+        cancellationReason: "Operator request",
+      });
     });
 
     test("later policy edits do not change a deployment's saved retention", async () => {
