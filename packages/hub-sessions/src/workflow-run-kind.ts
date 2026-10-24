@@ -171,6 +171,7 @@ import {
   authorizeUserPrincipal,
   type AuthorizeFn,
   type CommittedReads,
+  type CommittedTreeEntry,
   type KindHandler,
   type NewlyTerminalRun,
   type PriorDeltaReads,
@@ -1156,9 +1157,11 @@ async function enumerateRunParts(
         // The `<index>-<name>` shape is permissive (`.+`), so a directory
         // named e.g. `0-foo` would otherwise pass and admit an arbitrarily
         // nested subtree, breaking the one-file-per-mail-part invariant and
-        // -- on a pack-receive validation with no `listDirOids` -- driving the
-        // immutability resolver to `readBlob` a tree path and throw. A blob
-        // lists as empty; a directory lists its children.
+        // driving the immutability resolver to a tree path, which it
+        // refuses by a throw. A blob lists as empty; a directory lists its
+        // children. An empty directory also lists as empty, so this check
+        // passes it; at a path the prior tree holds, the resolver's own
+        // blob check refuses it.
         const filePath = `${messageDirPath}/${filename}`;
         if ((await listDir(filePath)).length > 0) {
           return {
@@ -1196,11 +1199,9 @@ async function validateRunPartsSubtree(args: {
   priorListDir: (path: string) => Promise<string[]>;
   readBlob: (path: string) => Promise<Uint8Array>;
   priorReadBlob: (path: string) => Promise<Uint8Array | null>;
-  listDirOids:
-    | ((path: string) => Promise<{ name: string; oid: string }[]>)
-    | undefined;
+  listDirOids: ((path: string) => Promise<CommittedTreeEntry[]>) | undefined;
   priorListDirOids:
-    | ((path: string) => Promise<{ name: string; oid: string }[]>)
+    | ((path: string) => Promise<CommittedTreeEntry[]>)
     | undefined;
   scopeRunIds: ReadonlySet<string> | undefined;
 }): Promise<ValidatePushResult> {
@@ -1806,12 +1807,16 @@ async function hashConsumedBlobOid(bytes: Uint8Array): Promise<string> {
  * falls back to hashing the entry's bytes, which preserves identical
  * semantics at O(retained) cost. Both the prior and prospective sides use
  * this; `sideLabel` distinguishes them in the missing-OID error.
+ *
+ * Every caller resolves a path that must hold a blob, so a listed entry
+ * of another type counts as absent and the resolve throws, as the hash
+ * fallback does when it reads a tree path. If a tree counted, a tree at
+ * a blob path with the same OID on both sides would pass as an unchanged
+ * blob.
  */
 function makeListingOidResolver(
   sideLabel: string,
-  listDirOids:
-    | ((path: string) => Promise<{ name: string; oid: string }[]>)
-    | undefined,
+  listDirOids: ((path: string) => Promise<CommittedTreeEntry[]>) | undefined,
   hashFallback: (blobPath: string) => Promise<string>,
 ): (blobPath: string) => Promise<string> {
   const dirOidCache = new Map<string, Map<string, string>>();
@@ -1824,7 +1829,7 @@ function makeListingOidResolver(
       if (byName === undefined) {
         byName = new Map<string, string>();
         for (const entry of await listDirOids(dir)) {
-          byName.set(entry.name, entry.oid);
+          if (entry.type === "blob") byName.set(entry.name, entry.oid);
         }
         dirOidCache.set(dir, byName);
       }
@@ -1843,7 +1848,7 @@ function makeListingOidResolver(
 function makePriorConsumedOidResolver(
   priorReadBlob: (path: string) => Promise<Uint8Array | null>,
   priorListDirOids:
-    | ((path: string) => Promise<{ name: string; oid: string }[]>)
+    | ((path: string) => Promise<CommittedTreeEntry[]>)
     | undefined,
 ): (blobPath: string) => Promise<string> {
   return makeListingOidResolver("prior", priorListDirOids, async (blobPath) => {
@@ -1879,8 +1884,8 @@ async function validateClaimCheckSubtree(
   readBlob: (path: string) => Promise<Uint8Array>,
   priorReadBlob: (path: string) => Promise<Uint8Array | null>,
   priorListDir: (path: string) => Promise<string[]>,
-  priorListDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
-  listDirOids?: (path: string) => Promise<{ name: string; oid: string }[]>,
+  priorListDirOids?: (path: string) => Promise<CommittedTreeEntry[]>,
+  listDirOids?: (path: string) => Promise<CommittedTreeEntry[]>,
 ): Promise<ValidatePushResult> {
   // Surface each consumed entry's git blob OID during enumeration
   // straight from the tree listing on both sides when the substrate

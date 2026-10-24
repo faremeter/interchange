@@ -2,7 +2,7 @@ import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import git from "isomorphic-git";
+import git, { type TreeEntry } from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
 import { collectReachableObjects } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
@@ -3979,7 +3979,7 @@ describe("workflow-run substrate — pack-path per-run scope completeness", () =
     // computeChangedPathPrefixes flags run-a (its subtree OID went
     // present->absent), putting it in scope so the deletion-direction
     // guard fires. The scoped prospective walk lists the now-absent
-    // run-a as empty -- via buildCommitTreeClosures.listDir returning []
+    // run-a as empty -- via buildTreeReadClosures.listDir returning []
     // for a missing dir -- and skips it, so the rejection surfaces as the
     // clean append-only path_violation rather than a raw substrate throw.
     const srcDir = await makeClaimCheckTempDir("wfr-drop-src-");
@@ -4053,6 +4053,102 @@ describe("workflow-run substrate — pack-path per-run scope completeness", () =
     // The clean contract reason, not a raw "is not a directory" throw.
     expect(reason).toContain("append-only");
     expect(reason).not.toContain("is not a directory");
+  });
+
+  test("a tree kept at a mail part path is rejected although its OID is unchanged", async () => {
+    // The pack path hands the handler tree listings with OIDs. An empty
+    // tree at a mail part path lists as empty, as a blob does, so the
+    // structural walk admits it. When the next commit keeps it, the
+    // immutability check must refuse the tree instead of passing it as a
+    // byte-unchanged blob by its equal OID.
+    type TreeSpec = { [name: string]: string | TreeSpec };
+    async function writeSpecTree(dir: string, spec: TreeSpec): Promise<string> {
+      const entries: TreeEntry[] = [];
+      for (const [name, value] of Object.entries(spec)) {
+        if (typeof value === "string") {
+          const oid = await git.writeBlob({
+            fs,
+            dir,
+            blob: new TextEncoder().encode(value),
+          });
+          entries.push({ mode: "100644", path: name, oid, type: "blob" });
+        } else {
+          const oid = await writeSpecTree(dir, value);
+          entries.push({ mode: "040000", path: name, oid, type: "tree" });
+        }
+      }
+      return git.writeTree({ fs, dir, tree: entries });
+    }
+    async function commitSpec(
+      dir: string,
+      spec: TreeSpec,
+      parent: string[],
+    ): Promise<string> {
+      return git.commit({
+        fs,
+        dir,
+        message: "spec",
+        author: { name: "probe", email: "probe@example.com" },
+        tree: await writeSpecTree(dir, spec),
+        parent,
+        ref: REF,
+      });
+    }
+
+    const segment = encodeURIComponent("<msg-1@host>");
+    const runA = (events: TreeSpec): TreeSpec => ({
+      ".gitignore": "",
+      [WORKFLOW_RUN_RUNS_PREFIX]: {
+        "run-a": {
+          events,
+          [WORKFLOW_RUN_PARTS_DIR]: { [segment]: { "0-photo.png": {} } },
+        },
+      },
+    });
+    const srcDir = await makeClaimCheckTempDir("wfr-tree-part-src-");
+    await git.init({ fs, dir: srcDir, defaultBranch: "events" });
+    const parent = await commitSpec(
+      srcDir,
+      runA({ "0.json": eventBody(0, "RunStarted") }),
+      [],
+    );
+    const tip = await commitSpec(
+      srcDir,
+      runA({
+        "0.json": eventBody(0, "RunStarted"),
+        "1.json": eventBody(1, "StepCompleted"),
+      }),
+      [parent],
+    );
+
+    const store = createRepoStore({
+      dataDir: await makeClaimCheckTempDir("wfr-tree-part-tgt-"),
+      signingKey: claimCheckSigningKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    const { repoId } = makeTargetStore();
+    await store.initRepo(repoId);
+    await store.receivePack(
+      HUB_PRINCIPAL,
+      repoId,
+      REF,
+      await packOids(srcDir, [parent]),
+      parent,
+      null,
+    );
+
+    await expect(
+      store.receivePack(
+        HUB_PRINCIPAL,
+        repoId,
+        REF,
+        await packOids(srcDir, [tip]),
+        tip,
+        parent,
+      ),
+    ).rejects.toThrow(/tree listing has no OID .*runs\/run-a\/parts\//);
+    expect(await store.resolveRef(HUB_PRINCIPAL, repoId, REF)).toBe(parent);
   });
 });
 
