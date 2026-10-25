@@ -32,6 +32,8 @@ import { createLoopIterationHandle } from "./loop-iteration-handle";
 import { runtimeRun } from "./run";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
 
+const noWake = (): void => undefined;
+
 const body = defineWorkflow({
   id: "handle-body",
   trigger: { type: "manual" },
@@ -104,7 +106,7 @@ describe("createLoopIterationHandle", () => {
       signalChannel: createInMemorySignalChannel(),
     });
 
-    const event = await handle.next();
+    const event = await handle.next(noWake);
     expect(event).toEqual({ kind: "terminal", terminalStatus: "completed" });
     // The body short-circuited on the terminal log; the action did NOT re-run.
     expect(runs).toBe(1);

@@ -114,3 +114,17 @@ test("dispatching control payloads preserves validation and parsed values", () =
       expect(dispatched).toEqual(combined);
   }
 });
+
+test("a quiet answer names its earliest timer as an ISO time", () => {
+  const answer = (wakeAt: string) => ({
+    type: "quiet.response",
+    data: { requestId: "quiet-1", quiet: true, wakeAt },
+  });
+  expect(
+    parseControlPayload(answer("2026-10-02T00:00:00.000Z")) instanceof
+      type.errors,
+  ).toBe(false);
+  expect(parseControlPayload(answer("tomorrow")) instanceof type.errors).toBe(
+    true,
+  );
+});

@@ -49,10 +49,19 @@ export {
   bufferedEvents,
   commitBuffered,
   dropChain,
+  flushAllBuffers,
   reloadState,
   whenRunNextBuffers,
   withRunCommitBarrier,
 } from "./commit-chain";
+export {
+  activityStarts,
+  beginDelivery,
+  isQuiet,
+  isWorking,
+  whenDelivered,
+  whenQuiet,
+} from "./activity";
 
 export {
   createSuspendableChildHandle,

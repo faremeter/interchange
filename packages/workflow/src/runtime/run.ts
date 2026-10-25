@@ -45,6 +45,7 @@ import {
   isRunDone,
   nextSchedulable,
   resumeResidualOf,
+  type StepKindLookup,
 } from "./dag";
 import {
   commit as commitDurableToChain,
@@ -72,6 +73,7 @@ import type {
 } from "./env";
 import { shouldAbortForDrain } from "./drain";
 import { bridgeAbort } from "./abort-bridge";
+import { beginWork, createIdleWait, type IdleWait, waitIdle } from "./activity";
 import {
   assertSpawnDepthWithinLimit,
   resolveMaxChildSpawnDepth,
@@ -161,6 +163,11 @@ export interface RuntimeRunOptions {
    * sign the control-plane `CancelRequested` a cascade cancel would require.
    */
   localAbort?: AbortSignal;
+  /**
+   * Called as the run settles, before it stops counting as work. A caller
+   * that waits idle on this run resumes here.
+   */
+  onSettle?: () => void;
 }
 
 /**
@@ -317,6 +324,7 @@ async function executeRun(
   options: RuntimeRunOptions,
   onStarted: (committed: boolean) => void,
 ): Promise<RunResult> {
+  const endWork = beginWork();
   try {
     return await executeRunBody(
       definition,
@@ -338,6 +346,8 @@ async function executeRun(
     // not hold dead promise chains for runs that crashed during
     // resume seeding or a stall guard.
     dropChain(runId);
+    options.onSettle?.();
+    endWork();
   }
 }
 
@@ -1094,9 +1104,14 @@ async function executeRunBody(
   // error and rethrow it; the loop stops every in-flight step before
   // the error leaves it.
   let repoWriteFailure: unknown;
+  // Whatever ends the loop's wait calls this first, while it still counts
+  // itself. Outside a wait it is a spent resume and does nothing.
+  let resumeLoop = (): void => undefined;
   // One waiter for the whole loop. A flush that already failed resolves
   // it immediately, so the next race observes it without a new registration.
-  const flushFailed = whenRunFlushFails(runId);
+  const flushFailed = whenRunFlushFails(runId, () => {
+    resumeLoop();
+  });
   function throwRememberedWriteFailure(): void {
     if (repoWriteFailure === undefined) {
       repoWriteFailure = flushFailureCause(runId);
@@ -1176,6 +1191,7 @@ async function executeRunBody(
           env.drain,
         );
         stepAborts.set(primitive.id, stepLocalAbort);
+        const endStepWork = beginWork();
         const promise = runPrimitiveSafe(
           definition,
           env,
@@ -1202,6 +1218,8 @@ async function executeRunBody(
             inFlight.delete(primitive.id);
             justSettled.add(primitive.id);
             stepAborts.delete(primitive.id);
+            resumeLoop();
+            endStepWork();
           });
         stepPromises.set(primitive.id, promise);
       }
@@ -1252,13 +1270,21 @@ async function executeRunBody(
       // Wait for at least one in-flight primitive to settle. Step
       // failures are already `StepFailed`. A parked step never settles,
       // so the flush waiter is what wakes the loop when an external
-      // writer drops the buffer.
-      await Promise.race([
-        ...Array.from(stepPromises.values()).map((p) =>
-          p.catch(() => undefined),
-        ),
-        flushFailed,
-      ]);
+      // writer drops the buffer. The loop only waits here: each step counts
+      // as work on its own. A step that settled since the last wait, or a
+      // flush that failed, ends this wait at once.
+      await waitIdle((resume) => {
+        resumeLoop = resume;
+        if (justSettled.size > 0 || flushFailureCause(runId) !== undefined) {
+          resume();
+        }
+        return Promise.race([
+          ...Array.from(stepPromises.values()).map((p) =>
+            p.catch(() => undefined),
+          ),
+          flushFailed,
+        ]);
+      });
       throwRememberedWriteFailure();
       state = await reloadState(env, runId);
       throwRememberedWriteFailure();
@@ -1546,7 +1572,7 @@ async function runPrimitive(
     case "awaitSignal":
       return runAwaitSignal(definition, env, runId, primitive, abort);
     case "sleep":
-      return runSleep(env, runId, primitive, abort);
+      return runSleep(definition, env, runId, primitive, abort);
     case "childWorkflow":
       return runChildWorkflow(
         definition,
@@ -1890,7 +1916,11 @@ async function runStep(
     };
     bridgeAbort(abort, onOuter);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // The deadline lives only in this process, so a timed step counts as
+    // working while it runs, even parked: stopping the process drops it.
+    let endTimedWork: (() => void) | undefined;
     if (step.timeout !== undefined) {
+      endTimedWork = beginWork();
       timer = setTimeout(() => {
         stepAbort.abort();
       }, step.timeout);
@@ -2204,6 +2234,7 @@ async function runStep(
       // into the next attempt. The step itself stays awaiting-timer
       // through the wait.
       await waitForTimer(
+        definition,
         env,
         runId,
         timerId,
@@ -2228,6 +2259,7 @@ async function runStep(
     } finally {
       abort.removeEventListener("abort", onOuter);
       if (timer !== undefined) clearTimeout(timer);
+      endTimedWork?.();
     }
   }
 }
@@ -2810,7 +2842,8 @@ async function driveSuspendableOccurrence(
   }
 
   for (;;) {
-    const bodyEvent = pending ?? (await child.next());
+    const bodyEvent =
+      pending ?? (await waitIdle((resume) => child.next(resume)));
     pending = undefined;
     if (bodyEvent.kind === "terminal") {
       terminalStatus = bodyEvent.terminalStatus;
@@ -3203,7 +3236,7 @@ function finishRelayPull(
   pull: ChildRelayPull,
 ): Promise<ChildDriveResult> {
   if (pull === "hold") return Promise.resolve({ kind: "held" });
-  return child.next();
+  return waitIdle((resume) => child.next(resume));
 }
 
 async function driveContainerSignalRelay(
@@ -3512,10 +3545,13 @@ async function raceChildSignalRelease(
   const detachRaceAbort = bridgeAbort(abort, () => {
     raceAbort.abort();
   });
+  const idle = createIdleWait();
+  const onSignal = idle.waker();
+  const onRelease = idle.waker();
   const signalWait = env.signalChannel
-    .awaitNext(name, raceAbort.signal)
+    .awaitNext(name, onSignal, raceAbort.signal)
     .then((r) => ({ tag: "signal" as const, r }));
-  const releaseWait = watch(name, raceAbort.signal).then((rel) => ({
+  const releaseWait = watch(name, raceAbort.signal, onRelease).then((rel) => ({
     tag: "release" as const,
     rel,
   }));
@@ -3562,7 +3598,10 @@ async function raceChildSignalRelease(
     | { tag: "signal"; r: { payload: unknown; signalId: string } }
     | { tag: "release"; rel: ChildParkRelease };
   try {
-    outcome = await Promise.race([signalWait, releaseWait]);
+    outcome = await idle.wait(Promise.race([signalWait, releaseWait]), [
+      onSignal,
+      onRelease,
+    ]);
   } catch (cause) {
     raceAbort.abort();
     await signalWait.catch(() => undefined);
@@ -3669,14 +3708,20 @@ async function raceContainerSignalRelay(
     raceAbort.abort();
   };
   bridgeAbort(abort, onOuterAbort);
+  const idle = createIdleWait();
+  const onNext = idle.waker();
+  const race = { idle, waker: onNext };
   const waited =
     correlationId === undefined
-      ? awaitSignalFor(env, runId, containerStepId, name, raceAbort.signal)
+      ? awaitSignalFor(env, runId, containerStepId, name, raceAbort.signal, {
+          race,
+        })
       : awaitSignalFor(env, runId, containerStepId, name, raceAbort.signal, {
           correlationId,
+          race,
         });
   const pSignal = waited.then((r) => ({ tag: "signal" as const, r }));
-  const pNext = child.next().then((ev) => ({ tag: "next" as const, ev }));
+  const pNext = child.next(onNext).then((ev) => ({ tag: "next" as const, ev }));
   let outcome:
     | {
         tag: "signal";
@@ -3715,7 +3760,7 @@ async function raceContainerSignalRelay(
     await commit(env, runId, received);
     await flush(env, runId);
     await child.deliverSignal(name, outcome.r.payload, outcome.r.signalId);
-    return (await pNext).ev;
+    return (await idle.wait(pNext, [onNext])).ev;
   }
 
   // The body produced its next event before the signal arrived: its gate timed
@@ -4981,8 +5026,13 @@ async function skipUnroutedHandlerBranches(
  * after the caller's last-observed event rather than from `"head"`,
  * which would miss a TimerFired that landed during the
  * `await env.repoStore.subscribe(...)` setup.
+ *
+ * The wait is idle only where the resume guard continues the step from
+ * the log. A step in retry backoff is not continued, so its wait counts as
+ * work and a host waits it out before it stops the process.
  */
 async function waitForTimer(
+  definition: StepKindLookup,
   env: WorkflowRuntimeEnv,
   runId: string,
   timerId: string,
@@ -5002,7 +5052,10 @@ async function waitForTimer(
   const settled = await reloadState(env, runId);
   const subscribeFromSeq = settled.lastSeq + 1;
   const ac = new AbortController();
+  const idle = createIdleWait();
+  const wake = idle.waker();
   const onOuterAbort = (): void => {
+    wake();
     ac.abort();
   };
   if (abort.aborted) {
@@ -5025,20 +5078,33 @@ async function waitForTimer(
   // controller so the `for await` ends cleanly.
   const onDrain = (): void => {
     if (shouldAbortForDrain(drain, stepId)) {
+      wake();
       ac.abort();
     }
   };
   drain.signal.addEventListener("abort", onDrain, { once: true });
   const dispose = env.scheduler.scheduleIn(runId, timerId, fireAt);
   try {
-    for await (const { event } of env.repoStore.subscribe(runId, {
-      signal: ac.signal,
-      from: { seq: subscribeFromSeq },
-    })) {
-      if (event.kind === "TimerFired" && event.timerId === timerId) {
-        return;
+    const waiting = (async () => {
+      for await (const { event } of env.repoStore.subscribe(runId, {
+        signal: ac.signal,
+        from: { seq: subscribeFromSeq },
+      })) {
+        if (event.kind === "TimerFired" && event.timerId === timerId) {
+          // The return closes the subscription, which ends this entry's
+          // delivery.
+          wake();
+          return true;
+        }
       }
-    }
+      wake();
+      return false;
+    })();
+    const fired =
+      resumeResidualOf(definition, stepId, "awaiting-timer") === "continue"
+        ? await idle.wait(waiting, [wake])
+        : await waiting;
+    if (fired) return;
     if (abort.aborted) throw new Error("aborted");
     if (shouldAbortForDrain(drain, stepId)) {
       throw new Error("aborted: drain requested");
@@ -5079,47 +5145,54 @@ async function runMap(
   if (!Array.isArray(over)) {
     throw new Error(`map.over for ${primitive.id} did not resolve to an array`);
   }
-  await emitStepStartedWithValue(env, runId, primitive.id, over);
-  // v1 runs the inner steps sequentially. A parallel fan-out would
-  // need per-item commit serialization against the same run log
-  // beyond what the existing commit chain offers, plus a parallelism
-  // bound on the env. The spec does not commit to either semantic;
-  // sequential keeps the event log readable and the runtime simple.
-  const inner = primitive.step;
-  const outputs: unknown[] = [];
-  for (let i = 0; i < over.length; i += 1) {
-    const item = over[i];
-    const itemCtx: SelectorContext = {
-      ...selectorCtx,
-      trigger: { payload: item },
-    };
-    const scopedStep: StepPrimitive = {
-      ...inner,
-      id: scopedStepId(primitive.id, i),
-      // The outer map's retry policy applies as the fan-out-level
-      // default when the inner step does not declare its own. The
-      // inner step's policy already rides in via `...inner`; the
-      // spread below only fills in from the map when the inner is
-      // missing one.
-      ...(inner.retry === undefined && primitive.retry !== undefined
-        ? { retry: primitive.retry }
-        : {}),
-    };
-    // Resume cannot continue a map still in flight, so an item's completion
-    // stays buffered: writing it durably would buy nothing.
-    const output = await runStep(
-      definition,
-      env,
-      runId,
-      scopedStep,
-      itemCtx,
-      abort,
-      "buffered",
-    );
-    outputs.push(output);
+  // Resume cannot continue a map in flight, so the map counts as working
+  // while an item waits: stopping the process would fail its run.
+  const endMapWork = beginWork();
+  try {
+    await emitStepStartedWithValue(env, runId, primitive.id, over);
+    // v1 runs the inner steps sequentially. A parallel fan-out would
+    // need per-item commit serialization against the same run log
+    // beyond what the existing commit chain offers, plus a parallelism
+    // bound on the env. The spec does not commit to either semantic;
+    // sequential keeps the event log readable and the runtime simple.
+    const inner = primitive.step;
+    const outputs: unknown[] = [];
+    for (let i = 0; i < over.length; i += 1) {
+      const item = over[i];
+      const itemCtx: SelectorContext = {
+        ...selectorCtx,
+        trigger: { payload: item },
+      };
+      const scopedStep: StepPrimitive = {
+        ...inner,
+        id: scopedStepId(primitive.id, i),
+        // The outer map's retry policy applies as the fan-out-level
+        // default when the inner step does not declare its own. The
+        // inner step's policy already rides in via `...inner`; the
+        // spread below only fills in from the map when the inner is
+        // missing one.
+        ...(inner.retry === undefined && primitive.retry !== undefined
+          ? { retry: primitive.retry }
+          : {}),
+      };
+      // Resume cannot continue a map still in flight, so an item's completion
+      // stays buffered: writing it durably would buy nothing.
+      const output = await runStep(
+        definition,
+        env,
+        runId,
+        scopedStep,
+        itemCtx,
+        abort,
+        "buffered",
+      );
+      outputs.push(output);
+    }
+    await emitStepCompletedWithValue(env, runId, primitive.id, outputs);
+    return outputs;
+  } finally {
+    endMapWork();
   }
-  await emitStepCompletedWithValue(env, runId, primitive.id, outputs);
-  return outputs;
 }
 
 async function runGate(
@@ -5838,7 +5911,8 @@ function signalBoundToAwait(
  * caller read the step as awaiting before that; a signal delivered in between
  * is already in the log, so it is taken from there. `onWaiting` runs only
  * when the log has no such signal, after the subscriber exists and before
- * the wait blocks.
+ * the wait blocks. `race` is an input the caller races with this signal;
+ * its waker ends this wait too.
  */
 async function awaitSignalFor(
   env: WorkflowRuntimeEnv,
@@ -5849,17 +5923,27 @@ async function awaitSignalFor(
   opts?: {
     correlationId?: string;
     onWaiting?: () => void;
+    race?: { idle: IdleWait; waker: () => void };
   },
 ): Promise<{ payload: unknown; signalId: string; correlationId?: string }> {
   const correlationId = opts?.correlationId;
+  const idle = opts?.race?.idle ?? createIdleWait();
+  const onSignal = idle.waker();
+  const wakers =
+    opts?.race === undefined ? [onSignal] : [onSignal, opts.race.waker];
   const wait = new AbortController();
   const detach = bridgeAbort(abort, () => {
     wait.abort();
   });
   const waiting =
     correlationId === undefined
-      ? env.signalChannel.awaitNext(signalName, wait.signal)
-      : env.signalChannel.awaitNext(signalName, wait.signal, correlationId);
+      ? env.signalChannel.awaitNext(signalName, onSignal, wait.signal)
+      : env.signalChannel.awaitNext(
+          signalName,
+          onSignal,
+          wait.signal,
+          correlationId,
+        );
   const waitSettled = waiting.then(
     () => undefined,
     () => undefined,
@@ -5871,7 +5955,7 @@ async function awaitSignalFor(
       return correlationId === undefined ? bound : { ...bound, correlationId };
     }
     opts?.onWaiting?.();
-    return await waiting;
+    return await idle.wait(waiting, wakers);
   } finally {
     detach();
     wait.abort();
@@ -5969,6 +6053,8 @@ async function parkOnSignalResult(
     claimsRunInputChannel?: {
       sectionInputStepIds: ReadonlySet<string>;
     };
+    /** An input the caller races with this park; its waker ends the wait too. */
+    race?: { idle: IdleWait; waker: () => void };
   },
   state: ReturnType<typeof resumeFromLog>,
   abort: AbortSignal,
@@ -6244,13 +6330,16 @@ async function parkOnSignalResult(
       opts.stepId,
       opts.signalName,
       combinedAbort.signal,
-      repark
-        ? {
-            onWaiting: () => {
-              env.onSignalAwaiter?.({ runId, name: opts.signalName });
-            },
-          }
-        : undefined,
+      {
+        ...(repark
+          ? {
+              onWaiting: () => {
+                env.onSignalAwaiter?.({ runId, name: opts.signalName });
+              },
+            }
+          : {}),
+        ...(opts.race !== undefined ? { race: opts.race } : {}),
+      },
     );
     let next = await reloadState(env, runId);
     const signalReceived: WorkflowEvent = {
@@ -6475,6 +6564,7 @@ async function completeAwaitSignalOutcome(
 }
 
 async function runSleep(
+  definition: WorkflowDefinition,
   env: WorkflowRuntimeEnv,
   runId: string,
   primitive: SleepPrimitive,
@@ -6550,6 +6640,7 @@ async function runSleep(
   }
   void state;
   await waitForTimer(
+    definition,
     env,
     runId,
     timerId,
@@ -6593,7 +6684,7 @@ async function closeFailedChild(
   if (handle !== undefined) {
     try {
       for (;;) {
-        const event = await handle.next();
+        const event = await waitIdle((resume) => handle.next(resume));
         if (event.kind === "terminal") {
           drained = event.terminalStatus;
           break;
@@ -6691,6 +6782,8 @@ async function awaitChildPark(
     watchAbort.abort();
   });
   const parkRearm = await reloadState(env, parentRunId);
+  const idle = createIdleWait();
+  const onRelease = idle.waker();
   const decision = parkOnSignal(
     env,
     parentRunId,
@@ -6702,11 +6795,12 @@ async function awaitChildPark(
       ...(parkKind === "input"
         ? { claimsRunInputChannel: { sectionInputStepIds: sectionSteps } }
         : {}),
+      race: { idle, waker: onRelease },
     },
     parkRearm,
     parkAbort.signal,
   );
-  const release = watch(name, watchAbort.signal);
+  const release = watch(name, watchAbort.signal, onRelease);
   let outcome:
     | { tag: "decision"; payload: unknown }
     | { tag: "release"; rel: ChildParkRelease };
@@ -7409,8 +7503,9 @@ async function drivePlannedChildRelay(
         return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
       }
       if (snapshot.kind === "released") return { kind: "held" };
-      if (handle.whenSignalAwaiter !== undefined) {
-        await handle.whenSignalAwaiter(relay.name);
+      const whenAwaiter = handle.whenSignalAwaiter;
+      if (whenAwaiter !== undefined) {
+        await waitIdle((resume) => whenAwaiter(relay.name, resume));
       }
       await handle.deliverSignal(relay.name, relay.payload, relay.signalId);
       return { kind: "held" };
@@ -7457,8 +7552,9 @@ async function drivePlannedChildRelay(
         return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
       }
       if (snapshot.kind === "released") return { kind: "held" };
-      if (handle.whenSignalAwaiter !== undefined) {
-        await handle.whenSignalAwaiter(name);
+      const whenAwaiter = handle.whenSignalAwaiter;
+      if (whenAwaiter !== undefined) {
+        await waitIdle((resume) => whenAwaiter(name, resume));
       }
       await handle.resume(relay.correlationId, relay.decision);
       return { kind: "held" };
@@ -7660,7 +7756,9 @@ async function runChildWorkflow(
         if (terminalStatus === undefined) {
           let pending: ChildDriveResult | undefined;
           for (;;) {
-            const bodyEvent = pending ?? (await spawnedHandle.next());
+            const bodyEvent =
+              pending ??
+              (await waitIdle((resume) => spawnedHandle.next(resume)));
             pending = undefined;
             if (bodyEvent.kind === "terminal") {
               terminalStatus = bodyEvent.terminalStatus;

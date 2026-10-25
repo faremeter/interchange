@@ -318,7 +318,8 @@ forking a process.
 6. Emit `ready` and then `resumed.runs` on the control channel.
    Every other upstream control frame waits until both are out.
 7. Loop on `trigger.fire`, `authority.set`, `grants-updated`,
-   `credentials-updated`, `drain`, `shutdown`, and `signal.deliver` frames.
+   `credentials-updated`, `drain`, `shutdown`, `signal.deliver`, and
+   `quiet.request` frames.
 
 ### Authorize Closure
 
