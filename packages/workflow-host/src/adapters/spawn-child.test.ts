@@ -26,6 +26,8 @@ import {
   type RunChildWorkflow,
 } from "./spawn-child";
 
+const noWake = (): void => undefined;
+
 const tempDirs: string[] = [];
 
 // These tests exercise the adapter's resolution/abort/forwarding, not event
@@ -112,7 +114,7 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
       noopOnEvent,
     );
 
-    const event = await result.next();
+    const event = await result.next(noWake);
     expect(event.kind).toBe("terminal");
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("completed");
@@ -174,7 +176,7 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
       },
       noopOnEvent,
     );
-    const event = await result.next();
+    const event = await result.next(noWake);
     expect(event.kind).toBe("terminal");
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("failed");
@@ -367,7 +369,7 @@ describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () 
       },
       noopOnEvent,
     );
-    const event = await result.next();
+    const event = await result.next(noWake);
     expect(event.kind).toBe("terminal");
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("completed");

@@ -55,6 +55,8 @@ import {
   type SidecarChildStepInvoker,
 } from "./substrate-factory";
 
+const noWake = (): void => undefined;
+
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-suspendable-child";
 const WORKFLOW_RUN_REPO_ID: RepoId = {
@@ -275,7 +277,7 @@ describe("createSidecarSpawnSuspendableChild", () => {
 
     // The body step suspended -> the handle surfaces the approval park on the
     // reserved correlation, carrying the step's snapshot.
-    const parked = await handle.next();
+    const parked = await handle.next(noWake);
     expect(parked.kind).toBe("park");
     if (parked.kind !== "park") throw new Error("expected a park");
     expect(parked.park.correlationId).toBe(CORRELATION_ID);
@@ -288,7 +290,7 @@ describe("createSidecarSpawnSuspendableChild", () => {
 
     // The re-invoked step ran with the delivered decision and the run
     // completed.
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     expect(terminal.kind).toBe("terminal");
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("completed");
@@ -330,7 +332,7 @@ describe("createSidecarSpawnSuspendableChild", () => {
     );
 
     // The body's childWorkflow step failed loud, so the body run settles failed.
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     expect(terminal.kind).toBe("terminal");
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("failed");

@@ -63,6 +63,8 @@ import {
   type SidecarChildStepInvoker,
 } from "./substrate-factory";
 
+const noWake = (): void => undefined;
+
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-child-action";
 const WORKFLOW_RUN_REPO_ID: RepoId = {
@@ -375,7 +377,7 @@ describe("spawned body action steps", () => {
       () => undefined,
     );
 
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     expect(terminal.kind).toBe("terminal");
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("completed");
@@ -413,7 +415,7 @@ describe("spawned body action steps", () => {
       () => undefined,
     );
 
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     expect(terminal.kind).toBe("terminal");
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("failed");
@@ -452,7 +454,7 @@ describe("spawned body action steps", () => {
       () => undefined,
     );
 
-    const event = await result.next();
+    const event = await result.next(noWake);
     expect(event.kind).toBe("terminal");
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("completed");
@@ -490,7 +492,7 @@ describe("spawned body action steps", () => {
       () => undefined,
     );
 
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     expect(terminal.kind).toBe("terminal");
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("completed");
@@ -701,7 +703,7 @@ describe("spawned body action credentials", () => {
       },
     );
 
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("completed");
     expect(await fs.promises.readFile(marker, "utf8")).toBe("http");
@@ -727,7 +729,7 @@ describe("spawned body action credentials", () => {
       },
     );
 
-    const event = await result.next();
+    const event = await result.next(noWake);
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("completed");
     expect(await fs.promises.readFile(marker, "utf8")).toBe("http");
@@ -754,7 +756,7 @@ describe("spawned body action credentials", () => {
       },
     );
 
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("completed");
     expect(await fs.promises.readFile(marker, "utf8")).toBe("http");
@@ -792,7 +794,7 @@ describe("spawned body action credentials", () => {
       },
     );
 
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("completed");
     expect(await fs.promises.readFile(marker, "utf8")).toBe("http");
@@ -820,7 +822,7 @@ describe("spawned body action credentials", () => {
       },
     );
 
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("failed");
     const events: readonly WorkflowEvent[] =
@@ -866,7 +868,7 @@ describe("spawned body action credentials", () => {
       () => undefined,
       { material: credentialCell(), parentGrants: rootGrantsOf(root) },
     );
-    return result.next();
+    return result.next(noWake);
   }
 
   test("an action after a step resolves its credential while the top-level run holds the use grant", async () => {

@@ -629,6 +629,7 @@ function buildBindings(baseDir: string): RunWorkflowChildBindings {
     actionCredentials: () => unavailableActionCredentials,
     spawnChild: async () => createTerminalChildHandle("completed"),
     scheduler: { scheduleIn: () => () => undefined },
+    earliestQueuedTimer: () => undefined,
     evaluateGrants: async () => ({
       effect: "allow" as const,
       matchingGrants: [],
