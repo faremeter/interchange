@@ -2903,6 +2903,97 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(second?.cancellationReason).toBe("Operator request");
     });
 
+    // getStatus does not return the operator request time.
+    async function readOperatorCancellationRequestedAt() {
+      const [row] = await h.db
+        .select({ at: workflowRun.operatorCancellationRequestedAt })
+        .from(workflowRun)
+        .where(eq(workflowRun.id, runId));
+      return row?.at;
+    }
+
+    async function expireAndSweep() {
+      await expire();
+      await service({ sendControl: async () => undefined }).reconcileNext();
+    }
+
+    test("an operator cancellation request records that an operator asked", async () => {
+      expect(
+        await service().requestCancellation(
+          tenantId,
+          runId,
+          "Operator request",
+        ),
+      ).toBe("pending");
+      expect(await readOperatorCancellationRequestedAt()).toEqual(current);
+    });
+
+    test("an expiry cancellation does not record an operator request", async () => {
+      await expireAndSweep();
+      expect(
+        (await service().getStatus(tenantId, runId))?.cancellationRequestedAt,
+      ).toBe(current.toISOString());
+      expect(await readOperatorCancellationRequestedAt()).toBeNull();
+    });
+
+    test("an operator request after an expiry cancellation keeps the expiry reason and deadline", async () => {
+      await expireAndSweep();
+      const expired = await service().getStatus(tenantId, runId);
+      current = new Date(current.getTime() + 500);
+      expect(
+        await service().requestCancellation(
+          tenantId,
+          runId,
+          "Operator request",
+        ),
+      ).toBe("pending");
+      expect(await readOperatorCancellationRequestedAt()).toEqual(current);
+      const status = await service().getStatus(tenantId, runId);
+      expect(status?.cancellationReason).toBe(
+        "Maximum deployment lifetime exceeded",
+      );
+      expect(status?.cancellationDeadline).toBe(expired?.cancellationDeadline);
+      expect(status?.cancellationRequestedAt).toBe(
+        expired?.cancellationRequestedAt,
+      );
+    });
+
+    test("a repeated operator request keeps the first operator request time", async () => {
+      await service().requestCancellation(tenantId, runId, "Operator request");
+      const first = new Date(current);
+      current = new Date(current.getTime() + 500);
+      await service().requestCancellation(tenantId, runId, "Another request");
+      expect(await readOperatorCancellationRequestedAt()).toEqual(first);
+    });
+
+    test("an expiry after an operator request keeps the operator request", async () => {
+      await service().requestCancellation(tenantId, runId, "Operator request");
+      const requested = await service().getStatus(tenantId, runId);
+      const operatorAt = await readOperatorCancellationRequestedAt();
+      await expireAndSweep();
+      const status = await service().getStatus(tenantId, runId);
+      expect(status?.cancellationReason).toBe("Operator request");
+      expect(status?.cancellationDeadline).toBe(
+        requested?.cancellationDeadline,
+      );
+      expect(await readOperatorCancellationRequestedAt()).toEqual(operatorAt);
+    });
+
+    test("an operator request for a terminal run records no operator request", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({ status: "completed" })
+        .where(eq(workflowRun.id, runId));
+      expect(
+        await service().requestCancellation(
+          tenantId,
+          runId,
+          "Operator request",
+        ),
+      ).toBe("terminal");
+      expect(await readOperatorCancellationRequestedAt()).toBeNull();
+    });
+
     // Bounds a request that must not wait on a lock, so a regression
     // fails here instead of at the test runner's timeout.
     async function withinSeconds<T>(work: Promise<T>): Promise<T> {

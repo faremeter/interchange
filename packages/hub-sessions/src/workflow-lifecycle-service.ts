@@ -495,23 +495,37 @@ export function createWorkflowLifecycleService({
     tx: DBExecutor,
     run: Run,
     reason: string,
+    origin: "operator" | "expiry",
   ): Promise<Run> {
-    if (run.cancellationRequestedAt !== null) return run;
-    const requestedAt = now();
-    const deadline = new Date(requestedAt.getTime() + cancelGraceMs);
+    const at = now();
+    if (run.cancellationRequestedAt !== null) {
+      // The first request keeps its deadline and reason. A later operator
+      // request still records that an operator asked.
+      if (origin !== "operator" || run.operatorCancellationRequestedAt !== null)
+        return run;
+      await tx
+        .update(workflowRun)
+        .set({ operatorCancellationRequestedAt: at })
+        .where(eq(workflowRun.id, run.id));
+      return { ...run, operatorCancellationRequestedAt: at };
+    }
+    const deadline = new Date(at.getTime() + cancelGraceMs);
+    const operatorCancellationRequestedAt = origin === "operator" ? at : null;
     await tx
       .update(workflowRun)
       .set({
-        cancellationRequestedAt: requestedAt,
+        cancellationRequestedAt: at,
         cancellationDeadline: deadline,
         cancellationReason: reason,
+        operatorCancellationRequestedAt,
       })
       .where(eq(workflowRun.id, run.id));
     return {
       ...run,
-      cancellationRequestedAt: requestedAt,
+      cancellationRequestedAt: at,
       cancellationDeadline: deadline,
       cancellationReason: reason,
+      operatorCancellationRequestedAt,
     };
   }
 
@@ -519,7 +533,8 @@ export function createWorkflowLifecycleService({
     deadline: Date;
     reason: string;
   } {
-    // beginCancellation writes the request, deadline, and reason together.
+    // beginCancellation writes the first request, its deadline, and its
+    // reason together.
     if (run.cancellationDeadline === null || run.cancellationReason === null)
       throw new Error(
         `Workflow run ${run.id} has an incomplete cancellation request`,
@@ -561,7 +576,7 @@ export function createWorkflowLifecycleService({
       if (row === undefined) return "not_found" as const;
       const run = parseWorkflowRunRow(row);
       if (!isLiveWorkflowRunStatus(run.status)) return "terminal" as const;
-      await beginCancellation(tx, run, reason);
+      await beginCancellation(tx, run, reason, "operator");
       return "pending" as const;
     });
   }
@@ -832,6 +847,7 @@ export function createWorkflowLifecycleService({
               tx,
               run,
               "Maximum deployment lifetime exceeded",
+              "expiry",
             );
           }
           if (run.cancellationRequestedAt === null) return null;
