@@ -71,7 +71,8 @@ export function createInMemorySignalChannel(
       }
       q.push(delivery);
     },
-    async awaitNext(name, signal, correlationId) {
+    // Nothing in a local run asks whether it is quiet.
+    async awaitNext(name, _onWake, signal, correlationId) {
       const q = queued.get(name);
       const queuedMatch =
         q?.findIndex((item) => item.correlationId === correlationId) ?? -1;

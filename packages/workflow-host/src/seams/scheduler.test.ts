@@ -277,6 +277,40 @@ describe("workflow-host scheduler", () => {
     { timeout: 5000 },
   );
 
+  test("reports when the earliest queued timer fires, whatever order they were queued in", async () => {
+    const dataDir = await makeTempDir("scheduler-earliest-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        skill: permissiveHandler("workflow-runs-earliest"),
+      },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "skill", id: "deployment-earliest" };
+    const earliest = Date.now() + 60_000;
+    await seedTimerSet(store, repoId, "r1", 0, "t-late", earliest + 60_000);
+    await seedTimerSet(store, repoId, "r2", 0, "t-early", earliest);
+    await seedTimerSet(store, repoId, "r3", 0, "t-middle", earliest + 30_000);
+    const scheduler = createWorkflowHostScheduler({
+      repoStore: store,
+      runtimeStore: runtimeStoreFor(store, repoId),
+      principal,
+      listActiveDeployments: () => [repoId],
+      ref: REF,
+      clock: () => new Date(),
+      scheduleTimeout: createManualTimeouts().scheduleTimeout,
+    });
+    try {
+      expect(scheduler.earliestQueuedTimer()).toBeUndefined();
+      await scheduler.start();
+      expect(scheduler.queuedTimers()).toHaveLength(3);
+      expect(scheduler.earliestQueuedTimer()).toEqual(new Date(earliest));
+    } finally {
+      await scheduler.stop();
+    }
+  });
+
   test(
     "recovery enumerates unfired timers; matched TimerFired skips re-queue",
     async () => {
@@ -1011,12 +1045,6 @@ describe("workflow-host scheduler", () => {
       timerId: "t-terminal",
       fireAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    await runtimeStore.append(runId, {
-      kind: "RunFailed",
-      seq: 2,
-      at,
-      error: { message: "already terminal" },
-    });
 
     const timeouts = createManualTimeouts();
     const commits = observeSchedulerCommits(store);
@@ -1032,6 +1060,13 @@ describe("workflow-host scheduler", () => {
     try {
       await scheduler.start();
       expect(scheduler.queuedTimers()).toHaveLength(1);
+      // The run ends after recovery queued its timer.
+      await runtimeStore.append(runId, {
+        kind: "RunFailed",
+        seq: 2,
+        at,
+        error: { message: "already terminal" },
+      });
       timeouts.fireAll();
       await commits.whenCommitted();
 
@@ -1045,6 +1080,88 @@ describe("workflow-host scheduler", () => {
     } finally {
       await scheduler.stop();
       dropChain(runId);
+    }
+  });
+});
+
+describe("workflow-host scheduler recovery", () => {
+  const at = "2026-01-01T00:00:00.000Z";
+  const fireAt = "2026-01-02T00:00:00.000Z";
+  const timerSet = (seq: number, stepId?: string) => ({
+    seq,
+    type: "TimerSet",
+    at,
+    timerId: "t",
+    fireAt,
+    ...(stepId !== undefined ? { stepId } : {}),
+  });
+  const cases: [string, Record<string, unknown>[], string[]][] = [
+    [
+      "drops a timer whose step settled after it was set",
+      [
+        { seq: 1, type: "StepStarted", at, stepId: "gate", attempt: 1 },
+        timerSet(2, "gate"),
+        { seq: 3, type: "StepCompleted", at, stepId: "gate", attempt: 1 },
+      ],
+      [],
+    ],
+    [
+      "drops a timer of a run that ended",
+      [timerSet(1), { seq: 2, type: "RunCompleted", at }],
+      [],
+    ],
+    [
+      "keeps a retry timer set after its step failed",
+      [
+        { seq: 1, type: "StepStarted", at, stepId: "gate", attempt: 1 },
+        { seq: 2, type: "StepFailed", at, stepId: "gate", attempt: 1 },
+        timerSet(3, "gate"),
+      ],
+      ["t"],
+    ],
+    [
+      "drops a fired timer whose TimerFired sorts before its TimerSet",
+      [timerSet(9), { seq: 10, type: "TimerFired", at, timerId: "t" }],
+      [],
+    ],
+  ];
+  test.each(cases)("%s", async (_name, events, queued) => {
+    const dataDir = await makeTempDir("scheduler-recovery-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        skill: permissiveHandler("workflow-runs-recovery"),
+      },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "skill", id: "deployment-recovery" };
+    const runId = "r-recovery";
+    await store.writeTree(principal, repoId, REF, {
+      files: Object.fromEntries(
+        events.map((event) => [
+          `runs/${runId}/events/${String(event.seq)}.json`,
+          JSON.stringify(event),
+        ]),
+      ),
+      message: "seed the run's events",
+    });
+    const scheduler = createWorkflowHostScheduler({
+      repoStore: store,
+      runtimeStore: runtimeStoreFor(store, repoId),
+      principal,
+      listActiveDeployments: () => [repoId],
+      ref: REF,
+      clock: () => new Date(at),
+      scheduleTimeout: createManualTimeouts().scheduleTimeout,
+    });
+    try {
+      await scheduler.start();
+      expect(scheduler.queuedTimers().map((timer) => timer.timerId)).toEqual(
+        queued,
+      );
+    } finally {
+      await scheduler.stop();
     }
   });
 });

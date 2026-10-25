@@ -57,6 +57,8 @@ import {
   type SidecarChildStepInvoker,
 } from "./substrate-factory";
 
+const noWake = (): void => undefined;
+
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-child-grants";
 const WORKFLOW_RUN_REPO_ID: RepoId = {
@@ -324,7 +326,7 @@ describe("createSidecarRunChild grant capping", () => {
       noopOnEvent,
     );
 
-    const event = await result.next();
+    const event = await result.next(noWake);
     expect(event.kind).toBe("terminal");
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("completed");
@@ -388,7 +390,7 @@ describe("createSidecarRunChild grant capping", () => {
       noopOnEvent,
     );
 
-    const event = await result.next();
+    const event = await result.next(noWake);
     expect(event.kind).toBe("terminal");
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("completed");
@@ -545,7 +547,7 @@ describe("createSidecarRunChild root grants", () => {
         parentGrants: createSnapshotGrantsReader(rootGrants, "test root"),
       },
     );
-    return handle.next();
+    return handle.next(noWake);
   }
 
   test("a live child reads an always decision on its next step, and its grants file is unchanged", async () => {
