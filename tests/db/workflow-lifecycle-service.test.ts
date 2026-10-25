@@ -47,7 +47,9 @@ import {
   createWorkflowHistoryReceiveTracker,
   createWorkflowLifecycleService,
   SidecarIdentityValidationError,
+  SidecarNotConnectedError,
   WorkflowControlInitializingError,
+  WorkflowControlNotConnectedError,
   WorkflowControlTimeoutError,
   WorkflowControlUnconfirmedError,
   WorkflowControlUnreachableError,
@@ -75,7 +77,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       options: Partial<
         Pick<
           WorkflowLifecycleServiceDeps,
-          "db" | "sendControl" | "historyReceives"
+          "db" | "sendControl" | "historyReceives" | "cancelGraceMs"
         >
       > & {
         runReader?: Partial<WorkflowRunReader>;
@@ -127,7 +129,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             options.runReader?.hasRepository ?? (async () => false),
         },
         now: () => current,
-        cancelGraceMs: 1_000,
+        cancelGraceMs: options.cancelGraceMs ?? 1_000,
       });
     }
 
@@ -2083,6 +2085,262 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         (await restarted.getStatus(tenantId, runId))?.allocation?.status,
       ).toBe("releasing");
+    });
+
+    function notConnected(since: Date) {
+      return new WorkflowControlNotConnectedError(
+        new SidecarNotConnectedError(
+          `Allocated sidecar is not connected for allocation ${allocationId} generation 1`,
+          since,
+        ),
+      );
+    }
+
+    // A sidecar that is never connected to this Hub, since `since`.
+    function goneSince(since: Date) {
+      const actions: string[] = [];
+      return {
+        actions,
+        sendControl: async (
+          _target: unknown,
+          command: { action: "cancel" | "stop" },
+        ) => {
+          actions.push(command.action);
+          throw notConnected(since);
+        },
+      };
+    }
+
+    async function allocationState() {
+      return h.db.query.sidecarAllocation.findFirst({
+        where: eq(sidecarAllocation.id, allocationId),
+        columns: { status: true, failureCode: true, failureMessage: true },
+      });
+    }
+
+    function advance(ms: number) {
+      current = new Date(current.getTime() + ms);
+    }
+
+    test("an operator cancel releases a sidecar gone past the reconnect grace on the first sweep", async () => {
+      const gone = goneSince(new Date(current.getTime() - 20_000));
+      const lifecycle = service({ sendControl: gone.sendControl });
+      await lifecycle.requestCancellation(tenantId, runId, "User cancelled");
+
+      await lifecycle.reconcileNext();
+      expect(gone.actions).toEqual(["cancel"]);
+      expect(await allocationState()).toMatchObject({
+        status: "releasing",
+        failureCode: "workflow_cancel_unreachable",
+        failureMessage: expect.stringContaining("not connected"),
+      });
+      expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
+        "running",
+      );
+    });
+
+    test("an operator cancel releases a gone sidecar only once the full reconnect grace has passed", async () => {
+      const gone = goneSince(current);
+      const lifecycle = service({ sendControl: gone.sendControl });
+      await lifecycle.requestCancellation(tenantId, runId, "User cancelled");
+
+      advance(14_000);
+      await lifecycle.reconcileNext();
+      expect((await allocationState())?.status).toBe("allocated");
+
+      advance(1_000);
+      await lifecycle.reconcileNext();
+      expect(await allocationState()).toMatchObject({
+        status: "releasing",
+        failureCode: "workflow_cancel_unreachable",
+      });
+    });
+
+    test("a sidecar that reconnects inside the reconnect grace finishes an operator cancel normally", async () => {
+      let reachable = false;
+      const since = new Date(current.getTime() - 2_000);
+      const actions: string[] = [];
+      const lifecycle = service({
+        cancelGraceMs: 10_000,
+        sendControl: async (_target, command) => {
+          actions.push(command.action);
+          if (!reachable) throw notConnected(since);
+        },
+      });
+      await lifecycle.requestCancellation(tenantId, runId, "User cancelled");
+
+      await lifecycle.reconcileNext();
+      expect((await allocationState())?.status).toBe("allocated");
+
+      reachable = true;
+      advance(1_000);
+      await lifecycle.reconcileNext();
+      expect(actions).toEqual(["cancel", "cancel"]);
+      expect(await lifecycle.getStatus(tenantId, runId)).toMatchObject({
+        status: "running",
+        allocation: { status: "allocated" },
+      });
+
+      advance(10_000);
+      await lifecycle.reconcileNext();
+      expect(actions).toEqual(["cancel", "cancel", "stop"]);
+      expect(await lifecycle.getStatus(tenantId, runId)).toMatchObject({
+        status: "cancelled",
+        allocation: { status: "allocated" },
+      });
+    });
+
+    test("an expiry stop of a gone sidecar still waits out the unreachable stop grace", async () => {
+      await expire();
+      const gone = goneSince(new Date(current.getTime() - 600_000));
+      const lifecycle = service({ sendControl: gone.sendControl });
+
+      await lifecycle.reconcileNext();
+      advance(1_000);
+      await lifecycle.reconcileNext();
+      expect(gone.actions).toEqual(["cancel", "stop"]);
+      expect((await allocationState())?.status).toBe("allocated");
+
+      advance(59_000);
+      await lifecycle.reconcileNext();
+      expect((await allocationState())?.status).toBe("allocated");
+
+      advance(1_000);
+      await lifecycle.reconcileNext();
+      expect(await allocationState()).toMatchObject({
+        status: "releasing",
+        failureCode: "workflow_stop_failed",
+      });
+    });
+
+    test("an operator cancel keeps retrying a worker that is unreachable for another reason", async () => {
+      const lifecycle = service({
+        sendControl: async () => {
+          throw new WorkflowControlUnreachableError(
+            "Sidecar disconnected before the acknowledgement",
+          );
+        },
+      });
+      await lifecycle.requestCancellation(tenantId, runId, "User cancelled");
+
+      await lifecycle.reconcileNext();
+      advance(20_000);
+      await lifecycle.reconcileNext();
+      expect((await allocationState())?.status).toBe("allocated");
+    });
+
+    test("an operator request after an expiry cancel releases a gone sidecar", async () => {
+      await expire();
+      const gone = goneSince(new Date(current.getTime() - 20_000));
+      const lifecycle = service({ sendControl: gone.sendControl });
+
+      await lifecycle.reconcileNext();
+      expect((await allocationState())?.status).toBe("allocated");
+
+      advance(500);
+      await lifecycle.requestCancellation(tenantId, runId, "User cancelled");
+      advance(1_000);
+      await lifecycle.reconcileNext();
+      expect(await allocationState()).toMatchObject({
+        status: "releasing",
+        failureCode: "workflow_cancel_unreachable",
+      });
+    });
+
+    test("an operator cancel release that a reconciliation lease blocks is retried on the next sweep", async () => {
+      const gone = goneSince(new Date(current.getTime() - 20_000));
+      const lifecycle = service({ sendControl: gone.sendControl });
+      await lifecycle.requestCancellation(tenantId, runId, "User cancelled");
+      // The lease compares against the database clock, not the test clock.
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          reconciliationLeaseId: "lease",
+          reconciliationLeaseExpiresAt: new Date(Date.now() + 3_600_000),
+        })
+        .where(eq(sidecarAllocation.id, allocationId));
+
+      await lifecycle.reconcileNext();
+      expect((await allocationState())?.status).toBe("allocated");
+
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          reconciliationLeaseId: null,
+          reconciliationLeaseExpiresAt: null,
+        })
+        .where(eq(sidecarAllocation.id, allocationId));
+      advance(1_000);
+      await lifecycle.reconcileNext();
+      expect(await allocationState()).toMatchObject({
+        status: "releasing",
+        failureCode: "workflow_cancel_unreachable",
+      });
+    });
+
+    test("an operator cancel of a gone sidecar records cancellation once the provisioner confirms destruction", async () => {
+      const gone = goneSince(new Date(current.getTime() - 20_000));
+      const lifecycle = service({ sendControl: gone.sendControl });
+      await lifecycle.requestCancellation(tenantId, runId, "User cancelled");
+      await lifecycle.reconcileNext();
+      expect((await allocationState())?.status).toBe("releasing");
+
+      const destroyed: string[] = [];
+      const reconciler = createSidecarAllocationReconciler({
+        allocationStore: createSidecarAllocationStore(h.db, {
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
+        }),
+        plugins: createSidecarPluginRegistry({
+          provisioners: [
+            {
+              id: "test",
+              apiVersion: 2,
+              bindingFingerprint: "test:1",
+              capabilities: [],
+              ensure: async () => {
+                throw new Error(
+                  "cancelled capacity must not be provisioned again",
+                );
+              },
+              destroy: async (request) => {
+                destroyed.push(request.allocationId);
+                return { kind: "destroyed", cleanup: "confirmed" };
+              },
+            },
+          ],
+        }),
+        router: {
+          getCleanupConnection: () => undefined,
+          waitForSidecarInventory: async () => undefined,
+          undeployAllocation: async () => undefined,
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          isAllocatedSidecarReady: async () => false,
+          holdsAllocatedBinding: () => false,
+          waitForAllocatedSidecar: async () => undefined,
+          reportedDeploymentFailure: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "ws://hub.example/ws",
+        now: () => current,
+      });
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(destroyed).toEqual([allocationId]);
+      expect((await allocationState())?.status).toBe("released");
+
+      advance(1_000);
+      await lifecycle.reconcileNext();
+      expect(await lifecycle.getStatus(tenantId, runId)).toMatchObject({
+        status: "cancelled",
+        cancellationReason: "User cancelled",
+        allocation: {
+          status: "released",
+          failureCode: "workflow_cancel_unreachable",
+        },
+      });
     });
 
     async function cancelledCleanup(confirmed: boolean) {
