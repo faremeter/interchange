@@ -123,14 +123,45 @@ export class SidecarIdentityValidationError extends Error {
 }
 
 /**
+ * This Hub holds no connection for the allocation generation. The sidecar has
+ * not been connected to this Hub since `notConnectedSince`: the later of the
+ * router's creation and the last time this Hub lost that generation's binding.
+ */
+export class SidecarNotConnectedError extends Error {
+  readonly notConnectedSince: Date;
+
+  constructor(message: string, notConnectedSince: Date) {
+    super(message);
+    this.name = "SidecarNotConnectedError";
+    this.notConnectedSince = notConnectedSince;
+  }
+}
+
+/**
  * This Hub holds no current connection for the allocation generation, or the
  * connection closed before the worker answered. The worker may be healthy
- * behind another connection, so callers must retry rather than escalate.
+ * behind another connection, so callers retry rather than escalate. A caller
+ * that has its own reason to stop waiting, such as an operator cancel, may
+ * stop retrying a {@link WorkflowControlNotConnectedError}.
  */
 export class WorkflowControlUnreachableError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message, { cause });
     this.name = "WorkflowControlUnreachableError";
+  }
+}
+
+/**
+ * This Hub holds no connection for the allocation generation, and has held
+ * none since `notConnectedSince`.
+ */
+export class WorkflowControlNotConnectedError extends WorkflowControlUnreachableError {
+  readonly notConnectedSince: Date;
+
+  constructor(cause: SidecarNotConnectedError) {
+    super(cause.message, cause);
+    this.name = "WorkflowControlNotConnectedError";
+    this.notConnectedSince = cause.notConnectedSince;
   }
 }
 
@@ -769,7 +800,10 @@ export type SidecarRouterConfig = {
    * typically by flipping a flag.
    */
   scheduleTimeout?: (handler: () => void, ms: number) => () => void;
-  /** When a sidecar's stop report is first heard. Defaults to the wall clock. */
+  /**
+   * When the router is created, when a sidecar's stop report is first heard,
+   * and when an allocated binding is lost. Defaults to the wall clock.
+   */
   now?: () => Date;
   /** Maximum redelivery attempts before the hub stops retrying an un-acked
    * connected-window `mail.inbound`. Bounds the retry so a sidecar that never
@@ -841,6 +875,8 @@ export function createSidecarRouter(
     now = () => new Date(),
     lookups = {},
   } = config;
+  // No sidecar is connected to a router that was just created.
+  const createdAt = now();
 
   // Receiver-dispatch surface. Wire-layer callsites emit events here;
   // host code subscribes via `router.events`.
@@ -922,6 +958,12 @@ export function createSidecarRouter(
   const allocationFences = new Map<
     string,
     { generation: number; cleanup: { sidecarId: string } | undefined }
+  >();
+  // allocationId -> when this router last lost that generation's allocated
+  // binding. The entry stays until the allocation is retired.
+  const lostAllocatedBindings = new Map<
+    string,
+    { generation: number; at: Date }
   >();
   // allocationId -> generation whose worker acknowledged a workflow stop. Its
   // later workflow-run packs are refused, including after a reconnect.
@@ -2279,12 +2321,29 @@ export function createSidecarRouter(
         { waitable: true },
       );
     }
+    recordLostAllocatedBindings(allocated);
     if (addresses.length > 0 || allocated.length > 0) {
       events.emit("sidecar.disconnect", {
         ownedAddresses: addresses,
         allocated,
       });
     }
+  }
+
+  function recordLostAllocatedBindings(
+    allocated: readonly { allocationId: string; generation: number }[],
+  ): void {
+    if (allocated.length === 0) return;
+    const at = now();
+    for (const { allocationId, generation } of allocated)
+      lostAllocatedBindings.set(allocationId, { generation, at });
+  }
+
+  function notConnectedSince(target: AllocatedSidecarTarget): Date {
+    const lost = lostAllocatedBindings.get(target.allocationId);
+    if (lost?.generation !== target.generation || lost.at <= createdAt)
+      return createdAt;
+    return lost.at;
   }
 
   // Nothing a retired sidecar reports is the Hub's any more, yet it may still
@@ -3773,6 +3832,7 @@ export function createSidecarRouter(
         allocated.push({ allocationId, generation: binding.generation });
       }
     }
+    recordLostAllocatedBindings(allocated);
     if (sidecarSockets.get(conn.sidecarId) === ws) {
       sidecarSockets.delete(conn.sidecarId);
     }
@@ -4306,6 +4366,7 @@ export function createSidecarRouter(
 
     detachAllocation(target);
     allocationFences.delete(target.allocationId);
+    lostAllocatedBindings.delete(target.allocationId);
     stoppedAllocations.delete(target.allocationId);
     reportedStops.delete(target.allocationId);
 
@@ -4361,8 +4422,9 @@ export function createSidecarRouter(
       current === undefined ||
       current.identity.generation !== target.generation
     ) {
-      throw new Error(
+      throw new SidecarNotConnectedError(
         `Allocated sidecar is not connected for allocation ${target.allocationId} generation ${String(target.generation)}`,
+        notConnectedSince(target),
       );
     }
     if (
@@ -4432,8 +4494,9 @@ export function createSidecarRouter(
       binding === undefined ||
       binding.generation !== target.generation
     ) {
-      throw new Error(
+      throw new SidecarNotConnectedError(
         `Allocated sidecar is not connected for allocation ${target.allocationId}`,
+        notConnectedSince(target),
       );
     }
     return { ws: current.ws, conn, binding };
@@ -5803,6 +5866,8 @@ export function createSidecarRouter(
       connection = await getAllocatedConnection(target, "routing");
     } catch (cause) {
       if (cause instanceof SidecarIdentityValidationError) throw cause;
+      if (cause instanceof SidecarNotConnectedError)
+        throw new WorkflowControlNotConnectedError(cause);
       throw new WorkflowControlUnreachableError(
         cause instanceof Error ? cause.message : String(cause),
         cause,

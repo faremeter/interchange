@@ -1,8 +1,10 @@
 export {
   createSidecarRouter,
   SidecarIdentityValidationError,
+  SidecarNotConnectedError,
   WorkflowControlHistoryPendingError,
   WorkflowControlInitializingError,
+  WorkflowControlNotConnectedError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
   WorkflowControlUnconfirmedError,

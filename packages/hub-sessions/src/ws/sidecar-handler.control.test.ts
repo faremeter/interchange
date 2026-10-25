@@ -11,9 +11,13 @@ import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import {
   SidecarIdentityValidationError,
+  SidecarNotConnectedError,
   WorkflowControlHistoryPendingError,
   WorkflowControlInitializingError,
+  WorkflowControlNotConnectedError,
   WorkflowControlRejectedError,
+  type AllocatedSidecarTarget,
+  type SidecarRouterConfig,
   WorkflowControlTimeoutError,
   WorkflowControlUnconfirmedError,
   WorkflowControlUnreachableError,
@@ -1360,5 +1364,175 @@ describe("SidecarRouter allocated outbound mail", () => {
     await tick();
 
     expect(persisted).toBe(false);
+  });
+});
+
+describe("SidecarRouter not-connected allocations", () => {
+  const createdAt = new Date("2026-01-01T00:00:00.000Z");
+  const later = (ms: number) => new Date(createdAt.getTime() + ms);
+  const stepAddress = "run_anchor-step-1@tenant.example";
+
+  function clockedRouter(config: Partial<SidecarRouterConfig> = {}) {
+    const clock = { current: createdAt };
+    const router = createAllocatedRouter({
+      now: () => clock.current,
+      ...config,
+    });
+    return { clock, router };
+  }
+
+  async function rejectedControl(
+    router: ReturnType<typeof createAllocatedRouter>,
+    target: AllocatedSidecarTarget = TEST_TARGET,
+  ): Promise<unknown> {
+    return router.sendWorkflowControl(target, stopCommand(), 1).then(
+      () => {
+        throw new Error("Workflow control did not fail");
+      },
+      (error: unknown) => error,
+    );
+  }
+
+  async function notConnectedSince(
+    router: ReturnType<typeof createAllocatedRouter>,
+    target: AllocatedSidecarTarget = TEST_TARGET,
+  ) {
+    const error = await rejectedControl(router, target);
+    if (!(error instanceof WorkflowControlNotConnectedError)) throw error;
+    return error.notConnectedSince;
+  }
+
+  test("a generation with no connection has not been connected since the router was created", async () => {
+    const { clock, router } = clockedRouter();
+    clock.current = later(20_000);
+
+    const raw = await router
+      .bindAllocatedStepRoute(TEST_TARGET, stepAddress)
+      .then(
+        () => {
+          throw new Error("The step route was bound");
+        },
+        (error: unknown) => error,
+      );
+    if (!(raw instanceof SidecarNotConnectedError)) throw raw;
+    expect(raw.message).toContain("Allocated sidecar is not connected");
+    expect(raw.notConnectedSince).toEqual(createdAt);
+
+    const control = await rejectedControl(router);
+    if (!(control instanceof WorkflowControlNotConnectedError)) throw control;
+    expect(control).toBeInstanceOf(WorkflowControlUnreachableError);
+    expect(control.message).toBe(raw.message);
+    expect(control.cause).toBeInstanceOf(SidecarNotConnectedError);
+    expect(control.notConnectedSince).toEqual(createdAt);
+  });
+
+  test("a closed connection has not been connected since it closed", async () => {
+    const { clock, router } = clockedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    clock.current = later(5_000);
+    router.handleClose(ws);
+    clock.current = later(20_000);
+    expect(await notConnectedSince(router)).toEqual(later(5_000));
+
+    const again = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    clock.current = later(30_000);
+    router.handleClose(again);
+    clock.current = later(40_000);
+    expect(await notConnectedSince(router)).toEqual(later(30_000));
+  });
+
+  test("a detached binding has not been connected since it was detached", async () => {
+    let identityCurrent = true;
+    const { clock, router } = clockedRouter({
+      validateSidecarIdentity: async (_identity, use) =>
+        use !== "routing" || identityCurrent,
+    });
+    await connectAllocated(router, [TEST_IDENTITY.workflowRunAddress]);
+    clock.current = later(5_000);
+    identityCurrent = false;
+    // An identity that is no longer current detaches its binding. That
+    // failure is not a missing connection.
+    const stale = await rejectedControl(router);
+    expect(stale).toBeInstanceOf(WorkflowControlUnreachableError);
+    expect(stale).not.toBeInstanceOf(WorkflowControlNotConnectedError);
+    expect(stale).toHaveProperty(
+      "message",
+      expect.stringContaining("identity is no longer current"),
+    );
+
+    clock.current = later(20_000);
+    expect(await notConnectedSince(router)).toEqual(later(5_000));
+  });
+
+  test("a lost binding of an older generation does not count for the current one", async () => {
+    const { clock, router } = clockedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    clock.current = later(5_000);
+    router.handleClose(ws);
+    router.fenceAllocation(TEST_TARGET.allocationId, 2);
+    expect(
+      await notConnectedSince(router, {
+        allocationId: TEST_TARGET.allocationId,
+        generation: 2,
+      }),
+    ).toEqual(createdAt);
+  });
+
+  test("a retired allocation forgets when its binding was lost", async () => {
+    const { clock, router } = clockedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    clock.current = later(5_000);
+    router.handleClose(ws);
+    router.retireAllocation(TEST_TARGET);
+    router.fenceAllocation(TEST_TARGET.allocationId, TEST_TARGET.generation);
+    expect(await notConnectedSince(router)).toEqual(createdAt);
+  });
+
+  test("a generation that is not current is not a missing connection", async () => {
+    const { router } = clockedRouter();
+    const error = await rejectedControl(router, {
+      allocationId: TEST_TARGET.allocationId,
+      generation: 2,
+    });
+    expect(error).toBeInstanceOf(WorkflowControlUnreachableError);
+    expect(error).not.toBeInstanceOf(WorkflowControlNotConnectedError);
+    expect(error).toHaveProperty(
+      "message",
+      expect.stringContaining("is not current"),
+    );
+  });
+
+  test("a connection that changes during validation is not a missing connection", async () => {
+    const validating = Promise.withResolvers<undefined>();
+    const validated = Promise.withResolvers<boolean>();
+    const { router } = clockedRouter({
+      validateSidecarIdentity: async (_identity, use) => {
+        if (use !== "routing") return true;
+        validating.resolve(undefined);
+        return validated.promise;
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = rejectedControl(router);
+    await validating.promise;
+    router.handleClose(ws);
+    validated.resolve(true);
+    const error = await pending;
+    expect(error).toBeInstanceOf(WorkflowControlUnreachableError);
+    expect(error).not.toBeInstanceOf(WorkflowControlNotConnectedError);
+    expect(error).toHaveProperty(
+      "message",
+      expect.stringContaining("connection changed"),
+    );
   });
 });

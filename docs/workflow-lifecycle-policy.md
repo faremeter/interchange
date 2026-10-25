@@ -143,6 +143,44 @@ at a time before connecting. Size `maxDisconnected` for the
 `SIDECAR_MAX_ACTIVE_DEPLOYMENTS`, including startup overhead, or a restart can
 exceed the deadline and fail deployments.
 
+An operator cancel, through DELETE, does not wait for a sidecar that is gone.
+The Hub sends the cancel, and after the cancellation deadline the stop. When it
+cannot send either because it holds no connection for the deployment, and the
+sidecar has been gone for 15 seconds, the Hub releases the allocation through
+its provisioner and records `workflow_cancel_unreachable`. The lifecycle
+service sets this grace with `operatorCancelReconnectGraceMs`. The time counts
+from the later of the Hub start and the last time this Hub lost the sidecar's
+connection. The Hub keeps that time only in memory. A sidecar that reconnects
+inside the grace receives the cancel as usual. An operator request after an
+expiry cancel started also uses this rule. Other failures to reach the worker,
+and every stop that expiry starts, keep the 60-second stop grace.
+
+The grace is independent of the windows in which the Hub waits for a sidecar
+to reconnect. Those windows are usually longer, but a policy can set
+`maxDisconnected` below the grace, and some cases have no window:
+
+| Case                                                        | Reconnect window                                                                               |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| First deploy not completed, after a disconnect or Hub start | The 2-minute first-connect window; at a Hub start, a later deadline the generation already has |
+| First deploy completed, after a disconnect or Hub start     | The allocation's `maxDisconnected`                                                             |
+| The sidecar's provisioner ended its reconnect window        | None                                                                                           |
+
+An operator cancel after the grace can destroy a sidecar that would
+still reconnect. That is intended: the operator asked for the run to stop. An
+operator cancel of a deployment whose current generation has never connected
+releases it on the first sweep after the grace from the Hub start. This
+includes a replacement generation that is still booting: the time its earlier
+generation lost its connection does not count. A new deployment holds no
+history yet, and a replacement restores history that the Hub already holds, so
+the release loses none.
+
+The release completes at once only when the provisioner confirms cleanup. When
+destroy reports done but does not confirm cleanup, for example when it
+releases a provider hold on a shared sidecar, the Hub waits for the sidecar's
+cleanup connection until the connect deadline. It then records
+`destroy_failed`, the capacity stays reserved, and the run is not recorded
+`cancelled`. A forced release after expiry has the same limit.
+
 On a sidecar that also hosts other work, release removes only this
 deployment's hold on the sidecar. A connected sidecar is told to undeploy the
 deployment, which stops its child as part of teardown. An unreachable copy can

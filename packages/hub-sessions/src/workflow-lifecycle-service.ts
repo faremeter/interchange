@@ -44,6 +44,7 @@ import { isSidecarAllocationDispatchable } from "@intx/types";
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
 import type { WorkflowRunReader } from "./workflow-run-reader";
 import {
+  WorkflowControlNotConnectedError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
   type AllocatedSidecarTarget,
@@ -73,6 +74,10 @@ const RECOVERY_BACKOFF_MAX_MS = 5 * 60_000;
 const CANCEL_CONTROL_TIMEOUT_MS = 5_000;
 const STOP_CONTROL_TIMEOUT_MS = 10_000;
 const MAX_CONCURRENT_RETAINS_PER_SIDECAR = 8;
+const STOP_FAILED_RELEASE = {
+  failureCode: "workflow_stop_failed",
+  failureMessage: "Workflow stop could not be confirmed; reclaiming capacity",
+};
 
 type Run = ReturnType<typeof parseWorkflowRunRow>;
 type Allocation = typeof sidecarAllocation.$inferSelect;
@@ -111,6 +116,11 @@ export type WorkflowLifecycleServiceDeps = {
   now?: () => Date;
   cancelGraceMs?: number;
   unreachableStopGraceMs?: number;
+  /**
+   * How long a sidecar must be gone from this Hub before an operator cancel
+   * releases its capacity without the worker's answer.
+   */
+  operatorCancelReconnectGraceMs?: number;
   sendControl?: SidecarAllocationRouter["sendWorkflowControl"];
 };
 
@@ -122,12 +132,20 @@ export function createWorkflowLifecycleService({
   now = () => new Date(),
   cancelGraceMs = 30_000,
   unreachableStopGraceMs = 60_000,
+  operatorCancelReconnectGraceMs = 15_000,
   sendControl,
 }: WorkflowLifecycleServiceDeps) {
   if (cancelGraceMs < 0 || !Number.isFinite(cancelGraceMs))
     throw new Error("Cancellation grace must be finite and non-negative");
   if (unreachableStopGraceMs < 0 || !Number.isFinite(unreachableStopGraceMs))
     throw new Error("Unreachable stop grace must be finite and non-negative");
+  if (
+    operatorCancelReconnectGraceMs < 0 ||
+    !Number.isFinite(operatorCancelReconnectGraceMs)
+  )
+    throw new Error(
+      "Operator cancel reconnect grace must be finite and non-negative",
+    );
   // Connections are rebuilt after a restart, so an unreachable worker gets the
   // full grace from this service's start before its capacity is reclaimed.
   const startedAt = now().getTime();
@@ -628,9 +646,15 @@ export function createWorkflowLifecycleService({
     reason: string;
     timeoutMs: number;
     cancellationDeadline: Date;
+    operatorRequested: boolean;
   };
 
-  async function forceRelease(command: ControlRequest): Promise<void> {
+  // beginRelease clears the message when a code comes without one, so both
+  // are required.
+  async function forceRelease(
+    command: ControlRequest,
+    failure: { failureCode: string; failureMessage: string },
+  ): Promise<void> {
     await withRun(
       command.tenantId,
       command.runId,
@@ -646,9 +670,7 @@ export function createWorkflowLifecycleService({
           allocationId: allocation.id,
           expectedGeneration: allocation.generation,
           expectedStatus: allocation.status,
-          failureCode: "workflow_stop_failed",
-          failureMessage:
-            "Workflow stop could not be confirmed; reclaiming capacity",
+          ...failure,
           now: now(),
         });
       },
@@ -897,6 +919,7 @@ export function createWorkflowLifecycleService({
                 ? Math.max(1, Math.min(CANCEL_CONTROL_TIMEOUT_MS, remaining))
                 : STOP_CONTROL_TIMEOUT_MS,
             cancellationDeadline: cancellation.deadline,
+            operatorRequested: run.operatorCancellationRequestedAt !== null,
           };
         }
         if (
@@ -949,7 +972,8 @@ export function createWorkflowLifecycleService({
     if (command === null) return;
     if (sendControl === undefined) {
       logger.warn`Workflow control is unavailable for ${runId}`;
-      if (command.action === "stop") await forceRelease(command);
+      if (command.action === "stop")
+        await forceRelease(command, STOP_FAILED_RELEASE);
       return;
     }
     try {
@@ -965,6 +989,14 @@ export function createWorkflowLifecycleService({
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // An operator asked for this cancellation, so a sidecar that has been
+      // gone from this Hub for the reconnect grace loses its capacity without
+      // a wait for the cancellation deadline and the stop grace.
+      const releaseForOperator =
+        command.operatorRequested &&
+        error instanceof WorkflowControlNotConnectedError &&
+        now().getTime() - error.notConnectedSince.getTime() >=
+          operatorCancelReconnectGraceMs;
       // A live worker that stayed silent or refused has failed to stop. Any
       // other failure is retried briefly, since this Hub may not hold the
       // worker's connection yet, the worker may still be deploying, its
@@ -978,9 +1010,19 @@ export function createWorkflowLifecycleService({
         now().getTime() >=
         Math.max(command.cancellationDeadline.getTime(), startedAt) +
           unreachableStopGraceMs;
-      if (command.action === "stop" && (failedDefinitively || retriedTooLong)) {
+      if (releaseForOperator) {
+        logger.warn`Workflow ${command.action} for ${runId} found no sidecar: ${message}`;
+        await forceRelease(command, {
+          failureCode: "workflow_cancel_unreachable",
+          failureMessage:
+            "The sidecar was not connected when an operator cancelled the workflow; reclaiming capacity",
+        });
+      } else if (
+        command.action === "stop" &&
+        (failedDefinitively || retriedTooLong)
+      ) {
         logger.warn`Workflow stop failed for ${runId}: ${message}`;
-        await forceRelease(command);
+        await forceRelease(command, STOP_FAILED_RELEASE);
       } else {
         logger.info`Workflow ${command.action} for ${runId} deferred: ${message}`;
       }
