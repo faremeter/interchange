@@ -135,6 +135,13 @@ export const workflowRun = pgTable(
     lifecyclePolicy: jsonb("lifecycle_policy"),
     expiresAt: timestamp("expires_at"),
     cancellationRequestedAt: timestamp("cancellation_requested_at"),
+    // When an operator asked for the cancellation, also when an expiry
+    // cancellation started first. Null when no operator request is
+    // recorded; rows written before this column existed are null even
+    // when an operator cancelled them.
+    operatorCancellationRequestedAt: timestamp(
+      "operator_cancellation_requested_at",
+    ),
     cancellationReason: text("cancellation_reason"),
     cancellationDeadline: timestamp("cancellation_deadline"),
     capacityReleaseAt: timestamp("capacity_release_at"),
