@@ -11,6 +11,7 @@ import {
   createTerminalChildHandle,
   unavailableActionCredentials,
 } from "@intx/workflow";
+import { beginDelivery } from "@intx/workflow/runtime";
 import { loadWorkflowDefinitionFromClosure } from "@intx/workflow-host";
 import type { ApprovalSnapshot, KeyPair } from "@intx/types/runtime";
 import type {
@@ -65,6 +66,7 @@ import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
   waitForUpstreamPayload,
+  waitForUpstreamPayloads,
   type ChangeNotifier,
   sendAuthoritySet,
 } from "@intx/workflow-host/testing";
@@ -411,6 +413,7 @@ function buildBindings(opts: {
     scheduler: {
       scheduleIn: () => () => undefined,
     },
+    earliestQueuedTimer: () => undefined,
     evaluateGrants: async () => ({
       effect: "allow" as const,
       matchingGrants: [],
@@ -602,6 +605,489 @@ describe("runWorkflowChild", () => {
     expect(result.triggeredRunIds).toEqual(["run-1"]);
     expect(result.finalCredentialsSnapshot).not.toBeNull();
     expect(result.finalCredentialsSnapshot?.steps).toHaveLength(1);
+  });
+
+  test("a later quiet check supersedes one still waiting, which is not answered", async () => {
+    const baseDir = await makeTempDir("child-quiet-superseded-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: createMemoryFrameStream().writer,
+      bindings: buildBindings({ baseDir, childKeyPair }),
+    });
+    await waitForUpstreamPayload(childToSupervisor, "ready");
+
+    // Input on its way to a run keeps the child from being quiet.
+    const delivered = beginDelivery();
+    try {
+      for (const requestId of ["quiet-abandoned", "quiet-current"]) {
+        await supervisorSender.send({
+          type: "quiet.request",
+          data: { requestId, runId: "run-1", wait: true },
+        });
+      }
+      // The child takes frames in order, so both checks wait once this
+      // answers.
+      await supervisorSender.send({
+        type: "parked-correlations.request",
+        data: { requestId: "parked-1" },
+      });
+      await waitForUpstreamPayload(
+        childToSupervisor,
+        "parked-correlations.response",
+      );
+    } finally {
+      delivered();
+    }
+    await waitForUpstreamPayload(childToSupervisor, "quiet.response");
+    await supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "quiet-after", runId: "run-1", wait: false },
+    });
+    const answers = await waitForUpstreamPayloads(
+      childToSupervisor,
+      "quiet.response",
+      2,
+    );
+    expect(answers.map((answer) => answer.data.requestId)).toEqual([
+      "quiet-current",
+      "quiet-after",
+    ]);
+
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+  });
+
+  test.each([true, false])(
+    "a quiet check a run ends during answers it as ended (wait: %p)",
+    async (wait) => {
+      const baseDir = await makeTempDir("child-quiet-ends-");
+      const supervisorKeyPair = await generateKeyPair();
+      const childKeyPair = await generateKeyPair();
+      const channelId = generateChannelId();
+      const hmacKey = generateHmacKey();
+      const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+        await materializeClosure("child-def-", emptyWorkflowDefinition());
+      await seedProcessingEntry(
+        baseDir,
+        { kind: "workflow-run", id: "deployment-x" },
+        {
+          address: "deployment-x@example.com",
+          messageId: "msg-1",
+          receivedAt: 1,
+          text: "hello from the inbox",
+        },
+      );
+      const supervisorToChild = createMemoryNdjsonStream();
+      const childToSupervisor = createMemoryNdjsonStream();
+      const env = parseSpawnTimeEnv(
+        makeSpawnEnv({
+          channelId,
+          hmacKeyHex: hexEncode(hmacKey),
+          hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+          definitionHash,
+          closurePackageDir,
+        }),
+      );
+      const supervisorSender = createControlChannelSender({
+        privateKeySeed: supervisorKeyPair.privateKey,
+        channelId,
+        writer: supervisorToChild.writer,
+      });
+      await sendAuthoritySet(supervisorSender, {
+        snapshot: AUTHORITY_SNAPSHOT,
+      });
+      const runPromise = runWorkflowChild({
+        env,
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: createMemoryFrameStream().writer,
+        bindings: buildBindings({ baseDir, childKeyPair }),
+      });
+      await waitForUpstreamPayload(childToSupervisor, "ready");
+
+      // The check starts before the run exists and waits past its end.
+      const delivered = beginDelivery();
+      try {
+        await supervisorSender.send({
+          type: "quiet.request",
+          data: { requestId: "quiet-1", runId: "run-1", wait },
+        });
+        await supervisorSender.send({
+          type: "trigger.fire",
+          data: {
+            runId: "run-1",
+            messageId: "msg-1",
+            receivedAt: 1,
+            payload: textMail("hello from the inbox"),
+          },
+        });
+        await waitForUpstreamPayload(childToSupervisor, "terminal.event");
+      } finally {
+        delivered();
+      }
+      expect(
+        (await waitForUpstreamPayload(childToSupervisor, "quiet.response"))
+          .data,
+      ).toMatchObject({ requestId: "quiet-1", ended: true });
+
+      await supervisorSender.send({
+        type: "shutdown",
+        data: { reason: "test done" },
+      });
+      supervisorToChild.close();
+      await runPromise;
+    },
+  );
+
+  test("answers a quiet check with the earliest queued timer, and one for an ended run as ended", async () => {
+    const baseDir = await makeTempDir("child-quiet-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
+    await seedProcessingEntry(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      {
+        address: "deployment-x@example.com",
+        messageId: "msg-1",
+        receivedAt: 1,
+        text: "hello from the inbox",
+      },
+    );
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const wakeAt = "2026-10-02T00:00:00.000Z";
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      earliestQueuedTimer: () => new Date(wakeAt),
+    };
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+    await waitForUpstreamPayload(childToSupervisor, "ready");
+
+    await supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "quiet-1", runId: "run-1", wait: false },
+    });
+    expect(
+      (await waitForUpstreamPayload(childToSupervisor, "quiet.response")).data,
+    ).toEqual({ requestId: "quiet-1", quiet: true, wakeAt });
+
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: {
+        runId: "run-1",
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: textMail("hello from the inbox"),
+      },
+    });
+    await waitForUpstreamPayload(childToSupervisor, "terminal.event");
+    await supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "quiet-2", runId: "run-1", wait: true },
+    });
+    const answers = await waitForUpstreamPayloads(
+      childToSupervisor,
+      "quiet.response",
+      2,
+    );
+    // An ended run decides nothing about quiet, so it reports no timer.
+    expect(answers[1]?.data).toEqual({
+      requestId: "quiet-2",
+      quiet: false,
+      ended: true,
+    });
+
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+  });
+
+  test("answers a quiet check as not quiet while a step is in flight", async () => {
+    const baseDir = await makeTempDir("child-quiet-step-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-quiet-step-def-", {
+        id: "test-workflow",
+        triggers: [],
+        steps: { "step-1": agentStep("step-1") },
+        stepOrder: ["step-1"],
+      });
+    await seedProcessingEntry(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      {
+        address: "deployment-x@example.com",
+        messageId: "msg-1",
+        receivedAt: 1,
+        text: "hello from the inbox",
+      },
+    );
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const stepStarted = Promise.withResolvers<undefined>();
+    const finishStep = Promise.withResolvers<undefined>();
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      invokeStep: async () => {
+        stepStarted.resolve(undefined);
+        await finishStep.promise;
+        return { output: null };
+      },
+    };
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: createMemoryFrameStream().writer,
+      bindings,
+    });
+    await waitForUpstreamPayload(childToSupervisor, "ready");
+
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: {
+        runId: "run-1",
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: textMail("hello from the inbox"),
+      },
+    });
+    await stepStarted.promise;
+    await supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "quiet-1", runId: "run-1", wait: false },
+    });
+    expect(
+      (await waitForUpstreamPayload(childToSupervisor, "quiet.response")).data,
+    ).toEqual({ requestId: "quiet-1", quiet: false });
+
+    finishStep.resolve(undefined);
+    await waitForUpstreamPayload(childToSupervisor, "terminal.event");
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+  });
+
+  test("answers a quiet check as not quiet when work starts while it reads the run's history", async () => {
+    const baseDir = await makeTempDir("child-quiet-read-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const base = buildBindings({ baseDir, childKeyPair });
+    // The check reads the run's log before it decides and again after; the
+    // second read is held.
+    let reads: number | null = null;
+    const held = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const bindings: RunWorkflowChildBindings = {
+      ...base,
+      substrate: {
+        ...base.substrate,
+        openCommittedReads: async (...args) => {
+          if (reads !== null && (reads += 1) === 2) {
+            held.resolve(undefined);
+            await release.promise;
+          }
+          return base.substrate.openCommittedReads(...args);
+        },
+      },
+    };
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: createMemoryFrameStream().writer,
+      bindings,
+    });
+    await waitForUpstreamPayload(childToSupervisor, "ready");
+
+    reads = 0;
+    await supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "quiet-1", runId: "run-1", wait: false },
+    });
+    await held.promise;
+    // Activity that starts and ends during the read, as a step a timer began
+    // can; nothing is working by the time the answer goes out.
+    beginDelivery()();
+    release.resolve(undefined);
+    expect(
+      (await waitForUpstreamPayload(childToSupervisor, "quiet.response")).data,
+    ).toEqual({ requestId: "quiet-1", quiet: false });
+
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+  });
+
+  test("answers a quiet check it cannot carry out with the error, as not quiet", async () => {
+    const baseDir = await makeTempDir("child-quiet-error-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const base = buildBindings({ baseDir, childKeyPair });
+    let failReads = false;
+    const bindings: RunWorkflowChildBindings = {
+      ...base,
+      substrate: {
+        ...base.substrate,
+        openCommittedReads: (...args) =>
+          failReads
+            ? Promise.reject(new Error("the run log could not be read"))
+            : base.substrate.openCommittedReads(...args),
+      },
+    };
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: createMemoryFrameStream().writer,
+      bindings,
+    });
+    await waitForUpstreamPayload(childToSupervisor, "ready");
+
+    failReads = true;
+    await supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "quiet-1", runId: "run-1", wait: false },
+    });
+    expect(
+      (await waitForUpstreamPayload(childToSupervisor, "quiet.response")).data,
+    ).toEqual({
+      requestId: "quiet-1",
+      quiet: false,
+      error: "the run log could not be read",
+    });
+    failReads = false;
+
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
   });
 
   test("routes a mailbox.notify to the watch registry as an exists event", async () => {
@@ -2183,6 +2669,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       actionCredentials: () => unavailableActionCredentials,
       spawnChild: async () => createTerminalChildHandle("completed"),
       scheduler: { scheduleIn: () => () => undefined },
+      earliestQueuedTimer: () => undefined,
       evaluateGrants: async () => ({
         effect: "allow" as const,
         matchingGrants: [],
@@ -2283,6 +2770,9 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     expect(spy.replies[1]).toContain("alpha body");
     expect(spy.replies[1]).toContain("bravo body");
 
+    // Both runs end before the undeploy, so none is left counted as work
+    // in this process.
+    await waitForUpstreamPayloads(childToSupervisor, "terminal.event", 2);
     // Undeploy -> shutdown. Eviction runs the wrapped close exactly once
     // and the LSP subprocess dies.
     await supervisorSender.send({
@@ -2378,6 +2868,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       actionCredentials: () => unavailableActionCredentials,
       spawnChild: async () => createTerminalChildHandle("completed"),
       scheduler: { scheduleIn: () => () => undefined },
+      earliestQueuedTimer: () => undefined,
       evaluateGrants: async () => ({
         effect: "allow" as const,
         matchingGrants: [],
@@ -2466,6 +2957,9 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     expect(spy.sourceRotations[0]?.defaultSource).toBe("rotated");
     expect(factoryCalls).toBe(1);
 
+    // The run ends before the undeploy, so it is not left counted as work in
+    // this process.
+    await waitForUpstreamPayload(childToSupervisor, "terminal.event");
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "undeploy" },

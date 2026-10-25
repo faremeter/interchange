@@ -58,6 +58,7 @@ import {
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "@intx/hub-sessions/substrate";
 import {
+  beginDelivery,
   withRunCommitBarrier,
   type RepoStore as RuntimeRepoStore,
 } from "@intx/workflow/runtime";
@@ -186,9 +187,9 @@ export type SchedulerHandle = {
    */
   cancelQueued(runId: string, timerId: string): void;
   /**
-   * Test-visible view of currently-queued timers. The shape is
-   * intentionally narrow: the runtime body never inspects the
-   * scheduler's queue; tests assert on it directly.
+   * The currently-queued timers. The runtime body never inspects the
+   * queue; a child going quiet reads it for the earliest deadline, and
+   * tests assert on it directly.
    */
   queuedTimers(): readonly {
     runId: string;
@@ -226,9 +227,17 @@ export function createWorkflowHostScheduler(
     const key = queueKey(runId, timerId);
     const entry = queues.get(key);
     if (entry === undefined) return;
+    // A fired timer is input on its way to the run that waits for it, from
+    // the moment it leaves the queue until its commit reaches the
+    // subscriptions that wait for it.
+    const endDelivery = beginDelivery();
     queues.delete(key);
-    if (stopped) return;
-    await commitTimerFired(opts, runId, timerId);
+    try {
+      if (stopped) return;
+      await commitTimerFired(opts, runId, timerId);
+    } finally {
+      endDelivery();
+    }
   }
 
   function enqueue(

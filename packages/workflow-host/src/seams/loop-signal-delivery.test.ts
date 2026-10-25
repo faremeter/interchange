@@ -162,8 +162,8 @@ function deliverOnceSubscribed(inner: SignalChannelHandle): {
   const channel: SignalChannel = {
     deliver: (name, payload, signalId) =>
       inner.deliver(name, payload, signalId),
-    async awaitNext(name, signal) {
-      const pending = inner.awaitNext(name, signal);
+    async awaitNext(name, onWake, signal) {
+      const pending = inner.awaitNext(name, onWake, signal);
       if (name === "go") resolveSubscribed();
       return pending;
     },

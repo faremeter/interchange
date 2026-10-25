@@ -32,6 +32,8 @@
 //        - `authority.set` -> replace the snapshot and the material.
 //        - `grants-updated` -> replace the credentialsSnapshot.
 //        - `drain` -> forward to the drain controller (no-op here).
+//        - `quiet.request` -> answer whether every run only waits on
+//          input from outside, and the earliest queued timer.
 //        - `shutdown` -> stop accepting new triggers and exit the
 //          loop.
 //
@@ -94,8 +96,18 @@ import {
   createInMemoryEffectLedger,
   createLoopIterationHandle,
   emptyState,
+  isTerminalRunPhase,
+  resumeFromLog,
   runtimeRun,
 } from "@intx/workflow";
+import {
+  activityStarts,
+  beginDelivery,
+  flushAllBuffers,
+  isQuiet,
+  whenDelivered,
+  whenQuiet,
+} from "@intx/workflow/runtime";
 
 import {
   createWorkflowHostDrainController,
@@ -340,6 +352,11 @@ export interface RunWorkflowChildBindings {
   }) => Promise<void>;
   /** Host-process scheduler singleton. The child consumes the same instance. */
   scheduler: Scheduler;
+  /**
+   * The earliest timer the host scheduler has queued, which a stopped child
+   * must be woken for.
+   */
+  earliestQueuedTimer: () => Date | undefined;
   /** Grant evaluator wired against the host's grant-rule grammar. */
   evaluateGrants: GrantEvaluator;
   /**
@@ -988,6 +1005,7 @@ export async function runWorkflowChild(
   upstreamSender.open();
 
   const triggeredRunIds: string[] = [];
+  const quietCheck: { current: AbortController | null } = { current: null };
 
   // Resolve the mailbox watch registry the control loop routes `mailbox.notify`
   // frames to. Production wires it on the bindings (the substrate factory builds
@@ -1022,6 +1040,7 @@ export async function runWorkflowChild(
           triggeredRunIds,
           runsInFlight,
           cancellationBarrier,
+          quietCheck,
           warmCache,
           sourcesRef,
           credentialMaterialRef,
@@ -1111,6 +1130,72 @@ export async function runWorkflowChild(
   };
 }
 
+// Whether every run only waits on input from outside, for a supervisor that
+// stops the child once it is. Buffered events are made durable and input on
+// its way to a run is delivered first, so the answer holds for the log the
+// stopped child would leave. A check that fails is reported, not retried.
+async function answerQuiet(
+  ctx: {
+    bindings: RunWorkflowChildBindings;
+    runtimeRepoStore: ReturnType<typeof createWorkflowRunRepoStore>;
+    upstreamSender: ControlChannelSender;
+    quietCheck: { current: AbortController | null };
+  },
+  data: Extract<ControlPayload, { type: "quiet.request" }>["data"],
+): Promise<void> {
+  // The supervisor runs one standby attempt at a time, so a check still
+  // waiting when the next arrives belongs to one it gave up on.
+  ctx.quietCheck.current?.abort();
+  const superseded = new AbortController();
+  ctx.quietCheck.current = superseded;
+  let quiet = false;
+  let ended = false;
+  let wakeAt: Date | undefined;
+  let error: string | undefined;
+  try {
+    const runEnded = async (): Promise<boolean> =>
+      isTerminalRunPhase(
+        resumeFromLog(data.runId, await ctx.runtimeRepoStore.read(data.runId))
+          .phase,
+      );
+    ended = await runEnded();
+    while (!ended) {
+      if (data.wait) await whenQuiet(superseded.signal);
+      await flushAllBuffers();
+      await whenDelivered();
+      const startsAtDecision = activityStarts();
+      quiet = isQuiet();
+      // Read with `quiet`: a timer that leaves the queue after the decision
+      // is still reported, and wakes the deployment at once.
+      wakeAt = ctx.bindings.earliestQueuedTimer();
+      // The run can end while the check waits or makes its events durable.
+      ended = await runEnded();
+      // Work that started during that read, such as a step a timer began,
+      // may already have written history, so the decision no longer holds.
+      if (activityStarts() !== startsAtDecision) quiet = false;
+      if (quiet || !data.wait) break;
+    }
+  } catch (cause) {
+    if (superseded.signal.aborted) return;
+    error = cause instanceof Error ? cause.message : String(cause);
+    logger.warn`workflow-child quiet check failed: ${error}`;
+    quiet = false;
+  } finally {
+    if (ctx.quietCheck.current === superseded) ctx.quietCheck.current = null;
+  }
+  if (superseded.signal.aborted) return;
+  await ctx.upstreamSender.send({
+    type: "quiet.response",
+    data: {
+      requestId: data.requestId,
+      quiet,
+      ...(ended ? { ended: true as const } : {}),
+      ...(wakeAt !== undefined ? { wakeAt: wakeAt.toISOString() } : {}),
+      ...(error !== undefined ? { error } : {}),
+    },
+  });
+}
+
 /**
  * Handle a single control-channel payload. Returns `true` when the
  * payload signals shutdown so the caller exits the loop; otherwise
@@ -1139,6 +1224,7 @@ async function handleControlPayload(
     triggeredRunIds: string[];
     runsInFlight: Map<string, RuntimeWorkflowRun>;
     cancellationBarrier: ReturnType<typeof createCancellationBarrier>;
+    quietCheck: { current: AbortController | null };
     warmCache: WarmAgentCache | undefined;
     sourcesRef: SourcesSnapshotRef;
     credentialMaterialRef: CredentialMaterialRef;
@@ -1323,6 +1409,7 @@ async function handleControlPayload(
       // runtime body's `signalChannel.awaitNext` peer either resolves
       // (deliver landed) or remains pending until a subsequent
       // delivery.
+      const endDelivery = beginDelivery();
       const transientSignalChannel = createWorkflowHostSignalChannel({
         repoStore: ctx.bindings.substrate,
         runtimeStore: ctx.runtimeRepoStore,
@@ -1349,6 +1436,7 @@ async function handleControlPayload(
           logger.warn`signal.deliver commit failed runId=${payload.data.runId} signalName=${payload.data.signalName}: ${reason}`;
         } finally {
           await transientSignalChannel.stop();
+          endDelivery();
         }
       })();
       return false;
@@ -1590,6 +1678,19 @@ async function handleControlPayload(
       }
       ctx.substrateWriteBridge.handleWriteResponse(payload.data);
       return false;
+    }
+    case "quiet.request": {
+      // Answered off the loop: a wait for quiet can outlast many frames, and
+      // the flush it starts with needs the write responses this loop takes.
+      void answerQuiet(ctx, payload.data).catch((cause: unknown) => {
+        logger.error`workflow-child quiet.response send failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+      return false;
+    }
+    case "quiet.response": {
+      throw new Error(
+        "workflow-child received a `quiet.response` frame on its inbound control channel; this is a child-only upstream payload",
+      );
     }
     case "parked-correlations.request": {
       // Answer the supervisor's re-registration enumeration from durable

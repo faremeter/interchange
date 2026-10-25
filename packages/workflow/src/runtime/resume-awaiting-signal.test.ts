@@ -777,7 +777,7 @@ describe("signal committed before the wait starts", () => {
     const channel: SignalChannel = {
       deliver: (name, payload, signalId) =>
         inner.deliver(name, payload, signalId),
-      awaitNext: (name, signal) => {
+      awaitNext: (name, onWake, signal) => {
         waits += 1;
         landed ??= base.repoStore.append(runId, {
           kind: "SignalReceived",
@@ -787,7 +787,7 @@ describe("signal committed before the wait starts", () => {
           signalId: "sig-gap",
           payload: { gap: true },
         });
-        return inner.awaitNext(name, signal);
+        return inner.awaitNext(name, onWake, signal);
       },
     };
     const env = { ...base, signalChannel: channel };

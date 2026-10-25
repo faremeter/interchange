@@ -958,6 +958,35 @@ const controlPayloadFactories = defineControlPayloadFactories({
         }).array(),
       },
     }),
+  "quiet.request": () =>
+    type({
+      // Supervisor asks whether every run only waits on input from outside,
+      // so it can stop the child. With `wait` the child answers once it is
+      // quiet; without, it answers at once. While the run lives it first
+      // makes every buffered event durable. `runId` is the deployment's run.
+      // One check is out at a time: a new request supersedes one still
+      // waiting, which gets no answer.
+      type: "'quiet.request'",
+      data: {
+        requestId: "string > 0",
+        runId: "string > 0",
+        wait: "boolean",
+      },
+    }),
+  "quiet.response": () =>
+    type({
+      // `ended` when the deployment's run has ended, so there is nothing to
+      // stop it for. `wakeAt` is the earliest timer the child has queued.
+      // `error` when the child could not check.
+      type: "'quiet.response'",
+      data: {
+        requestId: "string > 0",
+        quiet: "boolean",
+        "ended?": "true",
+        "wakeAt?": "string.date.iso",
+        "error?": "string",
+      },
+    }),
   "resumed.runs": () =>
     type({
       // Child reports self-discovered runs after reconnect or recycle.

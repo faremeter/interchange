@@ -2983,6 +2983,15 @@ export function createSidecarSubstrateFactory(
         });
       },
       scheduler,
+      earliestQueuedTimer: () => {
+        let earliest: number | undefined;
+        for (const timer of hostScheduler.queuedTimers()) {
+          if (earliest === undefined || timer.fireAtMs < earliest) {
+            earliest = timer.fireAtMs;
+          }
+        }
+        return earliest === undefined ? undefined : new Date(earliest);
+      },
       evaluateGrants: evaluateGrantsAdapter,
       loadParkedApproval,
       readParkedApprovalOps,

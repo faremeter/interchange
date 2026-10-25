@@ -375,7 +375,7 @@ describe("childWorkflow signal relay", () => {
       repoStore,
       signalChannel: {
         deliver: () => Promise.reject(new Error("deliver is not used")),
-        awaitNext: (name, signal) => {
+        awaitNext: (name, _onWake, signal) => {
           if (!injected && name === "go") {
             injected = true;
             const last = parentTip;
@@ -1347,6 +1347,7 @@ describe("park-release watch", () => {
     const watch = handle.waitForParkRelease?.(
       "go",
       new AbortController().signal,
+      () => undefined,
     );
     if (watch === undefined) {
       throw new Error("handle does not watch a park release");
@@ -1467,7 +1468,7 @@ async function raceLoggedSignalAgainstRelease(
     repoStore,
     signalChannel: {
       deliver: () => Promise.reject(new Error("deliver is not used")),
-      awaitNext: (_name, signal) => pendingSignal(signal),
+      awaitNext: (_name, _onWake, signal) => pendingSignal(signal),
     },
     spawnChild: () =>
       Promise.resolve({
@@ -1985,11 +1986,12 @@ describe("a parked childWorkflow survives a process restart", () => {
     // open keeps that crash window: the parent log names a child run whose
     // own log was never written. Letting the child start would share this
     // process's commit chain with the resume.
+    const spawner = Promise.withResolvers<never>();
     const first = startRelayed({
       definition: parent,
       runId,
       invokeStep: async () => ({ output: null }),
-      spawnChild: () => new Promise<never>(() => undefined),
+      spawnChild: () => spawner.promise,
     });
     void first.run.complete;
     await waitForEvent(
@@ -2020,6 +2022,10 @@ describe("a parked childWorkflow survives a process restart", () => {
     });
     await run.signal("go", { done: true }, "sig-keep");
     const result = await run.complete;
+    // The first run would otherwise keep working for the rest of the
+    // process, and other test files share it.
+    spawner.reject(new Error("the crash window is over"));
+    await first.run.complete.catch(() => undefined);
 
     expect(result.terminalStatus).toBe("completed");
     expect(seen).toEqual([{ token: "keep" }]);

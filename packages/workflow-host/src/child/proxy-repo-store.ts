@@ -36,6 +36,8 @@ import type {
   WriteResult,
 } from "@intx/hub-sessions/substrate";
 
+import { beginDelivery } from "@intx/workflow/runtime";
+
 import type { ChildSubstrateWriteBridge } from "./substrate-write-bridge";
 
 type WriteTreeArgs = Parameters<RepoStore["writeTree"]>[3];
@@ -79,7 +81,21 @@ type SubscriberState = {
     | null;
   closed: boolean;
   signal: AbortSignal;
+  // A commit is on its way to this subscriber's consumer while an entry is
+  // buffered, or handed out and the consumer has not come back for the next.
+  handedOut: boolean;
+  endDelivery: (() => void) | null;
 };
+
+function noteDelivery(sub: SubscriberState): void {
+  const delivering = !sub.closed && (sub.buffer.length > 0 || sub.handedOut);
+  if (delivering && sub.endDelivery === null) {
+    sub.endDelivery = beginDelivery();
+  } else if (!delivering && sub.endDelivery !== null) {
+    sub.endDelivery();
+    sub.endDelivery = null;
+  }
+}
 
 export function createProxyWorkflowRunRepoStore(
   opts: CreateProxyWorkflowRunRepoStoreOpts,
@@ -132,10 +148,13 @@ export function createProxyWorkflowRunRepoStore(
       if (sub.waiter !== null) {
         const w = sub.waiter;
         sub.waiter = null;
+        sub.handedOut = true;
+        noteDelivery(sub);
         w({ value: entry, done: false });
         continue;
       }
       sub.buffer.push(entry);
+      noteDelivery(sub);
     }
   }
 
@@ -251,10 +270,13 @@ export function createProxyWorkflowRunRepoStore(
         waiter: null,
         closed: false,
         signal: subOpts.signal,
+        handedOut: false,
+        endDelivery: null,
       };
       set.add(sub);
       const cleanup = (): void => {
         sub.closed = true;
+        noteDelivery(sub);
         const current = subscribers.get(key);
         if (current !== undefined) {
           current.delete(sub);
@@ -279,16 +301,21 @@ export function createProxyWorkflowRunRepoStore(
           return this;
         },
         next(): Promise<IteratorResult<{ seq: number; event: unknown }>> {
+          sub.handedOut = false;
           if (sub.closed) {
             return Promise.resolve({ value: undefined, done: true });
           }
           if (sub.buffer.length > 0) {
             const next = sub.buffer.shift();
             if (next === undefined) {
+              noteDelivery(sub);
               return Promise.resolve({ value: undefined, done: true });
             }
+            sub.handedOut = true;
+            noteDelivery(sub);
             return Promise.resolve({ value: next, done: false });
           }
+          noteDelivery(sub);
           return new Promise((resolve) => {
             sub.waiter = resolve;
           });

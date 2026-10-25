@@ -126,6 +126,9 @@ type Awaiter = {
     correlationId?: string;
   }) => void;
   reject: (cause: unknown) => void;
+  // The caller's `onWake`, called before this channel stops counting the
+  // entry that settles the wait.
+  wake: () => void;
   signal?: AbortSignal;
   onAbort?: () => void;
 };
@@ -259,28 +262,25 @@ export function createWorkflowHostSignalChannel(
             // the same slot picks it up via the state-reader path.
             break;
           }
+          const received = {
+            payload: entry.event.payload,
+            signalId: entry.event.signalId,
+            ...(entry.event.correlationId !== undefined
+              ? { correlationId: entry.event.correlationId }
+              : {}),
+          };
+          // Both the teardown and the next pull end this entry's delivery.
+          next.wake();
           if (awaiterCount(slot) === 0) {
             // Resolving the last awaiter on this subscription. Tear
             // down before the resolve so any awaitNext call inside
             // the awaiter's continuation installs a fresh
             // subscription instead of joining a dead one.
             teardown();
-            next.resolve({
-              payload: entry.event.payload,
-              signalId: entry.event.signalId,
-              ...(entry.event.correlationId !== undefined
-                ? { correlationId: entry.event.correlationId }
-                : {}),
-            });
+            next.resolve(received);
             return;
           }
-          next.resolve({
-            payload: entry.event.payload,
-            signalId: entry.event.signalId,
-            ...(entry.event.correlationId !== undefined
-              ? { correlationId: entry.event.correlationId }
-              : {}),
-          });
+          next.resolve(received);
         }
       } finally {
         // Catches the queue-drained natural break, the `stopped`
@@ -381,18 +381,23 @@ export function createWorkflowHostSignalChannel(
           ),
       );
     },
-    async awaitNext(name, signal, correlationId) {
+    async awaitNext(name, onWake, signal, correlationId) {
       if (stopped) {
+        onWake();
         throw new Error("signal channel: awaitNext after stop");
       }
       if (signal !== undefined && signal.aborted) {
+        onWake();
         throw new Error("aborted");
       }
       // Drain the state-machine queue first. A signal that was
       // committed before the awaiter subscribed lives in the name
       // queue, or under its correlation, after log replay.
       const queued = peekState(name, correlationId);
-      if (queued !== null) return queued;
+      if (queued !== null) {
+        onWake();
+        return queued;
+      }
 
       const slot = slotOf(name, correlationId);
       return new Promise<{
@@ -403,10 +408,12 @@ export function createWorkflowHostSignalChannel(
         const awaiter: Awaiter = {
           resolve,
           reject,
+          wake: onWake,
           ...(signal !== undefined ? { signal } : {}),
         };
         if (signal !== undefined) {
           const onAbort = (): void => {
+            onWake();
             const list = awaiters.get(slot);
             if (list !== undefined) {
               const idx = list.indexOf(awaiter);
@@ -438,6 +445,7 @@ export function createWorkflowHostSignalChannel(
           if (awaiter.signal !== undefined && awaiter.onAbort !== undefined) {
             awaiter.signal.removeEventListener("abort", awaiter.onAbort);
           }
+          awaiter.wake();
           awaiter.reject(new Error("signal channel stopped"));
         }
       }

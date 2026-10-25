@@ -146,10 +146,13 @@ export interface SignalChannel {
    * delivery resolves. Resolves with the payload and the assigned
    * `signalId`. Rejects on `signal.abort()` if `signal` is supplied.
    * Must see every signal delivered after the call, since the runtime
-   * only checks the log for ones delivered before it.
+   * only checks the log for ones delivered before it. A channel whose
+   * process answers a quiet check calls `onWake` before it settles the
+   * wait, while whatever woke it still counts as delivery.
    */
   awaitNext(
     name: string,
+    onWake: () => void,
     signal?: AbortSignal,
     correlationId?: string,
   ): Promise<{ payload: unknown; signalId: string; correlationId?: string }>;
@@ -441,9 +444,15 @@ export type SuspendableChildPark = {
  * signal at a time reads `readParkRelease` before it accepts a signal that
  * is already waiting, and uses `waitForParkRelease` to learn that the open
  * park ended without consuming a sibling.
+ *
+ * Each wait takes an `onWake`, called before the wait settles while
+ * whatever settles it still counts as work, so a caller that waits idle
+ * counts again first.
  */
 export type SuspendableChildHandle = {
-  next(): Promise<
+  next(
+    onWake: () => void,
+  ): Promise<
     | { kind: "park"; park: SuspendableChildPark }
     | { kind: "signal-park"; name: string; timeout?: number }
     | { kind: "input-park"; correlationId: string }
@@ -491,6 +500,7 @@ export type SuspendableChildHandle = {
   waitForParkRelease?(
     name: string,
     abort: AbortSignal,
+    onWake: () => void,
   ): Promise<
     | { kind: "released" }
     | {
@@ -507,7 +517,7 @@ export type SuspendableChildHandle = {
    * Present on the live suspendable handle. A terminal handle has no
    * channel and omits it.
    */
-  whenSignalAwaiter?(name: string): Promise<void>;
+  whenSignalAwaiter?(name: string, onWake: () => void): Promise<void>;
 };
 
 /**

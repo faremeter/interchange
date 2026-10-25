@@ -78,13 +78,13 @@ export function createObservedSignalChannel(): ObservedSignalChannel {
       }
       return inner.deliver(name, payload, signalId, correlationId);
     },
-    awaitNext(name, signal, correlationId) {
+    awaitNext(name, onWake, signal, correlationId) {
       counts.set(name, countOf(name) + 1);
       announce();
       if (correlationId === undefined) {
-        return inner.awaitNext(name, signal);
+        return inner.awaitNext(name, onWake, signal);
       }
-      return inner.awaitNext(name, signal, correlationId);
+      return inner.awaitNext(name, onWake, signal, correlationId);
     },
     awaitedCount: countOf,
     async awaitAwaitedCount(name, count) {

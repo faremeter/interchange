@@ -54,6 +54,8 @@ import {
   type SidecarChildStepInvoker,
 } from "./substrate-factory";
 
+const noWake = (): void => undefined;
+
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-abort";
 const WORKFLOW_RUN_REPO_ID: RepoId = {
@@ -316,7 +318,7 @@ describe("in-process child parent-abort", () => {
     abort.abort();
 
     const result = await settled;
-    const event = await result.next();
+    const event = await result.next(noWake);
     expect(event.kind).toBe("terminal");
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("failed");
@@ -350,11 +352,11 @@ describe("in-process child parent-abort", () => {
 
     // The body parked on an approval and the handle surfaced it: the child is
     // live. Abort the parent now.
-    const parked = await handle.next();
+    const parked = await handle.next(noWake);
     expect(parked.kind).toBe("park");
     abort.abort();
 
-    const terminal = await handle.next();
+    const terminal = await handle.next(noWake);
     expect(terminal.kind).toBe("terminal");
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
     expect(terminal.terminalStatus).toBe("failed");

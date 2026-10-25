@@ -487,7 +487,7 @@ The workflow-process runs code the operator deploys but the sidecar does not ful
 
 Each deployment gets two channels:
 
-- **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries the child's first `authority.set`, trigger fires, signal deliveries, drain, recycle, shutdown, grants-updated, credentials-updated, sources-updated, and back from the child its `definition` report and its `ready` signal. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
+- **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries the child's first `authority.set`, trigger fires, signal deliveries, drain, quiet checks, recycle, shutdown, grants-updated, credentials-updated, sources-updated, and back from the child its `definition` report and its `ready` signal. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
 - **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-message `message.run.started` / `message.run.ended` brackets). High rate. Sending lives in `packages/workflow-host/src/ipc/event-sender.ts`; receiving and payload validation live in `event-channel.ts`.
 
 Each side signs control frames with its own private key and verifies incoming frames against its peer's public key, so the child cannot forge supervisor commands. Symmetric HMAC authenticates the event stream at reactor cadence — Ed25519 per frame at that rate would dominate runtime cost. The control receiver validates each payload against its message kind's schema. Those schemas and the `InferenceEvent` schema applied by `parseInferenceEvent` accept disjoint payload shapes: control schemas reject inference-event shapes, and the event schema rejects control-plane shapes, so a confused-deputy attack that smuggles a `drain` or `recycle` over the event channel fails at validation.
@@ -660,6 +660,13 @@ ChannelSender` writes against; the event channel is the
      supervisor's recycle path drives the kill/respawn from outside
      the child, so the downstream `recycle` payload exists for
      symmetry with the protocol but is not the trigger.
+   - `quiet.request` -> make every buffered event durable and answer
+     whether every run only waits on input from outside, with the
+     earliest timer the scheduler has queued; with `wait`, answer once
+     that holds. A run that has ended answers `ended`, and a check that
+     fails answers with its error.
+     A check still waiting when the next one arrives is dropped
+     unanswered, since the supervisor gave up on it.
    - `shutdown` -> stop accepting new triggers and exit the loop.
 
 #### Trust Anchors
@@ -696,9 +703,9 @@ while the run has no snapshot.
 
 - **Control channel.** Supervisor -> child. Carries every
   `ControlPayload` variant (`authority.set`, `trigger.fire`,
-  `signal.deliver`, `drain`, `recycle`, `shutdown`, `grants-updated`,
-  `credentials-updated`, `sources-updated`) plus the child's upstream
-  `ready` ride. Every
+  `signal.deliver`, `drain`, `quiet.request`, `recycle`, `shutdown`,
+  `grants-updated`, `credentials-updated`, `sources-updated`) plus the
+  child's upstream `ready` ride. Every
   inbound frame is verified against `HOST_PUBKEY`; the receiver
   iterator crashes the loop on any signature/channelId/seq
   violation.
