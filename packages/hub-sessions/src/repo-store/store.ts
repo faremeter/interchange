@@ -343,10 +343,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return readsWith(dir, fs, () => cacheFor(dir));
   }
 
-  // One isomorphic-git cache for a span of a pack receive's reads, so
-  // the span loads and SHA-1-verifies each pack once, however many reads
-  // it makes. `fn` gets the cache as a thunk that counts each call, and
-  // the count is charged to the dir's entry when the span ends.
+  // One isomorphic-git cache for a span of reads: a step of a pack
+  // receive, or a walk that numbers a ref update or seeds a
+  // subscriber. The span loads and SHA-1-verifies each pack once,
+  // however many reads it makes. `fn` gets the cache as a thunk that
+  // counts each call, and the count is charged to the dir's entry when
+  // the span ends.
   async function withReceiveCache<T>(
     dir: string,
     fn: (cache: () => object) => Promise<T>,
@@ -414,13 +416,15 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     };
   }
 
-  // Per-(repoId, ref) seq cache. Value is the seq of the ref's
-  // current tip; the next commit on the ref gets `cached + 1`. The
-  // cache is populated lazily — on each ref update we either bump
-  // the cached value or recompute it from `git.log` walk. Cleared
-  // on any failure inside the update path so a half-applied state
-  // never poisons future reads.
-  const seqCache = new Map<string, number>();
+  // Per-(repoId, ref) seq cache: a commit and its seq. In a complete
+  // history the seq of a commit is its depth (see `commitDepth`), which
+  // no later write can change, so an entry stays true for its commit
+  // after the ref moves on, and only shortens the next walk: a walk
+  // that does not meet the cached commit counts to the root. In a
+  // history with a missing parent the entry is the base the next seq
+  // advances from.
+  type CachedSeq = { tip: string; seq: number };
+  const seqCache = new Map<string, CachedSeq>();
 
   // Per-(repoId, ref) subscriber set. Each subscriber holds its own
   // buffer, kind filter, and waiter callback so concurrent
@@ -481,17 +485,46 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return `${repoId.kind}/${repoId.id}/${ref}`;
   }
 
-  // Count commits reachable from `ref`. Returns 0 when the ref does
-  // not yet exist. `git.log` returns newest-first; the count gives
-  // the seq the next commit would land at if added now (the current
-  // tip's seq is `count - 1`).
-  async function countCommits(dir: string, ref: string): Promise<number> {
-    try {
-      const entries = await git.log({ fs, dir, cache: cacheFor(dir), ref });
-      return entries.length;
-    } catch (err) {
-      if (hasCode(err) && err.code === "NotFoundError") return 0;
-      throw err;
+  // The seq of `sha`: the number of first-parent steps from it to its
+  // root commit, so a root has seq 0. The store writes no merge
+  // commits (writeTree commits one parent and a receive rejects a
+  // commit with more), so this is the position `replayHistory` gives
+  // the commit. The walk stops early at `known`, a commit whose seq it
+  // already has. A history with a missing parent, as a deploy pack or
+  // GC leaves it, has no replay entries to match. A walk that meets the
+  // missing parent counts the readable commits it walked: on from
+  // `known` when there is one, so a gap between two received tips
+  // still advances the seq, and from 0 at the oldest readable commit
+  // when there is none. Returns null only when `sha` itself is missing.
+  async function commitDepth(
+    dir: string,
+    cache: () => object,
+    sha: string,
+    known: CachedSeq | undefined,
+  ): Promise<number | null> {
+    let steps = 0;
+    let current = sha;
+    while (true) {
+      if (known !== undefined && current === known.tip) {
+        return known.seq + steps;
+      }
+      let parent: string | undefined;
+      try {
+        const { commit } = await git.readCommit({
+          fs,
+          dir,
+          cache: cache(),
+          oid: current,
+        });
+        parent = commit.parent[0];
+      } catch (err) {
+        if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+        if (steps === 0) return null;
+        return known === undefined ? steps - 1 : known.seq + steps;
+      }
+      if (parent === undefined) return steps;
+      steps += 1;
+      current = parent;
     }
   }
 
@@ -499,15 +532,18 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // the root commit and incrementing toward HEAD. Each entry's
   // `event` is the substrate-level commit descriptor — same shape
   // the live path emits, so replay and live are vocabulary-identical.
+  // `tip` is the newest commit of the replay, null when it is empty.
   async function replayHistory(
     dir: string,
     ref: string,
-  ): Promise<SubscribeEntry[]> {
+  ): Promise<{ entries: SubscribeEntry[]; tip: string | null }> {
     let entries: Awaited<ReturnType<typeof git.log>>;
     try {
       entries = await git.log({ fs, dir, cache: cacheFor(dir), ref });
     } catch (err) {
-      if (hasCode(err) && err.code === "NotFoundError") return [];
+      if (hasCode(err) && err.code === "NotFoundError") {
+        return { entries: [], tip: null };
+      }
       throw err;
     }
     const reversed = [...entries].reverse();
@@ -525,7 +561,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       out.push({ seq: i, event });
       prev = entry.oid;
     }
-    return out;
+    return { entries: out, tip: prev };
   }
 
   function deliverToSubscriber(sub: SubscriberState, entry: SubscribeEntry) {
@@ -547,9 +583,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
 
   // Called from inside the per-repo lock immediately after a
-  // successful ref update. Computes the new tip's seq (either by
-  // bumping the cached value or by walking the log), then fans the
-  // event out to every subscriber registered for this (repoId, ref).
+  // successful ref update. Computes the new tip's seq with a walk that
+  // stops at the cached commit, so an update that extends the cached
+  // tip reads only the commits it adds. Then fans the event out to
+  // every subscriber registered for this (repoId, ref).
   // Errors raised by individual subscriber delivery (e.g. buffer
   // overrun) are captured on the subscriber's state so the
   // ref-update path itself is never destabilised by a slow consumer.
@@ -560,18 +597,18 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     newSha: string,
   ): Promise<void> {
     const key = refKey(repoId, ref);
-    let seq: number;
-    const cached = seqCache.get(key);
-    if (cached !== undefined) {
-      seq = cached + 1;
-    } else {
-      const dir = repoDir(repoId);
-      const count = await countCommits(dir, ref);
-      // `count` is the number of commits including the one we just
-      // produced. The tip's seq is `count - 1`.
-      seq = Math.max(0, count - 1);
+    const dir = repoDir(repoId);
+    const seq = await withReceiveCache(dir, (cache) =>
+      commitDepth(dir, cache, newSha, seqCache.get(key)),
+    );
+    // The ref write before this call put `newSha` in the store, so a
+    // missing tip means the store lost an object it just wrote.
+    if (seq === null) {
+      throw new Error(
+        `ref_update_tip_missing: ${newSha} on ${ref} for ${repoId.kind}/${repoId.id}`,
+      );
     }
-    seqCache.set(key, seq);
+    seqCache.set(key, { tip: newSha, seq });
 
     const event: RepoStoreSubscribeEvent = {
       type: "ref.updated",
@@ -2544,29 +2581,46 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     let replayQueue: SubscribeEntry[] | null = null;
     let replayPrimed = false;
 
+    // Seed an empty seq cache with the ref tip's depth, so the next
+    // update's walk under the repo lock stops at that tip instead of
+    // reading the whole history. The seed runs with no repo lock, so an
+    // update can cache its own entry first; the seed then leaves that
+    // entry, which a history with a missing parent advances from. A
+    // kind that GC reclaims gets no seed walk: GC can remove an object
+    // during a walk with no lock, and the walk would count a history it
+    // saw cut short. Its first update counts under the lock instead.
+    async function seedFromTip(dir: string): Promise<void> {
+      if (seqCache.has(key) || isReclaimedByGC(repoId)) return;
+      const tip = await resolveRefSha(dir, ref);
+      if (tip === null) return;
+      const depth = await withReceiveCache(dir, (cache) =>
+        commitDepth(dir, cache, tip, undefined),
+      );
+      if (depth !== null && !seqCache.has(key)) {
+        seqCache.set(key, { tip, seq: depth });
+      }
+    }
+
     async function primeReplay(): Promise<void> {
       replayPrimed = true;
       const dir = repoDir(repoId);
       if (opts.from === "head") {
-        // Seed the seq cache so the next commit on the ref carries
-        // the correct seq even if no prior commit had ever populated
-        // it. Subscribers that come in with `from: "head"` see only
-        // new commits — there is no history to replay.
-        const cached = seqCache.get(key);
-        if (cached === undefined) {
-          const count = await countCommits(dir, ref);
-          if (count > 0) seqCache.set(key, count - 1);
-        }
+        // Subscribers that come in with `from: "head"` see only new
+        // commits — there is no history to replay.
+        await seedFromTip(dir);
         replayQueue = [];
         return;
       }
-      const all = await replayHistory(dir, ref);
-      // Seed the seq cache from the replay so live deliveries
-      // continue the seq sequence correctly.
-      if (all.length > 0) {
-        const last = all[all.length - 1];
-        if (last === undefined) throw new Error("unreachable");
-        seqCache.set(key, last.seq);
+      const { entries: all, tip } = await replayHistory(dir, ref);
+      // Seed an empty seq cache with the replay's tip. A replay with
+      // entries read the whole history, so its seed holds for every
+      // kind. A history that ends in a missing parent replays nothing,
+      // so its seed comes from a walk of the readable history.
+      const last = all.at(-1);
+      if (last !== undefined && tip !== null) {
+        if (!seqCache.has(key)) seqCache.set(key, { tip, seq: last.seq });
+      } else {
+        await seedFromTip(dir);
       }
       const fromSeq = opts.from.seq;
       replayQueue = all.filter((e) => e.seq >= fromSeq);

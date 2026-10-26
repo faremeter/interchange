@@ -579,8 +579,12 @@ export interface RepoStore {
    * `{ seq, event }` entries: one per commit on the ref. `seq` is
    * zero-indexed at the ref's root commit and counts ancestors
    * walking forward to HEAD, so the same commit always carries the
-   * same `seq` across restarts. The emitted `event` is the
-   * substrate-level commit descriptor; consumers that need richer
+   * same `seq` across restarts. A history with a missing parent (a
+   * pack that carries only its tip, or history GC removed) replays no
+   * entries. Its live `seq` advances by the readable commits each
+   * update adds, from 0 at the oldest readable commit when the store
+   * starts; it does not hold across restarts. The emitted `event` is
+   * the substrate-level commit descriptor; consumers that need richer
    * shapes layer their own decoding on top.
    *
    * Cancellation: when `opts.signal` aborts, the iterator ends
