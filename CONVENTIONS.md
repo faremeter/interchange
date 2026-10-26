@@ -18,7 +18,7 @@ This document describes the coding conventions, patterns, and best practices use
 - [Testing](#testing)
 - [Logging](#logging)
 - [Documentation](#documentation)
-- [ESLint Rules](#eslint-rules)
+- [Lint Rules](#lint-rules)
 - [Git Workflow](#git-workflow)
 
 ---
@@ -50,7 +50,7 @@ make all
 # Individual targets
 make build           # tsc -b --noEmit --force (revalidates the entire graph)
 make build-admin-ui  # admin-ui production bundle (vite build)
-make lint            # Prettier + ESLint + API docs freshness
+make lint            # Prettier + oxlint + API docs freshness
 make format          # Auto-format with Prettier
 make test            # Run bun tests
 make test-e2e        # Admin UI browser end-to-end suite (excluded from all)
@@ -319,7 +319,7 @@ function processData(data: unknown) {
 }
 ```
 
-Type assertions (`as Type`) bypass type checking and often indicate interface problems. The ESLint rule `@typescript-eslint/no-unsafe-type-assertion` is enabled at error level to enforce this. Prefer runtime validation:
+Type assertions (`as Type`) bypass type checking and often indicate interface problems. The `no-unsafe-type-assertion` lint rule is enabled at error level to enforce this. Prefer runtime validation:
 
 ```typescript
 // Bad
@@ -399,7 +399,7 @@ onChange={(value) => {
 
 #### Router params
 
-Use TanStack Router's `from` parameter instead of `strict: false` with a cast. An ESLint `no-restricted-syntax` rule enforces this:
+Use TanStack Router's `from` parameter instead of `strict: false` with a cast. A `no-restricted-syntax` lint rule enforces this:
 
 ```typescript
 // Bad
@@ -800,7 +800,7 @@ logger.error`Failed to connect: ${err instanceof Error ? err.message : String(er
 
 ### No Console
 
-ESLint enforces `no-console: error`. Always use the package logger instead of `console.log`.
+oxlint enforces `no-console: error`. Always use the package logger instead of `console.log`.
 
 ---
 
@@ -864,9 +864,9 @@ A premise is worth writing down when a later change could violate it, so that th
 
 ---
 
-## ESLint Rules
+## Lint Rules
 
-ESLint is configured in `eslint.config.ts` using TypeScript-ESLint's strict and stylistic rules.
+oxlint is configured in `.oxlintrc.json` with TypeScript-ESLint's strict and stylistic rules, and runs the type-aware rules through `oxlint-tsgolint`. Disable comments keep the `eslint-disable` form, which oxlint honors.
 
 Key rules and their implications:
 

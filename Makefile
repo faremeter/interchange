@@ -35,7 +35,7 @@ build-admin-ui: FORCE
 
 lint: FORCE
 	prettier -c .
-	NODE_OPTIONS=--max-old-space-size=8192 eslint --cache .
+	oxlint
 	$(BUN) bin/gen-api-docs.ts --check
 	$(BUN) bin/check-deps.ts
 	$(BUN) bin/check-launchers.ts
@@ -132,7 +132,7 @@ publish-builtins: builtins
 	$(BUN) bin/publish-tool-packages.ts --registry workspace-builtins --from dist/builtins
 
 clean:
-	rm -f .env-checked .eslintcache
+	rm -f .env-checked
 	find . -type f -name tsconfig.tsbuildinfo -a ! -path '*/node_modules/*' | xargs rm -f
 	find . -type d -name dist -a ! -path '*/node_modules/*' | xargs rm -rf
 
