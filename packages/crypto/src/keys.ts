@@ -31,7 +31,7 @@ const SPKI_ED25519_PREFIX = new Uint8Array([
 
 /**
  * View a byte string as `ArrayBuffer`-backed so it satisfies the Web
- * Crypto `BufferSource` parameter types under TypeScript 5.9's generic
+ * Crypto `BufferSource` parameter types under TypeScript's generic
  * `Uint8Array<ArrayBufferLike>`. Funneling every `subtle.*` byte argument
  * through this one helper keeps the type workaround to a single
  * eslint-disable instead of scattering assertions across call sites.
