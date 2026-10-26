@@ -650,6 +650,94 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await pendingRows()).toEqual([]);
     });
 
+    test("a re-push of the tip the Hub holds is accepted with no pending row, receive or commit", async () => {
+      const kinds: string[] = [];
+      let commitCalls = 0;
+      const agentRepoStore = await createRepoStore(
+        (real) =>
+          async (...args) => {
+            const prepared = await real.prepareWorkflowRunPack(...args);
+            kinds.push(prepared.kind);
+            if (prepared.kind !== "prepared") return prepared;
+            return {
+              ...prepared,
+              commit: () => {
+                commitCalls += 1;
+                return prepared.commit();
+              },
+            };
+          },
+      );
+      const tracker = createWorkflowHistoryReceiveTracker();
+      const begun: string[] = [];
+      const lookups = createLookups(agentRepoStore, {
+        ...tracker,
+        begin: (id) => {
+          begun.push(id);
+          tracker.begin(id);
+        },
+      });
+      const line = await runLine([[{ runId: "run-a" }]]);
+      const push = await pushOf(line, 0);
+
+      expect(await receivePack(lookups, push)).toEqual({ accepted: true });
+      expect(await receivePack(lookups, push)).toEqual({ accepted: true });
+      expect(kinds).toEqual(["prepared", "already_applied"]);
+      expect(commitCalls).toBe(1);
+      expect(begun).toHaveLength(1);
+      expect(await refTip(agentRepoStore)).toBe(push.commitSha);
+      expect(await pendingRows()).toEqual([]);
+    });
+
+    test("history is final while a receive validates, and the receive is then rejected", async () => {
+      const line = await runLine([[{ runId: "run-a" }]]);
+      const tip = commitAt(line, 0);
+      const gate = Promise.withResolvers<boolean>();
+      const ready = Promise.withResolvers<boolean>();
+      const commits: PackCommitResult[] = [];
+      const agentRepoStore = await createRepoStore(
+        pausingPrepare(
+          new Map([[tip, gate.promise]]),
+          new Map([[tip, ready]]),
+          commits,
+        ),
+      );
+      const lookups = createLookups(agentRepoStore);
+      const isFinal = lookups.isWorkflowRunHistoryFinal;
+      if (isFinal === undefined)
+        throw new Error("no isWorkflowRunHistoryFinal");
+
+      const receive = receivePack(lookups, await pushOf(line, 0));
+      let final: boolean;
+      try {
+        await ready.promise;
+        await h.db
+          .update(workflowRun)
+          .set({ status: "cancelled", endedAt: new Date() })
+          .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+        final = await isFinal({
+          kind: "allocated",
+          agentAddress: ANCHOR_ADDRESS,
+          allocationId: ALLOCATION_ID,
+          anchorRunId: ANCHOR_RUN_ID,
+          generation: 1,
+        });
+      } finally {
+        gate.resolve(true);
+      }
+
+      // The validating receive is not in flight yet, so history reads as
+      // final. Its locked recheck then sees the terminal anchor.
+      expect(final).toBe(true);
+      expect(await receive).toEqual({
+        accepted: false,
+        reason: "path_violation",
+      });
+      expect(commits).toEqual([]);
+      expect(await stagedEntries(agentRepoStore)).toEqual([]);
+      expect(await pendingRows()).toEqual([]);
+    });
+
     for (const order of [
       ["c", "a", "b"],
       ["a", "c", "b"],
