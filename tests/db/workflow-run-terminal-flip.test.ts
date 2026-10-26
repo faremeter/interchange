@@ -59,6 +59,7 @@ import {
 } from "@intx/test-harness/seed";
 
 import { applyWorkflowRunPack } from "../hub-agent/lib/deploy-flow-env";
+import { NO_STANDBY_ROUTER } from "./sidecar-test-helpers";
 import {
   buildWorkflowRunLine,
   type WorkflowRunPackRun,
@@ -324,6 +325,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       let current = observedAt;
       const lifecycle = createWorkflowLifecycleService({
+        standbyRouter: NO_STANDBY_ROUTER,
         retentionRouter: {
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
@@ -1037,6 +1039,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
         await h.db.update(sidecarAllocation).set({ sidecarId: "stop-worker" });
         const lifecycle = createWorkflowLifecycleService({
+          standbyRouter: NO_STANDBY_ROUTER,
           retentionRouter: {
             fenceAllocation: () => undefined,
             retireAllocation: () => undefined,
@@ -1348,6 +1351,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await Promise.race([reading.promise, result]);
         await enqueue("later-mail");
         const lifecycle = createWorkflowLifecycleService({
+          standbyRouter: NO_STANDBY_ROUTER,
           retentionRouter: {
             fenceAllocation: () => undefined,
             retireAllocation: () => undefined,
@@ -1783,6 +1787,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         1,
       );
       const lifecycle = createWorkflowLifecycleService({
+        standbyRouter: NO_STANDBY_ROUTER,
         retentionRouter: {
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
