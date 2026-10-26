@@ -770,6 +770,52 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     expect(pushCount).toBe(2);
   });
 
+  test("a first push the Hub rejects is not resent until notifyAddressRoutable re-drives it", async () => {
+    // The sender does not resend a rejected push on its own. The rejection
+    // latches on the slot, and the next `welcome` that routes the address
+    // ships the un-acked commits again.
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-rejected", {
+      agentAddress: "agent-rejected@example.com",
+      generation: 1,
+    });
+    let pushCount = 0;
+    const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
+      deriveWorkflowRunRepoId,
+      underlying: store,
+      packClient: {
+        forget: () => undefined,
+        async push() {
+          pushCount += 1;
+          if (pushCount === 1) {
+            throw new Error("Pack rejected: reason=corrupt");
+          }
+        },
+      },
+      registry,
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-rejected" };
+
+    await facade.writeTreePreservingPrefix(
+      { kind: "supervisor" },
+      repoId,
+      "refs/heads/main",
+      {
+        preservePrefix: "runs/r/events/",
+        merge: async () => ({ "runs/r/events/0.json": "{}" }),
+        message: "single batch",
+      },
+    );
+    await drainPushSettle();
+    expect(pushCount).toBe(1);
+
+    facade.notifyAddressRoutable("agent-rejected@example.com");
+    await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
+    expect(pushCount).toBe(2);
+  });
+
   test("flush fails rather than report a push no connection carried as drained", async () => {
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
