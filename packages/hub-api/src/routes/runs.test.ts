@@ -1393,11 +1393,15 @@ function lifecycleService(
       cancellationDeadline: null,
       cancellationReason: null,
       capacityReleaseAt: null,
+      standby: null,
       allocation: null,
     }),
     releaseCapacity: async () => "pending",
     releaseStoppedCleanup: async () => "released",
     requestCancellation: async () => "pending",
+    requestStandby: async () => "pending",
+    requestWake: async () => "pending",
+    noteDeploymentInStandby: async () => undefined,
     reconcileNext: async () => false,
     ...overrides,
   };
@@ -1441,6 +1445,68 @@ describe("workflow lifecycle endpoints", () => {
     expect(response.status).toBe(202);
     expect(response.headers.get("Location")).toBe(`${runURL()}/lifecycle`);
     expect(calls).toEqual([[TENANT_ID, RUN_ID]]);
+  });
+
+  test.each(["standby", "wake"] as const)(
+    "reading a run does not grant %s",
+    async (wanted) => {
+      let called = false;
+      const request = async () => {
+        called = true;
+        return "pending" as const;
+      };
+      const app = createTestApp({
+        grants: [makeGrant({ action: "read" })],
+        lifecycleService: lifecycleService({
+          requestStandby: request,
+          requestWake: request,
+        }),
+      });
+      expect(
+        (await app.request(`${runURL()}/${wanted}`, { method: "POST" })).status,
+      ).toBe(403);
+      expect(called).toBe(false);
+    },
+  );
+
+  test.each([
+    ["standby", "pending", 202],
+    ["standby", "settled", 204],
+    ["standby", "terminal", 409],
+    ["standby", "cancelling", 409],
+    ["standby", "unallocated", 409],
+    ["standby", "not_found", 404],
+    ["wake", "pending", 202],
+    ["wake", "settled", 204],
+    ["wake", "terminal", 409],
+    ["wake", "cancelling", 409],
+    ["wake", "unallocated", 409],
+    ["wake", "not_found", 404],
+  ] as const)("%s reports %s as %d", async (wanted, result, status) => {
+    const calls: string[] = [];
+    const app = createTestApp({
+      grants: [
+        makeGrant({ resource: `workflow-run:${RUN_ID}`, action: "manage" }),
+      ],
+      lifecycleService: lifecycleService({
+        requestStandby: async (tenantId, runId) => {
+          calls.push(`standby ${tenantId} ${runId}`);
+          return result;
+        },
+        requestWake: async (tenantId, runId) => {
+          calls.push(`wake ${tenantId} ${runId}`);
+          return result;
+        },
+      }),
+    });
+    const response = await app.request(`${runURL()}/${wanted}`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(status);
+    expect(response.headers.get("Location")).toBe(
+      status === 202 ? `${runURL()}/lifecycle` : null,
+    );
+    expect(calls).toEqual([`${wanted} ${TENANT_ID} ${RUN_ID}`]);
   });
 
   test("exhausted cleanup reports the required intervention", async () => {

@@ -46,6 +46,8 @@
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/lifecycle | Get workflow lifecycle status |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/capacity/release | Release workflow capacity |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/capacity/recover | Release capacity whose cleanup stopped |
+| POST | /api/tenants/:tenantId/workflows/runs/:runId/standby | Put a deployment in standby |
+| POST | /api/tenants/:tenantId/workflows/runs/:runId/wake | Wake a deployment |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/events | Read a run's event log |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for a run |
@@ -533,7 +535,7 @@ Returns the offerings associated with the run's workflow definition. These repre
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle
 Get workflow lifecycle status
 
-Returns the deployment's saved policy, deadlines, and allocation cleanup status. Policy edits apply to new deployments.
+Returns the deployment's saved policy, deadlines, standby state, and allocation cleanup status. Policy edits apply to new deployments.
 
 200: WorkflowLifecycleResponse -- Lifecycle status
 404: ErrorResponse -- Run not found
@@ -560,6 +562,28 @@ Body: RecoverWorkflowCapacityRequest
 204: (no content) -- Capacity released
 404: ErrorResponse -- Run or allocation not found
 409: ErrorResponse -- Cleanup has not stopped, or the allocation generation changed
+503: ErrorResponse -- Workflow lifecycle service unavailable
+
+### POST /api/tenants/:tenantId/workflows/runs/:runId/standby
+Put a deployment in standby
+
+Durably requests that a live top-level run's workflow child stop once every run of the deployment only waits on input from outside. Work in progress goes on until then, and the deployment keeps its capacity. Mail, a signal, an approval decision, or a due timer runs the child again, as does `POST .../wake`. Poll the Location header for progress; a standby request the sidecar refuses returns to `awake` with its reason.
+
+202: (no content) -- Standby requested
+204: (no content) -- The deployment is already in standby
+404: ErrorResponse -- Run not found
+409: ErrorResponse -- Run is terminal, being cancelled, or holds no sidecar capacity
+503: ErrorResponse -- Workflow lifecycle service unavailable
+
+### POST /api/tenants/:tenantId/workflows/runs/:runId/wake
+Wake a deployment
+
+Durably requests that the workflow child of a deployment in standby run again, or that a standby request in progress be abandoned. Poll the Location header for progress.
+
+202: (no content) -- Wake requested
+204: (no content) -- The deployment is not in standby
+404: ErrorResponse -- Run not found
+409: ErrorResponse -- Run is terminal, being cancelled, or holds no sidecar capacity
 503: ErrorResponse -- Workflow lifecycle service unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/events
@@ -1734,8 +1758,10 @@ Source: packages/types/src/workflows.ts
 **status**: Deployment lifecycle status. `recovering` means the Hub is replacing deployment capacity. `failed` is a terminal allocation failure with no infrastructure. `destroy_failed` means automatic cleanup stopped. Read `GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle` for the allocation's failure code and message.
 
 ### WorkflowLifecycleResponse
-`{ allocation: { failureCode: string | null, failureMessage: string | null, generation: number, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
+`{ allocation: { failureCode: string | null, failureMessage: string | null, generation: number, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, runId: string, standby: { changedAt: string | null, reason: string | null, state: "awake" | "entering" | "standby" | "waking", wakeAt: string | null } | null, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
 Source: packages/types/src/workflow-lifecycle.ts
+
+**standby**: Null once the run is terminal. `state` is `awake` while the workflow child runs and no standby is asked for, `entering` until the sidecar stops the child, `standby` once the Hub holds the history it left, and `waking` until the child runs again. `wakeAt` is the earliest timer a child in standby wakes for by itself. `reason` says why the state last changed other than as requested: the sidecar refused a standby or wake request, something other than a wake request woke the child in standby, such as mail or a restart that found new history, the sidecar reported the child running, or it reported the child in standby though no standby was asked for.
 
 ### WorkflowRollbackRequest
 `{ version: string }`

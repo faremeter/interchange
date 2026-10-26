@@ -78,6 +78,9 @@ export type ResolvedWorkflowLifecyclePolicy = {
   >;
 };
 
+export const workflowStandbyStates = ["entering", "standby", "waking"] as const;
+export type WorkflowStandbyState = (typeof workflowStandbyStates)[number];
+
 export const WorkflowLifecycleResponse = type({
   runId: "string",
   status: "'deployed' | 'running' | 'completed' | 'failed' | 'cancelled'",
@@ -87,6 +90,16 @@ export const WorkflowLifecycleResponse = type({
   cancellationDeadline: "string | null",
   cancellationReason: "string | null",
   capacityReleaseAt: "string | null",
+  standby: type({
+    state: type.enumerated("awake", ...workflowStandbyStates),
+    changedAt: "string | null",
+    wakeAt: "string | null",
+    reason: "string | null",
+  })
+    .or("null")
+    .describe(
+      "Null once the run is terminal. `state` is `awake` while the workflow child runs and no standby is asked for, `entering` until the sidecar stops the child, `standby` once the Hub holds the history it left, and `waking` until the child runs again. `wakeAt` is the earliest timer a child in standby wakes for by itself. `reason` says why the state last changed other than as requested: the sidecar refused a standby or wake request, something other than a wake request woke the child in standby, such as mail or a restart that found new history, the sidecar reported the child running, or it reported the child in standby though no standby was asked for.",
+    ),
   allocation: type({
     id: "string",
     generation: "number",

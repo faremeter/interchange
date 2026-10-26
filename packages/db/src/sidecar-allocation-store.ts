@@ -1536,6 +1536,36 @@ function buildSidecarAllocationStore(
           .update(workflowRun)
           .set({ publicKey: null, credentialRefs: null })
           .where(eq(workflowRun.id, updated.anchorRunId));
+        // The replacement copy starts awake: a standby request still wanted is
+        // carried out there, and a wake has nothing left to do. A JS date,
+        // since an answer is matched against this value read back, which
+        // drops microseconds.
+        const standbyChangedAt = args.now ?? new Date();
+        await tx
+          .update(workflowRun)
+          .set({
+            standbyState: "entering",
+            standbyStateAt: standbyChangedAt,
+            standbyWakeAt: null,
+          })
+          .where(
+            and(
+              eq(workflowRun.id, updated.anchorRunId),
+              eq(workflowRun.standbyState, "standby"),
+            ),
+          );
+        await tx
+          .update(workflowRun)
+          .set({
+            standbyState: null,
+            standbyStateAt: standbyChangedAt,
+          })
+          .where(
+            and(
+              eq(workflowRun.id, updated.anchorRunId),
+              eq(workflowRun.standbyState, "waking"),
+            ),
+          );
 
         return parseSidecarAllocationRow(updated);
       });

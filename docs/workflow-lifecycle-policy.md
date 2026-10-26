@@ -102,8 +102,8 @@ The platform default is not a ceiling: a tenant or installed workflow may set a
 longer duration. To effectively disable an action, set its field to `36500d`.
 
 `maxLifetime` measures wall-clock time from creation of the deployment's anchor
-run. Provisioning and waiting count; restarts and any future hibernation do
-not reset the clock. This also covers deployments that
+run. Provisioning, waiting, and standby count; restarts do not reset the
+clock. This also covers deployments that
 never receive their first trigger. If still live at expiry, the Hub stops the
 deployment as `cancelled`, allowing a 30-second cancellation grace period before stopping the process.
 Forced stop preempts a pending cooperative cancellation. The sidecar acknowledges
@@ -250,7 +250,9 @@ release or a recorded stop is rejected, and Git does not change.
 A missed sidecar connect deadline is a different decision from that capacity-loss
 record. When the committed run log is one the workflow runtime would continue,
 and it contains a park the runtime would re-attach, the Hub replaces the worker
-and restores the run onto it. Otherwise it releases the allocation and logs the
+and restores the run onto it. A deployment in standby is judged the same way,
+so one whose run sleeps on a timer, or that has no run yet, is released.
+Otherwise it releases the allocation and logs the
 anchor, the allocation, and the reason. Sleep with no signal park, a park that
 was not pushed to the committed ref, and an approval that was never flushed to
 the log stay on the release path: the first has no re-attachable park, and the
@@ -267,10 +269,11 @@ cleanup binding without workflow routes.
 Lifecycle reconciliation uses the shared reconciliation scheduler with eight
 independent slots per Hub. Each slot selects one run at a time, and active
 runs are excluded from further selection until their work finishes. Selection
-considers only deployments with work due: a live run that is cancelling or
-past its expiry, terminal copies awaiting retention, retained capacity whose
-release time has passed or is not yet recorded, a capacity loss waiting on
-reconciliation, and accepted history left unprojected past its grace. A
+considers only deployments with work due: a live run that is cancelling, past
+its expiry, or waiting on a standby or wake request, terminal copies awaiting
+retention, retained capacity whose release time has passed or is not yet
+recorded, a capacity loss waiting on reconciliation, and accepted history left
+unprojected past its grace. A
 deployment that ended without a saved policy is released only on request.
 Selection walks run IDs up to a captured upper bound, then waits one second
 before another scan. Work that becomes due during a scan can wait for the next
@@ -356,6 +359,48 @@ recorded yet, DELETE therefore returns `202`. The Hub records the run's own
 outcome when it recovers that history, and it never records `cancelled` over
 an accepted terminal event.
 
+`POST /api/tenants/:tenantId/workflows/runs/:runId/standby` puts a
+live deployment in standby: its sidecar stops the workflow child once every run
+only waits on input from outside, a signal, an approval, a timer, or mail, and
+the deployment keeps its capacity. Work in progress goes on until then,
+including input that just arrived, and a map or a step with a timeout counts as
+work until it ends, since a fresh child could not continue the map or keep the
+step's deadline. The sidecar refuses the standby request when the run has ended. The Hub records `entering`, and the lifecycle sweep sends
+the request while the Hub holds the connection of the sidecar the deployment
+runs on: the sidecar answers once every run waits, however long that takes, and
+abandons the standby request if that connection closes first, so the sweep asks
+again on the next one. A sidecar restarting the child puts the request off,
+and the sweep asks again. The sidecar marks the child in standby before anything
+can wake it, and answers with the history tips it reads then, refusing
+when the child ran again first. The Hub records `standby` only once it holds
+that history, together with the earliest timer the child wakes for. Mail, a signal, an approval decision, a due timer, or
+cancellation runs the child again, and the sidecar reports why. `POST .../wake`
+records `waking`, and the sweep sends the wake until the sidecar answers; it
+runs the child again or abandons a standby request in progress. An answer
+applies only to the request it carried out, and the Hub takes up the sidecar's
+reports and answers in the order the sidecar sent them, so a report never ends a
+later standby. A child in standby that its sidecar reports though no standby is
+asked for is recorded `waking` and woken the same way, and a `hello` finding
+the child running ends a recorded standby but leaves a pending request to
+its command. The lifecycle status's `standby` field shows the state, when
+it last changed, and the reason for a refused standby or wake request, or for an
+input that woke the child. The sidecar refuses a standby request while mail
+waits for the child, in the deployment's inbox or taken but not yet committed,
+since that mail would wake the child at once. A
+child in standby stays so across a sidecar restart: the sidecar restores it
+without starting the child while the run's history is where the stopped child
+left it, and reports it in standby. History written since starts the child,
+which the sidecar reports as a wake. Replacement capacity starts awake: a deployment in standby or entering it is put in standby again
+there once it is deployed and every run waits, and a pending wake has nothing
+left to do.
+Cancellation and expiry end standby. Both routes need `manage` on the
+run and return `202` while the change is pending, `204` when the deployment is
+already in the requested state, and `409` for a terminal or cancelling run,
+or one whose allocation no sidecar can carry the request out on. Like DELETE,
+a request takes only the anchor run's row lock and reads no history, so it
+does not wait for a pack receive; one for a run whose accepted history has
+ended returns `202`, and the sweep records the run's own outcome instead.
+
 Beginning release removes workflow routes. The allocation reaches `released`
 only after the provider's hold is released and deployment cleanup is
 confirmed. Confirmed removal frees the active sidecar slot even if the
@@ -377,5 +422,6 @@ from connected sidecars independently of provider availability and releases the
 provider hold through `SidecarProvisioner.destroy()`. Either an undeploy
 acknowledgement or confirmed provider destruction proves removal.
 These duration rules do not need a separate
-workflow-aware reaping plugin. Hibernating and resuming a live run remains
-separate work, especially when it depends on files held only on the sidecar.
+workflow-aware reaping plugin. Releasing the capacity of a deployment in
+standby and resuming it elsewhere remains separate work, especially when it
+depends on files held only on the sidecar.

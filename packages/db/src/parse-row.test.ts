@@ -318,6 +318,10 @@ function makeWorkflowRunRow(
     operatorCancellationRequestedAt: null,
     cancellationReason: null,
     cancellationDeadline: null,
+    standbyState: null,
+    standbyStateAt: null,
+    standbyWakeAt: null,
+    standbyReason: null,
     capacityReleaseAt: null,
     infrastructureFailedAt: null,
     failureCode: null,
@@ -352,6 +356,20 @@ describe("parseWorkflowRunRow", () => {
     expect(() =>
       parseWorkflowRunRow(
         makeWorkflowRunRow({ modelPreferences: [{ model: "opus" }] }),
+      ),
+    ).toThrow();
+  });
+
+  test("rejects a standby state outside the known states", () => {
+    expect(parseWorkflowRunRow(makeWorkflowRunRow()).standbyState).toBeNull();
+    expect(
+      parseWorkflowRunRow(makeWorkflowRunRow({ standbyState: "standby" }))
+        .standbyState,
+    ).toBe("standby");
+    // The column is plain text, so a row can hold any string.
+    expect(() =>
+      parseWorkflowRunRow(
+        Object.assign(makeWorkflowRunRow(), { standbyState: "stopped" }),
       ),
     ).toThrow();
   });

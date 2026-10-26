@@ -48,7 +48,14 @@ import {
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { tenant as tenantTable } from "@intx/db/schema";
+import {
+  sidecar as sidecarTable,
+  sidecarAllocation,
+  tenant as tenantTable,
+} from "@intx/db/schema";
+import { createInMemoryGrantStore } from "@intx/authz";
+import { createApp, type GetSession } from "@intx/hub-api";
+import type { GrantRule } from "@intx/types/authz";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -60,9 +67,14 @@ import {
   tenantSlugFromId,
 } from "@intx/test-harness/seed";
 import {
+  createWorkflowHistoryReceiveTracker,
+  createWorkflowLifecycleService,
+  createWorkflowRunReader,
   WorkflowControlHistoryPendingError,
   WorkflowControlRejectedError,
+  type EventCollectorRegistry,
   type RepoId,
+  type SessionService,
   type SidecarEventMap,
 } from "@intx/hub-sessions";
 
@@ -72,6 +84,7 @@ import {
   deployWorkflowSourceForTest,
   fireMailTrigger,
   initiateDrain,
+  injectSignal,
   listRunIds,
   readClaimCheckDir,
   readWorkflowRunEvents,
@@ -88,6 +101,7 @@ const WAIT_DEPLOYMENT_ID = "run_drain-roundtrip-wait-1";
 const CONTROL_DEPLOYMENT_ID = "run_control-roundtrip";
 const STOP_DEPLOYMENT_ID = "run_stop-roundtrip";
 const STANDBY_DEPLOYMENT_ID = "run_standby-roundtrip";
+const ROUTE_STANDBY_DEPLOYMENT_ID = "run_standby-route-roundtrip";
 const REFUSED_STANDBY_DEPLOYMENT_ID = "run_standby-refused-roundtrip";
 // Longer than the test's budget, so the worker's acknowledgement, not the
 // clock, settles the control request.
@@ -112,6 +126,7 @@ const DEFINITION_ASSET_IDS: Record<string, string> = {
   [CONTROL_DEPLOYMENT_ID]: "ast_control_roundtrip",
   [STOP_DEPLOYMENT_ID]: "ast_stop_roundtrip",
   [STANDBY_DEPLOYMENT_ID]: "ast_standby_roundtrip",
+  [ROUTE_STANDBY_DEPLOYMENT_ID]: "ast_standby_route_roundtrip",
   [REFUSED_STANDBY_DEPLOYMENT_ID]: "ast_standby_refused_roundtrip",
   [DEPLOYMENT_ID]: "ast_drain_roundtrip_cancel_wf",
   [WAIT_DEPLOYMENT_ID]: "ast_drain_roundtrip_wait_wf",
@@ -686,6 +701,118 @@ test.skipIf(!harnessDbEnvAvailable())(
   },
 );
 
+// The routes record the request and the lifecycle sweep carries it out against
+// the real child, through the same service the Hub composes.
+test.skipIf(!harnessDbEnvAvailable())(
+  "the standby and wake routes reach a real child through the lifecycle sweep",
+  async () => {
+    const anchorRunId = ROUTE_STANDBY_DEPLOYMENT_ID;
+    const { address, handle } = await deployParkedOnSignal({
+      anchorRunId,
+      definitionAssetId: "ast_standby_route_roundtrip",
+      workflowId: "standby-route-workflow",
+    });
+    const target = env.hub.prepareAllocationIdentity(anchorRunId, address);
+    await seedAllocation(anchorRunId, target);
+    let commandSettled = Promise.withResolvers<undefined>();
+    // The sweep pauses between passes on this clock, which the test moves.
+    let nowMs = Date.now();
+    const lifecycle = createWorkflowLifecycleService({
+      db: h.db,
+      retentionRouter: env.hub.router,
+      runReader: createWorkflowRunReader(env.hub.agentRepoStore.repoStore),
+      historyReceives: createWorkflowHistoryReceiveTracker(),
+      sendControl: (control, command, timeoutMs) =>
+        env.hub.router.sendWorkflowControl(control, command, timeoutMs),
+      standbyRouter: env.hub.router,
+      onStandbyCommandSettled: (runId) => {
+        if (runId === anchorRunId) commandSettled.resolve(undefined);
+      },
+      now: () => new Date(nowMs),
+    });
+    await seedPrincipal(h.db, {
+      id: OPERATOR_PRINCIPAL_ID,
+      tenantId: TENANT_ID,
+      kind: "user",
+      refId: OPERATOR_USER_ID,
+      status: "active",
+    });
+    const operatorGrants: GrantRule[] = ["manage", "read"].map((action) => ({
+      id: `grant-operator-${action}`,
+      resource: `workflow-run:${anchorRunId}`,
+      action,
+      effect: "allow",
+      origin: "system",
+      conditions: null,
+      expiresAt: null,
+      roleId: null,
+      principalId: OPERATOR_PRINCIPAL_ID,
+    }));
+    const app = createApp({
+      getSession: operatorSession(),
+      authHandler: () => new Response("", { status: 404 }),
+      db: h.db,
+      grantStore: createInMemoryGrantStore(operatorGrants),
+      sidecarRouter: env.hub.router,
+      sessionService: unusedSessionService(),
+      eventCollectors: unusedEventCollectors(),
+      assetService: null,
+      repoStore: null,
+      maxTarballBytes: 10_000_000,
+      workflowLifecycleService: lifecycle,
+    });
+    const runURL = `/api/tenants/${TENANT_ID}/workflows/runs/${anchorRunId}`;
+    const standbyState = async (): Promise<unknown> => {
+      const status = await app.request(`${runURL}/lifecycle`);
+      const body: unknown = await status.json();
+      return typeof body === "object" &&
+        body !== null &&
+        "standby" in body &&
+        typeof body.standby === "object" &&
+        body.standby !== null &&
+        "state" in body.standby
+        ? body.standby.state
+        : undefined;
+    };
+    // The state once the sweep has carried out the pending request. This run
+    // is the only one the sweep has work for, so a pass that selects a run
+    // sends its command, and sends it again once that settles unanswered: the
+    // sidecar's first answer can wait on history the child is still pushing.
+    const settled = async (): Promise<unknown> => {
+      for (;;) {
+        const state = await standbyState();
+        if (state !== "entering" && state !== "waking") return state;
+        commandSettled = Promise.withResolvers<undefined>();
+        if (await lifecycle.reconcileNext()) await commandSettled.promise;
+        // The sweep selects nothing while it pauses between passes.
+        else nowMs += 1_000;
+      }
+    };
+
+    expect(
+      (await app.request(`${runURL}/standby`, { method: "POST" })).status,
+    ).toBe(202);
+    expect(await settled()).toBe("standby");
+    expect(await readInStandbyMark(handle)).toBeDefined();
+
+    expect(
+      (await app.request(`${runURL}/wake`, { method: "POST" })).status,
+    ).toBe(202);
+    expect(await settled()).toBe("awake");
+    expect(await readInStandbyMark(handle)).toBeUndefined();
+
+    // The woken child still holds the run's park, so the signal completes it.
+    await injectSignal(env, anchorRunId, anchorRunId, "never-arrives", null);
+    const terminal = await waitForWorkflowRunComplete(
+      env,
+      anchorRunId,
+      anchorRunId,
+      { diagnostics: env.sidecarDiagnostics },
+    );
+    expect(terminal.type).toBe("RunCompleted");
+  },
+);
+
 // Mail waiting behind the run would wake the child as soon as it stopped, so
 // the sidecar refuses the standby and the child keeps running.
 test.skipIf(!harnessDbEnvAvailable())(
@@ -780,6 +907,89 @@ test.skipIf(!harnessDbEnvAvailable())(
   },
   30_000,
 );
+
+const OPERATOR_USER_ID = "usr_drain_roundtrip_operator";
+const OPERATOR_PRINCIPAL_ID = "prn_drain_roundtrip_operator";
+const MANIFEST_DIGEST = "1".repeat(64);
+
+// The allocation the fixture's router binds this deployment to, as the Hub
+// records it when it places the deployment.
+async function seedAllocation(
+  anchorRunId: string,
+  target: { allocationId: string; generation: number },
+): Promise<void> {
+  const provisioner = {
+    provisionerId: "test",
+    provisionerApiVersion: 2 as const,
+    provisionerBindingFingerprint: "test:1",
+    adapterManifestDigest: MANIFEST_DIGEST,
+  };
+  await h.db
+    .insert(sidecarTable)
+    .values({
+      id: SIDECAR_ID,
+      tokenHashSha256: new Uint8Array(32),
+      ...provisioner,
+    })
+    .onConflictDoNothing();
+  await h.db.insert(sidecarAllocation).values({
+    id: target.allocationId,
+    tenantId: TENANT_ID,
+    anchorRunId,
+    ...provisioner,
+    maxDisconnectedMs: 900_000,
+    sidecarId: SIDECAR_ID,
+    status: "allocated",
+    generation: target.generation,
+    ensureAcceptedGeneration: target.generation,
+  });
+}
+
+function operatorSession(): GetSession {
+  const now = new Date("2026-01-01");
+  return async () => ({
+    user: {
+      id: OPERATOR_USER_ID,
+      email: "operator@example.com",
+      emailVerified: true,
+      name: "Operator",
+      createdAt: now,
+      updatedAt: now,
+    },
+    session: {
+      id: "session_operator",
+      userId: OPERATOR_USER_ID,
+      token: "tok_operator",
+      expiresAt: new Date("2999-01-01"),
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+}
+
+function unused(name: string): never {
+  throw new Error(`drain round-trip: ${name} is not used`);
+}
+
+function unusedSessionService(): SessionService {
+  return {
+    stageWorkflowStep: () => unused("stageWorkflowStep"),
+    endSession: () => unused("endSession"),
+  };
+}
+
+function unusedEventCollectors(): EventCollectorRegistry {
+  return {
+    create: () => unused("create"),
+    dispatch: () => unused("dispatch"),
+    abandon: () => unused("abandon"),
+    has: () => false,
+    getStatus: () => undefined,
+    getAccumulatedText: () => undefined,
+    getCurrentTurnId: () => undefined,
+    getLastTurnId: () => undefined,
+  };
+}
 
 // The mark the sidecar keeps in a deployment's run record while its child is
 // in standby.

@@ -10,6 +10,8 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
+import type { WorkflowStandbyState } from "@intx/types";
+
 import { principal } from "./principals";
 import { sidecar } from "./sidecar";
 import { tenant } from "./tenants";
@@ -144,6 +146,18 @@ export const workflowRun = pgTable(
     ),
     cancellationReason: text("cancellation_reason"),
     cancellationDeadline: timestamp("cancellation_deadline"),
+    // Where a deployment anchor's workflow child stands on the way into or out
+    // of standby: `entering` until its sidecar stops the child, `standby` once
+    // the Hub holds the history the child left, `waking` until the child runs
+    // again. Null while the child runs and no standby is asked for.
+    standbyState: text("standby_state").$type<WorkflowStandbyState>(),
+    standbyStateAt: timestamp("standby_state_at"),
+    // The earliest pending timer a child in standby is woken for.
+    standbyWakeAt: timestamp("standby_wake_at"),
+    // Why the standby state last changed other than as requested: the
+    // sidecar refused a standby or wake request, or an input woke the child in
+    // standby.
+    standbyReason: text("standby_reason"),
     capacityReleaseAt: timestamp("capacity_release_at"),
     // When unrecoverable capacity loss happened while accepted history could
     // still settle some runs. Set on the anchor instead of failing its live

@@ -91,6 +91,36 @@ function workflowRunOperationUnsupported(
   );
 }
 
+function standbyResponse(
+  c: Context<TenantEnv>,
+  tenantId: string,
+  runId: string,
+  result: Awaited<ReturnType<WorkflowLifecycleService["requestStandby"]>>,
+): Response {
+  switch (result) {
+    case "not_found":
+      return errorResponse(c, "not_found", "Run not found");
+    case "terminal":
+      return errorResponse(c, "conflict", "Run is already terminal");
+    case "cancelling":
+      return errorResponse(c, "conflict", "Run is being cancelled");
+    case "unallocated":
+      return errorResponse(
+        c,
+        "conflict",
+        "The deployment holds no sidecar capacity",
+      );
+    case "settled":
+      return c.body(null, 204);
+    case "pending":
+      c.header(
+        "Location",
+        `/api/tenants/${tenantId}/workflows/runs/${runId}/lifecycle`,
+      );
+      return c.body(null, 202);
+  }
+}
+
 type RunStatusFilter =
   | "deployed"
   | "running"
@@ -655,7 +685,7 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "Get workflow lifecycle status",
       description:
-        "Returns the deployment's saved policy, deadlines, and allocation cleanup status. Policy edits apply to new deployments.",
+        "Returns the deployment's saved policy, deadlines, standby state, and allocation cleanup status. Policy edits apply to new deployments.",
       responses: {
         200: jsonResponse("Lifecycle status", WorkflowLifecycleResponse),
         404: jsonResponse("Run not found", ErrorResponse),
@@ -856,6 +886,86 @@ export function createRunRoutes({
         `/api/tenants/${tenantId}/workflows/runs/${runId}/lifecycle`,
       );
       return c.body(null, 202);
+    },
+  );
+
+  app.post(
+    "/:runId/standby",
+    requireGrant(idResource("workflow-run", "runId"), "manage"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "Put a deployment in standby",
+      description:
+        "Durably requests that a live top-level run's workflow child stop once every run of the deployment only waits on input from outside. Work in progress goes on until then, and the deployment keeps its capacity. Mail, a signal, an approval decision, or a due timer runs the child again, as does `POST .../wake`. Poll the Location header for progress; a standby request the sidecar refuses returns to `awake` with its reason.",
+      responses: {
+        202: { description: "Standby requested" },
+        204: { description: "The deployment is already in standby" },
+        404: jsonResponse("Run not found", ErrorResponse),
+        409: jsonResponse(
+          "Run is terminal, being cancelled, or holds no sidecar capacity",
+          ErrorResponse,
+        ),
+        503: jsonResponse(
+          "Workflow lifecycle service unavailable",
+          ErrorResponse,
+        ),
+      },
+    }),
+    async (c) => {
+      if (lifecycleService === null)
+        return errorResponse(
+          c,
+          "unavailable",
+          "Workflow lifecycle service unavailable",
+        );
+      const tenantId = c.get("tenant").id;
+      const runId = c.req.param("runId");
+      return standbyResponse(
+        c,
+        tenantId,
+        runId,
+        await lifecycleService.requestStandby(tenantId, runId),
+      );
+    },
+  );
+
+  app.post(
+    "/:runId/wake",
+    requireGrant(idResource("workflow-run", "runId"), "manage"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "Wake a deployment",
+      description:
+        "Durably requests that the workflow child of a deployment in standby run again, or that a standby request in progress be abandoned. Poll the Location header for progress.",
+      responses: {
+        202: { description: "Wake requested" },
+        204: { description: "The deployment is not in standby" },
+        404: jsonResponse("Run not found", ErrorResponse),
+        409: jsonResponse(
+          "Run is terminal, being cancelled, or holds no sidecar capacity",
+          ErrorResponse,
+        ),
+        503: jsonResponse(
+          "Workflow lifecycle service unavailable",
+          ErrorResponse,
+        ),
+      },
+    }),
+    async (c) => {
+      if (lifecycleService === null)
+        return errorResponse(
+          c,
+          "unavailable",
+          "Workflow lifecycle service unavailable",
+        );
+      const tenantId = c.get("tenant").id;
+      const runId = c.req.param("runId");
+      return standbyResponse(
+        c,
+        tenantId,
+        runId,
+        await lifecycleService.requestWake(tenantId, runId),
+      );
     },
   );
 
