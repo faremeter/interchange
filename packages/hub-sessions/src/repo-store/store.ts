@@ -464,8 +464,25 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // ref update lets receivePack pay O(new commits) instead of
   // O(history) per call. The cache is initialised lazily on first
   // receivePack to avoid the cold-start scan for repos that only
-  // ever write via writeTree.
+  // ever write via writeTree. A receive into a repo with no entry
+  // scans the history before it takes the repo lock (see
+  // `prebuildExistingCommits`), so the lock span reads only the
+  // commits that writes added during the scan.
   const existingCommitsCache = new Map<string, Set<string>>();
+
+  // Per-repoId token that a prebuilt existing-commit set carries.
+  // `removeRepo` deletes the token, so a set built from a removed
+  // repository never matches the repository created again at that id.
+  const existingCommitsEpochs = new Map<string, object>();
+
+  // Per-repoId scan before the lock, kept until a locked step installs
+  // the repo's set, so every receive that starts before then shares one
+  // scan. A scan that fails is dropped at once, so the next receive
+  // scans again.
+  const existingCommitsScans = new Map<
+    string,
+    Promise<PrebuiltExistingCommits | null>
+  >();
 
   // Per-(repoId, ref) cache of "the commit OID the receiver has acked
   // for a workflow-run pack". After the first push lands a ref's tip on
@@ -1166,11 +1183,17 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // yet (a freshly-initialised repo with HEAD pointing at an unborn
   // branch). Read failures bubble; a silent empty would let the walk
   // re-validate commits the kind handler already accepted.
+  //
+  // `seed` is a set an earlier scan of the same repository built; the
+  // scan adds to it and returns it. The walk skips a commit already in
+  // the set, and a scan adds every readable ancestor of each commit it
+  // adds, so a rescan reads only the commits a write added since.
   async function snapshotExistingCommits(
     dir: string,
     cache: () => object,
+    seed: Set<string>,
   ): Promise<Set<string>> {
-    const out = new Set<string>();
+    const out = seed;
     const visit = async (start: string): Promise<void> => {
       const stack: string[] = [start];
       while (stack.length > 0) {
@@ -1882,10 +1905,93 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     });
   }
 
+  // An existing-commit set built with no repo lock, the repo's token
+  // when the build started, and the git cache the build read through
+  // with its uncharged calls (see `chargePrebuiltScan`).
+  type PrebuiltExistingCommits = {
+    commits: Set<string>;
+    epoch: object;
+    cache: object;
+    ops: number;
+    charged: boolean;
+  };
+
+  // Scan a repo's history before a receive takes the repo lock, when
+  // the repo has no existing-commit set yet. Answers null when the set
+  // exists, when GC reclaims the kind (a scan with no lock could lose a
+  // pack and leave commits out of the set), when the repo does not
+  // exist yet, and when the scan fails: the scan races ref writes and
+  // `removeRepo`, so a failure is not a fault of the receive, and the
+  // locked scan in `stageReceive` reports a real one. A receive that
+  // starts while a scan of the repo runs waits for that scan.
+  function prebuildExistingCommits(
+    repoId: RepoId,
+  ): Promise<PrebuiltExistingCommits | null> {
+    const key = indexCacheKey(repoId);
+    if (existingCommitsCache.has(key) || isReclaimedByGC(repoId)) {
+      return Promise.resolve(null);
+    }
+    const running = existingCommitsScans.get(key);
+    if (running !== undefined) return running;
+    let epoch = existingCommitsEpochs.get(key);
+    if (epoch === undefined) {
+      epoch = {};
+      existingCommitsEpochs.set(key, epoch);
+    }
+    const scan = scanExistingCommits(repoId, epoch).then((prebuilt) => {
+      if (prebuilt === null && existingCommitsScans.get(key) === scan) {
+        existingCommitsScans.delete(key);
+      }
+      return prebuilt;
+    });
+    existingCommitsScans.set(key, scan);
+    return scan;
+  }
+
+  async function scanExistingCommits(
+    repoId: RepoId,
+    epoch: object,
+  ): Promise<PrebuiltExistingCommits | null> {
+    const dir = repoDir(repoId);
+    try {
+      if (!(await repoHasGitDir(dir))) return null;
+      const cache = cacheFor(dir);
+      let ops = 0;
+      const commits = await snapshotExistingCommits(
+        dir,
+        () => {
+          ops += 1;
+          return cache;
+        },
+        new Set(),
+      );
+      return { commits, epoch, cache, ops, charged: false };
+    } catch (cause) {
+      logger.debug`Scan of ${repoId.kind}/${repoId.id} before the repo lock failed; the receive scans under the lock: ${cause instanceof Error ? cause.message : String(cause)}`;
+      return null;
+    }
+  }
+
+  // Charge a prebuilt scan's git calls to its dir's cache entry once,
+  // inside the locked span that follows it. A charge before the lock
+  // could take the entry over its budget, and the locked span would
+  // then start from an empty cache and load every pack index again
+  // while it holds the lock.
+  function chargePrebuiltScan(
+    dir: string,
+    prebuilt: PrebuiltExistingCommits | null,
+  ): void {
+    if (prebuilt === null || prebuilt.charged) return;
+    prebuilt.charged = true;
+    chargeGitCache(dir, prebuilt.cache, prebuilt.ops);
+  }
+
   // The locked first step of every receive: resolve the tip, stage the
   // pack, and find its new commits. The caller holds the repo lock. In
   // the prepared mode it answers null, with nothing staged, when the ref
-  // already holds the pack's tip.
+  // already holds the pack's tip. `prebuilt` is the caller's scan from
+  // before it took the lock, used when the repo still has no set and
+  // was not removed since.
   async function stageReceive(
     principal: Principal,
     repoId: RepoId,
@@ -1893,6 +1999,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     pack: Uint8Array,
     commitSha: string,
     mode: ReceiveMode & { kind: "expected" },
+    prebuilt: PrebuiltExistingCommits | null,
   ): Promise<StagedReceive>;
   async function stageReceive(
     principal: Principal,
@@ -1901,6 +2008,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     pack: Uint8Array,
     commitSha: string,
     mode: ReceiveMode,
+    prebuilt: PrebuiltExistingCommits | null,
   ): Promise<StagedReceive | null>;
   async function stageReceive(
     principal: Principal,
@@ -1909,16 +2017,27 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     pack: Uint8Array,
     commitSha: string,
     mode: ReceiveMode,
+    prebuilt: PrebuiltExistingCommits | null,
   ): Promise<StagedReceive | null> {
     const dir = repoDir(repoId);
     await storageInitRepo(dir, storageOptsFor(repoId, undefined));
     const handler = handlerFor(repoId);
     return withReceiveCache(dir, async (cache) => {
+      chargePrebuiltScan(dir, prebuilt);
       const existingKey = indexCacheKey(repoId);
       let existingCommits = existingCommitsCache.get(existingKey);
       if (existingCommits === undefined) {
-        existingCommits = await snapshotExistingCommits(dir, cache);
+        // Receives that shared one scan each seed with a copy, so a
+        // scan below that fails partway leaves the shared set whole for
+        // the next receive.
+        const seed =
+          prebuilt !== null &&
+          existingCommitsEpochs.get(existingKey) === prebuilt.epoch
+            ? new Set(prebuilt.commits)
+            : new Set<string>();
+        existingCommits = await snapshotExistingCommits(dir, cache, seed);
         existingCommitsCache.set(existingKey, existingCommits);
+        existingCommitsScans.delete(existingKey);
       }
       if (!cleanedStagingDirs.has(dir)) {
         await removeStagedPacks(dir);
@@ -2171,6 +2290,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   ): Promise<NewlyTerminalRun[]> {
     gateAccess(principal, repoId, ref, "receivePack");
     const mode = { kind: "expected", expectedOldSha } as const;
+    const prebuilt = await prebuildExistingCommits(repoId);
 
     // One lock span covers the stage, the CAS check against
     // `expectedOldSha`, the validation, the publish, the ref write, and
@@ -2186,6 +2306,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         pack,
         commitSha,
         mode,
+        prebuilt,
       );
       try {
         const runs = await validateStaged(s);
@@ -2227,8 +2348,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // No `expectedOldSha`: the ref can move while this receive validates,
     // so commit decides from the live tip instead of a CAS.
     const mode = { kind: "prepared" } as const;
+    const prebuilt = await prebuildExistingCommits(repoId);
     const s = await withRepoLock(repoId, () =>
-      stageReceive(principal, repoId, ref, pack, commitSha, mode),
+      stageReceive(principal, repoId, ref, pack, commitSha, mode, prebuilt),
     );
     if (s === null) return { kind: "already_applied" };
 
@@ -2730,8 +2852,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         invalidateGitCache(dir);
         // This delete is the repo's incarnation boundary: a prepared
         // receive holds the deleted set and finds a different entry, or
-        // none, when it commits.
+        // none, when it commits, and a set prebuilt before the delete
+        // no longer matches the repo's token.
         existingCommitsCache.delete(indexCacheKey(repoId));
+        existingCommitsEpochs.delete(indexCacheKey(repoId));
+        existingCommitsScans.delete(indexCacheKey(repoId));
         cleanedStagingDirs.delete(dir);
         const refPrefix = `${indexCacheKey(repoId)}/`;
         for (const key of [...seqCache.keys()]) {
