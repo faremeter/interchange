@@ -118,6 +118,12 @@ function asRefUpdated(event: unknown): RefUpdatedEvent {
   return event;
 }
 
+// Runs every queued microtask, so code that continues with no I/O after
+// an awaited step has run up to its next I/O.
+function drainMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 describe("RepoStore", () => {
   describe("retained workflow ref namespace", () => {
     const definitionRepo: RepoId = { kind: "workflow", id: "definition" };
@@ -680,6 +686,196 @@ describe("RepoStore", () => {
       }
     },
   );
+
+  // A one-shot gate: `reached` resolves when the gated step arrives, and
+  // the step waits until `release()`.
+  function gate(): {
+    reached: Promise<void>;
+    arrive: () => Promise<void>;
+    release: () => void;
+  } {
+    let markReached: () => void = () => undefined;
+    const reached = new Promise<void>((resolve) => {
+      markReached = resolve;
+    });
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return {
+      reached,
+      arrive: () => {
+        markReached();
+        return released;
+      },
+      release,
+    };
+  }
+
+  // The real `readCommit`, bound before any test spies on it, so a spy
+  // left behind by a test that timed out cannot make a later mock call
+  // itself. Each gated mock below also matches only its own test's
+  // repository, so such a spy gates no later test.
+  const gitReadCommit = git.readCommit.bind(git);
+
+  test("a subscriber seeding during an update's ref write gives the update its own seq", async () => {
+    const dataDir = await makeTempDir("repo-store-seed-window-");
+    // The lock map is shared by every store in the process, so this
+    // test's own repo id keeps a gate it leaves held from blocking
+    // other tests.
+    const raceRepoId: RepoId = { kind: "agent-state", id: "seed-window" };
+    const before = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    for (const message of ["v1", "v2"])
+      await before.writeTree(principal, raceRepoId, REF, {
+        files: { "a.md": message },
+        message,
+      });
+    // A new store over the same data, as after a restart, has no seq
+    // cached, so the subscriber below seeds one.
+    const hold = gate();
+    let holding = false;
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "agent-state": {
+          ...createTestHandler(),
+          async onRefUpdated() {
+            if (holding) await hold.arrive();
+          },
+        },
+      },
+      authorize: allowAll,
+    });
+    const dir = store.getRepoDir(raceRepoId);
+    const root = (await git.log({ fs, dir, ref: REF })).at(-1)?.oid;
+    if (root === undefined) throw new Error("Missing root commit");
+
+    // The update moves the ref, then waits in onRefUpdated, before it
+    // computes its seq.
+    holding = true;
+    const write = store.writeTree(principal, raceRepoId, REF, {
+      files: { "a.md": "v3" },
+      message: "v3",
+    });
+    await hold.reached;
+    holding = false;
+
+    // The subscriber's seed walks the moved ref to its root meanwhile.
+    let markWalked: () => void = () => undefined;
+    const walked = new Promise<void>((resolve) => {
+      markWalked = resolve;
+    });
+    const spy = spyOn(git, "readCommit").mockImplementation(async (args) => {
+      const result = await gitReadCommit(args);
+      if (args.dir === dir && args.oid === root) markWalked();
+      return result;
+    });
+    const ac = new AbortController();
+    const stream = store.subscribe(principal, raceRepoId, REF, {
+      from: "head",
+      signal: ac.signal,
+    });
+    try {
+      const first = stream.next();
+      await walked;
+      spy.mockRestore();
+      await drainMicrotasks();
+      hold.release();
+      const { commitSha } = await write;
+      const a = await first;
+      const second = stream.next();
+      await store.writeTree(principal, raceRepoId, REF, {
+        files: { "a.md": "v4" },
+        message: "v4",
+      });
+      const b = await second;
+      if (a.done || b.done) throw new Error("Missing update");
+      expect(asRefUpdated(a.value.event).newSha).toBe(commitSha);
+      expect(a.value.seq).toBe(3);
+      expect(b.value.seq).toBe(4);
+    } finally {
+      spy.mockRestore();
+      hold.release();
+      ac.abort();
+    }
+  });
+
+  test("a subscriber seeding its seq while an update lands keeps later seqs in step", async () => {
+    const dataDir = await makeTempDir("repo-store-seed-race-");
+    // The lock map is shared by every store in the process, so this
+    // test's own repo id keeps a gate it leaves held from blocking
+    // other tests.
+    const raceRepoId: RepoId = { kind: "agent-state", id: "seed-race" };
+    const before = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    for (const message of ["v1", "v2"])
+      await before.writeTree(principal, raceRepoId, REF, {
+        files: { "a.md": message },
+        message,
+      });
+    // A new store over the same data, as after a restart, has no seq
+    // cached, so the subscriber below seeds one.
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const dir = store.getRepoDir(raceRepoId);
+    const root = (await git.log({ fs, dir, ref: REF })).at(-1)?.oid;
+    if (root === undefined) throw new Error("Missing root commit");
+
+    // The seed reads the history up to its root, then waits until a
+    // concurrent update has computed and cached its own seq.
+    const hold = gate();
+    let held = false;
+    const spy = spyOn(git, "readCommit").mockImplementation(async (args) => {
+      const result = await gitReadCommit(args);
+      if (args.dir === dir && args.oid === root && !held) {
+        held = true;
+        await hold.arrive();
+      }
+      return result;
+    });
+    const ac = new AbortController();
+    const stream = store.subscribe(principal, raceRepoId, REF, {
+      from: "head",
+      signal: ac.signal,
+    });
+    try {
+      const first = stream.next();
+      await hold.reached;
+      await store.writeTree(principal, raceRepoId, REF, {
+        files: { "a.md": "v3" },
+        message: "v3",
+      });
+      hold.release();
+      const a = await first;
+      const second = stream.next();
+      await store.writeTree(principal, raceRepoId, REF, {
+        files: { "a.md": "v4" },
+        message: "v4",
+      });
+      const b = await second;
+      if (a.done || b.done) throw new Error("Missing update");
+      expect(a.value.seq).toBe(3);
+      expect(b.value.seq).toBe(4);
+    } finally {
+      spy.mockRestore();
+      hold.release();
+      ac.abort();
+    }
+  });
 
   test("writeTree on an existing ref advances from that ref", async () => {
     const dataDir = await makeTempDir("repo-store-advance-");
@@ -2643,6 +2839,265 @@ describe("RepoStore", () => {
     acB.abort();
   });
 
+  test("live seqs count from the oldest commit of a history that ends in a missing parent", async () => {
+    const source = createRepoStore({
+      dataDir: await makeTempDir("repo-store-dangling-src-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    await source.writeTree(principal, repoId, REF, {
+      files: { "a.md": "v1" },
+      message: "v1",
+    });
+    const { commitSha } = await source.writeTree(principal, repoId, REF, {
+      files: { "a.md": "v2" },
+      message: "v2",
+    });
+    // The pack carries the tip only, so the target cannot read its
+    // parent.
+    const { pack } = await source.createPack(principal, repoId, REF);
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-dangling-tgt-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    await store.receivePack(principal, repoId, REF, pack, commitSha, null);
+
+    const ac = new AbortController();
+    const stream = store.subscribe(principal, repoId, REF, {
+      from: "head",
+      signal: ac.signal,
+    });
+    const readCommit = spyOn(git, "readCommit");
+    const seqs: number[] = [];
+    const reads: number[] = [];
+    try {
+      for (const message of ["v3", "v4", "v5", "v6"]) {
+        const next = stream.next();
+        const before = readCommit.mock.calls.length;
+        await store.writeTree(principal, repoId, REF, {
+          files: { "a.md": message },
+          message,
+        });
+        reads.push(readCommit.mock.calls.length - before);
+        const entry = await next;
+        if (entry.done) throw new Error("Missing update");
+        seqs.push(entry.value.seq);
+      }
+      expect(seqs).toEqual([1, 2, 3, 4]);
+      // After the first update caches a seq, each update reads the same
+      // number of commits however long the history grows.
+      expect(new Set(reads.slice(1)).size).toBe(1);
+    } finally {
+      ac.abort();
+      readCommit.mockRestore();
+    }
+  });
+
+  test("live seqs advance across received tips whose parents are missing", async () => {
+    const source = createRepoStore({
+      dataDir: await makeTempDir("repo-store-gap-src-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const write = (message: string) =>
+      source.writeTree(principal, repoId, REF, {
+        files: { "a.md": message },
+        message,
+      });
+    await write("v1");
+    const { commitSha: first } = await write("v2");
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-gap-tgt-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    // Each pack carries its tip only, and the source writes two commits
+    // between packs, so every received tip's parent is missing.
+    const firstPack = await source.createPack(principal, repoId, REF);
+    await store.receivePack(
+      principal,
+      repoId,
+      REF,
+      firstPack.pack,
+      first,
+      null,
+    );
+
+    const ac = new AbortController();
+    const stream = store.subscribe(principal, repoId, REF, {
+      from: "head",
+      signal: ac.signal,
+    });
+    try {
+      const seqs: number[] = [];
+      let old = first;
+      for (const [skipped, message] of [
+        ["v3", "v4"],
+        ["v5", "v6"],
+        ["v7", "v8"],
+      ] as const) {
+        await write(skipped);
+        const { commitSha } = await write(message);
+        const { pack } = await source.createPack(principal, repoId, REF);
+        const next = stream.next();
+        await store.receivePack(principal, repoId, REF, pack, commitSha, old);
+        old = commitSha;
+        const entry = await next;
+        if (entry.done) throw new Error("Missing update");
+        seqs.push(entry.value.seq);
+      }
+      const [base] = seqs;
+      if (base === undefined) throw new Error("Missing seq");
+      expect(seqs).toEqual([base, base + 1, base + 2]);
+    } finally {
+      ac.abort();
+    }
+  });
+
+  test("a replay subscriber on a history that ends in a missing parent seeds its seq outside the lock", async () => {
+    const source = createRepoStore({
+      dataDir: await makeTempDir("repo-store-dangling-replay-src-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const { commitSha: missing } = await source.writeTree(
+      principal,
+      repoId,
+      REF,
+      { files: { "a.md": "v1" }, message: "v1" },
+    );
+    const { commitSha } = await source.writeTree(principal, repoId, REF, {
+      files: { "a.md": "v2" },
+      message: "v2",
+    });
+    const { pack } = await source.createPack(principal, repoId, REF);
+    const dataDir = await makeTempDir("repo-store-dangling-replay-tgt-");
+    const target = () =>
+      createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: { "agent-state": createTestHandler() },
+        authorize: allowAll,
+      });
+    await target().receivePack(principal, repoId, REF, pack, commitSha, null);
+    // A new store over the same data, as after a restart, has no seq
+    // cached, so the subscriber below seeds one.
+    const store = target();
+    const dir = store.getRepoDir(repoId);
+
+    // The replay has no entries, so the seed walks the readable history
+    // and stops at the missing parent.
+    let markWalked: () => void = () => undefined;
+    const walked = new Promise<void>((resolve) => {
+      markWalked = resolve;
+    });
+    const readCommit = spyOn(git, "readCommit").mockImplementation(
+      async (args) => {
+        try {
+          return await gitReadCommit(args);
+        } finally {
+          if (args.dir === dir && args.oid === missing) markWalked();
+        }
+      },
+    );
+    const ac = new AbortController();
+    try {
+      const stream = store.subscribe(principal, repoId, REF, {
+        from: { seq: 0 },
+        signal: ac.signal,
+      });
+      const first = stream.next();
+      await walked;
+      await drainMicrotasks();
+      const seqs: number[] = [];
+      const reads: number[] = [];
+      for (const [message, next] of [
+        ["v3", first],
+        ["v4", null],
+      ] as const) {
+        const pending = next ?? stream.next();
+        const before = readCommit.mock.calls.length;
+        await store.writeTree(principal, repoId, REF, {
+          files: { "a.md": message },
+          message,
+        });
+        reads.push(readCommit.mock.calls.length - before);
+        const entry = await pending;
+        if (entry.done) throw new Error("Missing update");
+        seqs.push(entry.value.seq);
+      }
+      expect(seqs).toEqual([1, 2]);
+      expect(reads[0]).toBe(reads[1]);
+    } finally {
+      ac.abort();
+      readCommit.mockRestore();
+    }
+  });
+
+  test("a subscriber on a kind that GC reclaims does not seed its seq with no lock", async () => {
+    const dataDir = await makeTempDir("repo-store-gc-seed-");
+    const gcStore = () =>
+      createRepoStore({
+        dataDir,
+        signingKey,
+        handlers: { "agent-state": createTestHandler() },
+        authorize: allowAll,
+        gc: {
+          kinds: ["agent-state"],
+          retention: "keep-history",
+          packThreshold: 1000,
+          looseThreshold: 1e6,
+          warnBytes: 1e12,
+        },
+      });
+    const before = gcStore();
+    for (const message of ["v1", "v2", "v3"])
+      await before.writeTree(principal, repoId, REF, {
+        files: { "a.md": message },
+        message,
+      });
+    // A new store over the same data, as after a restart, has no seq
+    // cached, so the subscriber below would seed one.
+    const store = gcStore();
+    const dir = store.getRepoDir(repoId);
+
+    // A seed would first resolve the ref, and that call starts within
+    // the microtasks after the first `next()`.
+    const resolveRef = spyOn(git, "resolveRef");
+    const ac = new AbortController();
+    try {
+      const stream = store.subscribe(principal, repoId, REF, {
+        from: "head",
+        signal: ac.signal,
+      });
+      const next = stream.next();
+      await drainMicrotasks();
+      expect(
+        resolveRef.mock.calls.filter(
+          ([args]) => args.dir === dir && args.ref === REF,
+        ),
+      ).toHaveLength(0);
+
+      await store.writeTree(principal, repoId, REF, {
+        files: { "a.md": "v4" },
+        message: "v4",
+      });
+      const entry = await next;
+      if (entry.done) throw new Error("Missing update");
+      const history = await git.log({ fs, dir, ref: REF });
+      expect(entry.value.seq).toBe(history.length - 1);
+    } finally {
+      ac.abort();
+      resolveRef.mockRestore();
+    }
+  });
+
   test("subscribe authorize denial throws immediately", async () => {
     const dataDir = await makeTempDir("repo-store-sub-deny-");
     const handler = createTestHandler();
@@ -3737,10 +4192,11 @@ describe("RepoStore pack receive reads", () => {
       await store.receivePack(principal, repoId, REF, packfile, tip, null);
       expect(validated).toBe(COMMITS);
       // Per commit: its root and `deploy/` trees, and its commit read by
-      // the walk and by validation. A few more reads come from the tip
-      // checks in the pack receive.
+      // the walk, by validation, and by the walk that numbers the new
+      // tip for subscribers. A few more reads come from the tip checks
+      // in the pack receive and from the root commit.
       expect(readTree.mock.calls.length).toBeLessThanOrEqual(2 * COMMITS + 4);
-      expect(readCommit.mock.calls.length).toBeLessThanOrEqual(2 * COMMITS + 4);
+      expect(readCommit.mock.calls.length).toBeLessThanOrEqual(3 * COMMITS + 5);
     } finally {
       readTree.mockRestore();
       readCommit.mockRestore();
@@ -4497,13 +4953,6 @@ describe("RepoStore prepared pack receive", () => {
     };
   }
 
-  // Runs every queued microtask. A staged pack removal that does not
-  // wait for the repo lock starts within them, because no I/O comes
-  // before it.
-  function drainMicrotasks(): Promise<void> {
-    return new Promise((resolve) => setImmediate(resolve));
-  }
-
   test("the discard of a failed validation waits for removeRepo", async () => {
     const line = await sourceLine(["v1"]);
     const [tip] = line.commits;
@@ -4525,6 +4974,8 @@ describe("RepoStore prepared pack receive", () => {
       const removing = store.removeRepo(repoId);
       await removal.reached;
       hold.release(false);
+      // A staged pack removal that does not wait for the repo lock
+      // starts within the drained microtasks: no I/O comes before it.
       await drainMicrotasks();
       removal.release();
 
@@ -4766,6 +5217,160 @@ describe("RepoStore prepared pack receive", () => {
         tip,
       ),
     ).rejects.toThrow(/reclaimed by GC/);
+  });
+
+  // The seq a `from: { seq: 0 }` replay of `REF` gives `commitSha`.
+  async function replayedSeq(
+    store: ReturnType<typeof createRepoStore>,
+    commitSha: string,
+  ): Promise<number> {
+    const ac = new AbortController();
+    const replay = store.subscribe(principal, repoId, REF, {
+      from: { seq: 0 },
+      signal: ac.signal,
+    });
+    try {
+      for (;;) {
+        const entry = await replay.next();
+        if (entry.done) throw new Error(`replay ended before ${commitSha}`);
+        if (asRefUpdated(entry.value.event).newSha === commitSha) {
+          return entry.value.seq;
+        }
+      }
+    } finally {
+      ac.abort();
+    }
+  }
+
+  test("a live subscriber's seq after a receive of many commits matches the replay", async () => {
+    const line = await sourceLine(
+      Array.from({ length: 11 }, (_, i) => `v${String(i + 1)}`),
+    );
+    const [first] = line.commits;
+    const middle = line.commits[5];
+    const tip = line.commits.at(-1);
+    if (first === undefined || middle === undefined || tip === undefined) {
+      throw new Error("line");
+    }
+    const { store } = await targetStore(runsHandler());
+    await (
+      await prepare(store, repoId, await line.packAt(first), first)
+    ).commit();
+    const ac = new AbortController();
+    const live = store.subscribe(principal, repoId, REF, {
+      from: "head",
+      signal: ac.signal,
+    });
+    try {
+      const firstNext = live.next();
+      await (
+        await prepare(store, repoId, await line.packAt(middle), middle)
+      ).commit();
+      const a = await firstNext;
+      if (a.done) throw new Error("Missing update");
+      expect(a.value.seq).toBe(await replayedSeq(store, middle));
+
+      // The cached seq of the previous tip bounds the next walk to the
+      // commits this receive adds.
+      const pack = await line.packAt(tip);
+      const secondNext = live.next();
+      const log = spyOn(git, "log");
+      try {
+        await (await prepare(store, repoId, pack, tip)).commit();
+        expect(log).toHaveBeenCalledTimes(0);
+      } finally {
+        log.mockRestore();
+      }
+      const b = await secondNext;
+      if (b.done) throw new Error("Missing update");
+      expect(b.value.seq).toBe(await replayedSeq(store, tip));
+      expect(b.value.seq - a.value.seq).toBe(5);
+    } finally {
+      ac.abort();
+    }
+  });
+
+  test("a live subscriber's seq after a receive that replaces the ref's line matches the replay", async () => {
+    const lineA = await sourceLine(["a1", "a2", "a3"]);
+    const lineB = await sourceLine(
+      Array.from({ length: 8 }, (_, i) => `b${String(i + 1)}`),
+    );
+    const tipA = lineA.commits.at(-1);
+    const tipB = lineB.commits.at(-1);
+    if (tipA === undefined || tipB === undefined) throw new Error("line");
+    const { store } = await targetStore(runsHandler());
+    await (
+      await prepare(store, repoId, await lineA.packAt(tipA), tipA)
+    ).commit();
+    const ac = new AbortController();
+    const live = store.subscribe(principal, repoId, REF, {
+      from: "head",
+      signal: ac.signal,
+    });
+    try {
+      const next = live.next();
+      await (
+        await prepare(store, repoId, await lineB.packAt(tipB), tipB)
+      ).commit();
+      const entry = await next;
+      if (entry.done) throw new Error("Missing update");
+      expect(asRefUpdated(entry.value.event).newSha).toBe(tipB);
+      expect(entry.value.seq).toBe(await replayedSeq(store, tipB));
+    } finally {
+      ac.abort();
+    }
+  });
+
+  test("a replay subscriber continues the replay's seqs after a receive of many commits", async () => {
+    const line = await sourceLine(["v1", "v2", "v3", "v4", "v5"]);
+    const [first] = line.commits;
+    const tip = line.commits.at(-1);
+    if (first === undefined || tip === undefined) throw new Error("line");
+    const { store, repoDirOf } = await targetStore(runsHandler());
+    await (
+      await prepare(store, repoId, await line.packAt(first), first)
+    ).commit();
+    const earlier = new AbortController();
+    const earlierStream = store.subscribe(principal, repoId, REF, {
+      from: "head",
+      signal: earlier.signal,
+    });
+    const ac = new AbortController();
+    try {
+      const earlierNext = earlierStream.next();
+      await (
+        await prepare(store, repoId, await line.packAt(tip), tip)
+      ).commit();
+      const earlierEntry = await earlierNext;
+      if (earlierEntry.done) throw new Error("Missing update");
+
+      const history = await git.log({ fs, dir: repoDirOf(repoId), ref: REF });
+      expect(earlierEntry.value.seq).toBe(history.length - 1);
+      const replay = store.subscribe(principal, repoId, REF, {
+        from: { seq: 0 },
+        signal: ac.signal,
+      });
+      const seqs: number[] = [];
+      for (const _entry of history) {
+        const entry = await replay.next();
+        if (entry.done) throw new Error("Missing replay entry");
+        seqs.push(entry.value.seq);
+      }
+      const liveNext = replay.next();
+      await store.writeTree(principal, repoId, REF, {
+        files: { "deploy/a.md": "v6" },
+        message: "v6",
+      });
+      const live = await liveNext;
+      if (live.done) throw new Error("Missing update");
+      seqs.push(live.value.seq);
+      expect(seqs).toEqual(
+        Array.from({ length: history.length + 1 }, (_, i) => i),
+      );
+    } finally {
+      earlier.abort();
+      ac.abort();
+    }
   });
 
   test("prepareReceivePack refuses a kind other than workflow-run", async () => {
