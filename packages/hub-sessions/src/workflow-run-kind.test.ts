@@ -617,6 +617,38 @@ describe("workflowRunKindHandler.validatePush — compaction (events.jsonl)", ()
     expect(r.reason).toContain("is a tree");
   });
 
+  test("rejects a sealed events.jsonl that the new commit replaces with a tree", async () => {
+    const r = await validate(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "", [`${combinedPath}/a`]: "x" },
+      {
+        priorFiles: {
+          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+          [combinedPath]: fold(e0, e1),
+        },
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain(`combined event log ${combinedPath}`);
+    expect(r.reason).toContain("in the prospective tree");
+  });
+
+  test("rejects an events.jsonl blob where the prior commit held a tree", async () => {
+    const r = await validate(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "", [combinedPath]: fold(e0, e1) },
+      {
+        priorFiles: {
+          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+          [`${combinedPath}/a`]: "x",
+        },
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toContain(`combined event log ${combinedPath}`);
+    expect(r.reason).toContain("in the prior tree");
+  });
+
   test("rejects a freshly-sealed run with no terminal event", async () => {
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -1119,6 +1151,31 @@ describe("workflowRunKindHandler.validatePush — append-only via prior-tree", (
     ]);
   });
 
+  test("rejects a prior event that the new commit replaces with a tree", async () => {
+    const eventPath = `${WORKFLOW_RUN_RUNS_PREFIX}/run-x/events/0.json`;
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${eventPath}/nested`]: "nested",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-x/events/1.json`]: eventBody(
+          1,
+          "StepStarted",
+        ),
+      },
+      {
+        priorFiles: {
+          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+          [eventPath]: eventBody(0, "RunStarted"),
+        },
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /event runs\/run-x\/events\/0\.json bytes diverge from the prior tree \(a tree vs blob OID [0-9a-f]{40}\)/,
+    );
+  });
+
   test("rejects a prospective tree that mutates the bytes of an event present in the prior tree", async () => {
     const prior = {
       [`${WORKFLOW_RUN_RUNS_PREFIX}/run-x/events/0.json`]: eventBody(
@@ -1272,6 +1329,17 @@ describe("workflowRunKindHandler.validatePush — blobs subtree", () => {
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(
       /blob runs\/run-a\/blobs\/.* bytes diverge from the prior tree/,
+    );
+  });
+
+  test("rejects a prior blob that the new commit replaces with a tree", async () => {
+    const prior = blobsTree("run-a", { [BLOB_KEY_A]: "original-bytes" });
+    const prospective = blobsTree("run-a", { [`${BLOB_KEY_A}/nested`]: "x" });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /blob runs\/run-a\/blobs\/[0-9a-f]{64} bytes diverge from the prior tree \(a tree vs blob OID [0-9a-f]{40}\)/,
     );
   });
 
