@@ -605,6 +605,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return path.join(dataDir, handler.directoryPrefix, repoId.id);
   }
 
+  // GC runs on the write path of a repo whose kind is in `gc.kinds`. It
+  // removes packs and loose objects, and under `tip-only` retention it
+  // drops history, so a read of that repo with no repo lock can find
+  // objects gone partway through.
+  function isReclaimedByGC(repoId: RepoId): boolean {
+    return gc !== undefined && gc.kinds.includes(repoId.kind);
+  }
+
   // Write-path reclaim. Called at the end of every successful write for an
   // allowlisted kind, from inside the substrate's `withRepoLock`. The shared
   // evaluator acquires the storage per-directory lock, applies the policy
@@ -612,6 +620,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // propagates a reclaim failure — the triggering write has already
   // committed durably, so failing the caller would misreport it.
   async function maybeRunGC(repoId: RepoId): Promise<void> {
+    // Not `isReclaimedByGC`: the check is inline so `gc` narrows for the
+    // `maybeGC` call below.
     if (gc === undefined || !gc.kinds.includes(repoId.kind)) return;
     await maybeGC(repoDir(repoId), gc);
   }
@@ -2160,7 +2170,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         `prepareReceivePack: kind ${repoId.kind} is not workflow-run; a prepared receive validates with no repo lock, so it accepts only the workflow-run kind`,
       );
     }
-    if (gc !== undefined && gc.kinds.includes(repoId.kind)) {
+    if (isReclaimedByGC(repoId)) {
       throw new Error(
         `prepareReceivePack: kind ${repoId.kind} is reclaimed by GC, which can remove a pack while a prepared receive reads it`,
       );
