@@ -118,10 +118,41 @@ function asRefUpdated(event: unknown): RefUpdatedEvent {
   return event;
 }
 
+// The real `readCommit`, bound before any test spies on it, so a spy
+// left behind by a test that timed out cannot make a later mock call
+// itself. Each gated mock also matches only its own test's repository,
+// so such a spy gates no later test.
+const gitReadCommit = git.readCommit.bind(git);
+
 // Runs every queued microtask, so code that continues with no I/O after
 // an awaited step has run up to its next I/O.
 function drainMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+// A one-shot gate: `reached` resolves when the gated step arrives, and
+// the step waits until `release()`.
+function gate(): {
+  reached: Promise<void>;
+  arrive: () => Promise<void>;
+  release: () => void;
+} {
+  let markReached: () => void = () => undefined;
+  const reached = new Promise<void>((resolve) => {
+    markReached = resolve;
+  });
+  let release: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    reached,
+    arrive: () => {
+      markReached();
+      return released;
+    },
+    release,
+  };
 }
 
 describe("RepoStore", () => {
@@ -686,37 +717,6 @@ describe("RepoStore", () => {
       }
     },
   );
-
-  // A one-shot gate: `reached` resolves when the gated step arrives, and
-  // the step waits until `release()`.
-  function gate(): {
-    reached: Promise<void>;
-    arrive: () => Promise<void>;
-    release: () => void;
-  } {
-    let markReached: () => void = () => undefined;
-    const reached = new Promise<void>((resolve) => {
-      markReached = resolve;
-    });
-    let release: () => void = () => undefined;
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    return {
-      reached,
-      arrive: () => {
-        markReached();
-        return released;
-      },
-      release,
-    };
-  }
-
-  // The real `readCommit`, bound before any test spies on it, so a spy
-  // left behind by a test that timed out cannot make a later mock call
-  // itself. Each gated mock below also matches only its own test's
-  // repository, so such a spy gates no later test.
-  const gitReadCommit = git.readCommit.bind(git);
 
   test("a subscriber seeding during an update's ref write gives the update its own seq", async () => {
     const dataDir = await makeTempDir("repo-store-seed-window-");
@@ -5545,6 +5545,557 @@ describe("RepoStore prepared pack receive", () => {
     } finally {
       earlier.abort();
       ac.abort();
+    }
+  });
+
+  // A store over `dataDir` whose workflow-run handler counts the
+  // commits it validates, by their `deploy/a.md`, and can hold a ref
+  // update in onRefUpdated while it holds the repo lock.
+  function countingStore(
+    dataDir: string,
+    gc?: Parameters<typeof createRepoStore>[0]["gc"],
+  ): {
+    store: ReturnType<typeof createRepoStore>;
+    validated: string[];
+    holdNextUpdate: () => ReturnType<typeof gate>;
+  } {
+    const validated: string[] = [];
+    let hold: ReturnType<typeof gate> | null = null;
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        "workflow-run": {
+          ...runsHandler(async (text) => {
+            validated.push(text);
+            return true;
+          }),
+          async onRefUpdated() {
+            const held = hold;
+            hold = null;
+            if (held !== null) await held.arrive();
+          },
+        },
+      },
+      authorize: allowAll,
+      ...(gc === undefined ? {} : { gc }),
+    });
+    return {
+      store,
+      validated,
+      holdNextUpdate: () => {
+        hold = gate();
+        return hold;
+      },
+    };
+  }
+
+  // A line of `contents` whose first `receivedCount` commits a new
+  // target receives, and the target's data dir, for a new store over it
+  // as after a restart, with no existing-commit set.
+  async function restartedTarget(
+    contents: readonly string[],
+    receivedCount: number,
+    id: RepoId = repoId,
+  ): Promise<{
+    line: Awaited<ReturnType<typeof sourceLine>>;
+    dataDir: string;
+    repoDir: string;
+  }> {
+    const line = await sourceLine(contents);
+    const received = line.commits[receivedCount - 1];
+    if (received === undefined) throw new Error("line");
+    const { store, dataDir, repoDirOf } = await targetStore(runsHandler());
+    await (
+      await prepare(store, id, await line.packAt(received), received)
+    ).commit();
+    return { line, dataDir, repoDir: repoDirOf(id) };
+  }
+
+  test("a receive into a repo with no existing-commit set scans the history before it takes the lock", async () => {
+    const contents = Array.from({ length: 32 }, (_, i) => `v${String(i + 1)}`);
+    // The test holds the repo lock, and the lock map is shared by every
+    // store in the process, so the test's own repo id keeps a lock it
+    // leaves held from blocking other tests.
+    const scanRepoId: RepoId = { kind: "workflow-run", id: "scan-before-lock" };
+    const { line, dataDir, repoDir } = await restartedTarget(
+      contents,
+      30,
+      scanRepoId,
+    );
+    const history = await git.log({ fs, dir: repoDir, ref: REF });
+    const received = line.commits[29];
+    const tip = line.commits.at(-1);
+    if (received === undefined || tip === undefined) throw new Error("line");
+    const pack = await line.packAt(tip);
+    const { store, validated, holdNextUpdate } = countingStore(dataDir);
+    const OTHER = "refs/heads/other";
+
+    // One write holds the repo lock; a second waits for it.
+    const held = holdNextUpdate();
+    const first = store.writeTree(principal, scanRepoId, OTHER, {
+      files: { "deploy/a.md": "w1" },
+      message: "w1",
+    });
+    await held.reached;
+    const second = store.writeTree(principal, scanRepoId, OTHER, {
+      files: { "deploy/a.md": "w2" },
+      message: "w2",
+    });
+
+    // The scan reads the tip of the ref after it has resolved every
+    // branch tip (the branches scan in name order, and `test` sorts
+    // last). It arrives there while the write holds the lock, so the
+    // scan runs with no lock, and it saw the other ref before the
+    // second write moved it.
+    const scan = gate();
+    let gated = false;
+    const readCommit = spyOn(git, "readCommit").mockImplementation(
+      async (args) => {
+        const result = await gitReadCommit(args);
+        if (args.dir === repoDir && args.oid === received && !gated) {
+          gated = true;
+          await scan.arrive();
+        }
+        return result;
+      },
+    );
+    let preparing: ReturnType<typeof prepare> | null = null;
+    try {
+      preparing = prepare(store, scanRepoId, pack, tip);
+      await scan.reached;
+      held.release();
+      await first;
+      const { commitSha: w2 } = await second;
+      // The writes validate their own commits.
+      expect(validated).toEqual(["w1", "w2"]);
+      validated.length = 0;
+      scan.release();
+      const prepared = await preparing;
+      await prepared.commit();
+      expect(validated).toEqual(["v31", "v32"]);
+      // The scan reads each commit once; a second, locked scan would
+      // read the whole history again.
+      expect(readCommit.mock.calls.length).toBeLessThan(2 * history.length);
+
+      // The scan did not see the second write's commit. The locked
+      // step adds it from the other ref's moved tip, so a receive of
+      // that commit validates nothing.
+      validated.length = 0;
+      const w2Pack = await historyPack(repoDir, w2);
+      await (await prepare(store, scanRepoId, w2Pack, w2)).commit();
+      expect(validated).toEqual([]);
+    } finally {
+      readCommit.mockRestore();
+      scan.release();
+      held.release();
+      await Promise.allSettled([first, second]);
+      // A discard after a commit does nothing.
+      await (await preparing?.catch(() => null))?.discard();
+    }
+  });
+
+  test("a scan of a repo removed during it is not used for the repo created again", async () => {
+    const contents = Array.from({ length: 12 }, (_, i) => `v${String(i + 1)}`);
+    const { line, dataDir, repoDir } = await restartedTarget(contents, 10);
+    const [oldest] = line.commits;
+    const tip = line.commits.at(-1);
+    if (oldest === undefined || tip === undefined) throw new Error("line");
+    const pack = await line.packAt(tip);
+    const { store, validated } = countingStore(dataDir);
+
+    // The scan has read the ref's history when it reads the line's
+    // oldest commit. The repository is removed and created again
+    // before the scan returns, so the scan ends on the new repository.
+    const scan = gate();
+    let gated = false;
+    const readCommit = spyOn(git, "readCommit").mockImplementation(
+      async (args) => {
+        const result = await gitReadCommit(args);
+        if (args.dir === repoDir && args.oid === oldest && !gated) {
+          gated = true;
+          await scan.arrive();
+        }
+        return result;
+      },
+    );
+    let preparing: ReturnType<typeof prepare> | null = null;
+    try {
+      preparing = prepare(store, repoId, pack, tip);
+      await scan.reached;
+      await store.removeRepo(repoId);
+      await store.initRepo(repoId);
+      scan.release();
+      await (await preparing).commit();
+      expect(validated).toEqual(contents);
+    } finally {
+      readCommit.mockRestore();
+      scan.release();
+      // A discard after a commit does nothing.
+      await (await preparing?.catch(() => null))?.discard();
+    }
+  });
+
+  test("receives that start together on a repo with no existing-commit set share one scan", async () => {
+    const contents = Array.from({ length: 62 }, (_, i) => `v${String(i + 1)}`);
+    const { line, dataDir, repoDir } = await restartedTarget(contents, 60);
+    const history = await git.log({ fs, dir: repoDir, ref: REF });
+    const tip = line.commits.at(-1);
+    if (tip === undefined) throw new Error("line");
+    const pack = await line.packAt(tip);
+    const { store } = countingStore(dataDir);
+
+    const readCommit = spyOn(git, "readCommit");
+    const preparing = Array.from({ length: 4 }, () =>
+      prepare(store, repoId, pack, tip),
+    );
+    try {
+      await Promise.all(preparing);
+      const reads = readCommit.mock.calls.filter(
+        ([args]) => args.dir === repoDir,
+      ).length;
+      // One scan reads the history once; each receive adds a few reads
+      // for its own two commits.
+      expect(reads).toBeLessThan(2 * history.length);
+    } finally {
+      readCommit.mockRestore();
+      for (const result of await Promise.allSettled(preparing)) {
+        if (result.status === "fulfilled") await result.value.discard();
+      }
+    }
+  });
+
+  test("a receive that starts after the scan ends, while the lock is held, uses that scan", async () => {
+    const contents = Array.from({ length: 62 }, (_, i) => `v${String(i + 1)}`);
+    // The test holds the repo lock, so it uses its own repo id.
+    const lateRepoId: RepoId = { kind: "workflow-run", id: "late-scan" };
+    const { line, dataDir, repoDir } = await restartedTarget(
+      contents,
+      60,
+      lateRepoId,
+    );
+    const history = await git.log({ fs, dir: repoDir, ref: REF });
+    const tip = line.commits.at(-1);
+    if (tip === undefined) throw new Error("line");
+    const pack = await line.packAt(tip);
+    const { store, holdNextUpdate } = countingStore(dataDir);
+
+    const held = holdNextUpdate();
+    const write = store.writeTree(principal, lateRepoId, "refs/heads/other", {
+      files: { "deploy/a.md": "w1" },
+      message: "w1",
+    });
+    await held.reached;
+
+    // The scan lists tags last; after that it returns with no more I/O.
+    const listTags = git.listTags.bind(git);
+    let markListed: () => void = () => undefined;
+    const listed = new Promise<void>((resolve) => {
+      markListed = resolve;
+    });
+    const tagsSpy = spyOn(git, "listTags").mockImplementation(async (args) => {
+      const result = await listTags(args);
+      if (args.dir === repoDir) markListed();
+      return result;
+    });
+    const readCommit = spyOn(git, "readCommit");
+    const preparing: ReturnType<typeof prepare>[] = [];
+    try {
+      preparing.push(prepare(store, lateRepoId, pack, tip));
+      await listed;
+      tagsSpy.mockRestore();
+      await drainMicrotasks();
+      // The first receive's scan has ended, and the receive waits for
+      // the lock. A second receive starts now.
+      preparing.push(prepare(store, lateRepoId, pack, tip));
+      await drainMicrotasks();
+      held.release();
+      await write;
+      await Promise.all(preparing);
+      const reads = readCommit.mock.calls.filter(
+        ([args]) => args.dir === repoDir,
+      ).length;
+      expect(reads).toBeLessThan(2 * history.length);
+    } finally {
+      tagsSpy.mockRestore();
+      readCommit.mockRestore();
+      held.release();
+      await Promise.allSettled([write]);
+      for (const result of await Promise.allSettled(preparing)) {
+        if (result.status === "fulfilled") await result.value.discard();
+      }
+    }
+  });
+
+  test("a receive whose locked step fails leaves a shared scan whole for the next receive", async () => {
+    const contents = Array.from({ length: 12 }, (_, i) => `v${String(i + 1)}`);
+    // The test holds the repo lock, so it uses its own repo id.
+    const failRepoId: RepoId = { kind: "workflow-run", id: "shared-scan" };
+    const { line, dataDir, repoDir } = await restartedTarget(
+      contents,
+      10,
+      failRepoId,
+    );
+    const received = line.commits[9];
+    const tip = line.commits.at(-1);
+    if (received === undefined || tip === undefined) throw new Error("line");
+    const pack = await line.packAt(tip);
+    const { store, validated, holdNextUpdate } = countingStore(dataDir);
+    const OTHER = "refs/heads/other";
+
+    // A write holds the lock while the scan runs, and two more writes
+    // move the other ref past what the scan saw.
+    const held = holdNextUpdate();
+    const writes = [
+      store.writeTree(principal, failRepoId, OTHER, {
+        files: { "deploy/a.md": "w1" },
+        message: "w1",
+      }),
+    ];
+    await held.reached;
+    for (const message of ["w2", "w3"]) {
+      writes.push(
+        store.writeTree(principal, failRepoId, OTHER, {
+          files: { "deploy/a.md": message },
+          message,
+        }),
+      );
+    }
+
+    // Both receives wait for one scan, held at the ref's tip. Once the
+    // writes land, the first receive's locked step fails to read w2.
+    const scan = gate();
+    let gated = false;
+    let failOid: string | null = null;
+    const readCommit = spyOn(git, "readCommit").mockImplementation(
+      async (args) => {
+        if (args.dir === repoDir && args.oid === failOid) {
+          failOid = null;
+          throw new Error("transient read failure");
+        }
+        const result = await gitReadCommit(args);
+        if (args.dir === repoDir && args.oid === received && !gated) {
+          gated = true;
+          await scan.arrive();
+        }
+        return result;
+      },
+    );
+    const preparing = [
+      prepare(store, failRepoId, pack, tip),
+      prepare(store, failRepoId, pack, tip),
+    ];
+    try {
+      await scan.reached;
+      held.release();
+      const [, w2] = await Promise.all(writes);
+      if (w2 === undefined) throw new Error("writes");
+      failOid = w2.commitSha;
+      scan.release();
+      const [first, second] = await Promise.allSettled(preparing);
+      expect(first?.status).toBe("rejected");
+      if (second?.status !== "fulfilled") throw new Error("second receive");
+      await second.value.commit();
+
+      // The second receive's set holds w2, so a receive of w2 validates
+      // nothing.
+      validated.length = 0;
+      const w2Pack = await historyPack(repoDir, w2.commitSha);
+      await (await prepare(store, failRepoId, w2Pack, w2.commitSha)).commit();
+      expect(validated).toEqual([]);
+    } finally {
+      readCommit.mockRestore();
+      scan.release();
+      held.release();
+      await Promise.allSettled(writes);
+      for (const result of await Promise.allSettled(preparing)) {
+        // A discard after a commit does nothing.
+        if (result.status === "fulfilled") await result.value.discard();
+      }
+    }
+  });
+
+  test("a scan before the lock leaves the locked step its git cache", async () => {
+    const contents = Array.from({ length: 32 }, (_, i) => `v${String(i + 1)}`);
+    const { line, dataDir, repoDir } = await restartedTarget(contents, 30);
+    const received = line.commits[29];
+    const tip = line.commits.at(-1);
+    if (received === undefined || tip === undefined) throw new Error("line");
+    const pack = await line.packAt(tip);
+    const { store } = countingStore(dataDir);
+
+    // The store rebuilds a dir's git cache once the cache has served
+    // 8192 calls, and each read below charges one. The scan's reads
+    // take the count past that, so a scan charged before the lock
+    // would make the locked step start from an empty cache.
+    for (let i = 0; i < 8192 - 10; i++) {
+      await store.openCommittedReadsAtCommit(principal, repoId, received);
+    }
+    const readCommit = spyOn(git, "readCommit");
+    try {
+      await (await prepare(store, repoId, pack, tip)).discard();
+      const reads = readCommit.mock.calls
+        .filter(([args]) => args.dir === repoDir)
+        .map(([args]) => args);
+      const scanCache = reads[0]?.cache;
+      // The first read of the pack tip is the locked step's walk.
+      const lockedCache = reads.find((args) => args.oid === tip)?.cache;
+      expect(scanCache).toBeDefined();
+      expect(lockedCache).toBe(scanCache);
+    } finally {
+      readCommit.mockRestore();
+    }
+  });
+
+  test("a one-call receive into a repo with no existing-commit set scans the history before it takes the lock", async () => {
+    const contents = Array.from({ length: 12 }, (_, i) => `v${String(i + 1)}`);
+    // The test holds the repo lock, so it uses its own repo id.
+    const oneCallRepoId: RepoId = { kind: "workflow-run", id: "one-call" };
+    const { line, dataDir, repoDir } = await restartedTarget(
+      contents,
+      10,
+      oneCallRepoId,
+    );
+    const received = line.commits[9];
+    const tip = line.commits.at(-1);
+    if (received === undefined || tip === undefined) throw new Error("line");
+    const pack = await line.packAt(tip);
+    const { store, validated, holdNextUpdate } = countingStore(dataDir);
+
+    const held = holdNextUpdate();
+    const write = store.writeTree(
+      principal,
+      oneCallRepoId,
+      "refs/heads/other",
+      {
+        files: { "deploy/a.md": "w1" },
+        message: "w1",
+      },
+    );
+    await held.reached;
+
+    // The scan reads the received tip while the write holds the lock.
+    const scan = gate();
+    let gated = false;
+    const readCommit = spyOn(git, "readCommit").mockImplementation(
+      async (args) => {
+        const result = await gitReadCommit(args);
+        if (args.dir === repoDir && args.oid === received && !gated) {
+          gated = true;
+          await scan.arrive();
+        }
+        return result;
+      },
+    );
+    let receiving: Promise<unknown> | null = null;
+    try {
+      receiving = store.receivePack(
+        principal,
+        oneCallRepoId,
+        REF,
+        pack,
+        tip,
+        received,
+      );
+      await scan.reached;
+      scan.release();
+      held.release();
+      await write;
+      validated.length = 0;
+      await receiving;
+      expect(validated).toEqual(["v11", "v12"]);
+      expect(await store.resolveRef(principal, oneCallRepoId, REF)).toBe(tip);
+    } finally {
+      readCommit.mockRestore();
+      scan.release();
+      held.release();
+      await Promise.allSettled([write, receiving]);
+    }
+  });
+
+  test("a receive into a kind that GC reclaims scans its existing commits only under the lock", async () => {
+    const contents = Array.from({ length: 6 }, (_, i) => `v${String(i + 1)}`);
+    // The test holds the repo lock, so it uses its own repo id.
+    const gcRepoId: RepoId = { kind: "workflow-run", id: "gc-kind" };
+    const { line, dataDir, repoDir } = await restartedTarget(
+      contents,
+      4,
+      gcRepoId,
+    );
+    const received = line.commits[3];
+    const tip = line.commits.at(-1);
+    if (received === undefined || tip === undefined) throw new Error("line");
+    const pack = await line.packAt(tip);
+    const { store, validated, holdNextUpdate } = countingStore(dataDir, {
+      kinds: ["workflow-run"],
+      retention: "keep-history",
+      packThreshold: 1000,
+      looseThreshold: 1000,
+      warnBytes: Number.MAX_SAFE_INTEGER,
+    });
+
+    const held = holdNextUpdate();
+    const write = store.writeTree(principal, gcRepoId, "refs/heads/other", {
+      files: { "deploy/a.md": "w1" },
+      message: "w1",
+    });
+    await held.reached;
+
+    // A scan with no lock first checks that the repository exists, and
+    // that check starts within the microtasks after the receive starts.
+    const gitDir = path.join(repoDir, ".git");
+    const stat = spyOn(fs.promises, "stat");
+    let receiving: Promise<unknown> | null = null;
+    try {
+      receiving = store.receivePack(
+        principal,
+        gcRepoId,
+        REF,
+        pack,
+        tip,
+        received,
+      );
+      await drainMicrotasks();
+      expect(
+        stat.mock.calls.filter(([target]) => target === gitDir),
+      ).toHaveLength(0);
+      held.release();
+      await write;
+      validated.length = 0;
+      await receiving;
+      expect(validated).toEqual(["v5", "v6"]);
+    } finally {
+      stat.mockRestore();
+      held.release();
+      await Promise.allSettled([write, receiving]);
+    }
+  });
+
+  test("a receive whose scan before the lock fails scans under the lock", async () => {
+    const contents = Array.from({ length: 6 }, (_, i) => `v${String(i + 1)}`);
+    const { line, dataDir, repoDir } = await restartedTarget(contents, 4);
+    const tip = line.commits.at(-1);
+    if (tip === undefined) throw new Error("line");
+    const pack = await line.packAt(tip);
+    const { store, validated } = countingStore(dataDir);
+
+    let failed = false;
+    const readCommit = spyOn(git, "readCommit").mockImplementation(
+      async (args) => {
+        if (args.dir === repoDir && !failed) {
+          failed = true;
+          throw new Error("scan read failed");
+        }
+        return gitReadCommit(args);
+      },
+    );
+    try {
+      await (await prepare(store, repoId, pack, tip)).commit();
+      expect(failed).toBe(true);
+      expect(validated).toEqual(["v5", "v6"]);
+      expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
+    } finally {
+      readCommit.mockRestore();
     }
   });
 
