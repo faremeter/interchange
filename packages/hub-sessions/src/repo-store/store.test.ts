@@ -4104,6 +4104,34 @@ describe("RepoStore prepared pack receive", () => {
     );
   });
 
+  test("a prepare whose validation rejects the pack discards the staged pack", async () => {
+    const line = await sourceLine(["v1", "v2"]);
+    const [first, tip] = line.commits;
+    if (first === undefined || tip === undefined) throw new Error("line");
+    const { store, repoDirOf } = await targetStore(
+      runsHandler(async (text) => text !== "v2"),
+    );
+    await (
+      await prepare(store, repoId, await line.packAt(first), first)
+    ).commit();
+    const repoDir = repoDirOf(repoId);
+    const published = await receivedPacks(repoDir);
+
+    await expect(
+      store.prepareReceivePack(
+        principal,
+        repoId,
+        REF,
+        await line.packAt(tip),
+        tip,
+      ),
+    ).rejects.toThrow(/^path_violation: .*rejected v2/);
+
+    expect(await stagedPacks(repoDir)).toEqual([]);
+    expect(await receivedPacks(repoDir)).toEqual(published);
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(first);
+  });
+
   test("while one prepare validates, another repo's commit and the same repo's one-call receive proceed", async () => {
     const line = await sourceLine(["v1", "v2"]);
     const [first, tip] = line.commits;
