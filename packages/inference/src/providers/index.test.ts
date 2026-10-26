@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import path from "node:path";
 import type { LastCycleSource } from "@intx/types/runtime";
 import type { AdapterFactory, ProviderAdapter } from "../adapter";
 import type { ModuleImporter } from "../manifest";
@@ -29,6 +30,10 @@ describe("createBuiltinRegistry", () => {
 
   test("does not report an unregistered provider as a member", () => {
     expect(createBuiltinRegistry().has("custom")).toBe(false);
+  });
+
+  test("does not include corbits-system-one", () => {
+    expect(createBuiltinRegistry().has("corbits-system-one")).toBe(false);
   });
 });
 
@@ -62,5 +67,29 @@ describe("loadAdapterRegistry", () => {
 
     expect(registry.has("anthropic")).toBe(true);
     expect(registry.has("custom")).toBe(false);
+  });
+
+  test("loads a fixture factory for corbits-system-one without a network call", async () => {
+    const specifier = path.resolve(
+      import.meta.dir,
+      "fixtures/system-one-adapter.ts",
+    );
+    const manifest: AdapterManifest = [
+      {
+        provider: "corbits-system-one",
+        specifier,
+        export: "makeAdapter",
+      },
+    ];
+
+    const registry = await loadAdapterRegistry(manifest);
+    const adapter = registry.resolve(createSource("corbits-system-one"));
+
+    expect(registry.has("corbits-system-one")).toBe(true);
+    expect(adapter.buildRequest([], "jev-latest", {})).toEqual({
+      url: "fixture://system-one",
+      headers: {},
+      body: "",
+    });
   });
 });
