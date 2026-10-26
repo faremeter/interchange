@@ -3098,6 +3098,84 @@ describe("RepoStore", () => {
     }
   });
 
+  test("a subscriber after updates with no subscriber seeds its seq outside the lock", async () => {
+    const dataDir = await makeTempDir("repo-store-forget-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const write = (message: string) =>
+      store.writeTree(principal, repoId, REF, {
+        files: { "a.md": message },
+        message,
+      });
+    await write("v1");
+
+    // A subscriber that sees one update leaves a seq cached for the ref.
+    const earlier = new AbortController();
+    const earlierStream = store.subscribe(principal, repoId, REF, {
+      from: "head",
+      signal: earlier.signal,
+    });
+    try {
+      const earlierNext = earlierStream.next();
+      await write("v2");
+      expect((await earlierNext).done).toBe(false);
+    } finally {
+      earlier.abort();
+    }
+    for (let i = 3; i <= 20; i++) await write(`v${String(i)}`);
+
+    // The next subscriber's seed walks the history to its root with no
+    // lock. Had an entry for v2 stayed cached, the seed would skip, and
+    // the first update below would walk back to v2 under the lock.
+    const dir = store.getRepoDir(repoId);
+    const root = (await git.log({ fs, dir, ref: REF })).at(-1)?.oid;
+    if (root === undefined) throw new Error("Missing root commit");
+    let markWalked: () => void = () => undefined;
+    const walked = new Promise<void>((resolve) => {
+      markWalked = resolve;
+    });
+    const readCommit = spyOn(git, "readCommit").mockImplementation(
+      async (args) => {
+        const result = await gitReadCommit(args);
+        if (args.dir === dir && args.oid === root) markWalked();
+        return result;
+      },
+    );
+    const ac = new AbortController();
+    try {
+      const stream = store.subscribe(principal, repoId, REF, {
+        from: "head",
+        signal: ac.signal,
+      });
+      const first = stream.next();
+      await walked;
+      await drainMicrotasks();
+      const seqs: number[] = [];
+      const reads: number[] = [];
+      for (const [message, next] of [
+        ["v21", first],
+        ["v22", null],
+      ] as const) {
+        const pending = next ?? stream.next();
+        const before = readCommit.mock.calls.length;
+        await write(message);
+        reads.push(readCommit.mock.calls.length - before);
+        const entry = await pending;
+        if (entry.done) throw new Error("Missing update");
+        seqs.push(entry.value.seq);
+      }
+      expect(seqs).toEqual([21, 22]);
+      expect(reads[0]).toBe(reads[1]);
+    } finally {
+      ac.abort();
+      readCommit.mockRestore();
+    }
+  });
+
   test("subscribe authorize denial throws immediately", async () => {
     const dataDir = await makeTempDir("repo-store-sub-deny-");
     const handler = createTestHandler();
@@ -4192,11 +4270,10 @@ describe("RepoStore pack receive reads", () => {
       await store.receivePack(principal, repoId, REF, packfile, tip, null);
       expect(validated).toBe(COMMITS);
       // Per commit: its root and `deploy/` trees, and its commit read by
-      // the walk, by validation, and by the walk that numbers the new
-      // tip for subscribers. A few more reads come from the tip checks
-      // in the pack receive and from the root commit.
+      // the walk and by validation. A few more reads come from the tip
+      // checks in the pack receive.
       expect(readTree.mock.calls.length).toBeLessThanOrEqual(2 * COMMITS + 4);
-      expect(readCommit.mock.calls.length).toBeLessThanOrEqual(3 * COMMITS + 5);
+      expect(readCommit.mock.calls.length).toBeLessThanOrEqual(2 * COMMITS + 4);
     } finally {
       readTree.mockRestore();
       readCommit.mockRestore();
@@ -5217,6 +5294,104 @@ describe("RepoStore prepared pack receive", () => {
         tip,
       ),
     ).rejects.toThrow(/reclaimed by GC/);
+  });
+
+  test("a receive with no subscriber reads no ref history under the lock", async () => {
+    const line = await sourceLine(
+      Array.from({ length: 12 }, (_, i) => `v${String(i + 1)}`),
+    );
+    const middle = line.commits[9];
+    const tip = line.commits.at(-1);
+    if (middle === undefined || tip === undefined) throw new Error("line");
+    const { store: before, dataDir } = await targetStore(runsHandler());
+    await (
+      await prepare(before, repoId, await line.packAt(middle), middle)
+    ).commit();
+
+    // A new store over the same data, as after a restart, has no seq
+    // cached. The commit step of a prepared receive holds the lock and
+    // moves the ref; with no subscriber it reads no commit.
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "workflow-run": runsHandler() },
+      authorize: allowAll,
+    });
+    const prepared = await prepare(store, repoId, await line.packAt(tip), tip);
+    const readCommit = spyOn(git, "readCommit");
+    const ac = new AbortController();
+    try {
+      await prepared.commit();
+      expect(readCommit).toHaveBeenCalledTimes(0);
+
+      // A subscriber seeds its seq by walking the history through the
+      // same spy, so the zero count above is not a spy that sees nothing.
+      const stream = store.subscribe(principal, repoId, REF, {
+        from: "head",
+        signal: ac.signal,
+      });
+      const next = stream.next();
+      await store.writeTree(principal, repoId, REF, {
+        files: { "deploy/a.md": "v13" },
+        message: "v13",
+      });
+      expect((await next).done).toBe(false);
+      expect(readCommit.mock.calls.length).toBeGreaterThanOrEqual(12);
+    } finally {
+      ac.abort();
+      readCommit.mockRestore();
+    }
+  });
+
+  test("a subscriber after updates with no subscriber gets the seq of the ref's history", async () => {
+    const line = await sourceLine(["v1", "v2", "v3", "v4", "v5", "v6", "v7"]);
+    const [first, second] = line.commits;
+    const tip = line.commits.at(-1);
+    if (first === undefined || second === undefined || tip === undefined) {
+      throw new Error("line");
+    }
+    const { store, repoDirOf } = await targetStore(runsHandler());
+    await (
+      await prepare(store, repoId, await line.packAt(first), first)
+    ).commit();
+
+    // A subscriber that sees one update leaves a seq cached for the ref.
+    const earlier = new AbortController();
+    const earlierStream = store.subscribe(principal, repoId, REF, {
+      from: "head",
+      signal: earlier.signal,
+    });
+    try {
+      const earlierNext = earlierStream.next();
+      await (
+        await prepare(store, repoId, await line.packAt(second), second)
+      ).commit();
+      expect((await earlierNext).done).toBe(false);
+    } finally {
+      earlier.abort();
+    }
+
+    // One receive of five commits with no subscriber.
+    await (await prepare(store, repoId, await line.packAt(tip), tip)).commit();
+
+    const ac = new AbortController();
+    const stream = store.subscribe(principal, repoId, REF, {
+      from: "head",
+      signal: ac.signal,
+    });
+    try {
+      const next = stream.next();
+      await store.writeTree(principal, repoId, REF, {
+        files: { "deploy/a.md": "v8" },
+        message: "v8",
+      });
+      const entry = await next;
+      if (entry.done) throw new Error("Missing update");
+      const history = await git.log({ fs, dir: repoDirOf(repoId), ref: REF });
+      expect(entry.value.seq).toBe(history.length - 1);
+    } finally {
+      ac.abort();
+    }
   });
 
   // The seq a `from: { seq: 0 }` replay of `REF` gives `commitSha`.

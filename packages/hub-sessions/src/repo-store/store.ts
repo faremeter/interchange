@@ -422,7 +422,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // after the ref moves on, and only shortens the next walk: a walk
   // that does not meet the cached commit counts to the root. In a
   // history with a missing parent the entry is the base the next seq
-  // advances from.
+  // advances from, so that history's seq starts again once the entry
+  // goes. An update with no subscriber computes no seq and deletes the
+  // entry, and `primeReplay` seeds it again, with no lock, for the next
+  // subscriber, except on a kind that GC reclaims (see `seedFromTip`).
+  // A kept entry for an older tip would make that seed skip, and the
+  // next update would walk every commit since that tip under the lock.
+  // An update that lands after a subscriber registers and before its
+  // seed runs still walks to the root under the lock.
   type CachedSeq = { tip: string; seq: number };
   const seqCache = new Map<string, CachedSeq>();
 
@@ -583,10 +590,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
 
   // Called from inside the per-repo lock immediately after a
-  // successful ref update. Computes the new tip's seq with a walk that
-  // stops at the cached commit, so an update that extends the cached
-  // tip reads only the commits it adds. Then fans the event out to
-  // every subscriber registered for this (repoId, ref).
+  // successful ref update. With no subscriber for (repoId, ref) it
+  // drops the cached seq and computes nothing, so the update reads no
+  // history under the lock. Otherwise it computes the new tip's seq
+  // with a walk that stops at the cached commit, so an update that
+  // extends the cached tip reads only the commits it adds, and fans
+  // the event out to every subscriber.
   // Errors raised by individual subscriber delivery (e.g. buffer
   // overrun) are captured on the subscriber's state so the
   // ref-update path itself is never destabilised by a slow consumer.
@@ -597,6 +606,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     newSha: string,
   ): Promise<void> {
     const key = refKey(repoId, ref);
+    const set = subscribers.get(key);
+    if (set === undefined) {
+      seqCache.delete(key);
+      return;
+    }
     const dir = repoDir(repoId);
     const seq = await withReceiveCache(dir, (cache) =>
       commitDepth(dir, cache, newSha, seqCache.get(key)),
@@ -617,8 +631,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       newSha,
     };
     const entry: SubscribeEntry = { seq, event };
-    const set = subscribers.get(key);
-    if (set === undefined) return;
     for (const sub of set) deliverToSubscriber(sub, entry);
   }
 
@@ -2581,9 +2593,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     let replayQueue: SubscribeEntry[] | null = null;
     let replayPrimed = false;
 
-    // Seed an empty seq cache with the ref tip's depth, so the next
-    // update's walk under the repo lock stops at that tip instead of
-    // reading the whole history. The seed runs with no repo lock, so an
+    // Seed an empty seq cache with the ref tip's depth, so an update
+    // that lands after the seed walks under the repo lock only to that
+    // tip, not the whole history. The seed runs with no repo lock, so an
     // update can cache its own entry first; the seed then leaves that
     // entry, which a history with a missing parent advances from. A
     // kind that GC reclaims gets no seed walk: GC can remove an object
