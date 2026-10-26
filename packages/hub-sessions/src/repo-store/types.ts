@@ -582,8 +582,9 @@ export interface RepoStore {
    * same `seq` across restarts. A history with a missing parent (a
    * pack that carries only its tip, or history GC removed) replays no
    * entries. Its live `seq` advances by the readable commits each
-   * update adds, from 0 at the oldest readable commit when the store
-   * starts; it does not hold across restarts. The emitted `event` is
+   * update adds while the ref has a subscriber, and starts again from
+   * 0 at the oldest readable commit after a restart or after an update
+   * with no subscriber. The emitted `event` is
    * the substrate-level commit descriptor; consumers that need richer
    * shapes layer their own decoding on top.
    *
