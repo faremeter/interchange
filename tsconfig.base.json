@@ -23,6 +23,7 @@
     "module": "ESNext",
     "noEmit": true,
 
-    "lib": ["ESNext"]
+    "lib": ["ESNext"],
+    "types": ["bun"]
   }
 }

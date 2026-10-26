@@ -100,6 +100,7 @@ The project uses strict TypeScript settings defined in `tsconfig.base.json`. Key
 - **`noUncheckedIndexedAccess`**: Array/object index access may return `undefined`. Always check before using.
 - **`exactOptionalPropertyTypes`**: Optional properties cannot be explicitly set to `undefined`.
 - **`verbatimModuleSyntax`**: Use `import type` for type-only imports.
+- **Explicit `types`**: Only the global type packages listed in `types` load (the base lists `bun`). Installed `@types/*` packages are not included automatically.
 - **ESNext target**: Modern JavaScript features are available; no need for polyfills.
 
 ---
