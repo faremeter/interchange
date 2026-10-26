@@ -699,3 +699,18 @@ Where it lives today: `MailSigner`, `packages/types/src/mail-signer.ts`;
 `PerformScope`, `packages/workflow/src/runtime/env.ts`; the child bridge,
 `packages/workflow-host/src/child/mail-compose-bridge.ts`; the hub's checks,
 "Mail send grants" in `docs/AUTH.md`.
+
+**34.** A deployment in standby has its workflow child stopped while every
+run only waits on input from outside. Three things an author writes keep a
+run from counting as waiting, so its deployment stays out of standby until
+they end: a step with a `timeout`, from its start to its end, even while it
+is parked on an approval; a `map`, until it ends; and a step waiting to
+retry. A fresh child could not keep the step's deadline, continue the map,
+or continue the retry wait. An `awaitSignal` gate's `timeout` does not
+count, because it is a timer in the run's log.
+
+Where it lives today: the standby paragraph of
+`docs/workflow-lifecycle-policy.md`; `beginWork`,
+`packages/workflow/src/runtime/activity.ts`, called by `runStep` and
+`runMap`, and the doc comment of `waitForTimer`,
+`packages/workflow/src/runtime/run.ts`.

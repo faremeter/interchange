@@ -1059,6 +1059,8 @@ const SWEEP_PINNED = new Map<string, SweepPin>([
   [`GET ${TENANT_ROUTE}/workflows/runs/:runId/mail`, NOT_IMPLEMENTED],
   [`GET ${TENANT_ROUTE}/workflows/runs/:runId/lifecycle`, NO_LIFECYCLE],
   [`POST ${TENANT_ROUTE}/workflows/runs/:runId/capacity/release`, NO_LIFECYCLE],
+  [`POST ${TENANT_ROUTE}/workflows/runs/:runId/standby`, NO_LIFECYCLE],
+  [`POST ${TENANT_ROUTE}/workflows/runs/:runId/wake`, NO_LIFECYCLE],
   [`DELETE ${TENANT_ROUTE}/workflows/runs/:runId`, NO_LIFECYCLE],
   [`GET ${SMART_HTTP_REPO}/info/refs`, GIT_TOKEN_ONLY],
   [`POST ${SMART_HTTP_REPO}/git-upload-pack`, GIT_TOKEN_ONLY],
