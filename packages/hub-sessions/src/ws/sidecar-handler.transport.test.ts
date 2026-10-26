@@ -762,6 +762,73 @@ describe("SidecarRouter allocation pack transport", () => {
     });
   });
 
+  test("answers a ping while a workflow-run pack receive is in progress", async () => {
+    // A catch-up pack can take the Hub seconds to validate. The sidecar
+    // drops a connection whose pings go unanswered for its pong timeout,
+    // and then pushes the same pack again, so the pong must not wait for
+    // the receive.
+    const receiving = Promise.withResolvers<boolean>();
+    const finish = Promise.withResolvers<boolean>();
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack() {
+          receiving.resolve(true);
+          await finish.promise;
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(TEST_IDENTITY.workflowRunAddress),
+    };
+    for (const chunk of chunkPack(new Uint8Array([8]))) {
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.push",
+          agentAddress: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_TARGET.generation,
+          repoId,
+          transferId: "transfer-slow",
+          seq: chunk.seq,
+          data: chunk.data,
+        }),
+      );
+    }
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "repo.pack.done",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
+        repoId,
+        transferId: "transfer-slow",
+        ref: "refs/heads/events",
+        commitSha: "e".repeat(40),
+      }),
+    );
+
+    try {
+      await receiving.promise;
+      router.handleMessage(ws, JSON.stringify({ type: "ping" }));
+      expect(parsedFrames(ws)).toContainEqual({ type: "pong" });
+      expect(parsedFrames(ws)).not.toContainEqual(
+        expect.objectContaining({ type: "repo.pack.ack" }),
+      );
+    } finally {
+      finish.resolve(true);
+    }
+    await tick();
+    expect(lastFrame(ws)).toMatchObject({
+      type: "repo.pack.ack",
+      transferId: "transfer-slow",
+    });
+  });
+
   test("forwards a workflow-run pack rejection to the sidecar", async () => {
     const router = createAllocatedRouter({
       lookups: {
