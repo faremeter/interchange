@@ -479,6 +479,7 @@ export async function createHubServer({
     historyReceives: workflowHistoryReceives,
     sendControl: (target, command, timeoutMs) =>
       sidecarRouter.sendWorkflowControl(target, command, timeoutMs),
+    standbyRouter: sidecarRouter,
   });
   const dispatchProjection = createWorkflowDispatchProjection({
     db,
@@ -555,6 +556,9 @@ export async function createHubServer({
   // reconciliation reads what the sidecar reported.
   sidecarRouter.events.on("deployment.stopped", (allocated) =>
     sidecarAllocationReconciler.handleConnected(allocated),
+  );
+  sidecarRouter.events.on("deployment.standby", (report) =>
+    workflowLifecycleService.noteDeploymentInStandby(report),
   );
   attachWorkflowDispatchAcknowledgements({
     events: sidecarRouter.events,

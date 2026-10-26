@@ -37,7 +37,7 @@ import {
   DEFAULT_SIDECAR_CAPACITY,
   HubFrame,
 } from "@intx/types/sidecar";
-import { createMockWs } from "./sidecar-test-helpers";
+import { createMockWs, NO_STANDBY_ROUTER } from "./sidecar-test-helpers";
 
 const MANIFEST_DIGEST = "1".repeat(64);
 
@@ -191,6 +191,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         try {
           await Promise.race([prepared.promise, deployment]);
           const lifecycle = createWorkflowLifecycleService({
+            standbyRouter: NO_STANDBY_ROUTER,
             retentionRouter: {
               fenceAllocation: () => undefined,
               retireAllocation: () => undefined,
@@ -311,6 +312,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       try {
         await Promise.race([sent.promise, result]);
         const lifecycle = createWorkflowLifecycleService({
+          standbyRouter: NO_STANDBY_ROUTER,
           retentionRouter: {
             fenceAllocation: () => undefined,
             retireAllocation: () => undefined,
@@ -462,6 +464,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       try {
         await preparing.promise;
         const lifecycle = createWorkflowLifecycleService({
+          standbyRouter: NO_STANDBY_ROUTER,
           retentionRouter: {
             fenceAllocation: () => undefined,
             retireAllocation: () => undefined,

@@ -47,7 +47,7 @@ import {
 } from "@intx/types/sidecar";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
-import { createMockWs } from "./sidecar-test-helpers";
+import { createMockWs, NO_STANDBY_ROUTER } from "./sidecar-test-helpers";
 
 const NO_MANIFEST_DIGEST = await adapterManifestDigest(undefined);
 const TENANT = "tenant-lifecycle-integration";
@@ -191,6 +191,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         [];
       const lifecycle = createWorkflowLifecycleService({
         db: h.db,
+        standbyRouter: NO_STANDBY_ROUTER,
         retentionRouter: {
           ...router,
           retainAllocation: (...args) => {

@@ -139,8 +139,10 @@ elsewhere. A provisioner that knows the work will not come back on that
 sidecar passes `endReconnectWindow`. The Hub records that on the sidecar and
 ends the reconnect window of its disconnected work at once, handing it to the
 usual connection loss path, which today replaces a parked run and fails an
-active one. Work that disconnects later, and work a Hub restart would
-otherwise give a fresh window, gets no window either. Work still connected to
+active one. Standby alone does not make a deployment replaceable:
+one in standby whose run sleeps on a timer, or that has no run yet, fails too.
+Work that disconnects later, and work a Hub restart would otherwise give a
+fresh window, gets no window either. Work still connected to
 the sidecar contradicts the report; the Hub logs it and leaves that work
 running until it disconnects. `endReconnectWindow` covers allocations only,
 since a probe needs no help: one still waiting for its sidecar fails when its
