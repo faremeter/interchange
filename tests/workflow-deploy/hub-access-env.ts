@@ -127,6 +127,11 @@ export type HubAccessEnv = {
     /** The step that runs an agent, for a workflow with an agent step. */
     agentStepId?: string;
   }): Promise<{ publicKey: string }>;
+  /**
+   * Trigger a run through the real route, which mints the run's hub token,
+   * and return without waiting for the run. The run id is the anchor id.
+   */
+  trigger(anchorRunId: string): Promise<void>;
   /** Trigger a run through the real route and wait for it to complete. */
   runOnce(anchorRunId: string): Promise<readonly WorkflowRunEvent[]>;
   teardown(): Promise<void>;
@@ -261,6 +266,18 @@ export async function startHubAccessEnv(args: {
     model: "mock-model",
   };
 
+  const trigger = async (anchorRunId: string) => {
+    const res = await asCaller(
+      `/api/tenants/${tenantId}/workflows/${anchorRunId}/mail`,
+      { method: "POST", body: JSON.stringify({ content: "call the hub" }) },
+    );
+    if (res.status !== 202) {
+      throw new Error(
+        `expected 202 from /mail, got ${String(res.status)}: ${await res.text()}\n${env.sidecarDiagnostics()}`,
+      );
+    }
+  };
+
   return {
     h,
     env,
@@ -353,16 +370,10 @@ export async function startHubAccessEnv(args: {
       return { publicKey: handle.publicKey };
     },
 
+    trigger,
+
     async runOnce(anchorRunId) {
-      const res = await asCaller(
-        `/api/tenants/${tenantId}/workflows/${anchorRunId}/mail`,
-        { method: "POST", body: JSON.stringify({ content: "call the hub" }) },
-      );
-      if (res.status !== 202) {
-        throw new Error(
-          `expected 202 from /mail, got ${String(res.status)}: ${await res.text()}\n${env.sidecarDiagnostics()}`,
-        );
-      }
+      await trigger(anchorRunId);
       // The trigger runs the anchor itself, so the run id is the anchor id.
       const terminal = await waitForWorkflowRunComplete(
         env,
