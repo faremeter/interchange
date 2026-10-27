@@ -21,6 +21,11 @@ function encodeChunk(bytes: Uint8Array, start: number, end: number): string {
 }
 
 export function base64Encode(bytes: Uint8Array): string {
+  // bun-types declare toBase64 on every Uint8Array, but browser and worker
+  // runtimes that load this module may predate it.
+  if (typeof bytes.toBase64 === "function") {
+    return bytes.toBase64();
+  }
   const parts: string[] = [];
   for (let start = 0; start < bytes.length; start += BASE64_CHUNK_BYTES) {
     const end = Math.min(start + BASE64_CHUNK_BYTES, bytes.length);
