@@ -223,6 +223,23 @@ None of the four escalate privilege beyond that delegation, because forging the 
 
 At tool-invoke time the child evaluates the step's grants (`grants.json`, the operator-approved `frame.config.grants`) through a _gated capability_ before yielding credential material. That is the honest enforcement path for a **healthy** sidecar — but the sidecar is itself the process that _writes_ `grants.json` and assembles the snapshot the child reads. So the child-side gate is **defense-in-depth, not a boundary against a compromised sidecar**: a compromised sidecar could forge `grants.json`, but it gains nothing — the real boundaries are the hub's credential cipher and the closure pin, not the grant evaluation the sidecar feeds the child.
 
+### Restoring a run's authority in a new process
+
+A run needs three kinds of authority: its grants snapshot, its credential material, and its Hub tokens. Several paths start a new workflow child for a deployment. Before a new child resumes any run, the supervisor sends it one `authority.set` control frame with the run's grants snapshot and the supervisor's merged credential mirror. The child stops if its first control frame is not `authority.set`.
+
+- **Grants snapshot.** The supervisor reads it from the run's grants file, `runs/<runId>/grants.json`. Before the run's first trigger there is no file, and a read that fails gives no snapshot. In both cases the frame carries no snapshot, so a step that needs grants fails closed.
+- **Credential material and Hub tokens.** The mirror is the deploy delivery plus every later `credentials.update`, with its revokes applied. The Hub tokens join the mirror when the first `run.grants` barrier brings them.
+
+| Path                                                      | Grants snapshot                                                       | Credential material and Hub tokens                                                                              |
+| --------------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Deploy                                                    | None until the first trigger; the `run.grants` barrier then brings it | The deploy frame. The Hub tokens arrive on the first `run.grants` barrier                                       |
+| Sidecar restart                                           | The run's grants file                                                 | The deploy delivery in the run record. On reconnect the Hub replays `run.grants` and reconciles the credentials |
+| Crash-respawn, and every recycle (operator, policy, self) | The run's grants file                                                 | The supervisor's mirror                                                                                         |
+
+A credential that the Hub revokes while the sidecar is down stays usable by the restored run until the reconnect reconcile revokes it.
+
+The child starts its timer scheduler before it applies the frame, so a timer that is already due can fire first. Only a resumed run uses grants and credentials, and the child resumes runs only after it applies the frame.
+
 ### What the grant list does NOT bound
 
 Grants gate `tool:` / `effect:` / `credential:` resources. They are **not** a compute or network sandbox: raw computation, filesystem access within the child's data dir, and outbound network to public endpoints are bounded by **host/process isolation of the child**, not by the grant list. Do not mistake the grant model for a syscall sandbox.
@@ -331,7 +348,7 @@ Specificity still decides between grants: a broad conditioned `deny` loses to a 
 
 Grant revocation is policy-driven with a default of fail-secure.
 
-**Creator grant revocation**: If the creator's authority is revoked after workflow runs have been launched with creator-sourced grants, those running workflow runs must lose the affected grants. The harness authorizes each tool call against its live materialized grant set before the call executes, so a revoked capability is blocked once that set no longer contains it; a tool call already in flight is not interrupted. Propagating a revocation to an already-running deployment is not currently implemented — the earlier `grants.update` wire mechanism has been retired, and its supervised replacement is designed separately. Until then, the change takes effect when the deployment next loads its grants (the deploy pack at spawn and the supervisor's IPC credentials snapshot at recycle). Tenants can configure grace periods or notification-only behavior for specific grant types.
+**Creator grant revocation**: If the creator's authority is revoked after workflow runs have been launched with creator-sourced grants, those running workflow runs must lose the affected grants. The harness authorizes each tool call against its live materialized grant set before the call executes, so a revoked capability is blocked once that set no longer contains it; a tool call already in flight is not interrupted. Propagating a revocation to an already-running deployment is not currently implemented — the earlier `grants.update` wire mechanism has been retired, and its supervised replacement is designed separately. Until then, the change takes effect when the deployment next loads its grants (the deploy pack at spawn, and the `authority.set` frame that every new child receives; see _Restoring a run's authority in a new process_). Tenants can configure grace periods or notification-only behavior for specific grant types.
 
 **Invoker grant revocation**: Invoker-granted capabilities carry a fixed 24-hour TTL from the run's first trigger (`INVOKER_GRANT_TTL_MS`), not a lifetime tied to when the run stops. Approving an invoker-granted `ask` with `always` changes its effect to `allow` and keeps its expiry.
 

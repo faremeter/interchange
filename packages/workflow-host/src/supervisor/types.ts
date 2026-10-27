@@ -346,30 +346,31 @@ export interface WorkflowSupervisorBindings {
     reason: string;
   }) => void;
   /**
-   * Per-run grants source the dispatch loop consults before it forwards a
-   * `trigger.fire`. Unlike `onSuspensionRegister` (best-effort, fire-and-
-   * forget), this is a request/response contract: the supervisor awaits the
-   * returned `CredentialsSnapshot` and pushes it to the child over the
-   * control channel BEFORE firing the run's trigger, so the child's
-   * authorize closure binds to the run's grants rather than a stale
-   * spawn-time snapshot. A throwing sink is NOT swallowed -- the dispatch
-   * loop fails that run (a synthesized `RunFailed`) rather than firing the
-   * trigger against absent grants.
+   * Per-run grants source. The dispatch loop consults it before it forwards a
+   * `trigger.fire`, and every new child (spawn, crash-respawn, recycle) gets
+   * its result in the `authority.set` frame before it resumes any run. It
+   * resolves to null when the run has no grants file yet.
    *
-   * When this binding is wired, it is the SOLE grants push: `spawn` does not
-   * push a spawn-time snapshot, so the per-run push is the only thing that
-   * satisfies the child's throw-on-null authorize guard. A caller that
-   * injects no per-run sink -- today, the supervisor's own tests -- keeps the
-   * spawn-time push instead. Production (the sidecar) wires it to the
-   * walk-derived per-step credentials assembly.
+   * Before a trigger it is a request/response contract: the supervisor awaits
+   * the snapshot and pushes it to the child BEFORE firing the run's trigger,
+   * so the child's authorize closure binds to the run's grants. A null or a
+   * throw is NOT swallowed there -- the dispatch loop fails that run (a
+   * synthesized `RunFailed`) rather than firing the trigger against absent
+   * grants. For a new child, a null or a throw gives the child no grants
+   * snapshot, so a step that needs grants fails closed.
+   *
+   * A caller that injects no per-run source -- today, the supervisor's own
+   * tests -- gives a new child the spawn-time snapshot instead. Production
+   * (the sidecar) wires it to the run's grants file.
    */
   onRunStart?: (args: {
     runId: string;
     anchorRunId: string;
-  }) => Promise<import("./credentials").CredentialsSnapshot>;
+  }) => Promise<import("./credentials").CredentialsSnapshot | null>;
   /**
    * Decrypted credential material for the deployment's binding consumers and
-   * inference sources, delivered to the child on the pre-trigger barrier
+   * inference sources. It seeds the supervisor's mirror, which each new child
+   * receives in its first `authority.set` and the pre-trigger barrier re-sends
    * alongside the grants. Absent when the deployment binds no credentials. A
    * rotation flows through `deliverCredentials`, not this static binding.
    */

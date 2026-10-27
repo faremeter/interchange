@@ -1,4 +1,11 @@
-import { describe, test, expect, afterEach } from "bun:test";
+import {
+  describe,
+  test,
+  expect,
+  afterAll,
+  afterEach,
+  beforeAll,
+} from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +38,7 @@ import {
   waitForUpstreamPayloads,
   createChangeNotifier,
   type UpstreamFrameSource,
+  createLogCapture,
 } from "@intx/workflow-host/testing";
 import { resumeFromLog } from "@intx/workflow/state-machine";
 
@@ -400,6 +408,20 @@ function parseCredentialsUpdatedFrames(lines: readonly string[]) {
     if (payload instanceof type.errors) return [];
     if (payload.type !== "credentials-updated") return [];
     return [payload.data.delivery];
+  });
+}
+
+// The data of every `authority.set` frame, in send order.
+function parseAuthoritySetFrames(lines: readonly string[]) {
+  return lines.flatMap((line) => {
+    if (!line.includes("authority.set")) return [];
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) return [];
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) return [];
+    if (payload.type !== "authority.set") return [];
+    return [payload.data];
   });
 }
 
@@ -2394,9 +2416,10 @@ describe("createWorkflowSupervisor", () => {
     );
 
     // The per-run sink reads the step's grants exactly as `spawn` does, but
-    // per run rather than once per spawn. When `onRunStart` is wired the
-    // spawn-time push is suppressed, so a `grants-updated` on the child
-    // stream can only come from this per-run barrier.
+    // per run rather than once per spawn. A new child gets its grants in the
+    // `authority.set` frame, never in a `grants-updated`, so a
+    // `grants-updated` on the child stream can only come from this per-run
+    // barrier.
     const runStartCalls: { runId: string; anchorRunId: string }[] = [];
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async (
       args,
@@ -2414,7 +2437,8 @@ describe("createWorkflowSupervisor", () => {
 
     const wired = await spawnWithRunStart({ baseDir, onRunStart });
 
-    // No grants-updated is pushed at spawn time when onRunStart is wired.
+    // Spawn sends the child its grants in `authority.set`, not in a
+    // `grants-updated`.
     expect(
       parseControlFrameTypes(wired.supervisorToChild.flushed()),
     ).not.toContain("grants-updated");
@@ -2443,9 +2467,11 @@ describe("createWorkflowSupervisor", () => {
     expect(triggerIdx).toBeGreaterThanOrEqual(0);
     expect(grantsIdx).toBeLessThan(triggerIdx);
 
-    // The sink was consulted once for this run with the supervisor's
-    // deployment id stamped on.
+    // The sink was consulted for the spawn's `authority.set` and once for
+    // the barrier, both for this run with the supervisor's deployment id
+    // stamped on.
     expect(runStartCalls).toEqual([
+      { runId: firedRunId, anchorRunId: "run_deployment-x" },
       { runId: firedRunId, anchorRunId: "run_deployment-x" },
     ]);
 
@@ -2455,6 +2481,87 @@ describe("createWorkflowSupervisor", () => {
     });
     await wired.supervisor.shutdown();
   });
+
+  test("spawn sends authority.set as the child's first frame, with the run's grants and the credential mirror", async () => {
+    const baseDir = await makeTempDir("supervisor-authority-spawn-");
+    const runSnapshot = {
+      steps: [
+        {
+          stepId: "step-1",
+          address: "run_deployment-x-step-1@example.com",
+          grants: [{ id: "run-grant" }],
+          contentHash: "run-hash",
+        },
+      ],
+    };
+    const runStartCalls: { runId: string; anchorRunId: string }[] = [];
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart: async (args) => {
+        runStartCalls.push(args);
+        return runSnapshot;
+      },
+      credentialDelivery: {
+        bindings: [
+          { handle: "gh", credentialId: "cred_a", consumer: "tool:@acme/x" },
+        ],
+        materials: [
+          {
+            credentialId: "cred_a",
+            providerKey: "http",
+            origin: "https://api.example.test",
+            secret: "sk-a",
+          },
+        ],
+      },
+    });
+
+    // The child reads its first frame before it resumes any run.
+    const lines = wired.supervisorToChild.flushed();
+    expect(parseControlFrameTypes(lines)[0]).toBe("authority.set");
+    const [authority] = parseAuthoritySetFrames(lines);
+    expect(authority?.snapshot?.steps[0]?.grants).toEqual([
+      { id: "run-grant" },
+    ]);
+    expect(authority?.delivery?.materials.map((m) => m.credentialId)).toEqual([
+      "cred_a",
+    ]);
+    // Read for the deployment's top-level run.
+    expect(runStartCalls).toEqual([
+      { runId: "run_deployment-x", anchorRunId: "run_deployment-x" },
+    ]);
+    // A new child gets no separate grants or credentials push.
+    expect(parseControlFrameTypes(lines)).not.toContain("grants-updated");
+    expect(parseControlFrameTypes(lines)).not.toContain("credentials-updated");
+
+    await wired.supervisor.shutdown();
+  });
+
+  const noGrantsCases: [
+    string,
+    NonNullable<WorkflowSupervisorBindings["onRunStart"]>,
+  ][] = [
+    ["has no grants file yet", () => Promise.resolve(null)],
+    [
+      "fails its grants read",
+      () => Promise.reject(new Error("run grants write failed")),
+    ],
+  ];
+  test.each(noGrantsCases)(
+    "a new child gets no grants snapshot when the run %s",
+    async (_case, onRunStart) => {
+      const baseDir = await makeTempDir("supervisor-authority-no-grants-");
+      const wired = await spawnWithRunStart({ baseDir, onRunStart });
+
+      const [authority] = parseAuthoritySetFrames(
+        wired.supervisorToChild.flushed(),
+      );
+      expect(authority).toBeDefined();
+      expect(authority?.snapshot).toBeNull();
+
+      await wired.supervisor.shutdown();
+    },
+  );
 
   test("deliverSignal refreshes grants immediately before the signal frame", async () => {
     const baseDir = await makeTempDir("supervisor-signal-grants-");
@@ -4199,7 +4306,7 @@ describe("createWorkflowSupervisor", () => {
       [],
     ); // nothing sent
 
-    // Now spawn: the spawn re-assertion must carry the post-revoke mirror.
+    // Now spawn: the child's `authority.set` must carry the post-revoke mirror.
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-idle",
@@ -4229,13 +4336,11 @@ describe("createWorkflowSupervisor", () => {
     });
     await spawnPromise;
 
-    const deliveries = parseCredentialsUpdatedFrames(
-      supervisorToChild.flushed(),
-    );
-    const last = deliveries[deliveries.length - 1];
-    expect(last).toBeDefined();
-    expect(last?.materials.map((m) => m.credentialId)).toEqual(["cred_b"]);
-    expect(last?.bindings).toEqual([]);
+    const [authority] = parseAuthoritySetFrames(supervisorToChild.flushed());
+    expect(authority?.delivery?.materials.map((m) => m.credentialId)).toEqual([
+      "cred_b",
+    ]);
+    expect(authority?.delivery?.bindings).toEqual([]);
 
     await supervisor.shutdown();
   });
@@ -4741,35 +4846,81 @@ describe("createWorkflowSupervisor", () => {
     await wired.supervisor.shutdown();
   });
 
-  test("long-lived: grants barrier failure consumes message without firing trigger", async () => {
-    const baseDir = await makeTempDir("supervisor-long-lived-barrier-");
-    const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () => {
-      throw new Error("synthetic grants-barrier failure");
-    };
+  const barrierFailures: [
+    string,
+    NonNullable<WorkflowSupervisorBindings["onRunStart"]>,
+  ][] = [
+    [
+      "a failed grants read",
+      () => Promise.reject(new Error("synthetic grants-barrier failure")),
+    ],
+    ["no grants file", () => Promise.resolve(null)],
+  ];
+  test.each(barrierFailures)(
+    "long-lived: a grants barrier with %s consumes the message without firing the trigger",
+    async (_case, onRunStart) => {
+      const baseDir = await makeTempDir("supervisor-long-lived-barrier-");
 
-    const wired = await spawnWithRunStart({
-      baseDir,
+      const wired = await spawnWithRunStart({
+        baseDir,
 
-      onRunStart,
+        onRunStart,
+      });
+
+      wired.mailBus.deliver(
+        "run_deployment-x@example.com",
+        new TextEncoder().encode("msg-1"),
+      );
+
+      // A failed barrier fans out a synthesized RunFailed to the run's own
+      // watcher, so the dispatch reaches markConsumed without the child
+      // reporting anything: nothing here has to drive the mock child.
+      const address = "run_deployment-x@example.com";
+      await wired.inboxPrimitives.awaitState(
+        () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+      );
+      expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+
+      const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+      expect(runIds).toEqual([]);
+      expect(
+        parseControlFrameTypes(wired.supervisorToChild.flushed()),
+      ).not.toContain("grants-updated");
+      await wired.supervisor.shutdown();
+    },
+  );
+
+  describe("a grants barrier for a run with no grants file", () => {
+    // The barrier's own message is the only record of why it failed the run.
+    const logs = createLogCapture();
+    beforeAll(() => {
+      logs.install();
+    });
+    afterAll(() => {
+      logs.restore();
     });
 
-    wired.mailBus.deliver(
-      "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-1"),
-    );
+    test("fails the run as under-authorized", async () => {
+      const baseDir = await makeTempDir("supervisor-barrier-no-grants-");
+      const wired = await spawnWithRunStart({
+        baseDir,
+        onRunStart: () => Promise.resolve(null),
+      });
 
-    // A failed barrier fans out a synthesized RunFailed to the run's own
-    // watcher, so the dispatch reaches markConsumed without the child
-    // reporting anything: nothing here has to drive the mock child.
-    const address = "run_deployment-x@example.com";
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
-    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+      wired.mailBus.deliver(
+        "run_deployment-x@example.com",
+        new TextEncoder().encode("msg-no-grants"),
+      );
 
-    const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-    expect(runIds).toEqual([]);
-    await wired.supervisor.shutdown();
+      const record = await logs.waitForError(
+        "run_deployment-x has no grants file; refusing to start the run under-authorized",
+      );
+      expect(record.message).toContain("onRunStart grants barrier failed");
+      expect(parseTriggerFireRunIds(wired.supervisorToChild.flushed())).toEqual(
+        [],
+      );
+      await wired.supervisor.shutdown();
+    });
   });
 
   test("long-lived: mail after terminal is rejected without another trigger.fire", async () => {

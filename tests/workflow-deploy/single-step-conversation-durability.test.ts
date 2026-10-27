@@ -77,6 +77,7 @@ import { assembleMessage, assembleSignedContent } from "@intx/mime";
 import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
+  sendAuthoritySet,
 } from "@intx/workflow-host/testing";
 import {
   createControlChannelSender,
@@ -568,16 +569,6 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
           resolvedBy: null,
         }),
         ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
-        initialCredentialsSnapshot: {
-          steps: [
-            {
-              stepId: STEP_ID,
-              address: MAILBOX,
-              grants: [],
-              contentHash: "deadbeef",
-            },
-          ],
-        },
       };
 
       const env = parseSpawnTimeEnv({
@@ -600,13 +591,27 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         writer: supervisorToChild.writer,
       });
 
-      const runPromise = runWorkflowChild({
-        env,
-        controlReader: supervisorToChild.reader,
-        controlWriter: childToSupervisor.writer,
-        eventWriter: eventStream.writer,
-        bindings,
-      });
+      // The child reads the supervisor's `authority.set` before it resumes.
+      const runPromise = sendAuthoritySet(supervisorSender, {
+        snapshot: {
+          steps: [
+            {
+              stepId: STEP_ID,
+              address: MAILBOX,
+              grants: [],
+              contentHash: "deadbeef",
+            },
+          ],
+        },
+      }).then(() =>
+        runWorkflowChild({
+          env,
+          controlReader: supervisorToChild.reader,
+          controlWriter: childToSupervisor.writer,
+          eventWriter: eventStream.writer,
+          bindings,
+        }),
+      );
 
       return {
         supervisorSender,

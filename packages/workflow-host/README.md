@@ -72,8 +72,8 @@ Public surface (the package barrel re-exports these):
   adapter.
 - `createWorkflowSupervisor` — the per-deployment supervisor
   factory. See "Supervisor" below for the bindings shape.
-- `assembleCredentialsSnapshot` — per-step grant assembly used by
-  the supervisor at spawn time and on every `grants-updated` push.
+- `assembleCredentialsSnapshot` — per-step grant assembly the
+  supervisor uses at spawn time and on every recycle.
 - `commitCancelRequested` — low-level Q3 `CancelRequested` commit
   primitive the supervisor invokes for every cancellation origin.
 
@@ -305,17 +305,20 @@ forking a process.
    and substrate-shaped seams (`createWorkflowHostSignalChannel`,
    plus the host-process scheduler singleton carried on
    `bindings.scheduler`).
-3. Self-discover in-flight runs by enumerating `runs/<runId>/` and
+3. Read the first control frame, which must be `authority.set`, and
+   apply its grants snapshot and credential material.
+4. Self-discover in-flight runs by enumerating `runs/<runId>/` and
    resuming any whose log lacks a terminal event.
-4. Emit `ready` on the control channel.
-5. Loop on `trigger.fire`, `grants-updated`, `drain`, `recycle`,
-   `shutdown`, and `signal.deliver` frames.
+5. Emit `ready` on the control channel.
+6. Loop on `trigger.fire`, `authority.set`, `grants-updated`,
+   `credentials-updated`, `drain`, `recycle`, `shutdown`, and
+   `signal.deliver` frames.
 
 ### Authorize Closure
 
 The child's `WorkflowAuthorizeFn` closure is backed by a
-`CredentialsSnapshotRef`. A `grants-updated` control frame swaps
-the snapshot in place, so subsequent steps see fresh grants
+`CredentialsSnapshotRef`. The first `authority.set` frame sets it,
+and a `grants-updated` control frame swaps the snapshot in place, so subsequent steps see fresh grants
 without reconstructing the env. The closure looks up the
 originating step's grants by `stepId` and delegates to a
 host-supplied `GrantEvaluator`.

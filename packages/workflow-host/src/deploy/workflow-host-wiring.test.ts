@@ -288,8 +288,8 @@ describe("createSidecarWorkflowSupervisor", () => {
       runId: cleanRunId,
       anchorRunId,
     });
-    expect(snapshot.steps).toHaveLength(1);
-    expect(snapshot.steps[0]?.grants).toEqual(runGrants);
+    expect(snapshot?.steps).toHaveLength(1);
+    expect(snapshot?.steps[0]?.grants).toEqual(runGrants);
   });
 });
 
@@ -6094,6 +6094,7 @@ describe("assembleRunCredentialsSnapshot", () => {
       stepOrder,
       deriveStepAddress,
     });
+    if (snapshot === null) throw new Error("expected a snapshot");
 
     // Every step carries the single flat per-run grant set, keyed on the
     // deploy-time per-step address, with a shared content hash.
@@ -6109,28 +6110,28 @@ describe("assembleRunCredentialsSnapshot", () => {
     );
   });
 
-  test("a run without a per-run grants file fails closed", async () => {
+  test("a run without a per-run grants file has no snapshot", async () => {
     const tempBase = await createTempBaseDir("sidecar-run-grants-");
     const repoStore = createReadStubRepoStore(tempBase);
 
     // No per-run file. A deploy-time file is present so a silent fallback
-    // would surface deploy-time grants rather than failing; the run must fail
-    // closed instead of running against them.
+    // would surface deploy-time grants; the run must have none, so the
+    // barrier fails it closed and a new child starts with no snapshot.
     await writeDeployTimeStepGrants(
       tempBase,
       "step-1",
       JSON.stringify({ grants: [{ id: "deploy-grant-1" }] }),
     );
 
-    await expect(
-      assembleRunCredentialsSnapshot({
+    expect(
+      await assembleRunCredentialsSnapshot({
         repoStore,
         anchorRunId,
         runId,
         stepOrder,
         deriveStepAddress,
       }),
-    ).rejects.toThrow(/has no grants file/);
+    ).toBeNull();
   });
 
   test("a run with a malformed per-run grants file throws", async () => {
@@ -6213,6 +6214,9 @@ describe("assembleRunCredentialsSnapshot", () => {
       stepOrder,
       deriveStepAddress,
     });
+    if (first === null || second === null) {
+      throw new Error("expected both snapshots");
+    }
 
     for (const snapshot of [first, second]) {
       expect(snapshot.steps).toHaveLength(2);
