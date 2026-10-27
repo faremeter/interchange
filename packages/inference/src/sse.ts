@@ -9,12 +9,14 @@
 // The parser buffers incomplete lines across chunk boundaries so split chunks
 // are handled correctly regardless of where chunk boundaries fall.
 
-const decoder = new TextDecoder();
-
 export async function* parseSSE(
   stream: ReadableStream<Uint8Array>,
 ): AsyncIterable<string> {
   const reader = stream.getReader();
+  // One decoder per stream: a streaming decoder holds the incomplete UTF-8
+  // sequence at the end of a read, so a shared one splices bytes across
+  // concurrent streams.
+  const decoder = new TextDecoder();
   let buffer = "";
 
   try {

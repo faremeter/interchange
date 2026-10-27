@@ -1,8 +1,9 @@
 import { describe, test, expect } from "bun:test";
 import { parseSSE } from "./sse";
 
+const encoder = new TextEncoder();
+
 function makeStream(chunks: string[]): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
   return new ReadableStream({
     start(controller) {
       for (const chunk of chunks) {
@@ -11,6 +12,43 @@ function makeStream(chunks: string[]): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+// Answers each read only when the test sends a chunk, so a test can order
+// reads across streams. A pending read proves the parser has finished with
+// every chunk sent before it.
+function createScriptedStream() {
+  const reads: ((chunk: Uint8Array, end: boolean) => void)[] = [];
+  let onRead: (() => void) | undefined;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        return new Promise<void>((resolve) => {
+          reads.push((chunk, end) => {
+            controller.enqueue(chunk);
+            if (end) controller.close();
+            resolve();
+          });
+          onRead?.();
+        });
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  async function readPending(): Promise<void> {
+    while (reads.length === 0) {
+      await new Promise<void>((resolve) => {
+        onRead = resolve;
+      });
+    }
+  }
+  async function send(chunk: Uint8Array, end = false): Promise<void> {
+    await readPending();
+    const answer = reads.shift();
+    if (answer === undefined) throw new Error("no pending read");
+    answer(chunk, end);
+  }
+  return { stream, readPending, send };
 }
 
 async function collectSSE(
@@ -129,5 +167,27 @@ describe("parseSSE", () => {
     const stream = makeStream(["data: one\n\ndata: two\n\ndata: three\n\n"]);
     const results = await collectSSE(stream);
     expect(results).toEqual(["one", "two", "three"]);
+  });
+
+  test("keeps decoder state separate across concurrent streams", async () => {
+    const bytesA = encoder.encode("data: \u00e9\n");
+    const cut = bytesA.indexOf(0xc3) + 1;
+    const a = createScriptedStream();
+    const b = createScriptedStream();
+    const iterA = parseSSE(a.stream)[Symbol.asyncIterator]();
+    const iterB = parseSSE(b.stream)[Symbol.asyncIterator]();
+
+    const firstA = iterA.next();
+    await a.send(bytesA.subarray(0, cut));
+    await a.readPending();
+
+    const firstB = iterB.next();
+    await b.send(encoder.encode("data: other\n"), true);
+    expect(await firstB).toEqual({ done: false, value: "other" });
+    expect(await iterB.next()).toEqual({ done: true, value: undefined });
+
+    await a.send(bytesA.subarray(cut), true);
+    expect(await firstA).toEqual({ done: false, value: "\u00e9" });
+    expect(await iterA.next()).toEqual({ done: true, value: undefined });
   });
 });
