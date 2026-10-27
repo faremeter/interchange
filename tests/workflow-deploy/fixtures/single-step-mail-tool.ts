@@ -8,7 +8,8 @@
 //
 // Parameterised by the tool variant (fs | transport | ask), the step's system
 // prompt, the mail trigger address, and the agent/workflow ids so a caller
-// pins the run's address and selects the tool behaviour it exercises.
+// pins the run's address and selects the tool behaviour it exercises. With a
+// `napMs`, a `nap` sleep runs first and the agent step runs after it.
 
 import path from "node:path";
 
@@ -32,6 +33,8 @@ export type SingleStepMailToolFixtureParams = {
   agentId?: string;
   /** The `defineWorkflow` id. Defaults to a stable fixture-local id. */
   workflowId?: string;
+  /** The duration (ms) of a `nap` sleep the agent step runs after. */
+  napMs?: number;
 };
 
 export function singleStepMailToolEntry(
@@ -40,8 +43,14 @@ export function singleStepMailToolEntry(
   const stepId = params.stepId ?? "step1";
   const agentId = params.agentId ?? "single-step-mail-tool-agent";
   const workflowId = params.workflowId ?? "wf_single_step_mail_tool";
+  const napStep =
+    params.napMs === undefined
+      ? ""
+      : `
+    nap: sleep({ duration: ${JSON.stringify(params.napMs)} }),`;
+  const afterNap = params.napMs === undefined ? "" : `, after: ["nap"]`;
   return `
-import { defineWorkflow, step } from "@intx/workflow/definition";
+import { defineWorkflow, sleep, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
 import { mailSendTool } from ${JSON.stringify(MAIL_TOOL_MODULE)};
 
@@ -58,8 +67,8 @@ const agent = defineAgent({
 export const workflow = defineWorkflow({
   id: ${JSON.stringify(workflowId)},
   trigger: { type: "mail", to: ${JSON.stringify(params.address)} },
-  steps: {
-    [${JSON.stringify(stepId)}]: step({ agent }),
+  steps: {${napStep}
+    [${JSON.stringify(stepId)}]: step({ agent${afterNap} }),
   },
 });
 `;

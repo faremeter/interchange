@@ -35,6 +35,8 @@ export type HubAccessWorkflowFixtureParams = {
   calls: Readonly<Record<string, string>>;
   /** The workflow's grant requirements; none when omitted. */
   grantRequirements?: readonly GrantRequirement[];
+  /** The duration (ms) of a `nap` sleep the hub caller runs after. */
+  napMs?: number;
 };
 
 export function hubAccessWorkflowEntry(
@@ -45,14 +47,24 @@ export function hubAccessWorkflowEntry(
       ? ""
       : `
   grantRequirements: ${JSON.stringify(params.grantRequirements)},`;
+  const napStep =
+    params.napMs === undefined
+      ? ""
+      : `
+    nap: sleep({ duration: ${JSON.stringify(params.napMs)} }),`;
+  const afterNap =
+    params.napMs === undefined
+      ? ""
+      : `
+      after: ["nap"],`;
   return `
-import { action, defineWorkflow } from "@intx/workflow/definition";
+import { action, defineWorkflow, sleep } from "@intx/workflow/definition";
 
 export const workflow = defineWorkflow({
   id: ${JSON.stringify(params.workflowId)},
   trigger: { type: "mail", to: ${JSON.stringify(params.address)} },${requirementsField}
-  steps: {
-    [${JSON.stringify(HUB_CALLER_HANDLER)}]: action({
+  steps: {${napStep}
+    [${JSON.stringify(HUB_CALLER_HANDLER)}]: action({${afterNap}
       handler: ${JSON.stringify(HUB_CALLER_HANDLER)},
       credentials: ["interchange.hub"],
       effect: { requires: [${JSON.stringify(CALL_CAPABILITY)}] },
@@ -114,7 +126,7 @@ export const HUB_LOOP_STEP_ID = "repeat";
  * bodies act as the top-level run's principal.
  */
 export function hubAccessBodiesWorkflowEntry(
-  params: Omit<HubAccessWorkflowFixtureParams, "calls"> & {
+  params: Omit<HubAccessWorkflowFixtureParams, "calls" | "napMs"> & {
     /** The hub paths the `childWorkflow` body action calls. */
     childCalls: Readonly<Record<string, string>>;
     /** The hub paths the loop body action calls. */

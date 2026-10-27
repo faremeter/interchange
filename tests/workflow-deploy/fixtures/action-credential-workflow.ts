@@ -13,6 +13,9 @@
 //     so the resolve fails. The handler returns the refusal message as its
 //     output, so the run completes and the test can read the message.
 //
+// With a `gate`, a top-level `sleep` runs first and every other root step runs
+// after it, so no handler resolves the credential until the timer fires.
+//
 // The entry module exports the handlers next to `workflow`. The deployment
 // points `interchange.actions` and `interchange.loops` at this same module.
 
@@ -57,6 +60,8 @@ export type ActionCredentialWorkflowFixtureParams = {
    * unbound and deploy refuses it.
    */
   binding?: ActionCredentialBinding;
+  /** A leading `sleep` that every other root step runs after. */
+  gate?: { stepId: string; durationMs: number };
 };
 
 export function actionCredentialWorkflowEntry(
@@ -80,13 +85,23 @@ export function actionCredentialWorkflowEntry(
       : `
   credentialBindings: [${bindingFor(TOP_HANDLER)}${bindingFor(CHILD_HANDLER)}${bindingFor(LOOP_HANDLER)}
   ],`;
-  const declaring = (handler: string) => `action({
-      handler: ${JSON.stringify(handler)},
+  const gate = params.gate;
+  // Only the root steps carry `after`; a body's single step has no step to
+  // wait on.
+  const afterGate =
+    gate === undefined ? "" : `after: [${JSON.stringify(gate.stepId)}], `;
+  const gateStep =
+    gate === undefined
+      ? ""
+      : `
+    [${JSON.stringify(gate.stepId)}]: sleep({ duration: ${JSON.stringify(gate.durationMs)} }),`;
+  const declaring = (handler: string, after = "") => `action({
+      ${after}handler: ${JSON.stringify(handler)},
       credentials: [${JSON.stringify(ACTION_CREDENTIAL_HANDLE)}],
       effect: { requires: [${JSON.stringify(CALL_CAPABILITY)}] },
     })`;
   return `
-import { action, childWorkflow, defineWorkflow, loop } from "@intx/workflow/definition";
+import { action, childWorkflow, defineWorkflow, loop, sleep } from "@intx/workflow/definition";
 
 const child = defineWorkflow({
   id: ${JSON.stringify(params.childWorkflowId)},
@@ -107,11 +122,11 @@ const loopBody = defineWorkflow({
 export const workflow = defineWorkflow({
   id: ${JSON.stringify(params.workflowId)},
   trigger: { type: "mail", to: ${JSON.stringify(params.address)} },${credentialBindingsField}
-  steps: {
-    [${JSON.stringify(TOP_HANDLER)}]: ${declaring(TOP_HANDLER)},
-    spawn: childWorkflow({ definition: child }),
+  steps: {${gateStep}
+    [${JSON.stringify(TOP_HANDLER)}]: ${declaring(TOP_HANDLER, afterGate)},
+    spawn: childWorkflow({ ${afterGate}definition: child }),
     [${JSON.stringify(LOOP_STEP_ID)}]: loop({
-      body: loopBody,
+      ${afterGate}body: loopBody,
       while: "stopAfterOne",
       carry: "keepInput",
       maxIterations: 2,
@@ -119,7 +134,7 @@ export const workflow = defineWorkflow({
     }),
     loopDone: action({ handler: "loopDone", after: [${JSON.stringify(LOOP_STEP_ID)}] }),
     [${JSON.stringify(SCOPED_OUT_HANDLER)}]: action({
-      handler: ${JSON.stringify(SCOPED_OUT_HANDLER)},
+      ${afterGate}handler: ${JSON.stringify(SCOPED_OUT_HANDLER)},
       effect: { requires: [${JSON.stringify(CALL_CAPABILITY)}] },
     }),
   },
