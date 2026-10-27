@@ -36,9 +36,8 @@ export {
   type EffectContextConfig,
 } from "./effect-context";
 
-export { runtimeRun, type RuntimeRunOptions } from "./run";
+export { bodyLogForRelays, runtimeRun, type RuntimeRunOptions } from "./run";
 export {
-  bodyParkedSignals,
   loopIterationCursor,
   loopOccurrenceReattach,
   onTriggerOccurrenceReattach,

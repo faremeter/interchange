@@ -1303,6 +1303,13 @@ interface SidecarRunChildDeps {
    * relay an approval its own body parked and it never relayed.
    */
   loadParkedApproval?: LoadParkedApproval;
+  /**
+   * The step store's pending approval read and recovered-park write, so a
+   * nested run's step that crashed after it stored its approval park
+   * re-commits that park on resume, as a top-level step does.
+   */
+  readParkedApprovalOps?: ReadParkedApprovalOps;
+  persistRecoveredPark?: PersistRecoveredPark;
   /** Workflow-run repo identifying the parent's deployment. */
   workflowRunRepoId: RepoId;
   /** Workflow-run ref the child reads/writes against. */
@@ -2196,6 +2203,12 @@ async function buildChildRunEnv(args: {
     ...(args.deps.loadParkedApproval !== undefined
       ? { loadParkedApproval: args.deps.loadParkedApproval }
       : {}),
+    ...(args.deps.readParkedApprovalOps !== undefined
+      ? { readParkedApprovalOps: args.deps.readParkedApprovalOps }
+      : {}),
+    ...(args.deps.persistRecoveredPark !== undefined
+      ? { persistRecoveredPark: args.deps.persistRecoveredPark }
+      : {}),
   };
   // Wire loop-iteration spawning for a `loop` nested in this body. Assigned
   // AFTER the env literal because the iteration host closes over `env`: a loop
@@ -2800,7 +2813,7 @@ export function createSidecarSubstrateFactory(
       // A spawned child's steps resolve `director` refs against the same
       // closure-composed registry the parent's steps use.
       directors: stepDirectors,
-      loadParkedApproval: parkHooks.loadParkedApproval,
+      ...parkHooks,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory
     // resolver from this plus the lifted-body map it extracts after loading

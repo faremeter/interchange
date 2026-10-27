@@ -32,15 +32,29 @@ import {
   type RepoStore,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
-import { defineAgent } from "@intx/agent";
+import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import { createIsogitStore } from "@intx/storage-isogit/node";
+import { signalName } from "@intx/types/signals";
 import {
+  childWorkflow,
+  createInMemoryBlobSubstrate,
+  createInMemoryRepoStore,
+  createInMemoryScheduler,
+  createInMemorySignalChannel,
+  createNoopDrainController,
+  createSuspendableChildHandle,
   defineWorkflow,
   loop,
   loopBodyRunId,
+  rewriteInlineChildWorkflowBodies,
+  runtimeRun,
   sectionBodyRunId,
   step,
+  type RepoStore as RuntimeRepoStore,
+  type StepInvoker,
   type WorkflowDefinition,
+  type WorkflowEvent,
+  type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import {
   createDurableConversationStore,
@@ -829,6 +843,132 @@ describe("createParkedApprovalHooks", () => {
       ).toThrow("onExhausted");
     },
   );
+
+  // The container plans its relays from the body's parks, read through its
+  // own env, while the body recovers its park through the body's.
+  test("a warm-kept deployment's resume relays an approval its spawned body stored but never logged", async () => {
+    const dataDir = await makeTempDir();
+    const substrate = await createSubstrate(dataDir);
+    const childRunId = "run-body";
+    const outer = defineWorkflow({
+      id: "outer",
+      trigger: { type: "manual" },
+      steps: { spawn: childWorkflow({ definition: agentBody("body") }) },
+    });
+    const { workflow: rewritten, bodies } =
+      rewriteInlineChildWorkflowBodies(outer);
+    const body = bodies[0]?.definition;
+    if (body === undefined) throw new Error("the inline body was not lifted");
+    const hooks = createParkedApprovalHooks({
+      dataDir,
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
+      signer: testSigner,
+      warmRunId: RUN_ID,
+    });
+    const invokeStep: StepInvoker = async (req) =>
+      req.resume !== undefined
+        ? { output: null }
+        : {
+            suspend: {
+              correlationId: "corr-1",
+              kind: "approval",
+              approvalSnapshot: snapshot,
+            },
+          };
+    const envFor = (
+      repoStore: RuntimeRepoStore,
+      run: WorkflowDefinition,
+      extra: Partial<WorkflowRuntimeEnv>,
+    ): WorkflowRuntimeEnv => {
+      const clock = (): Date => new Date();
+      let ids = 0;
+      return {
+        repoStore,
+        scheduler: createInMemoryScheduler({ repoStore, clock }),
+        signalChannel: createInMemorySignalChannel(),
+        blobs: createInMemoryBlobSubstrate(),
+        directors: createDefaultDirectorRegistry(),
+        authorize: async () => ({
+          effect: "allow",
+          matchingGrants: [],
+          resolvedBy: null,
+        }),
+        invokeStep,
+        spawnChild: () => Promise.reject(new Error("the body spawns nothing")),
+        clock,
+        newId: (prefix) =>
+          prefix === "run" ? childRunId : `${prefix}-${String((ids += 1))}`,
+        drain: createNoopDrainController(run),
+        hasUpstreamSignalResolver: true,
+        ...extra,
+      };
+    };
+    const outerEnv = (
+      repoStore: RuntimeRepoStore,
+      parkHooks: Partial<typeof hooks>,
+      onPark: () => void,
+    ): WorkflowRuntimeEnv =>
+      envFor(repoStore, rewritten, {
+        ...parkHooks,
+        onPark,
+        spawnChild: async (spawn) =>
+          createSuspendableChildHandle(envFor(repoStore, body, parkHooks), {
+            definition: body,
+            childRunId: spawn.childRunId,
+            input: spawn.input,
+            depth: spawn.depth,
+            maxChildSpawnDepth: spawn.maxChildSpawnDepth,
+            signal: spawn.signal,
+            ...(spawn.resumeFromEvents !== undefined
+              ? { resumeFromEvents: spawn.resumeFromEvents }
+              : {}),
+            surfaceInputPark: true,
+          }),
+      });
+
+    // Run to the relayed park for the logs, then drop both from the body's
+    // park on: the body stored its approval but crashed before logging it.
+    const firstRepo = createInMemoryRepoStore();
+    const relayedFirst = Promise.withResolvers<undefined>();
+    const stop = new AbortController();
+    const first = runtimeRun(
+      rewritten,
+      outerEnv(firstRepo, {}, () => relayedFirst.resolve(undefined)),
+      { runId: RUN_ID, localAbort: stop.signal },
+    );
+    await relayedFirst.promise;
+    const beforePark = async (runId: string): Promise<WorkflowEvent[]> => {
+      const log = [...(await firstRepo.read(runId))];
+      const parked = log.findIndex((event) => event.kind === "SignalAwaited");
+      expect(parked).toBeGreaterThan(0);
+      return log.slice(0, parked);
+    };
+    const outerLog = await beforePark(RUN_ID);
+    const bodyLog = await beforePark(childRunId);
+    stop.abort();
+    await first.complete;
+    await parkColdStep(substrate, childRunId, 1, [
+      pendingApproval("corr-1", snapshot),
+    ]);
+
+    const repo = createInMemoryRepoStore();
+    await repo.appendBatch(childRunId, bodyLog);
+    const relayed = Promise.withResolvers<undefined>();
+    const resumed = runtimeRun(
+      rewritten,
+      outerEnv(repo, hooks, () => relayed.resolve(undefined)),
+      { runId: RUN_ID, resumeFromEvents: outerLog },
+    );
+    await relayed.promise;
+    await resumed.signal(
+      signalName("corr-1"),
+      { outcome: "approved" },
+      "approval-decision",
+    );
+    expect((await resumed.complete).terminalStatus).toBe("completed");
+  });
 });
 
 describe("toParkedApprovalOps", () => {

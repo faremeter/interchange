@@ -493,9 +493,9 @@ export type SuspendableChildHandle = {
    * or the child run has reached a terminal. A sibling park does not
    * resolve it and is left queued for a later `next`. Abort rejects.
    *
-   * Present on a handle whose caller can have several parks live at once.
-   * A loop iteration and an onTrigger body are driven one step at a time,
-   * so their callers keep racing `next` and do not need this.
+   * Present on a handle whose caller can have several parks live at once:
+   * a childWorkflow, and a loop iteration or onTrigger body on resume, where
+   * the parks already in the body's log are relayed one at a time.
    */
   waitForParkRelease?(
     name: string,

@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
+import { signalName } from "@intx/types/signals";
 import type { ApprovalSnapshot, KeyPair } from "@intx/types/runtime";
 import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
 import {
@@ -221,6 +222,7 @@ function suspendThenComplete(record: {
 function makeSpawner(
   substrate: ReturnType<typeof createRepoStore>,
   invokeStep: SidecarChildStepInvoker,
+  extra: Partial<Parameters<typeof createSidecarSpawnSuspendableChild>[0]> = {},
 ): ReturnType<typeof createSidecarSpawnSuspendableChild> {
   return createSidecarSpawnSuspendableChild({
     substrate,
@@ -244,6 +246,7 @@ function makeSpawner(
       parentGrants,
     closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
+    ...extra,
   });
 }
 
@@ -288,6 +291,91 @@ describe("createSidecarSpawnSuspendableChild", () => {
 
     // The re-invoked step ran with the delivered decision and the run
     // completed.
+    const terminal = await handle.next(noWake);
+    expect(terminal.kind).toBe("terminal");
+    if (terminal.kind !== "terminal") throw new Error("expected a terminal");
+    expect(terminal.terminalStatus).toBe("completed");
+    expect(record.resumeDecision).toEqual(decision);
+  });
+
+  test("re-parks a body step whose stored approval park never reached its log, and resumes on the grant", async () => {
+    const substrate = await makeSubstrate("suspendable-lost-park-");
+    const parentRunId = "run-parent";
+    await seedRunGrants(substrate, parentRunId, [
+      grant(`tool:${BODY_STEP_AGENT_ID}`, "invoke"),
+    ]);
+    const childRunId = "run-body-lost-park";
+    const at = "2026-10-01T00:00:00.000Z";
+    const persisted: unknown[] = [];
+    const record: { resumeDecision?: unknown } = {};
+    const spawn = makeSpawner(substrate, suspendThenComplete(record), {
+      readParkedApprovalOps: async (args) =>
+        args.runId === childRunId && args.stepId === "s"
+          ? [{ correlationId: CORRELATION_ID }]
+          : [],
+      persistRecoveredPark: async (args) => {
+        persisted.push(args);
+      },
+    });
+
+    // The body crashed after its step stored the park and before the park
+    // reached the body's log.
+    const handle = await spawn(
+      {
+        definition: bodyDefinition("body-wf"),
+        definitionRef: REF,
+        childRunId,
+        input: null,
+        parentRunId,
+        parentStepId: "section",
+        signal: new AbortController().signal,
+        depth: 0,
+        maxChildSpawnDepth: 32,
+        resumeFromEvents: [
+          {
+            kind: "RunStarted",
+            seq: 1,
+            at,
+            runId: childRunId,
+            definitionHash: "body-hash",
+            trigger: { type: "manual", payload: null },
+          },
+          {
+            kind: "StepStarted",
+            seq: 2,
+            at,
+            stepId: "s",
+            attempt: 1,
+            input: { ref: "inline:null" },
+          },
+        ],
+      },
+      () => undefined,
+    );
+    const watch = new AbortController();
+    for await (const { event } of reader(substrate).subscribe(childRunId, {
+      signal: watch.signal,
+      from: { seq: 1 },
+    })) {
+      if (
+        event.kind === "SignalAwaited" &&
+        event.signalName === signalName(CORRELATION_ID)
+      ) {
+        watch.abort();
+        break;
+      }
+    }
+    expect(persisted).toEqual([
+      {
+        runId: childRunId,
+        stepId: "s",
+        attempt: 1,
+        correlationId: CORRELATION_ID,
+      },
+    ]);
+
+    const decision = { outcome: "approved" as const, note: "ok" };
+    await handle.resume(CORRELATION_ID, decision);
     const terminal = await handle.next(noWake);
     expect(terminal.kind).toBe("terminal");
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
