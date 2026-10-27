@@ -32,13 +32,23 @@ import {
   type RepoStore,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
+import { defineAgent } from "@intx/agent";
 import { createIsogitStore } from "@intx/storage-isogit/node";
+import {
+  defineWorkflow,
+  loop,
+  loopBodyRunId,
+  sectionBodyRunId,
+  step,
+  type WorkflowDefinition,
+} from "@intx/workflow";
 import {
   createDurableConversationStore,
   readStepState,
 } from "@intx/workflow-host";
 
 import {
+  createParkedApprovalHooks,
   persistColdRecoveredPark,
   readColdParkedApprovalSnapshot,
   readColdParkedPendingOperations,
@@ -697,6 +707,128 @@ describe("readWarmParkedPendingOperations", () => {
     });
     expect(got).toEqual([]);
   });
+});
+
+// A warm-kept deployment's warm invoker runs its top-level run, and the cold
+// invoker every run it spawns.
+describe("createParkedApprovalHooks", () => {
+  const agent = defineAgent({
+    id: "a",
+    systemPrompt: "s",
+    tools: [],
+    capabilities: [],
+    inference: { sources: [{ provider: "anthropic", model: "m" }] },
+  });
+  const agentBody = (id: string): WorkflowDefinition =>
+    defineWorkflow({
+      id,
+      trigger: { type: "manual" },
+      steps: { s: step({ agent }) },
+    });
+
+  // A warm deployment whose agent of step "s" is parked on `corr-warm`.
+  async function warmDeployment(): Promise<{
+    substrate: RepoStore;
+    hooks: ReturnType<typeof createParkedApprovalHooks>;
+  }> {
+    const dataDir = await makeTempDir();
+    const substrate = await createSubstrate(dataDir);
+    const store = await createDurableConversationStore({
+      localStoreDir: await makeTempDir(),
+      signer: testSigner,
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: RUN_ID,
+      stepId: "s",
+      lifetime: { kind: "deployment" },
+    });
+    await store.storage.writeMetadata({
+      pendingOperations: [pendingApproval("corr-warm", snapshot)],
+      tokenUsage: EMPTY_USAGE,
+    });
+    await store.mirrorToSubstrate();
+    const hooks = createParkedApprovalHooks({
+      dataDir,
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
+      signer: testSigner,
+      warmRunId: RUN_ID,
+    });
+    return { substrate, hooks };
+  }
+
+  test("the top-level run reads its parks from the warm store", async () => {
+    const { hooks } = await warmDeployment();
+    const at = { runId: RUN_ID, stepId: "s", attempt: 1 };
+
+    expect(
+      await hooks.loadParkedApproval({ ...at, correlationId: "corr-warm" }),
+    ).toEqual(snapshot);
+    expect(await hooks.readParkedApprovalOps(at)).toEqual([
+      { correlationId: "corr-warm" },
+    ]);
+  });
+
+  test.each([
+    ["a childWorkflow child", "run-child"],
+    ["an onTrigger body", sectionBodyRunId(RUN_ID, "section", 0)],
+    ["a loop iteration inside a child", loopBodyRunId("run-child", "loop", 0)],
+  ])("%s reads its parks from its cold step state", async (_name, runId) => {
+    const { substrate, hooks } = await warmDeployment();
+    await parkColdStep(substrate, runId, 1, [
+      pendingApproval("corr-cold", snapshot),
+    ]);
+    const at = { runId, stepId: "s", attempt: 1 };
+
+    expect(
+      await hooks.loadParkedApproval({ ...at, correlationId: "corr-cold" }),
+    ).toEqual(snapshot);
+    expect(await hooks.readParkedApprovalOps(at)).toEqual([
+      { correlationId: "corr-cold" },
+    ]);
+  });
+
+  // The top-level run's park is read from committed state, so it has nothing
+  // to commit; any other run's goes to its cold step state, which here holds
+  // no park to commit.
+  test("only a run other than the top-level one commits a recovered park", async () => {
+    const { hooks } = await warmDeployment();
+    const park = { stepId: "s", attempt: 1, correlationId: "corr-lost" };
+
+    await hooks.persistRecoveredPark({ runId: RUN_ID, ...park });
+    await expect(
+      hooks.persistRecoveredPark({ runId: "run-child", ...park }),
+    ).rejects.toThrow(
+      "neither the committed step state nor a current local store holds its pending operation",
+    );
+  });
+
+  // The hooks read only the top-level run warm, since a loop iteration would
+  // inherit its env.
+  test.each(["loop", "done"])(
+    "a deployment's one step cannot be a loop, whose onExhausted names %s",
+    (onExhausted) => {
+      expect(() =>
+        defineWorkflow({
+          id: "looped",
+          trigger: { type: "manual" },
+          steps: {
+            loop: loop({
+              body: agentBody("loop-body"),
+              while: "cont",
+              carry: "next",
+              input: { literal: 0 },
+              maxIterations: 3,
+              onExhausted,
+            }),
+          },
+        }),
+      ).toThrow("onExhausted");
+    },
+  );
 });
 
 describe("toParkedApprovalOps", () => {

@@ -24,28 +24,14 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import {
   controlParkKindOf,
-  resumeFromLog,
+  findParkedApprovalSnapshot,
+  type LoadParkedApproval,
   type RepoStore as RuntimeRepoStore,
-  type RunState,
 } from "@intx/workflow";
 import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
-import { correlationIdFromSignalName, signalName } from "@intx/types/signals";
+import { correlationIdFromSignalName } from "@intx/types/signals";
 
 import { discoverInFlightRuns } from "./self-discovery";
-
-/**
- * Recover the durable approval snapshot for one parked control-plane
- * correlation. The child owns enumeration; the host owns the per-step
- * on-disk layout (cold vs warm), so the snapshot read is a host binding.
- * Returns `undefined` when no pending operation for the correlation carries
- * a snapshot.
- */
-export type LoadParkedApproval = (args: {
-  runId: string;
-  stepId: string;
-  attempt: number;
-  correlationId: string;
-}) => Promise<ApprovalSnapshot | undefined>;
 
 /**
  * One parked control-plane correlation: the child-supplied half of a
@@ -74,53 +60,6 @@ export interface CollectParkedApprovalCorrelationsOpts {
  * disagreements between the reduced state and the durable store that must not
  * silently drop a correlation the hub is waiting to register.
  */
-/**
- * The snapshot for a relayed approval. The container's store has none; the
- * body step that is still awaiting the same correlation has it. A nested
- * relay is followed the same way. A run is read once.
- */
-async function loadRelayedApprovalSnapshot(
-  opts: CollectParkedApprovalCorrelationsOpts,
-  load: LoadParkedApproval,
-  state: RunState,
-  stepId: string,
-  correlationId: string,
-  seen: Set<string>,
-): Promise<ApprovalSnapshot | undefined> {
-  const name = signalName(correlationId);
-  for (const child of state.children.values()) {
-    if (child.spawnedBy !== stepId || child.terminalStatus !== undefined) {
-      continue;
-    }
-    if (seen.has(child.childRunId)) continue;
-    seen.add(child.childRunId);
-    const events = [...(await opts.runtimeRepoStore.read(child.childRunId))];
-    if (events.length === 0) continue;
-    const childState = resumeFromLog(child.childRunId, events);
-    for (const childStep of childState.steps.values()) {
-      if (childStep.phase !== "awaiting-signal") continue;
-      if (childStep.awaitingSignal?.name !== name) continue;
-      const direct = await load({
-        runId: child.childRunId,
-        stepId: childStep.stepId,
-        attempt: childStep.currentAttempt,
-        correlationId,
-      });
-      if (direct !== undefined) return direct;
-      const nested = await loadRelayedApprovalSnapshot(
-        opts,
-        load,
-        childState,
-        childStep.stepId,
-        correlationId,
-        seen,
-      );
-      if (nested !== undefined) return nested;
-    }
-  }
-  return undefined;
-}
-
 export async function collectParkedApprovalCorrelations(
   opts: CollectParkedApprovalCorrelationsOpts,
 ): Promise<ParkedApprovalCorrelation[]> {
@@ -159,22 +98,15 @@ export async function collectParkedApprovalCorrelations(
           `workflow-child parked-correlations: run ${run.runId} step ${step.stepId} is parked on control-plane correlation ${correlationId}, but no loadParkedApproval binding is wired to recover its snapshot`,
         );
       }
-      const direct = await opts.loadParkedApproval({
+      const snapshot = await findParkedApprovalSnapshot({
+        repoStore: opts.runtimeRepoStore,
+        load: opts.loadParkedApproval,
         runId: run.runId,
+        state: run.resumedState,
         stepId: step.stepId,
         attempt: step.currentAttempt,
         correlationId,
       });
-      const snapshot =
-        direct ??
-        (await loadRelayedApprovalSnapshot(
-          opts,
-          opts.loadParkedApproval,
-          run.resumedState,
-          step.stepId,
-          correlationId,
-          new Set(),
-        ));
       if (snapshot === undefined) {
         throw new Error(
           `workflow-child parked-correlations: reduced state shows run ${run.runId} step ${step.stepId} awaiting control-plane correlation ${correlationId} (attempt ${String(step.currentAttempt)}), but durable storage carries no approval snapshot for it; the run log and the step store disagree`,

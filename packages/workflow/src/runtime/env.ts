@@ -628,7 +628,8 @@ export type WorkflowSignalPark = {
  * `SignalAwaited`. Deliberately narrow: the runtime reconstructs the missing
  * `SignalAwaited` from the correlationId (and optional timeout) alone and must
  * not learn the reactor's pending-operation internals (`gateId`,
- * `suspendedCall`, the snapshot), which stay the host's concern.
+ * `suspendedCall`), which stay the host's concern. A relay that needs the
+ * snapshot reads it through `LoadParkedApproval`.
  */
 export type ParkedApprovalOp = {
   correlationId: string;
@@ -650,6 +651,17 @@ export type ReadParkedApprovalOps = (args: {
   stepId: string;
   attempt: number;
 }) => Promise<ParkedApprovalOp[]>;
+
+/**
+ * Read the approval snapshot a parked step stored with its pending operation.
+ * See `WorkflowRuntimeEnv.loadParkedApproval`.
+ */
+export type LoadParkedApproval = (args: {
+  runId: string;
+  stepId: string;
+  attempt: number;
+  correlationId: string;
+}) => Promise<ApprovalSnapshot | undefined>;
 
 /**
  * Recovery hook the resume classifier awaits before it commits the
@@ -829,6 +841,14 @@ export interface WorkflowRuntimeEnv {
    * A host whose read answers only from durable state leaves it unset.
    */
   persistRecoveredPark?: PersistRecoveredPark;
+  /**
+   * Optional read of the approval snapshot a parked step stored with its
+   * pending operation. A restart can find a container's body parked on an
+   * approval the container never relayed; resume relays it from this
+   * snapshot. Production wires it to the sidecar's step store. Without it,
+   * such a resume fails the container step.
+   */
+  loadParkedApproval?: LoadParkedApproval;
 }
 
 /**

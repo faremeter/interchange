@@ -11,14 +11,12 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import {
   createInMemoryRepoStore,
+  type LoadParkedApproval,
   type RepoStore as RuntimeRepoStore,
   type WorkflowEvent,
 } from "@intx/workflow";
 
-import {
-  collectParkedApprovalCorrelations,
-  type LoadParkedApproval,
-} from "./parked-correlations";
+import { collectParkedApprovalCorrelations } from "./parked-correlations";
 
 const at = new Date().toISOString();
 const repoId: RepoId = { kind: "workflow-run", id: "dep-1" };
