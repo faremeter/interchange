@@ -2447,9 +2447,9 @@ async function runLoop(
   // count the attempt, so the frontier below is the attempt planLoopResume
   // must re-link. A terminal attempt the policy will not continue throws
   // here, before that planner runs and before any drive: planLoopResume
-  // returns undefined for a terminal child, and occurrenceResume is cleared
+  // returns no relays for a terminal child, and occurrenceRelays is cleared
   // after the first drive, so driving the terminal attempt would spawn the
-  // later park with no resume token.
+  // later park with nothing to re-link it.
   const iterationZeroInput =
     primitive.input !== undefined
       ? evaluate(primitive.input, selectorCtx)
@@ -2524,12 +2524,12 @@ async function runLoop(
   }
 
   // A crash-recovered iteration whose body was parked or mid-relay needs an
-  // active re-link on its FIRST drive below. planLoopResume yields that token
-  // (or undefined when the forward drive can re-adopt the iteration from the
-  // child's own durable log). Cleared after the recovered iteration is driven
-  // so every later iteration spawns fresh.
-  let occurrenceResume = terminated
-    ? undefined
+  // active re-link on its FIRST drive below. planLoopResume yields those relays
+  // (none when the forward drive can re-adopt the iteration from the child's
+  // own durable log). Cleared after the recovered iteration is driven so
+  // every later iteration spawns fresh.
+  let occurrenceRelays = terminated
+    ? []
     : await planLoopResume(env, primitive, runId, state, log, iteration);
 
   let iterations = iteration;
@@ -2548,7 +2548,7 @@ async function runLoop(
     // commits ChildCompleted. A non-suspending body drives straight to
     // terminal; a body that parks in-process (e.g. an agent step on an approval
     // gate, or an author `awaitSignal`) is serviced by the park proxy above
-    // without the body reaching a terminal. `occurrenceResume` is non-undefined
+    // without the body reaching a terminal. `occurrenceRelays` is non-empty
     // only on the recovered iteration of a crash resume, where it re-links a
     // body parked or mid-relay at the crash; it is cleared after this drive so
     // every later iteration spawns fresh.
@@ -2556,14 +2556,14 @@ async function runLoop(
       childRunId,
       bodyRef,
       input: currentInput,
-      resume: occurrenceResume,
+      relays: occurrenceRelays,
       spawnSuspendableChild: spawnLoopIteration,
       depth,
       maxChildSpawnDepth,
       abort,
       signalRelayAddressing: "name",
     });
-    occurrenceResume = undefined;
+    occurrenceRelays = [];
 
     // Trust the recorded child, not only the drive's return. A child log
     // that is missing is re-executed, and that fresh terminal can disagree
@@ -2650,29 +2650,6 @@ async function runLoop(
   return output;
 }
 
-/**
- * Re-link state for a crash-recovered occurrence whose body is parked. The
- * resume planner yields at most one of these -- an approval park or a
- * signal-relay park, never both -- so a single discriminated union encodes the
- * mutual exclusion the two former locals maintained by discipline.
- */
-type SuspendableOccurrenceResume =
-  | { kind: "approval"; corr: string; relay: boolean; decision?: unknown }
-  | { kind: "signal-relay-reestablish"; name: string; awaitSeq: number }
-  | {
-      kind: "signal-relay-relay";
-      name: string;
-      payload: unknown;
-      signalId: string;
-    }
-  // The body is parked on an author `awaitSignal` gate, but the container never
-  // emitted its relay await before the crash (in-flight, no durable relay). The
-  // re-adopted body re-parks silently, so there is no await to reestablish and
-  // no `onSignalPark` to surface it -- drive the container relay FRESH over the
-  // recovered name instead. `timeoutAt` is the body's deadline, when the gate
-  // is timed, so the fresh relay stays timed.
-  | { kind: "signal-relay-drive-fresh"; name: string; timeoutAt?: string };
-
 type ChildRelayPull = "next" | "hold";
 
 type ChildDriveResult =
@@ -2712,7 +2689,8 @@ async function driveSuspendableOccurrence(
     childRunId: string;
     bodyRef: string;
     input: unknown;
-    resume: SuspendableOccurrenceResume | undefined;
+    // A recovered body's relays, run before its queue is read.
+    relays: readonly ChildRelay[];
     spawnSuspendableChild: SpawnSuspendableChild;
     depth: number;
     maxChildSpawnDepth: number;
@@ -2724,7 +2702,7 @@ async function driveSuspendableOccurrence(
     childRunId,
     bodyRef,
     input,
-    resume,
+    relays,
     spawnSuspendableChild,
     depth,
     maxChildSpawnDepth,
@@ -2758,7 +2736,7 @@ async function driveSuspendableOccurrence(
     signal: abort,
     depth,
     maxChildSpawnDepth,
-    ...(resume !== undefined
+    ...(relays.length > 0
       ? { resumeFromEvents: await env.repoStore.read(childRunId) }
       : {}),
   });
@@ -2769,79 +2747,36 @@ async function driveSuspendableOccurrence(
   // than calling `next()` a second time and dropping it.
   let pending: ChildDriveResult | undefined;
 
-  if (resume?.kind === "approval") {
-    // Re-link the parent to a body re-spawned from its log and parked on the
-    // shared correlation. A re-park does not re-fire onPark, so the park is
-    // not surfaced via next(); drive the resume directly from the recovered
-    // correlation. A grant already delivered to the parent log (its
-    // SignalReceived consumed the container's park) is relayed as-is;
-    // otherwise re-park the container and await the grant as the steady-state
-    // loop would.
-    let decision: unknown;
-    if (resume.relay) {
-      decision = resume.decision;
-    } else {
-      const parkRearm = await reloadState(env, runId);
-      decision = await parkOnSignal(
-        env,
-        runId,
-        {
-          stepId: containerStepId,
-          signalName: signalName(resume.corr),
-          parkKind: "approval",
-        },
-        parkRearm,
-        abort,
+  // A resumed body does not surface the parks already in its log, so each is
+  // relayed here, one at a time, before the queue is read.
+  let relayedTerminal: "completed" | "failed" | "cancelled" | undefined;
+  for (const relay of relays) {
+    const driven = await drivePlannedChildRelay(
+      env,
+      runId,
+      containerStepId,
+      child,
+      relay,
+      abort,
+      new Set(),
+      signalRelayAddressing,
+    );
+    if (driven.kind === "terminal") {
+      relayedTerminal = driven.terminalStatus;
+      break;
+    }
+    if (driven.kind !== "held") {
+      throw new Error(
+        `suspendable body ${childRunId} resume relay returned ${driven.kind}; a held relay does not read the queue`,
       );
     }
-    await child.resume(resume.corr, decision);
-  } else if (resume?.kind === "signal-relay-relay") {
-    // A signal delivered before the crash but not relayed: deliver it (with
-    // its original id, so the body's dedup makes it idempotent) to unblock
-    // the body's gate; the loop then drives the body's next event.
-    await child.deliverSignal(resume.name, resume.payload, resume.signalId);
-  } else if (resume?.kind === "signal-relay-reestablish") {
-    // The container's signal-relay await is durable; the re-spawned body
-    // re-parks on the name silently, so re-drive the race from the recovered
-    // await seq (no re-emit) and continue with the body event it yields.
-    const relayLog = await env.repoStore.read(runId);
-    pending = await raceContainerSignalRelay(
-      env,
-      runId,
-      containerStepId,
-      child,
-      resume.name,
-      resume.awaitSeq,
-      correlationIdAt(relayLog, resume.awaitSeq),
-      abort,
-      "next",
-    );
-  } else if (resume?.kind === "signal-relay-drive-fresh") {
-    // The container never emitted its relay await before the crash, so there is
-    // nothing to reestablish and the re-adopted body re-parks silently (no
-    // onSignalPark). Drive the container relay FRESH over the recovered name --
-    // emit the relay await and race -- so the container ends up awaiting the
-    // signal that will arrive, and continue with the body event it yields.
-    // The body's deadline rides along, so the fresh relay stays timed when
-    // the gate is timed.
-    const freshTimeout = remainingSignalTimeout(
-      resume.timeoutAt,
-      env.clock().getTime(),
-    );
-    pending = await driveContainerSignalRelay(
-      env,
-      runId,
-      containerStepId,
-      child,
-      resume.name,
-      signalRelayAddressing,
-      abort,
-      "next",
-      freshTimeout,
-    );
   }
 
   for (;;) {
+    if (relayedTerminal !== undefined) {
+      terminalStatus = relayedTerminal;
+      break;
+    }
     const bodyEvent =
       pending ?? (await waitIdle((resume) => child.next(resume)));
     pending = undefined;
@@ -2984,20 +2919,10 @@ async function runOnTrigger(
   const initial = await reloadState(env, runId);
   let eventIndex: number;
   let currentInput: unknown;
-  // Set only on a crash-recovered iteration whose body is parked mid-approval:
-  // it re-links the parent to that body on the shared correlation before the
-  // drive loop, then clears so every later iteration is a fresh spawn.
-  let resumeApproval:
-    | { corr: string; relay: boolean; decision?: unknown }
-    | undefined;
-  // The signal-relay sibling of `resumeApproval`: set on a crash-recovered
-  // iteration whose body is parked mid-signal-relay. `reestablish` re-drives the
-  // durable await's race; `relay` delivers a signal that landed but was not
-  // relayed before the crash. Cleared after the recovered iteration is re-linked.
-  let resumeSignalRelay:
-    | { kind: "reestablish"; name: string; awaitSeq: number }
-    | { kind: "relay"; name: string; payload: unknown; signalId: string }
-    | undefined;
+  // Set only on a crash-recovered event whose body was mid-flight: the relays
+  // that re-link it on its first drive, cleared so every later event is a
+  // fresh spawn.
+  let resumeRelays: ChildRelay[] = [];
 
   if (!initial.steps.has(primitive.id)) {
     await emitStepStartedWithValue(env, runId, primitive.id, {
@@ -3025,38 +2950,13 @@ async function runOnTrigger(
         throw new Error(
           `onTrigger ${primitive.id} body run ${recordedSectionBodyRunId(runId, primitive.id, plan.eventIndex, initial.children)} ended ${plan.terminalStatus}`,
         );
-      case "reestablish-approval":
+      case "relink-body":
+        // The event's body was mid-flight. Re-spawn it from its own durable log
+        // on the same event; `currentInput` is unused, since the body has a
+        // durable RunStarted.
         eventIndex = plan.eventIndex;
         currentInput = undefined;
-        resumeApproval = { corr: plan.corr, relay: false };
-        break;
-      case "relay-grant":
-        eventIndex = plan.eventIndex;
-        currentInput = undefined;
-        resumeApproval = {
-          corr: plan.corr,
-          relay: true,
-          decision: plan.decision,
-        };
-        break;
-      case "reestablish-signal-relay":
-        eventIndex = plan.eventIndex;
-        currentInput = undefined;
-        resumeSignalRelay = {
-          kind: "reestablish",
-          name: plan.name,
-          awaitSeq: plan.awaitSeq,
-        };
-        break;
-      case "relay-signal-grant":
-        eventIndex = plan.eventIndex;
-        currentInput = undefined;
-        resumeSignalRelay = {
-          kind: "relay",
-          name: plan.name,
-          payload: plan.payload,
-          signalId: plan.signalId,
-        };
+        resumeRelays = plan.relays;
         break;
       case "advance-with-input":
         // The next event's trigger already arrived durably on the input channel
@@ -3066,16 +2966,6 @@ async function runOnTrigger(
         // trigger is not dropped.
         currentInput = plan.input;
         eventIndex = plan.eventIndex + 1;
-        break;
-      case "readopt-in-flight-body":
-        // The body child is in flight with no container park (a bare sleep
-        // parked entirely inside the child). Re-adopt this SAME event: re-spawn
-        // the body from its own durable log and await its terminal. `currentInput`
-        // is unused on a re-adopt (the body has a durable RunStarted), and no
-        // resume token is staged -- `resume` stays `undefined`, the sentinel for
-        // "re-adopt from the child log" the loop body path also uses.
-        eventIndex = plan.eventIndex;
-        currentInput = undefined;
         break;
       case "reawait-input": {
         // The current event's body completed; the section is idle on its input
@@ -3108,34 +2998,6 @@ async function runOnTrigger(
       eventIndex,
       (await reloadState(env, runId)).children,
     );
-    let resume: SuspendableOccurrenceResume | undefined;
-    if (resumeApproval !== undefined) {
-      resume = {
-        kind: "approval",
-        corr: resumeApproval.corr,
-        relay: resumeApproval.relay,
-        ...(resumeApproval.decision !== undefined
-          ? { decision: resumeApproval.decision }
-          : {}),
-      };
-      resumeApproval = undefined;
-    } else if (resumeSignalRelay !== undefined) {
-      resume =
-        resumeSignalRelay.kind === "relay"
-          ? {
-              kind: "signal-relay-relay",
-              name: resumeSignalRelay.name,
-              payload: resumeSignalRelay.payload,
-              signalId: resumeSignalRelay.signalId,
-            }
-          : {
-              kind: "signal-relay-reestablish",
-              name: resumeSignalRelay.name,
-              awaitSeq: resumeSignalRelay.awaitSeq,
-            };
-      resumeSignalRelay = undefined;
-    }
-
     const { terminalStatus } = await driveSuspendableOccurrence(
       env,
       runId,
@@ -3144,7 +3006,7 @@ async function runOnTrigger(
         childRunId,
         bodyRef,
         input: currentInput,
-        resume,
+        relays: resumeRelays,
         spawnSuspendableChild,
         depth,
         maxChildSpawnDepth,
@@ -3152,6 +3014,7 @@ async function runOnTrigger(
         signalRelayAddressing: "correlation",
       },
     );
+    resumeRelays = [];
 
     // Terminal-is-final unless the section tolerates a body failure. Two cases
     // always end the section, `tolerate` or not: a `cancelled` body, and ANY
@@ -3358,9 +3221,9 @@ async function driveContainerSignalRelay(
   // process restart. Resume re-enters this drive for a park the parent never
   // recorded, on the park-release leg. A relay the parent already recorded
   // is raced from that record and does not emit a second `SignalAwaited`.
-  // Fired on the fresh drive only, after the durable relay await above -- the
-  // reestablish path re-drives `raceContainerSignalRelay` directly and each
-  // level re-establishes from its own durable await, so it needs no re-fire.
+  // Fired on the fresh drive only, after the durable relay await above. Each
+  // level re-establishes from its own durable await, so a re-established
+  // relay reports `onSignalAwaiter` instead of a second park.
   if (env.onSignalPark !== undefined) {
     env.onSignalPark({
       runId,
@@ -3386,7 +3249,8 @@ async function driveContainerSignalRelay(
 
 /**
  * The container's relay await is stale: the body left the park, or the child
- * run ended, before the signal arrived. Retire it when it is still open.
+ * run ended, before the signal arrived. Retire it when it is still open,
+ * naming its correlation so a reader retires that park and not another.
  * A signal that landed and was consumed during the race is relayed
  * idempotently instead, and the await is not abandoned.
  */
@@ -3395,7 +3259,6 @@ async function abandonRelayIfOpen(
   runId: string,
   containerStepId: string,
   name: string,
-  correlationId?: string,
 ): Promise<boolean> {
   const afterRace = await reloadState(env, runId);
   const container = afterRace.steps.get(containerStepId);
@@ -3405,6 +3268,7 @@ async function abandonRelayIfOpen(
   ) {
     return false;
   }
+  const correlationId = container.awaitingSignal.correlationId;
   const retire = await reloadState(env, runId);
   const abandoned: WorkflowEvent = {
     kind: "SignalAwaitAbandoned",
@@ -3426,11 +3290,8 @@ async function settleStaleSignalRelay(
   child: SuspendableChildHandle,
   name: string,
   awaitSeq: number,
-  correlationId?: string,
 ): Promise<void> {
-  if (
-    await abandonRelayIfOpen(env, runId, containerStepId, name, correlationId)
-  ) {
+  if (await abandonRelayIfOpen(env, runId, containerStepId, name)) {
     return;
   }
   const log = await env.repoStore.read(runId);
@@ -3501,12 +3362,14 @@ type ChildParkRelease = Awaited<
 >;
 
 /**
- * Child-workflow arm of a container signal-relay. The spawn step awaits one
- * signal, and the child may already have queued a sibling park. Racing
- * `next` would consume that sibling and retire this relay while the child
- * gate is still parked. Watch the named park instead. A sibling does not
- * resolve the watch. The queue is read only after this park has a decision,
- * has left the await, or the child run has ended.
+ * Watched arm of a container signal-relay, for a container whose body can
+ * hold sibling parks: a childWorkflow, and any container on resume. Racing
+ * `next` would consume a sibling and retire this relay while the body gate is
+ * still parked. Watch the named park instead. A sibling does not resolve the
+ * watch. The queue is read only after this park has a decision, has left the
+ * await, or the body run has ended. A correlated await takes only a signal
+ * for its id. `onWaiting` runs as in `awaitSignalFor`: once both waits exist
+ * and the log holds no signal for this await.
  */
 async function raceChildSignalRelease(
   env: WorkflowRuntimeEnv,
@@ -3514,8 +3377,11 @@ async function raceChildSignalRelease(
   containerStepId: string,
   child: SuspendableChildHandle,
   name: string,
+  awaitSeq: number,
+  correlationId: string | undefined,
   abort: AbortSignal,
   pull: ChildRelayPull,
+  onWaiting?: () => void,
 ): Promise<ChildDriveResult> {
   const watch = child.waitForParkRelease;
   if (watch === undefined) {
@@ -3549,7 +3415,7 @@ async function raceChildSignalRelease(
   const onSignal = idle.waker();
   const onRelease = idle.waker();
   const signalWait = env.signalChannel
-    .awaitNext(name, onSignal, raceAbort.signal)
+    .awaitNext(name, onSignal, raceAbort.signal, correlationId)
     .then((r) => ({ tag: "signal" as const, r }));
   const releaseWait = watch(name, raceAbort.signal, onRelease).then((rel) => ({
     tag: "release" as const,
@@ -3564,7 +3430,10 @@ async function raceChildSignalRelease(
   let logged: { payload: unknown; signalId: string } | undefined;
   try {
     const log = await env.repoStore.read(runId);
-    logged = signalBoundToAwait(runId, log, containerStepId, name);
+    logged =
+      correlationId === undefined
+        ? signalBoundToAwait(runId, log, containerStepId, name)
+        : boundSignalForContainerAwait(log, name, containerStepId, awaitSeq);
   } catch (cause) {
     raceAbort.abort();
     detachRaceAbort();
@@ -3597,6 +3466,7 @@ async function raceChildSignalRelease(
   let outcome:
     | { tag: "signal"; r: { payload: unknown; signalId: string } }
     | { tag: "release"; rel: ChildParkRelease };
+  onWaiting?.();
   try {
     outcome = await idle.wait(Promise.race([signalWait, releaseWait]), [
       onSignal,
@@ -3638,6 +3508,7 @@ async function raceChildSignalRelease(
       signalName: name,
       signalId: outcome.r.signalId,
       payload: outcome.r.payload,
+      ...(correlationId !== undefined ? { correlationId } : {}),
     };
     await commit(env, runId, received);
     await flush(env, runId);
@@ -3666,12 +3537,13 @@ async function raceChildSignalRelease(
  * The awaiting arm of a container signal-relay: the container's
  * `SignalAwaited(name, "signal-relay")` at `awaitSeq` is durable and the body
  * is parked on `name`; race the signal's live arrival against the body
- * leg and against abort, then relay or retire. Shared by the fresh drive
- * ({@link driveContainerSignalRelay}, which just emitted the await) and by
- * crash-recovery (`reestablish-signal-relay`, whose re-spawned body re-parks on
- * `name` silently, so the await is re-driven from its durable seq without a
- * re-emit). `"next"` is the loop and onTrigger leg and returns the body's
- * next event. `"park-release"` is the childWorkflow leg.
+ * leg and against abort, then relay or retire. The fresh drive
+ * ({@link driveContainerSignalRelay}, which just emitted the await) enters
+ * here. A `signal-reestablish` relay on resume, whose re-spawned body re-parks
+ * on `name` silently, re-drives its durable await on the park-release leg
+ * directly, without a re-emit. `"next"` is the live loop and onTrigger leg and
+ * returns the body's next event. `"park-release"` is the leg of every resume
+ * relay and of a live childWorkflow.
  */
 async function raceContainerSignalRelay(
   env: WorkflowRuntimeEnv,
@@ -3692,6 +3564,8 @@ async function raceContainerSignalRelay(
       containerStepId,
       child,
       name,
+      awaitSeq,
+      correlationId,
       abort,
       pull,
     );
@@ -3776,40 +3650,24 @@ async function raceContainerSignalRelay(
     child,
     name,
     awaitSeq,
-    correlationId,
   );
   return outcome.ev;
 }
 
 /**
  * Discriminated resume plan for a crash-recovered onTrigger container, derived
- * purely from the container's reduced `state` plus its durable `log`. The
- * `children` map locates the current event index and the container step's
- * phase locates its lifecycle point; the log recovers a delivered-but-unrelayed
- * approval grant, whose `SignalReceived` reduces the container step to
- * `in-flight` and strips its `awaitingSignal` (so the correlation and decision
- * are no longer in the reduced state).
+ * from the container's reduced `state` plus its durable `log`, and the body's
+ * own log while it is mid-flight. The `children` map locates the current event
+ * index and the container step's phase locates its lifecycle point; a body
+ * mid-flight gets the relays `planChildRelays` plans for it.
  */
-type OnTriggerResumePlan =
+type OnTriggerResumePlan<R = PlannedChildRelay> =
   | { kind: "fresh" }
-  | { kind: "reestablish-approval"; eventIndex: number; corr: string }
-  | { kind: "relay-grant"; eventIndex: number; corr: string; decision: unknown }
-  | {
-      kind: "reestablish-signal-relay";
-      eventIndex: number;
-      name: string;
-      awaitSeq: number;
-    }
-  | {
-      kind: "relay-signal-grant";
-      eventIndex: number;
-      name: string;
-      payload: unknown;
-      signalId: string;
-    }
+  // The event's body was mid-flight: re-spawn it from its own log and drive
+  // these relays first, none when nothing waits on the section.
+  | { kind: "relink-body"; eventIndex: number; relays: R[] }
   | { kind: "reawait-input"; eventIndex: number; existingSignalName?: string }
   | { kind: "advance-with-input"; eventIndex: number; input: unknown }
-  | { kind: "readopt-in-flight-body"; eventIndex: number }
   | {
       kind: "terminal-is-final";
       eventIndex: number;
@@ -3825,36 +3683,6 @@ function bodyFailurePolicyOf(primitive: {
   readonly onBodyFailure?: BodyFailurePolicy;
 }): BodyFailurePolicy {
   return primitive.onBodyFailure ?? "end";
-}
-
-/**
- * The `awaitSignal` gate names a body child is parked on in its reduced state,
- * split by channel: `author` names are author-chosen (`correlationIdFromSignalName`
- * undefined); `controlPlane` names are reserved approval/relay channels. Both
- * signal a crash window where the body's leaf `SignalAwaited` flushed but the
- * container's proxy await did not, so a naive re-adopt re-parks the body on a
- * signal the container never relays. The loop planner keys its author-gate
- * drive-fresh on `author`; the onTrigger planner refuses on either, since it has
- * no fresh-relay drive for a body still awaiting a signal.
- */
-export function bodyParkedSignals(childState: RunState): {
-  author: string[];
-  controlPlane: string[];
-} {
-  const author: string[] = [];
-  const controlPlane: string[] = [];
-  for (const step of childState.steps.values()) {
-    if (step.phase !== "awaiting-signal" || step.awaitingSignal === undefined) {
-      continue;
-    }
-    const name = step.awaitingSignal.name;
-    if (correlationIdFromSignalName(name) === undefined) {
-      author.push(name);
-    } else {
-      controlPlane.push(name);
-    }
-  }
-  return { author, controlPlane };
 }
 
 /** Decimal event index with no leading zero. `section__01` is not index 1. */
@@ -3944,10 +3772,32 @@ async function planOnTriggerResume(
   primitive: OnTriggerPrimitive,
   state: RunState,
   log: readonly WorkflowEvent[],
-): Promise<OnTriggerResumePlan> {
-  return finishOnTriggerResume(primitive, state, log, (childRunId) =>
-    reloadState(env, childRunId),
+): Promise<OnTriggerResumePlan<ChildRelay>> {
+  const plan = await finishOnTriggerResume(
+    primitive,
+    state,
+    log,
+    (childRunId) => env.repoStore.read(childRunId),
+    env.clock().getTime(),
   );
+  if (plan.kind !== "relink-body") return plan;
+  const childRunId = recordedSectionBodyRunId(
+    state.runId,
+    primitive.id,
+    plan.eventIndex,
+    state.children,
+  );
+  const childLog = [...(await env.repoStore.read(childRunId))];
+  return {
+    ...plan,
+    relays: await loadPlannedRelays(
+      env,
+      `onTrigger ${primitive.id}`,
+      childRunId,
+      resumeFromLog(childRunId, childLog),
+      plan.relays,
+    ),
+  };
 }
 
 async function finishOnTriggerResume(
@@ -3957,7 +3807,8 @@ async function finishOnTriggerResume(
   },
   state: RunState,
   log: readonly WorkflowEvent[],
-  loadChild: (childRunId: string) => Promise<RunState>,
+  loadChild: (childRunId: string) => Promise<readonly WorkflowEvent[]>,
+  nowMs: number,
 ): Promise<OnTriggerResumePlan> {
   const eventIndex = highestSectionEventIndex(
     state.runId,
@@ -4054,116 +3905,53 @@ async function finishOnTriggerResume(
   }
   if (
     container.phase === "awaiting-signal" &&
-    container.awaitingSignal !== undefined
+    container.awaitingSignal !== undefined &&
+    controlParkKindOf(container.awaitingSignal) === "input"
   ) {
-    const parkKind = controlParkKindOf(container.awaitingSignal);
-    if (parkKind === "signal-relay") {
-      // The container is proxy-parked on the body's author `awaitSignal` gate.
-      // Recover the durable await's seq (the FIFO binding key) so the resume
-      // re-drives the race over the same await without re-emitting it.
-      const name = container.awaitingSignal.name;
-      const recovered = lastSignalRelayAwait(primitive.id, log, name);
-      if (recovered === undefined) {
-        throw new Error(
-          `onTrigger ${primitive.id} resume: container awaits signal-relay ${name} but no matching SignalAwaited is in the log`,
-        );
-      }
-      return {
-        kind: "reestablish-signal-relay",
-        eventIndex,
-        name,
-        awaitSeq: recovered.seq,
-      };
-    }
-    if (parkKind !== "approval") {
-      throw new Error(
-        `onTrigger ${primitive.id} resume: container is parked on an input channel while body child ${childRunId} is still in flight`,
-      );
-    }
-    const corr = correlationIdFromSignalName(container.awaitingSignal.name);
-    if (corr === undefined) {
-      throw new Error(
-        `onTrigger ${primitive.id} resume: container awaiting-signal ${container.awaitingSignal.name} is not a reserved control-plane channel`,
-      );
-    }
-    return { kind: "reestablish-approval", eventIndex, corr };
-  }
-  // The container is not parked but the body is still in flight: the approval
-  // grant was delivered (its SignalReceived moved the container to in-flight)
-  // but not yet relayed into the child. Recover the correlation and decision
-  // from the log.
-  const grant = recoverDeliveredApprovalGrant(primitive.id, log);
-  if (grant !== undefined) {
-    return {
-      kind: "relay-grant",
-      eventIndex,
-      corr: grant.corr,
-      decision: grant.decision,
-    };
-  }
-  // Signal-relay sibling of the delivered-grant window: a signal delivered to
-  // the container's last signal-relay await consumed it (moving the container
-  // to in-flight) but was not relayed into the body before the crash. Recover
-  // it from the log's FIFO pairing and relay on resume.
-  const relaySignal = recoverDeliveredSignalRelay(primitive.id, log);
-  if (relaySignal !== undefined) {
-    return {
-      kind: "relay-signal-grant",
-      eventIndex,
-      name: relaySignal.name,
-      payload: relaySignal.payload,
-      signalId: relaySignal.signalId,
-    };
-  }
-  // The body is in flight with nothing delivered to the container. Inspect the
-  // body's OWN reduced state. A bare `sleep` parks entirely inside the child
-  // (an `awaiting-timer` step, or an `in-flight` step once its `TimerFired`
-  // landed) and surfaces no container park, so re-adopt the in-flight body and
-  // await its terminal: the re-spawned body re-drives its own durable log and
-  // re-adopts its sleep timer via `isResumableSleepStep`. `resume` stays
-  // `undefined` in the dispatch below -- the sentinel a loop body already uses
-  // for this re-adopt.
-  //
-  // The shape we must NOT re-adopt is a body still parked on a signal the
-  // container has not proxied -- author `awaitSignal` OR a reserved
-  // approval/relay channel -- because its leaf `SignalAwaited` flushed but the
-  // container's proxy await did not. Re-adopting it re-parks the body silently
-  // (no `onPark`) on a signal the container never relays, hanging both sides
-  // forever. onTrigger has no fresh-relay drive (loop's `signal-relay-drive-
-  // fresh` is out of scope here), so keep failing loud. Any body NOT awaiting a
-  // signal re-adopts and its OWN resume classifier decides its terminal: a
-  // `sleep` resumes via `isResumableSleepStep`. A mid-flight `childWorkflow`
-  // reattaches from its log. A mid-flight `map` REJECTS, and the seam
-  // re-throws that rejection as a loud section failure -- never a
-  // silently-tolerated terminal (see the tolerate regression test). A
-  // crashed agent step instead SETTLES a terminal `StepFailed`: under
-  // the default `end` policy this fails the section as the pre-branch throw did,
-  // and under `tolerate` the section absorbs the crashed body and re-arms. That
-  // last case is the one genuine behavior change here, and it is the intended
-  // reading of `tolerate` -- a real body failure it is meant to swallow, not a
-  // hang or a lost run.
-  const childState = await loadChild(childRunId);
-  const { author, controlPlane } = bodyParkedSignals(childState);
-  const parkedSignals = [...author, ...controlPlane];
-  if (parkedSignals.length > 0) {
     throw new Error(
-      `onTrigger ${primitive.id} resume: body child ${childRunId} is parked ` +
-        `on an un-relayed signal (${parkedSignals.join(", ")}) with no ` +
-        `container proxy await; onTrigger cannot re-establish the relay fresh`,
+      `onTrigger ${primitive.id} resume: container is parked on an input channel while body child ${childRunId} is still in flight`,
     );
   }
-  return { kind: "readopt-in-flight-body", eventIndex };
+  // Re-link the body: re-establish the relay the section awaits, hand on input
+  // delivered to it but not to the body, and relay every park the body holds
+  // that the section never relayed. A body that holds none re-adopts from its
+  // own log, and its own resume classifier decides its terminal: a `sleep`
+  // resumes via `isResumableSleepStep`, a mid-flight `childWorkflow`
+  // reattaches, a mid-flight `map` rejects and the seam re-throws that as a
+  // loud section failure, and a crashed agent step settles a terminal
+  // `StepFailed`, which a `tolerate` section absorbs before it re-arms.
+  const childLog = [...(await loadChild(childRunId))];
+  const sinceSeq = childSpawnSeq(log, childRunId);
+  if (childLog.length === 0) {
+    return {
+      kind: "relink-body",
+      eventIndex,
+      relays: containerRelays(primitive.id, log, state, sinceSeq),
+    };
+  }
+  const relays = planChildRelays(
+    `onTrigger ${primitive.id}`,
+    primitive.id,
+    childRunId,
+    log,
+    state,
+    childLog,
+    resumeFromLog(childRunId, childLog),
+    nowMs,
+    sinceSeq,
+  );
+  refuseInputRelays(`onTrigger ${primitive.id}`, childRunId, relays);
+  return { kind: "relink-body", eventIndex, relays };
 }
 
 /**
- * The resume token for a crash-recovered loop iteration whose body was parked
- * or mid-relay at the crash, derived purely from the container's reduced
- * `state` plus its durable `log` for the given `iteration`. It yields ONLY the
- * active re-link the body needs on its next drive: re-establish the container's
- * signal-relay race, relay a grant/signal delivered but not relayed before the
- * crash, or re-adopt an approval park.
+ * The relays a crash-recovered loop iteration needs on its next drive, derived
+ * from the container's reduced `state` and durable `log` for the given
+ * `iteration` and the body's own log: re-establish what the container awaits,
+ * hand on a grant or signal delivered to it but not to the body, and relay
+ * every park the body holds that the container never relayed.
  *
- * `undefined` means "nothing to re-link", and `runLoop`'s forward drive
+ * An empty list means "nothing to re-link", and `runLoop`'s forward drive
  * re-adopts the iteration from the child's own durable log -- a terminal body
  * short-circuits, a body that crashed mid-invocation settles failed, a body
  * that had not yet worked re-runs. This is where the planner diverges from
@@ -4180,29 +3968,39 @@ async function planLoopResume(
   state: RunState,
   log: readonly WorkflowEvent[],
   iteration: number,
-): Promise<SuspendableOccurrenceResume | undefined> {
-  return finishLoopResume(
-    primitive,
-    runId,
-    state,
-    log,
-    iteration,
-    (childRunId) => reloadState(env, childRunId),
+): Promise<ChildRelay[]> {
+  const childRunId = loopBodyRunId(runId, primitive.id, iteration);
+  const childLog = [...(await env.repoStore.read(childRunId))];
+  return loadPlannedRelays(
+    env,
+    `loop ${primitive.id}`,
+    childRunId,
+    resumeFromLog(childRunId, childLog),
+    finishLoopResume(
+      primitive,
+      runId,
+      state,
+      log,
+      iteration,
+      childLog,
+      env.clock().getTime(),
+    ),
   );
 }
 
-async function finishLoopResume(
+function finishLoopResume(
   primitive: { readonly id: string },
   runId: string,
   state: RunState,
   log: readonly WorkflowEvent[],
   iteration: number,
-  loadChild: (childRunId: string) => Promise<RunState>,
-): Promise<SuspendableOccurrenceResume | undefined> {
+  childLog: readonly WorkflowEvent[],
+  nowMs: number,
+): PlannedChildRelay[] {
   const childRunId = loopBodyRunId(runId, primitive.id, iteration);
   const child = state.children.get(childRunId);
   if (child === undefined || child.terminalStatus !== undefined) {
-    return undefined;
+    return [];
   }
   const container = state.steps.get(primitive.id);
   if (container === undefined) {
@@ -4212,110 +4010,163 @@ async function finishLoopResume(
   }
   if (
     container.phase === "awaiting-signal" &&
-    container.awaitingSignal !== undefined
+    container.awaitingSignal !== undefined &&
+    controlParkKindOf(container.awaitingSignal) === "input"
   ) {
-    const parkKind = controlParkKindOf(container.awaitingSignal);
-    if (parkKind === "signal-relay") {
-      // The container is proxy-parked on the body's author `awaitSignal` gate.
-      // Recover the durable await's seq (the FIFO binding key) so the resume
-      // re-drives the race over the same await without re-emitting it.
-      const name = container.awaitingSignal.name;
-      const recovered = lastSignalRelayAwait(primitive.id, log, name);
-      if (recovered === undefined) {
-        throw new Error(
-          `loop ${primitive.id} resume: container awaits signal-relay ${name} but no matching SignalAwaited is in the log`,
-        );
-      }
-      return {
-        kind: "signal-relay-reestablish",
-        name,
-        awaitSeq: recovered.seq,
-      };
-    }
-    if (parkKind !== "approval") {
-      throw new Error(
-        `loop ${primitive.id} resume: container is parked on an input channel while body child ${childRunId} is still in flight`,
-      );
-    }
-    const corr = correlationIdFromSignalName(container.awaitingSignal.name);
-    if (corr === undefined) {
-      throw new Error(
-        `loop ${primitive.id} resume: container awaiting-signal ${container.awaitingSignal.name} is not a reserved control-plane channel`,
-      );
-    }
-    return { kind: "approval", corr, relay: false };
-  }
-  // The container is not parked but the body is still in flight: a grant or
-  // signal was DELIVERED (its SignalReceived moved the container to in-flight)
-  // but not relayed into the body before the crash. Relay it into the
-  // re-adopted body, else the body's silently re-parked gate would wait forever
-  // for a signal already consumed.
-  const grant = recoverDeliveredApprovalGrant(primitive.id, log);
-  if (grant !== undefined) {
-    return {
-      kind: "approval",
-      corr: grant.corr,
-      relay: true,
-      ...(grant.decision !== undefined ? { decision: grant.decision } : {}),
-    };
-  }
-  const relaySignal = recoverDeliveredSignalRelay(primitive.id, log);
-  if (relaySignal !== undefined) {
-    return {
-      kind: "signal-relay-relay",
-      name: relaySignal.name,
-      payload: relaySignal.payload,
-      signalId: relaySignal.signalId,
-    };
-  }
-  // Otherwise the body is in flight with nothing delivered to the container.
-  // On a consistent store the body's own durable log may show it parked on an
-  // author `awaitSignal` gate the container never relayed -- the crash landed
-  // after the body's leaf `SignalAwaited` flushed but before the container's
-  // relay `SignalAwaited` flushed. The re-adopted body re-parks silently, so
-  // the forward drive would never surface the gate and the container would
-  // block forever. Recover the parked author name from the body's reduced state
-  // and drive the container relay FRESH. (On an inconsistent store the child
-  // log is gone, so no gate is found and the forward drive re-runs the
-  // iteration -- the existing inconsistent-store behavior.)
-  const childState = await loadChild(childRunId);
-  const { author: authorAwaits } = bodyParkedSignals(childState);
-  if (authorAwaits.length > 1) {
     throw new Error(
-      `loop ${primitive.id} resume: body child ${childRunId} is parked on ` +
-        `multiple concurrent author signals (${authorAwaits.join(", ")}); ` +
-        `re-establishing more than one un-relayed gate is not supported`,
+      `loop ${primitive.id} resume: container is parked on an input channel while body child ${childRunId} is still in flight`,
     );
   }
-  const parkedName = authorAwaits[0];
-  if (parkedName !== undefined) {
-    let timeoutAt: string | undefined;
-    for (const step of childState.steps.values()) {
-      if (
-        step.phase === "awaiting-signal" &&
-        step.awaitingSignal?.name === parkedName
-      ) {
-        timeoutAt = step.awaitingSignal.timeoutAt;
-        break;
-      }
-    }
-    return {
-      kind: "signal-relay-drive-fresh",
-      name: parkedName,
-      ...(timeoutAt !== undefined ? { timeoutAt } : {}),
-    };
+  // On an inconsistent store the body's log is gone: the forward drive re-runs
+  // the body, and the container re-links what it held itself.
+  if (childLog.length === 0) {
+    return containerRelays(
+      primitive.id,
+      log,
+      state,
+      childSpawnSeq(log, childRunId),
+    );
   }
-  return undefined;
+  const relays = planChildRelays(
+    `loop ${primitive.id}`,
+    primitive.id,
+    childRunId,
+    log,
+    state,
+    childLog,
+    resumeFromLog(childRunId, childLog),
+    nowMs,
+    childSpawnSeq(log, childRunId),
+  );
+  refuseInputRelays(`loop ${primitive.id}`, childRunId, relays);
+  return relays;
+}
+
+// A loop or onTrigger body never parks on an input channel; the live drive
+// refuses one, so a log that holds one is not this container's.
+function refuseInputRelays(
+  container: string,
+  childRunId: string,
+  relays: readonly PlannedChildRelay[],
+): void {
+  for (const relay of relays) {
+    const input =
+      relay.kind === "input-fresh" ||
+      ((relay.kind === "control-reestablish" ||
+        relay.kind === "control-deliver") &&
+        relay.parkKind === "input");
+    if (input) {
+      throw new Error(
+        `${container} resume: body child ${childRunId} is parked on an input channel; a loop or onTrigger body cannot re-arm an input park`,
+      );
+    }
+  }
+}
+
+/**
+ * A body whose log is gone starts over and asks again for every input it was
+ * handed since its spawn at `sinceSeq`, but the container can hand on only the
+ * one it still holds, at `keepSeq`. A body that already took another fails
+ * here rather than waiting forever for input that is not coming again.
+ */
+function refuseHandedOnInput(
+  stepId: string,
+  log: readonly WorkflowEvent[],
+  sinceSeq: number,
+  keepSeq: number | undefined,
+): void {
+  for (const event of log) {
+    if (
+      event.kind === "SignalAwaited" &&
+      event.stepId === stepId &&
+      event.seq > sinceSeq &&
+      event.seq !== keepSeq &&
+      boundSignalForContainerAwait(log, event.signalName, stepId, event.seq) !==
+        undefined
+    ) {
+      throw new Error(
+        `step ${stepId} resume: its body lost its log after it was handed ${event.signalName}, which cannot be handed to it again`,
+      );
+    }
+  }
+}
+
+/**
+ * What a container held for a body whose log is gone: the relay it awaits, or
+ * input delivered to it that it had not handed on. Only its awaits after
+ * `sinceSeq`, the body's spawn, are this body's.
+ */
+function containerRelays(
+  stepId: string,
+  log: readonly WorkflowEvent[],
+  state: RunState,
+  sinceSeq: number,
+): PlannedChildRelay[] {
+  const awaiting = parentSignalAwait(state, stepId);
+  if (awaiting !== undefined) {
+    const kind = controlParkKindOf(awaiting);
+    const awaitSeq = lastAwaitSeq(log, stepId, awaiting.name, sinceSeq);
+    refuseHandedOnInput(stepId, log, sinceSeq, awaitSeq);
+    if (kind === "signal-relay") {
+      return awaitSeq === undefined
+        ? []
+        : [{ kind: "signal-reestablish", name: awaiting.name, awaitSeq }];
+    }
+    const correlationId = correlationIdFromSignalName(awaiting.name);
+    if (correlationId === undefined) {
+      throw new Error(
+        `step ${stepId} awaiting-signal ${awaiting.name} is not a reserved control-plane channel`,
+      );
+    }
+    return [{ kind: "control-reestablish", parkKind: kind, correlationId }];
+  }
+  let last: Extract<WorkflowEvent, { kind: "SignalAwaited" }> | undefined;
+  for (const event of log) {
+    if (
+      event.kind === "SignalAwaited" &&
+      event.stepId === stepId &&
+      event.seq > sinceSeq
+    ) {
+      last = event;
+    }
+  }
+  if (last === undefined) return [];
+  refuseHandedOnInput(stepId, log, sinceSeq, last.seq);
+  const bound = boundSignalForContainerAwait(
+    log,
+    last.signalName,
+    stepId,
+    last.seq,
+  );
+  if (bound === undefined) return [];
+  const correlationId = correlationIdFromSignalName(last.signalName);
+  if (correlationId === undefined) {
+    return [
+      {
+        kind: "signal-deliver",
+        name: last.signalName,
+        payload: bound.payload,
+        signalId: bound.signalId,
+        startsOver: true,
+      },
+    ];
+  }
+  return [
+    {
+      kind: "control-deliver",
+      parkKind: controlParkKindOf(last) === "input" ? "input" : "approval",
+      correlationId,
+      decision: bound.payload,
+      startsOver: true,
+    },
+  ];
 }
 
 /**
  * Whether a crash-recovered container can be re-attached, judged by the same
  * planners the runtime drives. `rejected` is a planner throw (caught here so
  * a caller can release instead of letting it escape). `reenter` is a child
- * the forward drive re-adopts that is not itself a park. A drive-fresh loop
- * park with a control-plane signal beside the author signal is `rejected`
- * even though the runtime planner would return the author name: more than
- * the author gate is waiting, and that is not re-attached.
+ * the forward drive re-adopts that is not itself a park.
  */
 export type OccurrenceReattach =
   | { readonly kind: "parked"; readonly childRunId?: string }
@@ -4323,36 +4174,33 @@ export type OccurrenceReattach =
   | { readonly kind: "open" }
   | { readonly kind: "rejected" };
 
-export async function loopOccurrenceReattach(args: {
+export function loopOccurrenceReattach(args: {
   readonly loopId: string;
   readonly runId: string;
   readonly iteration: number;
   readonly state: RunState;
   readonly log: readonly WorkflowEvent[];
-  readonly childState: RunState;
-}): Promise<OccurrenceReattach> {
+  readonly childLog: readonly WorkflowEvent[];
+  // Bounds a timed gate's remaining wait; a verdict does not depend on it.
+  readonly nowMs: number;
+}): OccurrenceReattach {
   const childRunId = loopBodyRunId(args.runId, args.loopId, args.iteration);
   try {
-    const plan = await finishLoopResume(
+    const plan = finishLoopResume(
       { id: args.loopId },
       args.runId,
       args.state,
       args.log,
       args.iteration,
-      async () => args.childState,
+      args.childLog,
+      args.nowMs,
     );
-    if (plan === undefined) {
+    if (plan.length === 0) {
       const child = args.state.children.get(childRunId);
       if (child === undefined || child.terminalStatus !== undefined) {
         return { kind: "open" };
       }
       return { kind: "reenter", childRunId };
-    }
-    if (plan.kind === "signal-relay-drive-fresh") {
-      const { author, controlPlane } = bodyParkedSignals(args.childState);
-      if (author.length !== 1 || controlPlane.length > 0) {
-        return { kind: "rejected" };
-      }
     }
     return { kind: "parked", childRunId };
   } catch {
@@ -4365,7 +4213,9 @@ export async function onTriggerOccurrenceReattach(args: {
   readonly onBodyFailure?: BodyFailurePolicy;
   readonly state: RunState;
   readonly log: readonly WorkflowEvent[];
-  readonly childState: RunState;
+  readonly loadChild: (childRunId: string) => Promise<readonly WorkflowEvent[]>;
+  // Bounds a timed gate's remaining wait; a verdict does not depend on it.
+  readonly nowMs: number;
 }): Promise<OccurrenceReattach> {
   try {
     const plan = await finishOnTriggerResume(
@@ -4377,7 +4227,8 @@ export async function onTriggerOccurrenceReattach(args: {
       },
       args.state,
       args.log,
-      async () => args.childState,
+      args.loadChild,
+      args.nowMs,
     );
     // A recorded body keeps the id the log stored. `sectionBodyRunId`
     // mints the parent-prefixed form, which is an empty log when the
@@ -4392,17 +4243,9 @@ export async function onTriggerOccurrenceReattach(args: {
     switch (plan.kind) {
       case "reawait-input":
         return { kind: "parked" };
-      case "reestablish-approval":
-      case "reestablish-signal-relay":
-      case "relay-grant":
-      case "relay-signal-grant":
+      case "relink-body":
         return {
-          kind: "parked",
-          childRunId: recordedChild(plan.eventIndex),
-        };
-      case "readopt-in-flight-body":
-        return {
-          kind: "reenter",
+          kind: plan.relays.length > 0 ? "parked" : "reenter",
           childRunId: recordedChild(plan.eventIndex),
         };
       case "fresh":
@@ -4416,45 +4259,8 @@ export async function onTriggerOccurrenceReattach(args: {
 }
 
 /**
- * Recover the correlation and delivered decision of the container's most recent
- * approval park from the durable log. Used only for the narrow crash window
- * where the grant's `SignalReceived` landed before the driver relayed it into
- * the body -- the container step reduces to `in-flight` with its
- * `awaitingSignal` stripped, so the correlation lives only in the log.
- */
-function recoverDeliveredApprovalGrant(
-  stepId: string,
-  log: readonly WorkflowEvent[],
-): { corr: string; decision: unknown } | undefined {
-  let corr: string | undefined;
-  let parkKind: ControlParkKind | undefined;
-  for (const event of log) {
-    if (event.kind === "SignalAwaited" && event.stepId === stepId) {
-      const candidate = correlationIdFromSignalName(event.signalName);
-      if (candidate !== undefined) {
-        corr = candidate;
-        parkKind = controlParkKindOf(event);
-      }
-    }
-  }
-  if (corr === undefined || parkKind !== "approval") return undefined;
-  const reserved = signalName(corr);
-  let decision: unknown;
-  let found = false;
-  for (const event of log) {
-    if (event.kind === "SignalReceived" && event.signalName === reserved) {
-      decision = event.payload;
-      found = true;
-    }
-  }
-  if (!found) return undefined;
-  return { corr, decision };
-}
-
-/**
  * Recover an input re-arm whose next trigger was delivered but whose body spawn
- * had not yet committed at the crash -- the input sibling of
- * `recoverDeliveredApprovalGrant`. After a body completes, the container
+ * had not yet committed at the crash. After a body completes, the container
  * re-arms an `input` park for event N+1; when that park's `SignalReceived`
  * landed (moving the container to `in-flight` and stripping its
  * `awaitingSignal`) but `ChildSpawned` N+1 was not written, the delivered
@@ -4505,56 +4311,6 @@ function recoverDeliveredInput(
   }
   if (!found) return undefined;
   return { payload };
-}
-
-/**
- * The name + seq of the container's last `SignalAwaited(_, "signal-relay")` --
- * optionally filtered to `name` -- or undefined if it has none. The last such
- * await is the one a crash-recovery re-drives (`reestablish-signal-relay`) or
- * binds a delivered signal against (`recoverDeliveredSignalRelay`).
- */
-function lastSignalRelayAwait(
-  containerStepId: string,
-  log: readonly WorkflowEvent[],
-  name?: string,
-): { name: string; seq: number } | undefined {
-  let last: { name: string; seq: number } | undefined;
-  for (const event of log) {
-    if (
-      event.kind === "SignalAwaited" &&
-      event.stepId === containerStepId &&
-      controlParkKindOf(event) === "signal-relay" &&
-      (name === undefined || event.signalName === name)
-    ) {
-      last = { name: event.signalName, seq: event.seq };
-    }
-  }
-  return last;
-}
-
-/**
- * Recover a signal delivered to the container's last signal-relay await but not
- * yet relayed into the body -- the signal-relay sibling of
- * `recoverDeliveredApprovalGrant`. The delivery's `SignalReceived` consumed the
- * container's await (moving it to `in-flight`), so the payload lives only in the
- * log; bind it by replaying the reducer's FIFO pairing. Returns undefined when
- * the container has no signal-relay await, or its last one carries no paired
- * signal (an await that was abandoned rather than consumed).
- */
-function recoverDeliveredSignalRelay(
-  containerStepId: string,
-  log: readonly WorkflowEvent[],
-): { name: string; payload: unknown; signalId: string } | undefined {
-  const last = lastSignalRelayAwait(containerStepId, log);
-  if (last === undefined) return undefined;
-  const bound = boundSignalForContainerAwait(
-    log,
-    last.name,
-    containerStepId,
-    last.seq,
-  );
-  if (bound === undefined) return undefined;
-  return { name: last.name, payload: bound.payload, signalId: bound.signalId };
 }
 
 /**
@@ -6936,6 +6692,9 @@ type ChildRelay =
       name: string;
       payload: unknown;
       signalId: string;
+      // The body's log is gone, so it starts over and parks afresh: no re-park
+      // to wait for, and its channel keeps the input until it asks.
+      startsOver?: true;
     }
   | { kind: "signal-fresh"; name: string; timeout?: number }
   | {
@@ -6948,6 +6707,7 @@ type ChildRelay =
       parkKind: "approval" | "input";
       correlationId: string;
       decision: unknown;
+      startsOver?: true;
     }
   | { kind: "input-fresh"; correlationId: string }
   | {
@@ -7143,11 +6903,13 @@ function lastAwaitSeq(
   log: readonly WorkflowEvent[],
   stepId: string,
   name: string,
+  sinceSeq: number,
 ): number | undefined {
   let seq: number | undefined;
   for (const event of log) {
     if (
       event.kind === "SignalAwaited" &&
+      event.seq > sinceSeq &&
       event.stepId === stepId &&
       event.signalName === name
     ) {
@@ -7158,16 +6920,17 @@ function lastAwaitSeq(
 }
 
 /**
- * The signal paired with the parent's last await of `name`, if that await
- * already consumed one. The full parent log is required: the pairing
- * replays the reducer's queue from seq 1.
+ * The signal paired with the parent's last await of `name` since `sinceSeq`,
+ * if that await already consumed one. The full parent log is required: the
+ * pairing replays the reducer's queue from seq 1.
  */
 function deliveredForAwait(
   parentLog: readonly WorkflowEvent[],
   stepId: string,
   name: string,
+  sinceSeq: number,
 ): { payload: unknown; signalId: string } | undefined {
-  const awaitSeq = lastAwaitSeq(parentLog, stepId, name);
+  const awaitSeq = lastAwaitSeq(parentLog, stepId, name, sinceSeq);
   if (awaitSeq === undefined) return undefined;
   return boundSignalForContainerAwait(parentLog, name, stepId, awaitSeq);
 }
@@ -7231,9 +6994,11 @@ function parentSignalAwait(
  * What a container still has to do for the parks of one body run it relays:
  * re-establish the relay it awaits, hand on input delivered to it but not yet
  * to the body, and relay every park the body holds that it never relayed, of
- * which a restart can leave several.
+ * which a restart can leave several. Only the container's awaits after
+ * `sinceSeq`, the body's spawn, are this body's.
  */
 function planChildRelays(
+  container: string,
   stepId: string,
   childRunId: string,
   parentLog: readonly WorkflowEvent[],
@@ -7241,6 +7006,7 @@ function planChildRelays(
   childLog: readonly WorkflowEvent[],
   childState: RunState,
   nowMs: number,
+  sinceSeq: number,
 ): PlannedChildRelay[] {
   const parks = openChildParks(childLog, childState);
   const parentAwait = parentSignalAwait(parentState, stepId);
@@ -7252,13 +7018,13 @@ function planChildRelays(
       if (park.kind === "author") {
         if (parentKind !== "signal-relay") {
           throw new Error(
-            `childWorkflow ${stepId} author park ${park.name} is awaited as ${parentKind}`,
+            `${container} author park ${park.name} is awaited as ${parentKind}`,
           );
         }
-        const awaitSeq = lastAwaitSeq(parentLog, stepId, park.name);
+        const awaitSeq = lastAwaitSeq(parentLog, stepId, park.name, sinceSeq);
         if (awaitSeq === undefined) {
           throw new Error(
-            `childWorkflow ${stepId} is awaiting ${park.name} with no SignalAwaited in the log`,
+            `${container} is awaiting ${park.name} with no SignalAwaited in the log`,
           );
         }
         relays.push({ kind: "signal-reestablish", name: park.name, awaitSeq });
@@ -7266,7 +7032,7 @@ function planChildRelays(
       }
       if (parentKind !== park.kind) {
         throw new Error(
-          `childWorkflow ${stepId} ${park.kind} park ${park.name} is awaited as ${parentKind}`,
+          `${container} ${park.kind} park ${park.name} is awaited as ${parentKind}`,
         );
       }
       relays.push({
@@ -7276,7 +7042,7 @@ function planChildRelays(
       });
       continue;
     }
-    const delivered = deliveredForAwait(parentLog, stepId, park.name);
+    const delivered = deliveredForAwait(parentLog, stepId, park.name, sinceSeq);
     if (
       delivered !== undefined &&
       !childSawSignal(childLog, park.awaitSeq, delivered.signalId)
@@ -7382,6 +7148,19 @@ async function loadPlannedRelays(
   return relays;
 }
 
+// The seq of the parent's record that it spawned `childRunId`, or 0.
+function childSpawnSeq(
+  parentLog: readonly WorkflowEvent[],
+  childRunId: string,
+): number {
+  for (const event of parentLog) {
+    if (event.kind === "ChildSpawned" && event.childRunId === childRunId) {
+      return event.seq;
+    }
+  }
+  return 0;
+}
+
 async function planChildWorkflowResume(
   env: WorkflowRuntimeEnv,
   stepId: string,
@@ -7455,6 +7234,7 @@ async function planChildWorkflowResume(
       recorded.childRunId,
       childState,
       planChildRelays(
+        `childWorkflow ${stepId}`,
         stepId,
         recorded.childRunId,
         parentLog,
@@ -7462,10 +7242,60 @@ async function planChildWorkflowResume(
         childLog,
         childState,
         env.clock().getTime(),
+        childSpawnSeq(parentLog, recorded.childRunId),
       ),
     ),
     seed: true,
   };
+}
+
+/**
+ * Wait until the body's park on `name` waits again, so a signal or decision
+ * this container took before the restart can go down. The park can instead
+ * end without waiting again, as a nested relay does when its gate timed out
+ * meanwhile; that read is returned and nothing goes down, as for a park
+ * already gone before the wait.
+ */
+async function awaitChildRearm(
+  handle: SuspendableChildHandle,
+  stepId: string,
+  name: string,
+  whenAwaiter: NonNullable<SuspendableChildHandle["whenSignalAwaiter"]>,
+  abort: AbortSignal,
+): Promise<{ kind: "rearmed" } | ChildParkRelease> {
+  const watch = handle.waitForParkRelease;
+  if (watch === undefined) {
+    throw new Error(
+      `step ${stepId} cannot hand ${name} down: the child handle does not ` +
+        `watch a park release, so a park that ended would be waited on forever`,
+    );
+  }
+  const watchAbort = new AbortController();
+  const detachWatchAbort = bridgeAbort(abort, () => {
+    watchAbort.abort();
+  });
+  const idle = createIdleWait();
+  const onRearm = idle.waker();
+  const onRelease = idle.waker();
+  const released = watch(name, watchAbort.signal, onRelease);
+  // The awaiter rejects once the body ends, and the watch then reads how.
+  const rearmed = whenAwaiter(name, onRearm).then(
+    () => ({ kind: "rearmed" as const }),
+    () => released,
+  );
+  try {
+    return await idle.wait(Promise.race([rearmed, released]), [
+      onRearm,
+      onRelease,
+    ]);
+  } finally {
+    detachWatchAbort();
+    watchAbort.abort();
+    await released.catch(() => undefined);
+    // The awaiter takes no abort. It settles when the park waits again or
+    // the body ends.
+    void rearmed.catch(() => undefined);
+  }
 }
 
 async function drivePlannedChildRelay(
@@ -7476,6 +7306,7 @@ async function drivePlannedChildRelay(
   relay: ChildRelay,
   abort: AbortSignal,
   sectionSteps: ReadonlySet<string>,
+  addressing: SignalRelayAddressing,
 ): Promise<ChildDriveResult> {
   switch (relay.kind) {
     case "signal-abandon": {
@@ -7484,7 +7315,9 @@ async function drivePlannedChildRelay(
     }
     case "signal-reestablish": {
       const relayLog = await env.repoStore.read(parentRunId);
-      return raceContainerSignalRelay(
+      // This run's own parent can hold a signal for this relay that it hands
+      // down only once the relay waits again, as it would for a re-parked gate.
+      return raceChildSignalRelease(
         env,
         parentRunId,
         stepId,
@@ -7493,11 +7326,17 @@ async function drivePlannedChildRelay(
         relay.awaitSeq,
         correlationIdAt(relayLog, relay.awaitSeq),
         abort,
-        "park-release",
         "hold",
+        () => {
+          env.onSignalAwaiter?.({ runId: parentRunId, name: relay.name });
+        },
       );
     }
     case "signal-deliver": {
+      if (relay.startsOver === true) {
+        await handle.deliverSignal(relay.name, relay.payload, relay.signalId);
+        return { kind: "held" };
+      }
       const snapshot = await readChildPark(handle, stepId, relay.name);
       if (snapshot.kind === "terminal") {
         return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
@@ -7505,7 +7344,17 @@ async function drivePlannedChildRelay(
       if (snapshot.kind === "released") return { kind: "held" };
       const whenAwaiter = handle.whenSignalAwaiter;
       if (whenAwaiter !== undefined) {
-        await waitIdle((resume) => whenAwaiter(relay.name, resume));
+        const rearm = await awaitChildRearm(
+          handle,
+          stepId,
+          relay.name,
+          whenAwaiter,
+          abort,
+        );
+        if (rearm.kind === "terminal") {
+          return { kind: "terminal", terminalStatus: rearm.terminalStatus };
+        }
+        if (rearm.kind === "released") return { kind: "held" };
       }
       await handle.deliverSignal(relay.name, relay.payload, relay.signalId);
       return { kind: "held" };
@@ -7525,7 +7374,7 @@ async function drivePlannedChildRelay(
         stepId,
         handle,
         relay.name,
-        "name",
+        addressing,
         abort,
         "park-release",
         relay.timeout,
@@ -7546,6 +7395,10 @@ async function drivePlannedChildRelay(
         "hold",
       );
     case "control-deliver": {
+      if (relay.startsOver === true) {
+        await handle.resume(relay.correlationId, relay.decision);
+        return { kind: "held" };
+      }
       const name = signalName(relay.correlationId);
       const snapshot = await readChildPark(handle, stepId, name);
       if (snapshot.kind === "terminal") {
@@ -7554,7 +7407,17 @@ async function drivePlannedChildRelay(
       if (snapshot.kind === "released") return { kind: "held" };
       const whenAwaiter = handle.whenSignalAwaiter;
       if (whenAwaiter !== undefined) {
-        await waitIdle((resume) => whenAwaiter(name, resume));
+        const rearm = await awaitChildRearm(
+          handle,
+          stepId,
+          name,
+          whenAwaiter,
+          abort,
+        );
+        if (rearm.kind === "terminal") {
+          return { kind: "terminal", terminalStatus: rearm.terminalStatus };
+        }
+        if (rearm.kind === "released") return { kind: "held" };
       }
       await handle.resume(relay.correlationId, relay.decision);
       return { kind: "held" };
@@ -7741,6 +7604,7 @@ async function runChildWorkflow(
               relay,
               childAbort.signal,
               sectionSteps,
+              "name",
             );
             if (driven.kind === "terminal") {
               terminalStatus = driven.terminalStatus;

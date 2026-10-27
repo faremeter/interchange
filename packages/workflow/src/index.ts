@@ -44,7 +44,6 @@ export {
 } from "./live-inert-projector";
 export {
   runtimeRun,
-  bodyParkedSignals,
   loopIterationCursor,
   loopOccurrenceReattach,
   onTriggerOccurrenceReattach,

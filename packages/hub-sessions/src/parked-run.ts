@@ -43,7 +43,7 @@ export function createParkedRunClassifier(deps: {
 }): ParkedRunClassifier {
   return async (allocation) => {
     try {
-      return await classifyAnchor(deps, allocation.anchorRunId);
+      return await classifyAnchor(deps, allocation.anchorRunId, Date.now());
     } catch (cause) {
       return {
         verdict: "unknown",
@@ -60,6 +60,7 @@ async function classifyAnchor(
     readonly projectionForAnchor: (anchorRunId: string) => Promise<unknown>;
   },
   anchorRunId: string,
+  nowMs: number,
 ): Promise<ParkedRunClassification> {
   const address = await deps.addressForAnchor(anchorRunId);
   if (address === null) {
@@ -121,6 +122,7 @@ async function classifyAnchor(
         raw,
         state,
         log: events.map(toWorkflowEvent),
+        nowMs,
       });
       if (judged.verdict !== undefined) return judged.classification;
       if (judged.park) hasPark = true;
@@ -132,6 +134,7 @@ async function classifyAnchor(
         raw,
         state,
         log: events.map(toWorkflowEvent),
+        nowMs,
       });
       if (judged.verdict !== undefined) return judged.classification;
       if (judged.park) hasPark = true;
@@ -163,6 +166,7 @@ async function judgeLoop(args: {
   raw: unknown;
   state: ReturnType<typeof resumeFromLog>;
   log: readonly WorkflowEvent[];
+  nowMs: number;
 }): Promise<Judge> {
   const maxIterations = maxIterationsOf(args.raw);
   if (maxIterations === undefined) {
@@ -192,17 +196,20 @@ async function judgeLoop(args: {
   }
   if (frontier === undefined) return { park: false };
   const childRunId = loopBodyRunId(args.anchorRunId, args.stepId, frontier);
-  const childState = resumeFromLog(
+  const childLog = await readChild(
+    args.deps.runReader,
+    args.repoId,
     childRunId,
-    await readChild(args.deps.runReader, args.repoId, childRunId),
   );
-  const reattach = await loopOccurrenceReattach({
+  const childState = resumeFromLog(childRunId, childLog);
+  const reattach = loopOccurrenceReattach({
     loopId: args.stepId,
     runId: args.anchorRunId,
     iteration: frontier,
     state: args.state,
     log: args.log,
-    childState,
+    childLog,
+    nowMs: args.nowMs,
   });
   return finishReattach(
     reattach,
@@ -219,6 +226,7 @@ async function judgeOnTrigger(args: {
   raw: unknown;
   state: ReturnType<typeof resumeFromLog>;
   log: readonly WorkflowEvent[];
+  nowMs: number;
 }): Promise<Judge> {
   const policy = failurePolicyOf(args.raw, "onBodyFailure");
   if (policy === "invalid") {
@@ -227,7 +235,6 @@ async function judgeOnTrigger(args: {
       `onTrigger ${args.stepId} has an invalid onBodyFailure`,
     );
   }
-  const childState = resumeFromLog(args.stepId, []);
   const reattach = await onTriggerOccurrenceReattach({
     sectionId: args.stepId,
     ...(policy === "end" || policy === "tolerate"
@@ -235,11 +242,10 @@ async function judgeOnTrigger(args: {
       : {}),
     state: args.state,
     log: args.log,
-    childState,
+    loadChild: (childRunId) =>
+      readChild(args.deps.runReader, args.repoId, childRunId),
+    nowMs: args.nowMs,
   });
-  // The planner reads the child only when the container is not already
-  // parked. Load that child when the decision names one, and re-judge so
-  // the unrelayed-body throw sees the committed child log.
   if (reattach.kind !== "parked" && reattach.kind !== "reenter") {
     return { park: false };
   }
@@ -249,17 +255,8 @@ async function judgeOnTrigger(args: {
     reattach.childRunId,
     await readChild(args.deps.runReader, args.repoId, reattach.childRunId),
   );
-  const again = await onTriggerOccurrenceReattach({
-    sectionId: args.stepId,
-    ...(policy === "end" || policy === "tolerate"
-      ? { onBodyFailure: policy }
-      : {}),
-    state: args.state,
-    log: args.log,
-    childState: loaded,
-  });
   return finishReattach(
-    again,
+    reattach,
     loaded,
     onTriggerBodyLookup(args.raw),
     args.stepId,

@@ -12,7 +12,7 @@
 
 import { describe, test, expect } from "bun:test";
 
-import { createDefaultDirectorRegistry } from "@intx/agent";
+import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import { signalName } from "@intx/types";
 import type { ApprovalSnapshot } from "@intx/types/runtime";
 
@@ -24,11 +24,16 @@ import {
   createInMemoryScheduler,
   createInMemorySignalChannel,
   createNoopDrainController,
+  createSpawnLoopIteration,
   defineWorkflow,
+  enumerateInlineLoopBodies,
+  loop,
   loopBodyRunId,
   runtimeRun,
   RuntimeResumeUnsupportedError,
   sectionBodyRunId,
+  step,
+  type LoadParkedApproval,
   type Primitive,
   type RepoStore,
   type SignalChannel,
@@ -321,8 +326,9 @@ function midSleepSeed(
 
 // A body child's OWN durable log, reduced to a single non-terminal step in the
 // named phase. `planOnTriggerResume` inspects this to decide whether an
-// in-flight body is re-adoptable (a bare sleep parked in `awaiting-timer`) or
-// must stay refused (an un-relayed author `awaitSignal`, still `awaiting-signal`).
+// in-flight body re-adopts with nothing to relay (a bare sleep parked in
+// `awaiting-timer`) or holds a park to relay (an author `awaitSignal`, still
+// `awaiting-signal`).
 function bodyChildLog(
   childRunId: string,
   tail:
@@ -415,6 +421,78 @@ function buildEnv(args: {
     drain: createNoopDrainController(args.def),
     hasUpstreamSignalResolver: true,
   };
+}
+
+// A body re-spawned from its log and parked on `names`. A resume or a delivered
+// signal releases a park, and the body completes once none is left: the
+// contract of a real handle, reduced to what the section's side needs. A body
+// whose log is gone `startsOver`: it parks afresh, which no re-park waiter
+// sees. Records the spawn and what reached the body.
+function parkedBody(
+  names: readonly string[],
+  opts: { startsOver?: boolean } = {},
+): {
+  spawn: SpawnSuspendableChild;
+  childRunId?: string;
+  resumeFromEvents?: readonly WorkflowEvent[] | undefined;
+  resumed?: { correlationId: string; decision: unknown };
+  delivered?: { name: string; payload: unknown; signalId: string };
+} {
+  const open = new Set(names);
+  const waiters = new Set<() => void>();
+  const settled = () =>
+    open.size === 0
+      ? ({ kind: "terminal", terminalStatus: "completed" } as const)
+      : ({ kind: "released" } as const);
+  const until = (done: () => boolean, abort?: AbortSignal) =>
+    new Promise<void>((resolve, reject) => {
+      if (done()) return resolve();
+      const wake = (): void => {
+        if (!done()) return;
+        waiters.delete(wake);
+        resolve();
+      };
+      waiters.add(wake);
+      abort?.addEventListener("abort", () => {
+        waiters.delete(wake);
+        reject(new Error("aborted"));
+      });
+    });
+  const release = (name: string): void => {
+    open.delete(name);
+    for (const wake of [...waiters]) wake();
+  };
+  const body: ReturnType<typeof parkedBody> = {
+    spawn: async ({ childRunId, resumeFromEvents }) => {
+      body.childRunId = childRunId;
+      body.resumeFromEvents = resumeFromEvents;
+      return {
+        next: async () => {
+          await until(() => open.size === 0);
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async (correlationId, decision) => {
+          body.resumed = { correlationId, decision };
+          release(signalName(correlationId));
+        },
+        deliverSignal: async (name, payload, signalId) => {
+          body.delivered = { name, payload, signalId };
+          release(name);
+        },
+        readParkRelease: async (name) =>
+          open.has(name) ? { kind: "open" } : settled(),
+        waitForParkRelease: async (name, abort) => {
+          await until(() => !open.has(name), abort);
+          return settled();
+        },
+        whenSignalAwaiter: (name) =>
+          opts.startsOver === true
+            ? new Promise<void>(() => undefined)
+            : until(() => open.has(name)),
+      };
+    },
+  };
+  return body;
 }
 
 // The DEPLOYED form of a section carries a body ref (deploy materializes the
@@ -628,25 +706,8 @@ describe("runOnTrigger", () => {
     await repoStore.appendBatch(runId, seed);
     await repoStore.appendBatch(bodyRunId, bodyLog);
     const channel = createInMemorySignalChannel();
-    let resumedCorr: string | undefined;
-    let resumedDecision: unknown;
-    let spawnedId: string | undefined;
-    let spawnResume: readonly WorkflowEvent[] | undefined;
-    const spawnSuspendableChild: SpawnSuspendableChild = async ({
-      childRunId,
-      resumeFromEvents,
-    }) => {
-      spawnedId = childRunId;
-      spawnResume = resumeFromEvents;
-      return {
-        next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
-        resume: async (correlationId, decision) => {
-          resumedCorr = correlationId;
-          resumedDecision = decision;
-        },
-        deliverSignal: async () => undefined,
-      };
-    };
+    const body = parkedBody([signalName(corr)]);
+    const spawnSuspendableChild = body.spawn;
 
     const def = sectionWorkflow();
     const run = runtimeRun(
@@ -668,10 +729,12 @@ describe("runOnTrigger", () => {
     await channel.deliver(signalName(corr), { approved: true }, "grant-1");
     await waitForPark(repoStore, runId, "input", 1);
 
-    expect(spawnedId).toBe(bodyRunId);
-    expect(spawnResume).toEqual(bodyLog);
-    expect(resumedCorr).toBe(corr);
-    expect(resumedDecision).toEqual({ approved: true });
+    expect(body.childRunId).toBe(bodyRunId);
+    expect(body.resumeFromEvents).toEqual(bodyLog);
+    expect(body.resumed).toEqual({
+      correlationId: corr,
+      decision: { approved: true },
+    });
     const log = await repoStore.read(runId);
     expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
 
@@ -777,14 +840,13 @@ describe("runOnTrigger", () => {
     await run.complete.catch(() => undefined);
   });
 
-  test("refuses a resume when the body is parked on an un-relayed author signal", async () => {
-    const runId = "sec-authorsig-refuse";
+  test("relays an author signal the section never relayed after a restart", async () => {
+    const runId = "sec-authorsig-fresh";
     const seed = midSleepSeed(runId);
     const repoStore = createInMemoryRepoStore();
     await repoStore.appendBatch(runId, seed);
-    // The body child is parked on an author `awaitSignal` gate whose container
-    // relay await never flushed. Re-adopting it would re-park the body on a
-    // signal the container never relays -- a hang -- so resume must fail loud.
+    // The body is parked on an author `awaitSignal` gate whose section relay
+    // await never flushed, so the resumed section relays it fresh.
     const bodyRunId = sectionEventRunId(runId, 0);
     await repoStore.appendBatch(
       bodyRunId,
@@ -794,51 +856,56 @@ describe("runOnTrigger", () => {
       }),
     );
     const channel = createInMemorySignalChannel();
-    let spawned = false;
-    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
-      spawned = true;
-      return {
-        next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
-        resume: async () => undefined,
-        deliverSignal: async () => undefined,
-      };
-    };
+    const body = parkedBody(["author-go"]);
 
     const def = sectionWorkflow();
-    const result = await runtimeRun(
+    const run = runtimeRun(
       def,
       buildEnv({
         def,
         repoStore,
         signalChannel: channel,
-        spawnSuspendableChild,
+        spawnSuspendableChild: body.spawn,
       }),
       { runId, resumeFromEvents: seed },
-    ).complete;
+    );
 
-    // Fail loud, not hang: the planner refuses before the body is re-spawned,
-    // and the section never re-arms.
-    expect(result.terminalStatus).toBe("failed");
-    expect(spawned).toBe(false);
-    const log = await repoStore.read(runId);
-    expect(
-      log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "input"),
-    ).toBe(false);
-    const failure = log.find((e) => e.kind === "StepFailed");
-    if (failure?.kind !== "StepFailed")
-      throw new Error("expected a StepFailed");
-    expect(failure.error.message).toContain("un-relayed signal");
+    const relay = await waitForEvent(
+      repoStore,
+      runId,
+      (e) =>
+        e.kind === "SignalAwaited" &&
+        e.parkKind === "signal-relay" &&
+        e.signalName === "author-go",
+    );
+    if (relay.kind !== "SignalAwaited") throw new Error("expected the relay");
+    await channel.deliver(
+      "author-go",
+      { ok: true },
+      "sig-go",
+      relay.correlationId,
+    );
+    await waitForPark(repoStore, runId, "input", 1);
+
+    expect(body.delivered).toEqual({
+      name: "author-go",
+      payload: { ok: true },
+      signalId: "sig-go",
+    });
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
   });
 
-  test("refuses a resume when the body is parked on an un-relayed control-plane approval", async () => {
+  test("fails a resume whose un-relayed body approval has no stored snapshot", async () => {
     const runId = "sec-approval-refuse";
     const seed = midSleepSeed(runId);
     const repoStore = createInMemoryRepoStore();
     await repoStore.appendBatch(runId, seed);
     // The body's agent step suspended for approval on a reserved control-plane
-    // channel, and the container's proxy park never flushed. Like the author
-    // case, re-adopting it re-parks the body silently on a decision the container
-    // will never relay -- a hang -- so resume must fail loud, not re-adopt.
+    // channel, and the container's proxy park never flushed. Relaying it fresh
+    // needs the snapshot the step stored, and this env reads none, so resume
+    // fails loud before it re-spawns the body.
     const bodyRunId = sectionEventRunId(runId, 0);
     await repoStore.appendBatch(
       bodyRunId,
@@ -879,7 +946,9 @@ describe("runOnTrigger", () => {
     const failure = log.find((e) => e.kind === "StepFailed");
     if (failure?.kind !== "StepFailed")
       throw new Error("expected a StepFailed");
-    expect(failure.error.message).toContain("un-relayed signal");
+    expect(failure.error.message).toContain(
+      "no step state holds its approval snapshot",
+    );
   });
 
   test("a re-adopted in-flight body whose resume is refused fails loud even under tolerate", async () => {
@@ -942,16 +1011,9 @@ describe("runOnTrigger", () => {
     const repoStore = createInMemoryRepoStore();
     await repoStore.appendBatch(runId, seed);
     const channel = createInMemorySignalChannel();
-    let resumedCorr: string | undefined;
-    let resumedDecision: unknown;
-    const spawnSuspendableChild: SpawnSuspendableChild = async () => ({
-      next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
-      resume: async (correlationId, decision) => {
-        resumedCorr = correlationId;
-        resumedDecision = decision;
-      },
-      deliverSignal: async () => undefined,
-    });
+    // The seed writes no body log, so the body starts over.
+    const body = parkedBody([signalName(corr)], { startsOver: true });
+    const spawnSuspendableChild = body.spawn;
 
     const def = sectionWorkflow();
     const run = runtimeRun(
@@ -970,8 +1032,10 @@ describe("runOnTrigger", () => {
     // completes and re-arms.
     await waitForPark(repoStore, runId, "input", 1);
 
-    expect(resumedCorr).toBe(corr);
-    expect(resumedDecision).toEqual({ approved: true });
+    expect(body.resumed).toEqual({
+      correlationId: corr,
+      decision: { approved: true },
+    });
     const log = await repoStore.read(runId);
     expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
 
@@ -1686,35 +1750,9 @@ describe("runOnTrigger", () => {
     const repoStore = createInMemoryRepoStore();
     await repoStore.appendBatch(runId, seed);
     const channel = createInMemorySignalChannel();
-    let spawnResume: readonly WorkflowEvent[] | undefined;
-    let delivered:
-      | { name: string; payload: unknown; signalId: string }
-      | undefined;
-    const spawnSuspendableChild: SpawnSuspendableChild = async ({
-      resumeFromEvents,
-    }) => {
-      spawnResume = resumeFromEvents;
-      let release: (() => void) | null = null;
-      return {
-        next: async () => {
-          // The re-spawned body re-parked on "go" silently; block until the
-          // recovered section re-drives the await and relays.
-          await new Promise<void>((r) => {
-            release = r;
-          });
-          return { kind: "terminal", terminalStatus: "completed" };
-        },
-        resume: async () => undefined,
-        deliverSignal: async (n, payload, signalId) => {
-          delivered = { name: n, payload, signalId };
-          if (release !== null) {
-            const r = release;
-            release = null;
-            r();
-          }
-        },
-      };
-    };
+    // The re-spawned body re-parked on "go" silently.
+    const body = parkedBody([name]);
+    const spawnSuspendableChild = body.spawn;
 
     const def = sectionWorkflow();
     const run = runtimeRun(
@@ -1735,8 +1773,8 @@ describe("runOnTrigger", () => {
     await waitForPark(repoStore, runId, "input", 1);
 
     // This seed does not write a body log, so the body re-spawns from an empty log.
-    expect(spawnResume).toEqual([]);
-    expect(delivered).toEqual({
+    expect(body.resumeFromEvents).toEqual([]);
+    expect(body.delivered).toEqual({
       name,
       payload: { text: "late" },
       signalId: "sig-2",
@@ -1755,6 +1793,43 @@ describe("runOnTrigger", () => {
     await run.complete.catch(() => undefined);
   });
 
+  test("a resumed relay whose body left the park is abandoned on its correlation", async () => {
+    const runId = "sec-relay-resume-closed";
+    const name = "go";
+    const correlationId = "corr-closed";
+    const seed = midSignalRelaySeed(runId, name, {
+      signalDelivered: false,
+      correlationId,
+    });
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    // The re-spawned body is no longer parked on "go".
+    const body = parkedBody([]);
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: createInMemorySignalChannel(),
+        spawnSuspendableChild: body.spawn,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+    await waitForPark(repoStore, runId, "input", 1);
+
+    const abandoned = (await repoStore.read(runId)).filter(
+      (e) => e.kind === "SignalAwaitAbandoned",
+    );
+    expect(abandoned).toEqual([
+      expect.objectContaining({ signalName: name, correlationId }),
+    ]);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
   test("reuses the logged correlation when a signal-relay park is still open", async () => {
     const runId = "sec-relay-resume-corr";
     const name = "go";
@@ -1767,29 +1842,8 @@ describe("runOnTrigger", () => {
     const repoStore = createInMemoryRepoStore();
     await repoStore.appendBatch(runId, seed);
     const channel = createInMemorySignalChannel();
-    let delivered:
-      | { name: string; payload: unknown; signalId: string }
-      | undefined;
-    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
-      let release: (() => void) | null = null;
-      return {
-        next: async () => {
-          await new Promise<void>((r) => {
-            release = r;
-          });
-          return { kind: "terminal", terminalStatus: "completed" };
-        },
-        resume: async () => undefined,
-        deliverSignal: async (n, payload, signalId) => {
-          delivered = { name: n, payload, signalId };
-          if (release !== null) {
-            const r = release;
-            release = null;
-            r();
-          }
-        },
-      };
-    };
+    const body = parkedBody([name]);
+    const spawnSuspendableChild = body.spawn;
 
     const def = sectionWorkflow();
     const run = runtimeRun(
@@ -1809,7 +1863,7 @@ describe("runOnTrigger", () => {
     await channel.deliver(name, { text: "late" }, "sig-2", correlationId);
     await waitForPark(repoStore, runId, "input", 1);
 
-    expect(delivered).toEqual({
+    expect(body.delivered).toEqual({
       name,
       payload: { text: "late" },
       signalId: "sig-2",
@@ -1928,29 +1982,8 @@ describe("runOnTrigger", () => {
     const repoStore = createInMemoryRepoStore();
     await repoStore.appendBatch(runId, seed);
     const channel = createInMemorySignalChannel();
-    let delivered:
-      | { name: string; payload: unknown; signalId: string }
-      | undefined;
-    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
-      let release: (() => void) | null = null;
-      return {
-        next: async () => {
-          await new Promise<void>((r) => {
-            release = r;
-          });
-          return { kind: "terminal", terminalStatus: "completed" };
-        },
-        resume: async () => undefined,
-        deliverSignal: async (n, payload, signalId) => {
-          delivered = { name: n, payload, signalId };
-          if (release !== null) {
-            const r = release;
-            release = null;
-            r();
-          }
-        },
-      };
-    };
+    const body = parkedBody([name]);
+    const spawnSuspendableChild = body.spawn;
 
     const def = sectionWorkflow();
     const run = runtimeRun(
@@ -1968,7 +2001,7 @@ describe("runOnTrigger", () => {
     await channel.deliver(name, { text: "turn-1" }, "sig-turn-1", openId);
     await waitForPark(repoStore, runId, "input", 1);
 
-    expect(delivered).toEqual({
+    expect(body.delivered).toEqual({
       name,
       payload: { text: "turn-1" },
       signalId: "sig-turn-1",
@@ -2000,7 +2033,7 @@ describe("runOnTrigger", () => {
     await run.complete.catch(() => undefined);
   });
 
-  test("relays a signal that landed before the crash relayed it (relay-signal-grant)", async () => {
+  test("relays a signal that landed before the crash relayed it", async () => {
     const runId = "sec-relay-grant";
     const name = "go";
     // The signal's SignalReceived is durable but was never relayed: the
@@ -2010,36 +2043,9 @@ describe("runOnTrigger", () => {
     const repoStore = createInMemoryRepoStore();
     await repoStore.appendBatch(runId, seed);
     const channel = createInMemorySignalChannel();
-    let delivered:
-      | { name: string; payload: unknown; signalId: string }
-      | undefined;
-    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
-      // Model the body's signal channel: `deliverSignal` may land before the
-      // body's `next()` awaits (the relay recovery delivers before the loop
-      // pulls next()), so `next()` completes if the signal already arrived.
-      let release: (() => void) | null = null;
-      let received = false;
-      return {
-        next: async () => {
-          if (!received) {
-            await new Promise<void>((r) => {
-              release = r;
-            });
-          }
-          return { kind: "terminal", terminalStatus: "completed" };
-        },
-        resume: async () => undefined,
-        deliverSignal: async (n, payload, signalId) => {
-          delivered = { name: n, payload, signalId };
-          received = true;
-          if (release !== null) {
-            const r = release;
-            release = null;
-            r();
-          }
-        },
-      };
-    };
+    // The seed writes no body log, so the body starts over.
+    const body = parkedBody([name], { startsOver: true });
+    const spawnSuspendableChild = body.spawn;
 
     const def = sectionWorkflow();
     const run = runtimeRun(
@@ -2058,7 +2064,7 @@ describe("runOnTrigger", () => {
     // original id -- into the re-spawned body, which completes and re-arms.
     await waitForPark(repoStore, runId, "input", 1);
 
-    expect(delivered).toEqual({
+    expect(body.delivered).toEqual({
       name,
       payload: { text: "delivered" },
       signalId: "relay-1",
@@ -2068,6 +2074,208 @@ describe("runOnTrigger", () => {
 
     await run.cancel("supervisor-operator", "test done");
     await run.complete.catch(() => undefined);
+  });
+
+  test("relays a signal that landed before the crash into a body whose park is a loop's relay", async () => {
+    const runId = "sec-nested-relay";
+    const awaitBody = defineWorkflow({
+      id: "sec-await-body",
+      trigger: { type: "manual" },
+      steps: { hold: awaitSignal({ name: "go" }) },
+    });
+    const loopBody = defineWorkflow({
+      id: "sec-loop-body",
+      trigger: { type: "manual" },
+      steps: {
+        inner: loop({
+          body: awaitBody,
+          while: "cont",
+          carry: "same",
+          input: { literal: 0 },
+          maxIterations: 1,
+          onExhausted: "escalate",
+        }),
+        escalate: action({ handler: "escalate", after: ["inner"] }),
+      },
+    });
+    const def = sectionWorkflow();
+    // The in-process loop spawner stands in for the host's section-body
+    // spawner: both drive the body through `createSuspendableChildHandle`.
+    const nestedEnv = (repoStore: RepoStore): WorkflowRuntimeEnv => {
+      const env = buildEnv({
+        def,
+        repoStore,
+        signalChannel: createInMemorySignalChannel(),
+        spawnSuspendableChild: async () => {
+          throw new Error("replaced below");
+        },
+      });
+      env.invokeAction = async () => ({ output: "escalated" });
+      env.loopFns = (ref) =>
+        ref === "cont" ? () => false : (_o, currentInput) => currentInput;
+      env.spawnLoopIteration = createSpawnLoopIteration(
+        env,
+        new Map(
+          enumerateInlineLoopBodies(loopBody).map((b) => [b.ref, b.definition]),
+        ),
+      );
+      env.spawnSuspendableChild = createSpawnLoopIteration(
+        env,
+        new Map([["body-ref", loopBody]]),
+      );
+      return env;
+    };
+
+    const repoStore1 = createInMemoryRepoStore();
+    void runtimeRun(def, nestedEnv(repoStore1), {
+      runId,
+      triggerPayload: { text: "event-0" },
+    }).complete;
+    const relayName = await waitForPark(repoStore1, runId, "signal-relay", 1);
+    const bodyRunId = sectionEventRunId(runId, 0);
+    const innerBodyRunId = loopBodyRunId(bodyRunId, "inner", 0);
+    const parkedLog = await repoStore1.read(runId);
+    const bodyLog = await repoStore1.read(bodyRunId);
+    const innerBodyLog = await repoStore1.read(innerBodyRunId);
+
+    // The section took the signal, and the crash landed before it reached the
+    // body, whose own park is its loop's relay.
+    const delivered: WorkflowEvent = {
+      kind: "SignalReceived",
+      seq: (parkedLog[parkedLog.length - 1]?.seq ?? 0) + 1,
+      at,
+      signalName: relayName,
+      signalId: "sig-pre",
+      payload: { done: true },
+      correlationId: relayCorrelationId(parkedLog),
+    };
+    const repoStore2 = createInMemoryRepoStore();
+    await repoStore2.appendBatch(bodyRunId, bodyLog);
+    await repoStore2.appendBatch(innerBodyRunId, innerBodyLog);
+    const run = runtimeRun(def, nestedEnv(repoStore2), {
+      runId,
+      resumeFromEvents: [...parkedLog, delivered],
+    });
+
+    await waitForPark(repoStore2, runId, "input", 1);
+    const innerReceived = (await repoStore2.read(innerBodyRunId)).filter(
+      (e) => e.kind === "SignalReceived",
+    );
+    expect(innerReceived).toEqual([
+      expect.objectContaining({ signalName: "go", signalId: "sig-pre" }),
+    ]);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("a resumed section relays a later event's park fresh, not the signal an earlier event took", async () => {
+    const runId = "sec-since-spawn";
+    const body = defineWorkflow({
+      id: "since-spawn-body",
+      trigger: { type: "manual" },
+      steps: {
+        gate: awaitSignal({ name: "author-go" }),
+        record: action({
+          handler: "record",
+          after: ["gate"],
+          input: { from: "steps.gate.output" },
+        }),
+      },
+    });
+    const def = sectionWorkflow();
+    const sectionEnv = (
+      repoStore: RepoStore,
+      signalChannel: SignalChannel,
+      recorded: { runId: string | undefined; input: unknown }[],
+    ): WorkflowRuntimeEnv => {
+      const env = buildEnv({
+        def,
+        repoStore,
+        signalChannel,
+        spawnSuspendableChild: async () => {
+          throw new Error("replaced below");
+        },
+      });
+      env.invokeAction = async (req) => {
+        recorded.push({ runId: req.authzContext.runId, input: req.input });
+        return { output: null };
+      };
+      env.spawnSuspendableChild = createSpawnLoopIteration(
+        env,
+        new Map([["body-ref", body]]),
+      );
+      return env;
+    };
+    const isRelay = (e: WorkflowEvent): boolean =>
+      e.kind === "SignalAwaited" &&
+      e.parkKind === "signal-relay" &&
+      e.signalName === "author-go";
+    const isInput = (e: WorkflowEvent): boolean =>
+      e.kind === "SignalAwaited" && e.parkKind === "input";
+    const body1 = sectionEventRunId(runId, 1);
+
+    const repoStore1 = createInMemoryRepoStore();
+    const channel1 = createInMemorySignalChannel();
+    const run1 = runtimeRun(def, sectionEnv(repoStore1, channel1, []), {
+      runId,
+      triggerPayload: { text: "event-0" },
+    });
+    const relay0 = await waitForNthEvent(repoStore1, runId, isRelay, 1);
+    if (relay0.kind !== "SignalAwaited") throw new Error("expected a relay");
+    await channel1.deliver(
+      "author-go",
+      { n: 1 },
+      "sig-1",
+      relay0.correlationId,
+    );
+    const input1 = await waitForNthEvent(repoStore1, runId, isInput, 1);
+    if (input1.kind !== "SignalAwaited") throw new Error("expected an input");
+    await channel1.deliver(input1.signalName, { text: "event-1" }, "ev-1");
+    await waitForEvent(
+      repoStore1,
+      body1,
+      (e) => e.kind === "SignalAwaited" && e.signalName === "author-go",
+    );
+    const relay1 = await waitForNthEvent(repoStore1, runId, isRelay, 2);
+    // Event 1's body parked on the name event 0's body took a signal on, and
+    // the crash landed before the section's relay for event 1 flushed.
+    const parentLog = (await repoStore1.read(runId)).filter(
+      (e) => e.seq < relay1.seq,
+    );
+    const bodyLog = await repoStore1.read(body1);
+
+    const recorded2: { runId: string | undefined; input: unknown }[] = [];
+    const repoStore2 = createInMemoryRepoStore();
+    await repoStore2.appendBatch(runId, parentLog);
+    await repoStore2.appendBatch(body1, bodyLog);
+    const channel2 = createInMemorySignalChannel();
+    const run2 = runtimeRun(def, sectionEnv(repoStore2, channel2, recorded2), {
+      runId,
+      resumeFromEvents: parentLog,
+    });
+    // A resume that hands event 1's body event 0's signal re-arms on input
+    // without relaying again.
+    const outcome = await Promise.race([
+      waitForNthEvent(repoStore2, runId, isRelay, 2),
+      waitForNthEvent(repoStore2, runId, isInput, 2),
+    ]);
+    if (isRelay(outcome) && outcome.kind === "SignalAwaited") {
+      await channel2.deliver(
+        "author-go",
+        { n: 2 },
+        "sig-2",
+        outcome.correlationId,
+      );
+      await waitForNthEvent(repoStore2, runId, isInput, 2);
+    }
+
+    expect(recorded2).toEqual([{ runId: body1, input: { n: 2 } }]);
+
+    await run2.cancel("supervisor-operator", "test done");
+    await run2.complete.catch(() => undefined);
+    await run1.cancel("supervisor-operator", "test done");
+    await run1.complete.catch(() => undefined);
   });
 
   test("two parents on one store run distinct event-0 bodies after the first log is terminal", async () => {
@@ -2419,6 +2627,159 @@ describe("runOnTrigger", () => {
 
     await run.cancel("supervisor-operator", "test done");
     await run.complete.catch(() => undefined);
+  });
+});
+
+describe("runOnTrigger queued body parks", () => {
+  const agent = defineAgent({
+    id: "gate-agent",
+    systemPrompt: "s",
+    tools: [],
+    capabilities: [],
+    inference: { sources: [{ provider: "anthropic", model: "m" }] },
+  });
+  // A body with two parallel approval steps: the section relays one, and the
+  // other waits for it in memory.
+  const body = defineWorkflow({
+    id: "two-approval-section-body",
+    trigger: { type: "manual" },
+    steps: { a: step({ agent }), b: step({ agent }) },
+  });
+
+  function realBodyEnv(args: {
+    def: WorkflowDefinition;
+    repoStore: RepoStore;
+    signalChannel: SignalChannel;
+    invokeStep: StepInvoker;
+    loadParkedApproval?: LoadParkedApproval;
+  }): WorkflowRuntimeEnv {
+    const env: WorkflowRuntimeEnv = {
+      ...buildEnv({
+        def: args.def,
+        repoStore: args.repoStore,
+        signalChannel: args.signalChannel,
+        spawnSuspendableChild: async () => {
+          throw new Error("replaced below");
+        },
+      }),
+      invokeStep: args.invokeStep,
+      ...(args.loadParkedApproval !== undefined
+        ? { loadParkedApproval: args.loadParkedApproval }
+        : {}),
+    };
+    env.spawnSuspendableChild = createSpawnLoopIteration(
+      env,
+      new Map([["body-ref", body]]),
+    );
+    return env;
+  }
+
+  test("relays an approval the section had not reached after a restart", async () => {
+    const runId = "sec-two-approvals";
+    const stored = new Map<string, ApprovalSnapshot>();
+    const key = (args: {
+      runId?: string;
+      stepId?: string;
+      attempt?: number;
+      correlationId: string;
+    }): string =>
+      `${String(args.runId)}/${String(args.stepId)}/${String(args.attempt)}/${args.correlationId}`;
+    const invokeStep: StepInvoker = async (req) => {
+      if (req.resume !== undefined) {
+        return {
+          output: {
+            reply: "done",
+            turn: {
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
+              timestamp: 0,
+            },
+          },
+        };
+      }
+      const correlationId = `corr-${String(req.authzContext.stepId)}`;
+      const approvalSnapshot: ApprovalSnapshot = {
+        name: "gate",
+        description: "gate",
+        inputSchema: { type: "object" },
+        arguments: { step: req.authzContext.stepId },
+      };
+      stored.set(key({ ...req.authzContext, correlationId }), approvalSnapshot);
+      return {
+        suspend: { correlationId, kind: "approval", approvalSnapshot },
+      };
+    };
+    const def = sectionWorkflow();
+
+    const repoStore1 = createInMemoryRepoStore();
+    const env1 = realBodyEnv({
+      def,
+      repoStore: repoStore1,
+      signalChannel: createInMemorySignalChannel(),
+      invokeStep,
+    });
+    void runtimeRun(def, env1, {
+      runId,
+      triggerPayload: { text: "event-0" },
+    }).complete;
+    const bodyRunId = sectionEventRunId(runId, 0);
+    const shown = await waitForPark(repoStore1, runId, "approval", 1);
+    for (const stepId of ["a", "b"]) {
+      await waitForEvent(
+        repoStore1,
+        bodyRunId,
+        (e) =>
+          e.kind === "SignalAwaited" &&
+          e.signalName === signalName(`corr-${stepId}`),
+      );
+    }
+    const parentLog = await repoStore1.read(runId);
+    const childLog = await repoStore1.read(bodyRunId);
+    const queued =
+      shown === signalName("corr-a")
+        ? signalName("corr-b")
+        : signalName("corr-a");
+
+    const repoStore2 = createInMemoryRepoStore();
+    await repoStore2.appendBatch(bodyRunId, childLog);
+    const channel2 = createInMemorySignalChannel();
+    const run2 = runtimeRun(
+      def,
+      realBodyEnv({
+        def,
+        repoStore: repoStore2,
+        signalChannel: channel2,
+        invokeStep,
+        loadParkedApproval: async (args) => stored.get(key(args)),
+      }),
+      { runId, resumeFromEvents: parentLog },
+    );
+    await channel2.deliver(shown, { outcome: "approved" }, "g-shown");
+    // A run that ends instead of relaying says why.
+    const ended = run2.complete.then((result) => {
+      const failed = result.events.find((e) => e.kind === "StepFailed");
+      throw new Error(
+        `the run ended ${result.terminalStatus}: ${failed?.kind === "StepFailed" ? failed.error.message : "no step failed"}`,
+      );
+    });
+    void ended.catch(() => undefined);
+    await Promise.race([
+      waitForEvent(
+        repoStore2,
+        runId,
+        (e) =>
+          e.kind === "SignalAwaited" &&
+          e.stepId === "section" &&
+          e.signalName === queued,
+      ),
+      ended,
+    ]);
+    await channel2.deliver(queued, { outcome: "approved" }, "g-queued");
+    // The body completed, so the section re-arms for the next event.
+    await Promise.race([waitForPark(repoStore2, runId, "input", 1), ended]);
+
+    await run2.cancel("supervisor-operator", "test done");
+    await run2.complete.catch(() => undefined);
   });
 });
 

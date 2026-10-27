@@ -38,7 +38,6 @@ export {
 
 export { runtimeRun, type RuntimeRunOptions } from "./run";
 export {
-  bodyParkedSignals,
   loopIterationCursor,
   loopOccurrenceReattach,
   onTriggerOccurrenceReattach,

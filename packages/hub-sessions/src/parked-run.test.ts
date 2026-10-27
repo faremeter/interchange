@@ -307,7 +307,7 @@ describe("createParkedRunClassifier", () => {
     expect(verdict.verdict).toBe("parked");
   });
 
-  test("two drive-fresh loops are parked together", async () => {
+  test("two loops whose author signals were never relayed are parked together", async () => {
     const left = loopBodyRunId(ANCHOR, "left", 0);
     const right = loopBodyRunId(ANCHOR, "right", 0);
     const child = (runId: string) =>
@@ -350,7 +350,8 @@ describe("createParkedRunClassifier", () => {
     expect(verdict.verdict).toBe("parked");
   });
 
-  test("an unrelayed onTrigger body is not parked", async () => {
+  // The section never relayed the body's gate; resume relays it fresh.
+  test("an unrelayed onTrigger body is parked", async () => {
     const childRunId = sectionBodyRunId(ANCHOR, "inbox", 0);
     await commitFiles(dir, {
       ...eventFiles(ANCHOR, [
@@ -379,7 +380,7 @@ describe("createParkedRunClassifier", () => {
       },
     })({ anchorRunId: ANCHOR });
 
-    expect(verdict.verdict).toBe("not-parked");
+    expect(verdict.verdict).toBe("parked");
   });
 
   test("a legacy onTrigger body id with an unsupported inner step is not parked", async () => {
