@@ -86,18 +86,18 @@ function buildRequest(
     ? options.systemPrompt
     : systemText || undefined;
 
+  // Place a cache breakpoint on the last user message so all prior
+  // turns are cached on the next request.
+  const lastUserIndex = conversationMessages.findLastIndex(
+    (m) => m.role !== "assistant",
+  );
   const maxTokens = options.maxTokens ?? 4096;
   const body: Record<string, unknown> = {
     model,
     max_tokens: maxTokens,
-    messages: conversationMessages.map((msg, i) => {
-      // Place a cache breakpoint on the last user message so all prior
-      // turns are cached on the next request.
-      const isLastUser =
-        msg.role !== "assistant" &&
-        conversationMessages.slice(i + 1).every((m) => m.role === "assistant");
-      return toAnthropicMessage(msg, isLastUser);
-    }),
+    messages: conversationMessages.map((msg, i) =>
+      toAnthropicMessage(msg, i === lastUserIndex),
+    ),
     stream: true,
   };
 

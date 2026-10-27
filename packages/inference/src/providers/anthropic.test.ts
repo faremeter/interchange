@@ -817,6 +817,85 @@ describe("Anthropic adapter — responseFormat boundary", () => {
   });
 });
 
+describe("Anthropic adapter — last-user cache breakpoint", () => {
+  const MessagesBody = type({
+    messages: type({
+      role: "string",
+      content: type({ "cache_control?": { type: "string" } }).array(),
+    }).array(),
+  });
+
+  function turn(
+    role: ConversationTurn["role"],
+    ...texts: string[]
+  ): ConversationTurn {
+    return {
+      role,
+      content: texts.map((text) => ({ type: "text", text })),
+      timestamp: 1000,
+    };
+  }
+
+  // The [message, block] positions that carry cache_control.
+  function breakpoints(turns: ConversationTurn[]): [number, number][] {
+    const req = createAnthropicAdapter(TEST_SOURCE).buildRequest(
+      turns,
+      "claude-sonnet-5",
+      {},
+    );
+    const body = MessagesBody.assert(JSON.parse(req.body));
+    return body.messages.flatMap((message, m) =>
+      message.content.flatMap((block, b): [number, number][] =>
+        block.cache_control === undefined ? [] : [[m, b]],
+      ),
+    );
+  }
+
+  test("an empty conversation has no breakpoint", () => {
+    expect(breakpoints([])).toEqual([]);
+  });
+
+  test("an all-assistant conversation has no breakpoint", () => {
+    expect(
+      breakpoints([turn("assistant", "a1"), turn("assistant", "a2")]),
+    ).toEqual([]);
+  });
+
+  test("a final user message carries it on its last block", () => {
+    expect(
+      breakpoints([
+        turn("user", "q1"),
+        turn("assistant", "a1"),
+        turn("user", "q2", "q2 continued"),
+      ]),
+    ).toEqual([[2, 1]]);
+  });
+
+  test("trailing assistant messages leave it on the last user", () => {
+    expect(
+      breakpoints([
+        turn("user", "q1"),
+        turn("assistant", "a1"),
+        turn("user", "q2"),
+        turn("assistant", "a2"),
+        turn("assistant", "a3"),
+      ]),
+    ).toEqual([[2, 0]]);
+  });
+
+  test("system messages do not count as the last user", () => {
+    expect(
+      breakpoints([
+        turn("system", "s1"),
+        turn("user", "q1"),
+        turn("system", "s2"),
+        turn("assistant", "a1"),
+        turn("system", "s3"),
+      ]),
+    ).toEqual([[0, 0]]);
+  });
+});
+
 describe("Anthropic adapter — tool-name codec round-trip", () => {
   const PREFIXED = "@intx/tools-posix/sidecar-bundle:run_shell";
   const ToolsBody = type({ tools: type({ name: "string" }).array() });
