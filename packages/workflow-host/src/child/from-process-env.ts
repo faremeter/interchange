@@ -45,6 +45,7 @@ import {
 } from "./mailbox-call-bridge";
 import {
   createControlChannelSender,
+  holdControlChannelSender,
   type NdjsonReader,
   type NdjsonWriter,
 } from "../ipc/control-sender";
@@ -214,11 +215,16 @@ export async function runWorkflowChildFromProcessEnv(
   // to build its `ChildHubPackSink`, and the same sender carries the
   // `ready` frame `runWorkflowChild` emits.
   const childKeyPair = await generateKeyPair();
-  const upstreamSender = createControlChannelSender({
-    privateKeySeed: childKeyPair.privateKey,
-    channelId: spawn.channelId,
-    writer: controlWriter,
-  });
+  // Held until `runWorkflowChild` sends its startup frames: the factory
+  // starts the timer scheduler, and a due timer writes through the bridges
+  // below before the child is ready.
+  const upstreamSender = holdControlChannelSender(
+    createControlChannelSender({
+      privateKeySeed: childKeyPair.privateKey,
+      channelId: spawn.channelId,
+      writer: controlWriter,
+    }),
+  );
   const substrateWriteBridge = createChildSubstrateWriteBridge({
     upstreamSender,
   });

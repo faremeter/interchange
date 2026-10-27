@@ -591,7 +591,12 @@ ChannelSender` writes against; the event channel is the
    timers, pending awaits, and uncancelled children from the seed log.
    Self-discovery runs before `ready` so a fresh `trigger.fired`
    cannot race ahead of a resume.
-5. **`ready`.** The child emits a signed `ready` control frame back
+5. **`ready`.** The child holds every other upstream control frame
+   until it has sent `ready` and `resumed.runs`, because the
+   supervisor accepts nothing else first and seeds its cohort
+   tracking from `resumed.runs`. A due timer or a resumed run that
+   writes during startup therefore waits. The child emits a signed
+   `ready` control frame back
    to the supervisor via the same `createControlChannelSender` shape
    the downstream uses, signed under the IPC keypair the supervisor
    minted at spawn time.

@@ -33,6 +33,10 @@ import {
   verifyHmac,
 } from "./index";
 import type {} from "./index";
+import {
+  holdControlChannelSender,
+  type ControlChannelSender,
+} from "./control-sender";
 import { waitUntil } from "@intx/types/testing";
 
 /**
@@ -170,6 +174,75 @@ describe("channelId minting", () => {
       ids.add(generateChannelId());
     }
     expect(ids.size).toBe(16);
+  });
+});
+
+describe("holdControlChannelSender", () => {
+  // An inner sender that records the order of the frames it is given.
+  function recordingSender() {
+    const types: string[] = [];
+    const sender: ControlChannelSender = {
+      get seq() {
+        return types.length;
+      },
+      send(payload) {
+        types.push(payload.type);
+        return Promise.resolve();
+      },
+    };
+    return { sender, types };
+  }
+  const recycle = {
+    type: "recycle.request",
+    data: { reason: "held" },
+  } as const;
+
+  test("sends the startup frames first and the held frames after open, in order", async () => {
+    const { sender, types } = recordingSender();
+    const held = holdControlChannelSender(sender);
+    const first = held.send(recycle);
+    const second = held.send({
+      type: "resumed.runs",
+      data: { runIds: ["held"] },
+    });
+    await held.sendNow({
+      type: "ready",
+      data: { childPid: 1, childPublicKey: "00" },
+    });
+    await held.sendNow({ type: "resumed.runs", data: { runIds: [] } });
+    expect(types).toEqual(["ready", "resumed.runs"]);
+
+    held.open();
+    await Promise.all([first, second]);
+    await held.send(recycle);
+    expect(types).toEqual([
+      "ready",
+      "resumed.runs",
+      "recycle.request",
+      "resumed.runs",
+      "recycle.request",
+    ]);
+  });
+
+  test("a frame sent right after open goes after the held frames", async () => {
+    const { sender, types } = recordingSender();
+    const held = holdControlChannelSender(sender);
+    const first = held.send(recycle);
+    held.open();
+    const second = held.send({ type: "resumed.runs", data: { runIds: [] } });
+    await Promise.all([first, second]);
+    expect(types).toEqual(["recycle.request", "resumed.runs"]);
+  });
+
+  test("fail rejects the held frames and later sends", async () => {
+    const { sender, types } = recordingSender();
+    const held = holdControlChannelSender(sender);
+    const waiting = held.send(recycle);
+    const cause = new Error("ready send failed");
+    held.fail(cause);
+    await expect(waiting).rejects.toBe(cause);
+    await expect(held.send(recycle)).rejects.toBe(cause);
+    expect(types).toEqual([]);
   });
 });
 
