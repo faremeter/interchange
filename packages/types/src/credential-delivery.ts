@@ -4,8 +4,9 @@ import { type } from "arktype";
  * The decrypted credential material and per-handle binding descriptors
  * delivered to a running agent so its consumers -- tools and action handlers --
  * can use provider-backed credentials. Secrets are decrypted hub-side and ride
- * this payload on the live channel -- the deploy frame at launch, a
- * `credentials.update` frame on rotation, a run's `run.grants` barrier (its
+ * this payload on the live channel -- the deploy frame at launch (with the
+ * run's hub tokens when a replacement deploy restarts a run that holds them),
+ * a `credentials.update` frame on rotation, a run's `run.grants` barrier (its
  * hub tokens) -- and the child's in-memory cell. The only copy at rest is the
  * sidecar's run record, where each secret is sealed under the sidecar's
  * credential cipher so a restart can restore the run. They NEVER ride the

@@ -451,6 +451,7 @@ export async function createHubServer({
   });
 
   const sessionService = createSessionService({
+    loadRunCredentials,
     sidecarRouter,
     sidecarAllocationRouter: sidecarRouter,
     agentRepoStore,

@@ -77,6 +77,10 @@ import {
   type ResolveAssetAttachmentFn,
 } from "./workflow-closure-resolution";
 import { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
+import {
+  type RunCredentialsLoader,
+  withRunCredentials,
+} from "./run-credentials";
 import { committedReadsToSourceTree } from "./committed-source-tree";
 import {
   describeProbeGateRefusal,
@@ -275,6 +279,11 @@ export type SessionServiceDeps = {
     readonly defaultRegistry: string;
     readonly scopeRouting?: readonly ScopeRoute[];
   };
+  /**
+   * Load a run's Hub tokens. A prepared deploy of an anchor that already has
+   * tokens carries them on its deploy frame.
+   */
+  loadRunCredentials: RunCredentialsLoader;
 };
 
 // Hub-side principal for reading asset repos. Assets are signed by the
@@ -392,11 +401,12 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
    */
   sourceRef: SourceRefPin;
   /**
-   * Resolved credential material for the definition's credential bindings,
-   * delivered to the child on the frame. The hub resolves + decrypts here; the
-   * source-ref child decrypts nothing. The grant that AUTHORIZES a credential's
-   * use is minted per-run by run-grant materialization, not carried on this
-   * frame.
+   * Resolved credential material for the definition's credential bindings and
+   * inference sources, plus the run's Hub tokens when a replacement deploy
+   * restarts a run that holds them, delivered to the child on the frame. The
+   * hub resolves + decrypts here; the source-ref child decrypts nothing. The
+   * grant that AUTHORIZES a credential's use is minted per-run by run-grant
+   * materialization, not carried on this frame.
    */
   credentials?: CredentialDelivery;
   /**
@@ -836,6 +846,7 @@ async function emitSourceRefDeployFrame(
   args: DeployCodeSourcedWorkflowArgs & {
     allocationTarget?: AllocatedSidecarTarget;
     sidecarAllocationRouter?: SidecarAllocationRouter;
+    loadRunCredentials: RunCredentialsLoader;
     onInitializationCleared(): void;
   },
   reconciliation: SidecarReconciliationContext,
@@ -848,6 +859,25 @@ async function emitSourceRefDeployFrame(
   signal.throwIfAborted();
   const { definitionId, sendArgs, hubConsumers } =
     await prepareSourceRefDeploy(args);
+  // A run that resumes in flight on a replacement sidecar can call the Hub
+  // before any new `run.grants` barrier brings its tokens, so the frame carries
+  // the tokens the anchor already holds. A first deploy has none yet. They stay
+  // out of `credentialRefs`, which is built from `sendArgs`. A failed load
+  // throws before anything is reserved, so the allocation retries the deploy.
+  const hub =
+    hubConsumers.length > 0
+      ? await args.loadRunCredentials(args.anchorRunId)
+      : null;
+  const frameArgs =
+    hub === null
+      ? sendArgs
+      : {
+          ...sendArgs,
+          credentials: withRunCredentials(
+            sendArgs.credentials ?? { bindings: [], materials: [] },
+            hub,
+          ),
+        };
   signal.throwIfAborted();
   const allocationStore = createSidecarAllocationStore(args.db);
   const initialization = {
@@ -861,7 +891,7 @@ async function emitSourceRefDeployFrame(
   let reserved = false;
   try {
     const result = await sendMultiStepDeployFrame(
-      sendArgs,
+      frameArgs,
       signal,
       async () => {
         if (!(await allocationStore.beginInitialization(initialization))) {
@@ -1722,6 +1752,7 @@ export function createSessionService(
       onInitializationCleared() {
         initializationCleared = true;
       },
+      loadRunCredentials: deps.loadRunCredentials,
       approved: params.approved,
       sidecarAllocationRouter: allocationRouter,
       allocationTarget: params.allocationTarget,

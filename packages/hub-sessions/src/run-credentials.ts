@@ -19,6 +19,22 @@ export type RunCredentialsLoader = (
   runId: string,
 ) => Promise<CredentialDelivery | null>;
 
+/**
+ * Add a run's hub credentials, when it has any, to a delivery. A hub id
+ * (`hub:<consumer>`) never names a catalog credential, so appending them is a
+ * merge.
+ */
+export function withRunCredentials(
+  delivery: CredentialDelivery,
+  hub: CredentialDelivery | null,
+): CredentialDelivery {
+  if (hub === null) return delivery;
+  return {
+    bindings: [...delivery.bindings, ...hub.bindings],
+    materials: [...delivery.materials, ...hub.materials],
+  };
+}
+
 export type CreateRunCredentialsLoaderDeps = {
   db: DB["db"];
   runTokenStore: RunTokenStore;

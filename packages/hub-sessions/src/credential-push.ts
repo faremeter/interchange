@@ -13,7 +13,10 @@
 //     so this needs no diff against a prior delivery.
 
 import { eq, and, inArray, isNull, isNotNull } from "drizzle-orm";
-import type { RunCredentialsLoader } from "./run-credentials";
+import {
+  type RunCredentialsLoader,
+  withRunCredentials,
+} from "./run-credentials";
 import { getLogger } from "@intx/log";
 import { hubConsumersOf, workflowRun } from "@intx/db/schema";
 import {
@@ -292,12 +295,12 @@ export async function pushCredentialRevoke(
  * closed by `pushCredentialRevoke`).
  *
  * Merge, not wholesale-replace: `credentialRefs` is only the deploy-time id set,
- * not the child's complete live set (a catalog re-point can deliver a new
- * credential online), so a replace would evict online-added credentials. The
- * merge upserts survivors and names the dead ids in `revoke`, leaving online
- * credentials untouched. It does NOT handle an id-CHANGING rotation of a
- * deploy-time source (the new id is not in `credentialRefs`); a later source
- * push delivers that.
+ * and the hub tokens below are not in it, so the reconcile names only what it
+ * re-resolved. The merge upserts survivors and names the dead ids in `revoke`,
+ * leaving anything else the child holds untouched. A hub token is never in
+ * `revoke`: the Hub refuses a deleted one, so its material is inert. It does
+ * NOT handle an id-CHANGING rotation of a deploy-time source (the new id is
+ * not in `credentialRefs`); a later source push delivers that.
  *
  * The run's hub credentials ride the same merge: its current run tokens when
  * it has any, and nothing when it has none. They are not credential rows, so
@@ -350,10 +353,7 @@ export async function pushCredentialReconcile(
     const hubConsumers = hubConsumersOf(refs);
     const hub =
       hubConsumers.length > 0 ? await loadRunCredentials(run.id) : null;
-    const delivery: CredentialDelivery = {
-      bindings: [...bindings, ...(hub?.bindings ?? [])],
-      materials: [...materials, ...(hub?.materials ?? [])],
-    };
+    const delivery = withRunCredentials({ bindings, materials }, hub);
 
     await sidecarRouter.sendCredentialsUpdate(
       agentAddress,
