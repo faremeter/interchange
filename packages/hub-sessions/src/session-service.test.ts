@@ -7,7 +7,11 @@ import * as tar from "tar";
 import type { HarnessConfig } from "@intx/types/runtime";
 import { hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
-import { projectLiveToInert } from "@intx/workflow";
+import {
+  action,
+  projectLiveToInert,
+  type WorkflowDefinition,
+} from "@intx/workflow";
 import {
   DEFAULT_SIDECAR_CAPACITY,
   DeploymentRejectedError,
@@ -19,6 +23,7 @@ import {
   sessionAsset as sessionAssetTable,
   sidecarAllocation,
 } from "@intx/db/schema";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { DB, SidecarAllocation } from "@intx/db";
 import { generateId } from "@intx/hub-common";
 import { createApprovalSet, deriveRunAddress } from "@intx/workflow-deploy";
@@ -26,6 +31,7 @@ import { createNoopCredentialCipher } from "@intx/crypto";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AssetService } from "./asset-service";
+import type { RunCredentialsLoader } from "./run-credentials";
 import type {
   LocalRepoStore,
   Principal,
@@ -458,6 +464,7 @@ describe("SessionService", () => {
   test("stageWorkflowStep keeps every phase on its allocated worker", async () => {
     const allocationRouter = createMockAllocationRouter();
     const service = createSessionService({
+      loadRunCredentials: async () => null,
       sidecarRouter: router,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
@@ -488,6 +495,7 @@ describe("SessionService", () => {
       Promise.reject(new Error("pack failed"));
 
     const service = createSessionService({
+      loadRunCredentials: async () => null,
       sidecarRouter: router,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
@@ -516,6 +524,7 @@ describe("SessionService", () => {
 
     const allocationRouter = createMockAllocationRouter();
     const service = createSessionService({
+      loadRunCredentials: async () => null,
       sidecarRouter: router,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
@@ -545,6 +554,7 @@ describe("SessionService", () => {
       Promise.reject(new Error("provision failed"));
 
     const service = createSessionService({
+      loadRunCredentials: async () => null,
       sidecarRouter: router,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
@@ -572,6 +582,7 @@ describe("SessionService", () => {
 
   test("endSession awaits undeploy ack", async () => {
     const service = createSessionService({
+      loadRunCredentials: async () => null,
       sidecarRouter: router,
       agentRepoStore: repoStore,
     });
@@ -710,6 +721,7 @@ describe("SessionService", () => {
       fakeRepoStore;
     const allocationRouter = createMockAllocationRouter();
     const service = createSessionService({
+      loadRunCredentials: async () => null,
       sidecarRouter: router,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
@@ -943,6 +955,7 @@ describe("SessionService", () => {
 
     const allocationRouter = createMockAllocationRouter();
     const service = createSessionService({
+      loadRunCredentials: async () => null,
       sidecarRouter: router,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
@@ -1123,6 +1136,7 @@ describe("SessionService", () => {
     };
 
     const service = createSessionService({
+      loadRunCredentials: async () => null,
       sidecarRouter: router,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
@@ -1263,7 +1277,11 @@ describe("deployCodeSourcedWorkflow", () => {
   // resolved to. The gate owns the frozen hash and the projection it hashed; the
   // closure is a passthrough. The entrypoint must build a source-ref frame that
   // binds to exactly these values with no recompute or re-resolution.
-  async function makeApproveOutput(grants: string[]) {
+  async function makeApproveOutput(
+    grants: string[],
+    // The workflow's steps; the default is one agent step.
+    steps?: WorkflowDefinition["steps"],
+  ) {
     const { defineWorkflow, step } = await import("@intx/workflow/definition");
     const { defineAgent } = await import("@intx/agent");
     const { gateAndFreezeProbeResult } = await import("./workflow-probe-gate");
@@ -1277,7 +1295,7 @@ describe("deployCodeSourcedWorkflow", () => {
     const definition = defineWorkflow({
       id: "wf_composed",
       trigger: { type: "manual" },
-      steps: { only: step({ agent: stubAgent, after: [] }) },
+      steps: steps ?? { only: step({ agent: stubAgent, after: [] }) },
     });
     // The gate hashes the inert projection the sidecar ships back; mirror the
     // probe's serialize/validate round-trip so the approve output carries the
@@ -1524,6 +1542,7 @@ describe("deployCodeSourcedWorkflow", () => {
     const preparedRepoStore = createMockRepoStore();
     preparedRepoStore.repoStore.resolveRef = async () => null;
     const service = createSessionService({
+      loadRunCredentials: async () => null,
       sidecarRouter,
       sidecarAllocationRouter: allocationRouter,
       agentRepoStore: preparedRepoStore,
@@ -1691,6 +1710,7 @@ describe("deployCodeSourcedWorkflow", () => {
         const repoStore = createMockRepoStore();
         repoStore.repoStore.resolveRef = async () => null;
         const service = createSessionService({
+          loadRunCredentials: async () => null,
           sidecarRouter: router,
           sidecarAllocationRouter: router,
           agentRepoStore: repoStore,
@@ -1949,6 +1969,7 @@ describe("deployCodeSourcedWorkflow", () => {
         const preparedRepoStore = createMockRepoStore();
         preparedRepoStore.repoStore.resolveRef = async () => null;
         const service = createSessionService({
+          loadRunCredentials: async () => null,
           sidecarRouter: createMockRouter(),
           sidecarAllocationRouter: allocationRouter,
           agentRepoStore: preparedRepoStore,
@@ -2076,6 +2097,7 @@ describe("deployCodeSourcedWorkflow", () => {
         router.noteSenderDeploySettled = (_sender, outcome) =>
           settlements.push(outcome);
         const service = createSessionService({
+          loadRunCredentials: async () => null,
           sidecarRouter: router,
           sidecarAllocationRouter: allocationRouter,
           agentRepoStore: preparedRepoStore,
@@ -2151,6 +2173,192 @@ describe("deployCodeSourcedWorkflow", () => {
       },
     );
 
+    describe("Hub tokens on the deploy frame", () => {
+      const HUB_TOKENS: CredentialDelivery = {
+        bindings: [
+          {
+            handle: "interchange.hub",
+            credentialId: "hub:action:push",
+            consumer: "action:push",
+          },
+        ],
+        materials: [
+          {
+            credentialId: "hub:action:push",
+            providerKey: "http",
+            origin: "https://hub.example",
+            secret: "itx-run-token",
+          },
+        ],
+      };
+
+      // Deploy a prepared workflow onto an allocation and record what the
+      // deploy frame carried, what the anchor update wrote, and whether the
+      // allocation was reserved.
+      async function deployPrepared(opts: {
+        hubConsumer: boolean;
+        loadRunCredentials: RunCredentialsLoader;
+      }) {
+        let frameCredentials: CredentialDelivery | undefined;
+        const writes: Record<string, unknown>[] = [];
+        const allocationRouter = createMockAllocationRouter();
+        allocationRouter.sendAgentDeployToAllocation = async (
+          _target,
+          _address,
+          _config,
+          workflow,
+          _signal,
+          beforeSend,
+        ) => {
+          await beforeSend?.();
+          frameCredentials = workflow?.credentials;
+          return { publicKey: "a".repeat(64) };
+        };
+        const handle = {
+          select: () => ({
+            from: () => ({
+              where: () => ({
+                for: async () => [
+                  { id: "alloc-test", publicKey: null as string | null },
+                ],
+              }),
+            }),
+          }),
+          update: () => ({
+            set: (values: Record<string, unknown>) => ({
+              where: () => ({
+                returning: async () => {
+                  writes.push(values);
+                  return [{ id: ANCHOR_RUN_ID }];
+                },
+              }),
+            }),
+          }),
+        };
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a transaction double over the capturing DB; allocation-store DB tests cover the SQL guards
+        const db = {
+          ...CAPTURING_DB,
+          transaction: async (run: (tx: typeof handle) => Promise<unknown>) =>
+            run(handle),
+        } as unknown as DB["db"];
+        const preparedRepoStore = createMockRepoStore();
+        preparedRepoStore.repoStore.resolveRef = async () => null;
+        const service = createSessionService({
+          loadRunCredentials: opts.loadRunCredentials,
+          sidecarRouter: createMockRouter(),
+          sidecarAllocationRouter: allocationRouter,
+          agentRepoStore: preparedRepoStore,
+          db,
+        });
+        const { approval, projection, closure } = await makeApproveOutput(
+          ["effect:call"],
+          {
+            push: action({
+              handler: "push",
+              ...(opts.hubConsumer ? { credentials: ["interchange.hub"] } : {}),
+              effect: { requires: ["call"] },
+            }),
+          },
+        );
+        if (!approval.ok) throw new Error("expected approval");
+        const outcome = await service
+          .deployPreparedCodeSourcedWorkflow({
+            tenantId: TENANT,
+            anchorRunId: ANCHOR_RUN_ID,
+            deploymentDomain: DEPLOYMENT_DOMAIN,
+            agentAddress: DEPLOY_ADDRESS,
+            source: SOURCE,
+            approved: { approval, projection, closure },
+            config: CONFIG,
+            allocationTarget: { allocationId: "alloc-test", generation: 1 },
+            reconciliation: {
+              leaseId: "lease-test",
+              signal: new AbortController().signal,
+            },
+            credentialCipher: createNoopCredentialCipher(),
+          })
+          .catch((error: unknown) => error);
+        const refs: unknown = writes.find(
+          (values) => "credentialRefs" in values,
+        )?.credentialRefs;
+        // The allocation store reserves the allocation by writing this
+        // attempt's lease id as its initialization marker.
+        const reserved = writes.some(
+          (values) => values.initializationLeaseId === "lease-test",
+        );
+        return { outcome, frameCredentials, reserved, refs };
+      }
+
+      test("a deploy of a run that holds tokens carries each token once, outside credentialRefs", async () => {
+        const loaded: string[] = [];
+        const result = await deployPrepared({
+          hubConsumer: true,
+          loadRunCredentials: async (runId) => {
+            loaded.push(runId);
+            return HUB_TOKENS;
+          },
+        });
+        expect(result.outcome).not.toBeInstanceOf(Error);
+        expect(loaded).toEqual([ANCHOR_RUN_ID]);
+        expect(
+          result.frameCredentials?.materials.filter(
+            (material) => material.credentialId === "hub:action:push",
+          ),
+        ).toHaveLength(1);
+        expect(result.frameCredentials?.bindings).toContainEqual(
+          HUB_TOKENS.bindings[0],
+        );
+        // The anchor keeps the consumer, never a token id or binding.
+        expect(result.refs).toMatchObject({ hubConsumers: ["action:push"] });
+        expect(JSON.stringify(result.refs)).not.toContain("hub:action:push");
+      });
+
+      test("a deploy of a run with no tokens yet carries no Hub material", async () => {
+        const loaded: string[] = [];
+        const result = await deployPrepared({
+          hubConsumer: true,
+          loadRunCredentials: async (runId) => {
+            loaded.push(runId);
+            return null;
+          },
+        });
+        expect(result.outcome).not.toBeInstanceOf(Error);
+        expect(loaded).toEqual([ANCHOR_RUN_ID]);
+        expect(result.reserved).toBe(true);
+        expect(
+          (result.frameCredentials?.materials ?? []).map(
+            (material) => material.credentialId,
+          ),
+        ).not.toContain("hub:action:push");
+      });
+
+      test("a deployment with no Hub consumer does not load tokens", async () => {
+        let loads = 0;
+        const result = await deployPrepared({
+          hubConsumer: false,
+          loadRunCredentials: async () => {
+            loads += 1;
+            return HUB_TOKENS;
+          },
+        });
+        expect(result.outcome).not.toBeInstanceOf(Error);
+        expect(loads).toBe(0);
+      });
+
+      test("a failed token load fails the deploy before it reserves the allocation", async () => {
+        const failure = new Error("synthetic token load failure");
+        const result = await deployPrepared({
+          hubConsumer: true,
+          loadRunCredentials: async () => {
+            throw failure;
+          },
+        });
+        expect(result.outcome).toBe(failure);
+        expect(result.reserved).toBe(false);
+        expect(result.frameCredentials).toBeUndefined();
+      });
+    });
+
     test("does not restore, deploy, or publish after cancellation while building a restore pack", async () => {
       const controller = new AbortController();
       const cancelled = new Error("Initialization cancelled");
@@ -2166,6 +2374,7 @@ describe("deployCodeSourcedWorkflow", () => {
         };
       };
       const service = createSessionService({
+        loadRunCredentials: async () => null,
         sidecarRouter: createMockRouter(),
         sidecarAllocationRouter: allocationRouter,
         agentRepoStore: preparedRepoStore,
@@ -2218,6 +2427,7 @@ describe("deployCodeSourcedWorkflow", () => {
       const preparedRepoStore = createMockRepoStore();
       preparedRepoStore.repoStore.resolveRef = async () => null;
       const service = createSessionService({
+        loadRunCredentials: async () => null,
         sidecarRouter,
         sidecarAllocationRouter: allocationRouter,
         agentRepoStore: preparedRepoStore,

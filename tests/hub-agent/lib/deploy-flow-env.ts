@@ -1132,6 +1132,7 @@ export async function startHub(
   };
 
   const sessionService = createSessionService({
+    loadRunCredentials: opts.loadRunCredentials ?? (async () => null),
     sidecarRouter: router,
     sidecarAllocationRouter: router,
     agentRepoStore,

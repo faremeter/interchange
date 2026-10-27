@@ -343,6 +343,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // harness's own session service uses an in-memory stub. Reuse the harness's
       // real sidecar-connected router and repo store.
       sessionService = createSessionService({
+        loadRunCredentials: async () => null,
         sidecarRouter: env.hub.router,
         sidecarAllocationRouter: env.hub.router,
         agentRepoStore: env.hub.agentRepoStore,

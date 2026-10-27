@@ -271,6 +271,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         repoStore: env.hub.agentRepoStore.repoStore,
       });
       sessionService = createSessionService({
+        loadRunCredentials: async () => null,
         sidecarRouter: env.hub.router,
         sidecarAllocationRouter: env.hub.router,
         agentRepoStore: env.hub.agentRepoStore,

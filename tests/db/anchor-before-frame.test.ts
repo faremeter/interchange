@@ -489,6 +489,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       tempDirs.push(dataDir);
       const service = createSessionService({
+        loadRunCredentials: async () => null,
         db: h.db,
         sidecarRouter: router,
         sidecarAllocationRouter: router,

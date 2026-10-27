@@ -159,6 +159,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const capture = createCapturingRouter();
       const service = createSessionService({
+        loadRunCredentials: async () => null,
         db: h.db,
         sidecarRouter: capture.router,
         sidecarAllocationRouter: capture.router,
