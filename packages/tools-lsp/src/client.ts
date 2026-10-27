@@ -283,6 +283,9 @@ export async function createLSPClient(
         processId: process.pid,
         rootUri: pathToFileURL(root).href,
         workspaceFolders: [{ uri: pathToFileURL(root).href, name: root }],
+        ...(server.initialization !== undefined
+          ? { initializationOptions: server.initialization }
+          : {}),
         capabilities: {
           textDocument: {
             synchronization: {
@@ -322,15 +325,6 @@ export async function createLSPClient(
       NOTIFY_TIMEOUT_MS,
       `initialized ${serverID}`,
     );
-    if (server.initialization !== undefined) {
-      await withTimeout(
-        connection.sendNotification("workspace/didChangeConfiguration", {
-          settings: server.initialization,
-        }),
-        NOTIFY_TIMEOUT_MS,
-        `didChangeConfiguration ${serverID}`,
-      );
-    }
   } catch (err) {
     connection.dispose();
     await stopProcess(proc);
