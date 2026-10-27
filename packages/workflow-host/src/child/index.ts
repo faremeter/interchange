@@ -70,7 +70,7 @@ export {
   type DiscoveredRun,
 } from "./self-discovery";
 
-export type { LoadParkedApproval } from "./parked-correlations";
+export type { LoadParkedApproval } from "@intx/workflow";
 
 export {
   createWarmAgentCache,

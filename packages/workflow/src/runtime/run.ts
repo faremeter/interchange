@@ -82,6 +82,7 @@ import {
 } from "./errors";
 import { loopBodyRunId, scopedStepId, sectionBodyRunId } from "./step-scope";
 import { inlineBodyRef } from "../inline-body-ref";
+import { findParkedApprovalSnapshot } from "./parked-approval";
 import {
   applyEvent,
   controlParkKindOf,
@@ -6795,6 +6796,8 @@ type OpenChildPark =
       name: string;
       correlationId: string;
       awaitSeq: number;
+      stepId: string;
+      attempt: number;
     };
 
 /**
@@ -6825,7 +6828,26 @@ type ChildRelay =
       correlationId: string;
       decision: unknown;
     }
-  | { kind: "input-fresh"; correlationId: string };
+  | { kind: "input-fresh"; correlationId: string }
+  | {
+      kind: "approval-fresh";
+      correlationId: string;
+      approvalSnapshot: ApprovalSnapshot;
+    };
+
+/**
+ * A relay as the resume planner sees it. A fresh approval names the step that
+ * parked on it; its snapshot is read from that step's stored state before the
+ * drive, so planning needs only the logs.
+ */
+type PlannedChildRelay =
+  | Exclude<ChildRelay, { kind: "approval-fresh" }>
+  | {
+      kind: "approval-fresh";
+      correlationId: string;
+      stepId: string;
+      attempt: number;
+    };
 
 type ChildWorkflowResumePlan =
   | { kind: "fresh"; stepStarted: boolean }
@@ -6955,6 +6977,8 @@ function openChildParks(
       name: event.signalName,
       correlationId,
       awaitSeq: event.seq,
+      stepId: event.stepId,
+      attempt: step.currentAttempt,
     });
   }
   return parks;
@@ -7027,7 +7051,7 @@ function deliveredForAwait(
   return boundSignalForContainerAwait(parentLog, name, stepId, awaitSeq);
 }
 
-function relayName(relay: ChildRelay): string {
+function relayName(relay: ChildRelay | PlannedChildRelay): string {
   switch (relay.kind) {
     case "signal-abandon":
     case "signal-reestablish":
@@ -7037,6 +7061,7 @@ function relayName(relay: ChildRelay): string {
     case "control-reestablish":
     case "control-deliver":
     case "input-fresh":
+    case "approval-fresh":
       return signalName(relay.correlationId);
     default: {
       const unexpected: never = relay;
@@ -7046,12 +7071,12 @@ function relayName(relay: ChildRelay): string {
 }
 
 function orderChildRelays(
-  relays: readonly ChildRelay[],
+  relays: readonly PlannedChildRelay[],
   parentAwaitName: string | undefined,
-): ChildRelay[] {
-  const abandon: ChildRelay[] = [];
-  const current: ChildRelay[] = [];
-  const rest: ChildRelay[] = [];
+): PlannedChildRelay[] {
+  const abandon: PlannedChildRelay[] = [];
+  const current: PlannedChildRelay[] = [];
+  const rest: PlannedChildRelay[] = [];
   for (const relay of relays) {
     if (relay.kind === "signal-abandon") {
       abandon.push(relay);
@@ -7081,6 +7106,12 @@ function parentSignalAwait(
   return awaiting;
 }
 
+/**
+ * What a container still has to do for the parks of one body run it relays:
+ * re-establish the relay it awaits, hand on input delivered to it but not yet
+ * to the body, and relay every park the body holds that it never relayed, of
+ * which a restart can leave several.
+ */
 function planChildRelays(
   stepId: string,
   childRunId: string,
@@ -7089,11 +7120,11 @@ function planChildRelays(
   childLog: readonly WorkflowEvent[],
   childState: RunState,
   nowMs: number,
-): ChildRelay[] {
+): PlannedChildRelay[] {
   const parks = openChildParks(childLog, childState);
   const parentAwait = parentSignalAwait(parentState, stepId);
   const childTerminal = isTerminalRunPhase(childState.phase);
-  const relays: ChildRelay[] = [];
+  const relays: PlannedChildRelay[] = [];
   for (const park of parks) {
     if (parentAwait !== undefined && parentAwait.name === park.name) {
       const parentKind = controlParkKindOf(parentAwait);
@@ -7147,9 +7178,13 @@ function planChildRelays(
       continue;
     }
     if (park.kind === "approval") {
-      throw new Error(
-        `childWorkflow ${stepId} cannot resume approval park of child run ${childRunId}: the approval snapshot is not in the log`,
-      );
+      relays.push({
+        kind: "approval-fresh",
+        correlationId: park.correlationId,
+        stepId: park.stepId,
+        attempt: park.attempt,
+      });
+      continue;
     }
     if (park.kind === "author") {
       const timeout = remainingSignalTimeout(park.timeoutAt, nowMs);
@@ -7180,6 +7215,50 @@ function planChildRelays(
     }
   }
   return orderChildRelays(relays, parentAwait?.name);
+}
+
+/**
+ * Read the snapshot of each approval the plan relays fresh from the stored
+ * state of the step that parked on it, before anything is driven.
+ */
+async function loadPlannedRelays(
+  env: WorkflowRuntimeEnv,
+  container: string,
+  childRunId: string,
+  childState: RunState,
+  planned: readonly PlannedChildRelay[],
+): Promise<ChildRelay[]> {
+  const relays: ChildRelay[] = [];
+  for (const relay of planned) {
+    if (relay.kind !== "approval-fresh") {
+      relays.push(relay);
+      continue;
+    }
+    const load = env.loadParkedApproval;
+    const approvalSnapshot =
+      load === undefined
+        ? undefined
+        : await findParkedApprovalSnapshot({
+            repoStore: env.repoStore,
+            load,
+            runId: childRunId,
+            state: childState,
+            stepId: relay.stepId,
+            attempt: relay.attempt,
+            correlationId: relay.correlationId,
+          });
+    if (approvalSnapshot === undefined) {
+      throw new Error(
+        `${container} cannot resume approval park ${relay.correlationId} of child run ${childRunId}: no step state holds its approval snapshot`,
+      );
+    }
+    relays.push({
+      kind: "approval-fresh",
+      correlationId: relay.correlationId,
+      approvalSnapshot,
+    });
+  }
+  return relays;
 }
 
 async function planChildWorkflowResume(
@@ -7249,14 +7328,20 @@ async function planChildWorkflowResume(
   return {
     kind: "reattach",
     childRunId: recorded.childRunId,
-    relays: planChildRelays(
-      stepId,
+    relays: await loadPlannedRelays(
+      env,
+      `childWorkflow ${stepId}`,
       recorded.childRunId,
-      parentLog,
-      prior,
-      childLog,
       childState,
-      env.clock().getTime(),
+      planChildRelays(
+        stepId,
+        recorded.childRunId,
+        parentLog,
+        prior,
+        childLog,
+        childState,
+        env.clock().getTime(),
+      ),
     ),
     seed: true,
   };
@@ -7366,6 +7451,26 @@ async function drivePlannedChildRelay(
         relay.correlationId,
         "input",
         undefined,
+        abort,
+        sectionSteps,
+        "hold",
+      );
+    }
+    case "approval-fresh": {
+      const name = signalName(relay.correlationId);
+      const snapshot = await readChildPark(handle, stepId, name);
+      if (snapshot.kind === "terminal") {
+        return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
+      }
+      if (snapshot.kind === "released") return { kind: "held" };
+      return awaitChildPark(
+        env,
+        parentRunId,
+        stepId,
+        handle,
+        relay.correlationId,
+        "approval",
+        relay.approvalSnapshot,
         abort,
         sectionSteps,
         "hold",

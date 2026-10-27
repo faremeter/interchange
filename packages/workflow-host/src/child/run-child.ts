@@ -72,6 +72,7 @@ import {
 import type {
   ActionCredentialsFactory,
   ActionHandler,
+  LoadParkedApproval,
   RunResult,
   RuntimeWorkflowRun,
   Scheduler,
@@ -147,10 +148,7 @@ import {
   loadWorkflowLoopFnsFromClosure,
 } from "../workflow-definition-loader";
 import { discoverInFlightRuns } from "./self-discovery";
-import {
-  collectParkedApprovalCorrelations,
-  type LoadParkedApproval,
-} from "./parked-correlations";
+import { collectParkedApprovalCorrelations } from "./parked-correlations";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
 import { createSupervisorBackedMailPartReader } from "./supervisor-backed-mail-part-reader";
@@ -361,17 +359,17 @@ export interface RunWorkflowChildBindings {
   cleanupRunStorage?: (runId: string) => Promise<void>;
   /**
    * Recover the durable approval snapshot for a parked control-plane
-   * correlation, so the child can answer a supervisor
-   * `parked-correlations.request` (the supervisor's re-registration path
-   * after a re-establishment). The child owns enumeration -- it walks its
-   * own reduced run state for `awaiting-signal` steps on control-plane
-   * channels -- but the snapshot lives in per-step durable storage whose
-   * on-disk layout (cold vs warm) the host owns, so the read is a host
-   * binding next to `cleanupRunStorage`. Optional so tests inject a stub and
-   * the recursive child-workflow adapter (which roots no per-step approval
-   * storage) can omit it; a production child that enumerates a parked
-   * control-plane step with no binding wired throws rather than silently
-   * dropping the correlation the hub is waiting to register.
+   * correlation. The child answers a supervisor
+   * `parked-correlations.request` with it (the supervisor's re-registration
+   * path after a re-establishment), and a resumed container relays from it a
+   * body's approval the container never relayed. The child owns enumeration
+   * -- it walks its own reduced run state for `awaiting-signal` steps on
+   * control-plane channels -- but the snapshot lives in per-step durable
+   * storage whose on-disk layout (cold vs warm) the host owns, so the read is
+   * a host binding next to `cleanupRunStorage`. Optional so tests inject a
+   * stub; a production child that enumerates a parked control-plane step with
+   * no binding wired throws rather than silently dropping the correlation the
+   * hub is waiting to register.
    */
   loadParkedApproval?: LoadParkedApproval;
   /**
@@ -1820,6 +1818,10 @@ function buildRuntimeEnv(args: {
       : {}),
     ...(args.bindings.persistRecoveredPark !== undefined
       ? { persistRecoveredPark: args.bindings.persistRecoveredPark }
+      : {}),
+    // Let a resume relay a body's approval its container never did.
+    ...(args.bindings.loadParkedApproval !== undefined
+      ? { loadParkedApproval: args.bindings.loadParkedApproval }
       : {}),
   };
   // The suspendable-loop executor runs each iteration's body under THIS run's

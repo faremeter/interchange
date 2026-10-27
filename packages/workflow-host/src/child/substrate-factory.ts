@@ -89,6 +89,7 @@ import {
   walkWorkflowSteps,
   LOOP_BODY_DESCENT,
   type ActionHandler,
+  type LoadParkedApproval,
   type LoopFnRegistry,
   type ParkedApprovalOp,
   type PersistRecoveredPark,
@@ -146,7 +147,6 @@ import {
 import type { SubstrateFactory, SubstrateFactoryEnv } from "./from-process-env";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
-import type { LoadParkedApproval } from "./parked-correlations";
 import { createProxyWorkflowRunRepoStore } from "./proxy-repo-store";
 import {
   createCredentialsBackedAuthorize,
@@ -1392,6 +1392,11 @@ export type SidecarChildStepInvoker = (
 interface SidecarRunChildDeps {
   /** Wrapped workflow-run substrate (the factory's `substrate`). */
   substrate: RepoStore;
+  /**
+   * The step store's approval snapshot read, so a nested run's resume can
+   * relay an approval its own body parked and it never relayed.
+   */
+  loadParkedApproval?: LoadParkedApproval;
   /** Workflow-run repo identifying the parent's deployment. */
   workflowRunRepoId: RepoId;
   /** Workflow-run ref the child reads/writes against. */
@@ -2176,6 +2181,9 @@ async function buildChildRunEnv(args: {
     ...(effects !== undefined && invokeAction !== undefined
       ? { effects, invokeAction }
       : {}),
+    ...(args.deps.loadParkedApproval !== undefined
+      ? { loadParkedApproval: args.deps.loadParkedApproval }
+      : {}),
   };
   // Wire loop-iteration spawning for a `loop` nested in this body. Assigned
   // AFTER the env literal because the iteration host closes over `env`: a loop
@@ -2791,6 +2799,42 @@ export function createSidecarSubstrateFactory(
       floorFor: (stepId) => toolMarkFloorByStep.get(stepId) ?? [],
     });
 
+    // Recover a parked correlation's approval snapshot, for the child's
+    // re-registration enumeration and for a resume that relays a body's
+    // approval its container never did. Wired unconditionally (unlike
+    // `cleanupRunStorage`, which is cold-only): a warm agent parks on approval
+    // just as a cold one does, and the branch on `warmKeep` selects the durable
+    // read -- cold reads the attempt's local store while it is current and its
+    // committed step state otherwise, warm reconstructs the agent's durable
+    // conversation state from the substrate.
+    const loadParkedApproval: LoadParkedApproval = ({
+      runId,
+      stepId,
+      attempt,
+      correlationId,
+    }) =>
+      warmRunId !== undefined
+        ? readWarmParkedApprovalSnapshot({
+            substrate,
+            workflowRunRepoId,
+            workflowRunRef: validated.WORKFLOW_RUN_REF,
+            principal,
+            runId: warmRunId,
+            stepId,
+            correlationId,
+          })
+        : readColdParkedApprovalSnapshot({
+            dataDir: validated.SIDECAR_DATA_DIR,
+            substrate,
+            workflowRunRepoId,
+            workflowRunRef: validated.WORKFLOW_RUN_REF,
+            principal,
+            runId,
+            stepId,
+            attempt,
+            correlationId,
+          });
+
     const childRunDeps: SidecarRunChildDeps = {
       substrate,
       workflowRunRepoId,
@@ -2816,6 +2860,7 @@ export function createSidecarSubstrateFactory(
       // A spawned child's steps resolve `director` refs against the same
       // closure-composed registry the parent's steps use.
       directors: stepDirectors,
+      loadParkedApproval,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory
     // resolver from this plus the lifted-body map it extracts after loading
@@ -2854,41 +2899,6 @@ export function createSidecarSubstrateFactory(
         );
       };
     }
-
-    // Recover a parked correlation's approval snapshot for the child's
-    // re-registration enumeration. Wired unconditionally (unlike
-    // `cleanupRunStorage`, which is cold-only): a warm agent parks on approval
-    // just as a cold one does, and the branch on `warmKeep` selects the durable
-    // read -- cold reads the attempt's local store while it is current and its
-    // committed step state otherwise, warm reconstructs the agent's durable
-    // conversation state from the substrate.
-    const loadParkedApproval: LoadParkedApproval = ({
-      runId,
-      stepId,
-      attempt,
-      correlationId,
-    }) =>
-      warmRunId !== undefined
-        ? readWarmParkedApprovalSnapshot({
-            substrate,
-            workflowRunRepoId,
-            workflowRunRef: validated.WORKFLOW_RUN_REF,
-            principal,
-            runId: warmRunId,
-            stepId,
-            correlationId,
-          })
-        : readColdParkedApprovalSnapshot({
-            dataDir: validated.SIDECAR_DATA_DIR,
-            substrate,
-            workflowRunRepoId,
-            workflowRunRef: validated.WORKFLOW_RUN_REF,
-            principal,
-            runId,
-            stepId,
-            attempt,
-            correlationId,
-          });
 
     // Enumerate a crashed step's durable pending approval operations for the
     // resume classifier, off the same cold/warm durable read as

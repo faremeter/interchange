@@ -50,6 +50,7 @@ import {
   type WorkflowAuthorizeFn,
   type WorkflowDefinition,
   type WorkflowEvent,
+  type LoadParkedApproval,
   type WorkflowPark,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
@@ -201,6 +202,7 @@ function startRelayed(args: {
   resumeFromEvents?: readonly WorkflowEvent[];
   hasUpstreamSignalResolver?: boolean;
   clock?: () => Date;
+  loadParkedApproval?: LoadParkedApproval;
   onSignalPark?: (park: {
     runId: string;
     name: string;
@@ -264,6 +266,9 @@ function startRelayed(args: {
       ? { onSignalPark: args.onSignalPark }
       : {}),
     ...(args.loopFns !== undefined ? { loopFns: args.loopFns } : {}),
+    ...(args.loadParkedApproval !== undefined
+      ? { loadParkedApproval: args.loadParkedApproval }
+      : {}),
   };
   env.spawnLoopIteration = createSpawnLoopIteration(env, loopBodies);
   return {
@@ -2020,6 +2025,123 @@ describe("a parked childWorkflow survives a process restart", () => {
     expect(seen).toEqual([{ token: "keep" }]);
     expect(countEvents(result.events, "ChildSpawned")).toBe(1);
     expect(spawnOutput(result.outputs.spawn).childRunId).toBe(childId);
+  });
+
+  test("relays an approval the parent had not reached from the snapshot its step stored", async () => {
+    const parent = defineWorkflow({
+      id: "resume-queued-approval-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-queued-approval-child",
+            trigger: { type: "manual" },
+            steps: { alpha: step({ agent }), beta: step({ agent }) },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-queued-approval";
+    // What each suspended step durably stored, as the host's step store does.
+    const stored = new Map<string, ApprovalSnapshot>();
+    const key = (args: {
+      runId?: string;
+      stepId?: string;
+      attempt?: number;
+      correlationId: string;
+    }): string =>
+      `${String(args.runId)}/${String(args.stepId)}/${String(args.attempt)}/${args.correlationId}`;
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        if (req.resume !== undefined) return { output: null };
+        const correlationId = `corr-${String(req.authzContext.stepId)}`;
+        const approvalSnapshot: ApprovalSnapshot = {
+          ...snapshot,
+          arguments: { step: req.authzContext.stepId },
+        };
+        stored.set(
+          key({ ...req.authzContext, correlationId }),
+          approvalSnapshot,
+        );
+        return {
+          suspend: { correlationId, kind: "approval", approvalSnapshot },
+        };
+      },
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.parkKind === "approval",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    for (const stepId of ["alpha", "beta"]) {
+      await waitForEvent(
+        first.repoStore,
+        childId,
+        (event) =>
+          event.kind === "SignalAwaited" &&
+          event.signalName === signalName(`corr-${stepId}`),
+      );
+    }
+    const childLog = await copyLog(first.repoStore, childId);
+    // The parent relays one park at a time, so the other is still queued.
+    const shown = parentLog.flatMap((event) =>
+      event.kind === "SignalAwaited" && event.parkKind === "approval"
+        ? [correlationIdFromSignalName(event.signalName)]
+        : [],
+    );
+    expect(shown).toHaveLength(1);
+    const queued = shown[0] === "corr-alpha" ? "corr-beta" : "corr-alpha";
+
+    const parks = parkSink();
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      onPark: parks.onPark,
+      repoStore,
+      resumeFromEvents: parentLog,
+      loadParkedApproval: async (args) => stored.get(key(args)),
+    });
+    // A run that ends instead of relaying says why.
+    const ended = run.complete.then((result) => {
+      const failed = result.events.find((event) => event.kind === "StepFailed");
+      throw new Error(
+        `the run ended ${result.terminalStatus}: ${failed?.kind === "StepFailed" ? failed.error.message : "no step failed"}`,
+      );
+    });
+    void ended.catch(() => undefined);
+    await run.signal(
+      signalName(String(shown[0])),
+      { outcome: "approved" },
+      "sig-shown",
+    );
+    const relayedPark = await Promise.race([parks.next(), ended]);
+    expect(relayedPark.correlationId).toBe(queued);
+    expect(relayedPark.approvalSnapshot).toEqual(
+      stored.get(
+        key({
+          runId: childId,
+          stepId: queued.slice("corr-".length),
+          attempt: 1,
+          correlationId: queued,
+        }),
+      ),
+    );
+    await run.signal(signalName(queued), { outcome: "approved" }, "sig-queued");
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
   });
 
   test("an unproxied approval fails before spawn and writes no await", async () => {

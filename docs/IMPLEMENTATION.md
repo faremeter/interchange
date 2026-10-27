@@ -916,7 +916,10 @@ A timed gate is exempt. Its scheduler timer resolves it in process, so
 it needs nothing upstream.
 
 A parked child survives a process restart. Resume reattaches the same
-child run from its log and reestablishes the relay on the spawn step. The
+child run from its log and reestablishes the relay on the spawn step. A
+park still queued at the restart is relayed then too; for an approval, the
+snapshot comes from the parked step's stored state, through the env's
+`loadParkedApproval`, and a resume without one fails the spawn step. The
 child stays unaddressable; the parent is the resume root.
 
 #### Recycle
