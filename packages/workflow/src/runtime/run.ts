@@ -4827,7 +4827,8 @@ async function waitForTimer(
   // tail the durable `TimerSet` and a crash-while-waiting leaves a
   // resumable pre-suspension log.
   await flush(env, runId);
-  const subscribeFromSeq = (await reloadState(env, runId)).lastSeq + 1;
+  const settled = await reloadState(env, runId);
+  const subscribeFromSeq = settled.lastSeq + 1;
   const ac = new AbortController();
   const onOuterAbort = (): void => {
     ac.abort();
@@ -4841,6 +4842,11 @@ async function waitForTimer(
   if (shouldAbortForDrain(drain, stepId)) {
     throw new Error("aborted: drain requested");
   }
+  // The flush queues behind every commit already on the run's chain, so a
+  // `TimerFired` the scheduler committed in the meantime is in `settled`
+  // and before `subscribeFromSeq`. A restored child's scheduler fires a
+  // due timer this way before its resumed run waits on it.
+  if (!settled.pendingTimers.has(timerId)) return;
   abort.addEventListener("abort", onOuterAbort, { once: true });
   // Listen for drain transitions that land mid-wait. A drain that
   // fires after the subscription has armed must abort the local

@@ -173,6 +173,102 @@ describe("resume awaiting timer", () => {
     expect(types).toContain("RunCompleted");
   });
 
+  // The resume reads a log whose tail is the TimerSet this many times, and
+  // the last is the sleep's read just before it waits on the timer. The
+  // first test below pins the count, so the race test injects at that read.
+  const READS_BEFORE_WAIT = 5;
+
+  // Resume a run parked in a sleep, counting the reads of its log while the
+  // tail is the TimerSet. With `fireOnRead`, that read commits the
+  // TimerFired first, as a scheduler commit queued ahead on the run's chain
+  // does. `readsAtWait` is the count when the sleep arms its timer.
+  async function resumeCountingReads(opts: {
+    runId: string;
+    fireAt: string;
+    fireOnRead?: number;
+  }) {
+    const env = buildEnv(sleepDuration);
+    const inner = env.repoStore;
+    let reads = 0;
+    let readsAtWait: number | undefined;
+    const repoStore: typeof inner = {
+      ...inner,
+      async read(id) {
+        const events = await inner.read(id);
+        if (id !== opts.runId || events.at(-1)?.kind !== "TimerSet") {
+          return events;
+        }
+        reads += 1;
+        if (reads !== opts.fireOnRead) return events;
+        await inner.append(id, {
+          kind: "TimerFired",
+          seq: events.length + 1,
+          at,
+          timerId: "timer-1",
+        });
+        return inner.read(id);
+      },
+    };
+    const scheduler: typeof env.scheduler = {
+      ...env.scheduler,
+      scheduleIn(...args) {
+        readsAtWait ??= reads;
+        return env.scheduler.scheduleIn(...args);
+      },
+    };
+    const seed: WorkflowEvent[] = [
+      runStartedSeed(opts.runId),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "w",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "TimerSet",
+        seq: 3,
+        at,
+        timerId: "timer-1",
+        fireAt: opts.fireAt,
+        stepId: "w",
+      },
+    ];
+    const result = await runtimeRun(
+      sleepDuration,
+      { ...env, repoStore, scheduler },
+      { runId: opts.runId, resumeFromEvents: seed },
+    ).complete;
+    return { result, reads, readsAtWait };
+  }
+
+  test("a resumed sleep reads its parked log a fixed number of times before it waits", async () => {
+    const { result, readsAtWait } = await resumeCountingReads({
+      runId: "run-timer-reads",
+      fireAt: soon(),
+    });
+    expect(result.terminalStatus).toBe("completed");
+    expect(readsAtWait).toBe(READS_BEFORE_WAIT);
+  });
+
+  test("a TimerFired committed just before the resumed sleep waits still completes the run", async () => {
+    // A restored child's scheduler fires a due timer during startup, so its
+    // TimerFired can land after the resumed sleep reads the run but before
+    // the sleep subscribes to the log.
+    const { result, reads } = await resumeCountingReads({
+      runId: "run-timer-race",
+      // Far in the future: only the injected TimerFired can wake the run.
+      fireAt: new Date(Date.now() + 3_600_000).toISOString(),
+      fireOnRead: READS_BEFORE_WAIT,
+    });
+    expect(reads).toBe(READS_BEFORE_WAIT);
+    expect(result.terminalStatus).toBe("completed");
+    const types = result.events.map((e) => e.kind);
+    expect(types.filter((t) => t === "TimerFired").length).toBe(1);
+    expect(types).toContain("RunCompleted");
+  });
+
   test("resumes a seed that already carries the TimerFired (sleep in-flight), completing it without re-parking", async () => {
     const runId = "run-fired";
     const env = buildEnv(sleepDuration);
