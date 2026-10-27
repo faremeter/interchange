@@ -17,7 +17,10 @@ export async function* parseSSE(
   // sequence at the end of a read, so a shared one splices bytes across
   // concurrent streams.
   const decoder = new TextDecoder();
-  let buffer = "";
+  // Fragments of the line still waiting for its newline, joined once when
+  // it arrives so a large field spread over many reads is not rescanned
+  // or recopied on every read.
+  const fragments: string[] = [];
 
   try {
     while (true) {
@@ -25,6 +28,7 @@ export async function* parseSSE(
 
       if (done) {
         // Flush any remaining content in the buffer as a final line.
+        const buffer = fragments.join("");
         if (buffer.length > 0) {
           const payload = extractDataPayload(buffer);
           if (payload !== null) {
@@ -34,14 +38,21 @@ export async function* parseSSE(
         break;
       }
 
-      buffer += decoder.decode(value, { stream: true });
+      const text = decoder.decode(value, { stream: true });
 
       // Process all complete lines (lines terminated by \n).
       // A line ending in \r\n counts as terminated at the \n.
+      let start = 0;
       let newlineIndex: number;
-      while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-        const rawLine = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
+      while ((newlineIndex = text.indexOf("\n", start)) !== -1) {
+        const tail = text.slice(start, newlineIndex);
+        start = newlineIndex + 1;
+        let rawLine = tail;
+        if (fragments.length > 0) {
+          fragments.push(tail);
+          rawLine = fragments.join("");
+          fragments.length = 0;
+        }
 
         // Strip trailing \r for CRLF line endings.
         const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
@@ -61,6 +72,9 @@ export async function* parseSSE(
         }
 
         yield payload;
+      }
+      if (start < text.length) {
+        fragments.push(text.slice(start));
       }
     }
   } finally {

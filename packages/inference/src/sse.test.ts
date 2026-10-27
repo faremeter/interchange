@@ -3,15 +3,19 @@ import { parseSSE } from "./sse";
 
 const encoder = new TextEncoder();
 
-function makeStream(chunks: string[]): ReadableStream<Uint8Array> {
+function makeByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
       for (const chunk of chunks) {
-        controller.enqueue(encoder.encode(chunk));
+        controller.enqueue(chunk);
       }
       controller.close();
     },
   });
+}
+
+function makeStream(chunks: string[]): ReadableStream<Uint8Array> {
+  return makeByteStream(chunks.map((chunk) => encoder.encode(chunk)));
 }
 
 // Answers each read only when the test sends a chunk, so a test can order
@@ -189,5 +193,60 @@ describe("parseSSE", () => {
     await a.send(bytesA.subarray(cut), true);
     expect(await firstA).toEqual({ done: false, value: "\u00e9" });
     expect(await iterA.next()).toEqual({ done: true, value: undefined });
+  });
+
+  test("joins a field split across many reads", async () => {
+    const value = "x".repeat(200_000);
+    const bytes = encoder.encode(`data: ${value}\n\ndata: after\n\n`);
+    const chunks: Uint8Array[] = [];
+    for (let start = 0; start < bytes.length; start += 1000) {
+      chunks.push(bytes.subarray(start, start + 1000));
+    }
+    const results = await collectSSE(makeByteStream(chunks));
+    expect(results).toEqual([value, "after"]);
+  });
+
+  test("parses every line in a read that completes a fragment", async () => {
+    const stream = makeStream([
+      "data: fir",
+      "st\ndata: second\ndata: thi",
+      "rd\n",
+    ]);
+    const results = await collectSSE(stream);
+    expect(results).toEqual(["first", "second", "third"]);
+  });
+
+  test("handles CRLF split across reads", async () => {
+    const stream = makeStream(["data: hello\r", "\n\r", "\n"]);
+    const results = await collectSSE(stream);
+    expect(results).toEqual(["hello"]);
+  });
+
+  test("decodes characters split at every byte boundary", async () => {
+    const bytes = encoder.encode("data: a\u00e9\u20ac\u{1f600}z\n");
+    for (let cut = 1; cut < bytes.length; cut++) {
+      const stream = makeByteStream([
+        bytes.subarray(0, cut),
+        bytes.subarray(cut),
+      ]);
+      expect(await collectSSE(stream)).toEqual(["a\u00e9\u20ac\u{1f600}z"]);
+    }
+    // One byte per read: reads inside a character decode to no text.
+    const stream = makeByteStream(Array.from(bytes, (b) => Uint8Array.of(b)));
+    expect(await collectSSE(stream)).toEqual(["a\u00e9\u20ac\u{1f600}z"]);
+  });
+
+  test("releases the reader when consumption stops early", async () => {
+    const stream = makeStream(["data: a\n\ndata: b\n\n"]);
+    for await (const _data of parseSSE(stream)) {
+      break;
+    }
+    expect(stream.locked).toBe(false);
+  });
+
+  test("releases the reader at the [DONE] sentinel", async () => {
+    const stream = makeStream(["data: [DONE]\n\ndata: b\n\n"]);
+    expect(await collectSSE(stream)).toEqual([]);
+    expect(stream.locked).toBe(false);
   });
 });
