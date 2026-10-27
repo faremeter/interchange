@@ -170,7 +170,8 @@ export interface SignalReceived extends EventBase {
  * another exit -- its own await timeout, or any later body event -- before the
  * external signal arrives, so a late signal does not resolve a park the body no
  * longer waits on. Distinct from `SignalReceived`: nothing is delivered, the
- * await is simply torn down.
+ * await is simply torn down. A container also commits this for an approval it
+ * was relaying when the body ended, so the await cannot swallow its next park.
  */
 export interface SignalAwaitAbandoned extends EventBase {
   kind: "SignalAwaitAbandoned";

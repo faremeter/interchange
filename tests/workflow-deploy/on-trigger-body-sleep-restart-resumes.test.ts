@@ -20,8 +20,9 @@
 //   3. Start a fresh sidecar against the crashed process's SIDECAR_DATA_DIR.
 //      Boot-time restore re-arms the body's unfired timer and re-includes the
 //      container; the container's resume re-adopts the in-flight body
-//      (`planOnTriggerResume` -> `readopt-in-flight-body`), re-spawns it from its
-//      log, and the body re-adopts its own sleep timer (`isResumableSleepStep`).
+//      (`planOnTriggerResume` -> `relink-body` with nothing to relay), re-spawns
+//      it from its log, and the body re-adopts its own sleep timer
+//      (`isResumableSleepStep`).
 //   4. The re-armed timer fires; the body's sleep completes and the container
 //      records `ChildCompleted` for that body -- only AFTER the restart.
 //

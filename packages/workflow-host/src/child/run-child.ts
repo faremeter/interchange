@@ -1772,6 +1772,9 @@ async function handleControlPayload(
         ...(ctx.bindings.loadParkedApproval !== undefined
           ? { loadParkedApproval: ctx.bindings.loadParkedApproval }
           : {}),
+        ...(ctx.bindings.readParkedApprovalOps !== undefined
+          ? { readParkedApprovalOps: ctx.bindings.readParkedApprovalOps }
+          : {}),
       });
       await ctx.upstreamSender.send({
         type: "parked-correlations.response",

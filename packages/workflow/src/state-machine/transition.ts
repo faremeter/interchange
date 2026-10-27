@@ -550,9 +550,9 @@ function consumeAwaiter(
 }
 
 /**
- * Retire a step's `signal-relay` await without delivering a payload. Emitted by
- * the onTrigger driver when the proxied body progressed by another exit before
- * the external signal arrived.
+ * Retire a step's relay await without delivering a payload. Emitted by the
+ * onTrigger and loop drivers when the proxied body progressed by another exit
+ * before the external signal arrived, or ended under its relayed approval.
  *
  * Race with `SignalReceived`: the abandon and a delivery can be committed
  * concurrently for the same await. If the delivery won -- the step is no longer
@@ -560,9 +560,11 @@ function consumeAwaiter(
  * as the signal left it). If the await is still live, retire it: clear the
  * awaiter and drop the step to `in-flight`.
  *
- * Scope is strict. It touches ONLY a matching `signal-relay` park: an approval
- * or input park, a name mismatch, or a correlation-id mismatch is a producer
- * bug or a mis-target and is rejected, never silently cleared. It never
+ * Scope is strict. It touches ONLY a matching `signal-relay` park, or the
+ * approval park of a step that spawned a child and so relays that child's
+ * approval: any other approval or input park, a name mismatch, or a
+ * correlation-id mismatch is a producer bug or a mis-target and is rejected,
+ * never silently cleared. It never
  * touches either unconsumed queue, `observedSignalIds`, or
  * `consumedIdentities`. A torn-down await does not consume or dedup a signal.
  * A late name-only delivery still queues for the next name await. A late
@@ -583,15 +585,19 @@ function handleSignalAwaitAbandoned(
   const correlationMismatch =
     e.correlationId !== undefined &&
     awaiting?.correlationId !== e.correlationId;
+  const kind = awaiting === undefined ? undefined : controlParkKindOf(awaiting);
+  const relaysChildApproval =
+    kind === "approval" &&
+    [...state.children.values()].some((c) => c.spawnedBy === e.stepId);
   if (
     awaiting === undefined ||
-    controlParkKindOf(awaiting) !== "signal-relay" ||
+    (kind !== "signal-relay" && !relaysChildApproval) ||
     awaiting.name !== e.signalName ||
     correlationMismatch
   ) {
     throw new TransitionError(
       "step-phase",
-      `SignalAwaitAbandoned for step ${e.stepId} on ${e.signalName} does not match an active signal-relay park`,
+      `SignalAwaitAbandoned for step ${e.stepId} on ${e.signalName} does not match an active relay park`,
       e,
     );
   }
