@@ -13,6 +13,7 @@ import {
   writeWorkflowRunRecord,
   deleteWorkflowRunRecord,
   markWorkflowRunRecord,
+  updateWorkflowRunRecordCredentials,
   updateWorkflowRunRecordSources,
   withWorkflowRunRecord,
   scanWorkflowRunRecords,
@@ -745,6 +746,105 @@ describe("workflow run record store", () => {
         sources: MULTI_STEP.sources,
         state: "tearing-down",
       });
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a credentials update seals the latest delivery and a restore reads it", async () => {
+    const dataDir = await makeDataDir();
+    const runId = "credentials-update";
+    try {
+      await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+      await markWorkflowRunRecord(dataDir, runId, { state: "tearing-down" });
+      const later = deliveryOf({ "cred-x": "sk-x2", "hub:mail": "itx-token" });
+      await updateWorkflowRunRecordCredentials(
+        dataDir,
+        runId,
+        SINGLE_STEP.generation,
+        later,
+        CIPHER,
+      );
+
+      // On disk every secret is sealed, and the other fields are kept.
+      const raw = await readRawRecord(dataDir, runId);
+      expect(raw.state).toBe("tearing-down");
+      expect(raw.sources).toEqual(SINGLE_STEP.sources);
+      const secrets = raw.credentials?.materials.map((m) => m.secret) ?? [];
+      expect(secrets).toHaveLength(2);
+      expect(secrets).not.toContain("sk-x2");
+      expect(secrets).not.toContain("itx-token");
+
+      const [scanned] = await scanWorkflowRunRecords(dataDir, CIPHER);
+      expect(scanned?.record.credentials).toEqual(later);
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a credentials update that revokes everything restores an empty cell", async () => {
+    const dataDir = await makeDataDir();
+    const runId = "credentials-revoked";
+    try {
+      await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+      const empty: CredentialDelivery = { bindings: [], materials: [] };
+      await updateWorkflowRunRecordCredentials(
+        dataDir,
+        runId,
+        SINGLE_STEP.generation,
+        empty,
+        CIPHER,
+      );
+      const [scanned] = await scanWorkflowRunRecords(dataDir, CIPHER);
+      expect(scanned?.record.credentials).toEqual(empty);
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a credentials update makes a version-1 record a sealed version 2", async () => {
+    const dataDir = await makeDataDir();
+    const runId = "credentials-version-1";
+    try {
+      // A version-1 record keeps its credential secrets in plaintext.
+      const file = recordPath(dataDir, runId);
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, JSON.stringify({ ...SINGLE_STEP, version: 1 }));
+      const later = deliveryOf({ "cred-x": "sk-x2" });
+      await updateWorkflowRunRecordCredentials(
+        dataDir,
+        runId,
+        SINGLE_STEP.generation,
+        later,
+        CIPHER,
+      );
+
+      const raw = await readRawRecord(dataDir, runId);
+      expect(raw.version).toBe(2);
+      expect(raw.credentials?.materials[0]?.secret).not.toBe("sk-x2");
+      const [scanned] = await scanWorkflowRunRecords(dataDir, CIPHER);
+      expect(scanned?.record.credentials).toEqual(later);
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a stale credentials update leaves a newer generation intact", async () => {
+    const dataDir = await makeDataDir();
+    const runId = "credentials-stale";
+    try {
+      await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
+      const original = await readRawRecord(dataDir, runId);
+      await expect(
+        updateWorkflowRunRecordCredentials(
+          dataDir,
+          runId,
+          SINGLE_STEP.generation - 1,
+          deliveryOf({ "cred-x": "sk-stale" }),
+          CIPHER,
+        ),
+      ).rejects.toThrow("generation changed");
+      expect(await readRawRecord(dataDir, runId)).toEqual(original);
     } finally {
       await fs.rm(dataDir, { recursive: true, force: true });
     }

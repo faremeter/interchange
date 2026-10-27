@@ -4,13 +4,14 @@ import { type } from "arktype";
  * The decrypted credential material and per-handle binding descriptors
  * delivered to a running agent so its consumers -- tools and action handlers --
  * can use provider-backed credentials. Secrets are decrypted hub-side and ride
- * this payload on the live channel ONLY -- the deploy frame at launch, a
+ * this payload on the live channel -- the deploy frame at launch, a
  * `credentials.update` frame on rotation, a run's `run.grants` barrier (its
- * hub tokens), and the child's in-memory cell. They
- * are NEVER written to disk (they do not ride the git-committed grants file)
- * and NEVER copied into any snapshot, event, or state -- redaction is by
- * construction, mirroring how an `InferenceSource`'s `apiKey` stays off every
- * egress type.
+ * hub tokens) -- and the child's in-memory cell. The only copy at rest is the
+ * sidecar's run record, where each secret is sealed under the sidecar's
+ * credential cipher so a restart can restore the run. They NEVER ride the
+ * git-committed grants file and are NEVER copied into any snapshot, event, or
+ * state -- redaction is by construction, mirroring how an `InferenceSource`'s
+ * `apiKey` stays off every egress type.
  *
  * `materials` is keyed by `credentialId` (a credential can back several handles,
  * so its secret is stored once); `bindings` maps each declared handle to the

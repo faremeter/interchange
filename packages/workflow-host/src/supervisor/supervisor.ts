@@ -355,6 +355,13 @@ export interface WorkflowSupervisor {
    * round-tripping the substrate. Returns `null` before spawn.
    */
   getCredentialsSnapshot(): CredentialsSnapshot | null;
+  /**
+   * The supervisor's merged mirror of every credential delivery: the deploy
+   * delivery plus each `deliverCredentials` update, revokes applied. It is
+   * what the next child's `authority.set` carries, so the host seals it into
+   * the run record. `null` when the deployment has never had any.
+   */
+  credentialDelivery(): CredentialDelivery | null;
 }
 
 export type SpawnOpts = {
@@ -5186,6 +5193,7 @@ export function createWorkflowSupervisor(
     deliverGrants,
     reEmitParkedCorrelations,
     getCredentialsSnapshot,
+    credentialDelivery: () => currentCredentialDelivery,
   };
 }
 

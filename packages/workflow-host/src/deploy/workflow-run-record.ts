@@ -15,9 +15,11 @@
 // carried, so a restore re-spawn feeds the child the same re-verify anchor
 // without recomputing it), `lineage`, and -- for a source-ref deployment --
 // the `sourceRef` pin (source + frozen closure) a restore needs to
-// re-materialize and re-evaluate the pinned code. The definition itself is
-// re-materialized from that `sourceRef` closure on restore, and each step's
-// grants live in its agent-state repo, so neither is duplicated here.
+// re-materialize and re-evaluate the pinned code. It also carries the run's
+// credential cell: the latest delivery the deployment received, sealed. The
+// definition itself is re-materialized from that `sourceRef` closure on
+// restore, and each step's grants live in its agent-state repo, so neither is
+// duplicated here.
 
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { dirname, join as pathJoin, resolve } from "node:path";
@@ -91,9 +93,11 @@ const workflowRunRecordBase = {
   // inference and binding alike. `bindings` and each material's `credentialId`/
   // `providerKey`/`origin` ride in the clear; only each material's `secret` is
   // sealed under the sidecar cipher (see `transformDeliveryMaterials`).
-  // Optional: a deployment that binds no credentials and whose sources need
-  // none carries none. Restored + re-delivered to the child on the pre-trigger
-  // barrier.
+  // Written at deploy and replaced after each credentials update that changes
+  // the supervisor's merged delivery, so it holds the deploy material plus the
+  // later updates and Hub tokens, with revokes applied. Optional: a deployment
+  // that binds no credentials and whose sources need none, and that received
+  // no update, carries none. A restore seeds the supervisor with it.
   "credentials?": CredentialDelivery,
   "sessionId?": "string > 0",
   "hubPublicKey?": "string > 0",
@@ -313,6 +317,48 @@ export async function updateWorkflowRunRecordSources(
       JSON.stringify({ ...record, sources }, null, 2),
       { mode: 0o600 },
     );
+  });
+}
+
+/**
+ * Replace a run record's credential cell with `credentials`, sealed under the
+ * sidecar `cipher`, so a restart restores the latest delivery the deployment
+ * received instead of its deploy-time one. Keeps every other field, including
+ * a concurrent stop mark. The whole cell is replaced, so a version-1 record
+ * becomes version 2 with every secret sealed.
+ */
+export async function updateWorkflowRunRecordCredentials(
+  dataDir: string,
+  runId: string,
+  generation: number,
+  credentials: CredentialDelivery,
+  cipher: CredentialCipher,
+): Promise<void> {
+  return withWorkflowRunRecord(dataDir, runId, async (path) => {
+    const record = await readWorkflowRunRecord(path, runId);
+    if (record === null) {
+      throw new Error(
+        `Cannot update credentials for ${runId}: its deployment record is missing or invalid`,
+      );
+    }
+    if (record.generation !== generation) {
+      throw new Error(
+        `Cannot update credentials for ${runId}: its deployment generation changed`,
+      );
+    }
+    const sealed: WorkflowRunRecord = {
+      ...record,
+      version: 2,
+      credentials: await transformDeliveryMaterials(
+        credentials,
+        runId,
+        (secret, aad) => cipher.encrypt(secret, aad),
+      ),
+    };
+    await writeFileAtomicDurable(path, JSON.stringify(sealed, null, 2), {
+      mode: 0o600,
+      requireDirectorySync: true,
+    });
   });
 }
 
