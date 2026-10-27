@@ -36,6 +36,8 @@ import type {
   RepoStore,
 } from "@intx/hub-sessions/substrate";
 
+import type { CredentialsSnapshotPayload } from "../ipc/control-payloads";
+
 /**
  * Path inside each step's `agent-state` repo that carries the step's
  * grants. The agent-state kind handler accepts state writes under the
@@ -246,6 +248,34 @@ export async function assembleCredentialsSnapshot(
     });
   }
   return { steps };
+}
+
+/** The wire form of a snapshot, as a control frame carries it. */
+export function toCredentialsSnapshotPayload(
+  snapshot: CredentialsSnapshot,
+): typeof CredentialsSnapshotPayload.infer {
+  return {
+    steps: snapshot.steps.map((s) => ({
+      stepId: s.stepId,
+      address: s.address,
+      grants: [...s.grants],
+      contentHash: s.contentHash,
+    })),
+  };
+}
+
+/** The snapshot a control frame's wire form carries. */
+export function fromCredentialsSnapshotPayload(
+  payload: typeof CredentialsSnapshotPayload.infer,
+): CredentialsSnapshot {
+  return {
+    steps: payload.steps.map((s) => ({
+      stepId: s.stepId,
+      address: s.address,
+      grants: s.grants,
+      contentHash: s.contentHash,
+    })),
+  };
 }
 
 export function isErrnoNotFound(cause: unknown): boolean {
