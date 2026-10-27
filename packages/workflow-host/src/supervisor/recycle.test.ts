@@ -38,9 +38,11 @@ import {
   type SignedPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
+  type WorkflowSupervisor,
   type WorkflowSupervisorBindings,
 } from "./index";
 import { createRecyclePolicy, type RecyclePolicyBounds } from "./recycle";
+import { waitUntil } from "@intx/types/testing";
 import { parseSpawnTimeEnv } from "../child/env-bootstrap";
 import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
 import {
@@ -62,6 +64,24 @@ function parseSignalDeliverRunIds(lines: readonly string[]): string[] {
     ids.push(payload.data.runId);
   }
   return ids;
+}
+
+// Every downstream frame on a child's stream, in send order.
+function parseControlFrames(lines: readonly string[]): ControlPayload[] {
+  return lines.flatMap((line) => {
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) return [];
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) return [];
+    return [payload];
+  });
+}
+
+function authoritySetFrames(lines: readonly string[]) {
+  return parseControlFrames(lines).flatMap((frame) =>
+    frame.type === "authority.set" ? [frame.data] : [],
+  );
 }
 
 async function makeTempDir(prefix: string): Promise<string> {
@@ -337,6 +357,8 @@ async function buildBindings(opts: {
   ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
   recyclePolicy?: RecyclePolicyBounds;
   inboxPrimitives?: InboxPrimitives;
+  onRunStart?: WorkflowSupervisorBindings["onRunStart"];
+  credentialDelivery?: WorkflowSupervisorBindings["credentialDelivery"];
 }): Promise<WorkflowSupervisorBindings> {
   const repoStore = createStubRepoStore(opts.baseDir, { writeTree: true });
   return {
@@ -370,6 +392,10 @@ async function buildBindings(opts: {
     ...(opts.recyclePolicy !== undefined
       ? { recyclePolicy: opts.recyclePolicy }
       : {}),
+    ...(opts.onRunStart !== undefined ? { onRunStart: opts.onRunStart } : {}),
+    ...(opts.credentialDelivery !== undefined
+      ? { credentialDelivery: opts.credentialDelivery }
+      : {}),
   };
 }
 
@@ -379,6 +405,8 @@ async function spawnSupervisor(opts: {
   mailBus: MailBusBindings;
   ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
   recyclePolicy?: RecyclePolicyBounds;
+  onRunStart?: WorkflowSupervisorBindings["onRunStart"];
+  credentialDelivery?: WorkflowSupervisorBindings["credentialDelivery"];
 }) {
   await seedStepGrants(
     opts.baseDir,
@@ -392,6 +420,10 @@ async function spawnSupervisor(opts: {
     ipcKeypair: opts.ipcKeypair,
     ...(opts.recyclePolicy !== undefined
       ? { recyclePolicy: opts.recyclePolicy }
+      : {}),
+    ...(opts.onRunStart !== undefined ? { onRunStart: opts.onRunStart } : {}),
+    ...(opts.credentialDelivery !== undefined
+      ? { credentialDelivery: opts.credentialDelivery }
       : {}),
   });
   const supervisor = createWorkflowSupervisor(bindings);
@@ -970,12 +1002,15 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
     if (secondChild === undefined) {
       throw new Error("second child missing for buffer test");
     }
-    // Count the supervisor's outbound frames to the new child before
-    // `ready`. The supervisor must NOT forward the buffered mail
-    // until `ready` lands; pre-ready, the only frame the supervisor
-    // would write would be a drain. Recycle's drain step ran against
-    // the FIRST child's controlSender, not this one.
-    expect(secondChild.supervisorToChild.flushed()).toEqual([]);
+    // The supervisor must NOT forward the buffered mail until `ready`
+    // lands; pre-ready, the only frame the new child gets is its
+    // `authority.set`. Recycle's drain step ran against the FIRST
+    // child's controlSender, not this one.
+    expect(
+      parseControlFrames(secondChild.supervisorToChild.flushed())
+        .map((frame) => frame.type)
+        .filter((frameType) => frameType !== "authority.set"),
+    ).toEqual([]);
 
     const secondChildSender = await driveReady(secondChild, ipcKeypair);
     const attempt = await recyclePromise;
@@ -1758,5 +1793,645 @@ describe("supervisor shutdown: teardown robustness", () => {
     // teardown (which would call the throwing kill again).
     await supervisor.shutdown();
     expect(child.killSignals.length).toBe(1);
+  });
+});
+
+describe("supervisor recycle: the new child's authority", () => {
+  const runSnapshot = {
+    steps: [
+      {
+        stepId: "step-1",
+        address: "run_deployment-x-step-1@example.com",
+        grants: [{ id: "run-grant" }],
+        contentHash: "run-hash",
+      },
+    ],
+  };
+  const material = (credentialId: string) => ({
+    credentialId,
+    providerKey: "http",
+    origin: "https://api.example.test",
+    secret: `sk-${credentialId}`,
+  });
+
+  const versioned = (contentHash: string) => ({
+    steps: [
+      {
+        stepId: "step-1",
+        address: "run_deployment-x-step-1@example.com",
+        grants: [{ id: `grant-${contentHash}` }],
+        contentHash,
+      },
+    ],
+  });
+
+  // A one-shot gate: `reached` resolves when the gated read arrives, and the
+  // read waits until `release()`.
+  function readGate() {
+    let markReached: () => void = () => undefined;
+    const reached = new Promise<void>((resolve) => {
+      markReached = resolve;
+    });
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return {
+      reached,
+      release,
+      arrive: () => {
+        markReached();
+        return released;
+      },
+    };
+  }
+
+  // A supervisor whose spawn is started but whose child has not readied.
+  async function startSpawn(opts: {
+    baseDir: string;
+    tracker: SpawnTracker;
+    ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
+    onRunStart: NonNullable<WorkflowSupervisorBindings["onRunStart"]>;
+  }) {
+    await seedStepGrants(
+      opts.baseDir,
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const bindings = await buildBindings({
+      baseDir: opts.baseDir,
+      spawner: opts.tracker.spawner,
+      mailBus: createMockMailBus(),
+      ipcKeypair: opts.ipcKeypair,
+      onRunStart: opts.onRunStart,
+    });
+    const supervisor = createWorkflowSupervisor(bindings);
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      warmKeep: false,
+      onInferenceEvent: () => undefined,
+    });
+    return { supervisor, spawnPromise };
+  }
+
+  // The grants hash of the last grants-bearing frame a child applies.
+  function lastGrantsHash(lines: readonly string[]): string | undefined {
+    const last = parseControlFrames(lines)
+      .filter(
+        (frame) =>
+          frame.type === "authority.set" || frame.type === "grants-updated",
+      )
+      .at(-1);
+    if (last?.type === "authority.set") {
+      return last.data.snapshot?.steps[0]?.contentHash;
+    }
+    if (last?.type === "grants-updated") {
+      return last.data.snapshot.steps[0]?.contentHash;
+    }
+    return undefined;
+  }
+
+  test("a grants refresh during the spawn's grants read reaches the starting child", async () => {
+    const baseDir = await makeTempDir("recycle-authority-spawn-refresh-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({});
+    const gate = readGate();
+    let reads = 0;
+    const { supervisor, spawnPromise } = await startSpawn({
+      baseDir,
+      tracker,
+      ipcKeypair,
+      onRunStart: async () => {
+        reads += 1;
+        if (reads === 1) {
+          await gate.arrive();
+          return versioned("old");
+        }
+        return versioned("new");
+      },
+    });
+    try {
+      await gate.reached;
+      // The supervisor is still idle, so the refresh reaches no child.
+      expect(await supervisor.deliverGrants("run_deployment-x")).toBe(
+        "skipped",
+      );
+      gate.release();
+      await tracker.awaitChildren(1);
+      const child = tracker.children[0];
+      if (child === undefined) throw new Error("child missing");
+      await driveReady(child, ipcKeypair);
+      await spawnPromise;
+
+      await waitUntil(
+        () => authoritySetFrames(child.supervisorToChild.flushed()).length >= 2,
+      );
+      expect(lastGrantsHash(child.supervisorToChild.flushed())).toBe("new");
+    } finally {
+      gate.release();
+      await spawnPromise.catch(() => undefined);
+      await supervisor.shutdown();
+    }
+  });
+
+  test("a grants refresh skipped during a recycle reaches the new child after install", async () => {
+    const baseDir = await makeTempDir("recycle-authority-recycle-refresh-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({});
+    const gate = readGate();
+    let reads = 0;
+    const { supervisor, spawnPromise } = await startSpawn({
+      baseDir,
+      tracker,
+      ipcKeypair,
+      onRunStart: async () => {
+        reads += 1;
+        if (reads === 2) {
+          await gate.arrive();
+          return versioned("old");
+        }
+        return versioned(reads === 1 ? "first" : "new");
+      },
+    });
+    await tracker.awaitChildren(1);
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("child missing");
+    await driveReady(first, ipcKeypair);
+    await spawnPromise;
+
+    const recyclePromise = supervisor.recycle({ reason: "refresh" });
+    try {
+      await gate.reached;
+      // The supervisor is recycling, so the refresh reaches no child.
+      expect(await supervisor.deliverGrants("run_deployment-x")).toBe(
+        "skipped",
+      );
+      gate.release();
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      await driveReady(second, ipcKeypair);
+      await recyclePromise;
+
+      await waitUntil(
+        () =>
+          authoritySetFrames(second.supervisorToChild.flushed()).length >= 2,
+      );
+      expect(lastGrantsHash(second.supervisorToChild.flushed())).toBe("new");
+    } finally {
+      gate.release();
+      await recyclePromise.catch(() => undefined);
+      await supervisor.shutdown();
+    }
+  });
+
+  test("a resend whose read began before a newer grants refresh does not send the older grants", async () => {
+    const baseDir = await makeTempDir("recycle-authority-stale-resend-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({});
+    const spawnRead = readGate();
+    const resendRead = readGate();
+    let reads = 0;
+    const { supervisor, spawnPromise } = await startSpawn({
+      baseDir,
+      tracker,
+      ipcKeypair,
+      onRunStart: async () => {
+        reads += 1;
+        if (reads === 1) {
+          await spawnRead.arrive();
+          return versioned("v0");
+        }
+        if (reads === 2) {
+          // The resend's read saw the file before the v2 write landed.
+          await resendRead.arrive();
+          return versioned("v1");
+        }
+        return versioned("v2");
+      },
+    });
+    try {
+      await spawnRead.reached;
+      // A skipped refresh during the spawn's read makes the spawn resend.
+      await supervisor.deliverGrants("run_deployment-x");
+      spawnRead.release();
+      await resendRead.reached;
+      // The grants file moves to v2, and the refresh reaches the child.
+      expect(await supervisor.deliverGrants("run_deployment-x")).toBe("pushed");
+      resendRead.release();
+      await tracker.awaitChildren(1);
+      const child = tracker.children[0];
+      if (child === undefined) throw new Error("child missing");
+      await driveReady(child, ipcKeypair);
+      await spawnPromise;
+
+      await waitUntil(
+        () => authoritySetFrames(child.supervisorToChild.flushed()).length >= 2,
+      );
+      expect(lastGrantsHash(child.supervisorToChild.flushed())).toBe("v2");
+    } finally {
+      spawnRead.release();
+      resendRead.release();
+      await spawnPromise.catch(() => undefined);
+      await supervisor.shutdown();
+    }
+  });
+
+  test("a resend whose grants read fails keeps the child's grants", async () => {
+    const baseDir = await makeTempDir("recycle-authority-resend-fail-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({});
+    const gate = readGate();
+    let reads = 0;
+    const { supervisor, spawnPromise } = await startSpawn({
+      baseDir,
+      tracker,
+      ipcKeypair,
+      onRunStart: async () => {
+        reads += 1;
+        if (reads === 1) {
+          await gate.arrive();
+          return versioned("good");
+        }
+        throw new Error("synthetic grants read failure");
+      },
+    });
+    try {
+      await gate.reached;
+      // A skipped refresh during the spawn's read makes the spawn resend.
+      await supervisor.deliverGrants("run_deployment-x");
+      gate.release();
+      await tracker.awaitChildren(1);
+      const child = tracker.children[0];
+      if (child === undefined) throw new Error("child missing");
+      await driveReady(child, ipcKeypair);
+      await spawnPromise;
+
+      await waitUntil(
+        () => authoritySetFrames(child.supervisorToChild.flushed()).length >= 2,
+      );
+      const frames = authoritySetFrames(child.supervisorToChild.flushed());
+      expect(frames[0]?.snapshot?.steps[0]?.contentHash).toBe("good");
+      // The resend omits the snapshot, so the child keeps "good".
+      expect(frames[1]).toBeDefined();
+      expect(frames[1] !== undefined && "snapshot" in frames[1]).toBe(false);
+    } finally {
+      gate.release();
+      await spawnPromise.catch(() => undefined);
+      await supervisor.shutdown();
+    }
+  });
+
+  // A supervisor whose keypair factory waits for `release()`.
+  async function startGatedKeypairSpawn(opts: {
+    baseDir: string;
+    tracker: SpawnTracker;
+    ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
+    keypair: () => Promise<{ privateKey: Uint8Array; publicKey: Uint8Array }>;
+  }) {
+    const bindings = await buildBindings({
+      baseDir: opts.baseDir,
+      spawner: opts.tracker.spawner,
+      mailBus: createMockMailBus(),
+      ipcKeypair: opts.ipcKeypair,
+    });
+    const supervisor = createWorkflowSupervisor({
+      ...bindings,
+      ipcKeyPairFactory: opts.keypair,
+    });
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-abc",
+      warmKeep: false,
+      onInferenceEvent: () => undefined,
+    });
+    return { supervisor, spawnPromise };
+  }
+
+  test("a spawner that throws leaves no pending spawn for a later shutdown", async () => {
+    const baseDir = await makeTempDir("recycle-authority-spawner-throws-");
+    const ipcKeypair = await generateKeyPair();
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: () => {
+        throw new Error("synthetic spawn ENOENT");
+      },
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+    });
+    const supervisor = createWorkflowSupervisor(bindings);
+    await expect(
+      supervisor.spawn({
+        stepOrder: ["step-1"],
+        definitionHash: "def-hash-abc",
+        warmKeep: false,
+        onInferenceEvent: () => undefined,
+      }),
+    ).rejects.toThrow(/synthetic spawn ENOENT/);
+    // A stale pending spawn would make this wait forever.
+    await supervisor.shutdown();
+  });
+
+  // The child applies `authority.set` as a replace and `credentials-updated`
+  // as a merge. The credential ids it holds after the given frames.
+  function heldCredentialIds(lines: readonly string[]): string[] {
+    let held = new Set<string>();
+    for (const frame of parseControlFrames(lines)) {
+      if (frame.type === "authority.set") {
+        held = new Set(
+          (frame.data.delivery?.materials ?? []).map((m) => m.credentialId),
+        );
+      } else if (frame.type === "credentials-updated") {
+        for (const id of frame.data.revoke ?? []) held.delete(id);
+        for (const m of frame.data.delivery.materials) {
+          held.add(m.credentialId);
+        }
+      }
+    }
+    return [...held].sort();
+  }
+
+  function oneMaterial(credentialId: string) {
+    return {
+      bindings: [],
+      materials: [
+        {
+          credentialId,
+          providerKey: "http",
+          origin: "https://api.example.com",
+          secret: `sk-${credentialId}`,
+        },
+      ],
+    };
+  }
+
+  const inFlightUpdates: [
+    string,
+    Parameters<WorkflowSupervisor["deliverCredentials"]>[0],
+    string[],
+  ][] = [
+    [
+      "adds a credential",
+      { delivery: oneMaterial("cred-b") },
+      ["cred-a", "cred-b"],
+    ],
+    [
+      "revokes a credential",
+      { delivery: { bindings: [], materials: [] }, revoke: ["cred-a"] },
+      [],
+    ],
+  ];
+  test.each(inFlightUpdates)(
+    "a credentials update that %s while its frame waits on the child is not undone by a resend",
+    async (_case, update, expected) => {
+      const baseDir = await makeTempDir("recycle-authority-cred-race-");
+      const ipcKeypair = await generateKeyPair();
+      const inner = createSpawnTracker({});
+      // Hold the child's next stdin write once armed, and report when a
+      // write reaches the hold.
+      let hold: PromiseWithResolvers<undefined> | null = null;
+      const writeHeld = Promise.withResolvers<undefined>();
+      const tracker: SpawnTracker = {
+        ...inner,
+        spawner: (args) => {
+          const handle = inner.spawner(args);
+          return {
+            ...handle,
+            controlWriter: {
+              write: async (line: string) => {
+                if (hold !== null) {
+                  writeHeld.resolve(undefined);
+                  await hold.promise;
+                }
+                return handle.controlWriter.write(line);
+              },
+            },
+          };
+        },
+      };
+      const spawnRead = readGate();
+      const resendRead = readGate();
+      let reads = 0;
+      const { supervisor, spawnPromise } = await startSpawn({
+        baseDir,
+        tracker,
+        ipcKeypair,
+        onRunStart: async () => {
+          reads += 1;
+          if (reads === 1) await spawnRead.arrive();
+          if (reads === 2) await resendRead.arrive();
+          return versioned("v");
+        },
+      });
+      const release = Promise.withResolvers<undefined>();
+      try {
+        await spawnRead.reached;
+        // The supervisor is idle, so this reaches only the mirror and makes
+        // the spawn resend.
+        await supervisor.deliverCredentials({
+          delivery: oneMaterial("cred-a"),
+        });
+        spawnRead.release();
+        await resendRead.reached;
+        // The child's stdin is full: the update's frame waits on the write.
+        hold = release;
+        const updating = supervisor.deliverCredentials(update);
+        await writeHeld.promise;
+        resendRead.release();
+        release.resolve(undefined);
+        hold = null;
+        await updating;
+        await inner.awaitChildren(1);
+        const child = inner.children[0];
+        if (child === undefined) throw new Error("child missing");
+        await driveReady(child, ipcKeypair);
+        await spawnPromise;
+        // The resend sends its frame after the update's.
+        await waitUntil(
+          () =>
+            authoritySetFrames(child.supervisorToChild.flushed()).length >= 2,
+        );
+
+        expect(heldCredentialIds(child.supervisorToChild.flushed())).toEqual(
+          expected,
+        );
+      } finally {
+        spawnRead.release();
+        resendRead.release();
+        release.resolve(undefined);
+        await spawnPromise.catch(() => undefined);
+        await supervisor.shutdown();
+      }
+    },
+  );
+
+  test("a shutdown during the spawn's keypair await stops the spawn before it starts a child", async () => {
+    const baseDir = await makeTempDir("recycle-authority-keypair-shutdown-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    const gate = readGate();
+    const { supervisor, spawnPromise } = await startGatedKeypairSpawn({
+      baseDir,
+      tracker,
+      ipcKeypair,
+      keypair: async () => {
+        await gate.arrive();
+        return ipcKeypair;
+      },
+    });
+    await gate.reached;
+    // The shutdown waits for the spawn, which waits for the keypair.
+    const shutdown = supervisor.shutdown();
+    gate.release();
+    await shutdown;
+
+    await expect(spawnPromise).rejects.toThrow(
+      /shut down before the spawn started its child/,
+    );
+    expect(tracker.children).toHaveLength(0);
+  });
+
+  test("a failed keypair leaves no pending spawn for a later shutdown", async () => {
+    const baseDir = await makeTempDir("recycle-authority-keypair-fail-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    const { supervisor, spawnPromise } = await startGatedKeypairSpawn({
+      baseDir,
+      tracker,
+      ipcKeypair,
+      keypair: () => Promise.reject(new Error("synthetic keypair failure")),
+    });
+    await expect(spawnPromise).rejects.toThrow(/synthetic keypair failure/);
+    // A stale pending spawn would make this wait forever.
+    await supervisor.shutdown();
+    expect(tracker.children).toHaveLength(0);
+  });
+
+  test("a shutdown during the spawn's grants read kills the new child and fails the spawn", async () => {
+    const baseDir = await makeTempDir("recycle-authority-shutdown-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    const gate = readGate();
+    const { supervisor, spawnPromise } = await startSpawn({
+      baseDir,
+      tracker,
+      ipcKeypair,
+      onRunStart: async () => {
+        await gate.arrive();
+        return versioned("v0");
+      },
+    });
+    await gate.reached;
+    // The shutdown waits for the spawn, which waits for the read.
+    const shutdown = supervisor.shutdown();
+    gate.release();
+    await shutdown;
+
+    await expect(spawnPromise).rejects.toThrow(
+      /shut down while the spawn read the run's authority/,
+    );
+    const child = tracker.children[0];
+    expect(child?.killSignals.length).toBeGreaterThan(0);
+  });
+
+  test("a recycled child's first frame is authority.set with the run's grants and the current credentials", async () => {
+    const baseDir = await makeTempDir("recycle-authority-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({});
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      onRunStart: async () => runSnapshot,
+      credentialDelivery: { bindings: [], materials: [material("cred_a")] },
+    });
+    // A credentials update reaches the supervisor while the first child runs.
+    await supervisor.deliverCredentials({
+      delivery: { bindings: [], materials: [material("cred_b")] },
+    });
+
+    const recyclePromise = supervisor.recycle({ reason: "authority" });
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recyclePromise;
+
+    const frames = parseControlFrames(second.supervisorToChild.flushed());
+    expect(frames[0]?.type).toBe("authority.set");
+    const [authority] = authoritySetFrames(second.supervisorToChild.flushed());
+    expect(authority?.snapshot?.steps[0]?.grants).toEqual([
+      { id: "run-grant" },
+    ]);
+    expect(
+      authority?.delivery?.materials.map((m) => m.credentialId).sort(),
+    ).toEqual(["cred_a", "cred_b"]);
+
+    await supervisor.shutdown();
+  });
+
+  test("a credentials update that arrives during the recycle reaches the new child after install", async () => {
+    const baseDir = await makeTempDir("recycle-authority-late-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({});
+    // The first read is the spawn's; the second is the recycle's, which
+    // waits until the test has delivered an update.
+    let reads = 0;
+    let markReached: () => void = () => undefined;
+    const reached = new Promise<void>((resolve) => {
+      markReached = resolve;
+    });
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      onRunStart: async () => {
+        reads += 1;
+        if (reads === 2) {
+          markReached();
+          await released;
+        }
+        return runSnapshot;
+      },
+      credentialDelivery: { bindings: [], materials: [material("cred_a")] },
+    });
+
+    const recyclePromise = supervisor.recycle({ reason: "authority-late" });
+    try {
+      await reached;
+      // The supervisor is recycling: the update reaches only its mirror.
+      await supervisor.deliverCredentials({
+        delivery: { bindings: [], materials: [material("cred_c")] },
+      });
+      release();
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      await driveReady(second, ipcKeypair);
+      await recyclePromise;
+
+      // The update moved the revision after the frame's read began, so
+      // the installed child gets its whole authority again.
+      await waitUntil(
+        () =>
+          authoritySetFrames(second.supervisorToChild.flushed()).length >= 2,
+      );
+      const frames = authoritySetFrames(second.supervisorToChild.flushed());
+      expect(
+        frames
+          .at(-1)
+          ?.delivery?.materials.map((m) => m.credentialId)
+          .sort(),
+      ).toEqual(["cred_a", "cred_c"]);
+    } finally {
+      release();
+      await recyclePromise.catch(() => undefined);
+      await supervisor.shutdown();
+    }
   });
 });

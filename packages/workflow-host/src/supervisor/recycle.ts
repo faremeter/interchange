@@ -95,7 +95,7 @@ import {
 import { generateChannelId, generateHmacKey } from "../ipc/crypto";
 import { receiveControlChannel } from "../ipc/control-receiver";
 import { receiveEventChannel, type EventPayload } from "../ipc/event-channel";
-import type { ControlPayload } from "../ipc/control-payloads";
+import type { AuthoritySetData, ControlPayload } from "../ipc/control-payloads";
 
 import {
   assembleCredentialsSnapshot,
@@ -214,6 +214,16 @@ export interface RecycleContext {
    */
   readonly abortPriorCohort: () => void;
   /**
+   * The new child's `authority.set` frame data: the run's grants snapshot
+   * (`fallback` when the supervisor has no per-run grants source) and the
+   * supervisor's credential mirror, with the authority revision it was read
+   * at. Read from the supervisor at the call, never copied when the context is
+   * built, so the frame carries the state at respawn time.
+   */
+  readonly buildAuthority: (
+    fallback: CredentialsSnapshot,
+  ) => Promise<{ data: AuthoritySetData; revision: number }>;
+  /**
    * Onward sink the supervisor uses to install the new child wiring
    * once the freshly-spawned child has emitted `ready` and the
    * credentialsSnapshot has been re-assembled.
@@ -221,6 +231,12 @@ export interface RecycleContext {
   readonly installNewChild: (next: {
     wiring: ChildWiring;
     credentialsSnapshot: CredentialsSnapshot;
+    /**
+     * The authority revision of the `authority.set` frame the new child got.
+     * The supervisor sends the frame again when its revision moved on while
+     * the child was recycling.
+     */
+    authorityRevision: number;
     /**
      * Live upstream control iterator the new child's receiver
      * yields. The supervisor's upstream-control pump consumes the
@@ -329,10 +345,10 @@ export async function triggerRecycle(
   });
 
   // Step 3: respawn. Fresh channelId, fresh HMAC key, fresh Ed25519
-  // IPC keypair. Per-step credentials are re-read so a grants update
-  // that landed since the original spawn is reflected in the new
-  // child's snapshot. The deploy tree (the materialized source closure,
-  // the workflow-asset repo, the agent-state repos) is UNCHANGED.
+  // IPC keypair. The new child gets the run's current grants and
+  // credential material in its first frame, before it resumes any run.
+  // The deploy tree (the materialized source closure, the
+  // workflow-asset repo, the agent-state repos) is UNCHANGED.
   const channelId = generateChannelId();
   const hmacKey = generateHmacKey();
   const ipcKeypair = await (
@@ -393,23 +409,19 @@ export async function triggerRecycle(
   const setTimer = ctx.setTimer ?? defaultSetTimer;
   const clearTimer = ctx.clearTimer ?? defaultClearTimer;
 
-  // Re-read per-step credentials. A grants update that landed during
-  // the previous child's lifetime is picked up here -- the recycle
-  // doubles as the supervisor's grant-refresh path. The deploy tree
-  // is not consulted; this read is against the `agent-state` repos
-  // alone, whose contents are independent of the materialized source
-  // closure.
+  // Re-read the spawn-time per-step credentials from the `agent-state`
+  // repos, and read the run's authority for the new child's first frame.
   //
-  // This is a substrate read that can reject -- a grants file that
-  // became malformed is precisely the recycle's grant-refresh path. The
-  // new child is already spawned and wired but not yet installed on
-  // `state`, so the supervisor's recycle-failure teardown (which reaps
-  // the PRIOR cohort) cannot see it; reap it here on failure or it
-  // leaks. The spawn path routes this same throw through its teardown
-  // owner. The try wraps only the awaited read: the handle and pumps it
-  // reaps are all constructed above, so the reap always has live
-  // handles.
+  // The credentials read can reject; the authority read cannot, because a
+  // failed grants read gives the child a null snapshot. The new child is
+  // already spawned and wired but not yet installed on `state`, so the
+  // supervisor's recycle-failure teardown (which reaps the PRIOR cohort)
+  // cannot see it; reap it here on failure or it leaks. The spawn path
+  // kills its child on the same failure. The try wraps only the awaited
+  // reads: the handle and pumps it reaps are all constructed above, so
+  // the reap always has live handles.
   let credentialsSnapshot: CredentialsSnapshot;
+  let authority: { data: AuthoritySetData; revision: number };
   try {
     credentialsSnapshot = await assembleCredentialsSnapshot({
       repoStore: ctx.bindings.repoStore,
@@ -421,6 +433,7 @@ export async function triggerRecycle(
         ? { deriveStepRepoId: ctx.bindings.deriveStepRepoId }
         : {}),
     });
+    authority = await ctx.buildAuthority(credentialsSnapshot);
   } catch (cause) {
     await reapUnreadyChild(handle, eventPump, controlIncoming, {
       killTimeoutMs,
@@ -431,6 +444,17 @@ export async function triggerRecycle(
     throw cause;
   }
 
+  // The first frame the new child receives: nothing else sends to this
+  // sender before `installNewChild`. The child applies it before it
+  // resumes any run. A large frame can wait on the child reading its
+  // stdin, so the send is folded into the bounded handshake below; a
+  // failed send fails the handshake and reaps the child.
+  const authoritySent = controlSender.send({
+    type: "authority.set",
+    data: authority.data,
+  });
+  void authoritySent.catch(() => undefined);
+
   // Steps 4 + 5: self-discover + resume. These run inside the child
   // before it emits `ready`; the supervisor waits, but bounded -- a child
   // that neither readies nor exits must not park the recycle (and thus
@@ -438,14 +462,14 @@ export async function triggerRecycle(
   // as the spawn path bounds its own: fold ready/failed into values, race
   // a resolve-only deadline, clear the timer on every path.
   //
-  // NOTE: `assembleCredentialsSnapshot` above is a substrate read that
-  // sits OUTSIDE this deadline; a wedged substrate is a supervisor-side
+  // NOTE: the credentials and authority reads above are substrate reads
+  // that sit OUTSIDE this deadline; a wedged substrate is a supervisor-side
   // fault bounded at its own layer, not by overloading this handshake
   // timer. The respawn is deadline-bounded on the child handshake, not on
   // that read.
   const readyTimeoutMs = ctx.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
-  const readyOutcome = readyPromise.then(
-    (info) => ({ kind: "ready" as const, info }),
+  const readyOutcome = Promise.all([readyPromise, authoritySent]).then(
+    ([info]) => ({ kind: "ready" as const, info }),
     (err: unknown) => ({ kind: "failed" as const, err }),
   );
   const readyDeadline = waitDeadline(setTimer, readyTimeoutMs);
@@ -487,6 +511,7 @@ export async function triggerRecycle(
     wiring: newWiring,
     credentialsSnapshot,
     controlIncoming,
+    authorityRevision: authority.revision,
   });
 
   // Step 6: the FIFO inbox claim-check queue holds any mail that

@@ -11,6 +11,10 @@
 // credential. So a `credentials-updated` frame MERGES: materials upsert by
 // `credentialId`, bindings upsert by `(consumer, handle)`.
 //
+// An `authority.set` frame is the one wholesale replace. It carries the
+// supervisor's mirror, which is this same merge applied to every producer's
+// delivery, so a replace with it evicts nothing a producer still holds.
+//
 // Because omission no longer means "gone", revocation is EXPLICIT: a frame's
 // `revoke` list names the credentialIds to drop, and dropping one also drops
 // every binding that references it. Revocation is applied before the upsert, so

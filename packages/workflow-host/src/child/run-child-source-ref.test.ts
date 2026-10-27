@@ -41,12 +41,14 @@ import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
   waitForUpstreamPayload,
+  sendAuthoritySet,
 } from "@intx/workflow-host/testing";
 
 import {
   createControlChannelSender,
   generateChannelId,
   generateHmacKey,
+  type NdjsonReader,
   receiveControlChannel,
 } from "../ipc/index";
 import { createSidecarActionCredentialsFactory } from "./action-credentials";
@@ -338,6 +340,145 @@ async function seedNonTerminalRun(
   );
 }
 
+// A closure whose workflow is one action that declares `api-token` and writes
+// the resolved handle's kind to `marker`, and whose actions module is the same
+// entry.
+async function writeCredentialedActionClosure(
+  marker: string,
+): Promise<{ packageDir: string; approvedHash: string }> {
+  const packageDir = await makeTempDir("srcref-action-cred-pkg-");
+  const definition = {
+    id: "srcref-action-cred",
+    triggers: [{ type: "manual" }],
+    steps: {
+      fetch: {
+        kind: "action",
+        id: "fetch",
+        handler: "resolveToken",
+        drainBehavior: "cancel",
+        input: { literal: { marker } },
+        effect: { requires: ["resolve"] },
+        credentials: ["api-token"],
+      },
+    },
+    stepOrder: ["fetch"],
+  };
+  await fsp.writeFile(
+    path.join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "@fixture/srcref-action-cred",
+      version: "1.0.0",
+      interchange: { workflow: "workflow.mjs", actions: "workflow.mjs" },
+    }),
+    "utf8",
+  );
+  await fsp.writeFile(
+    path.join(packageDir, "workflow.mjs"),
+    `import { writeFile } from "node:fs/promises";
+export const workflow = ${JSON.stringify(definition)};
+export async function resolveToken(input, ctx) {
+  return ctx.perform({
+    effectId: "resolve-once",
+    capability: "resolve",
+    run: async ({ credentials }) => {
+      const handle = await credentials.resolve("api-token");
+      await writeFile(input.marker, handle.kind);
+      return handle.kind;
+    },
+  });
+}
+`,
+    "utf8",
+  );
+  const live = await loadWorkflowDefinitionFromClosure({ packageDir });
+  return { packageDir, approvedHash: await computeLiveDefinitionHash(live) };
+}
+
+// The authority that lets the action resolve `api-token`: grants to use
+// `cred-1` and to invoke `resolve`, and the material for `cred-1`.
+function credentialedActionAuthority(consumer: string) {
+  return {
+    snapshot: {
+      steps: [
+        {
+          stepId: "fetch",
+          address: "deployment-x-fetch@example.com",
+          grants: [
+            {
+              id: "grant-use",
+              resource: "credential:cred-1",
+              action: "use",
+              effect: "allow",
+              origin: "system",
+              conditions: { tool: consumer },
+              expiresAt: null,
+              roleId: null,
+              principalId: null,
+            },
+            {
+              id: "grant-effect",
+              resource: "effect:resolve",
+              action: "invoke",
+              effect: "allow",
+              origin: "creator",
+              conditions: null,
+              expiresAt: null,
+              roleId: null,
+              principalId: null,
+            },
+          ],
+          contentHash: "deadbeef",
+        },
+      ],
+    },
+    delivery: {
+      bindings: [{ handle: "api-token", credentialId: "cred-1", consumer }],
+      materials: [
+        {
+          credentialId: "cred-1",
+          providerKey: "http",
+          origin: "https://api.example.com",
+          secret: "sk-top-level",
+        },
+      ],
+    },
+  };
+}
+
+// A reader that reports the child's first wait for a control frame. The
+// child asks for its first frame after its startup reads and before it
+// resumes any run or sends anything upstream.
+function signalFirstRead(reader: NdjsonReader): {
+  reader: NdjsonReader;
+  firstRead: Promise<void>;
+} {
+  let markFirstRead: () => void = () => undefined;
+  const firstRead = new Promise<void>((resolve) => {
+    markFirstRead = resolve;
+  });
+  return {
+    reader: {
+      read: async function* () {
+        markFirstRead();
+        yield* reader.read();
+      },
+    },
+    firstRead,
+  };
+}
+
+// The grants snapshot these tests give every child in its `authority.set`.
+const AUTHORITY_SNAPSHOT = {
+  steps: [
+    {
+      stepId: "main",
+      address: "deployment-x-main@example.com",
+      grants: [],
+      contentHash: "deadbeef",
+    },
+  ],
+};
+
 function buildBindings(baseDir: string): RunWorkflowChildBindings {
   return {
     substrate: createStubRepoStore(baseDir),
@@ -353,16 +494,6 @@ function buildBindings(baseDir: string): RunWorkflowChildBindings {
       matchingGrants: [],
       resolvedBy: null,
     }),
-    initialCredentialsSnapshot: {
-      steps: [
-        {
-          stepId: "main",
-          address: "deployment-x-main@example.com",
-          grants: [],
-          contentHash: "deadbeef",
-        },
-      ],
-    },
   };
 }
 
@@ -469,6 +600,8 @@ describe("source-ref run child", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
 
     const runPromise = runWorkflowChild({
       env,
@@ -658,6 +791,8 @@ describe("source-ref run child", () => {
       writer: supervisorToChild.writer,
     });
 
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+
     const runPromise = runWorkflowChild({
       env,
       controlReader: supervisorToChild.reader,
@@ -686,54 +821,8 @@ describe("source-ref run child", () => {
     const marker = path.join(markerDir, "marker");
     const consumer = actionConsumer("resolveToken");
 
-    // A closure whose workflow is one action that declares `api-token`, and
-    // whose actions module is the same entry.
-    const packageDir = await makeTempDir("srcref-action-cred-pkg-");
-    const definition = {
-      id: "srcref-action-cred",
-      triggers: [{ type: "manual" }],
-      steps: {
-        fetch: {
-          kind: "action",
-          id: "fetch",
-          handler: "resolveToken",
-          drainBehavior: "cancel",
-          input: { literal: { marker } },
-          effect: { requires: ["resolve"] },
-          credentials: ["api-token"],
-        },
-      },
-      stepOrder: ["fetch"],
-    };
-    await fsp.writeFile(
-      path.join(packageDir, "package.json"),
-      JSON.stringify({
-        name: "@fixture/srcref-action-cred",
-        version: "1.0.0",
-        interchange: { workflow: "workflow.mjs", actions: "workflow.mjs" },
-      }),
-      "utf8",
-    );
-    await fsp.writeFile(
-      path.join(packageDir, "workflow.mjs"),
-      `import { writeFile } from "node:fs/promises";
-export const workflow = ${JSON.stringify(definition)};
-export async function resolveToken(input, ctx) {
-  return ctx.perform({
-    effectId: "resolve-once",
-    capability: "resolve",
-    run: async ({ credentials }) => {
-      const handle = await credentials.resolve("api-token");
-      await writeFile(input.marker, handle.kind);
-      return handle.kind;
-    },
-  });
-}
-`,
-      "utf8",
-    );
-    const live = await loadWorkflowDefinitionFromClosure({ packageDir });
-    const approvedHash = await computeLiveDefinitionHash(live);
+    const { packageDir, approvedHash } =
+      await writeCredentialedActionClosure(marker);
 
     const supervisorKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
@@ -760,50 +849,6 @@ export async function resolveToken(input, ctx) {
             builtinCredentialProviders(),
           ),
         }),
-      initialCredentialMaterial: {
-        bindings: [{ handle: "api-token", credentialId: "cred-1", consumer }],
-        materials: [
-          {
-            credentialId: "cred-1",
-            providerKey: "http",
-            origin: "https://api.example.com",
-            secret: "sk-top-level",
-          },
-        ],
-      },
-      initialCredentialsSnapshot: {
-        steps: [
-          {
-            stepId: "fetch",
-            address: "deployment-x-fetch@example.com",
-            grants: [
-              {
-                id: "grant-use",
-                resource: "credential:cred-1",
-                action: "use",
-                effect: "allow",
-                origin: "system",
-                conditions: { tool: consumer },
-                expiresAt: null,
-                roleId: null,
-                principalId: null,
-              },
-              {
-                id: "grant-effect",
-                resource: "effect:resolve",
-                action: "invoke",
-                effect: "allow",
-                origin: "creator",
-                conditions: null,
-                expiresAt: null,
-                roleId: null,
-                principalId: null,
-              },
-            ],
-            contentHash: "deadbeef",
-          },
-        ],
-      },
     };
 
     const supervisorSender = createControlChannelSender({
@@ -811,6 +856,11 @@ export async function resolveToken(input, ctx) {
       channelId,
       writer: supervisorToChild.writer,
     });
+
+    await sendAuthoritySet(
+      supervisorSender,
+      credentialedActionAuthority(consumer),
+    );
     const runPromise = runWorkflowChild({
       env,
       controlReader: supervisorToChild.reader,
@@ -842,6 +892,91 @@ export async function resolveToken(input, ctx) {
       }
     }
 
+    expect(await fsp.readFile(marker, "utf8")).toBe("http");
+
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+  }, 30000);
+
+  test("a resumed run's credentialed action uses the child's first authority.set", async () => {
+    const baseDir = await makeTempDir("srcref-resume-authority-base-");
+    const runId = `srcref-resume-authority-run-${generateChannelId()}`;
+    await seedNonTerminalRun(baseDir, runId);
+    const markerDir = await makeTempDir("srcref-resume-authority-marker-");
+    const marker = path.join(markerDir, "marker");
+    const consumer = actionConsumer("resolveToken");
+    const { packageDir, approvedHash } =
+      await writeCredentialedActionClosure(marker);
+
+    const supervisorKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSourceRefEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash: approvedHash,
+        closurePackageDir: packageDir,
+      }),
+    );
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings(baseDir),
+      actionCredentials: (wiring) =>
+        createSidecarActionCredentialsFactory({
+          materialCell: wiring.materialRef,
+          resolveStepGrants: wiring.resolveStepGrants,
+          providers: createCredentialProviderRegistry(
+            builtinCredentialProviders(),
+          ),
+        }),
+    };
+    const control = signalFirstRead(supervisorToChild.reader);
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: control.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+
+    // The child waits for its first frame before it resumes the in-flight
+    // run, so nothing has gone upstream yet.
+    await control.firstRead;
+    expect(childToSupervisor.flushed()).toHaveLength(0);
+    await sendAuthoritySet(
+      supervisorSender,
+      credentialedActionAuthority(consumer),
+    );
+
+    const recvIter = receiveControlChannel({
+      publicKey: { bootstrapFromReady: true },
+      channelId,
+      reader: childToSupervisor.reader,
+      onCrash: (reason) => {
+        throw new Error(`unexpected control channel crash: ${reason}`);
+      },
+    });
+    let terminalKind: string | undefined;
+    for await (const payload of recvIter) {
+      if (payload.type === "terminal.event" && payload.data.runId === runId) {
+        terminalKind = payload.data.kind;
+        break;
+      }
+    }
+    expect(terminalKind).toBe("RunCompleted");
     expect(await fsp.readFile(marker, "utf8")).toBe("http");
 
     await supervisorSender.send({

@@ -636,6 +636,26 @@ const controlPayloadFactories = defineControlPayloadFactories({
         "revoke?": "string[]",
       },
     }),
+  "authority.set": () =>
+    type({
+      // The run's whole authority: its grants snapshot and its credential
+      // material. The child REPLACES both refs with this frame, where
+      // `grants-updated` replaces only the snapshot and `credentials-updated`
+      // merges into the material. The supervisor sends it as the first frame
+      // to every new child, before the child resumes any run, and again when
+      // an update reached the supervisor while the child was starting or
+      // recycling. A null snapshot means the supervisor has no grants for the
+      // run (no grants file, or the read failed), so a step that needs them
+      // fails closed. An absent snapshot keeps the child's current one: a
+      // resend whose grants read failed replaces only the material. The
+      // delivery is the supervisor's merged mirror of every producer's
+      // credentials, so a replace keeps them all.
+      type: "'authority.set'",
+      data: {
+        "snapshot?": CredentialsSnapshotPayload.or("null"),
+        delivery: CredentialDelivery.or("null"),
+      },
+    }),
   ready: () =>
     type({
       type: "'ready'",
@@ -1043,6 +1063,12 @@ type ControlPayloadFactory =
   (typeof controlPayloadFactories)[keyof typeof controlPayloadFactories];
 type ControlPayloadSchema = ReturnType<ControlPayloadFactory>;
 export type ControlPayload = ControlPayloadSchema["infer"];
+
+/** The data of an `authority.set` frame. */
+export type AuthoritySetData = Extract<
+  ControlPayload,
+  { type: "authority.set" }
+>["data"];
 
 const factories = new Map<string, ControlPayloadFactory>(
   Object.entries(controlPayloadFactories),

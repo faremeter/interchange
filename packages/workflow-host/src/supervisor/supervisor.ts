@@ -102,6 +102,7 @@ import { generateChannelId, generateHmacKey } from "../ipc/crypto";
 import { receiveControlChannel } from "../ipc/control-receiver";
 import { receiveEventChannel, type EventPayload } from "../ipc/event-channel";
 import type {
+  AuthoritySetData,
   ControlPayload,
   OutboundMessagePayload,
 } from "../ipc/control-payloads";
@@ -724,6 +725,27 @@ function projectPart(
 }
 
 /**
+ * A grants snapshot for a child, and the authority revision it was read at.
+ * `failed` marks a read that threw: a new child then gets no snapshot, and a
+ * resend keeps the child's current one.
+ */
+type ReadAuthority = {
+  snapshot: CredentialsSnapshot | null;
+  revision: number;
+  failed: boolean;
+};
+
+/**
+ * A spawn that has not yet published `state`. A shutdown in that window
+ * marks it cancelled and waits for `done`; the spawn then stops instead of
+ * publishing, and kills its child if it already started one.
+ */
+type PendingSpawn = {
+  cancelled: boolean;
+  done: PromiseWithResolvers<undefined>;
+};
+
+/**
  * Construct a per-deployment supervisor. All host-specific
  * dependencies are pulled in via `bindings`; nothing in the
  * supervisor reaches into `process.env` or a singleton.
@@ -741,8 +763,8 @@ export function createWorkflowSupervisor(
   // by `deliverCredentials` on every runtime update, so a mid-life revocation or
   // rotation is durable: the re-assertion sites read THIS mirror, not the frozen
   // `bindings.credentialDelivery`. Reading the frozen delivery would re-add an
-  // evicted credential on the next spawn/barrier, and the warm-recycle path
-  // (seeded only by the barrier) would lose every runtime update. Normalized on
+  // evicted credential, and lose every runtime update, on the next spawn,
+  // recycle or barrier. Normalized on
   // init via the same merge the child applies, so the mirror matches the child's
   // deduped cell from step zero. Lives outside `state` because `state` is a
   // phase union replaced on every transition; this must survive them.
@@ -750,6 +772,12 @@ export function createWorkflowSupervisor(
     bindings.credentialDelivery !== undefined
       ? mergeCredentialDelivery(null, bindings.credentialDelivery, undefined)
       : null;
+  // Bumped by every grants refresh and every mirror change, also one that
+  // reaches no child. A new child whose `authority.set` was built at an older
+  // revision gets the frame again once it is the live target, so an update
+  // that arrived while it was starting or recycling is not lost.
+  let authorityRevision = 0;
+  let pendingSpawn: PendingSpawn | null = null;
   /**
    * ALL runIds the current child cohort is driving, regardless of
    * who spawned them: supervisor-dispatched + self-discovered.
@@ -2847,26 +2875,58 @@ export function createWorkflowSupervisor(
         `supervisor: spawn called in phase ${state.phase}; expected idle`,
       );
     }
+    // Until this spawn publishes `state`, the supervisor still reads as
+    // idle, so a shutdown cancels this pending spawn and waits for it. The
+    // spawn checks the mark before it starts its child and again before it
+    // publishes, and settles the record on every exit before the publish.
+    const pending: PendingSpawn = {
+      cancelled: false,
+      done: Promise.withResolvers<undefined>(),
+    };
+    pendingSpawn = pending;
+    const settlePending = () => {
+      pendingSpawn = null;
+      pending.done.resolve(undefined);
+    };
     const channelId = generateChannelId();
     const hmacKey = generateHmacKey();
-    const ipcKeypair = await (bindings.ipcKeyPairFactory ?? generateKeyPair)();
-    const env = buildChildSpawnEnv({
-      substrateEnv: bindings.substrateEnv,
-      dynamicSpawnEnv: bindings.dynamicSpawnEnv,
-      channelId,
-      hmacKey,
-      hostPublicKey: ipcKeypair.publicKey,
-      anchorRunId: bindings.anchorRunId,
-      deploymentMailAddress: bindings.deploymentMailAddress,
-      stepCount: bindings.stepCount,
-      definitionHash: opts.definitionHash,
-      warmKeep: opts.warmKeep,
-    });
+    let ipcKeypair: Awaited<ReturnType<typeof generateKeyPair>>;
+    try {
+      ipcKeypair = await (bindings.ipcKeyPairFactory ?? generateKeyPair)();
+    } catch (cause) {
+      settlePending();
+      throw cause;
+    }
+    if (pending.cancelled) {
+      settlePending();
+      throw new Error(
+        "workflow-host supervisor: shut down before the spawn started its child",
+      );
+    }
+    let handle: SubprocessHandle;
+    try {
+      const env = buildChildSpawnEnv({
+        substrateEnv: bindings.substrateEnv,
+        dynamicSpawnEnv: bindings.dynamicSpawnEnv,
+        channelId,
+        hmacKey,
+        hostPublicKey: ipcKeypair.publicKey,
+        anchorRunId: bindings.anchorRunId,
+        deploymentMailAddress: bindings.deploymentMailAddress,
+        stepCount: bindings.stepCount,
+        definitionHash: opts.definitionHash,
+        warmKeep: opts.warmKeep,
+      });
 
-    const handle = bindings.subprocessSpawner({
-      binaryPath: bindings.binaryPath,
-      env,
-    });
+      // The spawner throws synchronously when it cannot start the child.
+      handle = bindings.subprocessSpawner({
+        binaryPath: bindings.binaryPath,
+        env,
+      });
+    } catch (cause) {
+      settlePending();
+      throw cause;
+    }
 
     let wired: Awaited<ReturnType<typeof wireChild>>;
     try {
@@ -2888,6 +2948,7 @@ export function createWorkflowSupervisor(
         clearTimer: readyClearTimer,
         logger,
       });
+      settlePending();
       throw cause;
     }
 
@@ -2901,6 +2962,47 @@ export function createWorkflowSupervisor(
     void wired.readyPromise.catch(() => {
       /* handled by the ready-handshake fold when the handshake runs */
     });
+
+    // Read the run's authority before the new child becomes the live target.
+    // The `authority.set` frame below must be the first frame the child
+    // receives, and once `state` names this child, `deliverGrants` and
+    // `deliverCredentials` send to it. The child has no state record yet, so a
+    // failed read kills it here, as the wireChild failure above does. The
+    // cancel check below runs with no await before the publish.
+    const killUnpublishedChild = () =>
+      killChildHandle(handle, DEFAULT_KILL_TIMEOUT_MS, {
+        setTimer: readySetTimer,
+        clearTimer: readyClearTimer,
+        logger,
+      });
+    let credentialsSnapshot: CredentialsSnapshot;
+    let authority: ReadAuthority;
+    try {
+      try {
+        credentialsSnapshot = await assembleCredentialsSnapshot({
+          repoStore: bindings.repoStore,
+          principal: bindings.readPrincipal,
+          stepOrder: opts.stepOrder,
+          anchorRunId: bindings.anchorRunId,
+          deriveStepAddress: bindings.deriveStepAddress,
+          ...(bindings.deriveStepRepoId !== undefined
+            ? { deriveStepRepoId: bindings.deriveStepRepoId }
+            : {}),
+        });
+        authority = await readAuthority(credentialsSnapshot);
+      } catch (cause) {
+        await killUnpublishedChild();
+        throw cause;
+      }
+      if (pending.cancelled) {
+        await killUnpublishedChild();
+        throw new Error(
+          "workflow-host supervisor: shut down while the spawn read the run's authority; killed the new child",
+        );
+      }
+    } finally {
+      settlePending();
+    }
 
     // Cohort abort controller covers terminal-event watcher
     // lifetime AND dispatch-loop lifetime; the abort fires on
@@ -2919,34 +3021,40 @@ export function createWorkflowSupervisor(
       eventPump: wired.wiring.eventPump,
       onInferenceEvent: opts.onInferenceEvent,
       mailUnsubscribe: null,
-      credentialsSnapshot: null,
+      credentialsSnapshot,
       terminalCohortAbort: new AbortController(),
       terminalBroadcaster: createTerminalBroadcaster(),
       dispatchLoop: null,
       replayDone: null,
       sweepDone: null,
     };
+    // Queued in the same synchronous turn that publishes `state`, so it takes
+    // the first downstream seq. The child resumes no run until it has applied
+    // this frame. A large frame can wait on the child reading its stdin, so
+    // the send is folded into the bounded ready handshake below instead of
+    // being awaited here.
+    const authoritySent = sendAuthority(
+      wired.wiring.controlSender,
+      authority.snapshot,
+    );
+    void authoritySent.catch(() => {
+      /* handled by the ready-handshake fold when the handshake runs */
+    });
+    if (authorityRevision !== authority.revision) {
+      void resendAuthority().catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`authority.set resend to the starting child failed: ${message}`;
+      });
+    }
 
     // Everything from here to the successful `return` runs with the state
     // record in "starting" (then "running"). A throw at any of these
-    // steps -- credentials assembly, mail registration, the ready
-    // handshake, the credentials push, the dispatch-loop start -- routes
+    // steps -- mail registration, the ready handshake with its
+    // `authority.set` send, the dispatch-loop start -- routes
     // through shutdownInternal, the single owner of starting/running
     // teardown: it kills the handle and releases the mail subscription
     // and address registration installed below.
     try {
-      const credentialsSnapshot = await assembleCredentialsSnapshot({
-        repoStore: bindings.repoStore,
-        principal: bindings.readPrincipal,
-        stepOrder: opts.stepOrder,
-        anchorRunId: bindings.anchorRunId,
-        deriveStepAddress: bindings.deriveStepAddress,
-        ...(bindings.deriveStepRepoId !== undefined
-          ? { deriveStepRepoId: bindings.deriveStepRepoId }
-          : {}),
-      });
-      state.credentialsSnapshot = credentialsSnapshot;
-
       // Replay any orphaned `processing/` entries back to `inbox/`
       // BEFORE the dispatch loop's first dequeue. A crash mid-dispatch
       // in a prior supervisor incarnation can leave an entry in
@@ -3056,8 +3164,11 @@ export function createWorkflowSupervisor(
       // contributes no rejection of its own. Kill on timeout uses the
       // SIGTERM->SIGKILL escalation because a wedged child may ignore SIGTERM;
       // SIGKILL guarantees `exited` settles.
-      const readyOutcome = wired.readyPromise.then(
-        (info) => ({ kind: "ready" as const, info }),
+      const readyOutcome = Promise.all([
+        wired.readyPromise,
+        authoritySent,
+      ]).then(
+        ([info]) => ({ kind: "ready" as const, info }),
         (err: unknown) => ({ kind: "failed" as const, err }),
       );
       const readyDeadline = waitDeadline(readySetTimer, readyTimeoutMs);
@@ -3087,51 +3198,6 @@ export function createWorkflowSupervisor(
         throw readyRace.err;
       }
       const readyInfo = readyRace.info;
-
-      // Push the assembled credentialsSnapshot to the child before the
-      // mail buffer drains. Without this, the child's
-      // `createCredentialsBackedAuthorize` closure observes a null
-      // snapshot ref on the first authorize call and throws "no
-      // credentialsSnapshot active"; the run's first step fails before
-      // the runtime body can commit `StepCompleted`. The send rides the
-      // same control channel `trigger.fire` uses, so the ordering
-      // guarantee (`grants-updated` lands before `trigger.fire`) holds
-      // for buffered and post-ready inbound mail alike.
-      //
-      // Suppressed when `onRunStart` is wired: that binding makes the
-      // dispatch loop push a per-run snapshot before each `trigger.fire`,
-      // so the spawn-time push would only mask a broken per-run barrier
-      // (the child would already hold grants and never hit its throw-on-
-      // null guard). The per-run push is then the sole grants source.
-      if (bindings.onRunStart === undefined) {
-        await wired.wiring.controlSender.send({
-          type: "grants-updated",
-          data: {
-            snapshot: toCredentialsSnapshotPayload(credentialsSnapshot),
-          },
-        });
-      }
-
-      // Deliver the run's credential material to the child on EVERY spawn, not
-      // only through the per-trigger `onRunStart` barrier. A restored run resumes
-      // from its parked state without a fresh `trigger.fire` (a signal wakes it),
-      // so the barrier would never re-deliver the cell and the resumed run's
-      // inference would fail closed. Seeding the live cell here at spawn lets an
-      // offline restart resolve each source's credential from the persisted
-      // (unsealed) delivery without waiting on a hub reconnect. Unlike the grants
-      // push above this is NOT suppressed when `onRunStart` is wired: the barrier
-      // fires per trigger, but a resume has no trigger, so the spawn push is the
-      // only credential source on the resume path. Idempotent with the barrier's
-      // own push on a fresh run: the child merges both, and both carry the same
-      // mirror. Absent when the deployment binds no credentials. Reads the live
-      // mirror, not the frozen deploy delivery, so a credential revoked earlier
-      // this process stays evicted.
-      if (currentCredentialDelivery !== null) {
-        await wired.wiring.controlSender.send({
-          type: "credentials-updated",
-          data: { delivery: currentCredentialDelivery },
-        });
-      }
 
       // Transition to running. The dispatch loop (started below)
       // picks up any pre-ready buffered mail through the FIFO inbox
@@ -3481,17 +3547,21 @@ export function createWorkflowSupervisor(
         runId,
         anchorRunId: bindings.anchorRunId,
       });
+      if (snapshot === null) {
+        throw new Error(
+          `run ${runId} has no grants file; refusing to start the run under-authorized`,
+        );
+      }
       await sender.send({
         type: "grants-updated",
         data: { snapshot: toCredentialsSnapshotPayload(snapshot) },
       });
       // Deliver the deployment's credential material on the same pre-trigger
-      // barrier, so a tool that resolves a credential on the first step already
-      // has it in the child's cell. Reads the live mirror, not the frozen deploy
-      // delivery: a rotation or revocation delivered earlier via
-      // `deliverCredentials` is reflected here, and a recycled child (seeded only
-      // by this barrier) inherits the current set instead of the deploy-time one.
-      // Absent when the deployment binds none.
+      // barrier, so a tool that resolves a credential on the first step has it
+      // in the child's cell. Reads the live mirror, not the frozen deploy
+      // delivery, so a rotation or revocation delivered earlier via
+      // `deliverCredentials` is reflected here. Absent when the deployment binds
+      // none.
       if (currentCredentialDelivery !== null) {
         await sender.send({
           type: "credentials-updated",
@@ -4152,6 +4222,10 @@ export function createWorkflowSupervisor(
 
   function shutdownInternal(opts: ShutdownOptions): Promise<void> {
     if (shutdownPromise !== null) return shutdownPromise;
+    if (state.phase === "idle" && pendingSpawn !== null) {
+      pendingSpawn.cancelled = true;
+      return pendingSpawn.done.promise;
+    }
     if (
       state.phase === "idle" ||
       state.phase === "stopped" ||
@@ -4648,10 +4722,18 @@ export function createWorkflowSupervisor(
           // A standalone helper would take all of it as parameters for zero
           // reuse -- the crash-respawn path reaches this callback transitively
           // through `runRespawn`, so it needs no separate extraction.
+          buildAuthority: async (fallback) => {
+            const read = await readAuthority(fallback);
+            return {
+              data: authorityData(read.snapshot),
+              revision: read.revision,
+            };
+          },
           installNewChild: ({
             wiring,
             credentialsSnapshot,
             controlIncoming,
+            authorityRevision: sentRevision,
           }) => {
             // Shutdown already owns the uninstalled child's kill and exit.
             // A late ready frame must only drain its IPC resources, never
@@ -4778,6 +4860,17 @@ export function createWorkflowSupervisor(
                 cause instanceof Error ? cause.message : String(cause);
               logger.warn`re-emit of parked correlations on re-establishment failed: ${message}`;
             });
+
+            // A grants refresh or a credentials update that arrived while the
+            // child was recycling reached only the mirror; send the child its
+            // whole authority again.
+            if (authorityRevision !== sentRevision) {
+              void resendAuthority().catch((cause: unknown) => {
+                const message =
+                  cause instanceof Error ? cause.message : String(cause);
+                logger.error`authority.set resend to the recycled child failed: ${message}`;
+              });
+            }
           },
           onCrash: onChildCrash,
           // Edge-resolved once at the supervisor factory; recycle bounds
@@ -4935,9 +5028,20 @@ export function createWorkflowSupervisor(
       opts.delivery,
       opts.revoke,
     );
+    // Advance the mirror and the authority revision BEFORE the send. An
+    // `authority.set` resend builds its frame from the mirror when it sends,
+    // and it re-reads when the revision moved during its grants read. So a
+    // resend either queues its frame ahead of this update's, or carries this
+    // update itself; it never replaces the child's cell with an older mirror
+    // after this frame. A whole-object swap via the same merge the child
+    // applies, so a concurrent reader sees a coherent object. If the send
+    // below throws, the mirror is ahead of a child that is already gone; the
+    // next child gets the mirror in its `authority.set`.
+    currentCredentialDelivery = next;
+    authorityRevision += 1;
     // Send to the live child ONLY in starting/running. Outside those the control
     // sender points at a dying/absent child, so a frame would buffer behind a
-    // SIGTERM or write into a closed pipe; the mirror advance below is the sole
+    // SIGTERM or write into a closed pipe; the mirror advance above is the sole
     // effect, and the child that eventually spawns is seeded from it. The
     // supervisor is the single producer of `credentials-updated` frames.
     if (state.phase === "running" || state.phase === "starting") {
@@ -4949,11 +5053,72 @@ export function createWorkflowSupervisor(
         },
       });
     }
-    // Advance the mirror. A throw from `send` above skips this, leaving the
-    // mirror matching the child that never received the frame. A whole-object
-    // swap via the same merge the child applies, so a concurrent reader sees a
-    // coherent object.
-    currentCredentialDelivery = next;
+  }
+
+  // The grants snapshot for a child's `authority.set`. With `onRunStart` wired
+  // it is the run's own grants file: none before the run's first trigger, and
+  // none when the read fails, so a new child's step that needs grants fails
+  // closed. Without it (the supervisor's own tests) it is the spawn-time
+  // snapshot. The revision is read before the grants, so an update during the
+  // read counts as newer.
+  async function readAuthority(
+    fallback: CredentialsSnapshot | null,
+  ): Promise<ReadAuthority> {
+    const revision = authorityRevision;
+    if (bindings.onRunStart === undefined) {
+      return { snapshot: fallback, revision, failed: false };
+    }
+    try {
+      const snapshot = await bindings.onRunStart({
+        runId: deriveWorkflowRunId(bindings.deploymentMailAddress),
+        anchorRunId: bindings.anchorRunId,
+      });
+      return { snapshot, revision, failed: false };
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`grants read for ${bindings.deploymentMailAddress} failed: ${message}`;
+      return { snapshot: null, revision, failed: true };
+    }
+  }
+
+  // The `authority.set` data. `keep` omits the snapshot, so the child keeps
+  // the one it holds and replaces only its material.
+  function authorityData(
+    snapshot: CredentialsSnapshot | null | "keep",
+  ): AuthoritySetData {
+    if (snapshot === "keep") return { delivery: currentCredentialDelivery };
+    return {
+      snapshot:
+        snapshot === null ? null : toCredentialsSnapshotPayload(snapshot),
+      delivery: currentCredentialDelivery,
+    };
+  }
+
+  function sendAuthority(
+    sender: ControlChannelSender,
+    snapshot: CredentialsSnapshot | null | "keep",
+  ): Promise<void> {
+    return sender.send({
+      type: "authority.set",
+      data: authorityData(snapshot),
+    });
+  }
+
+  // Send the live child its whole authority again, for an update that reached
+  // the supervisor while that child was starting or recycling. A refresh during
+  // the read may already have sent newer grants, so the read repeats until no
+  // update lands during it.
+  async function resendAuthority(): Promise<void> {
+    for (;;) {
+      if (state.phase !== "starting" && state.phase !== "running") return;
+      const { snapshot, revision, failed } = await readAuthority(
+        state.credentialsSnapshot,
+      );
+      if (revision !== authorityRevision) continue;
+      if (state.phase !== "starting" && state.phase !== "running") return;
+      await sendAuthority(state.controlSender, failed ? "keep" : snapshot);
+      return;
+    }
   }
 
   /**
@@ -4977,6 +5142,7 @@ export function createWorkflowSupervisor(
    */
   async function deliverGrants(runId: string): Promise<"pushed" | "skipped"> {
     if (bindings.onRunStart === undefined) return "skipped";
+    authorityRevision += 1;
     if (state.phase !== "running" && state.phase !== "starting") {
       return "skipped";
     }
@@ -4985,6 +5151,10 @@ export function createWorkflowSupervisor(
         runId,
         anchorRunId: bindings.anchorRunId,
       });
+      if (snapshot === null) {
+        logger.warn`deliverGrants: run ${runId} has no grants file; nothing to refresh`;
+        return "skipped";
+      }
       await state.controlSender.send({
         type: "grants-updated",
         data: { snapshot: toCredentialsSnapshotPayload(snapshot) },
@@ -4992,7 +5162,7 @@ export function createWorkflowSupervisor(
       return "pushed";
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      logger.error`deliverGrants refresh failed for run ${runId}; the durable grants file still governs the next barrier/respawn: ${message}`;
+      logger.error`deliverGrants refresh failed for run ${runId}; the durable grants file still governs the next barrier and the next child's authority.set: ${message}`;
       return "skipped";
     }
   }

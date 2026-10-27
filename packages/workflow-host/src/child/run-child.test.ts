@@ -60,6 +60,7 @@ import {
   createMemoryNdjsonStream,
   waitForUpstreamPayload,
   type ChangeNotifier,
+  sendAuthoritySet,
 } from "@intx/workflow-host/testing";
 import {
   createControlChannelSender,
@@ -369,6 +370,18 @@ function assembleConversationMessage(to: string, text: string): Uint8Array {
   return assembleMessage(headers, signedContent, new Uint8Array([0]));
 }
 
+// The grants snapshot these tests give every child in its `authority.set`.
+const AUTHORITY_SNAPSHOT = {
+  steps: [
+    {
+      stepId: "step-1",
+      address: "deployment-x-step-1@example.com",
+      grants: [],
+      contentHash: "deadbeef",
+    },
+  ],
+};
+
 function buildBindings(opts: {
   baseDir: string;
   childKeyPair?: { privateKey: Uint8Array; publicKey: Uint8Array };
@@ -395,16 +408,6 @@ function buildBindings(opts: {
     ...(childKeyPair !== undefined
       ? { ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair) }
       : {}),
-    initialCredentialsSnapshot: {
-      steps: [
-        {
-          stepId: "step-1",
-          address: "deployment-x-step-1@example.com",
-          grants: [],
-          contentHash: "deadbeef",
-        },
-      ],
-    },
   };
 }
 
@@ -572,6 +575,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
 
     const runPromise = runWorkflowChild({
       env,
@@ -635,6 +639,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
 
     // The watch callback is the delivery signal: `fire` schedules it on a
     // microtask, so the test reports the arrival from the callback rather
@@ -747,6 +752,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
 
     const runPromise = runWorkflowChild({
       env,
@@ -854,6 +860,8 @@ describe("runWorkflowChild", () => {
       writer: supervisorToChild.writer,
     });
 
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+
     const runPromise = runWorkflowChild({
       env,
       controlReader: supervisorToChild.reader,
@@ -956,6 +964,8 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
 
     const runPromise = runWorkflowChild({
       env,
@@ -1097,6 +1107,8 @@ describe("runWorkflowChild", () => {
       writer: supervisorToChild.writer,
     });
 
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+
     const runPromise = runWorkflowChild({
       env,
       controlReader: supervisorToChild.reader,
@@ -1228,6 +1240,8 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
 
     // Capture the child's error diagnostics. A second concurrent driver
     // loses the race to settle the crashed residual and its uncaught
@@ -1362,6 +1376,8 @@ describe("runWorkflowChild", () => {
       writer: supervisorToChild.writer,
     });
 
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+
     const runPromise = runWorkflowChild({
       env,
       controlReader: supervisorToChild.reader,
@@ -1403,6 +1419,125 @@ describe("runWorkflowChild", () => {
     ]);
   });
 
+  // A child over an empty definition, with a supervisor-side sender. The
+  // test sends the child's first frame itself.
+  async function startChildWithoutAuthority(prefix: string) {
+    const baseDir = await makeTempDir(prefix);
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings: buildBindings({ baseDir, childKeyPair }),
+    });
+    return {
+      supervisorSender,
+      supervisorToChild,
+      childToSupervisor,
+      runPromise,
+    };
+  }
+
+  test("a child whose first control frame is not authority.set fails before it readies", async () => {
+    const child = await startChildWithoutAuthority("child-no-authority-");
+    await child.supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "no authority" },
+    });
+    child.supervisorToChild.close();
+
+    await expect(child.runPromise).rejects.toThrow(
+      /first control frame must be authority.set, got shutdown/,
+    );
+    expect(child.childToSupervisor.flushed()).toHaveLength(0);
+  });
+
+  test("authority.set with no snapshot leaves the child with none", async () => {
+    const child = await startChildWithoutAuthority("child-authority-null-");
+    await sendAuthoritySet(child.supervisorSender, { snapshot: null });
+    await child.supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    child.supervisorToChild.close();
+
+    const result = await child.runPromise;
+    expect(result.finalCredentialsSnapshot).toBeNull();
+  });
+
+  test("a later authority.set replaces the snapshot", async () => {
+    const child = await startChildWithoutAuthority("child-authority-replace-");
+    await sendAuthoritySet(child.supervisorSender, {
+      snapshot: AUTHORITY_SNAPSHOT,
+    });
+    await sendAuthoritySet(child.supervisorSender, {
+      snapshot: {
+        steps: [
+          {
+            stepId: "step-1",
+            address: "deployment-x-step-1@example.com",
+            grants: [{ resource: "thing", action: "read" }],
+            contentHash: "replaced",
+          },
+        ],
+      },
+    });
+    await child.supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    child.supervisorToChild.close();
+
+    const result = await child.runPromise;
+    expect(result.finalCredentialsSnapshot?.steps[0]?.contentHash).toBe(
+      "replaced",
+    );
+  });
+
+  test("an authority.set with no snapshot keeps the current one", async () => {
+    const child = await startChildWithoutAuthority("child-authority-keep-");
+    await sendAuthoritySet(child.supervisorSender, {
+      snapshot: AUTHORITY_SNAPSHOT,
+    });
+    await child.supervisorSender.send({
+      type: "authority.set",
+      data: { delivery: null },
+    });
+    await child.supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    child.supervisorToChild.close();
+
+    const result = await child.runPromise;
+    expect(result.finalCredentialsSnapshot?.steps[0]?.contentHash).toBe(
+      AUTHORITY_SNAPSHOT.steps[0]?.contentHash,
+    );
+  });
+
   test("sources-updated on a multi-step deployment is rejected", async () => {
     const baseDir = await makeTempDir("child-sources-multistep-");
     const supervisorKeyPair = await generateKeyPair();
@@ -1436,6 +1571,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
 
     const runPromise = runWorkflowChild({
       env,
@@ -1501,6 +1637,7 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
 
     const runPromise = runWorkflowChild({
       env,
@@ -1558,6 +1695,14 @@ describe("runWorkflowChild", () => {
       childKeyPair,
     });
 
+    // The child reads the supervisor's `authority.set` before it readies.
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+
     // Run the child, capture its ready frame, verify via the
     // receiver iterator's bootstrap mode. The receiver extracts the
     // child's public key from the first frame's payload -- the
@@ -1592,11 +1737,6 @@ describe("runWorkflowChild", () => {
     expect(crashes).toHaveLength(0);
 
     // Tear down.
-    const supervisorSender = createControlChannelSender({
-      privateKeySeed: supervisorKeyPair.privateKey,
-      channelId,
-      writer: supervisorToChild.writer,
-    });
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },
@@ -1636,8 +1776,8 @@ describe("runWorkflowChild", () => {
     });
 
     // Sign with the WRONG key -- the receiver iterator's signature
-    // check should reject the frame and the loop should end without
-    // recording a triggered run.
+    // check rejects the frame and ends the channel, so the child never
+    // gets the `authority.set` it must read first.
     const wrongSender = createControlChannelSender({
       privateKeySeed: otherKeyPair.privateKey,
       channelId,
@@ -1663,8 +1803,9 @@ describe("runWorkflowChild", () => {
     });
     supervisorToChild.close();
 
-    const result = await runPromise;
-    expect(result.triggeredRunIds).toEqual([]);
+    await expect(runPromise).rejects.toThrow(
+      /ended before the supervisor's authority.set frame/,
+    );
   });
 });
 
@@ -2036,16 +2177,6 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         resolvedBy: null,
       }),
       ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
-      initialCredentialsSnapshot: {
-        steps: [
-          {
-            stepId,
-            address: "deployment-x@example.com",
-            grants: [],
-            contentHash: "deadbeef",
-          },
-        ],
-      },
     };
 
     const supervisorToChild = createMemoryNdjsonStream();
@@ -2071,6 +2202,19 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       privateKeySeed: supervisorKeyPair.privateKey,
       channelId,
       writer: supervisorToChild.writer,
+    });
+
+    await sendAuthoritySet(supervisorSender, {
+      snapshot: {
+        steps: [
+          {
+            stepId,
+            address: "deployment-x@example.com",
+            grants: [],
+            contentHash: "deadbeef",
+          },
+        ],
+      },
     });
 
     const runPromise = runWorkflowChild({
@@ -2226,16 +2370,6 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         resolvedBy: null,
       }),
       ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
-      initialCredentialsSnapshot: {
-        steps: [
-          {
-            stepId,
-            address: "deployment-x@example.com",
-            grants: [],
-            contentHash: "deadbeef",
-          },
-        ],
-      },
     };
 
     const supervisorToChild = createMemoryNdjsonStream();
@@ -2257,6 +2391,19 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       privateKeySeed: supervisorKeyPair.privateKey,
       channelId,
       writer: supervisorToChild.writer,
+    });
+
+    await sendAuthoritySet(supervisorSender, {
+      snapshot: {
+        steps: [
+          {
+            stepId,
+            address: "deployment-x@example.com",
+            grants: [],
+            contentHash: "deadbeef",
+          },
+        ],
+      },
     });
 
     const runPromise = runWorkflowChild({

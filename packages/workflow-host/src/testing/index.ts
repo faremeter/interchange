@@ -34,3 +34,4 @@ export {
   type LogCapture,
 } from "./log-capture";
 export { createStubRepoStore, type StubRepoStoreOpts } from "./stub-repo-store";
+export { sendAuthoritySet } from "./authority";
