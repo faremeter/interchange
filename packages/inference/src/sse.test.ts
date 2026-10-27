@@ -249,4 +249,35 @@ describe("parseSSE", () => {
     expect(await collectSSE(stream)).toEqual([]);
     expect(stream.locked).toBe(false);
   });
+
+  test("parses a final line without a newline", async () => {
+    const stream = makeStream(["data: a\n\ndata: tail"]);
+    const results = await collectSSE(stream);
+    expect(results).toEqual(["a", "tail"]);
+  });
+
+  test("strips CR from a final line without a newline", async () => {
+    const stream = makeStream(["data: tail\r"]);
+    const results = await collectSSE(stream);
+    expect(results).toEqual(["tail"]);
+  });
+
+  test("stops at a [DONE] sentinel without a final newline", async () => {
+    const stream = makeStream(["data: a\n\ndata: [DONE]"]);
+    const results = await collectSSE(stream);
+    expect(results).toEqual(["a"]);
+  });
+
+  test("ignores a final comment without a newline", async () => {
+    const stream = makeStream(["data: a\n\n: ping"]);
+    const results = await collectSSE(stream);
+    expect(results).toEqual(["a"]);
+  });
+
+  test("flushes an incomplete character at end of stream", async () => {
+    const bytes = encoder.encode("data: a\u00e9");
+    const stream = makeByteStream([bytes.subarray(0, bytes.length - 1)]);
+    const results = await collectSSE(stream);
+    expect(results).toEqual(["a\ufffd"]);
+  });
 });
