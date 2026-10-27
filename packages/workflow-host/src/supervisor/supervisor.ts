@@ -109,6 +109,7 @@ import type {
 import {
   assembleCredentialsSnapshot,
   type CredentialsSnapshot,
+  toCredentialsSnapshotPayload,
 } from "./credentials";
 import { commitCancelRequested } from "./cancel-signing";
 import { commitRunFailed } from "./terminal-commit";
@@ -3106,14 +3107,7 @@ export function createWorkflowSupervisor(
         await wired.wiring.controlSender.send({
           type: "grants-updated",
           data: {
-            snapshot: {
-              steps: credentialsSnapshot.steps.map((s) => ({
-                stepId: s.stepId,
-                address: s.address,
-                grants: [...s.grants],
-                contentHash: s.contentHash,
-              })),
-            },
+            snapshot: toCredentialsSnapshotPayload(credentialsSnapshot),
           },
         });
       }
@@ -3489,16 +3483,7 @@ export function createWorkflowSupervisor(
       });
       await sender.send({
         type: "grants-updated",
-        data: {
-          snapshot: {
-            steps: snapshot.steps.map((s) => ({
-              stepId: s.stepId,
-              address: s.address,
-              grants: [...s.grants],
-              contentHash: s.contentHash,
-            })),
-          },
-        },
+        data: { snapshot: toCredentialsSnapshotPayload(snapshot) },
       });
       // Deliver the deployment's credential material on the same pre-trigger
       // barrier, so a tool that resolves a credential on the first step already
@@ -5002,16 +4987,7 @@ export function createWorkflowSupervisor(
       });
       await state.controlSender.send({
         type: "grants-updated",
-        data: {
-          snapshot: {
-            steps: snapshot.steps.map((s) => ({
-              stepId: s.stepId,
-              address: s.address,
-              grants: [...s.grants],
-              contentHash: s.contentHash,
-            })),
-          },
-        },
+        data: { snapshot: toCredentialsSnapshotPayload(snapshot) },
       });
       return "pushed";
     } catch (cause) {

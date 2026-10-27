@@ -131,7 +131,10 @@ import type { EventPayload } from "../ipc/event-channel";
 import { runBodyThenCleanup } from "../run-body-then-cleanup";
 import { createWorkflowHostSignalChannel } from "../seams/signal-channel";
 import type { CredentialsSnapshot } from "../supervisor/credentials";
-import { hashGrants } from "../supervisor/credentials";
+import {
+  fromCredentialsSnapshotPayload,
+  hashGrants,
+} from "../supervisor/credentials";
 
 import type { SpawnTimeEnv } from "./env-bootstrap";
 import { loadVerifiedWorkflowDefinitionFromClosure } from "./verified-definition-loader";
@@ -1224,14 +1227,7 @@ async function handleControlPayload(
       // mismatch against the snapshot's per-step contentHash crashes
       // the child rather than silently honoring a desynchronized
       // push.
-      const snapshot: CredentialsSnapshot = {
-        steps: payload.data.snapshot.steps.map((s) => ({
-          stepId: s.stepId,
-          address: s.address,
-          grants: s.grants,
-          contentHash: s.contentHash,
-        })),
-      };
+      const snapshot = fromCredentialsSnapshotPayload(payload.data.snapshot);
       if (payload.data.stepHashes !== undefined) {
         for (const step of snapshot.steps) {
           const expected = payload.data.stepHashes[step.stepId];
