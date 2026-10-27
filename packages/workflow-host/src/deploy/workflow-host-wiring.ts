@@ -102,6 +102,7 @@ import {
   deleteWorkflowRunRecord,
   markWorkflowRunRecord,
   scanWorkflowRunRecords,
+  updateWorkflowRunRecordCredentials,
   updateWorkflowRunRecordSources,
   withWorkflowRunRecord,
   writeWorkflowRunRecord,
@@ -1201,6 +1202,12 @@ export function createSidecarDeployRouter<
    * it.
    */
   updateWorkflowRunRecordSources?: typeof updateWorkflowRunRecordSources;
+  /**
+   * Run-record credentials updater, injectable so a test can fail the seal of
+   * a credentials update. Defaults to the real
+   * `updateWorkflowRunRecordCredentials`; production never overrides it.
+   */
+  updateWorkflowRunRecordCredentials?: typeof updateWorkflowRunRecordCredentials;
   /** Create the closure cache shared by all deployments on this sidecar. */
   createWorkflowCache: (args: { rootDir: string; maxBytes: number }) => TCache;
   /**
@@ -1339,6 +1346,9 @@ export function createSidecarDeployRouter<
   }
   const persistWorkflowRunSources =
     deps.updateWorkflowRunRecordSources ?? updateWorkflowRunRecordSources;
+  const persistWorkflowRunCredentials =
+    deps.updateWorkflowRunRecordCredentials ??
+    updateWorkflowRunRecordCredentials;
   const applyClosure = deps.applyFrozenWorkflowClosure;
   const multistepSpawner = deps.multistepSubprocessSpawner;
   const { maxActiveDeployments, maxRetainedDeployments } = deps;
@@ -2289,8 +2299,24 @@ export function createSidecarDeployRouter<
       // warm single-step ones): the material cell is per-child and read by
       // every step's tool capabilities. The handler hands the delivery to the
       // supervisor's `deliverCredentials`, which sends a `credentials-updated`
-      // control frame to the child where the material cell is swapped. No
-      // durable persist -- credential material never touches disk.
+      // control frame to the child and advances the supervisor's mirror.
+      //
+      // It then seals the mirror into the run record, so a restart restores
+      // the latest material and Hub tokens, and a revoke stays revoked. The
+      // delivery goes first: the live child must not wait on a disk write. A
+      // failed seal throws, so the Hub sees the update fail, while the child
+      // and the mirror already hold it; the next update seals the whole
+      // mirror again. A `run.grants` frame whose credentials fail here drops
+      // its grants. An update that leaves the mirror as it was writes nothing.
+      // A failed seal can still have replaced the record before it failed,
+      // so after one the record's content is unknown and the next update
+      // writes even when the mirror matches the last confirmed seal.
+      // Updates for one deployment run one at a time on the link's
+      // per-address frame lane, as the sources handler above relies on.
+      // Skipped when no data dir was wired, matching the restore guard.
+      let sealedCredentials: string | undefined = JSON.stringify(
+        wired.supervisor.credentialDelivery(),
+      );
       deps.multistepCredentialsRouter?.register(
         spec.agentAddress,
         async (args) => {
@@ -2298,6 +2324,23 @@ export function createSidecarDeployRouter<
             delivery: args.delivery,
             ...(args.revoke !== undefined ? { revoke: args.revoke } : {}),
           });
+          if (stepStateDataDir === undefined) return;
+          const mirror = wired.supervisor.credentialDelivery();
+          const serialized = JSON.stringify(mirror);
+          if (mirror === null || serialized === sealedCredentials) return;
+          try {
+            await persistWorkflowRunCredentials(
+              stepStateDataDir,
+              runId,
+              spec.generation,
+              mirror,
+              deps.credentialCipher,
+            );
+          } catch (cause) {
+            sealedCredentials = undefined;
+            throw cause;
+          }
+          sealedCredentials = serialized;
         },
       );
       routersRegistered = true;
@@ -3069,11 +3112,12 @@ export function createSidecarDeployRouter<
               // falls back to that deployment's on-disk plaintext file for the
               // missing bodies.
               bodySources: record.bodySources,
-              // The record's credential-material cell, unsealed by the boot
-              // scan and re-delivered to the child on the pre-trigger barrier
-              // so an offline restart restores both inference and tool
-              // credentials without the hub. `undefined` when the deployment
-              // bound none.
+              // The record's credential-material cell: the latest delivery the
+              // deployment received before the restart, unsealed by the boot
+              // scan. It seeds the supervisor's mirror, so the restored child's
+              // first `authority.set` carries the inference and tool
+              // credentials and Hub tokens without the hub. `undefined` when
+              // the deployment has none.
               credentials: record.credentials,
               // The hub-approved wire hash the original deploy persisted, so
               // the restore re-spawn carries the same `DEFINITION_HASH` rather

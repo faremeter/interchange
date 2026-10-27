@@ -12,13 +12,16 @@ import {
   generateKeyPair,
 } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { syncRemovedPathDurable } from "@intx/storage-isogit/node";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
+  ControlPayload,
   createControlChannelSender,
+  SignedEnvelope,
   type EventPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
@@ -51,9 +54,11 @@ import {
 import { conversationStateRoot } from "../conversation-state-root";
 import {
   createDeploymentAddressRegistry,
+  createMultistepCredentialsRouter,
   createMultistepGrantsRouter,
   createMultistepMailRouter,
   createMultistepSourcesRouter,
+  type MultistepCredentialsRouter,
   type MultistepGrantsRouter,
   type MultistepMailRouter,
   type MultistepSourcesRouter,
@@ -62,6 +67,7 @@ import {
   scanWorkflowRunRecords,
   markWorkflowRunRecord,
   writeWorkflowRunRecord,
+  updateWorkflowRunRecordCredentials,
   updateWorkflowRunRecordSources,
   WorkflowRunRecord,
 } from "./workflow-run-record";
@@ -823,6 +829,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
      * rotation's persist window; omitted, the router uses the real writer.
      */
     updateWorkflowRunRecordSources?: typeof updateWorkflowRunRecordSources;
+    /**
+     * Injectable deployment-record credentials updater. The credentials-seal
+     * tests count or fail the seal; omitted, the router uses the real writer.
+     */
+    updateWorkflowRunRecordCredentials?: typeof updateWorkflowRunRecordCredentials;
+    multistepCredentialsRouter?: MultistepCredentialsRouter;
     maxActiveDeployments?: number;
     maxRetainedDeployments?: number;
     removeRunRepository?: (runId: string) => Promise<void>;
@@ -974,6 +986,15 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         ? {
             updateWorkflowRunRecordSources: opts.updateWorkflowRunRecordSources,
           }
+        : {}),
+      ...(opts.updateWorkflowRunRecordCredentials !== undefined
+        ? {
+            updateWorkflowRunRecordCredentials:
+              opts.updateWorkflowRunRecordCredentials,
+          }
+        : {}),
+      ...(opts.multistepCredentialsRouter !== undefined
+        ? { multistepCredentialsRouter: opts.multistepCredentialsRouter }
         : {}),
       applyFrozenWorkflowClosure:
         opts.applyFrozenWorkflowClosure ?? defaultApplyFrozenWorkflowClosure,
@@ -2332,6 +2353,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   function makeReadyDrivingSpawner(pidBase: number) {
     type Spawn = {
       env: Record<string, string>;
+      supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
       childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
       eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
       childSender?: ReturnType<typeof createControlChannelSender>;
@@ -2355,7 +2377,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         exited,
         resolveExit,
       } = createChildStreams();
-      spawns.push({ env, childToSupervisor, eventChildToSupervisor });
+      spawns.push({
+        env,
+        supervisorToChild,
+        childToSupervisor,
+        eventChildToSupervisor,
+      });
       spawnsChanges.notify();
       const handle: SubprocessHandle = {
         pid: pidBase + spawns.length,
@@ -2424,6 +2451,15 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         spawnsChanges.until(() => spawns.length >= count),
       envFor: (index: number): Record<string, string> | undefined =>
         spawns[index]?.env,
+      // Every control frame the supervisor sent the child, in send order.
+      controlFramesFor: (index: number): ControlPayload[] =>
+        (spawns[index]?.supervisorToChild.flushed() ?? []).flatMap((line) => {
+          const signed = SignedEnvelope(JSON.parse(line));
+          if (signed instanceof type.errors) return [];
+          const payload = ControlPayload(signed.envelope.payload);
+          if (payload instanceof type.errors) return [];
+          return [payload];
+        }),
       async recycleRequestFor(index: number): Promise<void> {
         const sender = spawns[index]?.childSender;
         if (sender === undefined) {
@@ -5600,6 +5636,243 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(
       JSON.parse(respawnEnv[STEP_INFERENCE_SOURCES_ENV_KEY] ?? "null"),
     ).toEqual({ "step-1": [makeInferenceSource("step-1")] });
+  });
+
+  // A one-material delivery for the credentials-seal tests.
+  function sealDelivery(credentialId: string, secret: string) {
+    return {
+      bindings: [],
+      materials: [
+        {
+          credentialId,
+          providerKey: "http",
+          origin: "https://api.example.com",
+          secret,
+        },
+      ],
+    };
+  }
+
+  // The credential ids the run record restores for `addr`, sorted.
+  async function sealedCredentialIds(dataDir: string, addr: string) {
+    const scanned = await scanWorkflowRunRecords(
+      dataDir,
+      createNoopCredentialCipher(),
+    );
+    const record = scanned.find(
+      (s) => s.runId === deriveWorkflowRunRepoId(addr),
+    );
+    return (record?.record.credentials?.materials ?? [])
+      .map((material) => material.credentialId)
+      .sort();
+  }
+
+  test("a credentials update seals the merged delivery, revokes included, into the run record", async () => {
+    const dataDir = await createTempBaseDir("sidecar-cred-seal-");
+    const addr = "run_credseal@example.com";
+    const credentialsRouter = createMultistepCredentialsRouter();
+    const spawner = makeReadyDrivingSpawner(11400);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepCredentialsRouter: credentialsRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = router.deploy(singleStepFrame(addr, "wf-credseal"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    const update = (delivery: CredentialDelivery, revoke?: string[]) =>
+      credentialsRouter.tryRoute({
+        type: "credentials.update",
+        agentAddress: addr,
+        delivery,
+        ...(revoke !== undefined ? { revoke } : {}),
+      });
+    expect(await update(sealDelivery("cred-a", "sk-a"))).toBe(true);
+    expect(await update(sealDelivery("hub:mail", "itx-token"))).toBe(true);
+    expect(await sealedCredentialIds(dataDir, addr)).toEqual([
+      "cred-a",
+      "hub:mail",
+    ]);
+
+    expect(await update({ bindings: [], materials: [] }, ["cred-a"])).toBe(
+      true,
+    );
+    expect(await sealedCredentialIds(dataDir, addr)).toEqual(["hub:mail"]);
+  });
+
+  test("a credentials update that leaves the delivery unchanged writes nothing", async () => {
+    const dataDir = await createTempBaseDir("sidecar-cred-same-");
+    const addr = "run_credsame@example.com";
+    const credentialsRouter = createMultistepCredentialsRouter();
+    const spawner = makeReadyDrivingSpawner(11500);
+    let seals = 0;
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepCredentialsRouter: credentialsRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      updateWorkflowRunRecordCredentials: async (...args) => {
+        seals += 1;
+        await updateWorkflowRunRecordCredentials(...args);
+      },
+    });
+    const deployPromise = router.deploy(singleStepFrame(addr, "wf-credsame"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    for (let i = 0; i < 2; i += 1) {
+      await credentialsRouter.tryRoute({
+        type: "credentials.update",
+        agentAddress: addr,
+        delivery: sealDelivery("hub:mail", "itx-token"),
+      });
+    }
+    expect(seals).toBe(1);
+  });
+
+  test("a failed credentials seal fails the update, and the next update seals both", async () => {
+    const dataDir = await createTempBaseDir("sidecar-cred-fail-");
+    const addr = "run_credfail@example.com";
+    const credentialsRouter = createMultistepCredentialsRouter();
+    const spawner = makeReadyDrivingSpawner(11600);
+    let failNext = false;
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepCredentialsRouter: credentialsRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      updateWorkflowRunRecordCredentials: async (...args) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error("synthetic seal failure");
+        }
+        await updateWorkflowRunRecordCredentials(...args);
+      },
+    });
+    const deployPromise = router.deploy(singleStepFrame(addr, "wf-credfail"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    failNext = true;
+    await expect(
+      credentialsRouter.tryRoute({
+        type: "credentials.update",
+        agentAddress: addr,
+        delivery: sealDelivery("cred-a", "sk-a"),
+      }),
+    ).rejects.toThrow("synthetic seal failure");
+    expect(await sealedCredentialIds(dataDir, addr)).toEqual([]);
+
+    // The mirror kept the first update, so the next seal carries both.
+    await credentialsRouter.tryRoute({
+      type: "credentials.update",
+      agentAddress: addr,
+      delivery: sealDelivery("cred-b", "sk-b"),
+    });
+    expect(await sealedCredentialIds(dataDir, addr)).toEqual([
+      "cred-a",
+      "cred-b",
+    ]);
+  });
+
+  test("a seal that replaced the record before it failed does not skip a later revoke", async () => {
+    const dataDir = await createTempBaseDir("sidecar-cred-partial-");
+    const addr = "run_credpartial@example.com";
+    const credentialsRouter = createMultistepCredentialsRouter();
+    const spawner = makeReadyDrivingSpawner(11700);
+    let failAfterWrite = false;
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepCredentialsRouter: credentialsRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      // The record write lands, then the seal fails, as a failed directory
+      // sync after the rename does.
+      updateWorkflowRunRecordCredentials: async (...args) => {
+        await updateWorkflowRunRecordCredentials(...args);
+        if (failAfterWrite) {
+          failAfterWrite = false;
+          throw new Error("synthetic directory sync failure");
+        }
+      },
+    });
+    const deployPromise = router.deploy(
+      singleStepFrame(addr, "wf-credpartial"),
+    );
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    await credentialsRouter.tryRoute({
+      type: "credentials.update",
+      agentAddress: addr,
+      delivery: sealDelivery("hub:mail", "itx-token"),
+    });
+    failAfterWrite = true;
+    await expect(
+      credentialsRouter.tryRoute({
+        type: "credentials.update",
+        agentAddress: addr,
+        delivery: sealDelivery("cred-a", "sk-a"),
+      }),
+    ).rejects.toThrow("synthetic directory sync failure");
+    expect(await sealedCredentialIds(dataDir, addr)).toEqual([
+      "cred-a",
+      "hub:mail",
+    ]);
+
+    // The mirror is back to the last confirmed seal, and the write still runs.
+    await credentialsRouter.tryRoute({
+      type: "credentials.update",
+      agentAddress: addr,
+      delivery: { bindings: [], materials: [] },
+      revoke: ["cred-a"],
+    });
+    expect(await sealedCredentialIds(dataDir, addr)).toEqual(["hub:mail"]);
+  });
+
+  test("a restart gives the restored child the latest sealed delivery in its first frame", async () => {
+    const dataDir = await createTempBaseDir("sidecar-cred-restart-");
+    const addr = "run_credrestart@example.com";
+    const credentialsRouter = createMultistepCredentialsRouter();
+    const first = makeReadyDrivingSpawner(11800);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepCredentialsRouter: credentialsRouter,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = routerA.deploy(
+      singleStepFrame(addr, "wf-credrestart"),
+    );
+    await first.driveReadyFor(0);
+    await deployPromise;
+    await credentialsRouter.tryRoute({
+      type: "credentials.update",
+      agentAddress: addr,
+      delivery: sealDelivery("cred-a", "sk-a"),
+    });
+    await credentialsRouter.tryRoute({
+      type: "credentials.update",
+      agentAddress: addr,
+      delivery: sealDelivery("hub:mail", "itx-token"),
+      revoke: ["cred-a"],
+    });
+
+    // A fresh router over the same data dir models the restarted sidecar.
+    const second = makeReadyDrivingSpawner(11900);
+    const { router: routerB } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: createInMemoryTransport(),
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const restorePromise = routerB.restoreWorkflowRuns();
+    await second.driveReadyFor(0);
+    await restorePromise;
+
+    const [firstFrame] = second.controlFramesFor(0);
+    if (firstFrame?.type !== "authority.set") {
+      throw new Error(`expected authority.set first, got ${firstFrame?.type}`);
+    }
+    expect(firstFrame.data.delivery).toEqual(
+      sealDelivery("hub:mail", "itx-token"),
+    );
   });
 
   test("a recycle interleaving the rotation persist respawns on the rotated sources", async () => {

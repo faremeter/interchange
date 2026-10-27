@@ -543,13 +543,13 @@ export function createMultistepSourcesRouter(): MultistepSourcesRouter {
  * against the `MultistepCredentialsRouter` after a supervisor's `spawn`
  * succeeds. The handler hands the delivery to the supervisor's
  * `deliverCredentials`, which sends a `credentials-updated` control IPC frame
- * to the workflow-process child, where the material cell is swapped in place.
+ * to the workflow-process child, where the material cell is swapped in place,
+ * and then seals the supervisor's merged delivery into the run record so a
+ * restart restores it.
  *
  * Unlike sources rotation, this registers for ANY deployment (single- or
  * multi-step): the material cell is per-child and read by every step's tool
- * capabilities, so there is no single-warm-agent restriction. There is no
- * durable persist -- credential material never touches disk (it is re-resolved
- * by the hub on reconnect).
+ * capabilities, so there is no single-warm-agent restriction.
  */
 export type MultistepCredentialsHandler = (args: {
   delivery: CredentialDelivery;

@@ -628,8 +628,9 @@ const controlPayloadFactories = defineControlPayloadFactories({
       // inference rotation, a credential-grant push), each carrying only its
       // own slice -- a swap would let one evict another's credentials.
       // Revocation is therefore explicit, never by omission. Carried inline
-      // like the grants and sources snapshots. The secret rides this frame and
-      // the in-memory cell only; it is never persisted.
+      // like the grants and sources snapshots. The child keeps the secret in
+      // its in-memory cell only; the sidecar seals the supervisor's merged
+      // delivery in the run record.
       type: "'credentials-updated'",
       data: {
         delivery: CredentialDelivery,
