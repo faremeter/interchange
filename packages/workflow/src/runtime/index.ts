@@ -7,6 +7,7 @@ export type {
   EffectContext,
   EffectLedger,
   LoopFn,
+  LoadParkedApproval,
   LoopFnRegistry,
   ParkedApprovalOp,
   PerformScope,
@@ -59,6 +60,8 @@ export {
 } from "./suspendable-child-handle";
 
 export { createLoopIterationHandle } from "./loop-iteration-handle";
+
+export { findParkedApprovalSnapshot } from "./parked-approval";
 
 export {
   MAX_CHILD_SPAWN_DEPTH,

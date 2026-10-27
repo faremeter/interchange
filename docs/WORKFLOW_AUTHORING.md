@@ -512,8 +512,9 @@ A queued park whose gate has already moved on is not given a signal that
 arrived while it waited.
 
 A parked child survives a process restart. Resume reattaches the same
-child run from its log and reestablishes the relay on the spawn step. The
-child stays unaddressable; the parent is the resume root. On drain the
+child run from its log and reestablishes the relay on the spawn step, and
+relays a park still queued at the restart. The child stays unaddressable;
+the parent is the resume root. On drain the
 relay sits on the spawn step, which defaults to `"wait"`, so the drain
 signal does not abort it. That covers the whole time the step is in
 flight, including a parked relay and a child that is still mid-step. An
