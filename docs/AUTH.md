@@ -239,7 +239,7 @@ A run needs three kinds of authority: its grants snapshot, its credential materi
 
 A credential that the Hub revokes while the sidecar is down stays usable by the restored run until the reconnect reconcile revokes it.
 
-The child starts its timer scheduler before it applies the frame, so a timer that is already due can fire first. Only a resumed run uses grants and credentials, and the child resumes runs only after it applies the frame.
+The child starts its timer scheduler before it applies the frame, so a timer that is already due can fire first. Only a resumed run uses grants and credentials, and the child resumes runs only after it applies the frame. The child also holds every control frame it sends until it has sent `ready` and `resumed.runs`, because the supervisor accepts nothing else first.
 
 ### What the grant list does NOT bound
 

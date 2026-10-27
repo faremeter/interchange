@@ -119,7 +119,9 @@ import {
 } from "../adapters/spawn-child";
 import {
   createControlChannelSender,
+  holdControlChannelSender,
   type ControlChannelSender,
+  type HeldControlChannelSender,
   type NdjsonReader,
   type NdjsonWriter,
 } from "../ipc/control-sender";
@@ -457,9 +459,11 @@ export interface RunWorkflowChildOpts {
    * The process-shaped wrapper `runWorkflowChildFromProcessEnv`
    * supplies a pre-built sender so the same Ed25519-signed surface is
    * shared with the pack-push bridge it constructs against the
-   * substrate factory.
+   * substrate factory. The sender holds every frame until the child has
+   * sent `ready` and `resumed.runs`, so a due timer or a resumed run that
+   * writes during startup cannot send ahead of them.
    */
-  upstreamSender?: ControlChannelSender;
+  upstreamSender?: HeldControlChannelSender;
   /**
    * Optional substrate-write bridge whose `handleMergeRequest` and
    * `handleWriteResponse` the child's control loop invokes when the
@@ -841,11 +845,13 @@ export async function runWorkflowChild(
   // `complete` promise without re-deriving the sender lazily.
   const upstreamSender =
     opts.upstreamSender ??
-    createControlChannelSender({
-      privateKeySeed: childKeyPair.privateKey,
-      channelId: opts.env.channelId,
-      writer: opts.controlWriter,
-    });
+    holdControlChannelSender(
+      createControlChannelSender({
+        privateKeySeed: childKeyPair.privateKey,
+        channelId: opts.env.channelId,
+        writer: opts.controlWriter,
+      }),
+    );
 
   // Control channel. The receiver iterator yields one verified payload
   // per call; any signature/channelId/seq violation crashes the
@@ -965,20 +971,31 @@ export async function runWorkflowChild(
   // signed by the child's own private key; the `ready` payload
   // publishes the matching public half so the supervisor can verify
   // every subsequent upstream frame.
-  await upstreamSender.send({
-    type: "ready",
-    data: {
-      childPid: process.pid,
-      childPublicKey: hexEncode(childKeyPair.publicKey),
-    },
-  });
+  //
+  // The supervisor accepts `ready` only as the first frame, and seeds its
+  // cohort tracking from `resumed.runs` before it reads anything else. A
+  // due timer or a resumed run can send during startup, so the sender holds
+  // their frames until both of these are out.
+  try {
+    await upstreamSender.sendNow({
+      type: "ready",
+      data: {
+        childPid: process.pid,
+        childPublicKey: hexEncode(childKeyPair.publicKey),
+      },
+    });
 
-  // Report self-discovered runs so the supervisor seeds its cohort
-  // tracking before the dispatch loop starts.
-  await upstreamSender.send({
-    type: "resumed.runs",
-    data: { runIds: resumedRunIds },
-  });
+    // Report self-discovered runs so the supervisor seeds its cohort
+    // tracking before the dispatch loop starts.
+    await upstreamSender.sendNow({
+      type: "resumed.runs",
+      data: { runIds: resumedRunIds },
+    });
+  } catch (cause) {
+    upstreamSender.fail(cause);
+    throw cause;
+  }
+  upstreamSender.open();
 
   const triggeredRunIds: string[] = [];
 

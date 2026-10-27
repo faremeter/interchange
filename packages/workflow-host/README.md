@@ -309,7 +309,8 @@ forking a process.
    apply its grants snapshot and credential material.
 4. Self-discover in-flight runs by enumerating `runs/<runId>/` and
    resuming any whose log lacks a terminal event.
-5. Emit `ready` on the control channel.
+5. Emit `ready` and then `resumed.runs` on the control channel.
+   Every other upstream control frame waits until both are out.
 6. Loop on `trigger.fire`, `authority.set`, `grants-updated`,
    `credentials-updated`, `drain`, `recycle`, `shutdown`, and
    `signal.deliver` frames.

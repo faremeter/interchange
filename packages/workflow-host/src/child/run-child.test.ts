@@ -62,6 +62,7 @@ import {
   type ChangeNotifier,
   sendAuthoritySet,
 } from "@intx/workflow-host/testing";
+import { holdControlChannelSender } from "../ipc/control-sender";
 import {
   createControlChannelSender,
   generateChannelId,
@@ -1421,7 +1422,12 @@ describe("runWorkflowChild", () => {
 
   // A child over an empty definition, with a supervisor-side sender. The
   // test sends the child's first frame itself.
-  async function startChildWithoutAuthority(prefix: string) {
+  async function startChildWithoutAuthority(
+    prefix: string,
+    // A frame the child's own sender sends before the child starts, as a
+    // due timer or a resumed run does during startup.
+    earlyFrame?: ControlPayload,
+  ) {
     const baseDir = await makeTempDir(prefix);
     const supervisorKeyPair = await generateKeyPair();
     const childKeyPair = await generateKeyPair();
@@ -1446,20 +1452,67 @@ describe("runWorkflowChild", () => {
       channelId,
       writer: supervisorToChild.writer,
     });
+    const upstreamSender = holdControlChannelSender(
+      createControlChannelSender({
+        privateKeySeed: childKeyPair.privateKey,
+        channelId,
+        writer: childToSupervisor.writer,
+      }),
+    );
+    const earlySent =
+      earlyFrame === undefined ? undefined : upstreamSender.send(earlyFrame);
     const runPromise = runWorkflowChild({
       env,
       controlReader: supervisorToChild.reader,
       controlWriter: childToSupervisor.writer,
       eventWriter: eventStream.writer,
       bindings: buildBindings({ baseDir, childKeyPair }),
+      upstreamSender,
     });
     return {
+      channelId,
       supervisorSender,
       supervisorToChild,
       childToSupervisor,
       runPromise,
+      earlySent,
     };
   }
+
+  test("a frame sent during startup goes upstream after ready and resumed.runs", async () => {
+    const child = await startChildWithoutAuthority("child-early-frame-", {
+      type: "recycle.request",
+      data: { reason: "early" },
+    });
+    // The receiver crashes on any first frame that is not `ready`, as the
+    // supervisor's does.
+    const recvIter = receiveControlChannel({
+      publicKey: { bootstrapFromReady: true },
+      channelId: child.channelId,
+      reader: child.childToSupervisor.reader,
+      onCrash: (reason) => {
+        throw new Error(`unexpected control channel crash: ${reason}`);
+      },
+    });
+    await sendAuthoritySet(child.supervisorSender, {
+      snapshot: AUTHORITY_SNAPSHOT,
+    });
+
+    const types: string[] = [];
+    for await (const payload of recvIter) {
+      types.push(payload.type);
+      if (types.length === 3) break;
+    }
+    expect(types).toEqual(["ready", "resumed.runs", "recycle.request"]);
+    await child.earlySent;
+
+    await child.supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    child.supervisorToChild.close();
+    await child.runPromise;
+  });
 
   test("a child whose first control frame is not authority.set fails before it readies", async () => {
     const child = await startChildWithoutAuthority("child-no-authority-");

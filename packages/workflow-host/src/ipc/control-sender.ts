@@ -109,3 +109,60 @@ export function createControlChannelSender(
     },
   };
 }
+
+/**
+ * A sender that holds every frame until `open`. The child's protocol needs
+ * its `ready` frame first and `resumed.runs` second, but its timers, resumed
+ * runs and bridges can send before then. They send through `send` and wait;
+ * the child sends its startup frames through `sendNow`, then opens.
+ */
+export interface HeldControlChannelSender extends ControlChannelSender {
+  /** Send at once, ahead of every held frame. */
+  sendNow(payload: ControlPayload): Promise<void>;
+  /** Send the held frames in the order they were sent, then stop holding. */
+  open(): void;
+  /** Reject the held frames and every later `send`. */
+  fail(cause: unknown): void;
+}
+
+export function holdControlChannelSender(
+  inner: ControlChannelSender,
+): HeldControlChannelSender {
+  type Held = {
+    payload: ControlPayload;
+    done: PromiseWithResolvers<undefined>;
+  };
+  // The frames sent before `open`, in order; null once open or failed.
+  let held: Held[] | null = [];
+  let failure: { cause: unknown } | null = null;
+  return {
+    get seq() {
+      return inner.seq;
+    },
+    send(payload) {
+      if (failure !== null) return Promise.reject(failure.cause);
+      if (held === null) return inner.send(payload);
+      const done = Promise.withResolvers<undefined>();
+      held.push({ payload, done });
+      return done.promise;
+    },
+    sendNow(payload) {
+      return inner.send(payload);
+    },
+    open() {
+      const pending = held ?? [];
+      held = null;
+      // The inner sender queues in call order, so the held frames take
+      // their places before any frame sent after `open` returns.
+      for (const { payload, done } of pending) {
+        inner.send(payload).then(() => done.resolve(undefined), done.reject);
+      }
+    },
+    fail(cause) {
+      failure = { cause };
+      const pending = held ?? [];
+      held = null;
+      for (const { done } of pending) done.reject(cause);
+    },
+  };
+}
