@@ -827,7 +827,7 @@ describe("applyEvent: correlated signal delivery", () => {
           correlationId: "corr-other",
         },
       ],
-      /does not match an active signal-relay park/,
+      /does not match an active relay park/,
     );
   });
 });
@@ -1391,6 +1391,46 @@ describe("applyEvent: SignalAwaitAbandoned", () => {
     expect(late.unconsumedSignals.get("wake")?.length).toBe(1);
   });
 
+  test("retires the approval park of a step that relays its child's approval", () => {
+    const events: WorkflowEvent[] = [
+      startRun(),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at: T,
+        stepId: "sec",
+        attempt: 1,
+        input: { ref: "i" },
+      },
+      {
+        kind: "ChildSpawned",
+        seq: 3,
+        at: T,
+        stepId: "sec",
+        childRunId: "body",
+        childDefinitionRef: "body-ref",
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 4,
+        at: T,
+        stepId: "sec",
+        signalName: "wake",
+        parkKind: "approval",
+      },
+      {
+        kind: "SignalAwaitAbandoned",
+        seq: 5,
+        at: T,
+        stepId: "sec",
+        signalName: "wake",
+      },
+    ];
+    const state = events.reduce(applyEvent, fresh());
+    expect(state.steps.get("sec")?.phase).toBe("in-flight");
+    expect(state.steps.get("sec")?.awaitingSignal).toBeUndefined();
+  });
+
   test("rejects an abandon that names an approval park", () => {
     expectThrowsAt(
       [
@@ -1419,7 +1459,7 @@ describe("applyEvent: SignalAwaitAbandoned", () => {
           signalName: "wake",
         },
       ],
-      /does not match an active signal-relay park/,
+      /does not match an active relay park/,
     );
   });
 
@@ -1451,7 +1491,7 @@ describe("applyEvent: SignalAwaitAbandoned", () => {
           signalName: "other",
         },
       ],
-      /does not match an active signal-relay park/,
+      /does not match an active relay park/,
     );
   });
 

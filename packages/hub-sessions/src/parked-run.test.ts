@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
+import { signalName } from "@intx/types/signals";
 import { loopBodyRunId, sectionBodyRunId } from "@intx/workflow";
 
 import { createParkedRunClassifier } from "./parked-run";
@@ -99,6 +100,71 @@ function stepStarted(stepId: string): Record<string, unknown> {
     attempt: 1,
     input: { ref: "inline:null" },
   };
+}
+
+function approvalAwaited(
+  stepId: string,
+  correlationId: string,
+): Record<string, unknown> {
+  return {
+    type: "SignalAwaited",
+    stepId,
+    signalName: signalName(correlationId),
+    parkKind: "approval",
+  };
+}
+
+function containerRelaying(
+  stepId: string,
+  childRunId: string,
+  relay: Record<string, unknown>,
+): Record<string, unknown>[] {
+  return [
+    runStarted(ANCHOR),
+    stepStarted(stepId),
+    { type: "ChildSpawned", stepId, childRunId, childDefinitionRef: "body" },
+    { ...relay, stepId },
+  ];
+}
+
+// A body step that timed out on approval `corr-x` and began its second attempt.
+function retriedPastApproval(): Record<string, unknown>[] {
+  return [
+    stepStarted("work"),
+    approvalAwaited("work", "corr-x"),
+    {
+      type: "StepFailed",
+      stepId: "work",
+      attempt: 1,
+      error: { message: "timed out" },
+      retriesExhausted: false,
+    },
+    { type: "TimerSet", timerId: "retry", fireAt: AT, stepId: "work" },
+    {
+      type: "AttemptScheduled",
+      stepId: "work",
+      nextAttempt: 2,
+      timerId: "retry",
+      fireAt: AT,
+    },
+    { type: "TimerFired", timerId: "retry" },
+  ];
+}
+
+function thenSleeping(
+  completedStep: string,
+  attempt: number,
+): Record<string, unknown>[] {
+  return [
+    {
+      type: "StepCompleted",
+      stepId: completedStep,
+      attempt,
+      output: { ref: "inline:null" },
+    },
+    stepStarted("nap"),
+    { type: "TimerSet", timerId: "nap", fireAt: AT, stepId: "nap" },
+  ];
 }
 
 describe("createParkedRunClassifier", () => {
@@ -264,6 +330,127 @@ describe("createParkedRunClassifier", () => {
     expect(verdict.verdict).toBe("parked");
   });
 
+  const loopBody = {
+    again: {
+      kind: "loop",
+      maxIterations: 3,
+      body: {
+        steps: {
+          work: { kind: "step" },
+          hold: { kind: "awaitSignal" },
+          nap: { kind: "sleep" },
+        },
+      },
+    },
+  };
+
+  test("a loop body that left its relayed approval for a sleep is not parked", async () => {
+    const childRunId = loopBodyRunId(ANCHOR, "again", 0);
+    await commitFiles(dir, {
+      ...eventFiles(
+        ANCHOR,
+        containerRelaying(
+          "again",
+          childRunId,
+          approvalAwaited("again", "corr-x"),
+        ),
+      ),
+      ...eventFiles(childRunId, [
+        runStarted(childRunId),
+        ...retriedPastApproval(),
+        ...thenSleeping("work", 2),
+      ]),
+    });
+
+    const verdict = await classify({ steps: loopBody })({
+      anchorRunId: ANCHOR,
+    });
+
+    expect(verdict.verdict).toBe("not-parked");
+  });
+
+  test("a loop body that left its relayed approval for a crashed step is not parked", async () => {
+    const childRunId = loopBodyRunId(ANCHOR, "again", 0);
+    await commitFiles(dir, {
+      ...eventFiles(
+        ANCHOR,
+        containerRelaying(
+          "again",
+          childRunId,
+          approvalAwaited("again", "corr-x"),
+        ),
+      ),
+      ...eventFiles(childRunId, [
+        runStarted(childRunId),
+        ...retriedPastApproval(),
+      ]),
+    });
+
+    const verdict = await classify({ steps: loopBody })({
+      anchorRunId: ANCHOR,
+    });
+
+    expect(verdict.verdict).toBe("not-parked");
+  });
+
+  test("a loop body that left its relayed approval for another approval is parked", async () => {
+    const childRunId = loopBodyRunId(ANCHOR, "again", 0);
+    await commitFiles(dir, {
+      ...eventFiles(
+        ANCHOR,
+        containerRelaying(
+          "again",
+          childRunId,
+          approvalAwaited("again", "corr-x"),
+        ),
+      ),
+      ...eventFiles(childRunId, [
+        runStarted(childRunId),
+        ...retriedPastApproval(),
+        approvalAwaited("work", "corr-y"),
+      ]),
+    });
+
+    const verdict = await classify({ steps: loopBody })({
+      anchorRunId: ANCHOR,
+    });
+
+    expect(verdict.verdict).toBe("parked");
+  });
+
+  test("a loop body that left its relayed gate for a sleep is not parked", async () => {
+    const childRunId = loopBodyRunId(ANCHOR, "again", 0);
+    await commitFiles(dir, {
+      ...eventFiles(
+        ANCHOR,
+        containerRelaying("again", childRunId, {
+          type: "SignalAwaited",
+          signalName: "go",
+          parkKind: "signal-relay",
+        }),
+      ),
+      ...eventFiles(childRunId, [
+        runStarted(childRunId),
+        stepStarted("hold"),
+        { type: "TimerSet", timerId: "gate", fireAt: AT, stepId: "hold" },
+        {
+          type: "SignalAwaited",
+          stepId: "hold",
+          signalName: "go",
+          timeoutAt: AT,
+        },
+        { type: "TimerFired", timerId: "gate" },
+        ...thenSleeping("hold", 1),
+      ]),
+    });
+
+    const verdict = await classify({ steps: loopBody })({
+      anchorRunId: ANCHOR,
+    });
+
+    expect(verdict.verdict).toBe("not-parked");
+  });
+
   test("a tolerated iteration followed by one unrelayed author signal is parked", async () => {
     const failedChild = loopBodyRunId(ANCHOR, "again", 0);
     const parkedChild = loopBodyRunId(ANCHOR, "again", 1);
@@ -310,7 +497,7 @@ describe("createParkedRunClassifier", () => {
     expect(verdict.verdict).toBe("parked");
   });
 
-  test("two drive-fresh loops are parked together", async () => {
+  test("two loops whose author signals were never relayed are parked together", async () => {
     const left = loopBodyRunId(ANCHOR, "left", 0);
     const right = loopBodyRunId(ANCHOR, "right", 0);
     const child = (runId: string) =>
@@ -353,7 +540,8 @@ describe("createParkedRunClassifier", () => {
     expect(verdict.verdict).toBe("parked");
   });
 
-  test("an unrelayed onTrigger body is not parked", async () => {
+  // The section never relayed the body's gate; resume relays it fresh.
+  test("an unrelayed onTrigger body is parked", async () => {
     const childRunId = sectionBodyRunId(ANCHOR, "inbox", 0);
     await commitFiles(dir, {
       ...eventFiles(ANCHOR, [
@@ -382,7 +570,80 @@ describe("createParkedRunClassifier", () => {
       },
     })({ anchorRunId: ANCHOR });
 
+    expect(verdict.verdict).toBe("parked");
+  });
+
+  test("an onTrigger body that left its relayed approval for a sleep is not parked", async () => {
+    const childRunId = sectionBodyRunId(ANCHOR, "inbox", 0);
+    await commitFiles(dir, {
+      ...eventFiles(
+        ANCHOR,
+        containerRelaying(
+          "inbox",
+          childRunId,
+          approvalAwaited("inbox", "corr-x"),
+        ),
+      ),
+      ...eventFiles(childRunId, [
+        runStarted(childRunId),
+        ...retriedPastApproval(),
+        ...thenSleeping("work", 2),
+      ]),
+    });
+
+    const verdict = await classify({
+      steps: {
+        inbox: {
+          kind: "onTrigger",
+          body: {
+            inline: {
+              steps: { work: { kind: "step" }, nap: { kind: "sleep" } },
+            },
+          },
+        },
+      },
+    })({ anchorRunId: ANCHOR });
+
     expect(verdict.verdict).toBe("not-parked");
+  });
+
+  test("an onTrigger body whose log cannot be read is unknown", async () => {
+    const childRunId = sectionBodyRunId(ANCHOR, "inbox", 0);
+    await commitFiles(dir, {
+      ...eventFiles(ANCHOR, [
+        runStarted(ANCHOR),
+        stepStarted("inbox"),
+        {
+          type: "ChildSpawned",
+          stepId: "inbox",
+          childRunId,
+          childDefinitionRef: "body",
+        },
+      ]),
+    });
+    const runReader = createWorkflowRunReader(repoStoreFor(root));
+
+    const verdict = await createParkedRunClassifier({
+      runReader: {
+        ...runReader,
+        readRunEvents: async (repoId, ref, runId) => {
+          if (runId === childRunId) throw new Error("the store is down");
+          return runReader.readRunEvents(repoId, ref, runId);
+        },
+      },
+      addressForAnchor: async () => ADDRESS,
+      projectionForAnchor: async () => ({
+        steps: {
+          inbox: {
+            kind: "onTrigger",
+            body: { inline: { steps: { hold: { kind: "awaitSignal" } } } },
+          },
+        },
+      }),
+    })({ anchorRunId: ANCHOR });
+
+    expect(verdict.verdict).toBe("unknown");
+    expect(verdict.reason).toContain("the store is down");
   });
 
   test("a legacy onTrigger body id with an unsupported inner step is not parked", async () => {

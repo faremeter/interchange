@@ -424,6 +424,92 @@ describe("collectParkedApprovalCorrelations", () => {
     ]);
   });
 
+  test("a relayed approval whose body stored the park but has not logged it is found", async () => {
+    const baseDir = await makeTempDir();
+    const runsDir = path.join(baseDir, repoId.kind, repoId.id, "runs");
+    const runtimeRepoStore = createInMemoryRepoStore();
+    await fs.mkdir(path.join(runsDir, "parent-run"), { recursive: true });
+    await fs.mkdir(path.join(runsDir, "child-run"), { recursive: true });
+    const parent: WorkflowEvent[] = [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId: "parent-run",
+        definitionHash: "x",
+        trigger: { type: "manual", payload: undefined },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "spawn",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "ChildSpawned",
+        seq: 3,
+        at,
+        stepId: "spawn",
+        childRunId: "child-run",
+        childDefinitionRef: "child",
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 4,
+        at,
+        stepId: "spawn",
+        signalName: signalName("corr-body"),
+        parkKind: "approval",
+      },
+    ];
+    // The body step stored its park and crashed before logging it.
+    const child: WorkflowEvent[] = [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId: "child-run",
+        definitionHash: "y",
+        trigger: { type: "manual", payload: undefined },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "hold",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+    ];
+    for (const event of parent)
+      await runtimeRepoStore.append("parent-run", event);
+    for (const event of child)
+      await runtimeRepoStore.append("child-run", event);
+    const storedInBody = (args: { runId: string; stepId: string }): boolean =>
+      args.runId === "child-run" && args.stepId === "hold";
+
+    const result = await collectParkedApprovalCorrelations({
+      substrate: createStubSubstrate(baseDir),
+      repoId,
+      runtimeRepoStore,
+      loadParkedApproval: async (args) =>
+        storedInBody(args) ? snapshot : undefined,
+      readParkedApprovalOps: async (args) =>
+        storedInBody(args) ? [{ correlationId: "corr-body" }] : [],
+    });
+
+    expect(result).toEqual([
+      {
+        runId: "parent-run",
+        correlationId: "corr-body",
+        parkKind: "approval",
+        snapshot,
+      },
+    ]);
+  });
+
   test("throws when the binding has no snapshot for an enumerated park", async () => {
     const { substrate, runtimeRepoStore } = await setup([
       { runId: "run-4", stepId: "s", name: signalName("corr-4") },

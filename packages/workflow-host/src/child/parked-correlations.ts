@@ -16,16 +16,20 @@
 // `childWorkflow` parks the container on the body's correlation, and the
 // snapshot stays in the body's step store. The container's own store has
 // none. Enumeration follows the spawned child that is still awaiting that
-// correlation, including a child that relays it onward.
+// correlation, including a child that relays it onward. It reads a body's log
+// as the container's resume plan does, so a park the body stored but has not
+// logged yet is found too.
 
 import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions/substrate";
 import {
+  bodyLogForRelays,
   controlParkKindOf,
   findParkedApprovalSnapshot,
   type LoadParkedApproval,
+  type ReadParkedApprovalOps,
   type RepoStore as RuntimeRepoStore,
 } from "@intx/workflow";
 import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
@@ -50,6 +54,7 @@ export interface CollectParkedApprovalCorrelationsOpts {
   repoId: RepoId;
   runtimeRepoStore: RuntimeRepoStore;
   loadParkedApproval?: LoadParkedApproval;
+  readParkedApprovalOps?: ReadParkedApprovalOps;
 }
 
 /**
@@ -68,6 +73,13 @@ export async function collectParkedApprovalCorrelations(
     repoId: opts.repoId,
     runtimeRepoStore: opts.runtimeRepoStore,
   });
+  const bodyEnv = {
+    repoStore: opts.runtimeRepoStore,
+    clock: () => new Date(),
+    ...(opts.readParkedApprovalOps !== undefined
+      ? { readParkedApprovalOps: opts.readParkedApprovalOps }
+      : {}),
+  };
   const out: ParkedApprovalCorrelation[] = [];
   for (const run of discovered) {
     for (const step of run.resumedState.steps.values()) {
@@ -99,7 +111,7 @@ export async function collectParkedApprovalCorrelations(
         );
       }
       const snapshot = await findParkedApprovalSnapshot({
-        repoStore: opts.runtimeRepoStore,
+        repoStore: { read: (id) => bodyLogForRelays(bodyEnv, id) },
         load: opts.loadParkedApproval,
         runId: run.runId,
         state: run.resumedState,

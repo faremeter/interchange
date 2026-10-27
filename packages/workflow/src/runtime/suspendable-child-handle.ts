@@ -233,12 +233,16 @@ export function createSuspendableChildHandle(
 
   // On resume, drive the run from its durable log; the body step re-parks
   // silently (a re-park does not re-fire onPark), and the caller relays the
-  // grant via resume on the correlation it recovered from its own log. On a
-  // fresh spawn, seed the run with the event's trigger payload.
-  const baseOptions =
-    resumeFromEvents !== undefined
-      ? { runId: childRunId, resumeFromEvents, depth, maxChildSpawnDepth }
-      : { runId: childRunId, triggerPayload: input, depth, maxChildSpawnDepth };
+  // grant via resume on the correlation it recovered from its own log. Either
+  // way the run is seeded with the event's trigger payload: a log's RunStarted
+  // overrides it, and a body whose log is gone starts over with it.
+  const baseOptions = {
+    runId: childRunId,
+    triggerPayload: input,
+    ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
+    depth,
+    maxChildSpawnDepth,
+  };
   const handle = runtimeRun(definition, runEnv, {
     ...baseOptions,
     localAbort: localTeardown.signal,
