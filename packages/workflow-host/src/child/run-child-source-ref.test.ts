@@ -52,7 +52,12 @@ import {
   receiveControlChannel,
 } from "../ipc/index";
 import { createSidecarActionCredentialsFactory } from "./action-credentials";
-import { parseSpawnTimeEnv, runWorkflowChild } from "./index";
+import {
+  parseSpawnTimeEnv,
+  runWorkflowChild,
+  runWorkflowChildFromProcessEnv,
+} from "./index";
+import { loadVerifiedWorkflowDefinitionFromClosure } from "./verified-definition-loader";
 
 const REF = "refs/heads/main";
 
@@ -593,6 +598,10 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
+    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir: env.closurePackageDir,
+      approvedHash: env.definitionHash,
+    });
     const bindings = buildBindings(baseDir);
 
     const supervisorSender = createControlChannelSender({
@@ -605,6 +614,7 @@ describe("source-ref run child", () => {
 
     const runPromise = runWorkflowChild({
       env,
+      definition,
       controlReader: supervisorToChild.reader,
       controlWriter: childToSupervisor.writer,
       eventWriter: eventStream.writer,
@@ -655,11 +665,10 @@ describe("source-ref run child", () => {
     // default per-test timeout is too tight for it under full-suite load.
   }, 30000);
 
-  test("a divergent closure hash fails closed and never emits ready", async () => {
-    const baseDir = await makeTempDir("srcref-divergent-base-");
+  test("a divergent closure hash fails closed before the factory runs and never emits ready", async () => {
     // Approve against fixture A's projection, then point the child at fixture
-    // B, whose evaluated projection hashes differently. The re-verify must
-    // refuse to run it.
+    // B, whose evaluated projection hashes differently. The process entry's
+    // re-verify must refuse to run it.
     const approvedFixture = await materializeFixtureClosure(
       "srcref-divergent-approved-",
       "srcref-approved",
@@ -674,36 +683,35 @@ describe("source-ref run child", () => {
     );
 
     const supervisorKeyPair = await generateKeyPair();
-    const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
     const eventStream = createMemoryFrameStream();
-
-    const env = parseSpawnTimeEnv(
-      makeSourceRefEnv({
-        channelId,
-        hmacKeyHex: hexEncode(hmacKey),
-        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
-        definitionHash: approvedFixture.approvedHash,
-        closurePackageDir: divergentFixture.packageDir,
-      }),
-    );
-    const bindings = buildBindings(baseDir);
+    let factoryCalls = 0;
 
     await expect(
-      runWorkflowChild({
-        env,
-        controlReader: supervisorToChild.reader,
-        controlWriter: childToSupervisor.writer,
-        eventWriter: eventStream.writer,
-        bindings,
-      }),
+      runWorkflowChildFromProcessEnv(
+        () => {
+          factoryCalls += 1;
+          throw new Error("the factory must not run for a divergent closure");
+        },
+        {
+          rawEnv: makeSourceRefEnv({
+            channelId: generateChannelId(),
+            hmacKeyHex: hexEncode(generateHmacKey()),
+            hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+            definitionHash: approvedFixture.approvedHash,
+            closurePackageDir: divergentFixture.packageDir,
+          }),
+          controlReader: supervisorToChild.reader,
+          controlWriter: childToSupervisor.writer,
+          eventWriter: eventStream.writer,
+        },
+      ),
     ).rejects.toThrow(/does not match the approved hash/);
 
     // The barrier fires before the child announces readiness: no upstream
     // frame was emitted, so the run never proceeded.
+    expect(factoryCalls).toBe(0);
     expect(childToSupervisor.flushed()).toHaveLength(0);
     supervisorToChild.close();
   }, 30000);
@@ -739,11 +747,16 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
+    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir: env.closurePackageDir,
+      approvedHash: env.definitionHash,
+    });
     const bindings = buildBindings(baseDir);
 
     await expect(
       runWorkflowChild({
         env,
+        definition,
         controlReader: supervisorToChild.reader,
         controlWriter: childToSupervisor.writer,
         eventWriter: eventStream.writer,
@@ -783,6 +796,10 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
+    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir: env.closurePackageDir,
+      approvedHash: env.definitionHash,
+    });
     const bindings = buildBindings(baseDir);
 
     const supervisorSender = createControlChannelSender({
@@ -795,6 +812,7 @@ describe("source-ref run child", () => {
 
     const runPromise = runWorkflowChild({
       env,
+      definition,
       controlReader: supervisorToChild.reader,
       controlWriter: childToSupervisor.writer,
       eventWriter: eventStream.writer,
@@ -839,6 +857,10 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
+    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir: env.closurePackageDir,
+      approvedHash: env.definitionHash,
+    });
     const bindings: RunWorkflowChildBindings = {
       ...buildBindings(baseDir),
       actionCredentials: (wiring) =>
@@ -863,6 +885,7 @@ describe("source-ref run child", () => {
     );
     const runPromise = runWorkflowChild({
       env,
+      definition,
       controlReader: supervisorToChild.reader,
       controlWriter: childToSupervisor.writer,
       eventWriter: eventStream.writer,
@@ -927,6 +950,10 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
+    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir: env.closurePackageDir,
+      approvedHash: env.definitionHash,
+    });
     const bindings: RunWorkflowChildBindings = {
       ...buildBindings(baseDir),
       actionCredentials: (wiring) =>
@@ -946,6 +973,7 @@ describe("source-ref run child", () => {
     });
     const runPromise = runWorkflowChild({
       env,
+      definition,
       controlReader: control.reader,
       controlWriter: childToSupervisor.writer,
       eventWriter: eventStream.writer,

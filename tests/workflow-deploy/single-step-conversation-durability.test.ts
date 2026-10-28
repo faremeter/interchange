@@ -47,6 +47,7 @@ import {
   computeLiveDefinitionHash,
   createTerminalChildHandle,
   unavailableActionCredentials,
+  type WorkflowDefinition,
 } from "@intx/workflow";
 import {
   createDefaultDirectorRegistry,
@@ -269,7 +270,7 @@ const ONE_STEP_WORKFLOW_DEFINITION = {
  */
 async function materializeClosure(
   packageDir: string,
-): Promise<{ approvedHash: string }> {
+): Promise<{ approvedHash: string; definition: WorkflowDefinition }> {
   await fs.mkdir(packageDir, { recursive: true });
   await fs.writeFile(
     path.join(packageDir, "package.json"),
@@ -286,7 +287,10 @@ async function materializeClosure(
     "utf8",
   );
   const live = await loadWorkflowDefinitionFromClosure({ packageDir });
-  return { approvedHash: await computeLiveDefinitionHash(live) };
+  return {
+    approvedHash: await computeLiveDefinitionHash(live),
+    definition: live,
+  };
 }
 
 /**
@@ -455,7 +459,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     // The closure dir is stable across the respawn (it models the sidecar's
     // persistent materialization); the workflow-asset repo is not read here.
     const closurePackageDir = path.join(baseDir, "workflow-closure");
-    const { approvedHash: definitionHash } =
+    const { approvedHash: definitionHash, definition } =
       await materializeClosure(closurePackageDir);
 
     const runRepoDir = substrate.getRepoDir(workflowRunRepoId);
@@ -606,6 +610,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       }).then(() =>
         runWorkflowChild({
           env,
+          definition,
           controlReader: supervisorToChild.reader,
           controlWriter: childToSupervisor.writer,
           eventWriter: eventStream.writer,

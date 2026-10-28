@@ -138,7 +138,6 @@ import {
   stepGrantsResolver,
   type SidecarStepCredentialContext,
 } from "./action-credentials";
-import { loadVerifiedWorkflowDefinitionFromClosure } from "./verified-definition-loader";
 import type { SubstrateFactory, SubstrateFactoryEnv } from "./from-process-env";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
@@ -2353,21 +2352,13 @@ export function createSidecarSubstrateFactory(
     const toolMarkFloorByStep = new Map<string, GrantRule[]>();
 
     // The step env's director registry is the closure-composed one, built
-    // from the SAME frozen closure the run-child loads, so a step agent's
+    // from the SAME frozen closure the run-child runs, so a step agent's
     // `director` ref resolves to a custom director shipped by the workflow
     // package or a package in its node_modules slots. The loader resolves only
-    // the ids the definition references, so the verified definition is
-    // evaluated here too. The import is ESM-cached, so the run-child reuses the
-    // module and only re-pays the project-then-hash check. A definition
-    // whose hash no longer matches the approval therefore fails the lineage
-    // build here, before any child spawns.
-    const stepDefinition = await loadVerifiedWorkflowDefinitionFromClosure({
-      packageDir: env.spawn.closurePackageDir,
-      approvedHash: env.spawn.definitionHash,
-    });
+    // the ids the verified definition references.
     const stepDirectors = await loadWorkflowDirectorRegistryFromClosure({
       packageDir: env.spawn.closurePackageDir,
-      definition: stepDefinition,
+      definition: env.definition,
     });
 
     const buildStepEnv = createSidecarStepBuildEnv({
