@@ -36,6 +36,8 @@ import {
   createStubRepoStore,
   waitForUpstreamPayload,
   type MemoryNdjsonStream,
+  sendDefinition,
+  TEST_DEFINITION_HASH,
 } from "@intx/workflow-host/testing";
 
 import { createWorkflowSupervisor, type InboxPrimitives } from "./index";
@@ -148,19 +150,22 @@ async function startOutboundHarness(): Promise<OutboundHarness> {
     anchorRunId: "outbound-dep",
     deploymentMailAddress: AGENT_ADDRESS,
     readPrincipal: { kind: "supervisor" },
-    deriveStepAddress: () => AGENT_ADDRESS,
     // Single-step launched agent: its grants live in the legacy
     // agent-state repo keyed by the agent id. The stub repo's
     // getRepoDir resolves the dir; no grants file is needed because the
     // outbound path never reads grants.
-    deriveStepRepoId: () => ({ kind: "agent-state", id: "outbound-dep" }),
+    layoutSteps: () =>
+      Promise.resolve({
+        stepIds: ["step-1"],
+        deriveStepAddress: () => AGENT_ADDRESS,
+        deriveStepRepoId: () => ({ kind: "agent-state", id: "outbound-dep" }),
+      }),
     inboxPrimitives: createNoopInboxPrimitives(),
     ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
   });
 
   const spawnPromise = supervisor.spawn({
-    stepOrder: ["step-1"],
-    definitionHash: "def-hash",
+    definitionHash: TEST_DEFINITION_HASH,
 
     onInferenceEvent: () => undefined,
   });
@@ -181,13 +186,11 @@ async function startOutboundHarness(): Promise<OutboundHarness> {
 
   // The child must announce `ready` (publishing its upstream-signing
   // public key) before the supervisor accepts further upstream frames.
-  await childSender.send({
-    type: "ready",
-    data: {
-      childPid: 9100,
-      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-    },
+  await sendDefinition(childSender, {
+    childPid: 9100,
+    childPublicKey: hexEncode(childIpcKeyPair.publicKey),
   });
+  await childSender.send({ type: "ready" });
   await spawnPromise;
 
   return {

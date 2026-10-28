@@ -48,7 +48,10 @@ function createMockSender(): {
           throw new Error(r);
         }
         seqCounter += 1;
-        sent.push({ type: payload.type, data: payload.data });
+        sent.push({
+          type: payload.type,
+          data: "data" in payload ? payload.data : undefined,
+        });
       },
     },
     sent,

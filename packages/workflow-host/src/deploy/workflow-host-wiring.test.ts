@@ -1,4 +1,5 @@
 import { describe, test, expect, afterEach, spyOn } from "bun:test";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -13,7 +14,10 @@ import {
 } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
-import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
+import {
+  canonicalJsonStringify,
+  computeWireDefinitionHash,
+} from "@intx/types/wire-definition-hash";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { syncRemovedPathDurable } from "@intx/storage-isogit/node";
@@ -22,11 +26,13 @@ import {
   ControlPayload,
   createControlChannelSender,
   SignedEnvelope,
+  type ControlChannelSender,
   type EventPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
 import type { WorkflowDefinition } from "@intx/workflow";
+import { projectLiveToInert } from "@intx/workflow/projection";
 import {
   DEFAULT_SIDECAR_CAPACITY,
   DeploymentRejectedError,
@@ -34,6 +40,7 @@ import {
   HostedIncarnation,
   MAX_DEPLOYMENT_ERROR_LENGTH,
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
+  WorkflowProjectionDefinition,
   type AgentDeployFrame,
 } from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
@@ -42,6 +49,7 @@ import {
   createMemoryNdjsonStream,
   createSpawnObserver,
   createChangeNotifier,
+  sendDefinition,
 } from "@intx/workflow-host/testing";
 import {
   assembleRunCredentialsSnapshot,
@@ -167,10 +175,13 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRepoId: { kind: "workflow-run", id: "wire-test" },
       workflowRunRef: "refs/heads/main",
       runId: "wire-test",
-      stepOrder: ["step1"],
       deploymentMailAddress: "wire-test@example.com",
-      deriveStepAddress: ({ runId, stepId }) =>
-        `${runId}-${stepId}@example.com`,
+      layoutSteps: () =>
+        Promise.resolve({
+          stepIds: ["step1"],
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
+        }),
       substrateEnv: { DATA_DIR: "/tmp/wire" },
       dynamicSpawnEnv: () => ({}),
       binaryPath: "/fake/bin/workflow-child",
@@ -204,10 +215,13 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRepoId: { kind: "workflow-run", id: "inbound" },
       workflowRunRef: "refs/heads/main",
       runId: "inbound",
-      stepOrder: ["step1"],
       deploymentMailAddress: "inbound@example.com",
-      deriveStepAddress: ({ runId, stepId }) =>
-        `${runId}-${stepId}@example.com`,
+      layoutSteps: () =>
+        Promise.resolve({
+          stepIds: ["step1"],
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
+        }),
       substrateEnv: {},
       dynamicSpawnEnv: () => ({}),
       binaryPath: "/fake/bin/workflow-child",
@@ -270,10 +284,13 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRepoId: { kind: "workflow-run", id: anchorRunId },
       workflowRunRef: "refs/heads/main",
       runId: anchorRunId,
-      stepOrder: ["step-1"],
       deploymentMailAddress: `${anchorRunId}@example.com`,
-      deriveStepAddress: ({ runId: dep, stepId }) =>
-        `${dep}-${stepId}@example.com`,
+      layoutSteps: () =>
+        Promise.resolve({
+          stepIds: ["step-1"],
+          deriveStepAddress: ({ runId: dep, stepId }) =>
+            `${dep}-${stepId}@example.com`,
+        }),
       substrateEnv: {},
       dynamicSpawnEnv: () => ({}),
       binaryPath: "/fake/bin/workflow-child",
@@ -283,13 +300,24 @@ describe("createSidecarWorkflowSupervisor", () => {
       isRunPoisoned: (runId) => runId === "run-poisoned",
     });
 
+    const layout = {
+      stepIds: ["step-1"],
+      deriveStepAddress: ({
+        runId: dep,
+        stepId,
+      }: {
+        runId: string;
+        stepId: string;
+      }) => `${dep}-${stepId}@example.com`,
+    };
     await expect(
-      wired.onRunStart({ runId: "run-poisoned", anchorRunId }),
+      wired.onRunStart({ runId: "run-poisoned", anchorRunId, layout }),
     ).rejects.toThrow(/grants write failed/);
 
     const snapshot = await wired.onRunStart({
       runId: cleanRunId,
       anchorRunId,
+      layout,
     });
     expect(snapshot?.steps).toHaveLength(1);
     expect(snapshot?.steps[0]?.grants).toEqual(runGrants);
@@ -593,6 +621,41 @@ function makeInferenceSource(id: string): InferenceSourceFixture {
 const deployDefinitionRegistry = new Map<string, WorkflowDefinition>();
 
 /**
+ * The inert projection each frame's `approvedWireHash` hashes, keyed by that
+ * hash. A fake child reports the projection its spawn env's `DEFINITION_HASH`
+ * names, as a real child reports the definition it verified.
+ */
+const projectionByHash = new Map<string, WorkflowProjectionDefinition>();
+
+/** Register a projection a fake child may report, and return its wire hash. */
+function registerProjection(projection: WorkflowProjectionDefinition): string {
+  // Synchronous twin of `computeWireDefinitionHash`, so the frame builders
+  // stay synchronous.
+  const hash = createHash("sha256")
+    .update(canonicalJsonStringify(projection))
+    .digest("hex");
+  projectionByHash.set(hash, projection);
+  return hash;
+}
+
+/** Send a fake child's `definition` frame for the hash its spawn env names. */
+function sendDefinitionFor(
+  sender: ControlChannelSender,
+  env: Record<string, string> | undefined,
+  child: { childPid: number; childPublicKey: string },
+): Promise<void> {
+  const hash = env?.DEFINITION_HASH;
+  const projection =
+    hash === undefined ? undefined : projectionByHash.get(hash);
+  if (projection === undefined) {
+    throw new Error(
+      `no registered projection hashes to the spawn env's DEFINITION_HASH ${String(hash)}; build the frame via makeMultistepFrame or registerProjection`,
+    );
+  }
+  return sendDefinition(sender, { ...child, projection });
+}
+
+/**
  * Upgrade a test's inert-ish definition to a valid LIVE definition: every step
  * gets a real agent so the definition survives `projectLiveToInert` (a bare
  * `{ kind: "step" }` with no agent throws). `stepOrder` is preserved verbatim,
@@ -639,10 +702,20 @@ function toLiveClosureDefinition(
  */
 function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
   const agentAddress = args.agentAddress ?? "multi@example.com";
-  deployDefinitionRegistry.set(
-    deriveWorkflowRunRepoId(agentAddress),
-    toLiveClosureDefinition(args.definition),
-  );
+  const live = toLiveClosureDefinition(args.definition);
+  deployDefinitionRegistry.set(deriveWorkflowRunRepoId(agentAddress), live);
+  // The hash the hub would have approved for this definition. A definition
+  // that does not project (a test of the deploy path's rejection) keeps the
+  // placeholder: its deploy fails before any child reports.
+  let projectedHash = "a".repeat(64);
+  try {
+    const projection = WorkflowProjectionDefinition(projectLiveToInert(live));
+    if (!(projection instanceof type.errors)) {
+      projectedHash = registerProjection(projection);
+    }
+  } catch {
+    // The projector rejects the definition; the deploy path will too.
+  }
   return {
     type: "agent.deploy",
     requestId: "deploy-test",
@@ -672,7 +745,7 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
       // explicitly exercises the fail-loud guard.
       ...(args.omitApprovedWireHash
         ? {}
-        : { approvedWireHash: args.approvedWireHash ?? "a".repeat(64) }),
+        : { approvedWireHash: args.approvedWireHash ?? projectedHash }),
     },
   };
 }
@@ -1056,10 +1129,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // the test-construction surface: the router constructs the
     // supervisor via createSidecarWorkflowSupervisor which does not
     // expose ipcKeyPairFactory. The supervisor's default keypair is
-    // generated with generateKeyPair; the test signs the `ready` frame
+    // generated with generateKeyPair; the test signs the child's frames
     // with whatever channelId the spawn-time env carries plus the
     // child's keypair, and the supervisor accepts a bootstrap
-    // signature from any childPublicKey carried in the `ready` payload.
+    // signature from any childPublicKey carried in the `definition`
+    // payload.
 
     const sources = defaultMultistepSources();
     const definition = {
@@ -1069,10 +1143,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
     // The sidecar sources DEFINITION_HASH from the frame's hub-approved hash
-    // verbatim (never a recompute), so stamp the real wire hash and assert the
-    // child receives it.
-    const approvedWireHash = await computeWireDefinitionHash(definition);
-    const frame = makeMultistepFrame({ definition, sources, approvedWireHash });
+    // verbatim (never a recompute), so assert the child receives the hash the
+    // frame stamped.
+    const frame = makeMultistepFrame({ definition, sources });
+    const approvedWireHash = frame.workflow?.approvedWireHash;
 
     const deployPromise = router.deploy(frame);
 
@@ -1105,13 +1179,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 7321,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinitionFor(childSender, env, {
+      childPid: 7321,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await childSender.send({ type: "ready" });
 
     const result = await deployPromise;
     // Every deployment -- single- or multi-step -- acks the deployment
@@ -1316,13 +1388,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 4242,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
-      },
+    await sendDefinitionFor(childSender, observedEnv, {
+      childPid: 4242,
+      childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
     });
+    await childSender.send({ type: "ready" });
 
     const result = await firstDeploy;
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
@@ -1440,13 +1510,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 9123,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinitionFor(childSender, observedEnv, {
+      childPid: 9123,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await childSender.send({ type: "ready" });
 
     await deployPromise;
 
@@ -1534,13 +1602,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 9124,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinitionFor(childSender, observedEnv, {
+      childPid: 9124,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await childSender.send({ type: "ready" });
 
     await deployPromise;
 
@@ -1655,13 +1721,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 9124,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinitionFor(childSender, observedEnv, {
+      childPid: 9124,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await childSender.send({ type: "ready" });
     await deployPromise;
 
     return {
@@ -2083,13 +2147,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           },
         },
       });
-      await childSender.send({
-        type: "ready",
-        data: {
-          childPid: 4400 + spawns.length,
-          childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-        },
+      await sendDefinitionFor(childSender, fixture.env, {
+        childPid: 4400 + spawns.length,
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       });
+      await childSender.send({ type: "ready" });
       if (opts.sendRecycleRequest) {
         await childSender.send({
           type: "recycle.request",
@@ -2187,13 +2249,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 7600,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinitionFor(childSender, observedEnv, {
+      childPid: 7600,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await childSender.send({ type: "ready" });
     await deployPromise;
   });
 
@@ -2292,13 +2352,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           },
         },
       });
-      await childSender.send({
-        type: "ready",
-        data: {
-          childPid,
-          childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-        },
+      await sendDefinitionFor(childSender, env, {
+        childPid,
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
       });
+      await childSender.send({ type: "ready" });
     }
 
     const sources = defaultMultistepSources();
@@ -2422,15 +2480,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       // Retain the sender so a later recycle.request (recycleRequestFor)
       // signs with the SAME keypair the supervisor pinned from this ready.
       spawn.childSender = childSender;
-      await childSender.send({
-        type: "ready",
-        data: {
-          childPid: pidBase + index,
-          childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString(
-            "hex",
-          ),
-        },
+      await sendDefinitionFor(childSender, spawn.env, {
+        childPid: pidBase + index,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
       });
+      await childSender.send({ type: "ready" });
       if (opts?.sendRecycleRequest === true) {
         // Model the child asking to recycle; the supervisor's upstream pump
         // consumes it and respawns.
@@ -3144,6 +3198,26 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // A well-formed source-ref record: lineage source-ref with a sourceRef pin
     // (source + closure) + approvedWireHash, exactly what the deploy path
     // persists.
+    const fakePackageDir = path.join(dataDir, "fake-closure-package");
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the stub stands in for a real closure evaluation; a minimal hand-built live definition cannot satisfy the full `WorkflowDefinition` nominal type
+    const closureDefinition = {
+      id: "wf-srcref",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1"],
+      steps: {
+        "step-1": {
+          kind: "step",
+          id: "step-1",
+          agent: {
+            id: "agent-1",
+            systemPrompt: "sys",
+            capabilities: [],
+            toolFactories: [],
+            inference: { sources: [] },
+          },
+        },
+      },
+    } as unknown as WorkflowDefinition;
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
@@ -3151,7 +3225,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       definitionId: "wf-srcref",
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
-      approvedWireHash: "a".repeat(64),
+      approvedWireHash: registerProjection(
+        WorkflowProjectionDefinition.assert(
+          projectLiveToInert(closureDefinition),
+        ),
+      ),
       lineage: "source-ref",
       sourceRef: {
         source: { kind: "registry", registry: "test-registry" },
@@ -3188,25 +3266,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // deploy path applies. The definition (not the on-disk workflow.json) is the
     // source of truth for the restored definition, so it must be a valid live
     // definition whose projection covers the record's sources (`step-1`).
-    const fakePackageDir = path.join(dataDir, "fake-closure-package");
-    const closureDefinition = {
-      id: "wf-srcref",
-      triggers: [{ type: "manual" }],
-      stepOrder: ["step-1"],
-      steps: {
-        "step-1": {
-          kind: "step",
-          id: "step-1",
-          agent: {
-            id: "agent-1",
-            systemPrompt: "sys",
-            capabilities: [],
-            toolFactories: [],
-            inference: { sources: [] },
-          },
-        },
-      },
-    };
     const applyCalls: { registry: string; entryCount: number }[] = [];
     const applyStub: NonNullable<
       Parameters<typeof buildMultistepFixture>[0]["applyFrozenWorkflowClosure"]
@@ -3221,8 +3280,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         entryCount: args.closure.entries.length,
       });
       return Promise.resolve({
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the stub stands in for a real closure evaluation; a minimal hand-built live definition cannot satisfy the full `WorkflowDefinition` nominal type
-        definition: closureDefinition as unknown as WorkflowDefinition,
+        definition: closureDefinition,
         packageDir: fakePackageDir,
         deployDir: path.join(dataDir, "fake-deploy-dir"),
       });
@@ -5284,11 +5342,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const head = "run_readytimeout@example.com";
     const anchorRunId = deriveWorkflowRunRepoId(head);
 
-    // A spawner whose child is created but never driven through the `ready`
+    // A spawner whose child is created but never driven through the
     // handshake. With a small threaded readyTimeoutMs the supervisor times
-    // out, kills the child, and rejects the spawn. The message echoes the
-    // threaded value, so this also proves readyTimeoutMs reaches the
-    // supervisor across the router's forwarding.
+    // out waiting for the child's definition, kills the child, and rejects
+    // the spawn. The message echoes the threaded value, so this also proves
+    // readyTimeoutMs reaches the supervisor across the router's forwarding.
     const spawner = makeReadyDrivingSpawner(10100);
     const { router } = await buildMultistepFixture({
       spawner: spawner.spawner,
@@ -5298,7 +5356,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     await expect(
       router.deploy(singleStepFrame(head, "wf-readytimeout")),
-    ).rejects.toThrow(/did not emit ready within 40ms/);
+    ).rejects.toThrow(/did not report its definition within 40ms/);
 
     // The deploy soft-failed, so its restore record was cleaned up -- a
     // wedged deploy leaves nothing for a later boot to re-spawn.
@@ -6127,13 +6185,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 10500,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinitionFor(childSender, observedEnv, {
+      childPid: 10500,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await childSender.send({ type: "ready" });
     await deployPromise;
 
     // `deployments` is keyed by the frame's run address; the router
@@ -6238,13 +6294,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 10600,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinitionFor(childSender, observedEnv, {
+      childPid: 10600,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await childSender.send({ type: "ready" });
     await deployPromise;
 
     const missAddress = "run_nonexistent@wf.example";

@@ -1406,12 +1406,16 @@ describe("loadVerifiedWorkflowDefinitionFromClosure", () => {
   test("accepts a closure whose plugin tools match the approved hash", async () => {
     const packageDir = await createPluginClosure([{ name: "lsp" }]);
 
-    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
-      packageDir,
-      approvedHash: await closureWireHash(packageDir),
-    });
+    const approvedHash = await closureWireHash(packageDir);
+    const { definition, projection } =
+      await loadVerifiedWorkflowDefinitionFromClosure({
+        packageDir,
+        approvedHash,
+      });
 
     expect(definition.id).toBe("plugin-workflow");
+    // The projection it returns is the one it verified.
+    expect(await computeWireDefinitionHash(projection)).toBe(approvedHash);
   });
 
   test("routes the plugin tools import through importModule", async () => {

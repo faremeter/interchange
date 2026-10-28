@@ -112,9 +112,10 @@ export function createControlChannelSender(
 
 /**
  * A sender that holds every frame until `open`. The child's protocol needs
- * its `ready` frame first and `resumed.runs` second, but its timers, resumed
- * runs and bridges can send before then. They send through `send` and wait;
- * the child sends its startup frames through `sendNow`, then opens.
+ * its `definition`, `ready` and `resumed.runs` frames first, in that order,
+ * but its timers, resumed runs and bridges can send before then. They send
+ * through `send` and wait; the child sends its startup frames through
+ * `sendNow`, then opens.
  */
 export interface HeldControlChannelSender extends ControlChannelSender {
   /** Send at once, ahead of every held frame. */

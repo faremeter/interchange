@@ -107,6 +107,40 @@ export type DeriveStepRepoId = (args: {
   stepId: string;
 }) => RepoId;
 
+/**
+ * Where a deployment's steps live: every step id the credentials snapshot
+ * carries an entry for, and how each one maps to its mail address and its
+ * `agent-state` repo. The host derives it from the definition the
+ * deployment's first child verified; it is fixed for the deployment's
+ * lifetime.
+ */
+export type StepLayout = {
+  /**
+   * The deployment's flat step-id namespace: the definition's own
+   * `stepOrder` plus the step ids of every `loop` body it carries.
+   */
+  readonly stepIds: readonly string[];
+  readonly deriveStepAddress: DeriveStepAddress;
+  /** Defaults to `<runId>-<stepId>` (`defaultStepRepoId`) when omitted. */
+  readonly deriveStepRepoId?: DeriveStepRepoId;
+};
+
+/** The fields of `AssembleCredentialsSnapshotOpts` a step layout supplies. */
+export function stepLayoutSnapshotOpts(
+  layout: StepLayout,
+): Pick<
+  AssembleCredentialsSnapshotOpts,
+  "stepOrder" | "deriveStepAddress" | "deriveStepRepoId"
+> {
+  return {
+    stepOrder: layout.stepIds,
+    deriveStepAddress: layout.deriveStepAddress,
+    ...(layout.deriveStepRepoId !== undefined
+      ? { deriveStepRepoId: layout.deriveStepRepoId }
+      : {}),
+  };
+}
+
 export type AssembleCredentialsSnapshotOpts = {
   /** Substrate handle the supervisor reads from. */
   repoStore: RepoStore;

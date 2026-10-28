@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
   computeLiveDefinitionHash,
   createTerminalChildHandle,
@@ -48,6 +49,7 @@ import {
   createMailboxWatchRegistry,
   parseSpawnTimeEnv,
   runWorkflowChild,
+  runWorkflowChildFromProcessEnv,
   type ChildStepInvoker,
   type RunWorkflowChildBindings,
 } from "./index";
@@ -993,11 +995,11 @@ describe("runWorkflowChild", () => {
     // executed -- so a subsequent `cleaned` assertion fires at exactly the
     // point the cold path WOULD have deleted, making the suppression proof
     // non-vacuous rather than passing merely because the continuation never
-    // ran. The receiver bootstraps the child's verifying key from `ready`;
-    // `flushed()`-based waits elsewhere are non-consuming, so `ready` is
-    // still queued for this iterator.
+    // ran. The receiver verifies against the key `buildBindings` gives the
+    // child; `flushed()`-based waits elsewhere are non-consuming, so every
+    // frame is still queued for this iterator.
     const recvIter = receiveControlChannel({
-      publicKey: { bootstrapFromReady: true },
+      publicKey: childKeyPair.publicKey,
       channelId,
       reader: childToSupervisor.reader,
       onCrash: (reason) => {
@@ -1288,9 +1290,9 @@ describe("runWorkflowChild", () => {
       // Decode the child's upstream frames live so the test observes the
       // run reach terminal (self-discovery completes before `ready`, so the
       // crashed runId is in the one-driver map before the trigger). The
-      // receiver bootstraps the child's verifying key from `ready`.
+      // receiver verifies against the key `buildBindings` gives the child.
       const recvIter = receiveControlChannel({
-        publicKey: { bootstrapFromReady: true },
+        publicKey: childKeyPair.publicKey,
         channelId,
         reader: childToSupervisor.reader,
         onCrash: (reason) => {
@@ -1496,6 +1498,7 @@ describe("runWorkflowChild", () => {
     });
     return {
       channelId,
+      childPublicKey: childKeyPair.publicKey,
       supervisorSender,
       supervisorToChild,
       childToSupervisor,
@@ -1509,10 +1512,8 @@ describe("runWorkflowChild", () => {
       type: "recycle.request",
       data: { reason: "early" },
     });
-    // The receiver crashes on any first frame that is not `ready`, as the
-    // supervisor's does.
     const recvIter = receiveControlChannel({
-      publicKey: { bootstrapFromReady: true },
+      publicKey: child.childPublicKey,
       channelId: child.channelId,
       reader: child.childToSupervisor.reader,
       onCrash: (reason) => {
@@ -1683,36 +1684,16 @@ describe("runWorkflowChild", () => {
     supervisorToChild.close();
   });
 
-  test("child ready frame is signed by the child's own keypair and bootstraps the supervisor's verification key", async () => {
-    const baseDir = await makeTempDir("child-ready-");
+  test("the process entry reports its verified definition first, under the key it publishes", async () => {
+    const baseDir = await makeTempDir("child-definition-report-");
     const supervisorKeyPair = await generateKeyPair();
-    const childKeyPair = await generateKeyPair();
     const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-    const {
-      packageDir: closurePackageDir,
-      approvedHash: definitionHash,
-      definition,
-    } = await materializeClosure("child-def-", emptyWorkflowDefinition());
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
 
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
     const eventStream = createMemoryFrameStream();
-
-    const env = parseSpawnTimeEnv(
-      makeSpawnEnv({
-        channelId,
-        hmacKeyHex: hexEncode(hmacKey),
-        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
-        definitionHash,
-        closurePackageDir,
-      }),
-    );
-
-    const bindings = buildBindings({
-      baseDir,
-      childKeyPair,
-    });
 
     // The child reads the supervisor's `authority.set` before it readies.
     const supervisorSender = createControlChannelSender({
@@ -1722,41 +1703,45 @@ describe("runWorkflowChild", () => {
     });
     await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
 
-    // Run the child, capture its ready frame, verify via the
-    // receiver iterator's bootstrap mode. The receiver extracts the
-    // child's public key from the first frame's payload -- the
-    // supervisor's private key never enters this code path.
-    const runPromise = runWorkflowChild({
-      env,
-      definition,
-      controlReader: supervisorToChild.reader,
-      controlWriter: childToSupervisor.writer,
-      eventWriter: eventStream.writer,
-      bindings,
-    });
+    const runPromise = runWorkflowChildFromProcessEnv(
+      () => Promise.resolve(buildBindings({ baseDir })),
+      {
+        rawEnv: makeSpawnEnv({
+          channelId,
+          hmacKeyHex: hexEncode(generateHmacKey()),
+          hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+          definitionHash,
+          closurePackageDir,
+        }),
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: eventStream.writer,
+      },
+    );
+
+    // The supervisor's receiver learns the child's verifying key from the
+    // definition frame itself; the supervisor's private key never enters
+    // this code path.
     const crashes: string[] = [];
     const recvIter = receiveControlChannel({
-      publicKey: { bootstrapFromReady: true },
+      publicKey: { bootstrapFromDefinition: true },
       channelId,
       reader: childToSupervisor.reader,
       onCrash: (reason) => crashes.push(reason),
     });
-    let readyPayload: { type: string; childPublicKey?: string } | undefined;
-    for await (const payload of recvIter) {
-      if (payload.type !== "ready") continue;
-      readyPayload = {
-        type: payload.type,
-        childPublicKey: payload.data.childPublicKey,
-      };
-      break;
+    const first = await recvIter.next();
+    if (first.done === true || first.value.type !== "definition") {
+      throw new Error("expected the child's definition frame first");
     }
-    expect(readyPayload?.type).toBe("ready");
-    expect(readyPayload?.childPublicKey).toBe(
-      hexEncode(childKeyPair.publicKey),
+    const { result } = first.value.data;
+    if (!result.ok) throw new Error(`definition load failed: ${result.error}`);
+    expect(await computeWireDefinitionHash(result.projection)).toBe(
+      definitionHash,
     );
+    const second = await recvIter.next();
+    expect(second.done === true ? undefined : second.value.type).toBe("ready");
     expect(crashes).toHaveLength(0);
 
-    // Tear down.
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },

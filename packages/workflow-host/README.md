@@ -138,11 +138,14 @@ The constructor argument shape:
   spawner invokes (resolved by the host via
   `require.resolve` / `import.meta.resolve` against the host's own
   package, `@intx/<host>`).
+- `layoutSteps` — derives the deployment's step ids, step addresses,
+  and step repo ids from the definition the first child reported,
+  once the supervisor has checked it against the approved hash. The
+  supervisor keeps that layout for every later respawn.
 - `substrateEnv`, `workflowRunRepoId`, `workflowRunRef`,
   `anchorRunId`, `deploymentMailAddress`, `readPrincipal`,
-  `deriveStepAddress`, `deriveStepRepoId?`, `ipcKeyPairFactory?` —
-  per-deployment configuration the supervisor needs in its closure
-  state.
+  `ipcKeyPairFactory?` — per-deployment configuration the supervisor
+  needs in its closure state.
 
 ### Deploy routing
 
@@ -172,10 +175,13 @@ in-process deploy path.
 
 `spawn(opts)` performs the IPC handshake (mint channelId, mint HMAC
 key, mint IPC Ed25519 keypair, build spawn-time env, invoke the
-spawner, wait for the child's `ready` frame), assembles the
-`credentialsSnapshot` from each step's `agent-state` repo,
-registers the deployment's mail address, and begins forwarding
-inbound mail as `trigger.fire` control frames. The IPC private key
+spawner, wait for the child's `definition` frame and check its
+projection against the approved hash), derives the step layout from
+that projection through the host's `layoutSteps`, assembles the
+`credentialsSnapshot` from each step's `agent-state` repo, sends
+`authority.set`, registers the deployment's mail address, waits for
+the child's `ready` frame, and begins forwarding inbound mail as
+`trigger.fire` control frames. The IPC private key
 never leaves the supervisor's closure — only the public key (as
 `HOST_PUBKEY`) ships in spawn-time env.
 
@@ -299,19 +305,22 @@ forking a process.
 
 ### Lifecycle
 
-1. Open the control channel and event channel via the IPC primitives.
-2. Construct a `WorkflowRuntimeEnv` from the production adapters
+1. (`runWorkflowChildFromProcessEnv`) Evaluate and verify the
+   closure once, and report the result in a `definition` frame: the
+   inert projection it verified, or why it could not load it.
+2. Open the control channel and event channel via the IPC primitives.
+3. Construct a `WorkflowRuntimeEnv` from the production adapters
    (`createWorkflowRunRepoStore`, `createWorkflowRunBlobSubstrate`)
    and substrate-shaped seams (`createWorkflowHostSignalChannel`,
    plus the host-process scheduler singleton carried on
    `bindings.scheduler`).
-3. Read the first control frame, which must be `authority.set`, and
+4. Read the first control frame, which must be `authority.set`, and
    apply its grants snapshot and credential material.
-4. Self-discover in-flight runs by enumerating `runs/<runId>/` and
+5. Self-discover in-flight runs by enumerating `runs/<runId>/` and
    resuming any whose log lacks a terminal event.
-5. Emit `ready` and then `resumed.runs` on the control channel.
+6. Emit `ready` and then `resumed.runs` on the control channel.
    Every other upstream control frame waits until both are out.
-6. Loop on `trigger.fire`, `authority.set`, `grants-updated`,
+7. Loop on `trigger.fire`, `authority.set`, `grants-updated`,
    `credentials-updated`, `drain`, `recycle`, `shutdown`, and
    `signal.deliver` frames.
 

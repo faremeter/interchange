@@ -20,6 +20,7 @@ import fs from "node:fs";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
+import { hexEncode } from "@intx/types/hex";
 import type { WorkflowDefinition } from "@intx/workflow";
 
 import { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
@@ -50,8 +51,12 @@ import {
   type NdjsonReader,
   type NdjsonWriter,
 } from "../ipc/control-sender";
+import type { ControlPayload } from "../ipc/control-payloads";
 import type { FrameWriter } from "../ipc/event-sender";
-import { loadVerifiedWorkflowDefinitionFromClosure } from "./verified-definition-loader";
+import {
+  loadVerifiedWorkflowDefinitionFromClosure,
+  type VerifiedWorkflowDefinition,
+} from "./verified-definition-loader";
 
 /**
  * File descriptor the supervisor's `Bun.spawn` wires the
@@ -194,7 +199,8 @@ export interface RunWorkflowChildFromProcessEnvOpts {
  *   - missing or malformed spawn-time env throws via
  *     `parseSpawnTimeEnv`;
  *   - a closure that fails to evaluate, or whose definition does not
- *     project to the approved hash, throws before the factory runs;
+ *     project to the approved hash, is reported to the supervisor in the
+ *     `definition` frame and throws before the factory runs;
  *   - a substrate-config key listed in `substrateConfigKeys` whose
  *     value is missing or empty throws;
  *   - factory rejection propagates;
@@ -222,14 +228,9 @@ export async function runWorkflowChildFromProcessEnv(
   // construct the upstream sender before invoking the substrate
   // factory: the factory consumes the sender via the pack-push bridge
   // to build its `ChildHubPackSink`, and the same sender carries the
-  // `ready` frame `runWorkflowChild` emits.
+  // `definition` frame below and the `ready` frame `runWorkflowChild`
+  // emits.
   const childKeyPair = await generateKeyPair();
-  // The one evaluation of the workflow code in this process. The factory
-  // and the runtime body both run this verified definition.
-  const definition = await loadVerifiedWorkflowDefinitionFromClosure({
-    packageDir: spawn.closurePackageDir,
-    approvedHash: spawn.definitionHash,
-  });
   // Held until `runWorkflowChild` sends its startup frames: the factory
   // starts the timer scheduler, and a due timer writes through the bridges
   // below before the child is ready.
@@ -240,6 +241,36 @@ export async function runWorkflowChildFromProcessEnv(
       writer: controlWriter,
     }),
   );
+  // The one evaluation of the workflow code in this process. The factory
+  // and the runtime body both run this verified definition. The supervisor
+  // derives the deployment's step layout from the reported projection, and
+  // learns from the report why a closure that does not load failed.
+  const reportDefinition = (result: DefinitionResult) =>
+    upstreamSender.sendNow({
+      type: "definition",
+      data: {
+        childPid: process.pid,
+        childPublicKey: hexEncode(childKeyPair.publicKey),
+        result,
+      },
+    });
+  let verified: VerifiedWorkflowDefinition;
+  try {
+    verified = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir: spawn.closurePackageDir,
+      approvedHash: spawn.definitionHash,
+    });
+  } catch (cause) {
+    // The load failure is the error that matters; a report that cannot be
+    // sent leaves the supervisor seeing the channel end instead.
+    await reportDefinition({
+      ok: false,
+      error: describeLoadFailure(cause),
+    }).catch(() => undefined);
+    throw cause;
+  }
+  await reportDefinition({ ok: true, projection: verified.projection });
+  const definition = verified.definition;
   const substrateWriteBridge = createChildSubstrateWriteBridge({
     upstreamSender,
   });
@@ -267,20 +298,50 @@ export async function runWorkflowChildFromProcessEnv(
     controlReader,
     controlWriter,
     eventWriter,
-    bindings: {
-      ...bindings,
-      // The child key pair is minted at this layer so the upstream
-      // sender and the `ready` frame's `childPublicKey` come from one
-      // keypair. Override the factory's path so `runWorkflowChild`
-      // does not re-mint a different key and break verification.
-      ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
-    },
+    bindings,
     upstreamSender,
     substrateWriteBridge,
     outboundMailBridge,
     mailboxMutationBridge,
     mailboxCallBridge,
   });
+}
+
+type DefinitionResult = Extract<
+  ControlPayload,
+  { type: "definition" }
+>["data"]["result"];
+
+const MAX_LOAD_FAILURE_CAUSES = 16;
+
+// The supervisor relays this to the Hub as the deploy's error, so it keeps
+// the cause chain: the loader names the entry, its causes say what failed.
+// The causes are author values, so the walk stops on a cycle, a `cause`
+// getter that mints a fresh error on every read, or a value that throws when
+// read or converted to a string.
+function describeLoadFailure(cause: unknown): string {
+  const messages: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = cause;
+  while (current !== undefined && !seen.has(current)) {
+    if (messages.length === MAX_LOAD_FAILURE_CAUSES) {
+      messages.push("(further causes omitted)");
+      break;
+    }
+    seen.add(current);
+    try {
+      if (!(current instanceof Error)) {
+        messages.push(String(current));
+        break;
+      }
+      messages.push(String(current.message));
+      current = current.cause;
+    } catch {
+      messages.push("(unprintable error)");
+      break;
+    }
+  }
+  return messages.join(": ");
 }
 
 const SubstrateConfigValue = type("string > 0");

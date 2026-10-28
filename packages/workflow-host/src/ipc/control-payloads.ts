@@ -657,9 +657,14 @@ const controlPayloadFactories = defineControlPayloadFactories({
         delivery: CredentialDelivery.or("null"),
       },
     }),
-  ready: () =>
+  definition: () =>
     type({
-      type: "'ready'",
+      // The child's first upstream frame, sent once it has evaluated its
+      // closure: the inert projection of the definition it verified against
+      // `DEFINITION_HASH`, or why it could not load or verify it. The
+      // supervisor checks the projection against the same approved hash
+      // before it uses it, since the child runs author code and could lie.
+      type: "'definition'",
       data: {
         childPid: "number",
         /**
@@ -669,7 +674,22 @@ const controlPayloadFactories = defineControlPayloadFactories({
          * child's private key never leaves the child's address space.
          */
         childPublicKey: "string",
+        // The supervisor validates the projection when it checks the hash,
+        // so the IPC module stays free of the workflow wire schema.
+        result: type({
+          ok: "true",
+          projection: "unknown",
+        }).or({
+          ok: "false",
+          error: "string",
+        }),
       },
+    }),
+  ready: () =>
+    type({
+      // The child has applied its authority and resumed its in-flight runs,
+      // so the supervisor may start dispatching to it.
+      type: "'ready'",
     }),
   "recycle.request": () =>
     type({

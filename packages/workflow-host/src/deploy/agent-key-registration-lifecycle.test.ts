@@ -28,12 +28,18 @@ import {
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
-import type { AgentDeployFrame } from "@intx/types/sidecar";
+import {
+  WorkflowProjectionDefinition,
+  type AgentDeployFrame,
+} from "@intx/types/sidecar";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowDefinition } from "@intx/workflow";
+import { projectLiveToInert } from "@intx/workflow/projection";
 import {
   createChangeNotifier,
   createMemoryFrameStream,
   createMemoryNdjsonStream,
+  sendDefinition,
 } from "@intx/workflow-host/testing";
 import { type } from "arktype";
 
@@ -185,6 +191,31 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
     );
     const repoStore = createSpawnTestRepoStore(tempBase);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
+    const liveDefinition = {
+      id: "wf-keylifecycle",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1"],
+      steps: {
+        "step-1": {
+          kind: "step",
+          id: "step-1",
+          agent: {
+            id: "agent-step-1",
+            systemPrompt: "sys",
+            capabilities: [],
+            toolFactories: [],
+            inference: { sources: [] },
+          },
+        },
+      },
+    } as unknown as WorkflowDefinition;
+    // What the child reports, and the hash the hub approved for it.
+    const projection = WorkflowProjectionDefinition.assert(
+      projectLiveToInert(liveDefinition),
+    );
+    const approvedWireHash = await computeWireDefinitionHash(projection);
+
     const router = createSidecarDeployRouter({
       ...DEFAULT_SIDECAR_CAPACITY,
       ...deployHostBindings(),
@@ -241,25 +272,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       // reaches the key-registration lifecycle this test exercises.
       applyFrozenWorkflowClosure: (applyArgs) =>
         Promise.resolve({
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
-          definition: {
-            id: "wf-keylifecycle",
-            triggers: [{ type: "manual" }],
-            stepOrder: ["step-1"],
-            steps: {
-              "step-1": {
-                kind: "step",
-                id: "step-1",
-                agent: {
-                  id: "agent-step-1",
-                  systemPrompt: "sys",
-                  capabilities: [],
-                  toolFactories: [],
-                  inference: { sources: [] },
-                },
-              },
-            },
-          } as unknown as WorkflowDefinition,
+          definition: liveDefinition,
           packageDir: path.join(applyArgs.instanceDir, "package"),
           deployDir: path.join(applyArgs.instanceDir, "deploy"),
         }),
@@ -278,9 +291,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not read config
       config: {} as AgentDeployFrame["config"],
       workflow: {
-        // Placeholder hub-approved wire hash so the deploy path's fail-loud
-        // guard passes; production always stamps it.
-        approvedWireHash: "a".repeat(64),
+        approvedWireHash,
         // Source-ref is the only deploy lineage: the frame carries no inline
         // definition, only the pin the sidecar re-materializes (the injected
         // closure stub above evaluates it to a single-step `step-1` definition).
@@ -322,13 +333,12 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: spawn.handle.pid,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinition(childSender, {
+      childPid: spawn.handle.pid,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+      projection,
     });
+    await childSender.send({ type: "ready" });
     await deployPromise;
 
     // (b) Registered after deploy -- the supervisor can now sign agent mail.

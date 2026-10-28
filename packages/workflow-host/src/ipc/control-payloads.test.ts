@@ -53,8 +53,27 @@ test("dispatching control payloads preserves validation and parsed values", () =
     { type: "shutdown", data: { reason: 1 } },
     { type: "drain", data: { deadlineMs: 100 } },
     { type: "drain", data: { deadlineMs: "100" } },
-    { type: "ready", data: { childPid: 1, childPublicKey: "key" } },
-    { type: "ready", data: { childPid: "1", childPublicKey: "key" } },
+    { type: "ready" },
+    {
+      type: "definition",
+      data: {
+        childPid: 1,
+        childPublicKey: "key",
+        result: { ok: true, projection: {} },
+      },
+    },
+    {
+      type: "definition",
+      data: {
+        childPid: 1,
+        childPublicKey: "key",
+        result: { ok: false, error: "the closure did not load" },
+      },
+    },
+    {
+      type: "definition",
+      data: { childPid: 1, childPublicKey: "key", result: { ok: false } },
+    },
     {
       type: "sources-updated",
       data: { sources: [source], defaultSource: "source" },

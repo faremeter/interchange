@@ -39,16 +39,6 @@ import {
 } from "./control-sender";
 import { waitUntil } from "@intx/types/testing";
 
-/**
- * Synthetic `childPublicKey` hex used to populate `ready` payloads
- * in tests whose receiver pins a fixed `publicKey` Uint8Array
- * (non-bootstrap mode). The receiver verifies signatures against the
- * key it was constructed with; the `childPublicKey` field is just
- * payload content here and never gets read out as a key. Tests that
- * exercise bootstrap mode supply a real keypair's public half.
- */
-const TEST_CHILD_PUBKEY_HEX = "ab".repeat(32);
-
 // Build the minimal decoded `Mail` for a plain-text body: a single
 // `text/plain` part whose decoded text is inlined (its `ref` is never read
 // for text parts). This is the shape a `trigger.fire` control-frame payload
@@ -73,10 +63,7 @@ describe("FrameEnvelope schema", () => {
     const envelope: FrameEnvelope = {
       seq: 1,
       channelId: "abcd",
-      payload: {
-        type: "ready",
-        data: { childPid: 42, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-      },
+      payload: { type: "ready" },
     };
     const bytes = encodeEnvelope(envelope);
     const decoded = decodeEnvelope(bytes);
@@ -205,10 +192,7 @@ describe("holdControlChannelSender", () => {
       type: "resumed.runs",
       data: { runIds: ["held"] },
     });
-    await held.sendNow({
-      type: "ready",
-      data: { childPid: 1, childPublicKey: "00" },
-    });
+    await held.sendNow({ type: "ready" });
     await held.sendNow({ type: "resumed.runs", data: { runIds: [] } });
     expect(types).toEqual(["ready", "resumed.runs"]);
 
@@ -274,10 +258,7 @@ describe("Control channel", () => {
     // The same `Mail` object is sent and asserted as received, so the
     // round-trip equality holds on the decoded payload shape.
     const firedMail = textMail("test input");
-    await sender.send({
-      type: "ready",
-      data: { childPid: 42, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-    });
+    await sender.send({ type: "ready" });
     await sender.send({ type: "drain", data: { deadlineMs: 5_000 } });
     await sender.send({
       type: "trigger.fire",
@@ -294,10 +275,7 @@ describe("Control channel", () => {
 
     expect(crashes).toEqual([]);
     expect(received).toEqual([
-      {
-        type: "ready",
-        data: { childPid: 42, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-      },
+      { type: "ready" },
       { type: "drain", data: { deadlineMs: 5_000 } },
       {
         type: "trigger.fire",
@@ -627,10 +605,7 @@ describe("Control channel", () => {
     const envelope: FrameEnvelope = {
       seq: 1,
       channelId,
-      payload: {
-        type: "ready",
-        data: { childPid: 1, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-      },
+      payload: { type: "ready" },
     };
     const forged: SignedEnvelope = {
       envelope,
@@ -667,10 +642,7 @@ describe("Control channel", () => {
       }
     })();
 
-    await sender.send({
-      type: "ready",
-      data: { childPid: 1, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-    });
+    await sender.send({ type: "ready" });
     stream.close();
     await consumer;
 
@@ -699,10 +671,7 @@ describe("Control channel", () => {
       const envelope: FrameEnvelope = {
         seq,
         channelId,
-        payload: {
-          type: "ready",
-          data: { childPid: seq, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-        },
+        payload: { type: "ready" },
       };
       const sig = await signEd25519(encodeEnvelope(envelope), kp.privateKey);
       const signed: SignedEnvelope = { envelope, sig: hexEncode(sig) };
@@ -740,10 +709,7 @@ describe("Control channel", () => {
       const envelope: FrameEnvelope = {
         seq,
         channelId,
-        payload: {
-          type: "ready",
-          data: { childPid: seq, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-        },
+        payload: { type: "ready" },
       };
       const sig = await signEd25519(encodeEnvelope(envelope), kp.privateKey);
       const signed: SignedEnvelope = { envelope, sig: hexEncode(sig) };
@@ -785,10 +751,7 @@ describe("Control channel", () => {
         if (receivedA.length === 1) return;
       }
     })();
-    await senderA.send({
-      type: "ready",
-      data: { childPid: 1, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-    });
+    await senderA.send({ type: "ready" });
     await consumerA;
     streamA.close();
 
@@ -812,32 +775,30 @@ describe("Control channel", () => {
         if (receivedB.length === 1) return;
       }
     })();
-    await senderB.send({
-      type: "ready",
-      data: { childPid: 2, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-    });
+    await senderB.send({ type: "ready" });
     await consumerB;
     streamB.close();
 
-    expect(receivedA).toEqual([
-      {
-        type: "ready",
-        data: { childPid: 1, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-      },
-    ]);
-    expect(receivedB).toEqual([
-      {
-        type: "ready",
-        data: { childPid: 2, childPublicKey: TEST_CHILD_PUBKEY_HEX },
-      },
-    ]);
+    expect(receivedA).toEqual([{ type: "ready" }]);
+    expect(receivedB).toEqual([{ type: "ready" }]);
   });
 
-  describe("bootstrap mode (bootstrapFromReady)", () => {
-    test("crashes when the first frame is not a ready frame", async () => {
+  describe("bootstrap mode (bootstrapFromDefinition)", () => {
+    function definitionFrame(childPublicKey: string): ControlPayload {
+      return {
+        type: "definition",
+        data: {
+          childPid: 1,
+          childPublicKey,
+          result: { ok: false, error: "the closure did not load" },
+        },
+      };
+    }
+
+    test("crashes when the first frame is not a definition frame", async () => {
       // The supervisor's upstream receiver opens with no pinned key and
-      // must see `ready` first so it can extract the child's public key.
-      // A non-`ready` first frame is rejected before any signature check.
+      // must see `definition` first so it can extract the child's public
+      // key. Any other first frame is rejected before any signature check.
       const kp = await generateKeyPair();
       const channelId = generateChannelId();
       const stream = createMemoryNdjsonStream();
@@ -851,7 +812,7 @@ describe("Control channel", () => {
 
       const consumer = (async () => {
         for await (const payload of receiveControlChannel({
-          publicKey: { bootstrapFromReady: true },
+          publicKey: { bootstrapFromDefinition: true },
           channelId,
           reader: stream.reader,
           onCrash: (reason) => crashes.push(reason),
@@ -866,13 +827,13 @@ describe("Control channel", () => {
 
       expect(received).toEqual([]);
       expect(crashes.length).toBe(1);
-      expect(crashes[0]).toMatch(/expected a ready frame/);
+      expect(crashes[0]).toMatch(/expected a definition frame/);
     });
 
-    test("crashes when the ready frame's childPublicKey is malformed hex", async () => {
+    test("crashes when the definition frame's childPublicKey is malformed hex", async () => {
       // Bootstrap extracts and hex-decodes `childPublicKey` from the
-      // ready payload before verifying the frame. A non-hex value crashes
-      // the receiver at the decode step.
+      // definition payload before verifying the frame. A non-hex value
+      // crashes the receiver at the decode step.
       const kp = await generateKeyPair();
       const channelId = generateChannelId();
       const stream = createMemoryNdjsonStream();
@@ -886,7 +847,7 @@ describe("Control channel", () => {
 
       const consumer = (async () => {
         for await (const payload of receiveControlChannel({
-          publicKey: { bootstrapFromReady: true },
+          publicKey: { bootstrapFromDefinition: true },
           channelId,
           reader: stream.reader,
           onCrash: (reason) => crashes.push(reason),
@@ -895,10 +856,7 @@ describe("Control channel", () => {
         }
       })();
 
-      await sender.send({
-        type: "ready",
-        data: { childPid: 1, childPublicKey: "zz" },
-      });
+      await sender.send(definitionFrame("zz"));
       stream.close();
       await consumer;
 
@@ -908,7 +866,7 @@ describe("Control channel", () => {
     });
 
     test("pins the child key so a later frame signed by a different key is rejected", async () => {
-      // Bootstrap is not TOFU-per-frame: the key carried on the ready
+      // Bootstrap is not TOFU-per-frame: the key carried on the definition
       // frame pins every subsequent frame. The first frame bootstraps the
       // receiver onto childA's key; a second well-formed, in-order frame
       // signed by a DIFFERENT key (childB) must fail to verify. The
@@ -928,7 +886,7 @@ describe("Control channel", () => {
 
       const consumer = (async () => {
         for await (const payload of receiveControlChannel({
-          publicKey: { bootstrapFromReady: true },
+          publicKey: { bootstrapFromDefinition: true },
           channelId,
           reader: stream.reader,
           onCrash: (reason) => crashes.push(reason),
@@ -937,10 +895,7 @@ describe("Control channel", () => {
         }
       })();
 
-      await senderA.send({
-        type: "ready",
-        data: { childPid: 1, childPublicKey: hexEncode(childA.publicKey) },
-      });
+      await senderA.send(definitionFrame(hexEncode(childA.publicKey)));
 
       const envelope: FrameEnvelope = {
         seq: 2,
@@ -956,12 +911,7 @@ describe("Control channel", () => {
       stream.close();
       await consumer;
 
-      expect(received).toEqual([
-        {
-          type: "ready",
-          data: { childPid: 1, childPublicKey: hexEncode(childA.publicKey) },
-        },
-      ]);
+      expect(received).toEqual([definitionFrame(hexEncode(childA.publicKey))]);
       expect(crashes.length).toBe(1);
       expect(crashes[0]).toMatch(/signature did not verify/);
     });

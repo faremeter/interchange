@@ -42,6 +42,8 @@ import {
   createMockMailBus,
   createChangeNotifier,
   waitForTriggerFireRunIds,
+  sendDefinition,
+  TEST_DEFINITION_HASH,
 } from "@intx/workflow-host/testing";
 
 import {
@@ -298,13 +300,11 @@ async function driveReady(
       },
     },
   });
-  await sender.send({
-    type: "ready",
-    data: {
-      childPid: child.pid,
-      childPublicKey: hexEncode(ipcKp.publicKey),
-    },
+  await sendDefinition(sender, {
+    childPid: child.pid,
+    childPublicKey: hexEncode(ipcKp.publicKey),
   });
+  await sender.send({ type: "ready" });
   return sender;
 }
 
@@ -351,16 +351,19 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       anchorRunId: "run_deployment-x",
       deploymentMailAddress: "run_deployment-x@example.com",
       readPrincipal: { kind: "supervisor" },
-      deriveStepAddress: ({ runId, stepId }) =>
-        `${runId}-${stepId}@example.com`,
+      layoutSteps: () =>
+        Promise.resolve({
+          stepIds: ["step-1"],
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
+        }),
       ipcKeyPairFactory: () => Promise.resolve(ipcKp),
       inboxPrimitives: wrappedInbox,
     };
 
     const supervisor = createWorkflowSupervisor(bindings);
     const spawnP = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => undefined,
     });
