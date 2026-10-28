@@ -40,6 +40,7 @@ import {
 import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
+  readPayloadsOfType,
   waitForUpstreamPayload,
   sendAuthoritySet,
 } from "@intx/workflow-host/testing";
@@ -145,6 +146,21 @@ async function materializeFixtureClosure(
   suffix = "",
   moduleSource?: string,
 ): Promise<{ packageDir: string; approvedHash: string }> {
+  const packageDir = await writeFixtureClosure(
+    prefix,
+    id,
+    moduleSource ?? liveFixtureModule(id, suffix),
+  );
+  const live = await loadWorkflowDefinitionFromClosure({ packageDir });
+  const approvedHash = await computeLiveDefinitionHash(live);
+  return { packageDir, approvedHash };
+}
+
+async function writeFixtureClosure(
+  prefix: string,
+  id: string,
+  moduleSource: string,
+): Promise<string> {
   const packageDir = await makeTempDir(prefix);
   await fsp.writeFile(
     path.join(packageDir, "package.json"),
@@ -157,12 +173,10 @@ async function materializeFixtureClosure(
   );
   await fsp.writeFile(
     path.join(packageDir, "workflow.mjs"),
-    moduleSource ?? liveFixtureModule(id, suffix),
+    moduleSource,
     "utf8",
   );
-  const live = await loadWorkflowDefinitionFromClosure({ packageDir });
-  const approvedHash = await computeLiveDefinitionHash(live);
-  return { packageDir, approvedHash };
+  return packageDir;
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +498,10 @@ const AUTHORITY_SNAPSHOT = {
   ],
 };
 
+// The key the child signs its upstream frames with, so the tests' receivers
+// can verify them.
+const CHILD_KEY_PAIR = await generateKeyPair();
+
 function buildBindings(baseDir: string): RunWorkflowChildBindings {
   return {
     substrate: createStubRepoStore(baseDir),
@@ -499,6 +517,7 @@ function buildBindings(baseDir: string): RunWorkflowChildBindings {
       matchingGrants: [],
       resolvedBy: null,
     }),
+    ipcChildKeyPairFactory: () => Promise.resolve(CHILD_KEY_PAIR),
   };
 }
 
@@ -596,7 +615,7 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
-    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+    const { definition } = await loadVerifiedWorkflowDefinitionFromClosure({
       packageDir: env.closurePackageDir,
       approvedHash: env.definitionHash,
     });
@@ -624,7 +643,7 @@ describe("source-ref run child", () => {
     // runtime's `RunStarted` hashes over `agent.inference`, which the inert
     // approval projection lacks, so an inert definition could not run here.
     const recvIter = receiveControlChannel({
-      publicKey: { bootstrapFromReady: true },
+      publicKey: CHILD_KEY_PAIR.publicKey,
       channelId,
       reader: childToSupervisor.reader,
       onCrash: (reason) => {
@@ -707,12 +726,89 @@ describe("source-ref run child", () => {
       ),
     ).rejects.toThrow(/does not match the approved hash/);
 
-    // The barrier fires before the child announces readiness: no upstream
-    // frame was emitted, so the run never proceeded.
+    // The barrier fires before the child announces readiness: its only
+    // upstream frame reports why, so the run never proceeded.
     expect(factoryCalls).toBe(0);
-    expect(childToSupervisor.flushed()).toHaveLength(0);
+    const reports = readPayloadsOfType(
+      childToSupervisor.flushed(),
+      "definition",
+    );
+    expect(childToSupervisor.flushed()).toHaveLength(1);
+    expect(reports[0]?.data.result).toEqual({
+      ok: false,
+      error: expect.stringMatching(/does not match the approved hash/),
+    });
     supervisorToChild.close();
   }, 30000);
+
+  // Each module throws while loading; the child still reports why.
+  test.each([
+    {
+      name: "a cause that points back to itself",
+      moduleSource: `const e = new Error("fixture: self cause"); e.cause = e; throw e;\n`,
+      error: /fixture: self cause$/,
+    },
+    {
+      name: "a cause cycle through two errors",
+      moduleSource: `const a = new Error("fixture: a"); const b = new Error("fixture: b"); a.cause = b; b.cause = a; throw a;\n`,
+      error: /fixture: a: fixture: b$/,
+    },
+    {
+      name: "a cause getter that makes a new error on every read",
+      moduleSource: `class Endless extends Error { get cause() { return new Endless("fixture: endless"); } }\nthrow new Endless("fixture: endless");\n`,
+      error: /fixture: endless: \(further causes omitted\)$/,
+    },
+    {
+      name: "a thrown value with no string form",
+      moduleSource: `throw Object.create(null);\n`,
+      error: /\(unprintable error\)$/,
+    },
+  ])(
+    "a closure that throws $name while loading reports the failure",
+    async ({ moduleSource, error }) => {
+      const packageDir = await writeFixtureClosure(
+        "srcref-load-failure-",
+        "srcref-load-failure",
+        moduleSource,
+      );
+      const supervisorKeyPair = await generateKeyPair();
+      const supervisorToChild = createMemoryNdjsonStream();
+      const childToSupervisor = createMemoryNdjsonStream();
+      const eventStream = createMemoryFrameStream();
+
+      await expect(
+        runWorkflowChildFromProcessEnv(
+          () => {
+            throw new Error("the factory must not run for a failed load");
+          },
+          {
+            rawEnv: makeSourceRefEnv({
+              channelId: generateChannelId(),
+              hmacKeyHex: hexEncode(generateHmacKey()),
+              hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+              definitionHash: "unused: the closure fails before the hash",
+              closurePackageDir: packageDir,
+            }),
+            controlReader: supervisorToChild.reader,
+            controlWriter: childToSupervisor.writer,
+            eventWriter: eventStream.writer,
+          },
+        ),
+      ).rejects.toThrow(/failed to import interchange.workflow entry/);
+
+      const reports = readPayloadsOfType(
+        childToSupervisor.flushed(),
+        "definition",
+      );
+      expect(reports).toHaveLength(1);
+      expect(reports[0]?.data.result).toEqual({
+        ok: false,
+        error: expect.stringMatching(error),
+      });
+      supervisorToChild.close();
+    },
+    30000,
+  );
 
   test("source-ref onTrigger bodies with no executor binding fail closed at startup", async () => {
     const baseDir = await makeTempDir("srcref-ontrigger-noexec-base-");
@@ -745,7 +841,7 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
-    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+    const { definition } = await loadVerifiedWorkflowDefinitionFromClosure({
       packageDir: env.closurePackageDir,
       approvedHash: env.definitionHash,
     });
@@ -794,7 +890,7 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
-    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+    const { definition } = await loadVerifiedWorkflowDefinitionFromClosure({
       packageDir: env.closurePackageDir,
       approvedHash: env.definitionHash,
     });
@@ -855,7 +951,7 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
-    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+    const { definition } = await loadVerifiedWorkflowDefinitionFromClosure({
       packageDir: env.closurePackageDir,
       approvedHash: env.definitionHash,
     });
@@ -890,7 +986,7 @@ describe("source-ref run child", () => {
       bindings,
     });
     const recvIter = receiveControlChannel({
-      publicKey: { bootstrapFromReady: true },
+      publicKey: CHILD_KEY_PAIR.publicKey,
       channelId,
       reader: childToSupervisor.reader,
       onCrash: (reason) => {
@@ -948,7 +1044,7 @@ describe("source-ref run child", () => {
         closurePackageDir: packageDir,
       }),
     );
-    const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+    const { definition } = await loadVerifiedWorkflowDefinitionFromClosure({
       packageDir: env.closurePackageDir,
       approvedHash: env.definitionHash,
     });
@@ -988,7 +1084,7 @@ describe("source-ref run child", () => {
     );
 
     const recvIter = receiveControlChannel({
-      publicKey: { bootstrapFromReady: true },
+      publicKey: CHILD_KEY_PAIR.publicKey,
       channelId,
       reader: childToSupervisor.reader,
       onCrash: (reason) => {

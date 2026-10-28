@@ -463,7 +463,7 @@ The workflow-process runs code the operator deploys but the sidecar does not ful
 
 Each deployment gets two channels:
 
-- **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries the child's first `authority.set`, trigger fires, signal deliveries, drain, recycle, shutdown, grants-updated, credentials-updated, sources-updated, and the child's `ready` signal back. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
+- **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries the child's first `authority.set`, trigger fires, signal deliveries, drain, recycle, shutdown, grants-updated, credentials-updated, sources-updated, and back from the child its `definition` report and its `ready` signal. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
 - **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-message `message.run.started` / `message.run.ended` brackets). High rate. Sending lives in `packages/workflow-host/src/ipc/event-sender.ts`; receiving and payload validation live in `event-channel.ts`.
 
 Each side signs control frames with its own private key and verifies incoming frames against its peer's public key, so the child cannot forge supervisor commands. Symmetric HMAC authenticates the event stream at reactor cadence — Ed25519 per frame at that rate would dominate runtime cost. The control receiver validates each payload against its message kind's schema. Those schemas and the `InferenceEvent` schema applied by `parseInferenceEvent` accept disjoint payload shapes: control schemas reject inference-event shapes, and the event schema rejects control-plane shapes, so a confused-deputy attack that smuggles a `drain` or `recycle` over the event channel fails at validation.
@@ -512,7 +512,10 @@ object whose shape is:
   Production wires it against `Bun.spawn`; tests inject a mock.
 - Per-deployment configuration: `binaryPath`, `substrateEnv`,
   `workflowRunRepoId`, `workflowRunRef`, `anchorRunId`,
-  `deploymentMailAddress`, `readPrincipal`, `deriveStepAddress`.
+  `deploymentMailAddress`, `readPrincipal`.
+- `layoutSteps(definition)` — derives the deployment's step layout
+  (its step ids and how each maps to a mail address and an
+  `agent-state` repo) from the definition the first child verified.
 
 The supervisor's `spawn(opts)` method:
 
@@ -525,11 +528,20 @@ The supervisor's `spawn(opts)` method:
 3. Invokes `bindings.subprocessSpawner` and constructs the control-
    channel sender + event-channel receiver against the returned
    handle's stdio / event-socket fds.
-4. Awaits the child's `ready` frame on the control channel.
+4. Awaits the child's `definition` frame, bounded by the ready
+   timeout. The frame carries the inert projection of the definition
+   the child verified, or the reason it could not load it. The
+   supervisor hashes the projection and fails the spawn unless it
+   matches `DEFINITION_HASH`: the child runs author code, so its own
+   check does not vouch for what it reports. On the first spawn the
+   supervisor passes the projection to `layoutSteps` and keeps the
+   layout; every later child reports the same hash.
 5. Assembles the per-deployment `credentialsSnapshot` from each
-   step's `agent-state` repo (see next subsection) and registers
-   the deployment's mail address on the bus.
-6. Forwards inbound mail as `trigger.fire` control frames; mail that
+   step's `agent-state` repo (see next subsection), sends the child
+   its `authority.set`, and registers the deployment's mail address
+   on the bus.
+6. Awaits the child's `ready` frame on the control channel.
+7. Forwards inbound mail as `trigger.fire` control frames; mail that
    arrives during `starting` buffers and drains in arrival order
    after `ready`.
 
@@ -551,6 +563,7 @@ the same package). The signature is:
 ```ts
 runWorkflowChild(opts: {
   env: SpawnTimeEnv;             // parsed spawn-time env
+  definition: WorkflowDefinition; // the verified live definition
   controlReader: NdjsonReader;   // supervisor -> child
   controlWriter: NdjsonWriter;   // child -> supervisor
   eventWriter: FrameWriter;      // child -> supervisor (InferenceEvents)
@@ -566,23 +579,34 @@ directly with mock streams and an in-memory substrate.
 
 #### Lifecycle
 
-1. **Open the IPC channels.** The control channel is the
+1. **Load the definition.** `runWorkflowChildFromProcessEnv`
+   evaluates the closure at `CLOSURE_PACKAGE_DIR` once, verifies it
+   against `DEFINITION_HASH`, and sends the supervisor a `definition`
+   frame with the inert projection it verified, or with the reason
+   the closure did not load or verify, before it exits. The frame is
+   the first one the child signs: it carries the child's public key.
+   The substrate factory and `runWorkflowChild` run the verified
+   definition, and `runWorkflowChild` then imports the directors,
+   loops, actions, and plugin entries it names. A throw in one of
+   those reaches the supervisor only as the control channel ending
+   before `ready`.
+2. **Open the IPC channels.** The control channel is the
    `receiveControlChannel` iterator the supervisor's `createControl
 ChannelSender` writes against; the event channel is the
    `createEventChannelSender` the child publishes to.
-2. **Construct `WorkflowRuntimeEnv`.** Each in-flight run gets a
+3. **Construct `WorkflowRuntimeEnv`.** Each in-flight run gets a
    per-run `BlobSubstrate` and `SignalChannel`; the per-deployment
    `RepoStore` adapter and the host-process `Scheduler` singleton
    are shared. The `authorize` slot is the credentialsSnapshot-backed
    closure documented below.
-3. **Authority.** The child reads its first control frame, which
+4. **Authority.** The child reads its first control frame, which
    must be `authority.set`, and fails otherwise. The frame carries
    the run's grants snapshot (or none) and the supervisor's merged
    credential mirror, and replaces the child's snapshot and material
    cell. Every spawn path sends it before the child resumes any run.
    When the supervisor cannot read the grants, the frame's snapshot
    is null, and a step that needs grants fails closed.
-4. **Self-discovery.** The child enumerates `runs/<runId>/` under
+5. **Self-discovery.** The child enumerates `runs/<runId>/` under
    the workflow-run repo's working tree, calls `resumeFromLog` for
    each run whose log lacks a terminal event
    (`RunCompleted`/`RunFailed`/`RunCancelled`), and invokes
@@ -591,16 +615,15 @@ ChannelSender` writes against; the event channel is the
    timers, pending awaits, and uncancelled children from the seed log.
    Self-discovery runs before `ready` so a fresh `trigger.fired`
    cannot race ahead of a resume.
-5. **`ready`.** The child holds every other upstream control frame
-   until it has sent `ready` and `resumed.runs`, because the
-   supervisor accepts nothing else first and seeds its cohort
-   tracking from `resumed.runs`. A due timer or a resumed run that
-   writes during startup therefore waits. The child emits a signed
-   `ready` control frame back
-   to the supervisor via the same `createControlChannelSender` shape
-   the downstream uses, signed under the IPC keypair the supervisor
-   minted at spawn time.
-6. **Control-loop.** The child consumes the receiver iterator:
+6. **`ready`.** The child holds every other upstream control frame
+   until it has sent `definition`, `ready` and `resumed.runs`,
+   because the supervisor accepts nothing else first and seeds its
+   cohort tracking from `resumed.runs`. A due timer or a resumed run
+   that writes during startup therefore waits. The child emits a
+   signed `ready` control frame back to the supervisor via the same
+   `createControlChannelSender` shape the downstream uses, signed
+   under the keypair whose public half rode the `definition` frame.
+7. **Control-loop.** The child consumes the receiver iterator:
    - `trigger.fire` -> fire the deployment's top-level run only when its durable event log is absent. A live log is recovered, and a terminal log is rejected rather than cleared.
    - `authority.set` -> replace the snapshot and the material cell. A
      null snapshot clears the snapshot; a frame without the `snapshot`

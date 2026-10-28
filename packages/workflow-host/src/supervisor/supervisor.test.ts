@@ -39,6 +39,9 @@ import {
   createChangeNotifier,
   type UpstreamFrameSource,
   createLogCapture,
+  sendDefinition,
+  TEST_DEFINITION,
+  TEST_DEFINITION_HASH,
 } from "@intx/workflow-host/testing";
 import { resumeFromLog } from "@intx/workflow/state-machine";
 
@@ -997,7 +1000,12 @@ async function buildBindings(opts: {
     anchorRunId: "run_deployment-x",
     deploymentMailAddress: "run_deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
-    deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
+    layoutSteps: () =>
+      Promise.resolve({
+        stepIds: ["step-1"],
+        deriveStepAddress: ({ runId, stepId }) =>
+          `${runId}-${stepId}@example.com`,
+      }),
     inboxPrimitives: opts.inboxPrimitives ?? createMemoryInboxPrimitives(),
   };
 }
@@ -1113,8 +1121,7 @@ describe("createWorkflowSupervisor", () => {
 
     const eventsObserved: { type: string }[] = [];
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: (event) => {
         eventsObserved.push({ type: event.type });
@@ -1138,6 +1145,10 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
+    await sendDefinition(childSender, {
+      childPid: 4321,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+    });
     // Wait for the supervisor to register the mail address on the
     // bus so the delivers below land inside the supervisor's
     // subscription handler -- a deliver before subscription is a
@@ -1153,20 +1164,14 @@ describe("createWorkflowSupervisor", () => {
       "run_deployment-x@example.com",
       new TextEncoder().encode("m2"),
     );
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 4321,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
-    });
+    await childSender.send({ type: "ready" });
 
     const result = await spawnPromise;
     expect(observedBinary).toBe("/fake/bin/workflow-child");
     expect(observedEnv).toMatchObject({
       DATA_DIR: baseDir,
       DEPLOYMENT_ID: "run_deployment-x",
-      DEFINITION_HASH: "def-hash-abc",
+      DEFINITION_HASH: TEST_DEFINITION_HASH,
       MAILBOX_ADDRESS: "run_deployment-x@example.com",
     });
     expect(observedEnv.IPC_CHANNEL_ID).toMatch(/^[0-9a-f]{32}$/);
@@ -1309,8 +1314,7 @@ describe("createWorkflowSupervisor", () => {
     };
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-barrier",
+      definitionHash: TEST_DEFINITION_HASH,
       onInferenceEvent: () => undefined,
     });
     observedEnv = await spawnObserver.first();
@@ -1327,14 +1331,12 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    await mailBus.awaitRegistered("run_deployment-x@example.com");
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 7777,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinition(childSender, {
+      childPid: 7777,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await mailBus.awaitRegistered("run_deployment-x@example.com");
+    await childSender.send({ type: "ready" });
     await spawnPromise;
     return {
       supervisor,
@@ -2417,7 +2419,9 @@ describe("createWorkflowSupervisor", () => {
     // `authority.set` frame, never in a `grants-updated`, so a
     // `grants-updated` on the child stream can only come from this per-run
     // barrier.
-    const runStartCalls: { runId: string; anchorRunId: string }[] = [];
+    const runStartCalls: Parameters<
+      NonNullable<WorkflowSupervisorBindings["onRunStart"]>
+    >[0][] = [];
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async (
       args,
     ) => {
@@ -2467,10 +2471,12 @@ describe("createWorkflowSupervisor", () => {
     // The sink was consulted for the spawn's `authority.set` and once for
     // the barrier, both for this run with the supervisor's deployment id
     // stamped on.
-    expect(runStartCalls).toEqual([
-      { runId: firedRunId, anchorRunId: "run_deployment-x" },
-      { runId: firedRunId, anchorRunId: "run_deployment-x" },
-    ]);
+    const call = {
+      runId: firedRunId,
+      anchorRunId: "run_deployment-x",
+      layout: expect.objectContaining({ stepIds: ["step-1"] }),
+    };
+    expect(runStartCalls).toEqual([call, call]);
 
     await wired.childSender.send({
       type: "terminal.event",
@@ -2491,7 +2497,9 @@ describe("createWorkflowSupervisor", () => {
         },
       ],
     };
-    const runStartCalls: { runId: string; anchorRunId: string }[] = [];
+    const runStartCalls: Parameters<
+      NonNullable<WorkflowSupervisorBindings["onRunStart"]>
+    >[0][] = [];
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async (args) => {
@@ -2525,7 +2533,11 @@ describe("createWorkflowSupervisor", () => {
     ]);
     // Read for the deployment's top-level run.
     expect(runStartCalls).toEqual([
-      { runId: "run_deployment-x", anchorRunId: "run_deployment-x" },
+      {
+        runId: "run_deployment-x",
+        anchorRunId: "run_deployment-x",
+        layout: expect.objectContaining({ stepIds: ["step-1"] }),
+      },
     ]);
     // A new child gets no separate grants or credentials push.
     expect(parseControlFrameTypes(lines)).not.toContain("grants-updated");
@@ -2931,6 +2943,40 @@ describe("createWorkflowSupervisor", () => {
   // child that exits before signalling ready. `createdTimers` retains every
   // timer even after it is cleared, so a test can capture the ready deadline
   // and later assert it was cancelled.
+  // Report a fake child's definition, as a real child does once it has
+  // loaded, on a fresh sender over the child's control stream.
+  type DefinitionResult =
+    | { ok: true; projection: unknown }
+    | { ok: false; error: string };
+
+  async function reportChildDefinition(
+    childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>,
+    spawnEnv: Record<string, string>,
+    result: DefinitionResult = { ok: true, projection: TEST_DEFINITION },
+  ): Promise<void> {
+    const channelId = spawnEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childIpcKeyPair = await generateKeyPair();
+    await createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    }).send({
+      type: "definition",
+      data: {
+        childPid: 4321,
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+        result,
+      },
+    });
+  }
+
   async function makeReadyTimeoutHarness(readyTimeoutMs: number) {
     type FakeTimer = { cb: () => void; ms: number; cancelled: boolean };
     const timers = new Set<FakeTimer>();
@@ -2950,21 +2996,25 @@ describe("createWorkflowSupervisor", () => {
     });
     const killSignals: string[] = [];
 
-    const spawner: SubprocessSpawner = ({ env: _env }) => ({
-      pid: 5150,
-      controlWriter: supervisorToChild.writer,
-      controlReader: childToSupervisor.reader,
-      eventReader: eventChildToSupervisor.reader,
-      kill: (signal) => {
-        killSignals.push(
-          typeof signal === "string" ? signal : String(signal ?? ""),
-        );
-        childToSupervisor.close();
-        eventChildToSupervisor.close();
-        resolveExit?.(0);
-      },
-      exited,
-    });
+    const spawned = Promise.withResolvers<Record<string, string>>();
+    const spawner: SubprocessSpawner = ({ env }) => {
+      spawned.resolve(env);
+      return {
+        pid: 5150,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: (signal) => {
+          killSignals.push(
+            typeof signal === "string" ? signal : String(signal ?? ""),
+          );
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+    };
 
     const mailBus = createMockMailBus();
     const baseBindings = await buildBindings({
@@ -2997,34 +3047,61 @@ describe("createWorkflowSupervisor", () => {
     };
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
-    // Resolve once the spawn has armed its ready deadline (which happens
-    // after the spawner is invoked, so this also confirms the child spawned).
-    async function waitForReadyDeadline(): Promise<FakeTimer> {
-      const armed = () => createdTimers.find((x) => x.ms === readyTimeoutMs);
+    // The spawn arms one deadline for the child's definition report and,
+    // once that arrives, a second for its `ready`. Resolve once the nth is
+    // armed (which happens after the spawner is invoked, so this also
+    // confirms the child spawned).
+    async function waitForDeadline(nth: number): Promise<FakeTimer> {
+      const armed = () =>
+        createdTimers.filter((x) => x.ms === readyTimeoutMs)[nth];
       await timerChanges.until(() => armed() !== undefined);
       const deadline = armed();
       if (deadline === undefined) {
-        throw new Error("ready deadline timer missing after it was armed");
+        throw new Error("handshake deadline timer missing after it was armed");
       }
       return deadline;
     }
 
-    return { supervisor, killSignals, childToSupervisor, waitForReadyDeadline };
+    return {
+      supervisor,
+      killSignals,
+      childToSupervisor,
+      reportDefinition: async () => {
+        await reportChildDefinition(childToSupervisor, await spawned.promise);
+      },
+      waitForDefinitionDeadline: () => waitForDeadline(0),
+      waitForReadyDeadline: () => waitForDeadline(1),
+    };
   }
 
   const readyTimeoutSpawnOpts = {
-    stepOrder: ["step-1"],
-    definitionHash: "def-hash-abc",
+    definitionHash: TEST_DEFINITION_HASH,
 
     onInferenceEvent: () => {
       /* unused in the ready-timeout tests */
     },
   };
 
+  test("spawn times out waiting for the child's definition, kills the child, and clears the deadline", async () => {
+    const h = await makeReadyTimeoutHarness(6_666);
+    // Never report the definition. Spawn blocks on it until the deadline.
+    const spawnPromise = h.supervisor.spawn(readyTimeoutSpawnOpts);
+    const definitionDeadline = await h.waitForDefinitionDeadline();
+    definitionDeadline.cb();
+
+    await expect(spawnPromise).rejects.toThrow(
+      /child did not report its definition within 6666ms; killed/,
+    );
+    expect(h.killSignals).toContain("SIGTERM");
+    expect(definitionDeadline.cancelled).toBe(true);
+  });
+
   test("spawn times out, kills the child, rejects, and clears the ready deadline", async () => {
     const h = await makeReadyTimeoutHarness(7_777);
-    // Never send `ready`. Spawn blocks on the handshake until the deadline.
+    // Report the definition but never send `ready`. Spawn blocks on the
+    // handshake until the deadline.
     const spawnPromise = h.supervisor.spawn(readyTimeoutSpawnOpts);
+    await h.reportDefinition();
     const readyDeadline = await h.waitForReadyDeadline();
     readyDeadline.cb();
 
@@ -3039,6 +3116,7 @@ describe("createWorkflowSupervisor", () => {
   test("spawn clears the ready deadline when the child exits before ready", async () => {
     const h = await makeReadyTimeoutHarness(8_888);
     const spawnPromise = h.supervisor.spawn(readyTimeoutSpawnOpts);
+    await h.reportDefinition();
     const readyDeadline = await h.waitForReadyDeadline();
 
     // The child exits before signalling ready: closing the control reader
@@ -3062,7 +3140,9 @@ describe("createWorkflowSupervisor", () => {
   // routes every post-seam throw through it.
   async function makePreRegistrationFailureHarness(opts: {
     failSubscribe?: boolean;
+    failLayoutSteps?: boolean;
     failDeriveStepAddress?: boolean;
+    definition?: DefinitionResult;
   }) {
     const baseDir = await makeTempDir("supervisor-spawn-leak-");
     await seedStepGrants(
@@ -3079,21 +3159,25 @@ describe("createWorkflowSupervisor", () => {
       resolveExit = resolve;
     });
     const killSignals: string[] = [];
-    const spawner: SubprocessSpawner = () => ({
-      pid: 4321,
-      controlWriter: supervisorToChild.writer,
-      controlReader: childToSupervisor.reader,
-      eventReader: eventChildToSupervisor.reader,
-      kill: (signal) => {
-        killSignals.push(
-          typeof signal === "string" ? signal : String(signal ?? ""),
-        );
-        childToSupervisor.close();
-        eventChildToSupervisor.close();
-        resolveExit?.(0);
-      },
-      exited,
-    });
+    const spawned = Promise.withResolvers<Record<string, string>>();
+    const spawner: SubprocessSpawner = ({ env }) => {
+      spawned.resolve(env);
+      return {
+        pid: 4321,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: (signal) => {
+          killSignals.push(
+            typeof signal === "string" ? signal : String(signal ?? ""),
+          );
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+    };
     const mailBus = createMockMailBus();
     const bindingsMailBus: MailBusBindings = {
       ...mailBus,
@@ -3110,27 +3194,55 @@ describe("createWorkflowSupervisor", () => {
       signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
       mailBus: bindingsMailBus,
     });
+    let layoutCalls = 0;
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      layoutSteps: (definition) => {
+        layoutCalls += 1;
+        return baseBindings.layoutSteps(definition);
+      },
+      ...(opts.failLayoutSteps === true
+        ? {
+            layoutSteps: () =>
+              Promise.reject(new Error("injected layoutSteps failure")),
+          }
+        : {}),
       ...(opts.failDeriveStepAddress === true
         ? {
-            deriveStepAddress: () => {
-              throw new Error("injected deriveStepAddress failure");
-            },
+            layoutSteps: () =>
+              Promise.resolve({
+                stepIds: ["step-1"],
+                deriveStepAddress: () => {
+                  throw new Error("injected deriveStepAddress failure");
+                },
+              }),
           }
         : {}),
     };
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     return {
-      supervisor: supervisors.track(createWorkflowSupervisor(bindings)),
+      // Start the spawn and report the child's definition, so it gets as
+      // far as the injected failure.
+      spawn: async () => {
+        const spawning = supervisor.spawn(preRegistrationSpawnOpts);
+        spawning.catch(() => undefined);
+        await reportChildDefinition(
+          childToSupervisor,
+          await spawned.promise,
+          opts.definition,
+        );
+        return spawning;
+      },
       killSignals,
       registered: mailBus.registered,
+      layoutCalls: () => layoutCalls,
+      sentToChild: () => supervisorToChild.flushed(),
     };
   }
 
   const preRegistrationSpawnOpts = {
-    stepOrder: ["step-1"],
-    definitionHash: "def-hash-abc",
+    definitionHash: TEST_DEFINITION_HASH,
 
     onInferenceEvent: () => {
       /* unused in the pre-registration failure tests */
@@ -3139,11 +3251,18 @@ describe("createWorkflowSupervisor", () => {
 
   test("a spawn whose mail subscription throws kills the child and releases the address", async () => {
     const h = await makePreRegistrationFailureHarness({ failSubscribe: true });
-    await expect(h.supervisor.spawn(preRegistrationSpawnOpts)).rejects.toThrow(
-      "injected subscribe failure",
-    );
+    await expect(h.spawn()).rejects.toThrow("injected subscribe failure");
     // The address was registered just before subscribe threw; the
     // teardown must unregister it so no orphaned registration survives.
+    expect(h.registered()).toHaveLength(0);
+    expect(h.killSignals.length).toBeGreaterThan(0);
+  });
+
+  test("a spawn whose step layout throws kills the child", async () => {
+    const h = await makePreRegistrationFailureHarness({
+      failLayoutSteps: true,
+    });
+    await expect(h.spawn()).rejects.toThrow("injected layoutSteps failure");
     expect(h.registered()).toHaveLength(0);
     expect(h.killSignals.length).toBeGreaterThan(0);
   });
@@ -3152,12 +3271,46 @@ describe("createWorkflowSupervisor", () => {
     const h = await makePreRegistrationFailureHarness({
       failDeriveStepAddress: true,
     });
-    await expect(h.supervisor.spawn(preRegistrationSpawnOpts)).rejects.toThrow(
+    await expect(h.spawn()).rejects.toThrow(
       "injected deriveStepAddress failure",
     );
     expect(h.registered()).toHaveLength(0);
     expect(h.killSignals.length).toBeGreaterThan(0);
   });
+
+  // The child runs author code, so the supervisor checks its report itself:
+  // a bad report fails the spawn before the host lays out any step or the
+  // child receives its authority.
+  test.each([
+    {
+      name: "a definition that does not hash to the approved hash",
+      definition: {
+        ok: true as const,
+        projection: { ...TEST_DEFINITION, id: "a-different-workflow" },
+      },
+      error: /not the approved/,
+    },
+    {
+      name: "a malformed definition",
+      definition: { ok: true as const, projection: { id: 42 } },
+      error: /reported a malformed definition/,
+    },
+    {
+      name: "its own load failure",
+      definition: { ok: false as const, error: "closure blew up" },
+      error: /could not load its definition: closure blew up/,
+    },
+  ])(
+    "a spawn whose child reports $name kills the child before any layout or authority",
+    async ({ definition, error }) => {
+      const h = await makePreRegistrationFailureHarness({ definition });
+      await expect(h.spawn()).rejects.toThrow(error);
+      expect(h.layoutCalls()).toBe(0);
+      expect(h.sentToChild()).toHaveLength(0);
+      expect(h.registered()).toHaveLength(0);
+      expect(h.killSignals.length).toBeGreaterThan(0);
+    },
+  );
 
   test("drain() forwards the `drain` control frame and arms a drainTimeout accumulator per in-flight run", async () => {
     const baseDir = await makeTempDir("supervisor-drain-arm-");
@@ -3261,8 +3414,7 @@ describe("createWorkflowSupervisor", () => {
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => {
         /* unused in this test */
@@ -3282,6 +3434,10 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
+    await sendDefinition(childSender, {
+      childPid: 9999,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+    });
     await mailBus.awaitRegistered("run_deployment-x@example.com");
     // Two pre-ready messages. The supervisor's FIFO inbox queue
     // serializes dispatch: only one run is in-flight at a time. By
@@ -3296,13 +3452,7 @@ describe("createWorkflowSupervisor", () => {
       "run_deployment-x@example.com",
       new TextEncoder().encode("drain-msg-B"),
     );
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 9999,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
-    });
+    await childSender.send({ type: "ready" });
     await spawnPromise;
 
     // No accumulators armed yet -- drain has not been called.
@@ -3480,8 +3630,7 @@ describe("createWorkflowSupervisor", () => {
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => {
         /* unused in this test */
@@ -3501,18 +3650,16 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
+    await sendDefinition(childSender, {
+      childPid: 8888,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+    });
     await mailBus.awaitRegistered("run_deployment-x@example.com");
     mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("escalate-msg"),
     );
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 8888,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
-    });
+    await childSender.send({ type: "ready" });
     await spawnPromise;
 
     // Wait for the dispatch loop to forward the buffered mail's
@@ -3778,8 +3925,7 @@ describe("createWorkflowSupervisor", () => {
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => undefined,
     });
@@ -3797,18 +3943,16 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
+    await sendDefinition(childSender, {
+      childPid: 7777,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+    });
     await mailBus.awaitRegistered("run_deployment-x@example.com");
     mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("term-msg-A"),
     );
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 7777,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
-    });
+    await childSender.send({ type: "ready" });
     await spawnPromise;
     // Wait for the dispatch loop to forward the buffered mail's
     // `trigger.fire` so the run is in `cohortRunIds` when `drain()`
@@ -3930,8 +4074,7 @@ describe("createWorkflowSupervisor", () => {
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => undefined,
     });
@@ -3949,18 +4092,16 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
+    await sendDefinition(childSender, {
+      childPid: 6666,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+    });
     await mailBus.awaitRegistered("run_deployment-x@example.com");
     mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("no-term-msg"),
     );
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 6666,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
-    });
+    await childSender.send({ type: "ready" });
     await spawnPromise;
     // Wait for the dispatch loop to forward the buffered mail's
     // `trigger.fire` so the run is in `cohortRunIds` when `drain()`
@@ -4162,8 +4303,7 @@ describe("createWorkflowSupervisor", () => {
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => undefined,
     });
@@ -4181,13 +4321,11 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 4321,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
-      },
+    await sendDefinition(childSender, {
+      childPid: 4321,
+      childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
     });
+    await childSender.send({ type: "ready" });
     await spawnPromise;
 
     const sources: InferenceSource[] = [
@@ -4298,8 +4436,7 @@ describe("createWorkflowSupervisor", () => {
 
     // Now spawn: the child's `authority.set` must carry the post-revoke mirror.
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-idle",
+      definitionHash: TEST_DEFINITION_HASH,
       onInferenceEvent: () => undefined,
     });
     observedEnv = await spawnObserver.first();
@@ -4316,13 +4453,11 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 4321,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
-      },
+    await sendDefinition(childSender, {
+      childPid: 4321,
+      childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
     });
+    await childSender.send({ type: "ready" });
     await spawnPromise;
 
     const [authority] = parseAuthoritySetFrames(supervisorToChild.flushed());
@@ -4389,8 +4524,7 @@ describe("createWorkflowSupervisor", () => {
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
       onInferenceEvent: () => undefined,
     });
     observedEnv = await spawnObserver.first();
@@ -4407,13 +4541,11 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 4321,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
-      },
+    await sendDefinition(childSender, {
+      childPid: 4321,
+      childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
     });
+    await childSender.send({ type: "ready" });
     await spawnPromise;
 
     const delivery = {
@@ -5943,13 +6075,7 @@ describe("IPC integration smoke", () => {
       channelId,
       writer: upstream.writer,
     });
-    await sender.send({
-      type: "ready",
-      data: {
-        childPid: 1,
-        childPublicKey: hexEncode(keyPair.publicKey),
-      },
-    });
+    await sender.send({ type: "ready" });
     expect(upstream.flushed()).toHaveLength(1);
 
     const eventStream = createMemoryFrameStream();
@@ -6060,8 +6186,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     };
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => undefined,
     });
@@ -6079,14 +6204,12 @@ describe("supervisor inbox FIFO dispatch loop", () => {
         },
       },
     });
-    await mailBus.awaitRegistered("run_deployment-x@example.com");
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 11111,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinition(childSender, {
+      childPid: 11111,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await mailBus.awaitRegistered("run_deployment-x@example.com");
+    await childSender.send({ type: "ready" });
     await spawnPromise;
     return {
       supervisor,

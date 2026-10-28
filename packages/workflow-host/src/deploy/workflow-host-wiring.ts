@@ -79,6 +79,7 @@ import {
   type CredentialsSnapshotStep,
   type DeriveStepAddress,
   type DeriveStepRepoId,
+  type StepLayout,
 } from "../supervisor/credentials";
 import {
   createWorkflowSupervisor,
@@ -534,29 +535,17 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * when the deployment binds no credentials.
    */
   credentialDelivery?: CredentialDelivery;
-  /**
-   * Every step id in the deployment's flat step-id namespace: its
-   * `stepOrder` plus the step ids of every `loop` body it carries. The
-   * `onRunStart` grants sink walks these to assemble the per-run
-   * credentialsSnapshot, so the sink needs the ids rather than the bare
-   * count -- and it needs the loop-body ids too, because a loop iteration
-   * inherits the parent run's env and authorizes against this same snapshot.
-   */
-  stepOrder: readonly string[];
   /** Deployment's mail address. */
   deploymentMailAddress: string;
-  /** Per-step mail-address derivation. */
-  deriveStepAddress: DeriveStepAddress;
   /**
-   * Optional override of the per-step `agent-state` repo identity the
-   * supervisor reads grants from while assembling the
-   * credentialsSnapshot. Defaults to the `<runId>-<stepId>`
-   * convention; the single-step launched-agent deploy supplies a
-   * derivation that returns the legacy agent-state repo so the spawned
-   * child reads grants from the same repo the legacy agent identity
-   * keys.
+   * Derive the deployment's step layout from the definition its first
+   * child verified (the supervisor's `layoutSteps` binding). The
+   * `onRunStart` grants sink assembles each per-run credentialsSnapshot
+   * from the same layout.
    */
-  deriveStepRepoId?: DeriveStepRepoId;
+  layoutSteps: (
+    definition: WorkflowProjectionDefinition,
+  ) => Promise<StepLayout>;
   /** Substrate-config keys propagated to the child via spawn-time env. */
   substrateEnv: Record<string, string>;
   /**
@@ -658,6 +647,7 @@ export type SidecarWorkflowSupervisor = {
   onRunStart(args: {
     runId: string;
     anchorRunId: string;
+    layout: StepLayout;
   }): Promise<CredentialsSnapshot | null>;
   /**
    * Refuse further outbound mail and wait for the sends already started. The
@@ -1889,19 +1879,6 @@ export function createSidecarDeployRouter<
       multistepDeriveStepAddress,
     });
 
-    // Every step id the deployment's credentials snapshot must cover. This is
-    // NOT `stepOrder`: a `loop` body runs in-process as a child run inheriting
-    // the parent's env, so a body step authorizes against the SAME snapshot the
-    // top-level steps do, keyed by its own plain step id. A snapshot built from
-    // `stepOrder` alone carries no entry for it and the child's authorize
-    // throws on the body's first tool call. The address/repo strategy above
-    // stays on `stepOrder`, because the head/step collapse is a property of the
-    // deployment's own step count, not of what a body can run.
-    const credentialStepIds = deps.inertFlatNamespaceStepIds({
-      definition: spec.definition,
-      context: "sidecar deploy router credentials snapshot: ",
-    });
-
     // Unwind every piece of spawn state if any step in this block throws,
     // so a failed spawn leaks no freshly-spawned workflow-process child,
     // supervisor handle, transport registration, or multistep
@@ -1992,11 +1969,33 @@ export function createSidecarDeployRouter<
         },
         workflowRunRef: "refs/heads/main",
         runId,
-        stepOrder: credentialStepIds,
         deploymentMailAddress: spec.agentAddress,
         ...(credentialDelivery !== undefined ? { credentialDelivery } : {}),
-        deriveStepAddress: stepStrategy.deriveStepAddress,
-        deriveStepRepoId: stepStrategy.deriveStepRepoId,
+        // The layout comes from the definition the child verified and the
+        // supervisor checked against the approved hash. Its step ids are NOT
+        // `stepOrder`: a `loop` body runs in-process as a child run
+        // inheriting the parent's env, so a body step authorizes against the
+        // SAME snapshot the top-level steps do, keyed by its own plain step
+        // id, and a snapshot built from `stepOrder` alone would make the
+        // child's authorize throw on the body's first tool call. The
+        // address/repo strategy stays on `stepOrder`, because the head/step
+        // collapse is a property of the deployment's own step count, not of
+        // what a body can run.
+        layoutSteps: (definition) => {
+          const strategy = createStepStrategy({
+            legacyAddress: spec.agentAddress,
+            stepOrder: definition.stepOrder,
+            multistepDeriveStepAddress,
+          });
+          return Promise.resolve({
+            stepIds: deps.inertFlatNamespaceStepIds({
+              definition,
+              context: "sidecar deploy router credentials snapshot: ",
+            }),
+            deriveStepAddress: strategy.deriveStepAddress,
+            deriveStepRepoId: strategy.deriveStepRepoId,
+          });
+        },
         isRunPoisoned: (runId) => poisonedRunIds.has(runId),
         // The supervisor stamps `runId` + `agentAddress` before
         // invoking this; forward the fully-stamped registration to the
@@ -2093,7 +2092,6 @@ export function createSidecarDeployRouter<
       // keeps instantiate-send-teardown per step.
       const warmKeep = spec.definition.stepOrder.length === 1;
       const spawnOpts: SpawnOpts = {
-        stepOrder: [...credentialStepIds],
         definitionHash,
         onInferenceEvent: (event) => {
           publishInferenceEvent(
@@ -3298,6 +3296,7 @@ export function createSidecarWorkflowSupervisor(
   const onRunStart = (args: {
     runId: string;
     anchorRunId: string;
+    layout: StepLayout;
   }): Promise<CredentialsSnapshot | null> => {
     // Fail closed on a run whose `run.grants` write was recorded as failed:
     // its per-run grants file never landed. A run with no file at all
@@ -3315,8 +3314,8 @@ export function createSidecarWorkflowSupervisor(
       repoStore: opts.repoStore,
       anchorRunId: args.anchorRunId,
       runId: args.runId,
-      stepOrder: opts.stepOrder,
-      deriveStepAddress: opts.deriveStepAddress,
+      stepOrder: args.layout.stepIds,
+      deriveStepAddress: args.layout.deriveStepAddress,
     });
   };
   const supervisor = createWorkflowSupervisor({
@@ -3335,7 +3334,7 @@ export function createSidecarWorkflowSupervisor(
     anchorRunId: opts.runId,
     deploymentMailAddress: opts.deploymentMailAddress,
     readPrincipal: supervisorPrincipal,
-    deriveStepAddress: opts.deriveStepAddress,
+    layoutSteps: opts.layoutSteps,
     onRunStart,
     ...(opts.credentialDelivery !== undefined
       ? { credentialDelivery: opts.credentialDelivery }
@@ -3345,9 +3344,6 @@ export function createSidecarWorkflowSupervisor(
       : {}),
     ...(opts.onSelfTerminate !== undefined
       ? { onSelfTerminate: opts.onSelfTerminate }
-      : {}),
-    ...(opts.deriveStepRepoId !== undefined
-      ? { deriveStepRepoId: opts.deriveStepRepoId }
       : {}),
     deriveMailAuditRef: deriveSidecarMailAuditRef(opts.runId),
     ...(opts.onDispatchTiming !== undefined

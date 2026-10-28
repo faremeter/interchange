@@ -21,6 +21,7 @@
 
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowDefinition } from "@intx/workflow";
+import type { InertWorkflowDefinition } from "@intx/workflow/projection";
 
 import {
   loadWorkflowDefinitionFromClosure,
@@ -50,6 +51,12 @@ export interface LoadVerifiedWorkflowDefinitionFromClosureOpts {
   importModule?: (importUrl: string) => Promise<unknown>;
 }
 
+/** A closure's evaluated definition and the inert projection it verified. */
+export interface VerifiedWorkflowDefinition {
+  readonly definition: WorkflowDefinition;
+  readonly projection: InertWorkflowDefinition;
+}
+
 /**
  * Evaluate a source-ref deployment's pinned code closure to a live
  * `WorkflowDefinition` and re-verify it by project-then-hash before returning
@@ -61,26 +68,25 @@ export interface LoadVerifiedWorkflowDefinitionFromClosureOpts {
  */
 export async function loadVerifiedWorkflowDefinitionFromClosure(
   opts: LoadVerifiedWorkflowDefinitionFromClosureOpts,
-): Promise<WorkflowDefinition> {
+): Promise<VerifiedWorkflowDefinition> {
   const definition = await loadWorkflowDefinitionFromClosure({
     packageDir: opts.packageDir,
     ...(opts.importModule !== undefined
       ? { importModule: opts.importModule }
       : {}),
   });
-  const recomputed = await computeWireDefinitionHash(
-    await projectWorkflowDefinitionFromClosure({
-      packageDir: opts.packageDir,
-      definition,
-      ...(opts.importModule !== undefined
-        ? { importModule: opts.importModule }
-        : {}),
-    }),
-  );
+  const projection = await projectWorkflowDefinitionFromClosure({
+    packageDir: opts.packageDir,
+    definition,
+    ...(opts.importModule !== undefined
+      ? { importModule: opts.importModule }
+      : {}),
+  });
+  const recomputed = await computeWireDefinitionHash(projection);
   if (recomputed !== opts.approvedHash) {
     throw new Error(
       `workflow-host verified-definition loader: recomputed wire hash ${recomputed} for the source-ref closure at ${opts.packageDir} does not match the approved hash ${opts.approvedHash}; refusing to run a definition that no longer projects to the hub-approved content`,
     );
   }
-  return definition;
+  return { definition, projection };
 }

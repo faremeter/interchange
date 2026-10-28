@@ -53,7 +53,6 @@
 
 import { getLogger } from "@intx/log";
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types/hex";
 
 import type {
   Principal,
@@ -411,15 +410,15 @@ export interface RunWorkflowChildBindings {
    */
   initialSources?: Record<string, InferenceSource[]>;
   /**
-   * Optional override for the child's Ed25519 keypair factory. The
-   * child mints a fresh keypair at startup, holds the private half
-   * in its own address space, signs every upstream control frame
-   * with it, and publishes the public half in the `ready` frame so
-   * the supervisor can verify subsequent upstream frames. Production
-   * wires this against `@intx/crypto`'s `generateKeyPair`;
-   * tests inject a deterministic factory so they can assert on the
-   * published key. The supervisor's private key is NEVER threaded
-   * into the child -- the child holds only its own private half.
+   * Optional override for the child's Ed25519 keypair factory, used only
+   * when the caller supplies no `upstreamSender`. The child then mints a
+   * keypair, holds the private half in its own address space, and signs
+   * every upstream control frame with it. The process entry supplies its
+   * own sender and publishes that sender's public half in its `definition`
+   * frame; a test that drives `runWorkflowChild` directly injects a
+   * deterministic factory so it knows the key that verifies the child's
+   * frames. The supervisor's private key is NEVER threaded into the
+   * child -- the child holds only its own private half.
    */
   ipcChildKeyPairFactory?: () => Promise<{
     privateKey: Uint8Array;
@@ -621,14 +620,6 @@ export async function runWorkflowChild(
   };
   const clock = opts.bindings.clock ?? defaultClock;
   const newId = opts.bindings.newId ?? defaultNewId;
-
-  // Mint the child's own upstream-signing keypair. The private half
-  // never leaves this address space; the public half rides on the
-  // `ready` frame's payload so the supervisor can verify subsequent
-  // upstream frames against it.
-  const childKeyPair = await (
-    opts.bindings.ipcChildKeyPairFactory ?? generateKeyPair
-  )();
 
   const runtimeRepoStore = createWorkflowRunRepoStore({
     substrate: opts.bindings.substrate,
@@ -845,7 +836,9 @@ export async function runWorkflowChild(
     opts.upstreamSender ??
     holdControlChannelSender(
       createControlChannelSender({
-        privateKeySeed: childKeyPair.privateKey,
+        privateKeySeed: (
+          await (opts.bindings.ipcChildKeyPairFactory ?? generateKeyPair)()
+        ).privateKey,
         channelId: opts.env.channelId,
         writer: opts.controlWriter,
       }),
@@ -963,25 +956,17 @@ export async function runWorkflowChild(
   // attach a terminal-event emitter onto every resumed run's
   // `complete` promise; the same sender lives behind the pack-push
   // bridge the process wrapper builds (when the caller supplies one),
-  // so the upstream frame sequence is monotonic across `ready`,
-  // every `pack.push.request`, every `terminal.event`, and any
-  // future child-originated upstream payload. Upstream frames are
-  // signed by the child's own private key; the `ready` payload
-  // publishes the matching public half so the supervisor can verify
-  // every subsequent upstream frame.
+  // so the upstream frame sequence is monotonic across the process
+  // entry's `definition` frame, `ready`, every `pack.push.request`,
+  // every `terminal.event`, and any future child-originated upstream
+  // payload.
   //
-  // The supervisor accepts `ready` only as the first frame, and seeds its
-  // cohort tracking from `resumed.runs` before it reads anything else. A
-  // due timer or a resumed run can send during startup, so the sender holds
-  // their frames until both of these are out.
+  // The supervisor accepts `ready` only right after `definition`, and
+  // seeds its cohort tracking from `resumed.runs` before it reads anything
+  // else. A due timer or a resumed run can send during startup, so the
+  // sender holds their frames until both of these are out.
   try {
-    await upstreamSender.sendNow({
-      type: "ready",
-      data: {
-        childPid: process.pid,
-        childPublicKey: hexEncode(childKeyPair.publicKey),
-      },
-    });
+    await upstreamSender.sendNow({ type: "ready" });
 
     // Report self-discovered runs so the supervisor seeds its cohort
     // tracking before the dispatch loop starts.
@@ -1443,12 +1428,13 @@ async function handleControlPayload(
       ctx.sourcesRef.current = { [stepId]: payload.data.sources };
       return false;
     }
+    case "definition":
     case "ready": {
-      // `ready` is a child->supervisor frame; receiving one on the
-      // child's downstream side is a protocol violation that the
-      // sender should not be able to produce against the typed union.
+      // `definition` and `ready` are child->supervisor frames; receiving
+      // one on the child's downstream side is a protocol violation that
+      // the sender should not be able to produce against the typed union.
       throw new Error(
-        "workflow-child received a `ready` frame on its inbound control channel; this is a supervisor-only payload",
+        `workflow-child received a \`${payload.type}\` frame on its inbound control channel; this is a supervisor-only payload`,
       );
     }
     case "recycle.request": {

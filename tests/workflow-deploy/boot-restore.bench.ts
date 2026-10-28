@@ -65,8 +65,13 @@ import {
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
-import type { AgentDeployFrame } from "@intx/types/sidecar";
+import {
+  WorkflowProjectionDefinition,
+  type AgentDeployFrame,
+} from "@intx/types/sidecar";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowDefinition } from "@intx/workflow";
+import { projectLiveToInert } from "@intx/workflow/projection";
 import {
   deriveWorkflowRunRepoId,
   inertFlatNamespaceStepIds,
@@ -74,6 +79,7 @@ import {
 import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
+  sendDefinition,
 } from "@intx/workflow-host/testing";
 import {
   createSidecarDeployRouter,
@@ -185,13 +191,12 @@ function makeReadyDrivingSpawner(pidBase: number) {
         },
       },
     });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: pidBase + index,
-        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
-      },
+    await sendDefinition(childSender, {
+      childPid: pidBase + index,
+      childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      projection: PROJECTION,
     });
+    await childSender.send({ type: "ready" });
   }
   return { spawner, driveReadyFor, spawnCount: () => spawns.length };
 }
@@ -229,42 +234,46 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
   });
 }
 
+// The single-step `step-1` definition every fake child reports, and the hash
+// each deployment's frame approves.
+// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
+const LIVE_DEFINITION = {
+  id: "wf-boot-restore",
+  triggers: [{ type: "manual" }],
+  stepOrder: ["step-1"],
+  steps: {
+    "step-1": {
+      kind: "step",
+      id: "step-1",
+      agent: {
+        id: "agent-step-1",
+        systemPrompt: "sys",
+        capabilities: [],
+        toolFactories: [],
+        inference: { sources: [] },
+      },
+    },
+  },
+} as unknown as WorkflowDefinition;
+const PROJECTION = WorkflowProjectionDefinition.assert(
+  projectLiveToInert(LIVE_DEFINITION),
+);
+const APPROVED_WIRE_HASH = await computeWireDefinitionHash(PROJECTION);
+
 /**
  * The injected closure materializer stub. Source-ref is the only deploy
  * lineage, so the router derives each deployment's definition through this
- * dependency on both the deploy and the restore path. Returns a valid
- * single-step `step-1` live definition (its step carries an agent so it survives
- * `projectLiveToInert`) keyed to the deployment id, so each of the N deployments
- * materializes a distinct, deterministic definition.
+ * dependency on both the deploy and the restore path. Returns the single-step
+ * `step-1` live definition every fake child reports.
  */
 const stubApplyFrozenWorkflowClosure: NonNullable<
   Parameters<typeof createSidecarDeployRouter>[0]["applyFrozenWorkflowClosure"]
-> = (applyArgs) => {
-  const deploymentId = path.basename(applyArgs.instanceDir);
-  return Promise.resolve({
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
-    definition: {
-      id: `wf-${deploymentId}`,
-      triggers: [{ type: "manual" }],
-      stepOrder: ["step-1"],
-      steps: {
-        "step-1": {
-          kind: "step",
-          id: "step-1",
-          agent: {
-            id: "agent-step-1",
-            systemPrompt: "sys",
-            capabilities: [],
-            toolFactories: [],
-            inference: { sources: [] },
-          },
-        },
-      },
-    } as unknown as WorkflowDefinition,
+> = (applyArgs) =>
+  Promise.resolve({
+    definition: LIVE_DEFINITION,
     packageDir: path.join(applyArgs.instanceDir, "package"),
     deployDir: path.join(applyArgs.instanceDir, "deploy"),
   });
-};
 
 const resolvedInboundMailPolicy = {
   clean: "admit",
@@ -374,10 +383,9 @@ function singleStepFrame(
     config: {} as AgentDeployFrame["config"],
     workflow: {
       // Source-ref is the only deploy lineage: the frame carries no inline
-      // definition, only the pin the router re-materializes (the injected
-      // closure stub evaluates it to a single-step `step-1` definition). The
-      // hub-approved wire hash is a placeholder; production always stamps it.
-      approvedWireHash: "a".repeat(64),
+      // definition, only the pin the router re-materializes for the child,
+      // which reports the single-step `step-1` definition.
+      approvedWireHash: APPROVED_WIRE_HASH,
       sourceRef: {
         source: { kind: "registry", registry: "test-registry" },
         closure: { schemaVersion: "1", topLevel: [], entries: [] },

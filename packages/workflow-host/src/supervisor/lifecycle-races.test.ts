@@ -26,6 +26,8 @@ import {
   createMemoryNdjsonStream,
   createMockMailBus,
   createStubRepoStore,
+  sendDefinition,
+  TEST_DEFINITION_HASH,
 } from "@intx/workflow-host/testing";
 
 import {
@@ -196,7 +198,12 @@ async function buildBindings(opts: {
     anchorRunId: "deployment-x",
     deploymentMailAddress: "deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
-    deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
+    layoutSteps: () =>
+      Promise.resolve({
+        stepIds: ["step-1"],
+        deriveStepAddress: ({ runId, stepId }) =>
+          `${runId}-${stepId}@example.com`,
+      }),
     ipcKeyPairFactory: () => Promise.resolve(opts.ipcKeypair),
     inboxPrimitives: createMemoryInboxPrimitives(),
   };
@@ -280,8 +287,7 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     const supervisor = createWorkflowSupervisor(bindings);
 
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => undefined,
     });
@@ -311,13 +317,11 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     // frames are buffered in the reader before any iterator consumer
     // pulls. `waitForReady` will consume `ready` and exit; the
     // upstream pump must observe the buffered `recycle.request` next.
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: first.pid,
-        childPublicKey: hexEncode(childIpcKeypair.publicKey),
-      },
+    await sendDefinition(childSender, {
+      childPid: first.pid,
+      childPublicKey: hexEncode(childIpcKeypair.publicKey),
     });
+    await childSender.send({ type: "ready" });
     await childSender.send({
       type: "recycle.request",
       data: { reason: "early-arriving" },
@@ -349,13 +353,11 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
         },
       },
     });
-    await secondSender.send({
-      type: "ready",
-      data: {
-        childPid: second.pid,
-        childPublicKey: hexEncode(childIpcKeypair.publicKey),
-      },
+    await sendDefinition(secondSender, {
+      childPid: second.pid,
+      childPublicKey: hexEncode(childIpcKeypair.publicKey),
     });
+    await secondSender.send({ type: "ready" });
 
     await supervisor.shutdown();
   });
@@ -413,8 +415,7 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
       },
     });
     const spawning = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "test",
+      definitionHash: TEST_DEFINITION_HASH,
       onInferenceEvent: () => undefined,
     });
     const env = await spawned.promise;
@@ -425,13 +426,11 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
       channelId,
       writer: controlIn.writer,
     });
-    await sender.send({
-      type: "ready",
-      data: {
-        childPid: 9992,
-        childPublicKey: hexEncode(childKeypair.publicKey),
-      },
+    await sendDefinition(sender, {
+      childPid: 9992,
+      childPublicKey: hexEncode(childKeypair.publicKey),
     });
+    await sender.send({ type: "ready" });
     await spawning;
     await blocked.promise;
     try {
@@ -491,8 +490,7 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
       clearTimer: () => undefined,
     });
     const spawning = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "test",
+      definitionHash: TEST_DEFINITION_HASH,
       onInferenceEvent: () => undefined,
     });
     const env = await spawned.promise;
@@ -503,13 +501,11 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
       channelId,
       writer: controlIn.writer,
     });
-    await sender.send({
-      type: "ready",
-      data: {
-        childPid: 9993,
-        childPublicKey: hexEncode(childKeypair.publicKey),
-      },
+    await sendDefinition(sender, {
+      childPid: 9993,
+      childPublicKey: hexEncode(childKeypair.publicKey),
     });
+    await sender.send({ type: "ready" });
     await spawning;
     try {
       const stopping = supervisor.shutdown();
@@ -522,9 +518,9 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
   });
 
   test("a spawn that loses its control channel mid-handshake surfaces the failure to the awaiting spawn() caller even when shutdown races in", async () => {
-    // The spawner returns a handle whose control reader never yields
-    // `ready`. The test starts `spawn()`, lets the supervisor reach
-    // the `waitForReady` await, then calls `shutdown()`. The shutdown
+    // The spawner returns a handle whose child reports its definition but
+    // never yields `ready`. The test starts `spawn()`, lets the supervisor
+    // reach the `waitForReady` await, then calls `shutdown()`. The shutdown
     // path kills the handle, which closes the control reader. The
     // supervisor's `waitForReady` observes the iterator ending and
     // throws "control channel ended before child emitted ready". That
@@ -540,6 +536,7 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     const mailBus = createMockMailBus();
 
     let spawnerInvoked = false;
+    let spawnChannelId: string | undefined;
     let controlIn: ReturnType<typeof createMemoryNdjsonStream> | undefined;
     let events: ReturnType<typeof createMemoryFrameStream> | undefined;
     let resolveExit: ((code: number) => void) | undefined;
@@ -548,8 +545,9 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     });
     let killed = false;
     const killRequested = Promise.withResolvers<undefined>();
-    const spawner: SubprocessSpawner = () => {
+    const spawner: SubprocessSpawner = ({ env }) => {
       spawnerInvoked = true;
+      spawnChannelId = env.IPC_CHANNEL_ID;
       controlIn = createMemoryNdjsonStream();
       const controlOut = createMemoryNdjsonStream();
       events = createMemoryFrameStream();
@@ -577,19 +575,36 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     });
     const supervisor = createWorkflowSupervisor(bindings);
 
-    // Spawn but never deliver `ready`. The supervisor will sit on
-    // `waitForReady`.
+    // Spawn and report the definition but never deliver `ready`. The
+    // supervisor will sit on `waitForReady`.
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash-abc",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => undefined,
     });
-    // Wait for the spawn to be in flight and registered with the
-    // mail bus so we know the supervisor is past `wireChild` and
-    // mid-handshake.
-    await mailBus.awaitRegistered("deployment-x@example.com");
     await waitUntil(() => spawnerInvoked);
+    if (spawnChannelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childIpcKeypair = await generateKeyPair();
+    await sendDefinition(
+      createControlChannelSender({
+        privateKeySeed: childIpcKeypair.privateKey,
+        channelId: spawnChannelId,
+        writer: {
+          write(line: string) {
+            controlIn?.inject(line);
+          },
+        },
+      }),
+      {
+        childPid: 9991,
+        childPublicKey: hexEncode(childIpcKeypair.publicKey),
+      },
+    );
+    // Wait for the spawn to be registered with the mail bus so we know the
+    // supervisor is past the definition handshake and waiting for `ready`.
+    await mailBus.awaitRegistered("deployment-x@example.com");
 
     // Concurrently trigger shutdown. The shutdown's `prior.handle.kill()`
     // closes the control reader; the supervisor's `waitForReady`

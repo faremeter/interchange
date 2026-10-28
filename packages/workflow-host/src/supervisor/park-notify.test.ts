@@ -22,6 +22,8 @@ import {
   createMemoryNdjsonStream,
   createSpawnObserver,
   createStubRepoStore,
+  sendDefinition,
+  TEST_DEFINITION_HASH,
 } from "@intx/workflow-host/testing";
 
 import {
@@ -121,15 +123,18 @@ describe("supervisor park.notify arm", () => {
       anchorRunId: DEPLOYMENT_ID,
       deploymentMailAddress: AGENT_ADDRESS,
       readPrincipal: { kind: "supervisor" },
-      deriveStepAddress: () => AGENT_ADDRESS,
-      deriveStepRepoId: () => ({ kind: "agent-state", id: DEPLOYMENT_ID }),
+      layoutSteps: () =>
+        Promise.resolve({
+          stepIds: ["step-1"],
+          deriveStepAddress: () => AGENT_ADDRESS,
+          deriveStepRepoId: () => ({ kind: "agent-state", id: DEPLOYMENT_ID }),
+        }),
       inboxPrimitives: createNoopInboxPrimitives(),
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     });
 
     const spawnPromise = supervisor.spawn({
-      stepOrder: ["step-1"],
-      definitionHash: "def-hash",
+      definitionHash: TEST_DEFINITION_HASH,
 
       onInferenceEvent: () => undefined,
     });
@@ -148,13 +153,11 @@ describe("supervisor park.notify arm", () => {
       },
     });
 
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: 9200,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
+    await sendDefinition(childSender, {
+      childPid: 9200,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
     });
+    await childSender.send({ type: "ready" });
     await spawnPromise;
 
     // Drive the park.notify frame the child emits from `env.onPark`.

@@ -45,8 +45,8 @@ export interface ControlChannelReceiverOpts {
    * Public key used to verify every inbound frame. When `Uint8Array`
    * the value is fixed at construction time (the child's downstream
    * receiver uses the supervisor's pubkey from `HOST_PUBKEY`). When
-   * `{ bootstrapFromReady: true }` the receiver opens in
-   * bootstrap mode: the first frame must be `ready` and must carry
+   * `{ bootstrapFromDefinition: true }` the receiver opens in
+   * bootstrap mode: the first frame must be `definition` and must carry
    * a `childPublicKey` hex-encoded Ed25519 public key in its payload.
    * The receiver extracts the key, verifies the first frame's
    * signature against it, then continues verifying subsequent frames
@@ -55,7 +55,7 @@ export interface ControlChannelReceiverOpts {
    * over the wire without the supervisor ever holding the matching
    * private half.
    */
-  publicKey: Uint8Array | { bootstrapFromReady: true };
+  publicKey: Uint8Array | { bootstrapFromDefinition: true };
   channelId: string;
   reader: NdjsonReader;
   /**
@@ -123,10 +123,10 @@ export async function* receiveControlChannel(
     }
 
     if (activePublicKey === null) {
-      // Bootstrap mode: the first frame must be `ready`. Extract the
+      // Bootstrap mode: the first frame must be `definition`. Extract the
       // child's public key from the payload, then verify the
       // first frame's signature against it. The receiver crashes if
-      // the payload is not a `ready` frame or carries a malformed
+      // the payload is not a `definition` frame or carries a malformed
       // `childPublicKey`.
       const candidate = parseControlPayload(signed.envelope.payload);
       if (candidate instanceof type.errors) {
@@ -135,9 +135,9 @@ export async function* receiveControlChannel(
         );
         return;
       }
-      if (candidate.type !== "ready") {
+      if (candidate.type !== "definition") {
         opts.onCrash(
-          `control channel bootstrap expected a ready frame, got ${candidate.type}`,
+          `control channel bootstrap expected a definition frame, got ${candidate.type}`,
         );
         return;
       }

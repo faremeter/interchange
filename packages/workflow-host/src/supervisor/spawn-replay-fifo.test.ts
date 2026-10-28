@@ -42,6 +42,8 @@ import {
   readPayloadsOfType,
   waitForUpstreamPayloads,
   createStubRepoStore,
+  sendDefinition,
+  TEST_DEFINITION_HASH,
 } from "@intx/workflow-host/testing";
 
 import {
@@ -304,7 +306,6 @@ async function seedOrphanedProcessing(
 type Harness = {
   supervisor: ReturnType<typeof createWorkflowSupervisor>;
   childSender: ReturnType<typeof createControlChannelSender>;
-  childPublicKey: string;
   supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
   mailBus: ReturnType<typeof createMockMailBus>;
   gatedInbox: ReturnType<typeof createGatedInboxPrimitives>;
@@ -394,15 +395,19 @@ async function boot(opts: { prefix: string }): Promise<
     anchorRunId: "run_deployment-x",
     deploymentMailAddress,
     readPrincipal: { kind: "supervisor" },
-    deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
+    layoutSteps: () =>
+      Promise.resolve({
+        stepIds: ["step-1"],
+        deriveStepAddress: ({ runId, stepId }) =>
+          `${runId}-${stepId}@example.com`,
+      }),
     ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     inboxPrimitives: gatedInbox.primitives,
   };
 
   const supervisor = createWorkflowSupervisor(bindings);
   const spawnPromise = supervisor.spawn({
-    stepOrder: ["step-1"],
-    definitionHash: "def-hash-abc",
+    definitionHash: TEST_DEFINITION_HASH,
 
     onInferenceEvent: () => {
       /* unused */
@@ -422,14 +427,18 @@ async function boot(opts: { prefix: string }): Promise<
       },
     },
   });
+  // A child reports its definition as soon as it has loaded; the supervisor
+  // registers the mail address only after that.
+  await sendDefinition(childSender, {
+    childPid: 7777,
+    childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+  });
   // Wait until the mail bus has been registered so the test's
   // `deliver()` will route into the supervisor's onMailMessage.
   await mailBus.awaitRegistered(deploymentMailAddress);
-  const childPublicKey = hexEncode(childIpcKeyPair.publicKey);
   return {
     supervisor,
     childSender,
-    childPublicKey,
     supervisorToChild,
     mailBus,
     gatedInbox,
@@ -443,16 +452,8 @@ async function boot(opts: { prefix: string }): Promise<
 
 async function sendReady(
   childSender: ReturnType<typeof createControlChannelSender>,
-  childPublicKey: string,
-  childPid: number,
 ): Promise<void> {
-  await childSender.send({
-    type: "ready",
-    data: {
-      childPid,
-      childPublicKey,
-    },
-  });
+  await childSender.send({ type: "ready" });
 }
 
 describe("supervisor spawn-time replay FIFO contract", () => {
@@ -492,7 +493,7 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     // Drive `ready` so the supervisor reaches `running`. The dispatch
     // loop is started inside `spawn()` and is now blocked on the
     // gated replayDone awaited as its first step.
-    await sendReady(harness.childSender, harness.childPublicKey, 7777);
+    await sendReady(harness.childSender);
     await harness.spawnPromise;
 
     // While the replay is still gated, inject a fresh mail. The

@@ -35,3 +35,8 @@ export {
 } from "./log-capture";
 export { createStubRepoStore, type StubRepoStoreOpts } from "./stub-repo-store";
 export { sendAuthoritySet } from "./authority";
+export {
+  sendDefinition,
+  TEST_DEFINITION,
+  TEST_DEFINITION_HASH,
+} from "./child-handshake";

@@ -366,6 +366,7 @@ export interface WorkflowSupervisorBindings {
   onRunStart?: (args: {
     runId: string;
     anchorRunId: string;
+    layout: import("./credentials").StepLayout;
   }) => Promise<import("./credentials").CredentialsSnapshot | null>;
   /**
    * Decrypted credential material for the deployment's binding consumers and
@@ -426,15 +427,16 @@ export interface WorkflowSupervisorBindings {
    */
   readPrincipal: Principal;
   /**
-   * Per-step mail-address derivation the supervisor uses while
-   * assembling the credentialsSnapshot. See `credentials.ts`.
+   * Derive the deployment's step layout from the definition its first child
+   * verified. The supervisor calls it once, after checking the child's
+   * reported projection against the approved hash and before it reads the
+   * run's authority for that child, and keeps the layout for every later
+   * respawn: the same hash check pins each later child to the same
+   * definition. A throw fails the spawn and kills the child.
    */
-  deriveStepAddress: import("./credentials").DeriveStepAddress;
-  /**
-   * Optional override for the step's agent-state repo identity. The
-   * default convention is `<anchorRunId>-<stepId>`.
-   */
-  deriveStepRepoId?: import("./credentials").DeriveStepRepoId;
+  layoutSteps: (
+    definition: import("@intx/types/sidecar").WorkflowProjectionDefinition,
+  ) => Promise<import("./credentials").StepLayout>;
   /**
    * Optional override for the per-spawn IPC keypair factory. Each
    * spawn mints a fresh control-channel Ed25519 keypair; this hook
@@ -566,10 +568,11 @@ export interface WorkflowSupervisorBindings {
    */
   consumedRetentionMs?: number;
   /**
-   * Bound on the child's spawn-time `ready` handshake, in milliseconds.
-   * A spawned child that neither emits `ready` nor exits would block
-   * `spawn` forever; on expiry the supervisor kills the child (SIGTERM,
-   * then SIGKILL) and rejects the spawn. The boot edge resolves the
+   * Bound on each frame of a new child's handshake, its definition report
+   * and then `ready`, in milliseconds, on spawn and on recycle. A child
+   * that neither sends the frame nor exits would block `spawn` forever; on
+   * expiry the supervisor kills the child (SIGTERM, then SIGKILL) and
+   * rejects the spawn. The boot edge resolves the
    * operator's config and supplies it; absent, `DEFAULT_READY_TIMEOUT_MS`
    * (30s) applies. Callers surface the rejection through their existing
    * spawn-failure path, so a wedged child fails the deploy (or, on the

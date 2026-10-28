@@ -28,14 +28,20 @@ import {
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
-import type { AgentDeployFrame } from "@intx/types/sidecar";
+import {
+  WorkflowProjectionDefinition,
+  type AgentDeployFrame,
+} from "@intx/types/sidecar";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowDefinition } from "@intx/workflow";
+import { projectLiveToInert } from "@intx/workflow/projection";
 import {
   createChangeNotifier,
   createMemoryFrameStream,
   createMemoryNdjsonStream,
   readPayloadsOfType,
   waitForUpstreamPayload,
+  sendDefinition,
 } from "@intx/workflow-host/testing";
 import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createSidecarDeployRouter } from "./workflow-host-wiring";
@@ -44,6 +50,31 @@ import {
   createMultistepMailRouter,
   createMultistepSignalRouter,
 } from "./workflow-run-pack-client";
+
+// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
+const LIVE_DEFINITION = {
+  id: "wf-undeploy-supervisor",
+  triggers: [{ type: "manual" }],
+  stepOrder: ["step-1"],
+  steps: {
+    "step-1": {
+      kind: "step",
+      id: "step-1",
+      agent: {
+        id: "agent-step-1",
+        systemPrompt: "sys",
+        capabilities: [],
+        toolFactories: [],
+        inference: { sources: [] },
+      },
+    },
+  },
+} as unknown as WorkflowDefinition;
+// What the child reports, and the hash the hub approved for it.
+const PROJECTION = WorkflowProjectionDefinition.assert(
+  projectLiveToInert(LIVE_DEFINITION),
+);
+const APPROVED_WIRE_HASH = await computeWireDefinitionHash(PROJECTION);
 
 function deriveWorkflowRunRepoId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
@@ -265,25 +296,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         // reaches the spawn/undeploy behavior this test exercises.
         applyFrozenWorkflowClosure: (applyArgs) =>
           Promise.resolve({
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
-            definition: {
-              id: "wf-undeploy-supervisor",
-              triggers: [{ type: "manual" }],
-              stepOrder: ["step-1"],
-              steps: {
-                "step-1": {
-                  kind: "step",
-                  id: "step-1",
-                  agent: {
-                    id: "agent-step-1",
-                    systemPrompt: "sys",
-                    capabilities: [],
-                    toolFactories: [],
-                    inference: { sources: [] },
-                  },
-                },
-              },
-            } as unknown as WorkflowDefinition,
+            definition: LIVE_DEFINITION,
             packageDir: path.join(applyArgs.instanceDir, "package"),
             deployDir: path.join(applyArgs.instanceDir, "deploy"),
           }),
@@ -305,9 +318,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
         config: {} as AgentDeployFrame["config"],
         workflow: {
-          // Placeholder hub-approved wire hash so the deploy path's fail-loud
-          // guard passes; production always stamps it.
-          approvedWireHash: "a".repeat(64),
+          approvedWireHash: APPROVED_WIRE_HASH,
           // Source-ref is the only deploy lineage: the frame carries no inline
           // definition, only the pin the sidecar re-materializes (the injected
           // closure stub above evaluates it to a single-step `step-1` definition).
@@ -350,13 +361,12 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
           },
         },
       });
-      await childSender.send({
-        type: "ready",
-        data: {
-          childPid: spawn.handle.pid,
-          childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-        },
+      await sendDefinition(childSender, {
+        childPid: spawn.handle.pid,
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+        projection: PROJECTION,
       });
+      await childSender.send({ type: "ready" });
 
       await deployPromise;
 
