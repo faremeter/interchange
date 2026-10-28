@@ -15,6 +15,14 @@ import { DEFAULT_PACK_MATERIALIZATION_LIMITS } from "./materialization-limits";
 // carries deltas; a misframe there would spuriously reject a valid pack at the
 // trailer-landing check. These tests build real delta packs with the git CLI.
 
+// A parent git process (a hook, `git rebase --exec`) exports GIT_DIR and
+// related variables. Inherited, they point these commands at that repository
+// instead of the temporary one, so `init`, `config` and `commit` would write
+// into it.
+const gitEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+);
+
 const tmpDirs: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -28,6 +36,7 @@ async function deltaPack(deltaBaseOffset: boolean): Promise<Uint8Array> {
   const g = (args: string[], input?: string) =>
     execFileSync("git", args, {
       cwd: dir,
+      env: gitEnv,
       input,
       maxBuffer: 1 << 28,
       stdio: ["pipe", "pipe", "pipe"],
