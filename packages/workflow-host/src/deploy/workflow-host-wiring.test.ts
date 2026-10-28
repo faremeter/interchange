@@ -50,6 +50,7 @@ import {
   createSpawnObserver,
   createChangeNotifier,
   sendDefinition,
+  waitForUpstreamPayload,
 } from "@intx/workflow-host/testing";
 import {
   assembleRunCredentialsSnapshot,
@@ -525,7 +526,10 @@ function downstreamPayloadType(line: string): string | undefined {
  * empty grants, so a freshly-created tempBase produces an empty
  * credentials snapshot which is what the wiring test wants.
  */
-function createSpawnTestRepoStore(tempBase: string): RepoStore {
+function createSpawnTestRepoStore(
+  tempBase: string,
+  beforeWriteTree?: (repoId: RepoId) => Promise<void>,
+): RepoStore {
   const stub: Partial<RepoStore> = {
     getRepoDir(repoId: RepoId): string {
       return path.join(tempBase, repoId.kind, repoId.id);
@@ -535,10 +539,12 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
     // The deploy router's grants bridge writes `state/grants.json` to
-    // each step's agent-state repo before `spawn()`. Mirror the
-    // `getRepoDir` layout so the write lands where the subsequent
-    // `assembleCredentialsSnapshot` working-tree read looks for it.
+    // each step's agent-state repo once the child reports its definition.
+    // Mirror the `getRepoDir` layout so the write lands where the
+    // subsequent `assembleCredentialsSnapshot` working-tree read looks for
+    // it.
     async writeTree(_p, repoId, _ref, content) {
+      await beforeWriteTree?.(repoId);
       const dir = path.join(tempBase, repoId.kind, repoId.id);
       for (const [relPath, contents] of Object.entries(content.files)) {
         const full = path.join(dir, relPath);
@@ -611,16 +617,6 @@ function makeInferenceSource(id: string): InferenceSourceFixture {
 }
 
 /**
- * Live definitions the source-ref deploy/restore path reconstructs, keyed by
- * derived deployment id. `makeMultistepFrame` registers one per frame it builds;
- * `buildMultistepFixture`'s default closure stub returns the matching entry so a
- * deploy or restore evaluates the exact topology the test described. Module-level
- * so a restore fixture built over the same on-disk data dir (a simulated
- * restart) reads the same entry the deploy fixture registered.
- */
-const deployDefinitionRegistry = new Map<string, WorkflowDefinition>();
-
-/**
  * The inert projection each frame's `approvedWireHash` hashes, keyed by that
  * hash. A fake child reports the projection its spawn env's `DEFINITION_HASH`
  * names, as a real child reports the definition it verified.
@@ -660,7 +656,7 @@ function sendDefinitionFor(
  * gets a real agent so the definition survives `projectLiveToInert` (a bare
  * `{ kind: "step" }` with no agent throws). `stepOrder` is preserved verbatim,
  * so a definition whose `stepOrder` names a step absent from `steps` still
- * projects to the same "no such entry" throw the deploy path rejects on.
+ * fails to project, as a real child's closure would.
  */
 function toLiveClosureDefinition(
   definition: MultistepDeployArgs["definition"],
@@ -693,17 +689,16 @@ function toLiveClosureDefinition(
  * frame carries NO inline `definition`: it pins each step's inference sources,
  * the hub-approved wire hash, and a placeholder source-ref pin. The runnable
  * definition is decoupled from the frame exactly as production decouples it --
- * the sidecar re-materializes it through the injected `applyFrozenWorkflowClosure`.
- * The helper registers the intended live definition (the caller's `definition`
- * arg, upgraded so each step carries a valid agent) under the frame's derived
- * deployment id; `buildMultistepFixture`'s default closure stub looks it up by
- * that id, so a deploy or restore reconstructs the exact topology the caller
- * described without threading it through the frame.
+ * the child evaluates the closure and reports its definition. The helper
+ * projects the intended live definition (the caller's `definition` arg,
+ * upgraded so each step carries a valid agent), stamps its hash as the
+ * approved one, and registers the projection for the fake child to report,
+ * so a deploy or restore works from the exact topology the caller described
+ * without threading it through the frame.
  */
 function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
   const agentAddress = args.agentAddress ?? "multi@example.com";
   const live = toLiveClosureDefinition(args.definition);
-  deployDefinitionRegistry.set(deriveWorkflowRunRepoId(agentAddress), live);
   // The hash the hub would have approved for this definition. A definition
   // that does not project (a test of the deploy path's rejection) keeps the
   // placeholder: its deploy fails before any child reports.
@@ -746,6 +741,36 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
       ...(args.omitApprovedWireHash
         ? {}
         : { approvedWireHash: args.approvedWireHash ?? projectedHash }),
+    },
+  };
+}
+
+// Add one spawned body, an onTrigger section or childWorkflow child, whose
+// only step pins `source`.
+function withReferencedBody(
+  frame: AgentDeployFrame,
+  source: InferenceSourceFixture,
+): AgentDeployFrame {
+  if (frame.workflow === undefined) {
+    throw new Error("withReferencedBody: the frame carries no workflow");
+  }
+  const definition = WorkflowProjectionDefinition.assert(
+    projectLiveToInert(
+      toLiveClosureDefinition({
+        id: "wf-body",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["body-step"],
+        steps: { "body-step": { kind: "step" } },
+      }),
+    ),
+  );
+  return {
+    ...frame,
+    workflow: {
+      ...frame.workflow,
+      referencedDefinitions: [
+        { definition, sources: { "body-step": [source] } },
+      ],
     },
   };
 }
@@ -917,11 +942,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     applyFrozenWorkflowClosure?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["applyFrozenWorkflowClosure"];
+    /** Runs before the repo store writes a tree, such as a step's grants. */
+    beforeWriteTree?: (repoId: RepoId) => Promise<void>;
   }) {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
     const tempBase = await createTempBaseDir("sidecar-multistep-");
-    const repoStore = createSpawnTestRepoStore(tempBase);
+    const repoStore = createSpawnTestRepoStore(tempBase, opts.beforeWriteTree);
     // The deploy router's source-ref branch materializes the pinned closure
     // under `${SIDECAR_DATA_DIR}/workflow-definition-closures/<id>/` before
     // invoking the spawner. The test fixture defaults the data dir to a
@@ -942,27 +969,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       ...defaultSubstrateEnv,
       ...(opts.multistepSubstrateEnv ?? {}),
     };
-    // The source-ref deploy/restore path derives the runnable definition by
-    // materializing the pin's closure through this injected dependency. The
-    // default stub returns the live definition `makeMultistepFrame` registered
-    // under the deployment id (the last segment of the per-deployment
-    // instance dir), so the deploy/restore evaluates the exact topology the
-    // frame described. A test that hand-writes a record (no frame) or wants a
-    // bespoke closure result passes its own `applyFrozenWorkflowClosure`.
+    // The source-ref deploy/restore path materializes the pin's closure
+    // through this injected dependency for the child to evaluate. The default
+    // stub stands in for the layout: the fake children report the projection
+    // the frame's hash names, so nothing reads the package dir.
     const defaultApplyFrozenWorkflowClosure: NonNullable<
       Parameters<
         typeof createSidecarDeployRouter
       >[0]["applyFrozenWorkflowClosure"]
     > = (applyArgs) => {
       const deploymentId = path.basename(applyArgs.instanceDir);
-      const definition = deployDefinitionRegistry.get(deploymentId);
-      if (definition === undefined) {
-        throw new Error(
-          `test default applyFrozenWorkflowClosure: no registered definition for deploymentId ${deploymentId} (instanceDir ${applyArgs.instanceDir}). Build the deploy frame via makeMultistepFrame/singleStepFrame, or pass an explicit applyFrozenWorkflowClosure when hand-writing a record.`,
-        );
-      }
       return Promise.resolve({
-        definition,
         packageDir: path.join(tempBase, "closure-package", deploymentId),
         deployDir: path.join(tempBase, "closure-deploy", deploymentId),
       });
@@ -1272,9 +1289,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   test("a second same-address deploy is rejected mid-spawn and never deletes the live run record", async () => {
     // Pins the synchronous hold on the address. The first deploy runs its
-    // durable writes and then suspends inside supervisor.spawn awaiting the
-    // child's `ready` handshake -- the window in which its incarnation is
-    // held as deploying but has no supervisor yet. A second same-address
+    // durable writes once its child reports its definition, and then
+    // suspends inside supervisor.spawn awaiting the child's `ready`
+    // handshake -- the window in which its incarnation is held as deploying
+    // but has no supervisor yet. A second same-address
     // frame arriving in that window must be rejected at the hold (its own
     // message, distinct from the spawn-core backstop) before it touches
     // durable state, so it cannot delete the first deploy's live record via
@@ -1342,9 +1360,31 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     );
 
     const firstDeploy = router.deploy(frame);
-    // Wait until the first deploy has spawned: its record is on disk and it
-    // is now suspended in the ready handshake with the reservation held.
+    // Wait until the first deploy has spawned and its child has reported its
+    // definition. The supervisor sends `authority.set` once the deploy has
+    // written the grants and the record, so the record is then on disk and
+    // the deploy is suspended in the ready handshake with the reservation
+    // held.
     observedEnv = await spawnObserver.first();
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await sendDefinitionFor(childSender, observedEnv, {
+      childPid: 4242,
+      childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+    });
+    await waitForUpstreamPayload(supervisorToChild, "authority.set");
     const recordBefore = await fs.readFile(recordFile, "utf8");
     expect(recordBefore.length).toBeGreaterThan(0);
 
@@ -1374,24 +1414,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     // Drive the first deploy's ready handshake so it completes, then confirm
     // the winner is the live, registered deployment.
-    const channelId = observedEnv.IPC_CHANNEL_ID;
-    if (channelId === undefined) {
-      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
-    }
-    const childSender = createControlChannelSender({
-      privateKeySeed: childIpcKeyPair.privateKey,
-      channelId,
-      writer: {
-        write(line: string) {
-          childToSupervisor.inject(line);
-          return Promise.resolve();
-        },
-      },
-    });
-    await sendDefinitionFor(childSender, observedEnv, {
-      childPid: 4242,
-      childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
-    });
     await childSender.send({ type: "ready" });
 
     const result = await firstDeploy;
@@ -1841,12 +1863,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test.each([false, true])(
     "a failed stopped mark still attempts deletion and holds capacity only if deletion fails (%s)",
     async (deletionFails) => {
-      const spawnError = new Error("ENOSPC: spawn failed");
-      let spawned = false;
+      // The deploy fails after its child came up and its record was written:
+      // the mail route registration that follows the spawn throws.
+      const deployError = new Error("ENOSPC: route registration failed");
+      const spawner = makeReadyDrivingSpawner(15500);
       const { router, substrateEnv } = await buildMultistepFixture({
-        spawner: () => {
-          spawned = true;
-          throw spawnError;
+        spawner: spawner.spawner,
+        multistepMailRouter: {
+          ...createMultistepMailRouter(),
+          register: () => {
+            throw deployError;
+          },
         },
       });
       const agentAddress = "run_failed-mark@example.com";
@@ -1871,13 +1898,18 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       );
       const open = fs.open;
       const unlink = fs.unlink;
+      let recordWrites = 0;
       let markAttempts = 0;
       let deleteAttempts = 0;
+      // The first write is the deploy's record; every later one is a mark.
       const openSpy = spyOn(fs, "open").mockImplementation(
         async (target, flags, mode) => {
-          if (spawned && String(target).startsWith(`${recordFile}.tmp.`)) {
-            markAttempts++;
-            throw new Error("ENOSPC: cannot write stopped mark");
+          if (String(target).startsWith(`${recordFile}.tmp.`)) {
+            recordWrites++;
+            if (recordWrites > 1) {
+              markAttempts++;
+              throw new Error("ENOSPC: cannot write stopped mark");
+            }
           }
           return open(target, flags, mode);
         },
@@ -1892,7 +1924,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       );
       try {
-        await expect(router.deploy(frame)).rejects.toBe(spawnError);
+        const deploying = router.deploy(frame);
+        await spawner.driveReadyFor(0);
+        await expect(deploying).rejects.toBe(deployError);
         expect(markAttempts).toBe(1);
         expect(deleteAttempts).toBe(1);
         expect(router.incarnations()).toHaveLength(deletionFails ? 1 : 0);
@@ -1952,6 +1986,34 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(spawnCount).toBe(0);
   });
 
+  test("rejects a deploy whose spawned body pins an unbuildable provider before spawning", async () => {
+    let spawnCount = 0;
+    const trackingSpawner: SubprocessSpawner = () => {
+      spawnCount++;
+      throw new Error("spawn must not be reached for an inadmissible source");
+    };
+    const { router } = await buildMultistepFixture({
+      spawner: trackingSpawner,
+      assertSourceBuildable: (source) => {
+        if (source.provider === "ghost-provider") {
+          throw new Error(
+            `Source provider "${source.provider}" is not registered`,
+          );
+        }
+      },
+    });
+
+    const frame = withReferencedBody(
+      singleStepFrame("run_unbuildable_body@example.com", "wf-unbuildable"),
+      { ...makeInferenceSource("body-step"), provider: "ghost-provider" },
+    );
+
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /ghost-provider.*not registered/,
+    );
+    expect(spawnCount).toBe(0);
+  });
+
   test("a spawner that throws synchronously surfaces a structured rejection rather than hanging in starting", async () => {
     // Simulates `Bun.spawn` failing to launch (binary missing,
     // permissions error). The router must surface the rejection
@@ -1980,16 +2042,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     );
   });
 
-  test("rejects a malformed workflow projection at the router boundary before spawn fires", async () => {
-    let spawnerInvoked = false;
-    const spawner: SubprocessSpawner = () => {
-      spawnerInvoked = true;
-      throw new Error("spawner must not run for an invalid projection");
-    };
-
-    const { router } = await buildMultistepFixture({ spawner });
+  test("rejects a deploy whose child could not load its definition, with the child's reason", async () => {
+    const spawner = makeReadyDrivingSpawner(9700);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+    });
 
     const frame = makeMultistepFrame({
+      agentAddress: "run_bad@example.com",
       definition: {
         id: "wf-bad",
         triggers: [{ type: "manual" }],
@@ -2002,15 +2062,44 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       },
     });
 
-    // The closure-derived definition is structurally invalid: `stepOrder` names
-    // `step-missing`, which the `steps` record does not define. Source-ref is the
-    // only deploy lineage, so the definition is projected from the materialized
-    // closure BEFORE the projection guard; the live->inert projector rejects the
-    // dangling stepOrder entry at the router boundary, before any spawn fires.
-    await expect(router.deploy(frame)).rejects.toThrow(
-      /stepOrder names "step-missing" .* the steps record has no such entry/,
+    // The sidecar process never evaluates the closure. The child does, its
+    // projection rejects the dangling stepOrder entry, and it reports why.
+    const deploying = router.deploy(frame);
+    await spawner.driveDefinitionFor(0, {
+      error:
+        'live->inert projector: stepOrder names "step-missing" but the steps record has no such entry',
+    });
+    await expect(deploying).rejects.toThrow(
+      /could not load its definition: .*stepOrder names "step-missing"/,
     );
-    expect(spawnerInvoked).toBe(false);
+    expect(heldAddresses(router)).toEqual([]);
+  });
+
+  test("rejects a deploy whose reported definition the frame's sources do not cover", async () => {
+    const spawner = makeReadyDrivingSpawner(9710);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+    });
+
+    const frame = makeMultistepFrame({
+      agentAddress: "run_uncovered@example.com",
+      definition: {
+        id: "wf-uncovered",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1", "step-2"],
+        steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+      },
+      sources: { "step-1": [makeInferenceSource("step-1")] },
+    });
+
+    // The frame carries no definition to cover, so the structural check runs
+    // on the definition the child reports.
+    const deploying = router.deploy(frame);
+    await spawner.driveDefinitionFor(0);
+    await expect(deploying).rejects.toThrow(
+      /workflow\.sources is missing entry for stepId "step-2"/,
+    );
+    expect(heldAddresses(router)).toEqual([]);
   });
 
   test("refuses to deploy a workflow frame carrying no approvedWireHash rather than recomputing it", async () => {
@@ -2018,9 +2107,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // hash. A frame that carries none is a wiring bug, not a legacy case: the
     // sidecar must fail loud rather than substitute its own recompute, which
     // would collapse the re-verify to a self-check. Production always stamps
-    // it, so only a malformed frame reaches this guard. Source-ref is the only
-    // deploy lineage, so the durable run record the deploy path builds before
-    // the spawn is the first gate to reject the missing hash.
+    // it, so only a malformed frame reaches this guard. The spawn core's guard
+    // rejects the missing hash before any child starts.
     let spawnerInvoked = false;
     const spawner: SubprocessSpawner = () => {
       spawnerInvoked = true;
@@ -2045,7 +2133,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     await expect(router.deploy(frame)).rejects.toThrow(
-      /must carry approvedWireHash/,
+      /carries no approvedWireHash/,
     );
     expect(spawnerInvoked).toBe(false);
   });
@@ -2453,10 +2541,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       };
       return handle;
     };
-    async function driveReadyFor(
+    // Send spawn `index`'s `definition` frame: the projection its frame
+    // registered, or, with `error`, the reason its closure did not load.
+    async function driveDefinitionFor(
       index: number,
-      opts?: { sendRecycleRequest?: boolean },
-    ): Promise<void> {
+      opts?: { error?: string },
+    ): Promise<ReturnType<typeof createControlChannelSender>> {
       await spawnsChanges.until(() => spawns.length > index);
       const spawn = spawns[index];
       if (spawn === undefined) {
@@ -2478,12 +2568,27 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       });
       // Retain the sender so a later recycle.request (recycleRequestFor)
-      // signs with the SAME keypair the supervisor pinned from this ready.
+      // signs with the SAME keypair the supervisor pinned from this report.
       spawn.childSender = childSender;
-      await sendDefinitionFor(childSender, spawn.env, {
+      const child = {
         childPid: pidBase + index,
         childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
-      });
+      };
+      if (opts?.error === undefined) {
+        await sendDefinitionFor(childSender, spawn.env, child);
+      } else {
+        await childSender.send({
+          type: "definition",
+          data: { ...child, result: { ok: false, error: opts.error } },
+        });
+      }
+      return childSender;
+    }
+    async function driveReadyFor(
+      index: number,
+      opts?: { sendRecycleRequest?: boolean },
+    ): Promise<void> {
+      const childSender = await driveDefinitionFor(index);
       await childSender.send({ type: "ready" });
       if (opts?.sendRecycleRequest === true) {
         // Model the child asking to recycle; the supervisor's upstream pump
@@ -2496,6 +2601,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     }
     return {
       spawner,
+      driveDefinitionFor,
       driveReadyFor,
       spawnCount: () => spawns.length,
       awaitSpawnCount: (count: number) =>
@@ -2683,14 +2789,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
             `closure materialization faulted for ${deploymentId}: pinned code did not resolve`,
           );
         }
-        const definition = deployDefinitionRegistry.get(deploymentId);
-        if (definition === undefined) {
-          throw new Error(
-            `test applyFrozenWorkflowClosure: no registered definition for ${deploymentId}`,
-          );
-        }
         return Promise.resolve({
-          definition,
           packageDir: path.join(dataDir, "closure-package", deploymentId),
           deployDir: path.join(dataDir, "closure-deploy", deploymentId),
         });
@@ -2727,18 +2826,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     ).toMatchObject({ state: "stopped", error: why });
   });
 
-  test("restore rejects a closure-derived definition whose stepOrder names a step with no matching entry", async () => {
+  test("restore holds a deployment whose child could not load its definition as stopped", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-validator-data-");
     const head = "run_validator@example.com";
     const anchorRunId = deriveWorkflowRunRepoId(head);
 
-    // Write a well-formed source-ref record: it clears the record schema and the
-    // scan boundary, so restore reaches the projection gate. The closure it
-    // re-materializes, though, evaluates to a structurally invalid definition --
-    // its `stepOrder` names a step the `steps` record does not define. The
-    // source-ref restore arm projects the closure-derived definition
-    // (`projectLiveToInert`) before spawning, so it rejects the dangling
-    // stepOrder entry and never spawns a child for a broken definition.
+    // A well-formed source-ref record: it clears the record schema and the
+    // scan boundary, so restore reaches the spawn. The closure the child
+    // evaluates, though, does not load, and the child reports why.
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
@@ -2766,42 +2861,24 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       spawner: spawner.spawner,
       transport: freshTransport,
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
-      applyFrozenWorkflowClosure: (applyArgs) =>
-        Promise.resolve({
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; this stands in for a closure that evaluates to a structurally invalid definition
-          definition: {
-            id: "wf-missing-step",
-            triggers: [{ type: "manual" }],
-            stepOrder: ["step-1", "step-missing"],
-            steps: {
-              "step-1": {
-                kind: "step",
-                id: "step-1",
-                agent: {
-                  id: "agent-step-1",
-                  systemPrompt: "sys",
-                  capabilities: [],
-                  toolFactories: [],
-                  inference: { sources: [] },
-                },
-              },
-            },
-          } as unknown as WorkflowDefinition,
-          packageDir: path.join(applyArgs.instanceDir, "package"),
-          deployDir: path.join(applyArgs.instanceDir, "deploy"),
-        }),
     });
 
-    await router.restoreWorkflowRuns();
+    const restoring = router.restoreWorkflowRuns();
+    await spawner.driveDefinitionFor(0, {
+      error:
+        'live->inert projector: stepOrder names "step-missing" but the steps record has no such entry',
+    });
+    await restoring;
 
-    expect(spawner.spawnCount()).toBe(0);
     expect(isRegistered(freshTransport, head)).toBe(false);
     expect(router.incarnations()).toEqual([
       {
         address: head,
         generation: 1,
         state: "stopped",
-        error: expect.stringMatching(/^The sidecar could not restore it: /),
+        error: expect.stringMatching(
+          /^The sidecar could not restore it: .*could not load its definition: .*step-missing/,
+        ),
       },
     ]);
   });
@@ -3199,7 +3276,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // (source + closure) + approvedWireHash, exactly what the deploy path
     // persists.
     const fakePackageDir = path.join(dataDir, "fake-closure-package");
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the stub stands in for a real closure evaluation; a minimal hand-built live definition cannot satisfy the full `WorkflowDefinition` nominal type
+    // The definition the restored child reports; the record carries its hash.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a minimal hand-built live definition stands in for a real closure evaluation and cannot satisfy the full `WorkflowDefinition` nominal type
     const closureDefinition = {
       id: "wf-srcref",
       triggers: [{ type: "manual" }],
@@ -3243,8 +3321,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       createNoopCredentialCipher(),
     );
 
-    // The source-ref restore arm reconstructs the definition from the
-    // re-materialized closure, NOT from the on-disk inert workflow.json. Write a
+    // The source-ref restore arm re-materializes the closure for the child,
+    // and never reads an on-disk inert workflow.json. Write a
     // DELIBERATELY-CORRUPT workflow.json to prove the arm never reads it: were
     // the restore path to parse this file it would throw and soft-skip the
     // record, so a successful restore below is proof the closure is the source
@@ -3259,13 +3337,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await fs.mkdir(path.dirname(workflowJsonPath), { recursive: true });
     await fs.writeFile(workflowJsonPath, "}{ not valid json", "utf8");
 
-    // Stub the closure materializer: record its inputs, and return a fake
-    // package dir plus the evaluated live definition the restore arm now
-    // projects to the inert wire shape -- the SAME
-    // `WorkflowProjectionDefinition(projectLiveToInert(...))` computation the
-    // deploy path applies. The definition (not the on-disk workflow.json) is the
-    // source of truth for the restored definition, so it must be a valid live
-    // definition whose projection covers the record's sources (`step-1`).
+    // Stub the closure materializer: record its inputs and return a fake
+    // package dir for the child to evaluate.
     const applyCalls: { registry: string; entryCount: number }[] = [];
     const applyStub: NonNullable<
       Parameters<typeof buildMultistepFixture>[0]["applyFrozenWorkflowClosure"]
@@ -3280,7 +3353,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         entryCount: args.closure.entries.length,
       });
       return Promise.resolve({
-        definition: closureDefinition,
         packageDir: fakePackageDir,
         deployDir: path.join(dataDir, "fake-deploy-dir"),
       });
@@ -4239,12 +4311,19 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         deriveWorkflowRunRepoId(head),
         "deployment.json",
       );
+      // The deploy fails after its child came up and its record was written:
+      // the mail route registration that follows the spawn throws.
+      const spawner = makeReadyDrivingSpawner(15700);
       const { router } = await buildMultistepFixture({
-        spawner: () => {
-          throw cause;
-        },
+        spawner: spawner.spawner,
         multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
         maxActiveDeployments: 1,
+        multistepMailRouter: {
+          ...createMultistepMailRouter(),
+          register: () => {
+            throw cause;
+          },
+        },
       });
       const unlink = fs.unlink;
       const spy = spyOn(fs, "unlink").mockImplementation(async (target) => {
@@ -4252,9 +4331,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         return unlink(target);
       });
       try {
-        await expect(
-          router.deploy(singleStepFrame(head, "wf-failure")),
-        ).rejects.toBe(cause);
+        const deploying = router.deploy(singleStepFrame(head, "wf-failure"));
+        await spawner.driveReadyFor(0);
+        await expect(deploying).rejects.toBe(cause);
         const incarnations = router.incarnations();
         expect(incarnations).toEqual([
           {
@@ -4308,6 +4387,51 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       expect(router.incarnations()).toEqual([]);
     },
   );
+
+  test("a deploy writes its run record only once its child reported and its grants are on disk", async () => {
+    const dataDir = await createTempBaseDir("sidecar-record-after-grants-");
+    const head = "run_record_after_grants@example.com";
+    const spawner = makeReadyDrivingSpawner(15800);
+    const recordAtGrantsWrite: boolean[] = [];
+    const { router, tempBase } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      beforeWriteTree: async () => {
+        recordAtGrantsWrite.push(
+          await recordExists(dataDir, deriveWorkflowRunRepoId(head)),
+        );
+      },
+    });
+
+    const deploying = router.deploy(
+      singleStepFrame(head, "wf-record-after-grants"),
+    );
+    await spawner.awaitSpawnCount(1);
+    // Until the child reports its definition, a restart finds nothing to
+    // re-drive: the record would otherwise come back without its grants.
+    expect(await recordExists(dataDir, deriveWorkflowRunRepoId(head))).toBe(
+      false,
+    );
+
+    await spawner.driveReadyFor(0);
+    await deploying;
+    // The grants went to disk before the record existed.
+    expect(recordAtGrantsWrite).toEqual([false]);
+    expect(await recordExists(dataDir, deriveWorkflowRunRepoId(head))).toBe(
+      true,
+    );
+    const grants = await fs.readFile(
+      path.join(
+        tempBase,
+        "agent-state",
+        deriveWorkflowRunId(head),
+        "state",
+        "grants.json",
+      ),
+      "utf8",
+    );
+    expect(JSON.parse(grants)).toEqual({ grants: [] });
+  });
 
   test("restore holds a deployment its record marks stopped or tearing down without spawning it", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-marked-");
@@ -5216,6 +5340,55 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       {
         state: "stopped",
         error: expect.stringMatching(/is not registered$/),
+      },
+    );
+  });
+
+  test("restore holds a deployment whose spawned body's pinned source is no longer buildable as stopped", async () => {
+    const dataDir = await createTempBaseDir(
+      "sidecar-restore-unbuildable-body-data-",
+    );
+    const head = "run_unbuildable_body_restore@example.com";
+    const anchorRunId = deriveWorkflowRunRepoId(head);
+
+    const first = makeReadyDrivingSpawner(9950);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = routerA.deploy(
+      withReferencedBody(singleStepFrame(head, "wf-unbuildable-body-restore"), {
+        ...makeInferenceSource("body-step"),
+        provider: "ghost-provider",
+      }),
+    );
+    await first.driveReadyFor(0);
+    await deployPromise;
+
+    // Restart with a gate that rejects only the body's provider.
+    const second = makeReadyDrivingSpawner(10050);
+    const freshTransport = createInMemoryTransport();
+    const { router: routerB } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: freshTransport,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      assertSourceBuildable: (source) => {
+        if (source.provider === "ghost-provider") {
+          throw new Error(
+            `Source provider "${source.provider}" is not registered`,
+          );
+        }
+      },
+    });
+
+    await routerB.restoreWorkflowRuns();
+
+    expect(second.spawnCount()).toBe(0);
+    expect(isRegistered(freshTransport, head)).toBe(false);
+    expect(await waitForRecord(dataDir, anchorRunId, () => true)).toMatchObject(
+      {
+        state: "stopped",
+        error: expect.stringMatching(/ghost-provider.*is not registered$/),
       },
     );
   });

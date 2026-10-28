@@ -322,20 +322,6 @@ export const workflow = defineWorkflow({
     expect(definition.id).toBe("named-export-workflow");
   });
 
-  test("busts the ESM module cache with importCacheKey", async () => {
-    const packageDir = await createClosureFixture({
-      workflowEntry: "./workflow.js",
-      entrySource: DEFAULT_EXPORT_ENTRY,
-    });
-
-    const definition = await loadWorkflowDefinitionFromClosure({
-      packageDir,
-      importCacheKey: "sha512-fixture",
-    });
-
-    expect(definition.id).toBe("fixture-workflow");
-  });
-
   test("rejects a package.json without an interchange.workflow field", async () => {
     const packageDir = await createClosureFixture({ workflowEntry: null });
 

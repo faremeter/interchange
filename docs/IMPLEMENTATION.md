@@ -1024,12 +1024,22 @@ branches on the frame shape:
    without constructing a supervisor or spawning a child. The follow-up
    full-closure deploy pack then applies into the primed repo and
    verifies against the recorded key.
-2. **Workflow frame (carries a `WorkflowDefinition`).** The router
-   constructs a fresh per-deployment workflow-host supervisor and drives
-   its `spawn(opts)` lifecycle: per-step `agent-state` repo
-   provisioning, key minting, workflow-process child spawn via
-   `subprocessSpawner`, mail-bus registration, the IPC ready handshake,
-   and `credentialsSnapshot` assembly.
+2. **Workflow frame (carries a source-ref pin).** The router checks
+   that it can build every inference source the frame pins, lays out
+   the frozen closure without evaluating it, constructs a fresh
+   per-deployment workflow-host supervisor and drives its `spawn(opts)`
+   lifecycle: key minting, workflow-process child spawn via
+   `subprocessSpawner`, the child's definition report, per-step
+   `agent-state` repo provisioning, `credentialsSnapshot` assembly,
+   mail-bus registration and the IPC ready handshake. The long-lived
+   sidecar process keeps every module it imports, so it never evaluates
+   the workflow's code: everything it does with the definition --
+   the structural check against the frame's sources, the step layout,
+   the deploy-time grants write, the single-step head repo and hub
+   key, the inbound mail policy -- works from the projection the child
+   verified, after the supervisor checks it against the approved hash.
+   A closure that fails, throws or hangs while loading fails only its
+   own deploy or restore.
 
 A frame carrying neither shape is rejected -- there is no in-process
 deploy path. A single agent deploys as a single-step workflow whose
@@ -1076,9 +1086,9 @@ a child run inheriting the parent's env, so a body step authorizes
 against this same snapshot under its own plain step id. The host owns
 that widening because it is the layer that holds the definition --
 `inertFlatNamespaceStepIds` in `@intx/workflow-deploy` computes it from
-the frozen inert projection, and the sidecar's deploy router feeds the
-result to both the snapshot assembly and the deploy-time per-step grants
-write. A step id absent from the snapshot is unrecoverable at the child's
+the inert projection the child reported, and the sidecar's deploy router
+feeds the result to both the snapshot assembly and the deploy-time
+per-step grants write. A step id absent from the snapshot is unrecoverable at the child's
 authorize (it throws rather than denying), so the producer, not the
 consumer, owns totality. An `onTrigger` section or `childWorkflow` body
 is NOT part of this namespace: it is lifted to its own definition and the

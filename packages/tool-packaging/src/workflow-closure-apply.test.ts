@@ -3,7 +3,6 @@ import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
@@ -18,12 +17,16 @@ const WORKFLOW_PACKAGE_NAME = "@fixture/frozen-workflow";
 const WORKFLOW_PACKAGE_VERSION = "1.4.2";
 const WORKFLOW_ID = "fixture-closure-workflow";
 
+// Set by the fixture's entry when anything evaluates it.
+const EVALUATED_MARKER = "__frozenWorkflowFixtureEvaluated";
+
 // The pinned code the frozen closure carries: an ESM entry whose default
-// export is a plain, envelope-valid workflow definition. It imports nothing so
-// the closure needs no dependency entries, keeping the fixture hermetic while
-// still exercising the real fetch -> SRI-verify -> extract -> layout -> import
-// path.
-const WORKFLOW_ENTRY_SOURCE = `export default {
+// export is a plain, envelope-valid workflow definition, and which marks the
+// global object when evaluated. It imports nothing so the closure needs no
+// dependency entries, keeping the fixture hermetic while still exercising the
+// real fetch -> SRI-verify -> extract -> layout path.
+const WORKFLOW_ENTRY_SOURCE = `globalThis[${JSON.stringify(EVALUATED_MARKER)}] = true;
+export default {
   id: ${JSON.stringify(WORKFLOW_ID)},
   triggers: [],
   steps: { done: { kind: "sleep", id: "done", durationMs: 1 } },
@@ -98,59 +101,8 @@ function registries(): ReadonlyMap<string, RegistryConfig> {
 
 const host = hostPlatform("linux", "x64");
 
-/**
- * The test's `loadDefinition`. Reads the packed `interchange.workflow`
- * entry and returns its default export. This package's tests do not
- * import `@intx/workflow-host`.
- */
-async function loadFixtureDefinition(args: {
-  readonly packageDir: string;
-  readonly importCacheKey?: string;
-}): Promise<{ readonly id: string }> {
-  const raw = await fs.readFile(
-    path.join(args.packageDir, "package.json"),
-    "utf8",
-  );
-  const parsed: unknown = JSON.parse(raw);
-  if (parsed === null || typeof parsed !== "object") {
-    throw new Error("fixture package.json is not an object");
-  }
-  const interchange = "interchange" in parsed ? parsed.interchange : undefined;
-  const workflow =
-    interchange !== null &&
-    typeof interchange === "object" &&
-    "workflow" in interchange &&
-    typeof interchange.workflow === "string"
-      ? interchange.workflow
-      : undefined;
-  if (workflow === undefined) {
-    throw new Error(
-      `fixture package at ${args.packageDir} declares no interchange.workflow`,
-    );
-  }
-  const entryAbs = path.join(args.packageDir, workflow);
-  const href =
-    args.importCacheKey === undefined
-      ? pathToFileURL(entryAbs).href
-      : `${pathToFileURL(entryAbs).href}?importCacheKey=${encodeURIComponent(args.importCacheKey)}`;
-  const mod: unknown = await import(href);
-  if (mod === null || typeof mod !== "object" || !("default" in mod)) {
-    throw new Error("fixture entry has no default export");
-  }
-  const definition: unknown = mod.default;
-  if (
-    definition === null ||
-    typeof definition !== "object" ||
-    !("id" in definition) ||
-    typeof definition.id !== "string"
-  ) {
-    throw new Error("fixture entry default export has no string id");
-  }
-  return { id: definition.id };
-}
-
 describe("applyFrozenWorkflowClosure", () => {
-  test("materializes the pinned closure and loads the pinned code", async () => {
+  test("materializes the pinned closure without evaluating the pinned code", async () => {
     const fixture = await packWorkflowFixture();
     const manifest: ToolPackageManifest = {
       schemaVersion: "1",
@@ -186,12 +138,12 @@ describe("applyFrozenWorkflowClosure", () => {
       registryMaxTarballBytes: 10_000_000,
       registries: registries(),
       host,
-      loadDefinition: loadFixtureDefinition,
       fetchTarball,
     });
 
-    // The pinned code was evaluated to its validated definition.
-    expect(applied.definition.id).toBe(WORKFLOW_ID);
+    // The sidecar process keeps every module it imports, so laying out the
+    // closure must not evaluate the entry; the workflow child does that.
+    expect(Reflect.get(globalThis, EVALUATED_MARKER)).toBeUndefined();
 
     // The frozen closure was applied byte-for-byte: the workflow package's
     // package.json is present in the materialized store directory.
@@ -239,7 +191,6 @@ describe("applyFrozenWorkflowClosure", () => {
         registryMaxTarballBytes: 10_000_000,
         registries: registries(),
         host,
-        loadDefinition: loadFixtureDefinition,
         fetchTarball,
       }),
     ).rejects.toThrow(/integrity\.mismatch/);
@@ -260,7 +211,6 @@ describe("applyFrozenWorkflowClosure", () => {
         registryMaxTarballBytes: 10_000_000,
         registries: registries(),
         host,
-        loadDefinition: loadFixtureDefinition,
       }),
     ).rejects.toThrow(/exactly one top-level pin/);
   });
@@ -292,7 +242,6 @@ describe("applyFrozenWorkflowClosure", () => {
         registryMaxTarballBytes: 10_000_000,
         registries: registries(),
         host,
-        loadDefinition: loadFixtureDefinition,
       }),
     ).rejects.toThrow(/is not in the sidecar registry config/);
   });
@@ -341,12 +290,15 @@ describe("applyFrozenWorkflowClosure", () => {
       registryMaxTarballBytes: 10_000_000,
       registries: registries(),
       host,
-      loadDefinition: loadFixtureDefinition,
       assetRoot,
       assetMounts: new Map([[assetId, mountPath]]),
       gitDirs: new Map(),
     });
 
-    expect(applied.definition.id).toBe(WORKFLOW_ID);
+    const pkgJson = JSON.parse(
+      await fs.readFile(path.join(applied.packageDir, "package.json"), "utf8"),
+    );
+    expect(pkgJson.name).toBe(WORKFLOW_PACKAGE_NAME);
+    expect(Reflect.get(globalThis, EVALUATED_MARKER)).toBeUndefined();
   });
 });

@@ -28,9 +28,9 @@
 //       deploy id. parseToolRegistries(raw) and hostPlatform(os, cpu)
 //       are the registry-map and host-platform boundary that apply
 //       consumes.
-//       applyFrozenWorkflowClosure({ …, host, loadDefinition }) — lays
-//       out a frozen workflow closure and loads the definition through
-//       the caller-supplied loader.
+//       applyFrozenWorkflowClosure({ …, host }) — lays out a frozen
+//       workflow closure for the workflow child to evaluate, importing
+//       none of it.
 //       createWorkflowClosureMaterializer({ …, host, materializeAssets })
 //       — lays out a probe frame's frozen closure without importing
 //       author code. Asset delivery is the caller-supplied callback.

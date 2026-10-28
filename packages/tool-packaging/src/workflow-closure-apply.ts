@@ -3,11 +3,9 @@
 // When a deploy frame carries a `source` (the npm registry the workflow
 // definition package is published to) plus the hub's frozen dependency
 // `closure` (concrete versions + integrity SRIs), the sidecar materializes
-// EXACTLY that closure. The caller-supplied `loadDefinition` evaluates the
-// pinned code to a definition, rather than the deploy trusting an inline
-// serialized projection. The closure is applied byte-for-byte as the hub
-// froze it; the sidecar never re-resolves the pin against the registry at
-// apply time.
+// EXACTLY that closure for its workflow child to evaluate. The closure is
+// applied byte-for-byte as the hub froze it; the sidecar never re-resolves the
+// pin against the registry at apply time.
 //
 // This is the durable deploy counterpart to the airlocked install-time
 // probe: it reuses the same apply machinery (`createTarballCache` /
@@ -22,21 +20,18 @@
 // (`package.entry.missing`), so the layout manifest handed to `applyAtomic`
 // carries an EMPTY `topLevel`: every entry is still materialized and laid out
 // (the dependency layout walks `entries`, and each dependency resolves against
-// the frozen closure), but no tool factory is imported. `loadDefinition`
-// imports the workflow entry against the materialized package directory.
+// the frozen closure), but nothing is imported. The apply runs in the
+// long-lived sidecar process, which keeps every module it imports, so the
+// workflow child is the only process that evaluates the workflow entry.
 //
-// `host` and `loadDefinition` come from the caller. This package must not
-// import `@intx/hub-agent` or `@intx/workflow-host`, and it does not read
-// the process: the sidecar process edge resolves the platform and passes
-// `loadWorkflowDefinitionFromClosure`.
+// `host` comes from the caller. This package must not import
+// `@intx/hub-agent` or `@intx/workflow-host`, and it does not read the
+// process: the sidecar process edge resolves the platform.
 
 import path from "node:path";
 
 import { getLogger } from "@intx/log";
-import {
-  type ToolPackageManifest,
-  getToolPackageSourceContentIdentity,
-} from "@intx/types/tool-packages";
+import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import { applyAtomic } from "./atomic-apply";
@@ -51,9 +46,7 @@ import { storeEntryDir } from "./store-layout";
 
 const logger = getLogger(["sidecar", "workflow-closure-apply"]);
 
-export interface ApplyFrozenWorkflowClosureArgs<
-  TDefinition extends { readonly id: string },
-> {
+export interface ApplyFrozenWorkflowClosureArgs {
   /** Names the registry the workflow definition package is published to. */
   readonly source: WorkflowDefinitionSource;
   /**
@@ -79,15 +72,6 @@ export interface ApplyFrozenWorkflowClosureArgs<
   /** npm `os`/`cpu` pair the loader selects optional dependencies with. */
   readonly host: HostPlatform;
   /**
-   * Import the materialized package's workflow entry and return the
-   * definition it evaluated to. The caller owns validation; this function
-   * reads `definition.id`.
-   */
-  readonly loadDefinition: (args: {
-    readonly packageDir: string;
-    readonly importCacheKey?: string;
-  }) => Promise<TDefinition>;
-  /**
    * Workspace root `kind: "asset"` closure entries mount against. A
    * registry-sourced workflow definition closure carries no asset entries, so
    * this defaults to `<instanceDir>/workspace`.
@@ -108,11 +92,7 @@ export interface ApplyFrozenWorkflowClosureArgs<
   readonly fetchTarball?: TarballFetcher;
 }
 
-export interface AppliedWorkflowClosure<
-  TDefinition extends { readonly id: string },
-> {
-  /** The definition the caller-supplied loader returned. */
-  readonly definition: TDefinition;
+export interface AppliedWorkflowClosure {
   /** Directory of the materialized workflow package within the closure. */
   readonly packageDir: string;
   /** The staged, never-renamed deploy directory the closure was laid out under. */
@@ -120,8 +100,8 @@ export interface AppliedWorkflowClosure<
 }
 
 /**
- * Materialize a workflow definition's frozen closure durably and load the
- * pinned code through `loadDefinition`.
+ * Materialize a workflow definition's frozen closure durably, without
+ * evaluating it.
  *
  * The closure's single top-level pin IS the workflow definition package: the
  * hub resolved the closure for exactly that pin. The frozen `entries` are
@@ -129,15 +109,12 @@ export interface AppliedWorkflowClosure<
  * happens at apply time.
  *
  * @throws if the closure does not carry exactly one top-level pin, the source
- *   registry is not configured on this sidecar, the apply fails (integrity
- *   mismatch, fetch failure, extract failure, ...), or `loadDefinition`
- *   rejects.
+ *   registry is not configured on this sidecar, or the apply fails (integrity
+ *   mismatch, fetch failure, extract failure, ...).
  */
-export async function applyFrozenWorkflowClosure<
-  TDefinition extends { readonly id: string },
->(
-  args: ApplyFrozenWorkflowClosureArgs<TDefinition>,
-): Promise<AppliedWorkflowClosure<TDefinition>> {
+export async function applyFrozenWorkflowClosure(
+  args: ApplyFrozenWorkflowClosureArgs,
+): Promise<AppliedWorkflowClosure> {
   if (args.closure.topLevel.length !== 1) {
     throw new Error(
       `sidecar workflow-closure apply: the frozen closure must carry exactly one top-level pin (the workflow definition package), got ${String(args.closure.topLevel.length)}`,
@@ -220,26 +197,6 @@ export async function applyFrozenWorkflowClosure<
     workflowPin.version,
   );
 
-  // The workflow package's own integrity is the natural ESM-cache-bust token:
-  // Node keys its module cache by resolved URL, so a re-apply of changed bytes
-  // under the same name@version reimports rather than resolving to the prior
-  // instance.
-  const workflowEntry = args.closure.entries.find(
-    (entry) =>
-      entry.name === workflowPin.name && entry.version === workflowPin.version,
-  );
-
-  const definition = await args.loadDefinition({
-    packageDir,
-    ...(workflowEntry !== undefined
-      ? {
-          importCacheKey: getToolPackageSourceContentIdentity(
-            workflowEntry.source,
-          ),
-        }
-      : {}),
-  });
-
-  logger.debug`applied frozen workflow closure ${workflowPin.name}@${workflowPin.version}: loaded definition ${definition.id}`;
-  return { definition, packageDir, deployDir: result.deployDir };
+  logger.debug`applied frozen workflow closure ${workflowPin.name}@${workflowPin.version}`;
+  return { packageDir, deployDir: result.deployDir };
 }
