@@ -311,6 +311,21 @@ process.exit(0);
     }
   });
 
+  test("kill() on a child that exited but is not yet reaped does not throw", async () => {
+    const binaryPath = await writeShellChild("shell-exit-unreaped", "exit 0");
+    const handle = defaultSubprocessSpawner({ binaryPath, env: {} });
+    // Bun reaps the child on the event loop, so spinning here without
+    // yielding holds the exited child unreaped, the state in which macOS
+    // refuses a signal to its process group.
+    while (!processGone(handle.pid)) {
+      // Spin until the child has exited.
+    }
+    expect(() => {
+      handle.kill("SIGTERM");
+    }).not.toThrow();
+    await handle.exited;
+  });
+
   test("reports the missing event channel fd when the group kill fails", () => {
     // On this path the spawner reads only `stdio`, and `pid` for the group
     // kill, so a fake process is enough and no real child needs cleaning up.

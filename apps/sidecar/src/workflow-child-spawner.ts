@@ -175,8 +175,21 @@ export const defaultSubprocessSpawner: SubprocessSpawner = ({
     try {
       process.kill(-proc.pid, signal);
     } catch (err) {
-      if (!(err instanceof Error && "code" in err && err.code === "ESRCH"))
-        throw err;
+      const code = err instanceof Error && "code" in err ? err.code : undefined;
+      if (code === "ESRCH") return;
+      // macOS refuses a group signal with EPERM once every process in the
+      // group has exited, where Linux reports success. Until Bun reaps the
+      // child its pid cannot be reused, so signal the child itself: that
+      // succeeds on an exited child and still fails on one we may not signal.
+      if (
+        code === "EPERM" &&
+        proc.exitCode === null &&
+        proc.signalCode === null
+      ) {
+        process.kill(proc.pid, signal);
+        return;
+      }
+      throw err;
     }
   }
   const eventFd = proc.stdio[CHILD_EVENT_CHANNEL_FD];
