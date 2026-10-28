@@ -333,10 +333,11 @@ export interface WorkflowSupervisorBindings {
   }) => void;
   /**
    * Test seam, unset in production. Called each time a shutdown waits for
-   * work it owns before it resolves: `writes` for repository writes started
-   * off the control pump.
+   * work it owns before it resolves: `replay` for a respawn's replay of
+   * `processing/`, `writes` for repository writes started off the control
+   * pump.
    */
-  onShutdownWait?: (waiting: "writes") => void;
+  onShutdownWait?: (waiting: "replay" | "writes") => void;
   /**
    * Test seam, unset in production. Called each time a respawn, before it
    * scans `runs/`, waits for the boot replay (`replay`) or for repository
