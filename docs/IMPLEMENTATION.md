@@ -1018,7 +1018,8 @@ cannot defend against.
   `maxGrantsAgeMs`. Defaults are unlimited (the bound is disabled
   unless the operator sets a threshold). On a threshold trip the
   policy calls `triggerRecycle` with origin `policy` and a reason
-  naming the tripped bound.
+  naming the tripped bound. Each child gets its own check, armed
+  when it starts, so `maxUptimeMs` measures the running child.
 - **Workflow-process self-initiated.** The child sends a
   `recycle.request` payload over control IPC when its own self-
   check decides it needs to be recycled (an internal consistency

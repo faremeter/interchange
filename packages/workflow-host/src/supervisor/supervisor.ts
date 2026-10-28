@@ -3385,30 +3385,7 @@ export function createWorkflowSupervisor(
         logger.warn`re-emit of parked correlations on re-establishment failed: ${message}`;
       });
 
-      // Arm the recycle policy. The policy is a no-op when all bounds
-      // are `undefined`; bounds resolution lives inside `createRecyclePolicy`.
-      if (bindings.recyclePolicy !== undefined) {
-        const setTimer = bindings.recyclePolicySetTimer ?? defaultSetTimer;
-        const clearTimer =
-          bindings.recyclePolicyClearTimer ?? defaultClearTimer;
-        recyclePolicy = createRecyclePolicy({
-          bounds: bindings.recyclePolicy,
-          now,
-          spawnedAt: spawnContext.spawnedAt,
-          ...(bindings.readRssBytes !== undefined
-            ? { readRssBytes: bindings.readRssBytes }
-            : {}),
-          ...(bindings.readGrantsAgeMs !== undefined
-            ? { readGrantsAgeMs: bindings.readGrantsAgeMs }
-            : {}),
-          setTimer,
-          clearTimer,
-          trigger: async (reason) => {
-            await recycle({ reason, origin: "policy" });
-          },
-        });
-      }
-
+      armRecyclePolicy(spawnContext.spawnedAt);
       return {
         pid: childPid,
         channelId,
@@ -3433,6 +3410,38 @@ export function createWorkflowSupervisor(
       });
       throw cause;
     }
+  }
+
+  // Arm the recycle policy for the child that just started at `spawnedAt`,
+  // replacing the previous child's, so its bounds measure the running child.
+  // The policy is a no-op when all bounds are `undefined`; bounds resolution
+  // lives inside `createRecyclePolicy`.
+  function armRecyclePolicy(spawnedAt: number): void {
+    stopRecyclePolicy();
+    if (bindings.recyclePolicy === undefined) return;
+    const setTimer = bindings.recyclePolicySetTimer ?? defaultSetTimer;
+    const clearTimer = bindings.recyclePolicyClearTimer ?? defaultClearTimer;
+    recyclePolicy = createRecyclePolicy({
+      bounds: bindings.recyclePolicy,
+      now: bindings.recyclePolicyNow ?? defaultNow,
+      spawnedAt,
+      ...(bindings.readRssBytes !== undefined
+        ? { readRssBytes: bindings.readRssBytes }
+        : {}),
+      ...(bindings.readGrantsAgeMs !== undefined
+        ? { readGrantsAgeMs: bindings.readGrantsAgeMs }
+        : {}),
+      setTimer,
+      clearTimer,
+      trigger: async (reason) => {
+        await recycle({ reason, origin: "policy" });
+      },
+    });
+  }
+
+  function stopRecyclePolicy(): void {
+    recyclePolicy?.stop();
+    recyclePolicy = null;
   }
 
   /**
@@ -4937,14 +4946,13 @@ export function createWorkflowSupervisor(
             // drives a spurious respawn and a crash of THIS child is
             // classified against the new generation.
             armChildForRunning(wiring.handle);
-            // Cache fresh spawn context with the updated spawnedAt
-            // so the policy timer's uptime check resets on recycle.
             const now = bindings.recyclePolicyNow ?? defaultNow;
             spawnContext = {
               definitionHash: priorContext.definitionHash,
               onInferenceEvent: priorContext.onInferenceEvent,
               spawnedAt: now(),
             };
+            armRecyclePolicy(spawnContext.spawnedAt);
             // Re-arm the upstream control pump on the new wiring's
             // iterator. The old wiring's iterator ended when the
             // recycle path killed the predecessor handle. The new

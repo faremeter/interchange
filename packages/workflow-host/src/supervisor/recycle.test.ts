@@ -54,7 +54,11 @@ import {
   type WorkflowSupervisor,
   type WorkflowSupervisorBindings,
 } from "./index";
-import { createRecyclePolicy, type RecyclePolicyBounds } from "./recycle";
+import {
+  createRecyclePolicy,
+  DEFAULT_POLICY_INTERVAL_MS,
+  type RecyclePolicyBounds,
+} from "./recycle";
 import { waitUntil } from "@intx/types/testing";
 import { parseSpawnTimeEnv } from "../child/env-bootstrap";
 import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
@@ -1219,7 +1223,90 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
   });
 });
 
+// A supervisor's recycle policy with its clock and ticks driven by hand. Other
+// timers on the same bindings run for real.
+function manualRecyclePolicy(maxUptimeMs: number) {
+  let nowMs = 1_700_000_000_000;
+  const ticks = new Map<symbol, () => void>();
+  const timers = new Map<symbol, ReturnType<typeof setTimeout>>();
+  let armedNext: PromiseWithResolvers<undefined> | null = null;
+  const bindings: Partial<WorkflowSupervisorBindings> = {
+    recyclePolicy: { maxUptimeMs },
+    recyclePolicyNow: () => nowMs,
+    recyclePolicySetTimer: (cb, ms) => {
+      const handle = Symbol("timer");
+      if (ms === DEFAULT_POLICY_INTERVAL_MS) {
+        ticks.set(handle, cb);
+        armedNext?.resolve(undefined);
+        armedNext = null;
+      } else {
+        const timer = setTimeout(() => {
+          timers.delete(handle);
+          cb();
+        }, ms);
+        timers.set(handle, timer);
+      }
+      return handle;
+    },
+    recyclePolicyClearTimer: (handle) => {
+      if (typeof handle !== "symbol") return;
+      ticks.delete(handle);
+      clearTimeout(timers.get(handle));
+      timers.delete(handle);
+    },
+  };
+  return {
+    bindings,
+    advance(ms: number): void {
+      nowMs += ms;
+    },
+    armed: () => ticks.size,
+    // Resolves when a policy next arms its tick.
+    nextArm(): Promise<undefined> {
+      armedNext = Promise.withResolvers<undefined>();
+      return armedNext.promise;
+    },
+    tick(): void {
+      const due = [...ticks.values()];
+      ticks.clear();
+      for (const cb of due) cb();
+    },
+  };
+}
+
 describe("supervisor recycle: policy-initiated (max-uptime trip)", () => {
+  test("each replacement child's uptime counts from its own start", async () => {
+    const baseDir = await makeTempDir("recycle-policy-child-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    const policy = manualRecyclePolicy(60_000);
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      overrides: policy.bindings,
+    });
+    expect(policy.armed()).toBe(1);
+
+    policy.advance(61_000);
+    const replaced = policy.nextArm();
+    policy.tick();
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await replaced;
+    expect(policy.armed()).toBe(1);
+
+    const ticked = policy.nextArm();
+    policy.tick();
+    await ticked;
+    expect(tracker.totalSpawns).toBe(2);
+
+    await supervisor.shutdown();
+  });
+
   test("the policy's max-uptime threshold trips recycle with a policy-origin reason", async () => {
     const baseDir = await makeTempDir("recycle-policy-");
     const ipcKeypair = await generateKeyPair();
