@@ -194,7 +194,6 @@ async function buildBindings(opts: {
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
     anchorRunId: "deployment-x",
-    stepCount: 1,
     deploymentMailAddress: "deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
@@ -283,7 +282,6 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });
@@ -417,7 +415,6 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     const spawning = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "test",
-      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     const env = await spawned.promise;
@@ -496,7 +493,6 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     const spawning = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "test",
-      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     const env = await spawned.promise;
@@ -586,7 +582,6 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });

@@ -3,9 +3,8 @@
 // Both the initial spawn and every recycle respawn route the env through
 // this single builder, so the required-key contract the child-side parser
 // (`parseSpawnTimeEnv`) enforces has exactly one producer. A divergence
-// between the two paths -- the recycle env once omitted `STEP_COUNT` and
-// broke every recycle -- is no longer expressible: the required keys are
-// built as an exactly-typed record, so omitting one is a compile error.
+// between the two paths is not expressible: the required keys are built as
+// an exactly-typed record, so omitting one is a compile error.
 
 import { hexEncode } from "@intx/types/hex";
 
@@ -36,12 +35,8 @@ export interface ChildSpawnEnvParts {
   anchorRunId: string;
   /** Mail address the deployment registered on the bus. */
   deploymentMailAddress: string;
-  /** Step count of the deployed workflow (`stepOrder.length`). */
-  stepCount: number;
   /** Content hash of the deployed workflow definition. */
   definitionHash: string;
-  /** Whether this deployment's agent is warm-kept across messages. */
-  warmKeep: boolean;
 }
 
 /**
@@ -62,7 +57,6 @@ export function buildChildSpawnEnv(
     DEPLOYMENT_ID: parts.anchorRunId,
     DEFINITION_HASH: parts.definitionHash,
     MAILBOX_ADDRESS: parts.deploymentMailAddress,
-    STEP_COUNT: String(parts.stepCount),
   };
   return {
     ...parts.substrateEnv,
@@ -70,6 +64,5 @@ export function buildChildSpawnEnv(
     // anchors below still win over everything.
     ...parts.dynamicSpawnEnv(),
     ...required,
-    WARM_KEEP: parts.warmKeep ? "true" : "false",
   };
 }

@@ -821,15 +821,16 @@ export async function runWorkflowChild(
   const drainController = createWorkflowHostDrainController({ definition });
 
   // Warm-agent cache (design §3b). Built only when the deployment is a
-  // warm candidate (the single-step long-lived agent the deploy
-  // projection marked). The cache lives in this run-loop's address
-  // space, holds the constructed agent across messages, and is evicted
-  // -- running the wrapped `agent.close()` that kills the LSP subprocess
-  // -- at the loop's teardown points (the shutdown frame and the
-  // exit-path `finally` below). A multi-step deployment leaves this
-  // `undefined`, so its steps keep instantiate-send-teardown and no
-  // multi-step agent is ever warm-kept.
-  const warmCache: WarmAgentCache | undefined = opts.env.warmKeep
+  // warm candidate (a single-step deployment's long-lived agent). The
+  // cache lives in this run-loop's address space, holds the constructed
+  // agent across messages, and is evicted -- running the wrapped
+  // `agent.close()` that kills the LSP subprocess -- at the loop's
+  // teardown points (the shutdown frame and the exit-path `finally`
+  // below). A multi-step deployment leaves this `undefined`, so its steps
+  // keep instantiate-send-teardown and no multi-step agent is ever
+  // warm-kept.
+  const warmKeep = isWarmKeptDeployment(opts.definition);
+  const warmCache: WarmAgentCache | undefined = warmKeep
     ? createWarmAgentCache()
     : undefined;
 
@@ -942,7 +943,7 @@ export async function runWorkflowChild(
     void handle.complete
       .then((result) => {
         reclaimRunStorageIfCold({
-          warmKeep: opts.env.warmKeep,
+          warmKeep,
           cleanupRunStorage: opts.bindings.cleanupRunStorage,
           runId: run.runId,
         });
@@ -1009,7 +1010,6 @@ export async function runWorkflowChild(
     for await (const payload of iter) {
       if (
         await handleControlPayload(payload, {
-          env: opts.env,
           bindings: opts.bindings,
           credentialsRef,
           runtimeRepoStore,
@@ -1127,7 +1127,6 @@ export async function runWorkflowChild(
 async function handleControlPayload(
   payload: ControlPayload,
   ctx: {
-    env: SpawnTimeEnv;
     bindings: RunWorkflowChildBindings;
     credentialsRef: CredentialsSnapshotRef;
     runtimeRepoStore: ReturnType<typeof createWorkflowRunRepoStore>;
@@ -1234,7 +1233,7 @@ async function handleControlPayload(
       void handle.complete
         .then((result) => {
           reclaimRunStorageIfCold({
-            warmKeep: ctx.env.warmKeep,
+            warmKeep: isWarmKeptDeployment(ctx.definition),
             cleanupRunStorage: ctx.bindings.cleanupRunStorage,
             runId: payload.data.runId,
           });
@@ -1425,9 +1424,8 @@ async function handleControlPayload(
           "workflow-child sources-updated: single-step deployment has no step id",
         );
       }
-      // A sources-updated only reaches a warm single-step deployment, which
-      // always builds a warm cache. An absent cache is a routing bug, not a
-      // silent no-op.
+      // A single-step deployment always builds a warm cache, so an absent
+      // cache breaks an invariant rather than being a silent no-op.
       if (ctx.warmCache === undefined) {
         throw new Error(
           "workflow-child sources-updated: no warm cache; a sources rotation must target a warm single-step deployment",
@@ -2054,6 +2052,15 @@ export function emitTerminalEvent(
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`terminal.event upstream send failed for runId=${result.runId}: ${message}`;
     });
+}
+
+/**
+ * Whether a deployment's agent is warm-kept across messages (design §3b): the
+ * sole step of a single-step deployment is the long-lived agent, and every
+ * multi-step agent runs instantiate-send-teardown per step.
+ */
+export function isWarmKeptDeployment(definition: WorkflowDefinition): boolean {
+  return definition.stepOrder.length === 1;
 }
 
 /**

@@ -374,16 +374,6 @@ export type SpawnOpts = {
   /** Content hash of the deployment's workflow definition. */
   definitionHash: string;
   /**
-   * Whether the spawned child warm-keeps its agent across messages
-   * (design §3b). The host sets this true only for the single-step
-   * long-lived deployment the deploy projection marked a warm candidate;
-   * the supervisor threads it into the child's spawn env as `WARM_KEEP`
-   * so the child's run-loop builds a warm-agent cache. Carried
-   * explicitly so the warm-keep decision is deterministic and survives
-   * recycle (the recycle path re-spawns with the same env).
-   */
-  warmKeep: boolean;
-  /**
    * Callback the supervisor invokes for each verified InferenceEvent
    * the child publishes. Mirrors the existing `agent.event` event
    * sink the host exposes; the supervisor is the in-host translator.
@@ -2920,9 +2910,7 @@ export function createWorkflowSupervisor(
         hostPublicKey: ipcKeypair.publicKey,
         anchorRunId: bindings.anchorRunId,
         deploymentMailAddress: bindings.deploymentMailAddress,
-        stepCount: bindings.stepCount,
         definitionHash: opts.definitionHash,
-        warmKeep: opts.warmKeep,
       });
 
       // The spawner throws synchronously when it cannot start the child.
@@ -3267,7 +3255,6 @@ export function createWorkflowSupervisor(
       spawnContext = {
         stepOrder: opts.stepOrder,
         definitionHash: opts.definitionHash,
-        warmKeep: opts.warmKeep,
         onInferenceEvent: opts.onInferenceEvent,
         spawnedAt: now(),
       };
@@ -4698,7 +4685,6 @@ export function createWorkflowSupervisor(
           },
           stepOrder: priorContext.stepOrder,
           definitionHash: priorContext.definitionHash,
-          warmKeep: priorContext.warmKeep,
           onInferenceEvent: priorContext.onInferenceEvent,
           current: {
             handle: prior.handle,
@@ -4831,7 +4817,6 @@ export function createWorkflowSupervisor(
             spawnContext = {
               stepOrder: priorContext.stepOrder,
               definitionHash: priorContext.definitionHash,
-              warmKeep: priorContext.warmKeep,
               onInferenceEvent: priorContext.onInferenceEvent,
               spawnedAt: now(),
             };
@@ -5287,8 +5272,6 @@ type ActiveState = {
 type SpawnContext = {
   stepOrder: readonly string[];
   definitionHash: string;
-  /** Warm-keep flag carried on respawn env (unchanged across recycle). */
-  warmKeep: boolean;
   onInferenceEvent: (event: EventPayload) => void;
   spawnedAt: number;
 };

@@ -582,8 +582,6 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         DEPLOYMENT_ID,
         DEFINITION_HASH: definitionHash,
         MAILBOX_ADDRESS: MAILBOX,
-        STEP_COUNT: "1",
-        WARM_KEEP: "true",
         // Source-ref: both the initial spawn and the respawn evaluate the same
         // stable closure dir; the respawn wipes only the child's local store.
         CLOSURE_PACKAGE_DIR: closurePackageDir,

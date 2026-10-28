@@ -146,7 +146,6 @@ async function startOutboundHarness(): Promise<OutboundHarness> {
     workflowRunRepoId: { kind: "workflow-run", id: "outbound-dep" },
     workflowRunRef: "refs/heads/main",
     anchorRunId: "outbound-dep",
-    stepCount: 1,
     deploymentMailAddress: AGENT_ADDRESS,
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: () => AGENT_ADDRESS,
@@ -162,7 +161,6 @@ async function startOutboundHarness(): Promise<OutboundHarness> {
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash",
-    warmKeep: false,
 
     onInferenceEvent: () => undefined,
   });

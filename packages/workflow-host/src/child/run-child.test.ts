@@ -434,7 +434,6 @@ function makeSpawnEnv(opts: {
     DEPLOYMENT_ID: "deployment-x",
     DEFINITION_HASH: opts.definitionHash ?? "definition-hash-abc",
     MAILBOX_ADDRESS: "deployment-x@example.com",
-    STEP_COUNT: "1",
     // Source-ref is the only deploy lineage: the child evaluates the pinned
     // closure at this dir. The parse-only contract tests pass a placeholder
     // (they never load it); the run tests pass a materialized closure dir.
@@ -463,27 +462,6 @@ describe("parseSpawnTimeEnv", () => {
     expect(env.anchorRunId).toBe("deployment-x");
     expect(env.definitionHash).toBe("definition-hash-abc");
     expect(env.mailboxAddress).toBe("deployment-x@example.com");
-    // WARM_KEEP absent -> warm-keep off (deterministic, opt-in).
-    expect(env.warmKeep).toBe(false);
-  });
-
-  test("parses WARM_KEEP=true as warm-keep on, any other value as off", () => {
-    const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-    const hostPubKeyHex = hexEncode(new Uint8Array(32));
-    const base = makeSpawnEnv({
-      channelId,
-      hmacKeyHex: hexEncode(hmacKey),
-      hostPubKeyHex,
-    });
-    expect(parseSpawnTimeEnv({ ...base, WARM_KEEP: "true" }).warmKeep).toBe(
-      true,
-    );
-    expect(parseSpawnTimeEnv({ ...base, WARM_KEEP: "false" }).warmKeep).toBe(
-      false,
-    );
-    // A non-"true" value is NOT a silent enable.
-    expect(parseSpawnTimeEnv({ ...base, WARM_KEEP: "1" }).warmKeep).toBe(false);
   });
 
   test("rejects env missing a required key", () => {
@@ -946,7 +924,12 @@ describe("runWorkflowChild", () => {
       packageDir: closurePackageDir,
       approvedHash: definitionHash,
       definition,
-    } = await materializeClosure("child-def-", emptyWorkflowDefinition());
+    } = await materializeClosure("child-warm-def-", {
+      id: "test-workflow",
+      triggers: [],
+      steps: { "step-1": agentStep("step-1") },
+      stepOrder: ["step-1"],
+    });
     await seedProcessingEntry(
       baseDir,
       { kind: "workflow-run", id: "deployment-x" },
@@ -962,21 +945,19 @@ describe("runWorkflowChild", () => {
     const childToSupervisor = createMemoryNdjsonStream();
     const eventStream = createMemoryFrameStream();
 
-    // WARM_KEEP="true": the warm single-step deployment reuses one stable
-    // workspace across runs, so deleting per run would wipe a live
-    // conversation's files. The run-loop's warmKeep gate must suppress the
-    // per-run cleanup entirely even when a callback is wired.
-    const env = parseSpawnTimeEnv({
-      ...makeSpawnEnv({
+    // The warm single-step deployment reuses one stable workspace across
+    // runs, so deleting per run would wipe a live conversation's files. The
+    // run-loop's warm-keep gate must suppress the per-run cleanup entirely
+    // even when a callback is wired.
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
         closurePackageDir,
       }),
-      WARM_KEEP: "true",
-    });
-    expect(env.warmKeep).toBe(true);
+    );
 
     const cleaned: string[] = [];
     const bindings: RunWorkflowChildBindings = {
@@ -1702,76 +1683,6 @@ describe("runWorkflowChild", () => {
     supervisorToChild.close();
   });
 
-  test("sources-updated with no warm cache is rejected as a routing bug", async () => {
-    // A single-step definition with WARM_KEEP off leaves the child with no
-    // warm cache. A sources-updated must never silently no-op there; it is
-    // a routing bug, so the handler throws.
-    const baseDir = await makeTempDir("child-sources-nowarm-");
-    const supervisorKeyPair = await generateKeyPair();
-    const childKeyPair = await generateKeyPair();
-    const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-    const {
-      packageDir: closurePackageDir,
-      approvedHash: definitionHash,
-      definition,
-    } = await materializeClosure("child-sources-nowarm-def-", {
-      id: "test-workflow",
-      triggers: [],
-      steps: { "step-1": agentStep("step-1") },
-      stepOrder: ["step-1"],
-    });
-
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventStream = createMemoryFrameStream();
-
-    const env = parseSpawnTimeEnv(
-      makeSpawnEnv({
-        channelId,
-        hmacKeyHex: hexEncode(hmacKey),
-        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
-        definitionHash,
-        closurePackageDir,
-      }),
-    );
-    const bindings = buildBindings({ baseDir, childKeyPair });
-    const supervisorSender = createControlChannelSender({
-      privateKeySeed: supervisorKeyPair.privateKey,
-      channelId,
-      writer: supervisorToChild.writer,
-    });
-    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
-
-    const runPromise = runWorkflowChild({
-      env,
-      definition,
-      controlReader: supervisorToChild.reader,
-      controlWriter: childToSupervisor.writer,
-      eventWriter: eventStream.writer,
-      bindings,
-    });
-
-    await supervisorSender.send({
-      type: "sources-updated",
-      data: {
-        sources: [
-          {
-            id: "primary",
-            provider: "anthropic",
-            baseURL: "https://api.anthropic.com",
-            credentialId: "sk-x",
-            model: "claude-test",
-          },
-        ],
-        defaultSource: "primary",
-      },
-    });
-
-    await expect(runPromise).rejects.toThrow(/no warm cache/);
-    supervisorToChild.close();
-  });
-
   test("child ready frame is signed by the child's own keypair and bootstraps the supervisor's verification key", async () => {
     const baseDir = await makeTempDir("child-ready-");
     const supervisorKeyPair = await generateKeyPair();
@@ -2299,20 +2210,18 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     const childToSupervisor = createMemoryNdjsonStream();
     const eventStream = createMemoryFrameStream();
 
-    // WARM_KEEP="true": the single-step long-lived deployment the deploy
-    // projection marks a warm candidate. The run-loop builds a warm
-    // cache and the step-invoker reuses the agent across messages.
-    const env = parseSpawnTimeEnv({
-      ...makeSpawnEnv({
+    // A single-step definition is the long-lived deployment the child
+    // warm-keeps: the run-loop builds a warm cache and the step-invoker
+    // reuses the agent across messages.
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
         closurePackageDir,
       }),
-      WARM_KEEP: "true",
-    });
-    expect(env.warmKeep).toBe(true);
+    );
 
     const supervisorSender = createControlChannelSender({
       privateKeySeed: supervisorKeyPair.privateKey,
@@ -2496,16 +2405,15 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     const childToSupervisor = createMemoryNdjsonStream();
     const eventStream = createMemoryFrameStream();
 
-    const env = parseSpawnTimeEnv({
-      ...makeSpawnEnv({
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
         channelId,
         hmacKeyHex: hexEncode(hmacKey),
         hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
         definitionHash,
         closurePackageDir,
       }),
-      WARM_KEEP: "true",
-    });
+    );
 
     const supervisorSender = createControlChannelSender({
       privateKeySeed: supervisorKeyPair.privateKey,

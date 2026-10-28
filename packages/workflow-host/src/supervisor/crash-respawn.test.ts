@@ -400,7 +400,6 @@ async function buildBindings(opts: {
     workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
     workflowRunRef: "refs/heads/main",
     anchorRunId: "run_deployment-x",
-    stepCount: 1,
     deploymentMailAddress: "run_deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
@@ -480,7 +479,6 @@ async function spawnSupervisor(opts: {
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
-    warmKeep: false,
     onInferenceEvent: () => undefined,
   });
   await opts.tracker.awaitChildren(1);

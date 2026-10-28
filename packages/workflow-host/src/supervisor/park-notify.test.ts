@@ -119,7 +119,6 @@ describe("supervisor park.notify arm", () => {
       workflowRunRepoId: { kind: "workflow-run", id: DEPLOYMENT_ID },
       workflowRunRef: "refs/heads/main",
       anchorRunId: DEPLOYMENT_ID,
-      stepCount: 1,
       deploymentMailAddress: AGENT_ADDRESS,
       readPrincipal: { kind: "supervisor" },
       deriveStepAddress: () => AGENT_ADDRESS,
@@ -131,7 +130,6 @@ describe("supervisor park.notify arm", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });

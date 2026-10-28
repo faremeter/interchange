@@ -383,7 +383,6 @@ async function buildBindings(opts: {
     workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
     workflowRunRef: "refs/heads/main",
     anchorRunId: "run_deployment-x",
-    stepCount: 1,
     deploymentMailAddress: "run_deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
@@ -430,7 +429,6 @@ async function spawnSupervisor(opts: {
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
-    warmKeep: false,
 
     onInferenceEvent: () => undefined,
   });
@@ -480,7 +478,6 @@ describe("supervisor spawn: failure cleanup", () => {
       supervisor.spawn({
         stepOrder: ["step-1"],
         definitionHash: "def-hash-abc",
-        warmKeep: false,
 
         onInferenceEvent: () => undefined,
       }),
@@ -546,7 +543,6 @@ describe("supervisor spawn: failure cleanup", () => {
       supervisor.spawn({
         stepOrder: ["step-1"],
         definitionHash: "def-hash-abc",
-        warmKeep: false,
 
         onInferenceEvent: () => undefined,
       }),
@@ -592,7 +588,6 @@ describe("supervisor spawn: dynamic env", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });
@@ -621,10 +616,10 @@ describe("supervisor spawn: dynamic env", () => {
 describe("supervisor recycle: operator-initiated", () => {
   test("the recycle respawn env satisfies the child spawn-time env contract", async () => {
     // Regression: the recycle respawn env must carry every required
-    // spawn-time key. A recycle env that omitted a required key (STEP_COUNT)
-    // made the respawned child abort in parseSpawnTimeEnv before opening
-    // IPC, so every recycle tore the deployment down. The fake spawner does
-    // not run parseSpawnTimeEnv, so this asserts the captured env against it
+    // spawn-time key. A recycle env that omitted a required key made the
+    // respawned child abort in parseSpawnTimeEnv before opening IPC, so
+    // every recycle tore the deployment down. The fake spawner does not run
+    // parseSpawnTimeEnv, so this asserts the captured env against it
     // directly -- the check the real child binary performs at boot.
     const baseDir = await makeTempDir("recycle-env-");
     const ipcKeypair = await generateKeyPair();
@@ -653,9 +648,11 @@ describe("supervisor recycle: operator-initiated", () => {
       throw new Error("expected two captured spawn envs");
     }
     // Both the initial spawn and the recycle respawn must satisfy the
-    // child's spawn-time env contract, with the same step count.
-    expect(parseSpawnTimeEnv(spawnEnv).stepCount).toBe(1);
-    expect(parseSpawnTimeEnv(respawnEnv).stepCount).toBe(1);
+    // child's spawn-time env contract, for the same definition.
+    const spawned = parseSpawnTimeEnv(spawnEnv);
+    const respawned = parseSpawnTimeEnv(respawnEnv);
+    expect(respawned.definitionHash).toBe(spawned.definitionHash);
+    expect(respawned.closurePackageDir).toBe(spawned.closurePackageDir);
   });
 
   test("drain mail sends, child is killed, fresh child spawns with a new channelId", async () => {
@@ -733,7 +730,6 @@ describe("supervisor recycle: failure after the cohort handoff", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });
@@ -802,7 +798,6 @@ describe("supervisor recycle: respawn handshake bound", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });
@@ -869,7 +864,6 @@ describe("supervisor recycle: respawn handshake bound", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });
@@ -926,7 +920,6 @@ describe("supervisor recycle: deliverSignal phase guard", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });
@@ -1221,7 +1214,6 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });
@@ -1330,7 +1322,6 @@ describe("supervisor recycle: drain-side processing replay", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });
@@ -1387,7 +1378,6 @@ describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
       const spawning = supervisor.spawn({
         stepOrder: ["step-1"],
         definitionHash: "def-hash-shutdown-race",
-        warmKeep: false,
         onInferenceEvent: () => undefined,
       });
       await tracker.awaitChildren(1);
@@ -1467,7 +1457,6 @@ describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
     const spawning = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-shutdown-before-spawn",
-      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     await tracker.awaitChildren(1);
@@ -1544,7 +1533,6 @@ describe("supervisor recycle: shutdown owns the retiring dispatch loop", () => {
     const spawning = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-retiring-loop",
-      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     await tracker.awaitChildren(1);
@@ -1615,7 +1603,6 @@ describe("supervisor recycle: external drain phase guard", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-drain-guard",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });
@@ -1869,7 +1856,6 @@ describe("supervisor recycle: the new child's authority", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     return { supervisor, spawnPromise };
@@ -2102,7 +2088,6 @@ describe("supervisor recycle: the new child's authority", () => {
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
-      warmKeep: false,
       onInferenceEvent: () => undefined,
     });
     return { supervisor, spawnPromise };
@@ -2124,7 +2109,6 @@ describe("supervisor recycle: the new child's authority", () => {
       supervisor.spawn({
         stepOrder: ["step-1"],
         definitionHash: "def-hash-abc",
-        warmKeep: false,
         onInferenceEvent: () => undefined,
       }),
     ).rejects.toThrow(/synthetic spawn ENOENT/);
