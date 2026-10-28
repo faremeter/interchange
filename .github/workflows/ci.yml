@@ -10,6 +10,9 @@ on:
   # the "make all" check.
   push:
     branches: [main]
+  # A manual run checks the tip of the selected branch, e.g. a commit that
+  # reached main without a run. To check an older commit, push a branch at it.
+  workflow_dispatch:
 
 concurrency:
   # PRs group by number so a newer push supersedes and cancels the stale run.
@@ -21,7 +24,9 @@ concurrency:
   # guarantees every commit on main runs; cancel-in-progress only governs PR
   # supersession (it does not protect a pending run, so it cannot carry this).
   # The group is workflow-run scoped, so a supersession cancels all jobs of the
-  # stale run together.
+  # stale run together. A manual run has no PR number, so it groups by the SHA
+  # of the selected branch tip. Every run in a SHA group tests the same commit,
+  # so an eviction there never leaves a commit unvalidated.
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
