@@ -211,6 +211,57 @@ describe("resume awaiting signal", () => {
     expect(types).toContain("RunCompleted");
   });
 
+  test("a resumed run's steps read the trigger payload its RunStarted recorded", async () => {
+    const runId = "run-resumed-trigger";
+    const def = defineWorkflow({
+      id: "wait-resume-trigger-input",
+      trigger: { type: "manual" },
+      steps: {
+        gate: awaitSignal({ name: "go" }),
+        after: step({
+          agent: resumeAgent("after"),
+          after: ["gate"],
+          input: { from: "trigger.payload" },
+        }),
+      },
+    });
+    const inputs: unknown[] = [];
+    const channel = createObservedSignalChannel();
+    const env = buildEnv(def, {
+      signalChannel: channel,
+      invokeStep: async (req) => {
+        inputs.push(req.input);
+        return { output: null };
+      },
+    });
+    const seed: WorkflowEvent[] = [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId,
+        definitionHash: "x",
+        trigger: { type: "manual", payload: { text: "first mail" } },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "gate",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      { kind: "SignalAwaited", seq: 3, at, stepId: "gate", signalName: "go" },
+    ];
+
+    const handle = runtimeRun(def, env, { runId, resumeFromEvents: seed });
+    await channel.awaitAwaitedCount("go", 1);
+    await channel.deliver("go", { resumed: true }, "sig-live");
+
+    expect((await handle.complete).terminalStatus).toBe("completed");
+    expect(inputs).toEqual([{ text: "first mail" }]);
+  });
+
   test("resumes a seed that already carries the SignalReceived (gate in-flight), completing it without a live deliver", async () => {
     const runId = "run-received";
     const env = buildEnv(gateOnly);

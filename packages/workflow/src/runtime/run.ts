@@ -1035,7 +1035,11 @@ async function executeRunBody(
   // protects these `resolveRef` calls runs up front, before any blob
   // resolution.
   const canonicalLog = await env.repoStore.read(runId);
+  // Selectors read the trigger payload the log's RunStarted recorded, so a
+  // resume, which is given none, reads what the run started with.
+  let triggerPayload = options.triggerPayload;
   for (const event of canonicalLog) {
+    if (event.kind === "RunStarted") triggerPayload = event.trigger.payload;
     if (event.kind !== "StepCompleted") continue;
     stepOutputs[event.stepId] = await env.blobs.resolveRef(event.output.ref);
   }
@@ -1180,7 +1184,7 @@ async function executeRunBody(
       for (const primitive of ready) {
         inFlight.add(primitive.id);
         const ctx: SelectorContext = {
-          trigger: { payload: options.triggerPayload },
+          trigger: { payload: triggerPayload },
           steps: Object.fromEntries(
             Object.entries(stepOutputs).map(([id, output]) => [id, { output }]),
           ),
@@ -2952,10 +2956,15 @@ async function runOnTrigger(
         );
       case "relink-body":
         // The event's body was mid-flight. Re-spawn it from its own durable log
-        // on the same event; `currentInput` is unused, since the body has a
-        // durable RunStarted.
+        // on the same event, whose RunStarted holds its input; a body whose log
+        // is gone starts over with the event's input.
         eventIndex = plan.eventIndex;
-        currentInput = undefined;
+        currentInput =
+          plan.startsOverWith === undefined
+            ? undefined
+            : plan.startsOverWith.from === "trigger"
+              ? evaluate({ from: "trigger.payload" }, selectorCtx)
+              : plan.startsOverWith.payload;
         resumeRelays = plan.relays;
         break;
       case "advance-with-input":
@@ -3664,8 +3673,14 @@ async function raceContainerSignalRelay(
 type OnTriggerResumePlan<R = PlannedChildRelay> =
   | { kind: "fresh" }
   // The event's body was mid-flight: re-spawn it from its own log and drive
-  // these relays first, none when nothing waits on the section.
-  | { kind: "relink-body"; eventIndex: number; relays: R[] }
+  // these relays first, none when nothing waits on the section. A body whose
+  // log is gone starts over with `startsOverWith`.
+  | {
+      kind: "relink-body";
+      eventIndex: number;
+      relays: R[];
+      startsOverWith?: OnTriggerEventInput;
+    }
   | { kind: "reawait-input"; eventIndex: number; existingSignalName?: string }
   | { kind: "advance-with-input"; eventIndex: number; input: unknown }
   | {
@@ -3927,6 +3942,12 @@ async function finishOnTriggerResume(
       kind: "relink-body",
       eventIndex,
       relays: containerRelays(primitive.id, log, state, sinceSeq),
+      startsOverWith: onTriggerEventInput(
+        primitive.id,
+        log,
+        eventIndex,
+        sinceSeq,
+      ),
     };
   }
   const relays = planChildRelays(
@@ -4256,6 +4277,50 @@ export async function onTriggerOccurrenceReattach(args: {
   } catch {
     return { kind: "rejected" };
   }
+}
+
+// The input an onTrigger event's body was spawned with: the run's trigger
+// payload for event 0, else what the section's input park delivered.
+type OnTriggerEventInput =
+  | { from: "trigger" }
+  | { from: "input"; payload: unknown };
+
+/**
+ * The input event `eventIndex` of an onTrigger section started with, for a body
+ * that starts over without its log. A later event took what the section's last
+ * input park before the body's `ChildSpawned` at `spawnSeq` received.
+ */
+function onTriggerEventInput(
+  stepId: string,
+  log: readonly WorkflowEvent[],
+  eventIndex: number,
+  spawnSeq: number,
+): OnTriggerEventInput {
+  if (eventIndex === 0) return { from: "trigger" };
+  let inputAwait: string | undefined;
+  for (const event of log) {
+    if (
+      event.seq < spawnSeq &&
+      event.kind === "SignalAwaited" &&
+      event.stepId === stepId &&
+      controlParkKindOf(event) === "input"
+    ) {
+      inputAwait = event.signalName;
+    }
+  }
+  for (const event of log) {
+    if (
+      inputAwait !== undefined &&
+      event.seq < spawnSeq &&
+      event.kind === "SignalReceived" &&
+      event.signalName === inputAwait
+    ) {
+      return { from: "input", payload: event.payload };
+    }
+  }
+  throw new Error(
+    `onTrigger ${stepId} resume: the body of event ${String(eventIndex)} lost its log, and the log holds no input that started that event`,
+  );
 }
 
 /**

@@ -495,6 +495,32 @@ function parkedBody(
   return body;
 }
 
+// A body that runs until the section is torn down, recording the input each
+// spawn of it was given. With `endFirst`, the first spawn ends at once.
+function recordingBody(
+  inputs: unknown[],
+  opts: { endFirst?: boolean } = {},
+): SpawnSuspendableChild {
+  return async ({ input, signal }) => {
+    inputs.push(input);
+    const ends = opts.endFirst === true && inputs.length === 1;
+    return {
+      next: () =>
+        ends
+          ? Promise.resolve({ kind: "terminal", terminalStatus: "completed" })
+          : new Promise((resolve) => {
+              signal.addEventListener("abort", () => {
+                resolve({ kind: "terminal", terminalStatus: "cancelled" });
+              });
+            }),
+      resume: async () => {
+        throw new Error("resume on a body that does not park");
+      },
+      deliverSignal: async () => undefined,
+    };
+  };
+}
+
 // The DEPLOYED form of a section carries a body ref (deploy materializes the
 // inline body to a workflow asset); build it directly since runOnTrigger runs
 // the body by ref.
@@ -1042,6 +1068,70 @@ describe("runOnTrigger", () => {
     await run.cancel("supervisor-operator", "test done");
     await run.complete.catch(() => undefined);
   });
+
+  test.each([
+    { event: 0, payload: { text: "event-0" } },
+    { event: 1, payload: { text: "event-1" } },
+  ])(
+    "a body of event $event whose log is gone starts over with that event's input",
+    async ({ event, payload }) => {
+      const runId = `sec-lost-body-${String(event)}`;
+      const def = sectionWorkflow();
+      const repoStore1 = createInMemoryRepoStore();
+      const channel1 = createInMemorySignalChannel();
+      const run1 = runtimeRun(
+        def,
+        buildEnv({
+          def,
+          repoStore: repoStore1,
+          signalChannel: channel1,
+          spawnSuspendableChild: recordingBody([], { endFirst: event === 1 }),
+        }),
+        { runId, triggerPayload: { text: "event-0" } },
+      );
+      if (event === 1) {
+        const input = await waitForPark(repoStore1, runId, "input", 1);
+        await channel1.deliver(input, payload, "sig-1");
+      }
+      await waitForNthEvent(
+        repoStore1,
+        runId,
+        (e) => e.kind === "ChildSpawned",
+        event + 1,
+      );
+      // A copy: the store hands out its live log, which the cancel below
+      // extends.
+      const parentLog = [...(await repoStore1.read(runId))];
+      await run1.cancel("supervisor-operator", "crash");
+      await run1.complete.catch(() => undefined);
+
+      // Only the parent log survives the restart.
+      const repoStore2 = createInMemoryRepoStore();
+      await repoStore2.appendBatch(runId, parentLog);
+      const inputs: unknown[] = [];
+      const spawned = recordingBody(inputs);
+      const respawned = Promise.withResolvers<undefined>();
+      const run2 = runtimeRun(
+        def,
+        buildEnv({
+          def,
+          repoStore: repoStore2,
+          signalChannel: createInMemorySignalChannel(),
+          spawnSuspendableChild: async (args) => {
+            const handle = await spawned(args);
+            respawned.resolve(undefined);
+            return handle;
+          },
+        }),
+        { runId, resumeFromEvents: parentLog },
+      );
+      await respawned.promise;
+      expect(inputs).toEqual([payload]);
+
+      await run2.cancel("supervisor-operator", "test done");
+      await run2.complete.catch(() => undefined);
+    },
+  );
 
   test("advances to the next event with a trigger delivered before the crash spawned its body", async () => {
     const runId = "sec-resume-input";
@@ -1902,6 +1992,7 @@ describe("runOnTrigger", () => {
     const openId = "corr-b";
     const event0 = sectionEventRunId(runId, 0);
     const event1 = sectionEventRunId(runId, 1);
+    const inputChannel = signalName("input-corr-1");
     const seed: WorkflowEvent[] = [
       {
         kind: "RunStarted",
@@ -1961,8 +2052,24 @@ describe("runOnTrigger", () => {
         terminalStatus: "completed",
       },
       {
-        kind: "ChildSpawned",
+        kind: "SignalAwaited",
         seq: 8,
+        at,
+        stepId: "section",
+        signalName: inputChannel,
+        parkKind: "input",
+      },
+      {
+        kind: "SignalReceived",
+        seq: 9,
+        at,
+        signalName: inputChannel,
+        signalId: "trigger-1",
+        payload: { text: "event-1" },
+      },
+      {
+        kind: "ChildSpawned",
+        seq: 10,
         at,
         stepId: "section",
         childRunId: event1,
@@ -1970,7 +2077,7 @@ describe("runOnTrigger", () => {
       },
       {
         kind: "SignalAwaited",
-        seq: 9,
+        seq: 11,
         at,
         stepId: "section",
         signalName: name,
@@ -1999,7 +2106,8 @@ describe("runOnTrigger", () => {
 
     await channel.deliver(name, { text: "turn-0" }, "sig-turn-0", abandonedId);
     await channel.deliver(name, { text: "turn-1" }, "sig-turn-1", openId);
-    await waitForPark(repoStore, runId, "input", 1);
+    // The seed holds event 1's input park; the second is the re-arm.
+    await waitForPark(repoStore, runId, "input", 2);
 
     expect(body.delivered).toEqual({
       name,

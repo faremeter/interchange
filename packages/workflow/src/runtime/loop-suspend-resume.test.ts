@@ -501,6 +501,46 @@ describe("loop iteration suspend crash-resume", () => {
     });
   });
 
+  test("a body whose log is gone starts over with its iteration's input", async () => {
+    const runId = "await-run-lost-body";
+    const blobs = createInMemoryBlobSubstrate();
+    const repoStore1 = createInMemoryRepoStore();
+    void runtimeRun(
+      awaitParent,
+      buildEnv({
+        parentDef: awaitParent,
+        repoStore: repoStore1,
+        blobs,
+        signalChannel: createInMemorySignalChannel(),
+        invokeAction: awaitInvokeAction({ n: 0 }),
+      }),
+      { runId },
+    ).complete;
+    await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
+    const parentLog = await repoStore1.read(runId);
+
+    // Only the parent log survives the restart.
+    const ranPre = Promise.withResolvers<unknown>();
+    const run2 = runtimeRun(
+      awaitParent,
+      buildEnv({
+        parentDef: awaitParent,
+        repoStore: createInMemoryRepoStore(),
+        blobs,
+        signalChannel: createInMemorySignalChannel(),
+        invokeAction: async ({ handler, input }) => {
+          if (handler === "pre") ranPre.resolve(input);
+          return { output: { ran: true } };
+        },
+      }),
+      { runId, resumeFromEvents: parentLog },
+    );
+    expect(await ranPre.promise).toBe(0);
+
+    await run2.signal("go", { done: true }, "sig-1");
+    expect((await run2.complete).terminalStatus).toBe("completed");
+  });
+
   test("a body whose log is gone after it took a relayed signal fails instead of waiting for it again", async () => {
     const runId = "lost-body-after-input";
     const blobs = createInMemoryBlobSubstrate();
