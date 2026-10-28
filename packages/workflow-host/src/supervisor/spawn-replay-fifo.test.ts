@@ -392,7 +392,6 @@ async function boot(opts: { prefix: string }): Promise<
     workflowRunRepoId,
     workflowRunRef: "refs/heads/main",
     anchorRunId: "run_deployment-x",
-    stepCount: 1,
     deploymentMailAddress,
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
@@ -404,7 +403,6 @@ async function boot(opts: { prefix: string }): Promise<
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
-    warmKeep: false,
 
     onInferenceEvent: () => {
       /* unused */

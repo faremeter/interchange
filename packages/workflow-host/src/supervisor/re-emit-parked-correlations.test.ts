@@ -254,7 +254,6 @@ async function setup(opts: {
     workflowRunRepoId: { kind: "workflow-run", id: DEPLOYMENT_ID },
     workflowRunRef: "refs/heads/main",
     anchorRunId: DEPLOYMENT_ID,
-    stepCount: 1,
     deploymentMailAddress: AGENT_ADDRESS,
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: () => AGENT_ADDRESS,
@@ -270,7 +269,6 @@ async function setup(opts: {
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash",
-    warmKeep: false,
 
     onInferenceEvent: () => undefined,
   });
@@ -524,7 +522,6 @@ describe("supervisor reEmitParkedCorrelations", () => {
       workflowRunRepoId: { kind: "workflow-run", id: DEPLOYMENT_ID },
       workflowRunRef: "refs/heads/main",
       anchorRunId: DEPLOYMENT_ID,
-      stepCount: 1,
       deploymentMailAddress: AGENT_ADDRESS,
       readPrincipal: { kind: "supervisor" },
       deriveStepAddress: () => AGENT_ADDRESS,

@@ -349,7 +349,6 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
       workflowRunRef: "refs/heads/main",
       anchorRunId: "run_deployment-x",
-      stepCount: 1,
       deploymentMailAddress: "run_deployment-x@example.com",
       readPrincipal: { kind: "supervisor" },
       deriveStepAddress: ({ runId, stepId }) =>
@@ -362,7 +361,6 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     const spawnP = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash",
-      warmKeep: false,
 
       onInferenceEvent: () => undefined,
     });

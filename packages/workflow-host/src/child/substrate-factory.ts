@@ -152,6 +152,7 @@ import {
 } from "./credentials-backed-authorize";
 import {
   eagerlyResolveActionHandlers,
+  isWarmKeptDeployment,
   type CredentialWiring,
   type RunWorkflowChildBindings,
   type SourcesSnapshotRef,
@@ -2208,6 +2209,7 @@ export function createSidecarSubstrateFactory(
         `sidecar workflow-child substrate config failed validation: ${validated.summary}`,
       );
     }
+    const warmKeep = isWarmKeptDeployment(env.definition);
 
     const stepInferenceSources = parseStepInferenceSources(
       validated.STEP_INFERENCE_SOURCES,
@@ -2329,17 +2331,17 @@ export function createSidecarSubstrateFactory(
     // and each store restores its prior snapshot from the substrate on
     // first acquire.
     const conversationSigner = createStepStorageSigner(signingKey);
-    const durableConversation: DurableConversationRegistry | undefined = env
-      .spawn.warmKeep
-      ? createDurableConversationRegistry({
-          dataDir: validated.SIDECAR_DATA_DIR,
-          workflowRunRepoId,
-          workflowRunRef: validated.WORKFLOW_RUN_REF,
-          substrate,
-          principal,
-          signer: conversationSigner,
-        })
-      : undefined;
+    const durableConversation: DurableConversationRegistry | undefined =
+      warmKeep
+        ? createDurableConversationRegistry({
+            dataDir: validated.SIDECAR_DATA_DIR,
+            workflowRunRepoId,
+            workflowRunRef: validated.WORKFLOW_RUN_REF,
+            substrate,
+            principal,
+            signer: conversationSigner,
+          })
+        : undefined;
 
     // Per-step tool-mark floor grants, keyed by base step id. The step
     // env builder derives and records each step's floor from its
@@ -2366,7 +2368,7 @@ export function createSidecarSubstrateFactory(
       workflowRunRepoId,
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
-      stepCount: env.spawn.stepCount,
+      stepCount: env.definition.stepOrder.length,
       outboundMailBridge: env.outboundMailBridge,
       cache: stepToolCache,
       adapters: childAdapterRegistry,
@@ -2447,7 +2449,7 @@ export function createSidecarSubstrateFactory(
       workflowRunRepoId,
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
-      stepCount: env.spawn.stepCount,
+      stepCount: env.definition.stepOrder.length,
       outboundMailBridge: env.outboundMailBridge,
       cache: stepToolCache,
       adapters: childAdapterRegistry,
@@ -2518,13 +2520,12 @@ export function createSidecarSubstrateFactory(
     // authorize closure vary per step.
     //
     // The `warmCache` (design §3b) is the run-loop's per-deployment
-    // warm-agent cache, present only for the single-step long-lived
-    // deployment the deploy projection marked a warm candidate. When
-    // supplied, the adapter builds the agent once and reuses it across
-    // messages; when absent, it keeps instantiate-send-teardown per
-    // step. Forwarding it here is the only warm-keep wiring this binding
-    // needs -- the adapter and the run-loop own the rest of the
-    // lifecycle.
+    // warm-agent cache, present only for a single-step deployment's
+    // long-lived agent. When supplied, the adapter builds the agent once
+    // and reuses it across messages; when absent, it keeps
+    // instantiate-send-teardown per step. Forwarding it here is the only
+    // warm-keep wiring this binding needs -- the adapter and the run-loop
+    // own the rest of the lifecycle.
     // Run-boundary durability flush (design §3c). When the deployment is
     // warm-kept, mirror the warm agent's conversation snapshot to the
     // workflow-run substrate after each message's send settles. The key
@@ -2670,7 +2671,7 @@ export function createSidecarSubstrateFactory(
     // termination for inspection until allocation cleanup. Internal cold runs
     // can reclaim their own scratch once they finish.
     let cleanupRunStorage: ((runId: string) => Promise<void>) | undefined;
-    if (!env.spawn.warmKeep) {
+    if (!warmKeep) {
       const topLevelRun = parseRunAddress(env.spawn.mailboxAddress);
       if (topLevelRun === null)
         throw new Error(
@@ -2701,7 +2702,7 @@ export function createSidecarSubstrateFactory(
       attempt,
       correlationId,
     }) =>
-      env.spawn.warmKeep
+      warmKeep
         ? readWarmParkedApprovalSnapshot({
             substrate,
             workflowRunRepoId,
@@ -2731,7 +2732,7 @@ export function createSidecarSubstrateFactory(
       attempt,
     }) =>
       toParkedApprovalOps(
-        env.spawn.warmKeep
+        warmKeep
           ? await readWarmParkedPendingOperations({
               substrate,
               workflowRunRepoId,

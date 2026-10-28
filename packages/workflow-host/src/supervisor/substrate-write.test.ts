@@ -440,7 +440,6 @@ async function bootSupervisorToReady(
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
     anchorRunId: "deployment-x",
-    stepCount: 1,
     deploymentMailAddress: "deployment-x@example.com",
     readPrincipal: { kind: "supervisor" },
     deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
@@ -456,7 +455,6 @@ async function bootSupervisorToReady(
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
-    warmKeep: false,
 
     onInferenceEvent: () => {
       /* unused */

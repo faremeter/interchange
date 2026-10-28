@@ -159,10 +159,9 @@ export interface WorkflowStepInvokerOpts {
    * it -- not in this adapter's `finally`.
    *
    * Supplying a cache is the explicit warm-keep signal: the run-loop
-   * builds and threads a cache only for the single-step long-lived
-   * deployment the deploy projection marked a warm candidate. Multi-step
-   * steps omit it and keep instantiate-send-teardown, so a multi-step
-   * agent is never warm-kept.
+   * builds and threads a cache only for a single-step deployment's
+   * long-lived agent. Multi-step steps omit it and keep
+   * instantiate-send-teardown, so a multi-step agent is never warm-kept.
    */
   warmCache?: WarmAgentCache;
   /**

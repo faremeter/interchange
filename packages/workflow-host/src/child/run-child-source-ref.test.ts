@@ -516,7 +516,6 @@ function makeSourceRefEnv(opts: {
     DEPLOYMENT_ID: "deployment-x",
     DEFINITION_HASH: opts.definitionHash,
     MAILBOX_ADDRESS: "deployment-x@example.com",
-    STEP_COUNT: "1",
     CLOSURE_PACKAGE_DIR: opts.closurePackageDir,
   };
 }
@@ -547,7 +546,6 @@ describe("source-ref run child", () => {
         DEPLOYMENT_ID: "deployment-x",
         DEFINITION_HASH: "abc",
         MAILBOX_ADDRESS: "deployment-x@example.com",
-        STEP_COUNT: "1",
       }),
     ).toThrow(/CLOSURE_PACKAGE_DIR/);
   });

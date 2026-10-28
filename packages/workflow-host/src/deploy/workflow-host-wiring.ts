@@ -535,12 +535,6 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    */
   credentialDelivery?: CredentialDelivery;
   /**
-   * Step count of the deployed `WorkflowDefinition` (`stepOrder.length`).
-   * Threaded into the child's spawn-time env so its deploy-tree read
-   * collapses onto the head for a single-step deployment.
-   */
-  stepCount: number;
-  /**
    * Every step id in the deployment's flat step-id namespace: its
    * `stepOrder` plus the step ids of every `loop` body it carries. The
    * `onRunStart` grants sink walks these to assemble the per-run
@@ -1998,7 +1992,6 @@ export function createSidecarDeployRouter<
         },
         workflowRunRef: "refs/heads/main",
         runId,
-        stepCount: spec.definition.stepOrder.length,
         stepOrder: credentialStepIds,
         deploymentMailAddress: spec.agentAddress,
         ...(credentialDelivery !== undefined ? { credentialDelivery } : {}),
@@ -2096,13 +2089,12 @@ export function createSidecarDeployRouter<
 
       // Warm-keep is the single-step launched-agent deploy: the sole step
       // IS the long-lived agent, so the child warm-keeps it across
-      // messages. A multi-step deploy keeps instantiate-send-teardown per
-      // step. The signal is carried explicitly down through the spawn env.
+      // messages and its sources can rotate in place. A multi-step deploy
+      // keeps instantiate-send-teardown per step.
       const warmKeep = spec.definition.stepOrder.length === 1;
       const spawnOpts: SpawnOpts = {
         stepOrder: [...credentialStepIds],
         definitionHash,
-        warmKeep,
         onInferenceEvent: (event) => {
           publishInferenceEvent(
             spec.agentAddress,
@@ -3341,7 +3333,6 @@ export function createSidecarWorkflowSupervisor(
     workflowRunRepoId: opts.workflowRunRepoId,
     workflowRunRef: opts.workflowRunRef,
     anchorRunId: opts.runId,
-    stepCount: opts.stepCount,
     deploymentMailAddress: opts.deploymentMailAddress,
     readPrincipal: supervisorPrincipal,
     deriveStepAddress: opts.deriveStepAddress,

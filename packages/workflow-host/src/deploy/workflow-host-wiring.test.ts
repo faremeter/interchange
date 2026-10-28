@@ -167,7 +167,6 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRepoId: { kind: "workflow-run", id: "wire-test" },
       workflowRunRef: "refs/heads/main",
       runId: "wire-test",
-      stepCount: 1,
       stepOrder: ["step1"],
       deploymentMailAddress: "wire-test@example.com",
       deriveStepAddress: ({ runId, stepId }) =>
@@ -205,7 +204,6 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRepoId: { kind: "workflow-run", id: "inbound" },
       workflowRunRef: "refs/heads/main",
       runId: "inbound",
-      stepCount: 1,
       stepOrder: ["step1"],
       deploymentMailAddress: "inbound@example.com",
       deriveStepAddress: ({ runId, stepId }) =>
@@ -272,7 +270,6 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRepoId: { kind: "workflow-run", id: anchorRunId },
       workflowRunRef: "refs/heads/main",
       runId: anchorRunId,
-      stepCount: 1,
       stepOrder: ["step-1"],
       deploymentMailAddress: `${anchorRunId}@example.com`,
       deriveStepAddress: ({ runId: dep, stepId }) =>
