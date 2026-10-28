@@ -104,7 +104,8 @@ export class PendingTracker<
    * transports, tests) settles it. When `timeoutMs` elapses the entry is
    * dropped and `reject` is invoked with `timeoutMessage` — the same
    * rejection path an error reply frame uses, so per-site cleanup (routing
-   * rollback, address bookkeeping) runs exactly once either way.
+   * rollback, address bookkeeping) runs exactly once either way. A null
+   * `timeoutMs` arms none: the entry waits for its reply or its connection.
    *
    * `meta` is the opaque per-entry payload settle-time ownership checks read
    * off `get`; pass `undefined` when the round-trip carries none.
@@ -113,7 +114,7 @@ export class PendingTracker<
     key: Key,
     ws: WsHandle,
     options: {
-      timeoutMs: number;
+      timeoutMs: number | null;
       timeoutMessage: string;
       resolve(value: Value): void;
       reject(error: string | Failure): void;
@@ -124,22 +125,25 @@ export class PendingTracker<
     // below can recognize it. Allocated before `schedule`, because the
     // handler closes over it and the entry itself does not exist yet.
     const token = Symbol("pending-entry");
-    const cancelTimeout = this.schedule(() => {
-      // Only the entry this call registered may be timed out. The global
-      // timer never fires a cancelled timeout, but `schedule` is injectable
-      // now and a caller's implementation is not owed that guarantee -- so
-      // the handler checks rather than trusting cancellation to be perfect.
-      // The check compares `token` rather than asking whether the key is
-      // occupied: keys are reused (`pendingDeploys` is keyed by agent
-      // address), so a stale fire can find the key held by a live successor.
-      // Treating that as its own entry would drop the successor without
-      // settling it and run this already-settled entry's per-site cleanup a
-      // second time.
-      const current = this.entries.get(key);
-      if (current === undefined || current.token !== token) return;
-      this.entries.delete(key);
-      options.reject(options.timeoutMessage);
-    }, options.timeoutMs);
+    const cancelTimeout =
+      options.timeoutMs === null
+        ? () => undefined
+        : this.schedule(() => {
+            // Only the entry this call registered may be timed out. The global
+            // timer never fires a cancelled timeout, but `schedule` is injectable
+            // now and a caller's implementation is not owed that guarantee -- so
+            // the handler checks rather than trusting cancellation to be perfect.
+            // The check compares `token` rather than asking whether the key is
+            // occupied: keys are reused (`pendingDeploys` is keyed by agent
+            // address), so a stale fire can find the key held by a live successor.
+            // Treating that as its own entry would drop the successor without
+            // settling it and run this already-settled entry's per-site cleanup a
+            // second time.
+            const current = this.entries.get(key);
+            if (current === undefined || current.token !== token) return;
+            this.entries.delete(key);
+            options.reject(options.timeoutMessage);
+          }, options.timeoutMs);
     this.entries.set(key, {
       key,
       ws,
