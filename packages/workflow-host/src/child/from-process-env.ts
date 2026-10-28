@@ -20,6 +20,7 @@ import fs from "node:fs";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
+import type { WorkflowDefinition } from "@intx/workflow";
 
 import { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
 import {
@@ -50,6 +51,7 @@ import {
   type NdjsonWriter,
 } from "../ipc/control-sender";
 import type { FrameWriter } from "../ipc/event-sender";
+import { loadVerifiedWorkflowDefinitionFromClosure } from "./verified-definition-loader";
 
 /**
  * File descriptor the supervisor's `Bun.spawn` wires the
@@ -78,6 +80,11 @@ export const EVENT_CHANNEL_FD = 3;
 export interface SubstrateFactoryEnv {
   /** Parsed spawn-time env (IPC trust anchors + deployment ids). */
   readonly spawn: SpawnTimeEnv;
+  /**
+   * The deployment's live workflow definition, evaluated from the closure at
+   * `spawn.closurePackageDir` and verified against `spawn.definitionHash`.
+   */
+  readonly definition: WorkflowDefinition;
   /**
    * Substrate-config keys the host placed in
    * `WorkflowSupervisorBindings.substrateEnv`. The factory narrows
@@ -186,6 +193,8 @@ export interface RunWorkflowChildFromProcessEnvOpts {
  * Failures surface loudly:
  *   - missing or malformed spawn-time env throws via
  *     `parseSpawnTimeEnv`;
+ *   - a closure that fails to evaluate, or whose definition does not
+ *     project to the approved hash, throws before the factory runs;
  *   - a substrate-config key listed in `substrateConfigKeys` whose
  *     value is missing or empty throws;
  *   - factory rejection propagates;
@@ -215,6 +224,12 @@ export async function runWorkflowChildFromProcessEnv(
   // to build its `ChildHubPackSink`, and the same sender carries the
   // `ready` frame `runWorkflowChild` emits.
   const childKeyPair = await generateKeyPair();
+  // The one evaluation of the workflow code in this process. The factory
+  // and the runtime body both run this verified definition.
+  const definition = await loadVerifiedWorkflowDefinitionFromClosure({
+    packageDir: spawn.closurePackageDir,
+    approvedHash: spawn.definitionHash,
+  });
   // Held until `runWorkflowChild` sends its startup frames: the factory
   // starts the timer scheduler, and a due timer writes through the bridges
   // below before the child is ready.
@@ -239,6 +254,7 @@ export async function runWorkflowChildFromProcessEnv(
   });
   const bindings = await factory({
     spawn,
+    definition,
     substrateConfig,
     substrateWriteBridge,
     outboundMailBridge,
@@ -247,6 +263,7 @@ export async function runWorkflowChildFromProcessEnv(
   });
   return runWorkflowChild({
     env: spawn,
+    definition,
     controlReader,
     controlWriter,
     eventWriter,
