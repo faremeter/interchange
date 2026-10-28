@@ -1979,6 +1979,8 @@ export function createWorkflowSupervisor(
   // Set once shutdown has waited for the last of them. A write started after
   // that would land after the host may have removed the run's repository.
   let detachedWritesClosed = false;
+  // A respawn's replay of `processing/`, which shutdown waits for.
+  const respawnReplays = new Set<Promise<void>>();
 
   function ownDetachedWrite(write: Promise<unknown>): void {
     detachedWrites.add(write);
@@ -4492,6 +4494,10 @@ export function createWorkflowSupervisor(
              the in-flight fold's substrate commit to settle. */
         });
       }
+      if (respawnReplays.size > 0) {
+        bindings.onShutdownWait?.("replay");
+        await Promise.allSettled([...respawnReplays]);
+      }
       // Own the detached writes last, so every write lands before shutdown
       // resolves: the child's, and the consumes the waits above can start. New
       // merges fail once stopping, so what remains is local I/O. A finishing
@@ -4819,22 +4825,35 @@ export function createWorkflowSupervisor(
               bindings.onRespawnWait?.();
               await Promise.all([...detachedWrites]);
             }
-            const { ownedMessageIds } = await scanRunsForBoot(
-              bindings.repoStore,
-              bindings.readPrincipal,
-              bindings.workflowRunRepoId,
-              bindings.workflowRunRef,
-              { runId: deriveWorkflowRunId(bindings.deploymentMailAddress) },
-            );
-            const { retainedMessageIds } =
-              await inboxPrimitives.replayProcessingToInbox(
+            // Shutdown waits for a replay that began before it; one after it
+            // would write a repository its host may already have removed.
+            if (state.phase !== "recycling") {
+              throw new Error("the workflow supervisor is shutting down");
+            }
+            const replay = (async () => {
+              const { ownedMessageIds } = await scanRunsForBoot(
                 bindings.repoStore,
-                inboxWritePrincipal,
+                bindings.readPrincipal,
                 bindings.workflowRunRepoId,
-                bindings.deploymentMailAddress,
-                { ownedMessageIds },
+                bindings.workflowRunRef,
+                { runId: deriveWorkflowRunId(bindings.deploymentMailAddress) },
               );
-            keepOwnedMessages(retainedMessageIds, { childRunning: false });
+              const { retainedMessageIds } =
+                await inboxPrimitives.replayProcessingToInbox(
+                  bindings.repoStore,
+                  inboxWritePrincipal,
+                  bindings.workflowRunRepoId,
+                  bindings.deploymentMailAddress,
+                  { ownedMessageIds },
+                );
+              keepOwnedMessages(retainedMessageIds, { childRunning: false });
+            })();
+            respawnReplays.add(replay);
+            try {
+              await replay;
+            } finally {
+              respawnReplays.delete(replay);
+            }
           },
           abortPriorCohort: () => {
             // Fired by triggerRecycle between the drain and the kill.

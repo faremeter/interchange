@@ -2054,6 +2054,51 @@ describe("supervisor recycle: respawn credentials-read failure", () => {
   });
 });
 
+describe("supervisor recycle: shutdown during the replay", () => {
+  test("a shutdown during a respawn's replay resolves once its write lands", async () => {
+    const baseDir = await makeTempDir("recycle-replay-shutdown-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({ sigtermExits: true });
+    const memory = createMemoryInboxPrimitives();
+    const replaying = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const order: string[] = [];
+    let replays = 0;
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      overrides: {
+        onShutdownWait: (waiting) => {
+          if (waiting === "replay") release.resolve(undefined);
+        },
+        inboxPrimitives: {
+          ...memory,
+          async replayProcessingToInbox(...args) {
+            replays += 1;
+            if (replays === 1) return memory.replayProcessingToInbox(...args);
+            replaying.resolve(undefined);
+            await release.promise;
+            const replayed = await memory.replayProcessingToInbox(...args);
+            order.push("replayed");
+            return replayed;
+          },
+        },
+      },
+    });
+
+    const recycled = supervisor
+      .recycle({ reason: "replay-shutdown-test" })
+      .catch(() => undefined);
+    await replaying.promise;
+    const stopped = supervisor.shutdown().then(() => order.push("stopped"));
+    await stopped;
+    expect(order).toEqual(["replayed", "stopped"]);
+    await recycled;
+  });
+});
+
 describe("supervisor shutdown: teardown robustness", () => {
   test("shutdown still kills the child and reaches stopped when mail unsubscribe throws", async () => {
     const baseDir = await makeTempDir("shutdown-unsub-throw-");
