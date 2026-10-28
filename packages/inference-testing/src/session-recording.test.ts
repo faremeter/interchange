@@ -207,6 +207,59 @@ describe("createRecordingHarness end-to-end", () => {
     expect(typeof requestBody["messages"]).toBe("object");
   });
 
+  test("captures a stream that arrives with no content-type header", async () => {
+    const dir = await makeTmpDir();
+    const harness = createRecordingHarness({
+      outputDir: dir,
+      source: ANTHROPIC_SOURCE,
+      maxExchanges: 1,
+      redactRequestHeaders: [],
+      redactResponseHeaders: [],
+      fetch: async () => {
+        const chunks = wire.completeResponse("anthropic", {
+          text: "ok",
+          headUsage: ZERO_USAGE,
+          tailUsage: { ...ZERO_USAGE, output: 1 },
+        });
+        return new Response(sseResponseFromChunks(chunks).body, {
+          status: 200,
+        });
+      },
+      bypassCIGuardForTests: true,
+    });
+
+    let seq = 0;
+    const events: InferenceEvent[] = [];
+    for await (const ev of harness.runInference({
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "?" }],
+          timestamp: 0,
+        },
+      ],
+      source: ANTHROPIC_SOURCE,
+      nextSeq: () => ++seq,
+    })) {
+      events.push(ev);
+    }
+    await harness.finalize();
+
+    // The built-in adapter declines to classify, so the harness reports
+    // the mismatch exactly as production does; the recorder still writes
+    // the bytes so the quirk can become a fixture.
+    const errorEvent = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
+        e.type === "inference.error",
+    );
+    expect(errorEvent?.data.error.category).toBe("protocol_mismatch");
+
+    const exchangeFiles = (
+      await fs.readdir(path.join(dir, "exchanges", "0"))
+    ).sort();
+    expect(exchangeFiles).toContain("response.sse");
+  });
+
   test("redacts configured request and response headers", async () => {
     const dir = await makeTmpDir();
     const harness = createRecordingHarness({
