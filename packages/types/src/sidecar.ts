@@ -195,18 +195,28 @@ export const HostedIncarnation = type({
   address: type("string").atMostLength(MAX_DEPLOYMENT_ADDRESS_LENGTH),
   generation: Generation,
   state: IncarnationState,
+  // A live incarnation whose workflow child is in standby: stopped while every
+  // run waits, and respawned for its next input.
+  "inStandby?": "true",
   "retention?": DeploymentRetention,
   // Why a stopped incarnation stopped when the Hub did not stop it: its
   // workflow child ended itself, or the sidecar could not restore it. The Hub
   // fails such a deployment.
   "error?": type("string > 0").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
-}).narrow(
-  (incarnation, ctx) =>
-    incarnation.retention === undefined ||
-    incarnation.state === "stopped" ||
-    incarnation.state === "tearing-down" ||
-    ctx.mustBe("stopped before deciding retention"),
-);
+})
+  .narrow(
+    (incarnation, ctx) =>
+      incarnation.retention === undefined ||
+      incarnation.state === "stopped" ||
+      incarnation.state === "tearing-down" ||
+      ctx.mustBe("stopped before deciding retention"),
+  )
+  .narrow(
+    (incarnation, ctx) =>
+      incarnation.inStandby === undefined ||
+      incarnation.state === "live" ||
+      ctx.mustBe("live to be in standby"),
+  );
 export type HostedIncarnation = typeof HostedIncarnation.infer;
 
 // ---------------------------------------------------------------------------
@@ -844,9 +854,13 @@ export const AgentUndeployFrame = type({
 export type AgentUndeployFrame = typeof AgentUndeployFrame.infer;
 
 /**
- * Cancel a workflow, stop its process, or transfer a terminal copy into the
- * retained pool. Retention reports kept/refused only after its decision is
- * durable. The sidecar refuses a command for another generation.
+ * Cancel a workflow, stop its process, transfer a terminal copy into the
+ * retained pool, or put its workflow child in standby or wake it. Retention
+ * reports kept/refused only after its decision is durable. `standby` answers
+ * once the child is stopped and the standby mark is durable, or with the reason
+ * it was abandoned; `wake` answers once a standby request in progress is
+ * abandoned or the child is running again. The sidecar refuses a command for
+ * another generation.
  */
 export const WorkflowControlFrame = type({
   type: "'workflow.control'",
@@ -854,7 +868,7 @@ export const WorkflowControlFrame = type({
   agentAddress: "string",
   generation: Generation,
   runId: "string",
-  action: "'cancel' | 'stop' | 'retain'",
+  action: "'cancel' | 'stop' | 'retain' | 'standby' | 'wake'",
   reason: "string",
 });
 export type WorkflowControlFrame = typeof WorkflowControlFrame.infer;
@@ -876,17 +890,28 @@ export const WorkflowRunRefTips = type({
 );
 export type WorkflowRunRefTips = typeof WorkflowRunRefTips.infer;
 
+// `string.date.iso` also admits forms such as week dates that `Date` cannot read.
+const WakeAtTime = type("string.date.iso").narrow(
+  (value, ctx) =>
+    !Number.isNaN(Date.parse(value)) || ctx.mustBe("a time a Date can read"),
+);
+
 export const WorkflowControlAckFrame = type({
   type: "'workflow.control.ack'",
   requestId: "string",
-  "error?": "string",
+  "error?": type("string").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
   "retention?": DeploymentRetention,
   /**
-   * A stopped worker's ref tips, read after its child exited. The Hub
-   * confirms a live stop only once it holds the same tips. Retain follows
-   * the existing terminal-history cutoff instead of importing later commits.
+   * The ref tips of a stopped worker or one in standby, read after its child
+   * exited. The Hub confirms a live stop or a standby request only once it
+   * holds the same tips. Retain follows the existing terminal-history cutoff
+   * instead of importing later commits.
    */
   "refTips?": WorkflowRunRefTips,
+  /**
+   * The earliest pending timer of the child in standby, which wakes it.
+   */
+  "wakeAt?": WakeAtTime,
 });
 export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
 
@@ -906,6 +931,21 @@ export const DeploymentStoppedFrame = type({
   "refTips?": WorkflowRunRefTips,
 });
 export type DeploymentStoppedFrame = typeof DeploymentStoppedFrame.infer;
+
+/**
+ * Reports a deployment in standby whose workflow child is running again though
+ * the Hub did not wake it. `reason` says what did, such as mail, a signal, a
+ * cancellation, its earliest pending timer, or a restart. The sidecar queues
+ * it while no connection is welcomed, so a report sent around a reconnect is
+ * delivered after `welcome`.
+ */
+export const DeploymentWokenFrame = type({
+  type: "'deployment.woken'",
+  agentAddress: type("string").atMostLength(MAX_DEPLOYMENT_ADDRESS_LENGTH),
+  generation: Generation,
+  reason: type("string > 0").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
+});
+export type DeploymentWokenFrame = typeof DeploymentWokenFrame.infer;
 
 /**
  * The Hub's answer to `hello`, sent once it has reconciled the reported
@@ -1191,6 +1231,7 @@ export const SidecarFrame = type.or(
   WorkflowProbeErrorFrame,
   WorkflowControlAckFrame,
   DeploymentStoppedFrame,
+  DeploymentWokenFrame,
 );
 export type SidecarFrame = typeof SidecarFrame.infer;
 

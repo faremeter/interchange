@@ -607,6 +607,7 @@ const orchestrator = createSidecarOrchestrator({
     publishWorkflowInferenceEvent,
     publishWorkflowSuspension,
     publishDeploymentStopped,
+    publishDeploymentWoken,
   }) => {
     const router = createSidecarDeployRouter({
       ...capacity,
@@ -628,6 +629,7 @@ const orchestrator = createSidecarOrchestrator({
       reportDeploymentRefTips: (incarnation) =>
         wrappedRepoStore.reportWorkflowRunRefTips(incarnation),
       publishDeploymentStopped,
+      publishDeploymentWoken,
       // The run record lives in the repository and goes last, so a crash
       // partway through leaves it for the next boot to report.
       removeRunRepository: (runId) =>
