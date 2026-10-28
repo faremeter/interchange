@@ -40,6 +40,7 @@ import {
   SourceRefPin,
 } from "@intx/types/sidecar";
 
+import { RecordedStandby } from "../supervisor/recorded-standby";
 import {
   removeFileAtomicDurable,
   writeFileAtomicDurable,
@@ -108,6 +109,9 @@ const workflowRunRecordBase = {
   "state?": "'stopped' | 'tearing-down'",
   "retention?": DeploymentRetention,
   "error?": "string > 0",
+  // Set while the child is in standby: what a restart needs to restore the
+  // standby without the child while the run's history is still at `tip`.
+  "standby?": RecordedStandby,
 } as const;
 
 /**
@@ -394,6 +398,32 @@ export async function markWorkflowRunRecord(
             : {}),
           ...(mark.error !== undefined ? { error: mark.error } : {}),
         },
+        null,
+        2,
+      ),
+      { mode: 0o600, requireDirectorySync: true },
+    );
+    return true;
+  });
+}
+
+/**
+ * Record a live deployment's child as in standby, or clear it with `null`.
+ * Returns false when the boot scan would not accept the run's record.
+ */
+export async function markWorkflowRunRecordInStandby(
+  dataDir: string,
+  runId: string,
+  standby: RecordedStandby | null,
+): Promise<boolean> {
+  return withWorkflowRunRecord(dataDir, runId, async (path) => {
+    const checked = await readWorkflowRunRecord(path, runId);
+    if (checked === null) return false;
+    const { standby: _replaced, ...record } = checked;
+    await writeFileAtomicDurable(
+      path,
+      JSON.stringify(
+        standby === null ? record : { ...record, standby },
         null,
         2,
       ),

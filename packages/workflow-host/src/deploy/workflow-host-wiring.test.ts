@@ -42,6 +42,7 @@ import {
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
+  type WorkflowRunRefTips,
 } from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 import {
@@ -51,6 +52,7 @@ import {
   createChangeNotifier,
   sendDefinition,
   waitForUpstreamPayload,
+  waitForUpstreamPayloads,
 } from "@intx/workflow-host/testing";
 import {
   assembleRunCredentialsSnapshot,
@@ -75,6 +77,7 @@ import {
 import {
   scanWorkflowRunRecords,
   markWorkflowRunRecord,
+  markWorkflowRunRecordInStandby,
   writeWorkflowRunRecord,
   updateWorkflowRunRecordCredentials,
   updateWorkflowRunRecordSources,
@@ -526,11 +529,27 @@ function downstreamPayloadType(line: string): string | undefined {
  * empty grants, so a freshly-created tempBase produces an empty
  * credentials snapshot which is what the wiring test wants.
  */
+// `historyTip`, when given, is the tip every ref resolves to, over an empty
+// claim-check tree, so a restored standby's boot recovery can read the run.
 function createSpawnTestRepoStore(
   tempBase: string,
   beforeWriteTree?: (repoId: RepoId) => Promise<void>,
+  historyTip?: string | null,
 ): RepoStore {
   const stub: Partial<RepoStore> = {
+    ...(historyTip !== undefined
+      ? {
+          resolveRef: async () => historyTip,
+          openCommittedReads: async () => null,
+          async writeTreeDelta(_p, _id, _ref, args) {
+            await args.computeDelta(null, {
+              readBlobByOid: async () => new Uint8Array(),
+              listDirOids: async () => [],
+            });
+            return { commitSha: "stub-sha", newlyTerminalRuns: [] };
+          },
+        }
+      : {}),
     getRepoDir(repoId: RepoId): string {
       return path.join(tempBase, repoId.kind, repoId.id);
     },
@@ -894,6 +913,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     publishDeploymentStopped?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["publishDeploymentStopped"];
+    publishDeploymentWoken?: Parameters<
+      typeof createSidecarDeployRouter
+    >[0]["publishDeploymentWoken"];
     assertSourceBuildable?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["assertSourceBuildable"];
@@ -944,11 +966,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     >[0]["applyFrozenWorkflowClosure"];
     /** Runs before the repo store writes a tree, such as a step's grants. */
     beforeWriteTree?: (repoId: RepoId) => Promise<void>;
+    /** The tip of every deployment's run history, for a standby restore. */
+    historyTip?: string | null;
   }) {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
     const tempBase = await createTempBaseDir("sidecar-multistep-");
-    const repoStore = createSpawnTestRepoStore(tempBase, opts.beforeWriteTree);
+    const repoStore = createSpawnTestRepoStore(
+      tempBase,
+      opts.beforeWriteTree,
+      opts.historyTip,
+    );
     // The deploy router's source-ref branch materializes the pinned closure
     // under `${SIDECAR_DATA_DIR}/workflow-definition-closures/<id>/` before
     // invoking the spawner. The test fixture defaults the data dir to a
@@ -1038,6 +1066,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         }),
       reportDeploymentRefTips:
         opts.reportDeploymentRefTips ?? (async () => ({})),
+      ...(opts.publishDeploymentWoken !== undefined
+        ? { publishDeploymentWoken: opts.publishDeploymentWoken }
+        : {}),
       ...(opts.publishDeploymentStopped !== undefined
         ? { publishDeploymentStopped: opts.publishDeploymentStopped }
         : {}),
@@ -1457,6 +1488,32 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       }),
     ).toEqual({});
     expect(reported).toEqual([agentAddress]);
+  });
+
+  test("refuses to put a deployment in standby or wake it with no workflow child here", async () => {
+    const { router } = await buildMultistepFixture({
+      spawner: () => {
+        throw new Error("control must not spawn");
+      },
+    });
+    if (router.control === undefined)
+      throw new Error("router.control is undefined");
+    const command = {
+      type: "workflow.control",
+      requestId: "standby-missing",
+      agentAddress: "run_standbymissing@example.com",
+      generation: 1,
+      runId: "run_standbymissing",
+      action: "standby",
+      reason: "Put the deployment's workflow child in standby",
+    } as const;
+
+    await expect(router.control(command)).rejects.toThrow(
+      "The deployment has no workflow child to put in standby",
+    );
+    await expect(
+      router.control({ ...command, requestId: "wake", action: "wake" }),
+    ).rejects.toThrow("The deployment has no workflow child to wake");
   });
 
   test("registers a multistepMailRouter handler against the deployment address once spawn succeeds", async () => {
@@ -2499,6 +2556,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
       childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
       eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
+      resolveExit?: (code: number) => void;
       childSender?: ReturnType<typeof createControlChannelSender>;
     };
     const spawnsChanges = createChangeNotifier();
@@ -2525,6 +2583,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         supervisorToChild,
         childToSupervisor,
         eventChildToSupervisor,
+        ...(resolveExit !== undefined ? { resolveExit } : {}),
       });
       spawnsChanges.notify();
       const handle: SubprocessHandle = {
@@ -2617,6 +2676,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           if (payload instanceof type.errors) return [];
           return [payload];
         }),
+      controlFor: (index: number) => spawns[index]?.supervisorToChild,
       async recycleRequestFor(index: number): Promise<void> {
         const sender = spawns[index]?.childSender;
         if (sender === undefined) {
@@ -2632,6 +2692,105 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       // Arm a one-shot spawn failure for the next spawner invocation.
       failNextSpawn(): void {
         failNext = true;
+      },
+      // Exit the child as a crash does, without being asked to.
+      crash(index: number): void {
+        const spawn = spawns[index];
+        if (spawn === undefined)
+          throw new Error(`spawn ${String(index)} missing`);
+        spawn.eventChildToSupervisor.close();
+        spawn.childToSupervisor.close();
+        spawn.resolveExit?.(1);
+      },
+      // Answer the `count`th correlation query a child asks, with none.
+      async answerParkedQuery(index: number, count: number): Promise<void> {
+        const spawn = spawns[index];
+        const sender = spawn?.childSender;
+        if (spawn === undefined || sender === undefined) {
+          throw new Error(
+            `spawn ${String(index)} has no sender; drive its ready first`,
+          );
+        }
+        const query = (
+          await waitForUpstreamPayloads(
+            spawn.supervisorToChild,
+            "parked-correlations.request",
+            count,
+          )
+        )[count - 1];
+        if (query === undefined) throw new Error("correlation query missing");
+        await sender.send({
+          type: "parked-correlations.response",
+          data: { requestId: query.data.requestId, parked: [] },
+        });
+      },
+      // Answer the `count`th quiet query a child asks.
+      async answerQuiet(
+        index: number,
+        count: number,
+        answer: { quiet: boolean; ended?: true },
+      ): Promise<void> {
+        const spawn = spawns[index];
+        const sender = spawn?.childSender;
+        if (spawn === undefined || sender === undefined) {
+          throw new Error(
+            `spawn ${String(index)} has no sender; drive its ready first`,
+          );
+        }
+        const query = (
+          await waitForUpstreamPayloads(
+            spawn.supervisorToChild,
+            "quiet.request",
+            count,
+          )
+        )[count - 1];
+        if (query === undefined) throw new Error("quiet query missing");
+        await sender.send({
+          type: "quiet.response",
+          data: { requestId: query.data.requestId, ...answer },
+        });
+      },
+      // Answer a standby attempt as the real child does: quiet for the wait and
+      // the final check, no parked correlations, then exit on `shutdown`.
+      async putChildInStandby(index: number): Promise<void> {
+        const spawn = spawns[index];
+        const sender = spawn?.childSender;
+        if (spawn === undefined || sender === undefined) {
+          throw new Error(
+            `spawn ${String(index)} has no sender; drive its ready first`,
+          );
+        }
+        for (const count of [1, 2]) {
+          const query = (
+            await waitForUpstreamPayloads(
+              spawn.supervisorToChild,
+              "quiet.request",
+              count,
+            )
+          )[count - 1];
+          if (query === undefined) throw new Error("quiet query missing");
+          await sender.send({
+            type: "quiet.response",
+            data: { requestId: query.data.requestId, quiet: true },
+          });
+        }
+        // The first correlation query is the one the child's start asks.
+        const parked = (
+          await waitForUpstreamPayloads(
+            spawn.supervisorToChild,
+            "parked-correlations.request",
+            2,
+          )
+        )[1];
+        if (parked === undefined) throw new Error("correlation query missing");
+        await sender.send({
+          type: "parked-correlations.response",
+          data: { requestId: parked.data.requestId, parked: [] },
+        });
+        await waitForUpstreamPayload(spawn.supervisorToChild, "shutdown");
+        spawn.eventChildToSupervisor.close();
+        spawn.childToSupervisor.close();
+        spawn.resolveExit?.(0);
       },
     };
   }
@@ -2752,6 +2911,314 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(second.spawnCount()).toBe(1);
     expect(isRegistered(freshTransport, head)).toBe(true);
   });
+
+  const askedQuiet = async (
+    spawner: ReturnType<typeof makeReadyDrivingSpawner>,
+  ) => {
+    const control = spawner.controlFor(0);
+    if (control === undefined) throw new Error("no spawned child");
+    return (await waitForUpstreamPayload(control, "quiet.request")).data.wait;
+  };
+
+  const HISTORY_TIP = "tip-at-stop";
+
+  // Record a standby at `HISTORY_TIP`, then leave its restore on a fresh router
+  // whose run history is at `historyTip` for the test to drive.
+  async function restoreRecordedStandby(
+    dataDir: string,
+    head: string,
+    pidBase: number,
+    opts: {
+      historyTip: string;
+      publishDeploymentWoken?: (report: { reason: string }) => void;
+    },
+  ) {
+    const frame = singleStepFrame(head, `wf-${head.split("@")[0] ?? head}`);
+    const first = makeReadyDrivingSpawner(pidBase);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = routerA.deploy(frame);
+    await first.driveReadyFor(0);
+    await deployPromise;
+    const deployedInStandby = routerA
+      .incarnations()
+      .find((incarnation) => incarnation.address === head)?.inStandby;
+    await markWorkflowRunRecordInStandby(
+      dataDir,
+      deriveWorkflowRunRepoId(head),
+      { parked: [], tip: HISTORY_TIP },
+    );
+
+    const second = makeReadyDrivingSpawner(pidBase + 100);
+    const { router } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: createInMemoryTransport(),
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      historyTip: opts.historyTip,
+      ...(opts.publishDeploymentWoken !== undefined
+        ? { publishDeploymentWoken: opts.publishDeploymentWoken }
+        : {}),
+    });
+    const restoring = router.restoreWorkflowRuns();
+    return { frame, router, spawned: second, deployedInStandby, restoring };
+  }
+
+  const standbyMark = async (dataDir: string, head: string) =>
+    (await waitForRecord(dataDir, deriveWorkflowRunRepoId(head), () => true))?.[
+      "standby"
+    ];
+
+  test("a deploy starts its child awake, and a record in standby over unchanged history restores it without a child", async () => {
+    const dataDir = await createTempBaseDir("sidecar-standby-restore-");
+    const head = "run_standbydrestore@example.com";
+    const reports: string[] = [];
+    const { router, spawned, deployedInStandby, restoring } =
+      await restoreRecordedStandby(dataDir, head, 9150, {
+        historyTip: HISTORY_TIP,
+        publishDeploymentWoken: (report) => reports.push(report.reason),
+      });
+    await restoring;
+
+    expect(deployedInStandby).toBeUndefined();
+    expect(spawned.spawnCount()).toBe(0);
+    expect(
+      router.incarnations().find((incarnation) => incarnation.address === head)
+        ?.inStandby,
+    ).toBe(true);
+    expect(await standbyMark(dataDir, head)).toEqual({
+      parked: [],
+      tip: HISTORY_TIP,
+    });
+    expect(reports).toEqual([]);
+  });
+
+  test("a record in standby over history written since restores the child awake, clears the mark and reports it woken", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-moved-");
+    const head = "run_restoremoved@example.com";
+    const reported = Promise.withResolvers<string>();
+    const { router, spawned, restoring } = await restoreRecordedStandby(
+      dataDir,
+      head,
+      9180,
+      {
+        historyTip: "tip-after-a-cancellation",
+        publishDeploymentWoken: (report) => reported.resolve(report.reason),
+      },
+    );
+    await spawned.driveReadyFor(0);
+    await restoring;
+
+    expect(await reported.promise).toBe(
+      "Woken by its restart, which found history written after it stopped",
+    );
+    expect(await standbyMark(dataDir, head)).toBeUndefined();
+    expect(
+      router.incarnations().find((incarnation) => incarnation.address === head)
+        ?.inStandby,
+    ).toBeUndefined();
+  });
+
+  test("a wake of a restored standby is answered once the cleared mark is on disk, and sends no wake report", async () => {
+    const dataDir = await createTempBaseDir("sidecar-wake-mark-");
+    const head = "run_wakemark@example.com";
+    const reports: string[] = [];
+    const { frame, router, spawned, restoring } = await restoreRecordedStandby(
+      dataDir,
+      head,
+      9170,
+      {
+        historyTip: HISTORY_TIP,
+        publishDeploymentWoken: (report) => reports.push(report.reason),
+      },
+    );
+    await restoring;
+    expect(await standbyMark(dataDir, head)).toBeDefined();
+    if (router.control === undefined)
+      throw new Error("router.control is undefined");
+
+    const woken = router.control({
+      type: "workflow.control",
+      requestId: "wake-mark",
+      agentAddress: head,
+      generation: frame.generation,
+      runId: deriveWorkflowRunId(head),
+      action: "wake",
+      reason: "Wake the deployment's workflow child",
+    });
+    await spawned.driveReadyFor(0);
+    expect(await woken).toEqual({});
+    expect(spawned.spawnCount()).toBe(1);
+    expect(await standbyMark(dataDir, head)).toBeUndefined();
+    // The Hub that asked for the wake records it from the answer.
+    expect(reports).toEqual([]);
+  });
+
+  // Deploy `head` awake for standby and wake controls, with the history
+  // tips each standby answer reads.
+  async function deployForStandby(
+    head: string,
+    pidBase: number,
+    reportDeploymentRefTips: () => Promise<WorkflowRunRefTips>,
+  ) {
+    const frame = singleStepFrame(head, `wf-${head.split("@")[0] ?? head}`);
+    const spawned = makeReadyDrivingSpawner(pidBase);
+    const { router } = await buildMultistepFixture({
+      spawner: spawned.spawner,
+      reportDeploymentRefTips,
+      historyTip: HISTORY_TIP,
+    });
+    const deployPromise = router.deploy(frame);
+    await spawned.driveReadyFor(0);
+    await deployPromise;
+    const control = router.control;
+    if (control === undefined) throw new Error("router.control is undefined");
+    return {
+      spawned,
+      control: (action: "standby" | "wake", requestId: string) =>
+        control({
+          type: "workflow.control",
+          requestId,
+          agentAddress: head,
+          generation: frame.generation,
+          runId: deriveWorkflowRunId(head),
+          action,
+          reason: `${action === "standby" ? "Put the deployment's workflow child in standby" : "Wake the deployment's workflow child"}`,
+        }),
+    };
+  }
+
+  test("a repeated standby attempt answers with the history the supervisor wrote since the child stopped", async () => {
+    let reads = 0;
+    const { spawned, control } = await deployForStandby(
+      "run_standbyrepeat@example.com",
+      9230,
+      async () => {
+        reads += 1;
+        return { "refs/heads/main": String(reads % 10).repeat(40) };
+      },
+    );
+
+    const first = control("standby", "standby-first");
+    await spawned.putChildInStandby(0);
+    expect(await first).toEqual({
+      refTips: { "refs/heads/main": "1".repeat(40) },
+    });
+    expect(await control("standby", "standby-again")).toEqual({
+      refTips: { "refs/heads/main": "2".repeat(40) },
+    });
+    expect(spawned.spawnCount()).toBe(1);
+  });
+
+  test("a standby attempt whose child ran again before it was answered is refused", async () => {
+    const readStarted = Promise.withResolvers<undefined>();
+    const read = Promise.withResolvers<WorkflowRunRefTips>();
+    const { spawned, control } = await deployForStandby(
+      "run_standbywoken@example.com",
+      9250,
+      () => {
+        readStarted.resolve(undefined);
+        return read.promise;
+      },
+    );
+
+    const inStandby = control("standby", "standby-woken");
+    await spawned.putChildInStandby(0);
+    await readStarted.promise;
+    const woken = control("wake", "wake-during-read");
+    await spawned.driveReadyFor(1);
+    await spawned.answerParkedQuery(1, 1);
+    expect(await woken).toEqual({});
+    read.resolve({ "refs/heads/main": "a".repeat(40) });
+    await expect(inStandby).rejects.toThrow(
+      "The deployment was not put in standby: its child ran again before the standby attempt was answered",
+    );
+  });
+
+  test("a standby attempt a child crash puts off is answered as initializing, so the Hub asks again", async () => {
+    const { spawned, control } = await deployForStandby(
+      "run_standbycrash@example.com",
+      9290,
+      async () => ({ "refs/heads/main": "a".repeat(40) }),
+    );
+
+    const inStandby = control("standby", "standby-crash");
+    await spawned.answerQuiet(0, 1, { quiet: true });
+    const toChild = spawned.controlFor(0);
+    if (toChild === undefined) throw new Error("spawn 0 missing");
+    await waitForUpstreamPayloads(toChild, "quiet.request", 2);
+    spawned.crash(0);
+    await expect(inStandby).rejects.toThrow(
+      WORKFLOW_CONTROL_INITIALIZING_ERROR,
+    );
+    await spawned.driveReadyFor(1);
+    await spawned.answerParkedQuery(1, 1);
+  });
+
+  test("a standby attempt whose history tips cannot be read is put off with the child kept stopped", async () => {
+    let reads = 0;
+    const { spawned, control } = await deployForStandby(
+      "run_standbyunread@example.com",
+      9270,
+      async () => {
+        reads += 1;
+        if (reads === 1) throw new Error("disk unreadable");
+        return { "refs/heads/main": "a".repeat(40) };
+      },
+    );
+
+    const inStandby = control("standby", "standby-unread");
+    await spawned.putChildInStandby(0);
+    await expect(inStandby).rejects.toThrow(
+      WORKFLOW_CONTROL_INITIALIZING_ERROR,
+    );
+    expect(await control("standby", "standby-read")).toEqual({
+      refTips: { "refs/heads/main": "a".repeat(40) },
+    });
+    expect(spawned.spawnCount()).toBe(1);
+  });
+
+  test.each(["while asking", "before asking"] as const)(
+    "a standby attempt is abandoned once the connection that asked for it closes %s",
+    async (when) => {
+      const closedFirst = when === "before asking";
+      const head = `run_standbyclosed${closedFirst ? "first" : ""}@example.com`;
+      const frame = singleStepFrame(head, "wf-standby-closed");
+      const spawned = makeReadyDrivingSpawner(closedFirst ? 9195 : 9190);
+      const { router } = await buildMultistepFixture({
+        spawner: spawned.spawner,
+      });
+      const deployPromise = router.deploy(frame);
+      await spawned.driveReadyFor(0);
+      await deployPromise;
+      if (router.control === undefined)
+        throw new Error("router.control is undefined");
+
+      const connection = new AbortController();
+      if (closedFirst) connection.abort();
+      const inStandby = router.control(
+        {
+          type: "workflow.control",
+          requestId: "standby-closed",
+          agentAddress: head,
+          generation: frame.generation,
+          runId: deriveWorkflowRunId(head),
+          action: "standby",
+          reason: "Put the deployment's workflow child in standby",
+        },
+        { signal: connection.signal },
+      );
+      if (!closedFirst) {
+        expect(await askedQuiet(spawned)).toBe(true);
+        connection.abort();
+      }
+      await expect(inStandby).rejects.toThrow(
+        "The deployment was not put in standby: the Hub that asked for it disconnected",
+      );
+      expect(spawned.spawnCount()).toBe(1);
+    },
+  );
 
   test("restore holds a record whose closure will not materialize as stopped and restores the rest", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-softfail-data-");

@@ -1053,6 +1053,47 @@ describe("DeploymentStoppedFrame", () => {
   });
 });
 
+describe("deployments in standby", () => {
+  test("a hello marks only a live incarnation in standby", () => {
+    const hello = (state: string) => ({
+      type: "hello",
+      sidecarId: "sc-1",
+      token: "token",
+      capacity: { maxActiveDeployments: 1, maxRetainedDeployments: 0 },
+      incarnations: [
+        { address: "wf@example.test", generation: 1, state, inStandby: true },
+      ],
+    });
+    expect(SidecarFrame(hello("live")) instanceof type.errors).toBe(false);
+    expect(SidecarFrame(hello("stopped")) instanceof type.errors).toBe(true);
+  });
+
+  test("a standby request's answer names its earliest timer as an ISO time", () => {
+    const ack = (wakeAt: string) => ({
+      type: "workflow.control.ack",
+      requestId: "control-1",
+      wakeAt,
+    });
+    expect(
+      SidecarFrame(ack("2026-10-02T00:00:00.000Z")) instanceof type.errors,
+    ).toBe(false);
+    expect(SidecarFrame(ack("tomorrow")) instanceof type.errors).toBe(true);
+  });
+
+  test("the SidecarFrame union admits a wake report with why", () => {
+    const frame = {
+      type: "deployment.woken" as const,
+      agentAddress: "wf@example.test",
+      generation: 1,
+      reason: "Woken by mail",
+    };
+    expect(SidecarFrame(frame)).toEqual(frame);
+    expect(SidecarFrame({ ...frame, reason: "" }) instanceof type.errors).toBe(
+      true,
+    );
+  });
+});
+
 describe("SenderKeyEvictFrame", () => {
   const frame = {
     type: "sender.key.evict",

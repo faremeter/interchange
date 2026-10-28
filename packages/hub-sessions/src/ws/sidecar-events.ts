@@ -121,6 +121,19 @@ export type SidecarEventMap = {
     generation: number;
   };
 
+  /**
+   * Notification of whether the current generation's workflow child is
+   * in standby, as the sidecar reports it: on every `hello` for each live
+   * incarnation it routes, and when an input wakes a child in standby.
+   */
+  "deployment.standby": {
+    allocationId: string;
+    generation: number;
+    inStandby: boolean;
+    /** Why a child in standby runs again, when an input woke it. */
+    reason?: string;
+  };
+
   /** Notification. Emitted for mail the Hub gives up on: recipients no
    * connection routes, un-acked mail it stops redelivering that no
    * dispatch row stands behind, and mail held for a sender key that never
@@ -204,6 +217,7 @@ export function createSidecarEmitter(): SidecarEventEmitter {
     "sidecar.disconnect": new Set(),
     "sidecar.allocated.connected": new Set(),
     "deployment.stopped": new Set(),
+    "deployment.standby": new Set(),
     "mail.outbound.undelivered": new Set(),
     "mail.persisted": new Set(),
     "mail.inbound.acknowledged": new Set(),

@@ -13,6 +13,7 @@ import {
   writeWorkflowRunRecord,
   deleteWorkflowRunRecord,
   markWorkflowRunRecord,
+  markWorkflowRunRecordInStandby,
   updateWorkflowRunRecordCredentials,
   updateWorkflowRunRecordSources,
   withWorkflowRunRecord,
@@ -848,6 +849,49 @@ describe("workflow run record store", () => {
     } finally {
       await fs.rm(dataDir, { recursive: true, force: true });
     }
+  });
+
+  test("a standby mark keeps the rest of the record and clears without trace", async () => {
+    const dataDir = await makeDataDir();
+    const anchorRunId = "standby-1";
+    const standby = {
+      parked: [
+        {
+          runId: anchorRunId,
+          correlationId: "corr-gate",
+          parkKind: "approval" as const,
+          snapshot: {
+            name: "charge_card",
+            description: "Charge the customer's card",
+            inputSchema: { type: "object" },
+            arguments: { amount: 100 },
+          },
+        },
+        {
+          runId: anchorRunId,
+          correlationId: "corr-input",
+          parkKind: "input" as const,
+        },
+      ],
+      wakeAt: "2026-11-01T00:00:00.000Z",
+      tip: "0123456789abcdef0123456789abcdef01234567",
+    };
+    expect(
+      await markWorkflowRunRecordInStandby(dataDir, anchorRunId, standby),
+    ).toBe(false);
+
+    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP, CIPHER);
+    expect(
+      await markWorkflowRunRecordInStandby(dataDir, anchorRunId, standby),
+    ).toBe(true);
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([
+      { runId: anchorRunId, record: { ...SINGLE_STEP, standby } },
+    ]);
+
+    await markWorkflowRunRecordInStandby(dataDir, anchorRunId, null);
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([
+      { runId: anchorRunId, record: SINGLE_STEP },
+    ]);
   });
 
   test("marking leaves a record the boot scan would skip as it is", async () => {

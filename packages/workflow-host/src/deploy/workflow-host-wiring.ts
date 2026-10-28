@@ -46,6 +46,7 @@ import {
   type AgentUndeployFrame,
   type DeploymentStoppedFrame,
   type DeploymentRetention,
+  type DeploymentWokenFrame,
   type HostedIncarnation,
   type IncarnationState,
   type SourceRefPin,
@@ -74,11 +75,15 @@ import {
 } from "../supervisor/credentials";
 import {
   createWorkflowSupervisor,
+  StandbyDeferredError,
+  StandbyRefusedError,
+  type StandbyOutcome,
   type SpawnOpts,
   type WorkflowSupervisor,
 } from "../supervisor/supervisor";
 import type {
   DispatchTimingMark,
+  RecordedStandby,
   SubprocessSpawner,
   SuspensionRegistration,
 } from "../supervisor/types";
@@ -93,6 +98,7 @@ import type {
 import {
   deleteWorkflowRunRecord,
   markWorkflowRunRecord,
+  markWorkflowRunRecordInStandby,
   scanWorkflowRunRecords,
   updateWorkflowRunRecordCredentials,
   updateWorkflowRunRecordSources,
@@ -614,6 +620,10 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * poisoned.
    */
   isRunPoisoned?: (runId: string) => boolean;
+  /** Called when the child of a supervisor in standby runs again. */
+  onWake?: (info: { reason: string; requested: boolean }) => void;
+  /** Records the standby before anything can wake the stopped child. */
+  recordStandby?: (standby: RecordedStandby) => Promise<void>;
 };
 
 export type SidecarWorkflowSupervisor = {
@@ -817,6 +827,7 @@ type DeployRouterResult = {
 type WorkflowControlOutcome = {
   refTips?: WorkflowRunRefTips;
   retention?: DeploymentRetention;
+  wakeAt?: string;
 };
 
 type ResolvedInboundMailPolicy = Record<InboundMailOutcome, "reject" | "admit">;
@@ -831,7 +842,14 @@ type ResolvedInboundMailPolicy = Record<InboundMailOutcome, "reject" | "admit">;
 export interface SidecarDeployRouter {
   deploy(frame: AgentDeployFrame): Promise<DeployRouterResult>;
   undeploy(frame: AgentUndeployFrame): Promise<void>;
-  control(frame: WorkflowControlFrame): Promise<WorkflowControlOutcome>;
+  /**
+   * `signal` aborts once the connection that carried the frame closes; a
+   * standby attempt it asked for is abandoned then.
+   */
+  control(
+    frame: WorkflowControlFrame,
+    opts?: { signal?: AbortSignal },
+  ): Promise<WorkflowControlOutcome>;
   /**
    * Re-establish every persisted workflow deployment on this sidecar's local
    * substrate. Runs once at boot, before `hubLink.connect()`, so a single-step
@@ -1266,6 +1284,11 @@ export function createSidecarDeployRouter<
   publishDeploymentStopped?: (
     report: Omit<DeploymentStoppedFrame, "type">,
   ) => void;
+  /**
+   * Send the Hub a report that an input woke a deployment in standby. Tests
+   * that do not exercise the report omit it.
+   */
+  publishDeploymentWoken?: (report: Omit<DeploymentWokenFrame, "type">) => void;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -1344,6 +1367,8 @@ export function createSidecarDeployRouter<
     wired?: SidecarWorkflowSupervisor;
     // Why a stopped incarnation stopped when the Hub did not stop it.
     error?: string;
+    // The workflow child is in standby: stopped while every run waits.
+    inStandby?: true;
   };
   const deployments = new Map<string, HostedDeployment>();
   const retaining = new Set<HostedDeployment>();
@@ -1527,6 +1552,39 @@ export function createSidecarDeployRouter<
     deps.multistepCredentialsRouter?.unregister(agentAddress);
   }
 
+  // A child in standby runs again. Clear the mark so a restart does not
+  // put it in standby, and tell the Hub when it did not ask for the wake.
+  function noteDeploymentWoken(args: {
+    runId: string;
+    agentAddress: string;
+    hosted: HostedDeployment;
+    reason: string;
+    // The Hub asked for this wake, so it needs no report.
+    requested: boolean;
+  }): void {
+    if (deployments.get(args.agentAddress) !== args.hosted) return;
+    delete args.hosted.inStandby;
+    const report = (): void => {
+      if (args.requested) return;
+      if (deployments.get(args.agentAddress) !== args.hosted) return;
+      deps.publishDeploymentWoken?.({
+        agentAddress: args.agentAddress,
+        generation: args.hosted.generation,
+        reason: fitDeploymentError(`Woken by ${args.reason}`),
+      });
+    };
+    if (stepStateDataDir === undefined) {
+      report();
+      return;
+    }
+    void markWorkflowRunRecordInStandby(stepStateDataDir, args.runId, null)
+      .catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`Could not clear the standby mark of ${args.agentAddress}; a restart could restore it in standby: ${message}`;
+      })
+      .finally(report);
+  }
+
   // Hold a deployment whose supervisor drove ITSELF to a terminal phase
   // (crash-loop latch, channel crash, recycle failure) as stopped, with why,
   // until the Hub undeploys it: the hello reports it, the Hub fails the
@@ -1706,6 +1764,8 @@ export function createSidecarDeployRouter<
      * that long.
      */
     deployPersistence?: DeployPersistence;
+    /** The standby the deployment's record holds; unset on a deploy. */
+    standby?: RecordedStandby;
   }
 
   interface DeployPersistence {
@@ -2108,6 +2168,28 @@ export function createSidecarDeployRouter<
             error: `Its workflow child ended itself (${phase}): ${reason}`,
           });
         },
+        onWake: ({ reason, requested }) => {
+          noteDeploymentWoken({
+            runId,
+            agentAddress: spec.agentAddress,
+            hosted,
+            reason,
+            requested,
+          });
+        },
+        recordStandby: async (standby) => {
+          hosted.inStandby = true;
+          if (
+            stepStateDataDir !== undefined &&
+            !(await markWorkflowRunRecordInStandby(
+              stepStateDataDir,
+              runId,
+              standby,
+            ))
+          ) {
+            logger.error`Could not mark ${spec.agentAddress} in standby: its run record is missing or invalid, so a restart will not restore it`;
+          }
+        },
         substrateEnv,
         // Recomputed on every spawn AND recycle respawn. The rotation
         // handler below revises `currentSources` in place, so a respawn
@@ -2192,7 +2274,19 @@ export function createSidecarDeployRouter<
       // rejection into a structured failure frame. The supervisor is
       // registered against the deployment address only after spawn succeeds,
       // so a spawn-time rejection leaves the registry untouched.
-      await wired.supervisor.spawn(spawnOpts);
+      // A restored standby whose child had to start is reported woken once
+      // the deployment is set up.
+      let restoredAwake: string | null = null;
+      if (spec.standby === undefined) {
+        await wired.supervisor.spawn(spawnOpts);
+      } else {
+        const restored = await wired.supervisor.restoreInStandby(
+          spawnOpts,
+          spec.standby,
+        );
+        if (restored.inStandby) hosted.inStandby = true;
+        else restoredAwake = restored.reason;
+      }
       wiredForUnwind = wired;
       hosted.wired = wired;
       supervisorRegistered = true;
@@ -2412,6 +2506,16 @@ export function createSidecarDeployRouter<
       );
       routersRegistered = true;
 
+      if (restoredAwake !== null) {
+        logger.info`${spec.agentAddress} was in standby, and its restart started the child: ${restoredAwake}`;
+        noteDeploymentWoken({
+          runId,
+          agentAddress: spec.agentAddress,
+          hosted,
+          reason: restoredAwake,
+          requested: false,
+        });
+      }
       succeeded = true;
       return { publicKey: deploymentPublicKey };
     } finally {
@@ -2672,8 +2776,96 @@ export function createSidecarDeployRouter<
     }
   }
 
+  // A Hub that disconnects calls off the standby attempt it asked for, since it
+  // would not hear the answer, and a child the attempt already stopped is woken
+  // again. The supervisor records the standby before anything can wake the
+  // child.
+  async function putDeploymentInStandby(
+    frame: WorkflowControlFrame,
+    hosted: HostedDeployment,
+    wired: SidecarWorkflowSupervisor,
+    signal: AbortSignal | undefined,
+  ): Promise<WorkflowControlOutcome> {
+    const abandon = (): void => {
+      wired.supervisor.abandonStandby("the Hub that asked for it disconnected");
+    };
+    signal?.addEventListener("abort", abandon, { once: true });
+    let outcome: StandbyOutcome;
+    try {
+      const enteringStandby = wired.supervisor.enterStandby();
+      // Only an attempt that exists can be called off.
+      if (signal?.aborted === true) abandon();
+      outcome = await enteringStandby;
+    } catch (cause) {
+      // The Hub asks again for a standby attempt the child's restart put off.
+      if (cause instanceof StandbyDeferredError) {
+        throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR, { cause });
+      }
+      if (cause instanceof StandbyRefusedError) {
+        throw new Error(
+          `The deployment was not put in standby: ${cause.message}`,
+          {
+            cause,
+          },
+        );
+      }
+      throw cause;
+    } finally {
+      signal?.removeEventListener("abort", abandon);
+    }
+    // Read for every answer, a repeated one too: the supervisor can write
+    // history while the child is stopped, and reading ships what the Hub
+    // still lacks.
+    let refTips: WorkflowRunRefTips;
+    try {
+      refTips = await deps.reportDeploymentRefTips({
+        agentAddress: frame.agentAddress,
+        generation: frame.generation,
+      });
+    } catch (cause) {
+      // The child stays stopped, and the Hub asks again. Nothing else here
+      // acts on it: this request may be stale already.
+      logger.error`Could not read the history tips of ${frame.agentAddress}, which is in standby; the Hub asks again: ${cause instanceof Error ? cause.message : String(cause)}`;
+      throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR, { cause });
+    }
+    if (
+      deployments.get(frame.agentAddress) !== hosted ||
+      hosted.wired !== wired
+    )
+      throw new Error("The deployment changed while it was entering standby");
+    // A wake reports itself only after a record write, so this answer reaches
+    // the Hub before it. A child that already ran again ended its standby
+    // before the Hub heard of it.
+    if (hosted.inStandby !== true)
+      throw new Error(
+        "The deployment was not put in standby: its child ran again before the standby attempt was answered",
+      );
+    return {
+      refTips,
+      ...(outcome.wakeAt !== undefined ? { wakeAt: outcome.wakeAt } : {}),
+    };
+  }
+
+  // The cleared mark is durable before the Hub hears the child runs, so a
+  // restart does not restore it in standby.
+  async function wakeDeployment(
+    frame: WorkflowControlFrame,
+    wired: SidecarWorkflowSupervisor,
+  ): Promise<WorkflowControlOutcome> {
+    await wired.supervisor.wake();
+    if (stepStateDataDir !== undefined) {
+      await markWorkflowRunRecordInStandby(
+        stepStateDataDir,
+        deps.deriveWorkflowRunRepoId(frame.agentAddress),
+        null,
+      );
+    }
+    return {};
+  }
+
   async function control(
     frame: WorkflowControlFrame,
+    opts: { signal?: AbortSignal } = {},
   ): Promise<WorkflowControlOutcome> {
     if (deriveWorkflowRunId(frame.agentAddress) !== frame.runId) {
       throw new Error(
@@ -2691,10 +2883,28 @@ export function createSidecarDeployRouter<
     const stopping = workflowStopTasks.get(frame.agentAddress);
     if (hosted?.state === "tearing-down")
       throw new Error("The deployment is being removed");
+    if (frame.action === "standby" || frame.action === "wake") {
+      if (stopping !== undefined) throw new Error("The deployment is stopping");
+      if (hosted?.state === "deploying") {
+        throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR);
+      }
+      const wired = hosted?.wired;
+      if (
+        hosted === undefined ||
+        wired === undefined ||
+        hosted.state !== "live"
+      )
+        throw new Error(
+          `The deployment has no workflow child to ${frame.action === "standby" ? "put in standby" : "wake"}`,
+        );
+      return frame.action === "standby"
+        ? putDeploymentInStandby(frame, hosted, wired, opts.signal)
+        : wakeDeployment(frame, wired);
+    }
     if (stopping !== undefined) {
       await stopping;
       if (frame.action === "retain" && hosted?.retention === undefined)
-        return control(frame);
+        return control(frame, opts);
       return reportControlOutcome(frame);
     }
     if (hosted?.state === "deploying") {
@@ -3099,6 +3309,9 @@ export function createSidecarDeployRouter<
               // without this a rotation would silently drop it and wedge the
               // NEXT restart.
               sourceRef: record.sourceRef,
+              ...(record.standby !== undefined
+                ? { standby: record.standby }
+                : {}),
             };
 
             await spawnWorkflowRun(spec, hosted);
@@ -3169,6 +3382,9 @@ export function createSidecarDeployRouter<
         address,
         generation: hosted.generation,
         state: hosted.state,
+        ...(hosted.inStandby === true && hosted.state === "live"
+          ? { inStandby: true as const }
+          : {}),
         ...(hosted.retention !== undefined
           ? { retention: hosted.retention }
           : {}),
@@ -3318,6 +3534,10 @@ export function createSidecarWorkflowSupervisor(
       : {}),
     ...(opts.onSelfTerminate !== undefined
       ? { onSelfTerminate: opts.onSelfTerminate }
+      : {}),
+    ...(opts.onWake !== undefined ? { onWake: opts.onWake } : {}),
+    ...(opts.recordStandby !== undefined
+      ? { recordStandby: opts.recordStandby }
       : {}),
     deriveMailAuditRef: deriveSidecarMailAuditRef(opts.runId),
     ...(opts.onDispatchTiming !== undefined

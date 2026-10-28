@@ -26,7 +26,9 @@ import {
   connectAllocated,
   createAllocatedRouter,
   createManualRetries,
+  createMockWs,
   deployReply,
+  helloFrame,
   parsedFrames,
   TEST_CONFIG,
   TEST_IDENTITY,
@@ -716,6 +718,294 @@ describe("SidecarRouter allocation control protocols", () => {
     await tick();
     expect(received).toBe(1);
     expect(finalityReads).toBe(0);
+  });
+
+  test("confirms a standby request once the Hub holds its history and keeps the route", async () => {
+    let hubRefTips: WorkflowRunRefTips = {
+      ...TEST_REF_TIPS,
+      "refs/heads/main": "b".repeat(40),
+    };
+    const router = createAllocatedRouter({
+      lookups: { readWorkflowRunRefTips: async () => hubRefTips },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const acknowledgeStandby = async () => {
+      const pending = router.putAllocationInStandby(
+        TEST_IDENTITY,
+        CONTROL_TIMEOUT_MS,
+      );
+      await tick();
+      const frame = WorkflowControlFrame.assert(
+        framesOfType(ws, "workflow.control").at(-1),
+      );
+      expect(frame.action).toBe("standby");
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "workflow.control.ack",
+          requestId: frame.requestId,
+          refTips: TEST_REF_TIPS,
+          wakeAt: "2026-10-02T00:00:00.000Z",
+        }),
+      );
+      return pending;
+    };
+
+    await expect(acknowledgeStandby()).rejects.toThrow(
+      WorkflowControlHistoryPendingError,
+    );
+    hubRefTips = TEST_REF_TIPS;
+    expect(await acknowledgeStandby()).toEqual({
+      wakeAt: "2026-10-02T00:00:00.000Z",
+    });
+    expect(router.getRoutableAddresses()).toContain(
+      TEST_IDENTITY.workflowRunAddress,
+    );
+  });
+
+  test("waits for a standby request's answer however long every run takes to wait", async () => {
+    const armed: number[] = [];
+    const router = createAllocatedRouter({
+      scheduleTimeout: (_handler, ms) => {
+        armed.push(ms);
+        return () => undefined;
+      },
+      lookups: { readWorkflowRunRefTips: async () => TEST_REF_TIPS },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.putAllocationInStandby(TEST_IDENTITY, 7_000);
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    // The request is registered before its frame goes out.
+    expect(armed).not.toContain(7_000);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: TEST_REF_TIPS,
+      }),
+    );
+    expect(await pending).toEqual({});
+  });
+
+  test("sends a wake asked after a standby request behind it, however long the standby request's connection check takes", async () => {
+    let stall = false;
+    const checking = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async (_identity, use) => {
+        if (use === "routing" && stall) {
+          stall = false;
+          checking.resolve(undefined);
+          await release.promise;
+        }
+        return true;
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const before = framesOfType(ws, "workflow.control").length;
+    stall = true;
+    const inStandby = router.putAllocationInStandby(TEST_IDENTITY, 7_000);
+    await checking.promise;
+    const woken = router.wakeAllocation(TEST_IDENTITY, 7_000);
+    await tick();
+    expect(framesOfType(ws, "workflow.control")).toHaveLength(before);
+
+    release.resolve(undefined);
+    await ws.awaitSent(
+      () => framesOfType(ws, "workflow.control").length === before + 2,
+    );
+    expect(
+      framesOfType(ws, "workflow.control")
+        .slice(before)
+        .map((frame) => WorkflowControlFrame.assert(frame).action),
+    ).toEqual(["standby", "wake"]);
+    const settled = Promise.allSettled([inStandby, woken]);
+    router.handleClose(ws);
+    expect((await settled).map((outcome) => outcome.status)).toEqual([
+      "rejected",
+      "rejected",
+    ]);
+  });
+
+  test("a standby request whose connection closes right after its lookup settles", async () => {
+    // The close lands a varying number of microtasks after the lookup, so one
+    // of them falls between the lookup and the send.
+    for (let hops = 0; hops < 12; hops += 1) {
+      let closeAfterLookup: (() => void) | undefined;
+      const router = createAllocatedRouter({
+        validateSidecarIdentity: async (_identity, use) => {
+          const close = closeAfterLookup;
+          if (use === "routing" && close !== undefined) {
+            closeAfterLookup = undefined;
+            void (async () => {
+              for (let hop = 0; hop < hops; hop += 1) await null;
+              close();
+            })();
+          }
+          return true;
+        },
+      });
+      const ws = await connectAllocated(router, [
+        TEST_IDENTITY.workflowRunAddress,
+      ]);
+      closeAfterLookup = () => router.handleClose(ws);
+      const outcome = router.putAllocationInStandby(TEST_IDENTITY, 7_000).then(
+        () => "answered",
+        () => "settled",
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(await Promise.race([outcome, Promise.resolve("pending")])).toBe(
+        "settled",
+      );
+    }
+  });
+
+  test("takes up a standby request's answer after the frames the sidecar sent before it", async () => {
+    const releasePack = Promise.withResolvers<undefined>();
+    const router = createAllocatedRouter({
+      lookups: {
+        readWorkflowRunRefTips: async () => TEST_REF_TIPS,
+        async receiveWorkflowRunPack() {
+          await releasePack.promise;
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const seen: string[] = [];
+    router.events.on("deployment.standby", ({ reason }) => {
+      seen.push(reason ?? "hello");
+    });
+    const pending = router.putAllocationInStandby(TEST_IDENTITY, 7_000, () => {
+      seen.push("answer");
+    });
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    pushPack(router, ws, "transfer-slow");
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "deployment.woken",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation,
+        reason: "Woken by mail",
+      }),
+    );
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: TEST_REF_TIPS,
+      }),
+    );
+    await tick();
+    expect(seen).toEqual([]);
+
+    releasePack.resolve(undefined);
+    expect(await pending).toEqual({});
+    expect(seen).toEqual(["Woken by mail", "answer"]);
+  });
+
+  test("reports a standby request the worker refused", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.putAllocationInStandby(
+      TEST_IDENTITY,
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        error:
+          "The deployment was not put in standby: the workflow run has ended",
+      }),
+    );
+    await expect(pending).rejects.toThrow(WorkflowControlRejectedError);
+  });
+
+  test("reports whether a routed worker's child is in standby, on hello and on a wake", async () => {
+    const router = createAllocatedRouter();
+    const reports: { inStandby: boolean; reason?: string }[] = [];
+    router.events.on("deployment.standby", ({ inStandby, reason }) => {
+      reports.push({ inStandby, ...(reason !== undefined ? { reason } : {}) });
+    });
+    const ws = createMockWs();
+    router.handleOpen(ws);
+    router.handleMessage(
+      ws,
+      helloFrame(TEST_IDENTITY.sidecarId, [
+        {
+          address: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_IDENTITY.generation,
+          state: "live",
+          inStandby: true,
+        },
+      ]),
+    );
+    await tick();
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "deployment.woken",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation,
+        reason: "Woken by mail",
+      }),
+    );
+    await tick();
+    expect(reports).toEqual([
+      { inStandby: true },
+      { inStandby: false, reason: "Woken by mail" },
+    ]);
+  });
+
+  test("a hello reports no standby for a worker the Hub does not route", async () => {
+    const router = createAllocatedRouter();
+    const reports: unknown[] = [];
+    router.events.on("deployment.standby", (report) => {
+      reports.push(report);
+    });
+    router.retireAllocation(TEST_TARGET);
+    const ws = createMockWs();
+    router.handleOpen(ws);
+    router.handleMessage(
+      ws,
+      helloFrame(TEST_IDENTITY.sidecarId, [
+        {
+          address: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_IDENTITY.generation,
+          state: "live",
+          inStandby: true,
+        },
+      ]),
+    );
+    // The reports go out right after the welcome.
+    await ws.awaitSent((sent) => sent.some((raw) => raw.includes('"welcome"')));
+    expect(reports).toEqual([]);
   });
 
   test("a stopped worker that reconnects without its address still delivers its history", async () => {

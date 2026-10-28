@@ -61,7 +61,9 @@ import {
 } from "@intx/test-harness/seed";
 import {
   WorkflowControlHistoryPendingError,
+  WorkflowControlRejectedError,
   type RepoId,
+  type SidecarEventMap,
 } from "@intx/hub-sessions";
 
 import {
@@ -71,6 +73,7 @@ import {
   fireMailTrigger,
   initiateDrain,
   listRunIds,
+  readClaimCheckDir,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitFor,
@@ -84,6 +87,8 @@ const DEPLOYMENT_ID = "run_drain-roundtrip-1";
 const WAIT_DEPLOYMENT_ID = "run_drain-roundtrip-wait-1";
 const CONTROL_DEPLOYMENT_ID = "run_control-roundtrip";
 const STOP_DEPLOYMENT_ID = "run_stop-roundtrip";
+const STANDBY_DEPLOYMENT_ID = "run_standby-roundtrip";
+const REFUSED_STANDBY_DEPLOYMENT_ID = "run_standby-refused-roundtrip";
 // Longer than the test's budget, so the worker's acknowledgement, not the
 // clock, settles the control request.
 const CONTROL_TIMEOUT_MS = 120_000;
@@ -106,6 +111,8 @@ const CALLER_PRINCIPAL_ID = "prn_drain_roundtrip";
 const DEFINITION_ASSET_IDS: Record<string, string> = {
   [CONTROL_DEPLOYMENT_ID]: "ast_control_roundtrip",
   [STOP_DEPLOYMENT_ID]: "ast_stop_roundtrip",
+  [STANDBY_DEPLOYMENT_ID]: "ast_standby_roundtrip",
+  [REFUSED_STANDBY_DEPLOYMENT_ID]: "ast_standby_refused_roundtrip",
   [DEPLOYMENT_ID]: "ast_drain_roundtrip_cancel_wf",
   [WAIT_DEPLOYMENT_ID]: "ast_drain_roundtrip_wait_wf",
 };
@@ -608,6 +615,132 @@ test.skipIf(!harnessDbEnvAvailable())(
   30_000,
 );
 
+// A wait on an author signal sends the supervisor no park notice, so the
+// trigger's dispatch never sees this run park; the standby attempt goes through
+// anyway once the child has taken the trigger. It runs before the stop test,
+// whose stop fences the allocation identity every deployment here shares.
+test.skipIf(!harnessDbEnvAvailable())(
+  "Hub puts a real child in standby and wakes it, and mail wakes one in standby",
+  async () => {
+    const { address, handle } = await deployParkedOnSignal({
+      anchorRunId: STANDBY_DEPLOYMENT_ID,
+      definitionAssetId: "ast_standby_roundtrip",
+      workflowId: "standby-workflow",
+    });
+    const target = env.hub.prepareAllocationIdentity(
+      STANDBY_DEPLOYMENT_ID,
+      address,
+    );
+    const inStandbyMark = () => readInStandbyMark(handle);
+    // The standby attempt can overtake the child's last pushes; a repeated
+    // standby attempt answers again once that history has landed.
+    const enterStandby = () =>
+      waitFor(
+        async () => {
+          try {
+            await env.hub.router.putAllocationInStandby(
+              target,
+              CONTROL_TIMEOUT_MS,
+            );
+            return true;
+          } catch (error) {
+            if (error instanceof WorkflowControlHistoryPendingError)
+              return false;
+            throw error;
+          }
+        },
+        { diagnostics: env.sidecarDiagnostics },
+      );
+
+    await enterStandby();
+    expect(await inStandbyMark()).toBeDefined();
+    // A deployment in standby keeps its routes, so mail can still wake it.
+    expect(env.hub.router.getRoutableAddresses()).toContain(address);
+
+    // The sidecar answers a wake once the cleared mark is on disk.
+    await env.hub.router.wakeAllocation(target, CONTROL_TIMEOUT_MS);
+    expect(await inStandbyMark()).toBeUndefined();
+
+    await enterStandby();
+    const reported =
+      Promise.withResolvers<SidecarEventMap["deployment.standby"]>();
+    const unsubscribe = env.hub.router.events.on(
+      "deployment.standby",
+      (report) => {
+        reported.resolve(report);
+      },
+    );
+    try {
+      await fireMailTrigger(env, address, {
+        messageId: `<${STANDBY_DEPLOYMENT_ID}-wake@integration.interchange>`,
+      });
+      expect(await reported.promise).toEqual({
+        ...target,
+        inStandby: false,
+        reason: "Woken by mail",
+      });
+      expect(await inStandbyMark()).toBeUndefined();
+    } finally {
+      unsubscribe();
+    }
+  },
+);
+
+// Mail waiting behind the run would wake the child as soon as it stopped, so
+// the sidecar refuses the standby and the child keeps running.
+test.skipIf(!harnessDbEnvAvailable())(
+  "Hub's standby for a real child is refused while mail waits for it",
+  async () => {
+    const anchorRunId = REFUSED_STANDBY_DEPLOYMENT_ID;
+    const { address, handle } = await deployParkedOnSignal({
+      anchorRunId,
+      definitionAssetId: "ast_standby_refused_roundtrip",
+      workflowId: "standby-refused-workflow",
+    });
+    const target = env.hub.prepareAllocationIdentity(anchorRunId, address);
+    const { messageId } = await fireMailTrigger(env, address, {
+      messageId: `<${anchorRunId}-waiting@integration.interchange>`,
+    });
+    // The sidecar writes its inbox and pushes it to the Hub, so mail the Hub
+    // holds there is mail the sidecar has.
+    await waitFor(
+      async () => {
+        for (const subdir of ["inbox", "processing"] as const) {
+          const entries = await readClaimCheckDir(
+            env,
+            handle.workflowRunRepoId,
+            address,
+            subdir,
+          );
+          if (
+            entries.some((entry) =>
+              new TextDecoder().decode(entry.bytes).includes(messageId),
+            )
+          )
+            return true;
+        }
+        return false;
+      },
+      { diagnostics: env.sidecarDiagnostics },
+    );
+
+    const refusal = await env.hub.router
+      .putAllocationInStandby(target, CONTROL_TIMEOUT_MS)
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    expect(refusal).toBeInstanceOf(WorkflowControlRejectedError);
+    // Mail still in the inbox or already taken by the dispatch, depending on
+    // how far the dispatch got.
+    expect(refusal instanceof Error ? refusal.message : "").toContain(
+      "The deployment was not put in standby: mail ",
+    );
+    expect(await readInStandbyMark(handle)).toBeUndefined();
+    expect(env.hub.router.getRoutableAddresses()).toContain(address);
+  },
+);
+
 test.skipIf(!harnessDbEnvAvailable())(
   "Hub confirms a workflow stop once it holds the stopped worker's history",
   async () => {
@@ -647,6 +780,23 @@ test.skipIf(!harnessDbEnvAvailable())(
   },
   30_000,
 );
+
+// The mark the sidecar keeps in a deployment's run record while its child is
+// in standby.
+async function readInStandbyMark(handle: {
+  workflowRunRepoId: RepoId;
+}): Promise<unknown> {
+  const recordFile = path.join(
+    env.sidecar.dataDir,
+    "workflow-runs",
+    handle.workflowRunRepoId.id,
+    "deployment.json",
+  );
+  const record: unknown = JSON.parse(await readFile(recordFile, "utf8"));
+  return typeof record === "object" && record !== null && "standby" in record
+    ? record.standby
+    : undefined;
+}
 
 /**
  * Read every workflow-run event under any `runs/<runId>/events/`
