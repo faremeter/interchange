@@ -24,9 +24,23 @@ import {
   generateKeyPair,
 } from "@intx/crypto";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
-import type { AgentDeployFrame } from "@intx/types/sidecar";
+import { hexEncode } from "@intx/types";
+import {
+  WorkflowProjectionDefinition,
+  type AgentDeployFrame,
+} from "@intx/types/sidecar";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowDefinition } from "@intx/workflow";
-import type { SubprocessSpawner } from "@intx/workflow-host";
+import { projectLiveToInert } from "@intx/workflow/projection";
+import {
+  createControlChannelSender,
+  type SubprocessSpawner,
+} from "@intx/workflow-host";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  sendDefinition,
+} from "@intx/workflow-host/testing";
 
 import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import {
@@ -118,35 +132,95 @@ function stubFailingSessions(): Parameters<
 // spawn it exercises, so the stub returns a valid single-step live definition
 // (its one step carries an agent so it survives `projectLiveToInert`), keyed to
 // the frame's single source id `s1`.
-function stubApplyFrozenWorkflowClosure(
-  definitionId: string,
-): NonNullable<
+function stubApplyFrozenWorkflowClosure(): NonNullable<
   Parameters<typeof createSidecarDeployRouter>[0]["applyFrozenWorkflowClosure"]
 > {
   return (applyArgs) =>
     Promise.resolve({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
-      definition: {
-        id: definitionId,
-        triggers: [{ type: "manual" }],
-        stepOrder: ["s1"],
-        steps: {
-          s1: {
-            kind: "step",
-            id: "s1",
-            agent: {
-              id: "agent-s1",
-              systemPrompt: "sys",
-              capabilities: [],
-              toolFactories: [],
-              inference: { sources: [] },
-            },
-          },
-        },
-      } as unknown as WorkflowDefinition,
       packageDir: pathJoin(applyArgs.instanceDir, "package"),
       deployDir: pathJoin(applyArgs.instanceDir, "deploy"),
     });
+}
+
+// The single-step `s1` definition a child reports, and its approved hash.
+const SINGLE_STEP_PROJECTION = WorkflowProjectionDefinition.assert(
+  projectLiveToInert(
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
+    {
+      id: "wf-single",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["s1"],
+      steps: {
+        s1: {
+          kind: "step",
+          id: "s1",
+          agent: {
+            id: "agent-s1",
+            systemPrompt: "sys",
+            capabilities: [],
+            toolFactories: [],
+            inference: { sources: [] },
+          },
+        },
+      },
+    } as unknown as WorkflowDefinition,
+  ),
+);
+const SINGLE_STEP_HASH = await computeWireDefinitionHash(
+  SINGLE_STEP_PROJECTION,
+);
+
+// A child that reports its definition, then exits before it readies.
+function reportThenExitSpawner(
+  projection: WorkflowProjectionDefinition,
+): SubprocessSpawner {
+  return ({ env }) => {
+    const controlIn = createMemoryNdjsonStream();
+    const controlOut = createMemoryNdjsonStream();
+    const events = createMemoryFrameStream();
+    let resolveExit: (code: number) => void = () => undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    const exit = (code: number) => {
+      controlIn.close();
+      events.close();
+      resolveExit(code);
+    };
+    const report = async () => {
+      const keyPair = await generateKeyPair();
+      await sendDefinition(
+        createControlChannelSender({
+          privateKeySeed: keyPair.privateKey,
+          channelId: env.IPC_CHANNEL_ID ?? "",
+          writer: {
+            write(line: string) {
+              controlIn.inject(line);
+            },
+          },
+        }),
+        {
+          childPid: 4242,
+          childPublicKey: hexEncode(keyPair.publicKey),
+          projection,
+        },
+      );
+    };
+    // A failed report still ends the child, so the deploy fails fast and the
+    // test's ready-step assertion shows the report never landed.
+    void report().then(
+      () => exit(1),
+      () => exit(1),
+    );
+    return {
+      pid: 4242,
+      controlWriter: controlOut.writer,
+      controlReader: controlIn.reader,
+      eventReader: events.reader,
+      kill: () => exit(0),
+      exited,
+    };
+  };
 }
 
 function makeRouterDeps() {
@@ -235,9 +309,7 @@ describe("deploy-failure registry leak", () => {
 
     const tmpDir = mkdtempSync(pathJoin(tmpdir(), "h-a1-deploy-failure-"));
 
-    // The grants bridge writes `state/grants.json` to each step's
-    // agent-state repo before `spawn()`; supply a minimal RepoStore that
-    // honors `getRepoDir` + `writeTree` so the bridge succeeds and the
+    // A minimal RepoStore that honors `getRepoDir` + `writeTree`, so the
     // SPAWNER failure is the one this test exercises.
     const repoStoreStub: Partial<RepoStore> = {
       getRepoDir(repoId: RepoId): string {
@@ -291,7 +363,7 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
       multistepSubprocessSpawner: failingSpawner,
-      applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure("wf-1"),
+      applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure(),
     });
 
     const frame: AgentDeployFrame = {
@@ -319,8 +391,7 @@ describe("deploy-failure registry leak", () => {
         // spawn-failure behavior it exercises.
         approvedWireHash: "a".repeat(64),
         // Source-ref is the only deploy lineage: the frame carries no inline
-        // definition, only the pin the sidecar re-materializes (the injected
-        // closure stub above evaluates it to a single-step `s1` definition).
+        // definition, only the pin the sidecar re-materializes for the child.
         sourceRef: {
           source: { kind: "registry", registry: "test-registry" },
           closure: { schemaVersion: "1", topLevel: [], entries: [] },
@@ -361,7 +432,8 @@ describe("deploy-failure registry leak", () => {
     const forgottenAgents: string[] = [];
 
     // A sessions stub whose `initRepo` succeeds (so the single-step head
-    // proceeds to record the hub key and then fail at spawn) and whose
+    // proceeds to record the hub key once the child reports its definition,
+    // and then fail when the child exits before it readies) and whose
     // `deleteAgentDir` is spied: the unwind must NOT call it, because the
     // head repo directory also holds the durable identity keypair.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only initRepo runs on the happy path; deleteAgentDir is spied to prove it is NOT called
@@ -389,10 +461,6 @@ describe("deploy-failure registry leak", () => {
         forgottenAgents.push(address);
       },
     } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["keyStore"];
-
-    const failingSpawner: SubprocessSpawner = () => {
-      throw new Error("spawner forced failure");
-    };
 
     const tmpDir = mkdtempSync(pathJoin(tmpdir(), "single-step-unwind-"));
 
@@ -447,8 +515,8 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_CACHE_MAX_BYTES: "1000000",
         SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
-      multistepSubprocessSpawner: failingSpawner,
-      applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure("wf-single"),
+      multistepSubprocessSpawner: reportThenExitSpawner(SINGLE_STEP_PROJECTION),
+      applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure(),
     });
 
     const frame: AgentDeployFrame = {
@@ -468,12 +536,10 @@ describe("deploy-failure registry leak", () => {
         grants: [],
       } as unknown as AgentDeployFrame["config"],
       workflow: {
-        // Placeholder hub-approved wire hash so the deploy path's fail-loud
-        // guard passes; production always stamps it.
-        approvedWireHash: "a".repeat(64),
+        approvedWireHash: SINGLE_STEP_HASH,
         // Source-ref is the only deploy lineage: the frame carries no inline
-        // definition, only the pin the sidecar re-materializes (the injected
-        // closure stub above evaluates it to a single-step `s1` definition).
+        // definition, only the pin the sidecar re-materializes for the child,
+        // which reports the single-step `s1` definition.
         sourceRef: {
           source: { kind: "registry", registry: "test-registry" },
           closure: { schemaVersion: "1", topLevel: [], entries: [] },
@@ -492,10 +558,12 @@ describe("deploy-failure registry leak", () => {
       },
     };
 
-    await expect(router.deploy(frame)).rejects.toThrow();
+    await expect(router.deploy(frame)).rejects.toThrow(
+      /control channel ended before child emitted ready/,
+    );
 
     // The single-step head initialized its repo and recorded the hub key
-    // before the spawn failed.
+    // once the child reported its definition, before the spawn failed.
     expect(initedRepos).toEqual(["run_single@x.example"]);
     expect(recordedHubKeys).toEqual(["run_single@x.example"]);
     // The unwind reversed the in-memory hub key...

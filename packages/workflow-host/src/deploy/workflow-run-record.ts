@@ -218,9 +218,10 @@ async function transformDeliveryMaterials(
 }
 
 /**
- * Persist the initial run record after its slug is claimed and before the
- * child is spawned, so a crash mid-spawn leaves a record the boot scan
- * re-drives. Idempotent: it overwrites any existing record for the same run.
+ * Persist the initial run record once the deploy's step grants are on disk
+ * and before the child starts or resumes any run, so a record the boot scan
+ * re-drives after a crash always has its grants. Idempotent: it overwrites
+ * any existing record for the same run.
  *
  * Every credential secret in the run's `credentials` cell -- inference and
  * binding alike -- is sealed under the sidecar `cipher` before it touches disk,

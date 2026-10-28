@@ -265,14 +265,11 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
         SIDECAR_CACHE_MAX_BYTES: "1000000",
         SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
-      // Source-ref is the only deploy lineage: the router derives the runnable
-      // definition by materializing the pin's closure through this dependency.
-      // The stub returns a valid single-step `step-1` live definition (its step
-      // carries an agent so it survives `projectLiveToInert`) so the deploy
-      // reaches the key-registration lifecycle this test exercises.
+      // Source-ref is the only deploy lineage: the router materializes the
+      // pin's closure through this dependency for the child, which reports the
+      // single-step `step-1` definition.
       applyFrozenWorkflowClosure: (applyArgs) =>
         Promise.resolve({
-          definition: liveDefinition,
           packageDir: path.join(applyArgs.instanceDir, "package"),
           deployDir: path.join(applyArgs.instanceDir, "deploy"),
         }),

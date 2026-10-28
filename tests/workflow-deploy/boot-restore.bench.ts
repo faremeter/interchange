@@ -262,15 +262,14 @@ const APPROVED_WIRE_HASH = await computeWireDefinitionHash(PROJECTION);
 
 /**
  * The injected closure materializer stub. Source-ref is the only deploy
- * lineage, so the router derives each deployment's definition through this
- * dependency on both the deploy and the restore path. Returns the single-step
- * `step-1` live definition every fake child reports.
+ * lineage, so the router lays each deployment's closure out through this
+ * dependency on both the deploy and the restore path, for the child to
+ * evaluate.
  */
 const stubApplyFrozenWorkflowClosure: NonNullable<
   Parameters<typeof createSidecarDeployRouter>[0]["applyFrozenWorkflowClosure"]
 > = (applyArgs) =>
   Promise.resolve({
-    definition: LIVE_DEFINITION,
     packageDir: path.join(applyArgs.instanceDir, "package"),
     deployDir: path.join(applyArgs.instanceDir, "deploy"),
   });
