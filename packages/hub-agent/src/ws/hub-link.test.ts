@@ -35,6 +35,7 @@ import {
   type HostedIncarnation,
   type PackRejectFrame,
   type SessionErrorFrame,
+  type WorkflowControlAckFrame,
 } from "@intx/types/sidecar";
 import type { RepoId } from "@intx/types/repo";
 
@@ -545,7 +546,58 @@ describe("sidecar↔hub integration", () => {
     },
   );
 
-  test("a cancellation finishing after reconnect does not reply on the new connection", async () => {
+  test("fits a failed control's error to the bound on sidecar text", async () => {
+    const hello = Promise.withResolvers<undefined>();
+    const acknowledged = Promise.withResolvers<SidecarFrame>();
+    const hub = startWelcomingHub((raw) => {
+      const frame = SidecarFrame.assert(JSON.parse(raw));
+      if (frame.type === "hello") hello.resolve(undefined);
+      if (
+        frame.type === "workflow.control.ack" &&
+        frame.requestId === "long-error"
+      )
+        acknowledged.resolve(frame);
+    });
+    const bindings = withTestDeployBindings();
+    const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
+      hubURL: `ws://localhost:${hub.server.port}/ws`,
+      sidecarId: "long-error",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...bindings,
+      deployRouter: {
+        ...bindings.deployRouter,
+        control: async () => {
+          throw new Error("x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH * 2));
+        },
+      },
+    });
+    try {
+      client.connect();
+      await hello.promise;
+      hub.send({
+        type: "workflow.control",
+        requestId: "long-error",
+        action: "standby",
+        runId: "run_long",
+        agentAddress: "run_long@example.test",
+        generation: 1,
+        reason: "Asked for standby",
+      });
+      expect(await acknowledged.promise).toMatchObject({
+        type: "workflow.control.ack",
+        requestId: "long-error",
+        error: expect.stringMatching(/^x+\.\.\.$/),
+      });
+    } finally {
+      client.close();
+      await hub.server.stop(true);
+    }
+  });
+
+  test("a cancellation finishing after reconnect does not reply on the new connection, and learns its connection closed", async () => {
     const sockets: TestSocket[] = [];
     const stopped = Promise.withResolvers<undefined>();
     class TestSocket extends EventTarget {
@@ -587,6 +639,7 @@ describe("sidecar↔hub integration", () => {
     const release = Promise.withResolvers<undefined>();
     const finished = Promise.withResolvers<undefined>();
     const reconnect = Promise.withResolvers<() => void>();
+    let cancelSignal: AbortSignal | undefined;
     const bindings = withTestDeployBindings();
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
@@ -602,8 +655,9 @@ describe("sidecar↔hub integration", () => {
       },
       deployRouter: {
         ...bindings.deployRouter,
-        async control(frame) {
+        async control(frame, { signal }) {
           if (frame.action === "stop") return { refTips: STOPPED_REF_TIPS };
+          cancelSignal = signal;
           started.resolve(undefined);
           await release.promise;
           finished.resolve(undefined);
@@ -625,7 +679,9 @@ describe("sidecar↔hub integration", () => {
       };
       first.receive({ ...command, action: "cancel", requestId: "cancel" });
       await started.promise;
+      expect(cancelSignal?.aborted).toBe(false);
       first.close();
+      expect(cancelSignal?.aborted).toBe(true);
       (await reconnect.promise)();
       const second = sockets[1];
       if (second === undefined) throw new Error("Missing second socket");
@@ -1883,8 +1939,8 @@ describe("initial handshake on connect", () => {
     client.connect();
     try {
       // An event is best-effort and goes nowhere before the welcome, and so
-      // does a stop report, which the sidecar sends again after it; the
-      // register is owed and waits for it.
+      // does a stop report, which the sidecar sends again after it; a woken
+      // report and the register are owed and wait for it.
       client.sendEvent("live@integration.interchange", 3, "sess-queued", {
         type: "reactor.start",
         seq: 0,
@@ -1897,6 +1953,12 @@ describe("initial handshake on connect", () => {
         refTips: { "refs/heads/main": "c".repeat(40) },
       };
       client.sendDeploymentStopped(stopped);
+      const woken = {
+        agentAddress: "live@integration.interchange",
+        generation: 3,
+        reason: "Woken by mail",
+      };
+      client.sendDeploymentWoken(woken);
       client.sendSignalCorrelationRegister({
         correlationId: "corr-queued",
         runId: "run-1",
@@ -1922,7 +1984,15 @@ describe("initial handshake on connect", () => {
 
       sockets[0]!.send(JSON.stringify({ type: "welcome", routed: [] }));
       await waitUntil(() => types().includes("signal.correlation.register"));
-      expect(types()).toEqual(["hello", "signal.correlation.register"]);
+      expect(types()).toEqual([
+        "hello",
+        "deployment.woken",
+        "signal.correlation.register",
+      ]);
+      expect(JSON.parse(frames[1]!)).toEqual({
+        type: "deployment.woken",
+        ...woken,
+      });
 
       client.sendDeploymentStopped(stopped);
       await waitUntil(() => types().includes("deployment.stopped"));
@@ -2025,6 +2095,142 @@ describe("initial handshake on connect", () => {
       await waitUntil(() => registersFor("corr-marker").length === 1);
       expect(registersFor("corr-held")).toHaveLength(1);
       expect(types()[0]).toBe("hello");
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
+  test("wake reports owed during an outage leave the queue to mail and go out once per incarnation", async () => {
+    const frames: string[] = [];
+    const sockets: { send(data: string): void; close(): void }[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          sockets.push(ws);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") frames.push(evt.data);
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const sender = "run_outage@integration.interchange";
+    const sleepers = Array.from(
+      { length: 1100 },
+      (_, index) => `run_sleeper${String(index)}@integration.interchange`,
+    );
+    const transport = createInMemoryTransport();
+    transport.register(sender, createEd25519Crypto(await generateKeyPair()));
+    let reconnect = Promise.withResolvers<() => void>();
+    const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-wakes",
+      token: "test-token",
+      transport,
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () =>
+        [sender, ...sleepers].map((address) => ({
+          address,
+          generation: 1,
+          state: "live" as const,
+        })),
+      scheduleReconnect(callback) {
+        reconnect.resolve(callback);
+        return () => undefined;
+      },
+    });
+    const parsed = () =>
+      frames.map((raw) => {
+        const frame: {
+          type: string;
+          agentAddress?: string;
+          reason?: string;
+          delivered?: boolean;
+        } = JSON.parse(raw);
+        return frame;
+      });
+    const hellos = () =>
+      parsed().filter((frame) => frame.type === "hello").length;
+    // Each connection's frames, from its hello on.
+    const sinceHello = (count: number) => {
+      const all = parsed();
+      let seen = 0;
+      const start = all.findIndex(
+        (frame) => frame.type === "hello" && (seen += 1) === count,
+      );
+      return start < 0 ? [] : all.slice(start);
+    };
+    const welcome = async (index: number) => {
+      await waitUntil(() => hellos() === index + 1);
+      sockets[index]!.send(JSON.stringify({ type: "welcome", routed: [] }));
+    };
+    const dropAndReconnect = async () => {
+      sockets[sockets.length - 1]!.close();
+      const callback = await reconnect.promise;
+      reconnect = Promise.withResolvers<() => void>();
+      return callback;
+    };
+    const mail = (content: string) =>
+      transport.getTransportFor(sender).send({
+        to: "remote@example.test",
+        type: "conversation.message",
+        content,
+      });
+    // A mail goes out to be routed, then again marked delivered for audit.
+    const mailed = (count: number) =>
+      parsed().filter(
+        (frame) => frame.type === "mail.outbound" && frame.delivered !== true,
+      ).length === count;
+
+    client.connect();
+    try {
+      await welcome(0);
+      const resume = await dropAndReconnect();
+      for (const address of sleepers) {
+        client.sendDeploymentWoken({
+          agentAddress: address,
+          generation: 1,
+          reason: "Woken by timer",
+        });
+      }
+      // A later wake of the same incarnation replaces the one held for it,
+      // and one the sidecar no longer holds is not reported.
+      client.sendDeploymentWoken({
+        agentAddress: sleepers[0]!,
+        generation: 1,
+        reason: "Woken by mail",
+      });
+      client.sendDeploymentWoken({
+        agentAddress: "run_gone@integration.interchange",
+        generation: 1,
+        reason: "Woken by mail",
+      });
+      await mail("mail during the outage");
+
+      resume();
+      await welcome(1);
+      await waitUntil(() => mailed(1));
+      const second = sinceHello(2);
+      const woken = second.filter((frame) => frame.type === "deployment.woken");
+      expect(woken.map((frame) => frame.agentAddress)).toEqual(sleepers);
+      expect(woken[0]?.reason).toBe("Woken by mail");
+      expect(second.findIndex((frame) => frame.type === "mail.outbound")).toBe(
+        1 + sleepers.length,
+      );
+
+      // A report the Hub already has is not sent again on the next connection.
+      (await dropAndReconnect())();
+      await welcome(2);
+      await mail("mail after the next reconnect");
+      await waitUntil(() => mailed(2));
+      expect(
+        sinceHello(3).some((frame) => frame.type === "deployment.woken"),
+      ).toBe(false);
     } finally {
       client.close();
       await server.stop(true);
@@ -3353,6 +3559,7 @@ describe("answerMalformedRequestFrame", () => {
     | SessionErrorFrame
     | AgentDeployErrorFrame
     | AgentUndeployErrorFrame
+    | WorkflowControlAckFrame
     | PackRejectFrame;
 
   test("answers a malformed sources.update with session.error carrying the requestId", () => {
@@ -3377,6 +3584,32 @@ describe("answerMalformedRequestFrame", () => {
       requestId: "req-1",
       error: expect.stringMatching(/malformed sources.update frame/),
     });
+  });
+
+  test("answers a malformed workflow.control with an error ack carrying the requestId", () => {
+    const sent: Answer[] = [];
+    // An action this sidecar does not know, as a newer Hub could send.
+    const answered = answerMalformedRequestFrame(
+      {
+        type: "workflow.control",
+        requestId: "req-control",
+        agentAddress: "run_control@example.com",
+        generation: 2,
+        runId: "run_control",
+        action: "not-an-action",
+      },
+      "action must be a known action",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(true);
+    expect(sent).toEqual([
+      {
+        type: "workflow.control.ack",
+        requestId: "req-control",
+        error:
+          "malformed workflow.control frame: action must be a known action",
+      },
+    ]);
   });
 
   test("answers a malformed agent.deploy with agent.deploy.error naming its request and incarnation", () => {

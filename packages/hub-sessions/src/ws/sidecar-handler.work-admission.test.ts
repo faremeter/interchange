@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { canExecuteWorkflowRun, WorkflowRunNotExecutableError } from "@intx/db";
+import { WorkflowControlFrame } from "@intx/types/sidecar";
 
 import {
   connectAllocated,
@@ -10,6 +11,7 @@ import {
   liveIncarnations,
   parsedFrames,
   TEST_IDENTITY,
+  TEST_REF_TIPS,
   TEST_TARGET,
   tick,
 } from "./sidecar-handler.test-helpers";
@@ -235,6 +237,66 @@ test.each(["mail", "signal", "direct mail", "direct signal"] as const)(
     router.handleClose(ws);
   },
 );
+
+test.each(["standby", "wake"] as const)(
+  "guards a %s command",
+  async (action) => {
+    const router = createAllocatedRouter({
+      withExecutableWorkflowRun: async () => {
+        throw new WorkflowRunNotExecutableError(
+          TEST_IDENTITY.anchorRunId,
+          "stopping",
+        );
+      },
+    });
+    const ws = await connectAllocated(router, [address]);
+    const before = [...ws.sent];
+    const sending =
+      action === "standby"
+        ? router.putAllocationInStandby(TEST_TARGET, 7_000)
+        : router.wakeAllocation(TEST_TARGET, 7_000);
+    await expect(sending).rejects.toBeInstanceOf(WorkflowRunNotExecutableError);
+    expect(ws.sent).toEqual(before);
+    router.handleClose(ws);
+  },
+);
+
+test("a standby command whose admission fails after it went out still takes its answer", async () => {
+  const router = createAllocatedRouter({
+    withExecutableWorkflowRun: async (_target, send) => {
+      send();
+      throw new Error("The admission commit failed");
+    },
+  });
+  const ws = await connectAllocated(router, [address]);
+  let answered = false;
+  const pending = router.putAllocationInStandby(TEST_TARGET, 7_000, () => {
+    answered = true;
+  });
+  await tick();
+  const frame = WorkflowControlFrame.assert(
+    parsedFrames(ws)
+      .filter(
+        (sent) =>
+          typeof sent === "object" &&
+          sent !== null &&
+          "type" in sent &&
+          sent.type === "workflow.control",
+      )
+      .at(-1),
+  );
+  router.handleMessage(
+    ws,
+    JSON.stringify({
+      type: "workflow.control.ack",
+      requestId: frame.requestId,
+      refTips: TEST_REF_TIPS,
+    }),
+  );
+  expect(await pending).toEqual({});
+  expect(answered).toBe(true);
+  router.handleClose(ws);
+});
 
 test("reports untracked relay mail when admission fails transiently", async () => {
   const undelivered = Promise.withResolvers<{
