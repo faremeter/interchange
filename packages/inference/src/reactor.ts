@@ -483,7 +483,8 @@ export function createReactor(config: ReactorConfig): Reactor {
   // no tool call, so it must force the cycle commit.
   let cycleSuspended = false;
 
-  // Director-supplied checkpoint message override; consumed exactly once.
+  // Director-supplied checkpoint message override; cleared only once a
+  // commit carrying it succeeds.
   let pendingMessage: string | null = null;
 
   // AbortController for in-flight inference/tool operations.
@@ -1073,9 +1074,7 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   function buildCycleMessage(): string {
     if (pendingMessage !== null) {
-      const msg = pendingMessage;
-      pendingMessage = null;
-      return msg;
+      return pendingMessage;
     }
 
     if (cycleCompactorName !== null) {
@@ -1099,6 +1098,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     cycleToolCallsExecuted = 0;
     cycleCompactorName = null;
     cycleSuspended = false;
+    pendingMessage = null;
   }
 
   async function commitCycle(): Promise<void> {
@@ -1132,7 +1132,6 @@ export function createReactor(config: ReactorConfig): Reactor {
         `Cycle commit failed: ${cause instanceof Error ? cause.message : String(cause)}`,
         false,
       );
-      resetCycleAccumulators();
       return;
     }
 
