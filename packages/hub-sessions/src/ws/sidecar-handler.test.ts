@@ -673,7 +673,7 @@ describe("SidecarRouter allocation routing", () => {
   });
 });
 
-describe("SidecarRouter grants before a signal", () => {
+describe("SidecarRouter current grants on signals and triggers", () => {
   // The guard compares against the run id parsed from a run address.
   const address = "run_grants@deploy.test";
   const runId = "run_grants";
@@ -843,6 +843,180 @@ describe("SidecarRouter grants before a signal", () => {
       expect(types(ws).slice(before)).toEqual(["signal.deliver"]);
     }
     expect(loads).toBe(0);
+  });
+
+  function grantsOf(ws: ReturnType<typeof createMockWs>): unknown[] {
+    return framesOf(ws, "run.grants").map((frame) => frame["stepGrants"]);
+  }
+
+  // The grants a trigger was enqueued with, older than the loaded ones.
+  const enqueuedGrants = [
+    {
+      id: "grt-enqueued",
+      resource: "tool:posix",
+      action: "invoke",
+      effect: "ask" as const,
+      origin: "system" as const,
+      conditions: null,
+      expiresAt: null,
+      roleId: null,
+      principalId: "prn-run",
+    },
+  ];
+
+  function dispatch(
+    router: ReturnType<typeof createGrantsRouter>,
+    signal?: AbortSignal,
+  ) {
+    return router.sendWorkflowRunDispatchToAllocation(
+      runTarget,
+      address,
+      runId,
+      enqueuedGrants,
+      "cmF3LW1haWw=",
+      "sender@example.test",
+      "message-1",
+      signal,
+    );
+  }
+
+  test("a dispatched trigger carries the grants loaded at send time", async () => {
+    const router = createGrantsRouter({
+      loadRunGrants: async () => stepGrants,
+    });
+    const ws = await connect(router, [address]);
+    await dispatch(router);
+    expect(types(ws).slice(-2)).toEqual(["run.grants", "mail.inbound"]);
+    expect(grantsOf(ws)).toEqual([JSON.parse(JSON.stringify(stepGrants))]);
+  });
+
+  test("a dispatched trigger for a run with no principal carries no grants", async () => {
+    const router = createGrantsRouter({ loadRunGrants: async () => null });
+    const ws = await connect(router, [address]);
+    await dispatch(router);
+    expect(grantsOf(ws)).toEqual([[]]);
+  });
+
+  test("a dispatched trigger whose load fails keeps its enqueued grants", async () => {
+    const router = createGrantsRouter({
+      loadRunGrants: async () => {
+        throw new Error("db down");
+      },
+    });
+    const ws = await connect(router, [address]);
+    await dispatch(router);
+    expect(types(ws).slice(-2)).toEqual(["run.grants", "mail.inbound"]);
+    expect(grantsOf(ws)).toEqual([JSON.parse(JSON.stringify(enqueuedGrants))]);
+  });
+
+  test("a dispatched trigger aborted during its grants load sends nothing", async () => {
+    const controller = new AbortController();
+    const router = createGrantsRouter({
+      loadRunGrants: async () => {
+        controller.abort();
+        return stepGrants;
+      },
+    });
+    const ws = await connect(router, [address]);
+    const before = ws.sent.length;
+    await expect(dispatch(router, controller.signal)).rejects.toThrow();
+    expect(ws.sent.length).toBe(before);
+  });
+
+  test("a trigger replayed after a reconnect carries the grants loaded at replay time", async () => {
+    const router = createGrantsRouter({
+      loadRunGrants: async () => stepGrants,
+    });
+    const first = await connect(router, [address]);
+    expect(
+      await router.routeMail(
+        address,
+        "aGVsbG8=",
+        "sender@example.test",
+        "m-1",
+        {
+          runId,
+          stepGrants: [],
+        },
+      ),
+    ).toBe(true);
+    // The trigger went out with the grants it was routed with.
+    expect(grantsOf(first)).toEqual([[]]);
+    router.handleClose(first);
+
+    const second = createMockWs();
+    router.handleOpen(second);
+    router.handleMessage(
+      second,
+      helloFrame(runIdentity.sidecarId, liveIncarnations([address])),
+    );
+    await waitForFrame(second, (frame) => frame.type === "mail.inbound");
+    expect(grantsOf(second)).toEqual([JSON.parse(JSON.stringify(stepGrants))]);
+  });
+
+  // Reconnect the sidecar and wait for the replay of the trigger the caller
+  // routed.
+  async function reconnect(
+    router: ReturnType<typeof createGrantsRouter>,
+    previous: ReturnType<typeof createMockWs>,
+  ) {
+    router.handleClose(previous);
+    const next = createMockWs();
+    router.handleOpen(next);
+    router.handleMessage(
+      next,
+      helloFrame(runIdentity.sidecarId, liveIncarnations([address])),
+    );
+    await waitForFrame(next, (frame) => frame.type === "mail.inbound");
+    return next;
+  }
+
+  test("a replay whose load fails falls back to the grants the last replay sent", async () => {
+    let fail = false;
+    const router = createGrantsRouter({
+      loadRunGrants: async () => {
+        if (fail) throw new Error("db down");
+        return stepGrants;
+      },
+    });
+    const first = await connect(router, [address]);
+    await router.routeMail(address, "aGVsbG8=", "sender@example.test", "m-1", {
+      runId,
+      stepGrants: enqueuedGrants,
+    });
+    const second = await reconnect(router, first);
+    expect(grantsOf(second)).toEqual([JSON.parse(JSON.stringify(stepGrants))]);
+    fail = true;
+    const third = await reconnect(router, second);
+    expect(grantsOf(third)).toEqual([JSON.parse(JSON.stringify(stepGrants))]);
+  });
+
+  test("a replayed grants frame changes only its grants", async () => {
+    const router = createGrantsRouter({
+      loadRunGrants: async () => stepGrants,
+      loadRunCredentials: async () => credentials,
+    });
+    const first = await connect(router, [address]);
+    const senderIdentities = [
+      { address: "sender@example.test", publicKey: "b".repeat(64) },
+    ];
+    await router.routeMail(address, "aGVsbG8=", "sender@example.test", "m-1", {
+      runId,
+      stepGrants: enqueuedGrants,
+      senderIdentities,
+    });
+    const second = await reconnect(router, first);
+    expect(framesOf(second, "run.grants")).toEqual([
+      {
+        type: "run.grants",
+        agentAddress: address,
+        generation: runIdentity.generation,
+        runId,
+        stepGrants: JSON.parse(JSON.stringify(stepGrants)),
+        senderIdentities,
+        credentials,
+      },
+    ]);
   });
 });
 
