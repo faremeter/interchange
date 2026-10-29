@@ -3348,99 +3348,13 @@ export function createWorkflowSupervisor(
     // teardown: it kills the handle and releases the mail subscription
     // and address registration installed below.
     try {
-      // Replay any orphaned `processing/` entries back to `inbox/`
-      // BEFORE the dispatch loop's first dequeue. A crash mid-dispatch
-      // in a prior supervisor incarnation can leave an entry in
-      // `processing/` with no owner; the FIFO contract requires the
-      // entry move back to `inbox/` so the next dispatch picks it up
-      // in its original arrival position. The replay runs off the
-      // spawn critical path (the substrate write may roundtrip through
-      // the pack-pushing wrap and a slow hub), but `runDispatchLoop`
-      // takes the promise as an argument and awaits it before its
-      // first `dequeueToProcessing` so a fresh inbound mail that lands
-      // during the replay window cannot ship ahead of the orphan once
-      // the replay completes.
-      // One scan of `runs/` feeds both spawn-time recovery consumers: the
-      // orphan replay (which gates dispatch) and the compaction sweep (which
-      // does not). Sharing the walk keeps recovery off a second O(total-runs)
-      // scan.
-      const scanDone = scanRunsForBoot(
-        bindings.repoStore,
-        supervisorPrincipal,
-        bindings.workflowRunRepoId,
-        bindings.workflowRunRef,
-      );
-      const replayDone = scanDone
-        .then(({ ownedIdentities }) =>
-          inboxPrimitives.replayProcessingToInbox(
-            bindings.repoStore,
-            inboxWritePrincipal,
-            bindings.workflowRunRepoId,
-            bindings.deploymentMailAddress,
-            { ownedIdentities },
-          ),
-        )
-        .then(({ retainedIdentities }) => {
-          keepOwnedMessages(retainedIdentities, { childRunning: true });
-          wakeDispatch();
-        })
-        .catch((cause) => {
-          // Documented best-effort: a failed replay leaves orphaned
-          // `processing/` entries parked and the dispatch loop will
-          // then ship newly-enqueued mail ahead of them, violating
-          // the FIFO contract described in the comment above.
-          // Tightening this to a fatal `onChildCrash` was attempted
-          // but caused spurious crashes in the integration suite
-          // where the first spawn legitimately has no
-          // `processing/` directory to replay; resolving that
-          // requires either a no-op-on-missing variant of
-          // `replayProcessingToInbox` or a dispatch-loop periodic
-          // sweep that picks up parked orphans. Left as logged
-          // best-effort until that lands.
-          const message =
-            cause instanceof Error ? cause.message : String(cause);
-          logger.warn`boot recovery scan or processing replay failed on spawn: ${message}`;
-        });
+      const { replayed: replayDone, sweepDone } = recoverAtBoot();
       // Hold the replay promise on the active-state record so
       // `shutdownInternal` awaits its settlement before tearing the
       // bindings down. A shutdown that lands while the replay is in
       // flight would otherwise leave the substrate write pending past
       // the supervisor's exit.
       state.replayDone = replayDone;
-      bootReplay = replayDone;
-
-      // Re-seal runs a crash left terminal-but-per-event when their
-      // fire-and-forget fold never ran. Unlike the replay above, this must
-      // NOT gate dispatch: reclaiming leaked per-event files is housekeeping
-      // and cannot be allowed to delay the first dequeue. Best-effort, held
-      // on the active-state record so shutdown awaits its settlement (see the
-      // `sweepDone` field docstring for the teardown-latency tradeoff).
-      const sweepDone = scanDone
-        .then(({ pendingSealRunIds }) =>
-          recoverInterruptedCompactions({
-            substrate: bindings.repoStore,
-            repoId: bindings.workflowRunRepoId,
-            ref: bindings.workflowRunRef,
-            anchorRunId: bindings.anchorRunId,
-            pendingSealRunIds,
-          }),
-        )
-        .then(({ sealed, failed }) => {
-          if (sealed > 0) {
-            logger.info`recovery sweep sealed ${String(sealed)} interrupted run(s)`;
-          }
-          if (failed.length > 0) {
-            const detail = failed
-              .map((f) => `${f.runId} (${f.message})`)
-              .join("; ");
-            logger.warn`recovery sweep left ${String(failed.length)} run(s) unsealed: ${detail}`;
-          }
-        })
-        .catch((cause) => {
-          const message =
-            cause instanceof Error ? cause.message : String(cause);
-          logger.warn`boot recovery scan or compaction sweep failed on spawn: ${message}`;
-        });
       state.sweepDone = sweepDone;
 
       bindings.mailBus.registerAddress(bindings.deploymentMailAddress);
@@ -3612,6 +3526,74 @@ export function createWorkflowSupervisor(
       });
       throw cause;
     }
+  }
+
+  // Move `processing/` entries a crashed incarnation left without an owner back
+  // to `inbox/` in arrival order. The write can wait on a slow Hub, so it runs
+  // in the background, and dispatch awaits it before its first dequeue so new
+  // mail cannot overtake them. The compaction sweep shares its scan of `runs/`.
+  function recoverAtBoot(): {
+    replayed: Promise<void>;
+    sweepDone: Promise<void>;
+  } {
+    const scanDone = scanRunsForBoot(
+      bindings.repoStore,
+      supervisorPrincipal,
+      bindings.workflowRunRepoId,
+      bindings.workflowRunRef,
+    );
+    const replayed = scanDone
+      .then(({ ownedIdentities }) =>
+        inboxPrimitives.replayProcessingToInbox(
+          bindings.repoStore,
+          inboxWritePrincipal,
+          bindings.workflowRunRepoId,
+          bindings.deploymentMailAddress,
+          { ownedIdentities },
+        ),
+      )
+      .then(({ retainedIdentities }) => {
+        keepOwnedMessages(retainedIdentities, { childRunning: true });
+        wakeDispatch();
+      })
+      .catch((cause: unknown) => {
+        // Best-effort: entries a failed replay leaves in `processing/` lose
+        // their place to newer mail. Making this fatal crashed first spawns
+        // with no `processing/` directory; that needs a replay that allows
+        // one, or a periodic sweep for orphans.
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.warn`boot recovery scan or processing replay failed: ${message}`;
+      });
+    bootReplay = replayed;
+
+    // Re-seal terminal runs whose fold a crash interrupted. Housekeeping, so
+    // unlike the replay it does not gate dispatch; shutdown still awaits it.
+    const sweepDone = scanDone
+      .then(({ pendingSealRunIds }) =>
+        recoverInterruptedCompactions({
+          substrate: bindings.repoStore,
+          repoId: bindings.workflowRunRepoId,
+          ref: bindings.workflowRunRef,
+          anchorRunId: bindings.anchorRunId,
+          pendingSealRunIds,
+        }),
+      )
+      .then(({ sealed, failed }) => {
+        if (sealed > 0) {
+          logger.info`recovery sweep sealed ${String(sealed)} interrupted run(s)`;
+        }
+        if (failed.length > 0) {
+          const detail = failed
+            .map((f) => `${f.runId} (${f.message})`)
+            .join("; ");
+          logger.warn`recovery sweep left ${String(failed.length)} run(s) unsealed: ${detail}`;
+        }
+      })
+      .catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.warn`boot recovery scan or compaction sweep failed: ${message}`;
+      });
+    return { replayed, sweepDone };
   }
 
   // Arm the recycle policy for the child that just started at `spawnedAt`,
