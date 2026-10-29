@@ -1,4 +1,4 @@
-// Hub-side producers that push credential-material changes to running
+// Hub-side producers that push credential-material changes to live
 // deployments over `credentials.update`.
 //
 // Two shapes, one per removal semantic:
@@ -9,7 +9,7 @@
 //     its credential by id only, so the rotated secret rides the cell.
 //   - Flat named revoke (`pushCredentialRevoke`): after a credential is deleted
 //     or deliberately revoked, broadcast a `revoke` naming that credentialId so
-//     every running deployment drops it. The removed id is NAMED by the actor,
+//     every live deployment drops it. The removed id is NAMED by the actor,
 //     so this needs no diff against a prior delivery.
 
 import { eq, and, inArray, isNull, isNotNull } from "drizzle-orm";
@@ -18,7 +18,11 @@ import {
   withRunCredentials,
 } from "./run-credentials";
 import { getLogger } from "@intx/log";
-import { hubConsumersOf, workflowRun } from "@intx/db/schema";
+import {
+  hubConsumersOf,
+  liveWorkflowRunStatuses,
+  workflowRun,
+} from "@intx/db/schema";
 import {
   resolveInstanceModelSources,
   getDescendantTenants,
@@ -212,7 +216,7 @@ export async function pushSourceUpdatesSubtree(
 
 /**
  * After a credential is deleted or deliberately revoked, evict it from every
- * running deployment in the tenant AND its descendants. A descendant resolves
+ * live deployment in the tenant AND its descendants. A descendant resolves
  * an ancestor's tenant-owned credential through the tenant walk-up, so a
  * revoke in one tenant can affect a descendant's run. The push is a flat named
  * revocation: the child drops the credentialId's material and any binding that
@@ -221,7 +225,7 @@ export async function pushSourceUpdatesSubtree(
  *
  * Callers fire this without awaiting, so it must never reject: a failure to
  * enumerate or push is logged and dropped. This closes the ONLINE revocation
- * window (a running deployment stops holding the credential now); the offline
+ * window (a live deployment stops holding the credential now); the offline
  * window -- a run whose sidecar was disconnected when the revoke fired -- is
  * closed by the reconnect resync, not here.
  */
@@ -240,15 +244,16 @@ export async function pushCredentialRevoke(
   }
 
   try {
-    // Every running, addressable run in the subtree. Unlike the source-update
+    // Every live, addressable run in the subtree. Unlike the source-update
     // push this does NOT exclude deployment-anchor runs (`anchorRunId IS NULL`):
     // a deployed workflow is the primary credential consumer, and a flat revoke
     // is safe to deliver to any address -- a run that never held the credential
-    // no-ops on it.
+    // no-ops on it. "Live" includes a "deployed" anchor that no trigger has
+    // started yet: it already holds its deploy-time credentials.
     const runs = await db.query.workflowRun.findMany({
       where: and(
         inArray(workflowRun.tenantId, tenants),
-        eq(workflowRun.status, "running"),
+        inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
         isNotNull(workflowRun.address),
       ),
       columns: { id: true, address: true },
@@ -260,7 +265,7 @@ export async function pushCredentialRevoke(
       // broken invariant, surfaced rather than silently skipped.
       if (run.address === null) {
         throw new Error(
-          `running run ${run.id} matched the non-null-address filter but has a null address`,
+          `live run ${run.id} matched the non-null-address filter but has a null address`,
         );
       }
       addresses.add(run.address);

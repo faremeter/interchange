@@ -385,7 +385,7 @@ export function createCredentialRoutes({
         );
       }
 
-      // A deliberate revocation must evict the credential from any running
+      // A deliberate revocation must evict the credential from any live
       // deployment that holds it -- a re-resolve alone would leave the revoked
       // secret in a live child's cell. Fire-and-forget, best effort.
       if (body.status === "revoked") {
@@ -481,7 +481,7 @@ export function createCredentialRoutes({
         return errorResponse(c, "not_found", "Credential not found");
       }
 
-      // The credential row is gone; evict its material from any running
+      // The credential row is gone; evict its material from any live
       // deployment that still holds it so a live child cannot keep using it.
       // Fire-and-forget, best effort.
       void pushCredentialRevoke(db, sidecarRouter, tenantCtx.id, credentialId);
