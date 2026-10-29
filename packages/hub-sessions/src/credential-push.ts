@@ -1,12 +1,15 @@
 // Hub-side producers that push credential-material changes to live
 // deployments over `credentials.update`.
 //
-// Two shapes, one per removal semantic:
-//   - Source re-resolve (`pushSourceUpdates`, `pushSourceUpdatesSubtree`): after
-//     a credential secret rotation or a catalog edit, re-resolve each running
-//     instance's inference sources and push the refreshed material followed by
-//     the `sources.update` that references it. An inference source references
-//     its credential by id only, so the rotated secret rides the cell.
+// Three shapes:
+//   - Source re-resolve (`pushSourceUpdatesSubtree`): after a catalog edit,
+//     re-resolve each running instance's inference sources and push the
+//     refreshed material followed by the `sources.update` that references it.
+//     An inference source references its credential by id only, so a rotated
+//     secret rides the cell.
+//   - Rotation (`pushCredentialRotation`): after a credential secret rotation,
+//     run the source re-resolve over the subtree and push the rotated material
+//     to every live deployment that holds the credential.
 //   - Flat named revoke (`pushCredentialRevoke`): after a credential is deleted
 //     or deliberately revoked, broadcast a `revoke` naming that credentialId so
 //     every live deployment drops it. The removed id is NAMED by the actor,
@@ -175,26 +178,6 @@ async function pushSourceUpdatesToTenants(
 }
 
 /**
- * After a credential secret is rotated, re-resolve every running instance in
- * the tenant against the catalog and push the updates. A rotated secret flows
- * through because resolution dereferences the provider's credential reference
- * to the current secret.
- */
-export async function pushSourceUpdates(
-  db: DB["db"],
-  sidecarRouter: SidecarRouter,
-  tenantId: string,
-  credentialCipher: CredentialCipher,
-): Promise<void> {
-  await pushSourceUpdatesToTenants(
-    db,
-    sidecarRouter,
-    [tenantId],
-    credentialCipher,
-  );
-}
-
-/**
  * After a catalog edit in a tenant, re-resolve and push to every running
  * instance in that tenant AND its descendants. Descendants inherit the
  * edited tenant's catalog, so a change there (a disabled provider, a new
@@ -219,6 +202,112 @@ export async function pushSourceUpdatesSubtree(
     tenants,
     credentialCipher,
   );
+}
+
+/**
+ * After a credential's secret is rotated, deliver the new secret to every live
+ * holder in the tenant AND its descendants, which resolve an ancestor's
+ * credential through the tenant walk-up. Two holder sets, pushed
+ * independently so a failure in one does not block the other:
+ *   - Running folded instances: their inference sources are re-resolved and
+ *     re-pushed, which carries the current secret.
+ *   - Live deployments whose delivered refs (`credentialRefs`) name the
+ *     credential: the current material is pushed as a merge. Their child runs
+ *     have no address and route through the deployment's sidecar, so this
+ *     push covers them.
+ * The material carries its `secretVersion`, so a push that arrives after a
+ * later rotation's push cannot restore the older secret.
+ *
+ * Callers fire this without awaiting, so it must never reject. A deployment
+ * whose sidecar has no route fails its send; that is logged and not retried,
+ * because the reconnect reconcile re-resolves the current secret.
+ */
+export async function pushCredentialRotation(
+  db: DB["db"],
+  sidecarRouter: SidecarRouter,
+  tenantId: string,
+  credentialId: string,
+  credentialCipher: CredentialCipher,
+): Promise<void> {
+  let tenants: string[];
+  try {
+    tenants = await getDescendantTenants(db, tenantId);
+  } catch (err: unknown) {
+    log.warn`Failed to enumerate descendants for credential rotation: ${String(err)}`;
+    return;
+  }
+  await Promise.all([
+    pushSourceUpdatesToTenants(db, sidecarRouter, tenants, credentialCipher),
+    pushRotatedMaterialToDeployments(
+      db,
+      sidecarRouter,
+      tenants,
+      credentialId,
+      credentialCipher,
+    ),
+  ]);
+}
+
+async function pushRotatedMaterialToDeployments(
+  db: DB["db"],
+  sidecarRouter: Pick<SidecarRouter, "sendCredentialsUpdate">,
+  tenantIds: string[],
+  credentialId: string,
+  credentialCipher: CredentialCipher,
+): Promise<void> {
+  try {
+    // Only a deployment anchor carries `credentialRefs`, and it is cleared
+    // when the anchor's allocation generation advances. The refs hold few
+    // ids and no index covers them, so the credential filter runs here.
+    const runs = await db.query.workflowRun.findMany({
+      where: and(
+        inArray(workflowRun.tenantId, tenantIds),
+        inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+        isNotNull(workflowRun.address),
+        isNotNull(workflowRun.credentialRefs),
+      ),
+      columns: { id: true, address: true, credentialRefs: true },
+    });
+    const addresses = new Set<string>();
+    for (const run of runs) {
+      if (run.credentialRefs?.credentialIds.includes(credentialId) !== true) {
+        continue;
+      }
+      // The isNotNull(address) filter guarantees a value; a null here is a
+      // broken invariant, surfaced rather than silently skipped.
+      if (run.address === null) {
+        throw new Error(
+          `live run ${run.id} matched the non-null-address filter but has a null address`,
+        );
+      }
+      addresses.add(run.address);
+    }
+    if (addresses.size === 0) return;
+
+    // Empty when the credential was removed after the rotation: its own
+    // revoke push evicts it, so there is nothing to deliver.
+    const materials = await reresolveCurrentMaterials(
+      db,
+      [credentialId],
+      credentialCipher,
+    );
+    if (materials.length === 0) return;
+    const delivery: CredentialDelivery = { bindings: [], materials };
+    const results = await Promise.allSettled(
+      [...addresses].map((address) =>
+        deliverThenRevokeRemoved(db, sidecarRouter, address, { delivery }, [
+          credentialId,
+        ]),
+      ),
+    );
+    for (const result of results) {
+      if (result.status === "rejected") {
+        log.warn`Failed to push rotated credential: ${String(result.reason)}`;
+      }
+    }
+  } catch (err: unknown) {
+    log.warn`Failed to push rotated credential: ${String(err)}`;
+  }
 }
 
 /**

@@ -17,7 +17,11 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import { pgErrorCode } from "@intx/db";
-import { credential, grant as grantTable } from "@intx/db/schema";
+import {
+  credential,
+  grant as grantTable,
+  workflowDefinition,
+} from "@intx/db/schema";
 import type { GrantRule } from "@intx/types/authz";
 import { credentialAad } from "@intx/types";
 import { waitUntil } from "@intx/types/testing";
@@ -29,6 +33,8 @@ import {
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
   seedCredential,
+  seedModel,
+  seedModelOffering,
   seedModelProvider,
   seedPrincipal,
   seedProvider,
@@ -103,6 +109,7 @@ function capturingCredentialsRouter(): {
     address: string;
     revoke: string[] | undefined;
     materialsCount: number;
+    secretVersions: (number | undefined)[];
   }[];
 } {
   const base = createMockSidecarRouter();
@@ -110,6 +117,7 @@ function capturingCredentialsRouter(): {
     address: string;
     revoke: string[] | undefined;
     materialsCount: number;
+    secretVersions: (number | undefined)[];
   }[] = [];
   return {
     calls,
@@ -120,6 +128,7 @@ function capturingCredentialsRouter(): {
           address,
           revoke,
           materialsCount: delivery.materials.length,
+          secretVersions: delivery.materials.map((m) => m.secretVersion),
         });
       },
     },
@@ -940,6 +949,171 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // under-detect a stray push, never fail a correct run.
       await new Promise((r) => setTimeout(r, 30));
       expect(cap.calls).toHaveLength(0);
+    });
+  },
+);
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "credential rotation push to live deployments",
+  () => {
+    const ROTATION_PROVIDER_ID = "prv_rotation";
+
+    // A deployment anchor that has not been triggered yet and holds the
+    // credential in its delivered refs, and a completed one that also held it.
+    async function seedRotation(
+      app: Awaited<ReturnType<typeof setup>>,
+    ): Promise<string> {
+      // The rotation re-resolves the secret's origin from its provider, so the
+      // provider needs an API base URL.
+      await seedProvider(h.db, {
+        id: ROTATION_PROVIDER_ID,
+        tenantId: TENANT_ID,
+        name: "rotation",
+        apiBaseUrl: "https://api.rotation.test",
+      });
+      const res = await app.request(`/api/tenants/${TENANT_ID}/credentials`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          providerId: ROTATION_PROVIDER_ID,
+          name: "rotate-live",
+          type: "api_key",
+          secret: "sk-1",
+        }),
+      });
+      expect(res.status).toBe(201);
+      const body: unknown = await res.json();
+      if (!isObject(body) || typeof body["id"] !== "string") {
+        throw new Error("expected a credential id");
+      }
+      const credentialId = body["id"];
+      for (const [id, status] of [
+        ["run_live", "deployed"],
+        ["run_ended", "completed"],
+      ] as const) {
+        await seedWorkflowRun(h.db, {
+          id,
+          tenantId: TENANT_ID,
+          anchorRunId: id,
+          address: `${id}@test.interchange`,
+          status,
+          credentialRefs: { credentialIds: [credentialId], bindings: [] },
+        });
+      }
+      return credentialId;
+    }
+
+    test("a secret PATCH pushes the rotated secret to a live deployment that holds it", async () => {
+      const cap = capturingCredentialsRouter();
+      const app = await setup({ sidecarRouter: cap.router });
+      const credentialId = await seedRotation(app);
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ secret: "sk-2" }),
+        },
+      );
+      expect(res.status).toBe(200);
+
+      await waitUntil(() => cap.calls.length >= 1);
+      expect(cap.calls).toEqual([
+        {
+          address: "run_live@test.interchange",
+          revoke: undefined,
+          materialsCount: 1,
+          secretVersions: [2],
+        },
+      ]);
+    });
+
+    test("a PATCH that rotates and revokes in one request sends only the revoke", async () => {
+      const cap = capturingCredentialsRouter();
+      const sources: string[] = [];
+      const app = await setup({
+        sidecarRouter: {
+          ...cap.router,
+          sendSourcesUpdate: async (address) => {
+            sources.push(address);
+          },
+        },
+      });
+      const credentialId = await seedRotation(app);
+      // A running instance whose model has a second offering behind another
+      // credential. A rotation push would re-push its sources onto that
+      // offering.
+      await seedCredential(h.db, {
+        id: "crd_other",
+        tenantId: TENANT_ID,
+        providerId: ROTATION_PROVIDER_ID,
+        name: "other",
+        type: "api_key",
+        secret: await createTestCredentialCipher().encrypt(
+          "sk-other",
+          credentialAad("crd_other", "secret"),
+        ),
+      });
+      await seedModel(h.db, {
+        id: "mdl_opus",
+        tenantId: TENANT_ID,
+        canonicalName: "opus",
+      });
+      for (const [index, credId] of [credentialId, "crd_other"].entries()) {
+        await seedModelProvider(h.db, {
+          id: `mpv_${String(index)}`,
+          tenantId: TENANT_ID,
+          name: `mpv-${String(index)}`,
+          credentialId: credId,
+        });
+        await seedModelOffering(h.db, {
+          id: `mof_${String(index)}`,
+          tenantId: TENANT_ID,
+          modelId: "mdl_opus",
+          providerId: `mpv_${String(index)}`,
+          priority: index,
+          capabilities: [],
+        });
+      }
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_instance",
+        tenantId: TENANT_ID,
+        creatorPrincipalId: null,
+        name: "instance",
+        modelRequirements: [{ model: "opus" }],
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run_instance",
+        tenantId: TENANT_ID,
+        definitionId: "wfd_instance",
+        address: "instance@test.interchange",
+        status: "running",
+      });
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ secret: "sk-2", status: "revoked" }),
+        },
+      );
+      expect(res.status).toBe(200);
+
+      await waitUntil(() => cap.calls.length >= 2);
+      // A rotation push would arrive after the revoke's single fan-out; the
+      // same elapsed-time negative as the no-revoke PATCH case above.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(new Set(cap.calls.map((c) => c.address))).toEqual(
+        new Set(["run_live@test.interchange", "instance@test.interchange"]),
+      );
+      for (const call of cap.calls) {
+        expect(call.materialsCount).toBe(0);
+        expect(call.revoke).toEqual([credentialId]);
+      }
+      expect(cap.calls).toHaveLength(2);
+      expect(sources).toEqual([]);
     });
   },
 );

@@ -6,7 +6,7 @@ import type { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import {
   pushCredentialRevoke,
-  pushSourceUpdates,
+  pushCredentialRotation,
   pushSourceUpdatesSubtree,
   revokeRemovedCredentials,
 } from "./credential-push";
@@ -45,11 +45,32 @@ describe("source push error containment", () => {
     expect(result).toBeUndefined();
   });
 
-  test("pushSourceUpdates resolves when the instance scan fails", async () => {
-    const result = await pushSourceUpdates(
+  test("pushCredentialRotation resolves when the descendant lookup fails", async () => {
+    const result = await pushCredentialRotation(
       rejectingDB(),
       dummyRouter,
       "tnt_1",
+      "cred_x",
+      dummyCipher,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  test("pushCredentialRotation resolves when both run scans fail", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal stand-in for the drizzle client
+    const db = {
+      query: {
+        tenant: { findMany: async () => [] },
+        workflowRun: {
+          findMany: () => Promise.reject(new Error("db boom")),
+        },
+      },
+    } as unknown as DB["db"];
+    const result = await pushCredentialRotation(
+      db,
+      dummyRouter,
+      "tnt_1",
+      "cred_x",
       dummyCipher,
     );
     expect(result).toBeUndefined();
@@ -143,6 +164,133 @@ describe("pushCredentialRevoke", () => {
       "cred_x",
     );
     expect(result).toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("pushCredentialRotation", () => {
+  // The folded-instance scan names no columns; the deployment scan selects
+  // the refs. Each scan fails or answers on its own.
+  function rotationDB(scans: {
+    instances: () => Promise<unknown[]>;
+    deployments: () => Promise<unknown[]>;
+  }): { db: DB["db"]; scanned: string[] } {
+    const scanned: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal stand-in for the drizzle client
+    const db = {
+      query: {
+        tenant: { findMany: async () => [] },
+        workflowRun: {
+          findMany: (args: { columns?: unknown }) => {
+            const scan =
+              args.columns === undefined ? "instances" : "deployments";
+            scanned.push(scan);
+            return scans[scan]();
+          },
+        },
+        credential: {
+          findFirst: async () => ({
+            id: "cred_x",
+            providerId: "prv_x",
+            status: "active",
+            secret: "sk-rotated",
+            secretVersion: 2,
+          }),
+        },
+        provider: {
+          findFirst: async () => ({
+            name: "prv-x",
+            plugin: "http",
+            apiBaseUrl: "https://api.example.test",
+          }),
+        },
+      },
+      // The post-send re-check finds the credential still live.
+      select: () => ({
+        from: () => ({
+          where: async () => [{ id: "cred_x", status: "active" }],
+        }),
+      }),
+    } as unknown as DB["db"];
+    return { db, scanned };
+  }
+
+  const holder = {
+    id: "dep_1",
+    address: "dep-1",
+    credentialRefs: { credentialIds: ["cred_x"], bindings: [] },
+  };
+
+  test("pushes to a deployment holding the credential when the instance scan fails", async () => {
+    const { router, calls } = capturingRouter();
+    const { db } = rotationDB({
+      instances: () => Promise.reject(new Error("db boom")),
+      deployments: async () => [holder],
+    });
+    await pushCredentialRotation(
+      db,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only sendCredentialsUpdate is reached
+      router as unknown as SidecarRouter,
+      "tnt_1",
+      "cred_x",
+      dummyCipher,
+    );
+    expect(calls).toEqual([
+      {
+        address: "dep-1",
+        delivery: {
+          bindings: [],
+          materials: [
+            {
+              credentialId: "cred_x",
+              providerKey: "http",
+              origin: "https://api.example.test",
+              secret: "sk-rotated",
+              secretVersion: 2,
+            },
+          ],
+        },
+        revoke: undefined,
+      },
+    ]);
+  });
+
+  test("runs the instance scan when the deployment scan fails", async () => {
+    const { router } = capturingRouter();
+    const { db, scanned } = rotationDB({
+      instances: async () => [],
+      deployments: () => Promise.reject(new Error("db boom")),
+    });
+    await pushCredentialRotation(
+      db,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- no send is reached
+      router as unknown as SidecarRouter,
+      "tnt_1",
+      "cred_x",
+      dummyCipher,
+    );
+    expect(scanned.sort()).toEqual(["deployments", "instances"]);
+  });
+
+  test("skips a deployment whose refs do not name the credential", async () => {
+    const { router, calls } = capturingRouter();
+    const { db } = rotationDB({
+      instances: async () => [],
+      deployments: async () => [
+        {
+          ...holder,
+          credentialRefs: { credentialIds: ["cred_y"], bindings: [] },
+        },
+      ],
+    });
+    await pushCredentialRotation(
+      db,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- no send is reached
+      router as unknown as SidecarRouter,
+      "tnt_1",
+      "cred_x",
+      dummyCipher,
+    );
     expect(calls).toHaveLength(0);
   });
 });

@@ -156,7 +156,12 @@ This model is consistent with the architecture document's statement that child t
 
 ### Credential Rotation Push (Current Behavior)
 
-When a tenant administrator rotates a credential's secret, the control plane pushes the updated inference sources to every running instance in the tenant. The rotation is not filtered to the affected provider — the push takes only the tenant, re-resolves each running instance's full sources array, and sends a `sources.update` frame to the instance's sidecar over the persistent bidirectional connection that sidecars maintain with the control plane (described in the architecture document). The sidecar hot-swaps the active source on the harness and re-persists the agent config.
+When a tenant administrator rotates a credential's secret, the control plane pushes the new secret to running instances and live deployments in the tenant and its descendants, over the persistent bidirectional connection that sidecars maintain with the control plane (described in the architecture document):
+
+- **Running instances.** The push goes to every running instance in the subtree, not only to the instances that use the credential. It re-resolves each instance's full sources array, not only the affected provider. It sends the credential material, then a `sources.update` frame. The sidecar hot-swaps the active source on the harness and re-persists the agent config.
+- **Live deployments.** A deployment that is deployed or running and whose delivered credentials include the rotated one gets the new material in a `credentials.update` merge. Its child runs route through the deployment's sidecar, so they read the new secret too.
+
+A deployment whose sidecar is disconnected when the push fires gets the new secret at its reconnect reconcile.
 
 This push is triggered only by an administrator rotating the secret. It is not an automatic token-refresh loop: the control plane does not, on its own, detect an expiring or invalid token and obtain a new one. The planned proactive and reactive refresh flows below would add that capability; today the only way an updated credential reaches a running instance is an administrator rotation.
 

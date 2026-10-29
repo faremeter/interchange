@@ -37,7 +37,7 @@ import {
 import { jsonResponse } from "../openapi";
 import {
   pushCredentialRevoke,
-  pushSourceUpdates,
+  pushCredentialRotation,
   type SidecarRouter,
 } from "@intx/hub-sessions";
 
@@ -375,15 +375,17 @@ export function createCredentialRoutes({
         return errorResponse(c, "not_found", "Credential not found");
       }
 
-      // If the secret was updated, push new inference sources to running
-      // instances -- UNLESS the same request also revokes the credential. The
-      // source re-resolve skips a revoked credential, so that push could carry
-      // no rotated material; the revoke below does the eviction.
+      // If the secret was updated, push it to the live holders -- UNLESS the
+      // same request also revokes the credential. The rotation would deliver
+      // no secret for a revoked credential, but it would still re-push the
+      // sources of every running instance in the subtree. The revoke below
+      // does the eviction.
       if (body.secret !== undefined && body.status !== "revoked") {
-        void pushSourceUpdates(
+        void pushCredentialRotation(
           db,
           sidecarRouter,
           updated.tenantId,
+          updated.id,
           credentialCipher,
         );
       }
