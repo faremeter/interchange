@@ -12,6 +12,7 @@ export {
 } from "./pg-error";
 export type { DBConfig } from "./config";
 export { runMigrations, dropSchema } from "./migrate";
+export { credentialSecretColumns } from "./credential-secret";
 export {
   rekeyCredentialSecrets,
   type RekeyReport,

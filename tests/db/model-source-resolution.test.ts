@@ -8,12 +8,15 @@ import {
 } from "bun:test";
 
 import { createNoopCredentialCipher } from "@intx/crypto";
+import { eq } from "drizzle-orm";
+
 import {
+  credentialSecretColumns,
   resolveInferencePreferences,
   resolveInstanceModelSources,
   resolveModelSources,
 } from "@intx/db";
-import { workflowDefinition } from "@intx/db/schema";
+import { credential, workflowDefinition } from "@intx/db/schema";
 import { credentialAad, type ModelRequirement } from "@intx/types";
 import {
   createTestDb,
@@ -181,10 +184,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
           providerId: "prv_x",
           name: "cred-enc",
           secret: await cipher.encrypt(
-            "sk-real",
+            "sk-seeded",
             credentialAad("cred_enc", "secret"),
           ),
         });
+        await h.db
+          .update(credential)
+          .set(await credentialSecretColumns(cipher, "cred_enc", "sk-real"))
+          .where(eq(credential.id, "cred_enc"));
         await seedModel(h.db, {
           id: "mdl_opus",
           tenantId: "tnt_root",
@@ -213,6 +220,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         if (!result.ok) return;
         // The delivered secret is the decrypted plaintext, not the stored blob.
         expect(result.materials[0]?.secret).toBe("sk-real");
+        // The material carries the row's secret version from the same read.
+        expect(result.materials[0]?.secretVersion).toBe(2);
       });
 
       test("fails closed when a stored secret is not a ciphertext", async () => {

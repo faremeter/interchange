@@ -17,12 +17,20 @@ import { type } from "arktype";
  * `materials` is keyed by `credentialId` (a credential can back several handles,
  * so its secret is stored once); `bindings` maps each declared handle to the
  * credential that backs it and the consumer identity allowed to use it.
+ *
+ * `secretVersion` orders the secrets of one credential row: the hub
+ * increments it each time the secret changes, and the merge keeps the higher
+ * one, so a frame that arrives late cannot restore an older secret. An absent
+ * version counts as 0. Hub run tokens omit it, because they have no credential
+ * row. It orders the secret only: `providerKey` and `origin` are not
+ * versioned, and a revoke forgets the version with the material.
  */
 export const CredentialMaterialEntry = type({
   credentialId: "string",
   providerKey: "string",
   origin: "string",
   secret: "string",
+  "secretVersion?": "number.integer >= 1",
 });
 export type CredentialMaterialEntry = typeof CredentialMaterialEntry.infer;
 

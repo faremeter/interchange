@@ -4,6 +4,7 @@ import { describeRoute, validator } from "hono-openapi";
 
 import { credential, grant as grantTable, provider } from "@intx/db/schema";
 import {
+  credentialSecretColumns,
   getAncestorChain,
   isReferencedRowViolation,
   resolveCredentialByName,
@@ -333,12 +334,17 @@ export function createCredentialRoutes({
       if (body.name !== undefined) updates["name"] = body.name;
       if (body.description !== undefined)
         updates["description"] = body.description;
-      // Re-encrypt a rotated secret under the same row/column binding. A null
-      // refreshSecret clears it; a present value is encrypted.
+      // Re-encrypt a rotated secret under the same row/column binding, and
+      // advance its version. A null refreshSecret clears it; a present value
+      // is encrypted.
       if (body.secret !== undefined)
-        updates["secret"] = await credentialCipher.encrypt(
-          body.secret,
-          credentialAad(credentialId, "secret"),
+        Object.assign(
+          updates,
+          await credentialSecretColumns(
+            credentialCipher,
+            credentialId,
+            body.secret,
+          ),
         );
       if (body.refreshSecret !== undefined)
         updates["refreshSecret"] =

@@ -193,6 +193,7 @@ export async function resolveInferenceMaterials(
         row.secret,
         credentialAad(row.id, "secret"),
       ),
+      secretVersion: row.secretVersion,
     });
   }
   return [...materials.values()];
@@ -279,6 +280,7 @@ export async function reresolveCurrentMaterials(
         row.secret,
         credentialAad(row.id, "secret"),
       ),
+      secretVersion: row.secretVersion,
     });
   }
   return [...materials.values()];
@@ -593,6 +595,7 @@ export async function buildCredentialDelivery(args: {
           resolved.credential.secret,
           credentialAad(credentialId, "secret"),
         ),
+        secretVersion: resolved.credential.secretVersion,
       });
     }
   }

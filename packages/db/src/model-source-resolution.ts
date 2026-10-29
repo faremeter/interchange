@@ -212,6 +212,7 @@ async function buildSource(
       providerKey: provider.plugin,
       origin: provider.baseURL,
       secret,
+      secretVersion: credential.secretVersion,
     },
   };
 }

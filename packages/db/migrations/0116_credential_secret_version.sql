@@ -1,0 +1,1 @@
+ALTER TABLE "credential" ADD COLUMN "secret_version" integer DEFAULT 1 NOT NULL;

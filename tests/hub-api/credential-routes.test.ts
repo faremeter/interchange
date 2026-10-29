@@ -397,6 +397,57 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await cipher.decrypt(row.secret, credentialAad(credentialId, "secret")),
       ).toBe("sk-rotated");
     });
+
+    test("advances the secret version only when the secret changes", async () => {
+      const app = await setup();
+      const createRes = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            providerId: PROVIDER_ID,
+            name: "versioned",
+            type: "api_key",
+            secret: "sk-1",
+          }),
+        },
+      );
+      expect(createRes.status).toBe(201);
+      const created: unknown = await createRes.json();
+      if (!isObject(created)) throw new Error("expected object body");
+      const credentialId = created["id"];
+      if (typeof credentialId !== "string") {
+        throw new Error("expected credential id");
+      }
+      const patch = async (body: Record<string, unknown>) => {
+        const res = await app.request(
+          `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+          {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
+        expect(res.status).toBe(200);
+      };
+      const secretVersion = async () => {
+        const [row] = await h.db
+          .select({ secretVersion: credential.secretVersion })
+          .from(credential)
+          .where(eq(credential.id, credentialId));
+        if (row === undefined) throw new Error("credential row not found");
+        return row.secretVersion;
+      };
+
+      expect(await secretVersion()).toBe(1);
+      await patch({ secret: "sk-2" });
+      expect(await secretVersion()).toBe(2);
+      await patch({ description: "renamed" });
+      expect(await secretVersion()).toBe(2);
+      await patch({ secret: "sk-3" });
+      expect(await secretVersion()).toBe(3);
+    });
   },
 );
 

@@ -7,12 +7,16 @@ import {
   test,
 } from "bun:test";
 
+import { eq } from "drizzle-orm";
+
 import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   AmbiguousCredentialError,
   CredentialInactiveError,
   CredentialUnauthorizedError,
   buildCredentialDelivery,
+  credentialSecretColumns,
+  reresolveCurrentMaterials,
   resolveCredentialById,
   resolveCredentialByName,
   resolveCredentialRequirement,
@@ -20,6 +24,7 @@ import {
   resolveOAuthClient,
   resolveProviderByName,
 } from "@intx/db";
+import { credential } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -326,6 +331,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
           createNoopCredentialCipher(),
         );
         expect(got.map((m) => m.credentialId)).toEqual(["cred_1"]);
+      });
+
+      test("carries the secret version a rotation advances", async () => {
+        await seedInferenceCredential("active");
+        const cipher = createNoopCredentialCipher();
+        await h.db
+          .update(credential)
+          .set(await credentialSecretColumns(cipher, "cred_1", "sk-rotated"))
+          .where(eq(credential.id, "cred_1"));
+        const resolved = await resolveInferenceMaterials(
+          h.db,
+          "tnt_leaf",
+          ["cred_1"],
+          cipher,
+        );
+        const reresolved = await reresolveCurrentMaterials(
+          h.db,
+          ["cred_1"],
+          cipher,
+        );
+        for (const got of [resolved, reresolved]) {
+          expect(
+            got.map((m) => ({ secret: m.secret, version: m.secretVersion })),
+          ).toEqual([{ secret: "sk-rotated", version: 2 }]);
+        }
       });
 
       for (const status of ["expired", "revoked", "error"] as const) {
@@ -719,10 +749,50 @@ describe.skipIf(!harnessDbEnvAvailable())(
                 providerKey: "http",
                 origin: GITHUB_ORIGIN,
                 secret: "sk-gh",
+                secretVersion: 1,
               },
             ],
           },
         });
+      });
+
+      test("a delivered material carries the secret version a rotation advances", async () => {
+        await seedGithub({ apiBaseUrl: GITHUB_ORIGIN });
+        await seedCredential(h.db, {
+          id: "cred_gh",
+          tenantId: "tnt_leaf",
+          providerId: "prv_gh",
+          name: "gh",
+          secret: "sk-gh",
+        });
+        await h.db
+          .update(credential)
+          .set(
+            await credentialSecretColumns(
+              createNoopCredentialCipher(),
+              "cred_gh",
+              "sk-gh-rotated",
+            ),
+          )
+          .where(eq(credential.id, "cred_gh"));
+
+        const result = await deliver([
+          {
+            package: "@acme/tools",
+            handle: "gh",
+            provider: "github",
+            locator: "tenant",
+          },
+        ]);
+        if (!result.ok || result.delivery === undefined) {
+          throw new Error("expected a delivery");
+        }
+        expect(
+          result.delivery.materials.map((m) => ({
+            secret: m.secret,
+            version: m.secretVersion,
+          })),
+        ).toEqual([{ secret: "sk-gh-rotated", version: 2 }]);
       });
 
       test("an unresolved binding names its consumer", async () => {
