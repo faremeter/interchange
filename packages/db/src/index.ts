@@ -166,6 +166,7 @@ export {
   resolveInferenceMaterials,
   reresolveCurrentMaterials,
   AmbiguousCredentialError,
+  CredentialInactiveError,
   CredentialUnauthorizedError,
   buildCredentialDelivery,
 } from "./credential-resolution";

@@ -226,6 +226,52 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(pushed).toHaveLength(0);
     });
 
+    test("a source push after a revoke delivers neither the revoked secret nor its source", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "run1",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        address: "run1@tnt.test",
+        status: "running",
+      });
+      await h.db
+        .update(credentialTable)
+        .set({ status: "revoked" })
+        .where(eq(credentialTable.id, "cred_a"));
+
+      // A catalog edit or the rotation of another credential re-resolves every
+      // running instance's sources. Record both frames the push can send.
+      const delivered: CredentialDelivery[] = [];
+      const pushed: Pushed[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only the credentials + sources push methods are exercised by the push path
+      const router = {
+        sendCredentialsUpdate: (
+          _address: string,
+          delivery: CredentialDelivery,
+        ) => {
+          delivered.push(delivery);
+          return Promise.resolve();
+        },
+        sendSourcesUpdate: (
+          address: string,
+          sources: InferenceSource[],
+          defaultSource: string,
+        ) => {
+          pushed.push({ address, sources, default: defaultSource });
+          return Promise.resolve();
+        },
+      } as unknown as SidecarRouter;
+      await pushSourceUpdates(
+        h.db,
+        router,
+        "tnt_root",
+        createNoopCredentialCipher(),
+      );
+
+      expect(delivered).toHaveLength(0);
+      expect(pushed).toHaveLength(0);
+    });
+
     test("reconcile re-resolves a live credential and merges it (no revoke)", async () => {
       await seedWorkflowRun(h.db, {
         id: "dep_1",

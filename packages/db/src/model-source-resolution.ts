@@ -16,7 +16,10 @@ import {
   type ResolvedOffering,
 } from "./catalog-resolution";
 import type { DB } from "./client";
-import { resolveCredentialById } from "./credential-resolution";
+import {
+  resolveDeliverableCredential,
+  type DeliverableCredentialResolution,
+} from "./credential-resolution";
 import { parseModelOfferingRow } from "./parse-row";
 import { workflowDefinition } from "./schema/workflow-definitions";
 
@@ -29,6 +32,7 @@ export type SourceSkip =
   | { reason: "wallet_backed"; provider: string }
   | { reason: "credential_unresolved"; provider: string }
   | { reason: "credential_unauthorized"; provider: string }
+  | { reason: "credential_inactive"; provider: string }
   | { reason: "provider_misconfigured"; provider: string };
 
 /**
@@ -117,6 +121,15 @@ function applyPreference(
   return preference.mode === "pin" ? named : [...named, ...rest];
 }
 
+const CREDENTIAL_SKIP_REASONS = {
+  unresolved: "credential_unresolved",
+  unauthorized: "credential_unauthorized",
+  inactive: "credential_inactive",
+} as const satisfies Record<
+  Exclude<DeliverableCredentialResolution, { ok: true }>["reason"],
+  SourceSkip["reason"]
+>;
+
 async function buildSource(
   db: DB["db"],
   tenantId: string,
@@ -144,37 +157,25 @@ async function buildSource(
     };
   }
 
-  // Resolve the secret through the tenant-scoped credential resolver so a
-  // provider row referencing a credential outside the tenant's ancestor
-  // chain cannot leak that secret (the chain is the authority).
-  const credential = await resolveCredentialById(
+  // Resolve the secret through the delivery resolver so a provider row
+  // referencing a credential outside the tenant's ancestor chain, a
+  // principal-owned credential, or a credential that is not active cannot leak
+  // its secret. Each refusal is a distinct skip so the operator sees why.
+  const resolution = await resolveDeliverableCredential(
     db,
     tenantId,
     provider.credentialId,
   );
-  if (credential === null) {
+  if (!resolution.ok) {
     return {
       ok: false,
-      skip: { reason: "credential_unresolved", provider: provider.name },
+      skip: {
+        reason: CREDENTIAL_SKIP_REASONS[resolution.reason],
+        provider: provider.name,
+      },
     };
   }
-
-  // Authority to use a credential through a catalog provider is ownership
-  // within the tenant hierarchy -- the same rule the credential-binding path
-  // resolves (`source: "tenant"`). `resolveCredentialById` above already proved
-  // the credential is reachable in this tenant's ancestor chain, so a
-  // tenant-owned credential (`principalId IS NULL`) is authorized here by
-  // ownership alone, with no personal grant and no role grant consulted. This
-  // runs live on every launch and rotation, so a catalog edit that adds an
-  // eligible credential is picked up without re-materializing any grant. A
-  // principal-owned credential is not usable through a shared catalog provider;
-  // fail closed.
-  if (credential.principalId !== null) {
-    return {
-      ok: false,
-      skip: { reason: "credential_unauthorized", provider: provider.name },
-    };
-  }
+  const credential = resolution.credential;
 
   // Validate the row once at this DB-to-runtime boundary. This narrows the
   // jsonb `quirks` from `unknown` to a `Record | null` and checks
@@ -262,9 +263,10 @@ export async function resolveSourcesByOfferingIds(
  * agent unlaunchable.
  *
  * A credential-backed source is emitted only when the launching tenant owns
- * the referenced credential within its hierarchy (ownership is the authority);
- * otherwise the offering is skipped (`credential_unauthorized`) and its secret
- * is withheld.
+ * the referenced credential within its hierarchy (ownership is the authority)
+ * and the credential is active; otherwise the offering is skipped
+ * (`credential_unresolved`, `credential_unauthorized` or `credential_inactive`)
+ * and its secret is withheld.
  */
 export async function resolveModelSources(
   db: DB["db"],

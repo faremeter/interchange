@@ -49,6 +49,29 @@ export class CredentialUnauthorizedError extends Error {
   }
 }
 
+type InactiveCredentialStatus = Exclude<
+  (typeof credential.$inferSelect)["status"],
+  "active"
+>;
+
+/**
+ * Thrown when a referenced credential is a tenant-owned credential the given
+ * tenant can use, but its status is not `active`, so its secret must not be
+ * delivered. Distinct from `CredentialUnauthorizedError` so the operator sees a
+ * lifecycle problem (a revoked, expired or errored key), not a missing or
+ * foreign one.
+ */
+export class CredentialInactiveError extends Error {
+  readonly credentialId: string;
+  readonly status: InactiveCredentialStatus;
+  constructor(credentialId: string, status: InactiveCredentialStatus) {
+    super(`credential ${credentialId} has status ${status}, not active`);
+    this.name = "CredentialInactiveError";
+    this.credentialId = credentialId;
+    this.status = status;
+  }
+}
+
 /**
  * Resolve a credential USABLE by the launching tenant purely through ownership:
  * it exists, is reachable in the tenant's ancestor chain, and is tenant-owned
@@ -58,8 +81,11 @@ export class CredentialUnauthorizedError extends Error {
  * an ancestor) owns, and descendants inherit; a principal-owned credential is
  * never usable this way, its delegation flowing from its owner instead. It
  * wraps `resolveCredentialById` (the ancestor-chain check) with the tenant-owned
- * gate, so callers do not re-implement the predicate. `buildSource` expands it
- * inline only to distinguish an unresolved reference from a principal-owned one.
+ * gate, so callers do not re-implement the predicate. It does not consult the
+ * credential's status: a caller that only checks a reference (a catalog provider
+ * pointing at a credential) may name a credential that is not active yet. The
+ * rails that deliver a secret go through `resolveDeliverableCredential`, which
+ * adds the lifecycle rule.
  */
 export async function resolveTenantOwnedCredentialById(
   db: DB["db"],
@@ -70,23 +96,60 @@ export async function resolveTenantOwnedCredentialById(
   return row !== null && row.principalId === null ? row : null;
 }
 
+export type DeliverableCredentialResolution =
+  | { ok: true; credential: typeof credential.$inferSelect }
+  | { ok: false; reason: "unresolved" | "unauthorized" }
+  | { ok: false; reason: "inactive"; status: InactiveCredentialStatus };
+
+/**
+ * Resolve a credential whose secret may be DELIVERED to a run as inference
+ * material. Authority is ownership within the tenant hierarchy, the same rule
+ * the credential-binding path resolves (`source: "tenant"`): the credential must
+ * exist and be reachable in the tenant's ancestor chain (`unresolved`
+ * otherwise), and be tenant-owned (`unauthorized` for a principal-owned one,
+ * which is not usable through a shared catalog provider). No personal grant and
+ * no role grant is consulted. Delivery also requires `status = "active"`, the
+ * binding path's lifecycle rule, so a revoked, expired or errored credential is
+ * never delivered (`inactive`).
+ *
+ * Every delivery rail calls this live -- launch, deploy, and each rotation or
+ * catalog-edit re-push -- so a catalog edit that adds an eligible credential is
+ * picked up without re-materializing any grant, and a re-push after a revoke
+ * cannot deliver the revoked secret again.
+ */
+export async function resolveDeliverableCredential(
+  db: DB["db"],
+  tenantId: string,
+  credentialId: string,
+): Promise<DeliverableCredentialResolution> {
+  const row = await resolveCredentialById(db, tenantId, credentialId);
+  if (row === null) return { ok: false, reason: "unresolved" };
+  if (row.principalId !== null) return { ok: false, reason: "unauthorized" };
+  if (row.status !== "active") {
+    return { ok: false, reason: "inactive", status: row.status };
+  }
+  return { ok: true, credential: row };
+}
+
 /**
  * Resolve a set of inference-source credentialIds into the credential material
  * delivered on a run's unified credential-material cell. An inference source
  * references its credential by id only; for each DISTINCT id this resolves the
- * secret under the SAME tenant-ownership authority `buildSource` uses -- the
- * credential must exist, be reachable in the tenant's ancestor chain, and be
- * tenant-owned (`principalId IS NULL`) -- then decrypts it at the single point of
- * use. `providerKey`/`origin` come from the credential's own provider row
- * (`provider.plugin` / `provider.apiBaseUrl`), so the material describes the
- * credential itself, independent of any caller-supplied source fields.
+ * secret under the SAME authority `buildSource` uses
+ * (`resolveDeliverableCredential`) -- the credential must exist, be reachable in
+ * the tenant's ancestor chain, be tenant-owned (`principalId IS NULL`), and be
+ * active -- then decrypts it at the single point of use. `providerKey`/`origin`
+ * come from the credential's own provider row (`provider.plugin` /
+ * `provider.apiBaseUrl`), so the material describes the credential itself,
+ * independent of any caller-supplied source fields.
  *
  * Fails CLOSED, by throwing, on the first credentialId that is unresolved, not
- * tenant-owned, references a missing provider, or whose provider has no API
- * origin to pin -- a secret is never dropped nor delivered without an origin. The
- * single resolver for every inference source credentialId -> material, shared by
- * the deploy composition (top-level + inline body sources) and any other caller
- * that must materialize inference credentials for the cell.
+ * tenant-owned, not active (`CredentialInactiveError`), references a missing
+ * provider, or whose provider has no API origin to pin -- a secret is never
+ * dropped nor delivered without an origin. The single resolver for every
+ * inference source credentialId -> material, shared by the deploy composition
+ * (top-level + inline body sources) and any other caller that must materialize
+ * inference credentials for the cell.
  */
 export async function resolveInferenceMaterials(
   db: DB["db"],
@@ -97,14 +160,18 @@ export async function resolveInferenceMaterials(
   const materials = new Map<string, CredentialMaterialEntry>();
   for (const credentialId of credentialIds) {
     if (materials.has(credentialId)) continue;
-    const row = await resolveTenantOwnedCredentialById(
+    const resolution = await resolveDeliverableCredential(
       db,
       tenantId,
       credentialId,
     );
-    if (row === null) {
+    if (!resolution.ok) {
+      if (resolution.reason === "inactive") {
+        throw new CredentialInactiveError(credentialId, resolution.status);
+      }
       throw new CredentialUnauthorizedError(credentialId, tenantId);
     }
+    const row = resolution.credential;
     const providerRow = await db.query.provider.findFirst({
       where: eq(provider.id, row.providerId),
     });

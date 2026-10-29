@@ -1384,9 +1384,9 @@ describe("deployCodeSourcedWorkflow", () => {
       // The migrated deploy resolves each pinned source's credentialId to
       // tenant-owned material. Every source in these frame-shape tests (top
       // level and inline body) references the single credential "secret-only",
-      // so the mock answers with one tenant-owned row (principalId null) in the
-      // deploy tenant's own chain, backed by a provider with an API origin. The
-      // noop cipher passes the plaintext secret through unchanged.
+      // so the mock answers with one active tenant-owned row (principalId null)
+      // in the deploy tenant's own chain, backed by a provider with an API
+      // origin. The noop cipher passes the plaintext secret through unchanged.
       credential: {
         findFirst: () =>
           Promise.resolve({
@@ -1395,6 +1395,7 @@ describe("deployCodeSourcedWorkflow", () => {
             principalId: null,
             providerId: "prov-test",
             secret: "secret-only-plaintext",
+            status: "active",
           }),
       },
       tenant: {
@@ -2724,6 +2725,7 @@ describe("deployCodeSourcedWorkflow", () => {
               principalId: null,
               providerId: "prov-test",
               secret: "secret-agent-plaintext",
+              status: "active",
             });
           },
         },
@@ -2901,6 +2903,7 @@ describe("deployCodeSourcedWorkflow", () => {
               principalId: null,
               providerId: "prov-test",
               secret: "secret-agent-plaintext",
+              status: "active",
             });
           },
         },

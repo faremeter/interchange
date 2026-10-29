@@ -10,10 +10,13 @@ import {
 import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   AmbiguousCredentialError,
+  CredentialInactiveError,
+  CredentialUnauthorizedError,
   buildCredentialDelivery,
   resolveCredentialById,
   resolveCredentialByName,
   resolveCredentialRequirement,
+  resolveInferenceMaterials,
   resolveOAuthClient,
   resolveProviderByName,
 } from "@intx/db";
@@ -290,6 +293,77 @@ describe.skipIf(!harnessDbEnvAvailable())(
           "cred_missing",
         );
         expect(got).toBeNull();
+      });
+    });
+
+    describe("resolveInferenceMaterials", () => {
+      async function seedInferenceCredential(
+        status: "active" | "expired" | "revoked" | "error",
+      ) {
+        await seedTenants(h.db, [{ id: "tnt_leaf" }]);
+        await seedProvider(h.db, {
+          id: "prv_1",
+          tenantId: "tnt_leaf",
+          name: "anthropic",
+          apiBaseUrl: "https://api.anthropic.com",
+        });
+        await seedCredential(h.db, {
+          id: "cred_1",
+          tenantId: "tnt_leaf",
+          providerId: "prv_1",
+          name: "model-key",
+          secret: "sk-model",
+          status,
+        });
+      }
+
+      test("returns the material of an active tenant-owned credential", async () => {
+        await seedInferenceCredential("active");
+        const got = await resolveInferenceMaterials(
+          h.db,
+          "tnt_leaf",
+          ["cred_1"],
+          createNoopCredentialCipher(),
+        );
+        expect(got.map((m) => m.credentialId)).toEqual(["cred_1"]);
+      });
+
+      for (const status of ["expired", "revoked", "error"] as const) {
+        test(`refuses a credential with status ${status} as inactive, not unauthorized`, async () => {
+          await seedInferenceCredential(status);
+          const attempt = resolveInferenceMaterials(
+            h.db,
+            "tnt_leaf",
+            ["cred_1"],
+            createNoopCredentialCipher(),
+          );
+          await expect(attempt).rejects.toBeInstanceOf(CredentialInactiveError);
+        });
+      }
+
+      test("refuses a credential outside the ancestor chain as unauthorized", async () => {
+        await seedTenants(h.db, [{ id: "tnt_leaf" }, { id: "tnt_other" }]);
+        await seedProvider(h.db, {
+          id: "prv_other",
+          tenantId: "tnt_other",
+          name: "anthropic",
+          apiBaseUrl: "https://api.anthropic.com",
+        });
+        await seedCredential(h.db, {
+          id: "cred_other",
+          tenantId: "tnt_other",
+          providerId: "prv_other",
+          name: "model-key",
+        });
+        const attempt = resolveInferenceMaterials(
+          h.db,
+          "tnt_leaf",
+          ["cred_other"],
+          createNoopCredentialCipher(),
+        );
+        await expect(attempt).rejects.toBeInstanceOf(
+          CredentialUnauthorizedError,
+        );
       });
     });
 
