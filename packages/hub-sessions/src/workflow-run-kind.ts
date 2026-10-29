@@ -4263,7 +4263,7 @@ export type ScanRunsForBootResult = {
 
 /**
  * Walk `runs/` once and return the two boot-recovery inputs the supervisor's
- * spawn needs, from a single traversal of the working tree via `getRepoDir`:
+ * spawn needs, from one snapshot of the committed history at `ref`:
  *
  * - `ownedMessageIds`: the `consumedMessageId`s of NON-terminal runs -- the
  *   messages a live run still owns. Spawn feeds this into
@@ -4279,99 +4279,75 @@ export type ScanRunsForBootResult = {
  *   re-checks the run's max-seq event and no-ops a run that is not actually
  *   terminal, so this scan may be loose.
  *
- * The working tree tracks the run-event ref (`refs/heads/main`); the
- * claim-check ref (`refs/heads/events`) cannot see it, which is why this lives
- * at the caller rather than inside `replayProcessingToInbox`'s single-ref
- * delta. A run whose log is sealed (combined `events.jsonl`, only permitted for
- * a terminated run) contributes to neither set; an absent `runs/` directory
- * yields empty results.
+ * Only committed history shows what a run took: a write lays its files in the
+ * checkout before it commits, so a failed write leaves an event there that the
+ * resumed run never reads, and mail held back for it would never be handled.
+ * The run events live on the run-event ref; the claim-check ref
+ * (`refs/heads/events`) cannot see them, which is why this lives at the caller
+ * rather than inside `replayProcessingToInbox`'s single-ref delta. A run whose
+ * log is sealed (combined `events.jsonl`, only permitted for a terminated run)
+ * contributes to neither set; an absent `runs/` directory yields empty
+ * results.
  */
 export async function scanRunsForBoot(
   store: RepoStore,
+  principal: Principal,
   repoId: RepoId,
+  ref: string,
 ): Promise<ScanRunsForBootResult> {
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const repoDir = store.getRepoDir(repoId);
-  const runsDir = path.join(repoDir, WORKFLOW_RUN_RUNS_PREFIX);
-  let runIds: string[];
-  try {
-    runIds = await fs.readdir(runsDir);
-  } catch (cause) {
-    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") {
-      return { ownedMessageIds: new Set(), pendingSealRunIds: [] };
-    }
-    throw cause;
-  }
   const owned = new Set<string>();
   const pendingSealRunIds: string[] = [];
+  const reads = await store.openCommittedReads(principal, repoId, ref);
+  if (reads === null) return { ownedMessageIds: owned, pendingSealRunIds };
+  const runIds = (await reads.listDir(WORKFLOW_RUN_RUNS_PREFIX)).flatMap(
+    (entry) => (entry.type === "tree" ? [entry.name] : []),
+  );
+  const decoder = new TextDecoder();
   for (const runId of runIds) {
-    const runDir = path.join(runsDir, runId);
-    // A sealed run (combined events file) is terminal by the handler's
-    // own invariant -- only a terminated run is sealed -- so it owns
-    // nothing and is already folded. Its presence also means the per-event
-    // directory is absent.
-    let sealed = false;
+    const runPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
+    let eventEntries: CommittedTreeEntry[];
     try {
-      await fs.access(path.join(runDir, WORKFLOW_RUN_EVENTS_FILE));
-      sealed = true;
-    } catch (cause) {
-      // ENOENT is the normal "not sealed" case. Any other stat error leaves
-      // the run to fall through to the events-dir read below, which resolves
-      // it, so this catch is benign; warn so the anomaly is still visible.
+      // A sealed run (combined events file) is terminal by the handler's
+      // own invariant -- only a terminated run is sealed -- so it owns
+      // nothing and is already folded.
+      const runChildren = await reads.listDir(runPath);
       if (
-        !(cause instanceof Error) ||
-        !("code" in cause) ||
-        cause.code !== "ENOENT"
+        runChildren.some(
+          (entry) =>
+            entry.type === "blob" && entry.name === WORKFLOW_RUN_EVENTS_FILE,
+        )
       ) {
-        logger.warn`scanRunsForBoot: stat of the sealed-log file for run ${runId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+        continue;
       }
-      sealed = false;
-    }
-    if (sealed) continue;
-    const eventsDir = path.join(runDir, WORKFLOW_RUN_EVENTS_DIR);
-    let files: string[];
-    try {
-      files = await fs.readdir(eventsDir);
+      // Empty when the run has no events yet (grants may be staged before
+      // the first event).
+      eventEntries = await reads.listDir(
+        `${runPath}/${WORKFLOW_RUN_EVENTS_DIR}`,
+      );
     } catch (cause) {
-      // ENOENT means the run has neither a sealed log nor a per-event
-      // directory (grants may be staged before the first event); skip it.
-      // A non-ENOENT error drops the run from BOTH result sets, and a live
-      // run dropped from ownedMessageIds gets its message re-admitted and
+      // A failed read drops the run from BOTH result sets, and a live run
+      // dropped from ownedMessageIds gets its message re-admitted and
       // dispatched a second time on the same runId -- the double-driver
       // corruption this scan exists to prevent. Surface it, but still skip:
       // aborting the whole boot scan over one run is worse.
-      if (
-        !(cause instanceof Error) ||
-        !("code" in cause) ||
-        cause.code !== "ENOENT"
-      ) {
-        logger.error`scanRunsForBoot: reading events for run ${runId} failed; skipping it may re-admit its message and start a second run on the same runId: ${cause instanceof Error ? cause.message : String(cause)}`;
-      }
+      logger.error`scanRunsForBoot: reading events for run ${runId} failed; skipping it may re-admit its message and start a second run on the same runId: ${cause instanceof Error ? cause.message : String(cause)}`;
       continue;
     }
     let terminal = false;
     let consumedMessageId: string | undefined;
-    for (const file of files) {
-      if (!file.endsWith(".json")) continue;
+    for (const entry of eventEntries) {
+      if (entry.type !== "blob" || !entry.name.endsWith(".json")) continue;
       let parsed: unknown;
       try {
         parsed = JSON.parse(
-          await fs.readFile(path.join(eventsDir, file), "utf8"),
+          decoder.decode(await reads.readBlobByOid(entry.oid)),
         );
       } catch (cause) {
-        // A corrupt or unreadable event file drops this run's
-        // classification: a missed RunStarted re-admits its message (a
-        // second run on the same runId), a missed terminal event skips a
-        // needed seal. Surface it, but skip the file rather than abort the
-        // scan. ENOENT here is a benign race (the file vanished mid-scan).
-        if (
-          !(cause instanceof Error) ||
-          !("code" in cause) ||
-          cause.code !== "ENOENT"
-        ) {
-          logger.error`scanRunsForBoot: reading event ${file} for run ${runId} failed; skipping it may re-admit its message and start a second run on the same runId: ${cause instanceof Error ? cause.message : String(cause)}`;
-        }
+        // A corrupt or unreadable event drops this run's classification: a
+        // missed RunStarted re-admits its message (a second run on the same
+        // runId), a missed terminal event skips a needed seal. Surface it,
+        // but skip the event rather than abort the scan.
+        logger.error`scanRunsForBoot: reading event ${entry.name} for run ${runId} failed; skipping it may re-admit its message and start a second run on the same runId: ${cause instanceof Error ? cause.message : String(cause)}`;
         continue;
       }
       if (

@@ -2745,7 +2745,15 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // (`openCommittedReadsAtCommit`) entrypoints, which differ only in how
   // they obtain and validate the commit SHA.
   function committedReadsAt(dir: string, commitSha: string): CommittedReads {
-    const reads = dirReads(dir);
+    // Every path walk starts at the root, so a walk of `runs/` would parse
+    // that tree again for each run. A snapshot's objects never change, so
+    // one window holds each parsed commit and tree for its whole life.
+    const raw = dirReads(dir);
+    const reads: ObjectReads = {
+      ...raw,
+      readCommit: windowedMemo(raw.readCommit).get,
+      readTree: windowedMemo(raw.readTree).get,
+    };
     const { readBlobByOid } = buildPriorTreeClosures(reads, commitSha);
     const treeOid = async (relPath: string): Promise<string | null> => {
       // "." and "" both name the root tree; resolveTreeEntry treats the
@@ -2756,13 +2764,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const listDir = async (relPath: string): Promise<CommittedTreeEntry[]> => {
       const oid = await treeOid(relPath);
       if (oid === null) return [];
-      const { tree } = await git.readTree({
-        fs,
-        dir,
-        cache: cacheFor(dir),
-        oid,
-      });
-      return tree.map((e) => ({ name: e.path, oid: e.oid, type: e.type }));
+      return listingOf((await reads.readTree(oid)).entries);
     };
     return { listDir, readBlobByOid, treeOid };
   }

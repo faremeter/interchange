@@ -3133,7 +3133,9 @@ export function createWorkflowSupervisor(
       // scan.
       const scanDone = scanRunsForBoot(
         bindings.repoStore,
+        bindings.readPrincipal,
         bindings.workflowRunRepoId,
+        bindings.workflowRunRef,
       );
       const replayDone = scanDone
         .then(({ ownedMessageIds }) =>
