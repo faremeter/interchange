@@ -862,13 +862,12 @@ wall-clock time only while the supervisor believes at least one
 step transitions to `"wait"` behavior and resumes when cancel-mode
 work reappears. Time spent paused does not consume the deadline.
 
-On `drainTimeout` expiry the accumulator invokes the supervisor's
-injected `signAsPrincipal("supervisor", ...)` callback to mint a
-signature over a canonical `CancelRequested{origin:
-"supervisor-drain"}` event and commits it through the supervisor's
-substrate handle. The runtime body observes the commit through its
-existing cancel-cascade path; no special drain-aware cancel branch
-is needed in `run.ts`.
+On `drainTimeout` expiry the accumulator hands a
+`CancelRequested{origin: "supervisor-drain"}` event to the
+supervisor's injected `commitCancel`, which signs it and commits it
+as the supervisor's own cancellation. The runtime body observes the
+commit through its existing cancel-cascade path; no special
+drain-aware cancel branch is needed in `run.ts`.
 
 The canonical observable sequence at the in-process layer (asserted
 in this package's tests via `subscribeKind` against a fake

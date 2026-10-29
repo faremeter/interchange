@@ -4678,16 +4678,21 @@ export function createWorkflowSupervisor(
       if (drainAccumulators.has(runId)) continue;
       if (runInputChannels.has(runId)) continue;
       const accumulator = accumulatorFactory({
-        substrate: bindings.repoStore,
-        repoId: bindings.workflowRunRepoId,
-        ref: bindings.workflowRunRef,
-        anchorRunId: bindings.anchorRunId,
         runId,
-        signAsPrincipal: bindings.signAsPrincipal,
         drainTimeoutMs,
         now: drainNow,
         setTimer: drainSetTimer,
         clearTimer: drainClearTimer,
+        commitCancel: (cancel) =>
+          commitCancelRequested({
+            substrate: bindings.repoStore,
+            repoId: bindings.workflowRunRepoId,
+            ref: bindings.workflowRunRef,
+            anchorRunId: bindings.anchorRunId,
+            runId,
+            ...cancel,
+            signAsPrincipal: bindings.signAsPrincipal,
+          }),
         ...(cohortSource !== null ? { terminalEventSource: cohortSource } : {}),
       });
       drainAccumulators.set(runId, accumulator);

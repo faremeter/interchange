@@ -3455,12 +3455,7 @@ describe("createWorkflowSupervisor", () => {
     for (const stub of stubs) {
       expect(stub.__startCount).toBe(1);
       expect(stub.__stopCount).toBe(0);
-      expect(stub.__opts.anchorRunId).toBe("run_deployment-x");
-      expect(stub.__opts.repoId).toEqual({
-        kind: "workflow-run",
-        id: "run_deployment-x",
-      });
-      expect(stub.__opts.ref).toBe("refs/heads/main");
+      expect(typeof stub.__opts.commitCancel).toBe("function");
       expect(stub.__opts.drainTimeoutMs).toBe(7_500);
       expect(typeof stub.__opts.runId).toBe("string");
       expect(stub.__opts.runId.length).toBeGreaterThan(0);
