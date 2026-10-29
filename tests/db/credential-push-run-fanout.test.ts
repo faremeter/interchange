@@ -16,10 +16,12 @@ import {
   modelProvider as modelProviderTable,
   workflowDefinition,
 } from "@intx/db/schema";
+import { credentialSecretColumns } from "@intx/db";
 import {
   pushCredentialReconcile,
+  pushCredentialRotation,
   type RunCredentialsLoader,
-  pushSourceUpdates,
+  pushSourceUpdatesSubtree,
   revokeRemovedCredentials,
   type SidecarRouter,
 } from "@intx/hub-sessions";
@@ -114,7 +116,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // definition (id wfd_1) whose creator is authorized to use every
       // credential. A run anchored on wfd_1 resolves to one launchable source
       // (mof_a / sk-anthropic).
-      await seedTenants(h.db, [{ id: "tnt_root" }]);
+      // tnt_child inherits tnt_root's catalog and credentials, for the pushes
+      // that reach a tenant's subtree.
+      await seedTenants(h.db, [
+        { id: "tnt_root" },
+        { id: "tnt_child", parentId: "tnt_root" },
+      ]);
       await seedProvider(h.db, {
         id: "prv_x",
         tenantId: "tnt_root",
@@ -177,7 +184,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const pushed: Pushed[] = [];
-      await pushSourceUpdates(
+      await pushSourceUpdatesSubtree(
         h.db,
         recordingRouter(pushed),
         "tnt_root",
@@ -219,7 +226,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const pushed: Pushed[] = [];
-      await pushSourceUpdates(
+      await pushSourceUpdatesSubtree(
         h.db,
         recordingRouter(pushed),
         "tnt_root",
@@ -264,7 +271,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           return Promise.resolve();
         },
       } as unknown as SidecarRouter;
-      await pushSourceUpdates(
+      await pushSourceUpdatesSubtree(
         h.db,
         router,
         "tnt_root",
@@ -578,7 +585,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "running",
       });
       const captured: Reconciled[] = [];
-      await pushSourceUpdates(
+      await pushSourceUpdatesSubtree(
         h.db,
         racingRouter(captured, async () => undefined),
         "tnt_root",
@@ -609,7 +616,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           return Promise.resolve();
         },
       } as unknown as SidecarRouter;
-      await pushSourceUpdates(
+      await pushSourceUpdatesSubtree(
         h.db,
         router,
         "tnt_root",
@@ -629,7 +636,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const captured: Reconciled[] = [];
-      await pushSourceUpdates(
+      await pushSourceUpdatesSubtree(
         h.db,
         racingRouter(captured, revokeCredA),
         "tnt_root",
@@ -742,6 +749,122 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // barrier, so a revoke here could remove them after that delivery.
       expect(captured[0]?.delivery.materials).toEqual([]);
       expect(captured[0]?.revoke).toBeUndefined();
+    });
+
+    describe("pushCredentialRotation", () => {
+      // A router that records every credentials frame and source push.
+      function rotationRouter(): {
+        router: SidecarRouter;
+        frames: Reconciled[];
+        pushed: Pushed[];
+      } {
+        const frames: Reconciled[] = [];
+        const pushed: Pushed[] = [];
+        const router: SidecarRouter = {
+          ...recordingRouter(pushed),
+          sendCredentialsUpdate:
+            reconcilingRouter(frames).sendCredentialsUpdate,
+        };
+        return { router, frames, pushed };
+      }
+
+      async function rotateCredA(): Promise<void> {
+        await h.db
+          .update(credentialTable)
+          .set(
+            await credentialSecretColumns(
+              createNoopCredentialCipher(),
+              "cred_a",
+              "sk-rotated",
+            ),
+          )
+          .where(eq(credentialTable.id, "cred_a"));
+      }
+
+      async function seedDeployment(
+        id: string,
+        tenantId: string,
+        status: "deployed" | "running" | "completed",
+        credentialIds: string[],
+      ): Promise<void> {
+        await seedWorkflowRun(h.db, {
+          id,
+          tenantId,
+          definitionId: "wfd_1",
+          anchorRunId: id,
+          address: `${id}@tnt.test`,
+          status,
+          credentialRefs: { credentialIds, bindings: [] },
+        });
+      }
+
+      test("reaches each live holder in the subtree and skips the others", async () => {
+        await rotateCredA();
+        await seedDeployment("dep_root", "tnt_root", "running", ["cred_a"]);
+        await seedDeployment("dep_child", "tnt_child", "deployed", ["cred_a"]);
+        await seedDeployment("dep_other", "tnt_root", "running", ["cred_b"]);
+        await seedDeployment("dep_done", "tnt_root", "completed", ["cred_a"]);
+        // An instance resolves its definition in its own tenant only.
+        await h.db.insert(workflowDefinition).values({
+          id: "wfd_child",
+          tenantId: "tnt_child",
+          creatorPrincipalId: null,
+          name: "agent-child",
+          modelRequirements: [{ model: "opus" }],
+        });
+        await seedWorkflowRun(h.db, {
+          id: "run_child",
+          tenantId: "tnt_child",
+          definitionId: "wfd_child",
+          address: "run_child@tnt.test",
+          status: "running",
+        });
+
+        const { router, frames, pushed } = rotationRouter();
+        await pushCredentialRotation(
+          h.db,
+          router,
+          "tnt_root",
+          "cred_a",
+          createNoopCredentialCipher(),
+        );
+
+        expect(frames.map((f) => f.address).sort()).toEqual([
+          "dep_child@tnt.test",
+          "dep_root@tnt.test",
+          "run_child@tnt.test",
+        ]);
+        for (const frame of frames) {
+          expect(frame.revoke).toBeUndefined();
+          expect(
+            frame.delivery.materials.map((m) => ({
+              id: m.credentialId,
+              secret: m.secret,
+              version: m.secretVersion,
+            })),
+          ).toEqual([{ id: "cred_a", secret: "sk-rotated", version: 2 }]);
+        }
+        // Only the folded instance gets a source list; a deployment's sources
+        // reference the credential by id and read the rotated cell.
+        expect(pushed.map((p) => p.address)).toEqual(["run_child@tnt.test"]);
+      });
+
+      test("sends nothing to a deployment once the credential is revoked", async () => {
+        await rotateCredA();
+        await revokeCredA();
+        await seedDeployment("dep_root", "tnt_root", "running", ["cred_a"]);
+
+        const { router, frames, pushed } = rotationRouter();
+        await pushCredentialRotation(
+          h.db,
+          router,
+          "tnt_root",
+          "cred_a",
+          createNoopCredentialCipher(),
+        );
+        expect(frames).toEqual([]);
+        expect(pushed).toEqual([]);
+      });
     });
   },
 );
