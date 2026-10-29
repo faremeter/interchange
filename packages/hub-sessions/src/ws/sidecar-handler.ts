@@ -17,6 +17,7 @@ import {
   deriveMessageId,
   deriveWorkflowRunId,
   isRunAddress,
+  parseRunAddress,
 } from "@intx/types";
 import type { GrantWalkSnapshot } from "@intx/types";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
@@ -1334,6 +1335,51 @@ export function createSidecarRouter(
       logger.error`Failed to load hub credentials for run ${runId}; sending its grants without them: ${message}`;
       return null;
     }
+  }
+
+  // Best-effort and NEVER throws, like `loadRunCredentials`: it runs ahead of
+  // a committed signal, where a throw would drop the signal. A fault is logged
+  // and degrades to null, so the signal goes out with no grants frame.
+  async function loadRunGrants(
+    runId: string,
+  ): Promise<RunGrantsFrame["stepGrants"] | null> {
+    if (lookups.loadRunGrants === undefined) return null;
+    try {
+      return await lookups.loadRunGrants(runId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error`Failed to load the grants of run ${runId}; sending its signal without them: ${message}`;
+      return null;
+    }
+  }
+
+  // The `run.grants` frame that precedes a `signal.deliver`: the run's
+  // committed grants and hub credentials, loaded now. A decision commits its
+  // grant change before its signal is sent, so the frame carries it, and a
+  // retried signal carries it again. The caller sends the frame and the signal
+  // back-to-back with no await between them, so the sidecar applies the
+  // grants first on its ordered per-address lane. Two concurrent sends for
+  // one run are not ordered by when they loaded, so an older load can still
+  // land after a newer one; the sidecar keeps the last frame. Only the
+  // deployment's own run gets the frame: a frame for another run id would
+  // carry that run's grants to this address. Undefined when no frame is sent.
+  async function signalGrantsFrame(
+    agentAddress: string,
+    generation: number,
+    runId: string,
+  ): Promise<Extract<HubFrame, { type: "run.grants" }> | undefined> {
+    if (runId !== parseRunAddress(agentAddress)?.runId) return undefined;
+    const stepGrants = await loadRunGrants(runId);
+    if (stepGrants === null) return undefined;
+    const credentials = await loadRunCredentials(runId);
+    return {
+      type: "run.grants",
+      agentAddress,
+      generation,
+      runId,
+      stepGrants,
+      ...(credentials !== null ? { credentials } : {}),
+    };
   }
 
   // Resolve the frame that must precede a redelivery of a trigger mail on the
@@ -6216,7 +6262,13 @@ export function createSidecarRouter(
       );
     }
     const { ws, conn, binding } = routed;
+    const grantsFrame = await signalGrantsFrame(
+      opts.agentAddress,
+      binding.generation,
+      opts.runId,
+    );
     await withWorkflowWorkAdmission(ws, conn, opts.agentAddress, () => {
+      if (grantsFrame !== undefined) conn.send(grantsFrame);
       conn.send({
         type: "signal.deliver",
         agentAddress: opts.agentAddress,
@@ -6256,11 +6308,18 @@ export function createSidecarRouter(
         `Address ${opts.agentAddress} is not routed on allocation ${target.allocationId}`,
       );
     }
+    const grantsFrame = await signalGrantsFrame(
+      opts.agentAddress,
+      target.generation,
+      opts.runId,
+    );
+    signal?.throwIfAborted();
     await withWorkflowWorkAdmission(
       ws,
       conn,
       opts.agentAddress,
       () => {
+        if (grantsFrame !== undefined) conn.send(grantsFrame);
         conn.send({
           type: "signal.deliver",
           ...opts,

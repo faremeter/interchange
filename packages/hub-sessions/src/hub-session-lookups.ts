@@ -103,6 +103,7 @@ export function createHubSessionLookups(
     | "mintCorrespondentGrant"
     | "resyncCredentials"
     | "loadRunCredentials"
+    | "loadRunGrants"
     | "resolveSenderKey"
     | "resolveSenderKeyStrict"
     | "resolveSenderPrincipal"

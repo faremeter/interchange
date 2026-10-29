@@ -835,6 +835,29 @@ export async function loadCommittedRunGrants(
 }
 
 /**
+ * The sidecar router's `loadRunGrants` lookup: a run's committed grants by run
+ * id, read at send time, or null when the run has no run row or no run
+ * principal (a child run has none).
+ */
+export function createRunGrantsLoader(deps: {
+  db: DB["db"];
+}): (runId: string) => Promise<RunGrantsFrame["stepGrants"] | null> {
+  return async (runId) => {
+    const run = await deps.db.query.workflowRun.findFirst({
+      where: eq(workflowRun.id, runId),
+      columns: { tenantId: true },
+    });
+    if (run === undefined) return null;
+    const committed = await loadCommittedRunGrants(
+      deps.db,
+      run.tenantId,
+      runId,
+    );
+    return committed === null ? null : committed.stepGrants;
+  };
+}
+
+/**
  * The tool name an approval names, read from its `toolDefinition` snapshot. The
  * name lives in untyped jsonb; validate it through the `ToolDefinition` arktype
  * rather than reaching in, so a malformed snapshot fails loudly instead of

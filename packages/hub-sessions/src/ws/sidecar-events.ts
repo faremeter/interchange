@@ -287,6 +287,17 @@ export type SidecarLookups = {
    * them, so a load failure never drops the mail it precedes. */
   loadRunCredentials?: (runId: string) => Promise<CredentialDelivery | null>;
 
+  /** Loads a deployment run's committed grants by run id, or null when the run
+   * has no run principal. The wire layer sends them in a `run.grants` frame
+   * right before each `signal.deliver`, so a signal that resumes a parked run
+   * reaches the sidecar after the grants a decision committed. Absent: a
+   * signal is sent with no grants frame. It may throw; the wire layer logs a
+   * fault and sends the signal without the frame, so a load failure never
+   * drops the signal. */
+  loadRunGrants?: (
+    runId: string,
+  ) => Promise<RunGrantsFrame["stepGrants"] | null>;
+
   /** Persists a delivered outbound mail frame. Returns one row per
    * persisted record; the wire layer attaches `raw` to each row and
    * emits a `mail.persisted` event. */
