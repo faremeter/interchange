@@ -1327,7 +1327,7 @@ export function createMailTriggeredRunGrantsMaterializer(
     // This preflight inspects the anchor row's status, cancellation, and
     // deadline, and omits the durable-lifecycle terminal check that the HTTP
     // trigger route in workflow-run-trigger.ts applies. The supervisor's durable run-ref guard
-    // (rejectTerminalRun / readWorkflowRunLifecycle in supervisor.ts) is the
+    // (rejectTerminalRun / readCommittedWorkflowRunLifecycle in supervisor.ts) is the
     // fired/not-fired authority and never re-fires a durably-settled run, so
     // this status check is a lagging fast-fail only. The two preflights diverge
     // inside the status-flip lag window; that asymmetry is tolerable and is

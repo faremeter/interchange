@@ -206,7 +206,6 @@ export {
   classifyTerminalEvent,
   scanRunsForBoot,
   readCommittedWorkflowRunLifecycle,
-  readWorkflowRunLifecycle,
   workflowRunRepoIdForAddress,
   WORKFLOW_RUN_REF,
   replayProcessingToInbox,

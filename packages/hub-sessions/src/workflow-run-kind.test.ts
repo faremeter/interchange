@@ -16,7 +16,6 @@ import {
   parseEventSeq,
   readCommittedWorkflowRunLifecycle,
   scanRunsForBoot,
-  readWorkflowRunLifecycle,
   replayProcessingToInbox,
   WORKFLOW_RUN_GITIGNORE_PATH,
   WORKFLOW_RUN_RUNS_PREFIX,
@@ -3371,8 +3370,9 @@ describe("claim-check substrate FIFO invariant", () => {
 // replay leaves them in `processing/` rather than re-admitting them to
 // `inbox/` and dispatching a colliding second run on the same runId. The
 // run logs live on the run-event ref (`refs/heads/main`); the claim-check
-// ref (`refs/heads/events`) cannot see them, so the caller reads them via
-// the working tree and hands the owned set to `replayProcessingToInbox`.
+// ref (`refs/heads/events`) cannot see them, so the caller reads them from
+// that ref's committed history and hands the owned set to
+// `replayProcessingToInbox`.
 describe("claim-check API — resume-owned processing entries survive replay", () => {
   function runStartedBody(runId: string): string {
     return JSON.stringify({
@@ -3408,9 +3408,48 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       },
       message: "seed one live and one terminal run",
     });
-    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
     expect(owned.has("live")).toBe(true);
     expect(owned.has("done")).toBe(false);
+  });
+
+  test("scanRunsForBoot ignores events the checkout holds that never committed", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore(
+      "cc-owned-uncommitted-",
+    );
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+      },
+      message: "seed a live run",
+    });
+    // A write lays its files in the checkout before it commits, so one that
+    // failed in between leaves these behind.
+    const runsDir = path.join(
+      store.getRepoDir(repoId),
+      WORKFLOW_RUN_RUNS_PREFIX,
+    );
+    await fs.promises.mkdir(path.join(runsDir, "lost", "events"), {
+      recursive: true,
+    });
+    await fs.promises.writeFile(
+      path.join(runsDir, "lost", "events", "0.json"),
+      runStartedBody("lost"),
+    );
+
+    const { ownedMessageIds } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
+    expect(ownedMessageIds).toEqual(new Set(["live"]));
   });
 
   test("scanRunsForBoot proposes a terminal per-event run for sealing and drops it from owned", async () => {
@@ -3432,7 +3471,9 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     });
     const { ownedMessageIds, pendingSealRunIds } = await scanRunsForBoot(
       store,
+      principal,
       repoId,
+      "refs/heads/main",
     );
     expect(pendingSealRunIds).toEqual(["done"]);
     expect(ownedMessageIds.has("done")).toBe(false);
@@ -3452,39 +3493,13 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       },
       message: "seed a sealed (terminated, compacted) run",
     });
-    const { pendingSealRunIds } = await scanRunsForBoot(store, repoId);
+    const { pendingSealRunIds } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
     expect(pendingSealRunIds).toEqual([]);
-  });
-
-  test("readWorkflowRunLifecycle distinguishes grants-only, live, and terminal logs", async () => {
-    const { store, repoId, principal } =
-      await makeClaimCheckStore("cc-lifecycle-");
-    await store.writeTree(principal, repoId, "refs/heads/main", {
-      files: {
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/staged/grants.json`]: JSON.stringify({
-          stepGrants: [],
-        }),
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
-          runStartedBody("live-message"),
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/0.json`]:
-          runStartedBody("done-message"),
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/1.json`]: runCompletedBody(1),
-      },
-      message: "seed lifecycle states",
-    });
-
-    await expect(
-      readWorkflowRunLifecycle(store, repoId, "missing"),
-    ).resolves.toBe("absent");
-    await expect(
-      readWorkflowRunLifecycle(store, repoId, "staged"),
-    ).resolves.toBe("absent");
-    await expect(readWorkflowRunLifecycle(store, repoId, "live")).resolves.toBe(
-      "live",
-    );
-    await expect(readWorkflowRunLifecycle(store, repoId, "done")).resolves.toBe(
-      "terminal",
-    );
   });
 
   test("readCommittedWorkflowRunLifecycle reads the Git ref without a checkout", async () => {
@@ -3523,10 +3538,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     ).resolves.toBe("absent");
   });
 
-  test("readWorkflowRunLifecycle and readCommittedWorkflowRunLifecycle agree across states", async () => {
-    // Both readers run one shared classification core over different read
-    // surfaces (working-tree fs vs committed git objects). Seed one tree and
-    // read every run BOTH ways to prove the two surfaces classify identically.
+  test("readCommittedWorkflowRunLifecycle distinguishes grants-only, live, terminal, and sealed logs", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore("cc-equiv-");
     const sealedLog =
       [runStartedBody("sealed"), runCompletedBody(1)].join("\n") + "\n";
@@ -3542,7 +3554,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
         [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/1.json`]: runCompletedBody(1),
         [`${WORKFLOW_RUN_RUNS_PREFIX}/sealed/events.jsonl`]: sealedLog,
       },
-      message: "seed lifecycle states for the equivalence check",
+      message: "seed lifecycle states",
     });
 
     const reads = await store.openCommittedReads(
@@ -3560,43 +3572,10 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       ["sealed", "terminal"],
     ] as const;
     for (const [runId, expected] of cases) {
-      const fsResult = await readWorkflowRunLifecycle(store, repoId, runId);
-      const committedResult = await readCommittedWorkflowRunLifecycle(
-        reads,
-        runId,
-      );
-      expect(fsResult).toBe(expected);
-      expect(committedResult).toBe(expected);
-      expect(committedResult).toBe(fsResult);
+      await expect(
+        readCommittedWorkflowRunLifecycle(reads, runId),
+      ).resolves.toBe(expected);
     }
-  });
-
-  test("readWorkflowRunLifecycle wraps an unreadable latest event", async () => {
-    // A validated write cannot store a corrupt event, so seed a valid live run
-    // and then corrupt its latest event on disk -- the storage-corruption case
-    // the reader must surface as `workflow_run_event_unreadable` rather than
-    // misclassify.
-    const { store, repoId, principal } =
-      await makeClaimCheckStore("cc-corrupt-fs-");
-    await store.writeTree(principal, repoId, "refs/heads/main", {
-      files: {
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/corrupt/events/0.json`]:
-          runStartedBody("corrupt"),
-      },
-      message: "seed a valid live run",
-    });
-    const eventPath = path.join(
-      store.getRepoDir(repoId),
-      WORKFLOW_RUN_RUNS_PREFIX,
-      "corrupt",
-      "events",
-      "0.json",
-    );
-    await fs.promises.writeFile(eventPath, "not valid json{");
-
-    await expect(
-      readWorkflowRunLifecycle(store, repoId, "corrupt"),
-    ).rejects.toThrow(/workflow_run_event_unreadable/);
   });
 
   test("readCommittedWorkflowRunLifecycle wraps an unreadable latest event", async () => {
@@ -3620,24 +3599,6 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     await expect(
       readCommittedWorkflowRunLifecycle(reads, "corrupt"),
     ).rejects.toThrow(/workflow_run_event_unreadable/);
-  });
-
-  test("readWorkflowRunLifecycle surfaces a non-ENOENT events-directory read error", async () => {
-    // An absent events directory (ENOENT) classifies as absent, but a
-    // non-ENOENT read error must surface rather than be swallowed as absent.
-    // Seed the per-event `events` path as a file so readdir fails with ENOTDIR.
-    const { store, repoId } = await makeClaimCheckStore("cc-enotdir-");
-    const runDir = path.join(
-      store.getRepoDir(repoId),
-      WORKFLOW_RUN_RUNS_PREFIX,
-      "notdir",
-    );
-    await fs.promises.mkdir(runDir, { recursive: true });
-    await fs.promises.writeFile(path.join(runDir, "events"), "not a directory");
-
-    await expect(
-      readWorkflowRunLifecycle(store, repoId, "notdir"),
-    ).rejects.toThrow();
   });
 
   test("a CancelRequested-without-finalizer run is still owned (its message stays suppressed)", async () => {
@@ -3664,7 +3625,12 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       },
       message: "seed a run with a pending cancel but no finalizer",
     });
-    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
     expect(owned.has("cancelling")).toBe(true);
   });
 
@@ -3688,7 +3654,12 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       },
       message: "seed a live child run with no consumedMessageId",
     });
-    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
     expect(owned.size).toBe(0);
   });
 
@@ -3709,18 +3680,28 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       },
       message: "seed a sealed (terminated, compacted) run",
     });
-    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
     expect(owned.has("sealed")).toBe(false);
     expect(owned.size).toBe(0);
   });
 
   test("an absent runs directory yields an empty owned set", async () => {
-    const { store, repoId } = await makeClaimCheckStore("cc-owned-no-runs-");
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-owned-no-runs-");
     // A freshly-initialised repo has only a `.gitignore` genesis tree and
-    // no `runs/` directory. readdir on the missing directory surfaces
-    // ENOENT, which scanRunsForBoot treats as an empty owned set
-    // rather than throwing.
-    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
+    // no `runs/` directory, which scanRunsForBoot treats as an empty owned
+    // set rather than throwing.
+    const { ownedMessageIds: owned } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
     expect(owned.size).toBe(0);
   });
 
@@ -3751,7 +3732,12 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       message: "seed the live run for the owned entry",
     });
 
-    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(
+      store,
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
     expect(owned).toEqual(new Set(["live"]));
 
     const replay = await replayProcessingToInbox(
