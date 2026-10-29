@@ -25,7 +25,6 @@ export {
   parseEventSeq,
   scanRunsForBoot,
   readCommittedWorkflowRunLifecycle,
-  readWorkflowRunLifecycle,
   readProcessingEntry,
   replayProcessingToInbox,
   requireEventSeq,

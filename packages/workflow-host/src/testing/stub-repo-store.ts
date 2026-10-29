@@ -6,14 +6,19 @@
 // an incomplete version of the broad ones, and substituting a working store
 // would silently permit paths that currently fail loudly.
 //
+// Every stub serves its repo from a directory under `baseDir`: `getRepoDir`
+// names it, and `openCommittedReads` reads it as the committed tree, since a
+// stub keeps no git history.
+//
 // Only the two capability sets that were byte-identical across several files
 // live here. The rest of this repo's stub stores are genuinely different
 // fidelities, up to a 218-line in-memory implementation, and merging those
 // would trade a real assertion for a smaller diff.
 
+import fs from "node:fs/promises";
 import path from "node:path";
 
-import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import type { CommittedReads, RepoId, RepoStore } from "@intx/hub-sessions";
 
 export type StubRepoStoreOpts = {
   /**
@@ -31,6 +36,9 @@ export function createStubRepoStore(
   const stub: Partial<RepoStore> = {
     getRepoDir(repoId: RepoId): string {
       return path.join(baseDir, repoId.kind, repoId.id);
+    },
+    async openCommittedReads(_principal, repoId) {
+      return directoryReads(path.join(baseDir, repoId.kind, repoId.id));
     },
     ...(opts.writeTree === true
       ? {
@@ -53,4 +61,34 @@ export function createStubRepoStore(
       };
     },
   });
+}
+
+// A blob's oid is its repo-relative path.
+function directoryReads(repoDir: string): CommittedReads {
+  return {
+    async listDir(relPath) {
+      let dirents;
+      try {
+        dirents = await fs.readdir(path.join(repoDir, relPath), {
+          withFileTypes: true,
+        });
+      } catch (cause) {
+        if (
+          cause instanceof Error &&
+          "code" in cause &&
+          cause.code === "ENOENT"
+        ) {
+          return [];
+        }
+        throw cause;
+      }
+      return dirents.map((dirent) => ({
+        name: dirent.name,
+        oid: path.join(relPath, dirent.name),
+        type: dirent.isDirectory() ? ("tree" as const) : ("blob" as const),
+      }));
+    },
+    readBlobByOid: (oid) => fs.readFile(path.join(repoDir, oid)),
+    treeOid: async () => null,
+  };
 }
