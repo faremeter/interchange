@@ -36,10 +36,11 @@
 //       the messageId, is consumed, and reaches `RunCompleted`. The identical
 //       message D1 dropped, D2 admits -- the per-workflow policy is the switch.
 //
-// Scenarios (b)/(c) inject at the hub router's `sendRunGrants` +/`routeMail`
-// seam (the same surface `mail-edge-cases` uses) to hand the seam arbitrary raw
-// bytes with a chosen `authenticatedSender`; `buildMinimalMail` and
-// `waitForConsumedFilename` mirror that file's local helpers verbatim.
+// Scenarios (b)/(c) inject at the hub router's `routeMail` seam (the same
+// surface `mail-edge-cases` uses), which sends the run's grants ahead of the
+// mail, to hand the seam arbitrary raw bytes with a chosen
+// `authenticatedSender`; `buildMinimalMail` and `waitForConsumedFilename`
+// mirror that file's local helpers verbatim.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
@@ -402,14 +403,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         body: "unsigned enforcement body — dropped by the default policy",
       });
 
-      const d1GrantsDelivered = env.hub.router.sendRunGrants(
-        d1MailAddress,
-        d1RunId,
-        [],
-        [senderIdentity],
-      );
-      expect(d1GrantsDelivered).toBe(true);
-
       // Snapshot the diagnostics buffer BEFORE routing so the reject-log wait
       // scopes its match to events that arrive AFTER this route call.
       const diagBeforeDrop = env.sidecarDiagnostics();
@@ -418,6 +411,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         base64Encode(droppedRaw),
         EXTERNAL_SENDER,
         droppedMessageId,
+        { runId: d1RunId, stepGrants: [], senderIdentities: [senderIdentity] },
       );
       expect(droppedDelivered).toBe(true);
 
@@ -484,18 +478,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         body: "unsigned enforcement body — admitted by { missing: admit }",
       });
 
-      const d2GrantsDelivered = env.hub.router.sendRunGrants(
-        d2MailAddress,
-        d2RunId,
-        [],
-        [senderIdentity],
-      );
-      expect(d2GrantsDelivered).toBe(true);
       const admittedDelivered = await env.hub.router.routeMail(
         d2MailAddress,
         base64Encode(admittedRaw),
         EXTERNAL_SENDER,
         admittedMessageId,
+        { runId: d2RunId, stepGrants: [], senderIdentities: [senderIdentity] },
       );
       expect(admittedDelivered).toBe(true);
 

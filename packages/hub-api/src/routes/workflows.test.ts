@@ -24,6 +24,7 @@ import {
 } from "@intx/types";
 import type { GrantWalkSnapshot, SidecarAllocationStatus } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
+import type { RunGrantsFrame } from "@intx/types/sidecar";
 import {
   asset as assetTable,
   grant as grantTable,
@@ -562,7 +563,7 @@ type RouteMailCall = {
 type RunGrantsCall = {
   address: string;
   runId: string;
-  stepGrants: Parameters<SidecarRouter["sendRunGrants"]>[2];
+  stepGrants: RunGrantsFrame["stepGrants"];
 };
 // Every send the mock records, in call order, so tests can assert that a
 // `run.grants` send precedes the trigger `mail`.
@@ -608,11 +609,6 @@ function createMockSidecarRouter(
       });
       sendOrder.push({ kind: "mail", address });
       return routeMailResult;
-    },
-    sendRunGrants: (address, runId, stepGrants) => {
-      runGrantsCalls.push({ address, runId, stepGrants });
-      sendOrder.push({ kind: "run.grants", address });
-      return runGrantsResult;
     },
     noteSenderDeployStarted: () => notImpl("noteSenderDeployStarted"),
     noteSenderDeploySettled: () => notImpl("noteSenderDeploySettled"),

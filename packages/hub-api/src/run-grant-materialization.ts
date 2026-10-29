@@ -875,8 +875,10 @@ export function approvalToolName(
  * approves-always sets `allow` (stop asking, let it through); one who
  * rejects-always sets `deny` (stop asking, block it). The grant stays with the
  * run: every later read (the child's enforcement floor, the authorization view,
- * and the per-dispatch re-establish) sees the standing effect, so the tool is
- * not asked again for the life of the run.
+ * and the grants the sidecar router sends ahead of each signal and trigger)
+ * sees the standing effect, so the tool is not asked again for the life of the
+ * run. Two grant sends for one run can arrive out of order, and then the
+ * sidecar holds the older grants until the next send.
  *
  * Guarded to only change a grant currently gated `ask`: the `effect = "ask"`
  * predicate means it only ever resolves the checkpoint, never overrides an

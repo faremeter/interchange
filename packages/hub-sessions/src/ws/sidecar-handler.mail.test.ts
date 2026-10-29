@@ -722,26 +722,6 @@ describe("SidecarRouter allocation mail durability", () => {
       expect(grants[0]?.["credentials"]).toBeUndefined();
       expect(framesOfType(second, "mail.inbound")).toHaveLength(1);
     });
-
-    test("a standing-grant push carries none", async () => {
-      const loadedFor: string[] = [];
-      const router = routerWithCredentials(loadedFor);
-      const ws = await connectAllocated(router, [
-        TEST_IDENTITY.workflowRunAddress,
-      ]);
-      expect(
-        router.sendRunGrants(
-          TEST_IDENTITY.workflowRunAddress,
-          TEST_IDENTITY.anchorRunId,
-          [],
-          undefined,
-        ),
-      ).toBe(true);
-      expect(
-        framesOfType(ws, "run.grants")[0]?.["credentials"],
-      ).toBeUndefined();
-      expect(loadedFor).toEqual([]);
-    });
   });
 
   test("replays the co-delivered sender key on reconnect", async () => {

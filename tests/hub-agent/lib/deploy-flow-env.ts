@@ -836,6 +836,7 @@ export async function startHub(
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
     materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
     loadRunCredentials?: SidecarLookups["loadRunCredentials"];
+    loadRunGrants?: SidecarLookups["loadRunGrants"];
     senderKeyResolution?: {
       db: DBExecutor;
       principalKeyStore: PrincipalKeyStore;
@@ -1048,6 +1049,11 @@ export async function startHub(
       // carries a credential delivery.
       ...(opts.loadRunCredentials !== undefined
         ? { loadRunCredentials: opts.loadRunCredentials }
+        : {}),
+      // Unset unless a test supplies a loader: a signal then goes out with no
+      // run.grants frame ahead of it.
+      ...(opts.loadRunGrants !== undefined
+        ? { loadRunGrants: opts.loadRunGrants }
         : {}),
       // Resolve a signed mail sender's durable public key so the materializer
       // path co-delivers it on the recipient run's grants barrier, exactly as
@@ -1633,6 +1639,14 @@ export type StartDeployFlowEnvOpts = {
    */
   loadRunCredentials?: SidecarLookups["loadRunCredentials"];
   /**
+   * Loader for a run's committed grants, wired into the mock hub's sidecar
+   * router as the `loadRunGrants` lookup. The router sends the loaded grants
+   * in a run.grants frame ahead of each signal it delivers, so a signal that
+   * resumes a parked run reaches the sidecar after the grants a decision
+   * committed.
+   */
+  loadRunGrants?: SidecarLookups["loadRunGrants"];
+  /**
    * A db + principal key store the mock hub uses to resolve a signed mail
    * sender's durable public key, wired into the sidecar router as the
    * `resolveSenderKey` / `resolveSenderKeyStrict` lookups exactly as production
@@ -1677,6 +1691,9 @@ export async function startDeployFlowEnv(
       : {}),
     ...(opts.loadRunCredentials !== undefined
       ? { loadRunCredentials: opts.loadRunCredentials }
+      : {}),
+    ...(opts.loadRunGrants !== undefined
+      ? { loadRunGrants: opts.loadRunGrants }
       : {}),
     ...(opts.senderKeyResolution !== undefined
       ? { senderKeyResolution: opts.senderKeyResolution }
@@ -2486,8 +2503,8 @@ export type FireMailTriggerOpts = {
 
 /**
  * `code` marker on the errors `fireMailTrigger` throws when the hub declines
- * to route a frame at the target address -- `sendRunGrants` or `routeMail`
- * returned false, meaning the address had no live connection.
+ * to route the trigger at the target address -- `routeMail` returned false,
+ * meaning the address had no live connection.
  */
 export const MAIL_TRIGGER_UNROUTABLE_CODE = "mail_trigger_unroutable";
 
@@ -2571,7 +2588,7 @@ export async function fireMailTrigger(
   const rawMessage = assembleMessage(headers, signedContent, signature);
   const base64 = base64Encode(rawMessage);
 
-  // Deliver the run's grants before the trigger mail. The runId is the local
+  // Deliver the run's grants with the trigger mail. The runId is the local
   // part of the deployment's mail address (not the per-message Message-ID);
   // derive it through the same shared helper the production route and sidecar
   // use, so this fixture cannot mask a divergence by hand-picking the right
@@ -2588,26 +2605,19 @@ export async function fireMailTrigger(
   const senderIdentities = [
     { address: from, publicKey: hexEncode(keyPair.publicKey) },
   ];
-  const grantsDelivered = env.hub.router.sendRunGrants(
-    address,
-    runId,
-    opts.grants ?? [],
-    senderIdentities,
-  );
-  if (!grantsDelivered) {
-    throw Object.assign(
-      new Error(
-        `fireMailTrigger: sendRunGrants returned false for ${address}; address is not routable on the hub`,
-      ),
-      { code: MAIL_TRIGGER_UNROUTABLE_CODE },
-    );
-  }
 
   // Route the trigger the way the production route does, stamping the
   // signed-under address as the authenticated sender. This fixture reuses
   // that same address as the MIME From, so it is not a From-independence
-  // check.
-  const delivered = await env.hub.router.routeMail(address, base64, from);
+  // check. `routeMail` sends the `run.grants` frame ahead of the mail under
+  // one admission decision.
+  const delivered = await env.hub.router.routeMail(
+    address,
+    base64,
+    from,
+    undefined,
+    { runId, stepGrants: opts.grants ?? [], senderIdentities },
+  );
   if (!delivered) {
     throw Object.assign(
       new Error(

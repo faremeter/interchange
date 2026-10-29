@@ -24,15 +24,12 @@ import {
   signalName,
 } from "@intx/types";
 
-import { getLogger } from "@intx/log";
-
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
 import { createAuthorizeGrant } from "../middleware/grant";
 import { ts } from "../format";
 import {
   approvalToolName,
-  loadCommittedRunGrants,
   lockWorkflowRunState,
   setRunToolGrantEffect,
 } from "../run-grant-materialization";
@@ -46,53 +43,6 @@ import {
 import { jsonResponse } from "../openapi";
 
 type ParsedApproval = ReturnType<typeof parseApprovalRow>;
-
-const log = getLogger(["hub", "approvals"]);
-
-/**
- * Push a run's grants to the sidecar after a standing (`scope: "always"`)
- * resolution has mutated them in the resolve transaction. Re-reads the now
- * durably-mutated committed grants and rewrites the run's `grants.json` (the
- * `run.grants` handler also refreshes a live child), so the running child sees
- * the change in-flight and any respawn re-reads it.
- *
- * Best-effort relative to the resume: this runs after the resolve committed and
- * the parked run must still be resumed, so a failure is logged loudly but never
- * propagated -- a throw would skip the caller's signal delivery and hang the
- * run. It self-heals regardless: the mutation is already durable in the
- * committed grants, and the next dispatch's per-run re-establish reads the same
- * committed grants, so a missed push only delays the effect, never loses it.
- */
-async function propagateRunGrantsToSidecar(
-  deps: CreateApprovalRoutesDeps,
-  approval: ParsedApproval,
-  tenantId: string,
-): Promise<void> {
-  try {
-    const committed = await loadCommittedRunGrants(
-      deps.db,
-      tenantId,
-      approval.runId,
-    );
-    // A run with no committed per-run grants has nothing to push.
-    if (committed === null) return;
-    // A standing-grant refresh carries no inbound sender, so there is no sender
-    // key to co-deliver on this barrier; the sender's key rides the run.grants
-    // frame that its triggering mail pushed.
-    const delivered = deps.sidecarRouter.sendRunGrants(
-      approval.agentAddress,
-      approval.runId,
-      committed.stepGrants,
-      undefined,
-    );
-    if (!delivered) {
-      log.warn`standing grant for run ${approval.runId} not pushed: deployment ${approval.agentAddress} is not routable; the next dispatch re-establishes it`;
-    }
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    log.error`failed to push standing grant for run ${approval.runId}; the parked run still resumes and the next dispatch re-establishes it: ${message}`;
-  }
-}
 
 export function formatApproval(row: ParsedApproval) {
   return {
@@ -331,8 +281,9 @@ export async function resolveApproval(
     // A standing resolution durably mutates the run's committed grant for this
     // tool IN this transaction -- `allow` on approve-always, `deny` on
     // reject-always -- so a rolled-back resolve reverts the grant change too.
-    // The run keeps it: enforcement, the authorization view, and the
-    // per-dispatch re-establish all read the committed grant.
+    // The run keeps it: enforcement, the authorization view, and the grants
+    // the sidecar router sends ahead of the resume signal all read the
+    // committed grant.
     if (standingToolName !== null) {
       await setRunToolGrantEffect(
         tx,
@@ -370,17 +321,6 @@ export async function resolveApproval(
 
   if (claimed.kind !== "resolved") {
     return claimed;
-  }
-
-  // Standing resolution: the committed grant was mutated in the transaction
-  // above. Push the now-durable grants to the sidecar so the running child sees
-  // the change in-flight. Post-commit, so a rolled-back resolve pushes nothing.
-  // It runs before the wake/signal delivery so the floor lands promptly, but
-  // correctness does not depend on that ordering: `deliverSignal` refreshes
-  // grants on the child's control FIFO immediately ahead of the resume signal,
-  // and the next dispatch re-establishes them regardless.
-  if (args.scope === "always") {
-    await propagateRunGrantsToSidecar(deps, approval, args.tenantId);
   }
 
   if (claimed.provisionedDispatchService !== undefined) {

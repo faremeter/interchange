@@ -69,7 +69,7 @@ import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 // The tenant domain must equal the fixture's deploy domain so the route's
 // derived address (`run_<anchorRunId>@<tenant.domain>`) matches the address
 // the fixture deployed the sidecar workflow under; otherwise the route's
-// sendRunGrants/routeMail target an unknown address (409).
+// routeMail targets an unknown address (409).
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_run-mail-send-route-1";
 const TENANT_ID = "tnt_run_mail_send_route";

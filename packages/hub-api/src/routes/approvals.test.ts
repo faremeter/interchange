@@ -119,19 +119,6 @@ function createMockDB(
       principal: { findFirst: async () => testPrincipal },
       approval: { findMany: async () => approvalList },
     },
-    // A standing resolution's post-commit push calls loadCommittedRunGrants off
-    // the top-level db (outside the resolve tx): the run principal (limit(1))
-    // then its grant rows (orderBy). This mock seeds no run principal, so the
-    // read returns null and the push no-ops -- its correctness is covered by the
-    // setRunToolGrantEffect real-DB test.
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([]),
-          orderBy: () => Promise.resolve([]),
-        }),
-      }),
-    }),
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
       let workflowRunLockIndex = 0;
       return fn({
@@ -293,10 +280,6 @@ function createMockSidecarRouter(
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
     routeMail: () => notImpl("routeMail"),
-    // A standing resolution's post-commit push no-ops in these tests (no run
-    // principal is seeded, so loadCommittedRunGrants returns null before this is
-    // reached); sendRunGrants is never called.
-    sendRunGrants: () => notImpl("sendRunGrants"),
     noteSenderDeployStarted: () => notImpl("noteSenderDeployStarted"),
     noteSenderDeploySettled: () => notImpl("noteSenderDeploySettled"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
