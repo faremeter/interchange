@@ -2015,6 +2015,124 @@ describe("deployCodeSourcedWorkflow", () => {
       });
     }
 
+    for (const removed of [true, false]) {
+      test(`prepared deploy re-checks its delivered credentials after completion (removed=${String(removed)})`, async () => {
+        const writes: Record<string, unknown>[] = [];
+        // What the anchor rows held when the re-check read credential status.
+        let writesAtRecheck: Record<string, unknown>[] | undefined;
+        const tx = {
+          select: () => ({
+            from: () => ({
+              where: () => ({
+                for: async () => [{ id: "alloc-test", publicKey: null }],
+              }),
+            }),
+          }),
+          update: () => ({
+            set: (values: Record<string, unknown>) => {
+              writes.push(values);
+              return {
+                where: () => ({
+                  returning: async () => [{ id: ANCHOR_RUN_ID }],
+                }),
+              };
+            },
+          }),
+        };
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- transaction double plus the credential status read the post-completion re-check performs
+        const db = {
+          ...CAPTURING_DB,
+          transaction: async (run: (handle: typeof tx) => Promise<unknown>) =>
+            run(tx),
+          select: () => ({
+            from: () => ({
+              where: async () => {
+                writesAtRecheck = [...writes];
+                return [
+                  {
+                    id: "secret-only",
+                    status: removed ? "revoked" : "active",
+                  },
+                ];
+              },
+            }),
+          }),
+        } as unknown as DB["db"];
+        const allocationRouter = createMockAllocationRouter();
+        allocationRouter.sendAgentDeployToAllocation = async (
+          _target,
+          _address,
+          _config,
+          _workflow,
+          _signal,
+          beforeSend,
+        ) => {
+          await beforeSend?.();
+          return { publicKey: "completed-key" };
+        };
+        const preparedRepoStore = createMockRepoStore();
+        preparedRepoStore.repoStore.resolveRef = async () => null;
+        const router = createMockRouter();
+        const service = createSessionService({
+          loadRunCredentials: async () => null,
+          sidecarRouter: router,
+          sidecarAllocationRouter: allocationRouter,
+          agentRepoStore: preparedRepoStore,
+          db,
+        });
+        const { approval, projection, closure } = await makeApproveOutput([
+          "inference.source:anthropic:mock-model",
+        ]);
+        if (!approval.ok) throw new Error("expected approval");
+        const result = await service.deployPreparedCodeSourcedWorkflow({
+          tenantId: TENANT,
+          anchorRunId: ANCHOR_RUN_ID,
+          deploymentDomain: DEPLOYMENT_DOMAIN,
+          agentAddress: DEPLOY_ADDRESS,
+          source: SOURCE,
+          approved: { approval, projection, closure },
+          config: CONFIG,
+          allocationTarget: { allocationId: "alloc-test", generation: 1 },
+          reconciliation: {
+            leaseId: "lease-test",
+            signal: new AbortController().signal,
+          },
+          credentialCipher: createNoopCredentialCipher(),
+        });
+        expect(result).toMatchObject({ publicKey: "completed-key" });
+
+        // The re-check reads after the completion committed the key and the
+        // credential refs, so a sidecar that reconnected before that commit
+        // still gets the revoke.
+        expect(writesAtRecheck).toBeDefined();
+        expect(
+          writesAtRecheck?.some(
+            (values) =>
+              values.publicKey === "completed-key" &&
+              "credentialRefs" in values,
+          ),
+        ).toBe(true);
+
+        const revokes = router.calls.filter(
+          (call) => call.method === "sendCredentialsUpdate",
+        );
+        if (removed) {
+          expect(revokes).toEqual([
+            {
+              method: "sendCredentialsUpdate",
+              args: [
+                DEPLOY_ADDRESS,
+                { bindings: [], materials: [] },
+                ["secret-only"],
+              ],
+            },
+          ]);
+        } else {
+          expect(revokes).toEqual([]);
+        }
+      });
+    }
+
     test.each(["none", "reservation", "rollback"] as const)(
       "handles unsent rollback with a lost %s response",
       async (lostResponse) => {

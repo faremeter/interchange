@@ -24,6 +24,7 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import {
+  findRemovedCredentialIds,
   resolveInstanceModelSources,
   getDescendantTenants,
   reresolveCurrentMaterials,
@@ -287,6 +288,35 @@ export async function pushCredentialRevoke(
     }
   } catch (err: unknown) {
     log.warn`Failed to push credential revoke: ${String(err)}`;
+  }
+}
+
+/**
+ * Revoke, on `agentAddress`, every id in `credentialIds` that is now removed
+ * (deleted or `revoked`). A caller that delivered material it read EARLIER runs
+ * this AFTER the delivery reaches the sidecar: a removal that committed before
+ * this read is caught here, and one that commits after it is pushed by its own
+ * online revoke, which the sidecar applies after the delivery because both ride
+ * the address's ordered lane. Sends nothing when nothing was removed.
+ *
+ * Fire-and-forget safe: it never rejects; a failure is logged and dropped.
+ */
+export async function revokeRemovedCredentials(
+  db: DB["db"],
+  sidecarRouter: Pick<SidecarRouter, "sendCredentialsUpdate">,
+  agentAddress: string,
+  credentialIds: Iterable<string>,
+): Promise<void> {
+  try {
+    const removed = await findRemovedCredentialIds(db, credentialIds);
+    if (removed.length === 0) return;
+    await sidecarRouter.sendCredentialsUpdate(
+      agentAddress,
+      { bindings: [], materials: [] },
+      removed,
+    );
+  } catch (err: unknown) {
+    log.warn`Failed to revoke removed credentials for ${agentAddress}: ${String(err)}`;
   }
 }
 

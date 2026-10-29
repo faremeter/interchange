@@ -165,6 +165,7 @@ export {
   resolveTenantOwnedCredentialById,
   resolveInferenceMaterials,
   reresolveCurrentMaterials,
+  findRemovedCredentialIds,
   AmbiguousCredentialError,
   CredentialInactiveError,
   CredentialUnauthorizedError,

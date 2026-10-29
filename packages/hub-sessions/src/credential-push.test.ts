@@ -8,6 +8,7 @@ import {
   pushCredentialRevoke,
   pushSourceUpdates,
   pushSourceUpdatesSubtree,
+  revokeRemovedCredentials,
 } from "./credential-push";
 import type { SidecarRouter } from "./ws/sidecar-handler";
 
@@ -143,5 +144,74 @@ describe("pushCredentialRevoke", () => {
     );
     expect(result).toBeUndefined();
     expect(calls).toHaveLength(0);
+  });
+});
+
+// The deploy path awaits this after its completion commits, so a rejection
+// would send a successful deploy into its failure handling.
+describe("revokeRemovedCredentials", () => {
+  function statusDB(rows: () => Promise<unknown[]>): DB["db"] {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal select-chain stand-in for the status read
+    return {
+      select: () => ({ from: () => ({ where: rows }) }),
+    } as unknown as DB["db"];
+  }
+
+  test("resolves when the router has no route for the address", async () => {
+    const router = {
+      sendCredentialsUpdate: async () => {
+        throw new Error('No sidecar connected for agent "a"');
+      },
+    };
+    await expect(
+      revokeRemovedCredentials(
+        statusDB(async () => []),
+        router,
+        "a",
+        ["gone"],
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  test("resolves and sends nothing when the status read fails", async () => {
+    const { router, calls } = capturingRouter();
+    await expect(
+      revokeRemovedCredentials(
+        statusDB(async () => {
+          throw new Error("db down");
+        }),
+        router,
+        "a",
+        ["x"],
+      ),
+    ).resolves.toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  test("skips the status read for an empty id set", async () => {
+    let reads = 0;
+    const { router, calls } = capturingRouter();
+    await revokeRemovedCredentials(
+      statusDB(async () => {
+        reads += 1;
+        return [];
+      }),
+      router,
+      "a",
+      [],
+    );
+    expect(reads).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("revokes a duplicated id once", async () => {
+    const { router, calls } = capturingRouter();
+    await revokeRemovedCredentials(
+      statusDB(async () => []),
+      router,
+      "a",
+      ["x", "x"],
+    );
+    expect(calls.map((call) => call.revoke)).toEqual([["x"]]);
   });
 });

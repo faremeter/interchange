@@ -58,6 +58,7 @@ import {
 } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
+import { revokeRemovedCredentials } from "./credential-push";
 import {
   DEFAULT_ASSET_REF,
   type Asset,
@@ -1824,6 +1825,24 @@ export function createSessionService(
       sidecarRouter.noteSenderDeploySettled(senderAttempt, {
         recorded: result.publicKey,
       });
+
+      // The deploy frame carried material read during prepare. A credential
+      // removed after that read and before the hub routed this address had no
+      // route for its online revoke, so re-check now and revoke it. This runs
+      // after the completion above commits `credentialRefs`: a sidecar that
+      // reconnects before that commit finds no refs to reconcile, and this
+      // re-check is what still reaches it. It is awaited so the deploy settles
+      // with its removals sent; it never rejects, and only a removal paired
+      // with an unresponsive sidecar holds the deploy, for one request
+      // timeout.
+      if (result.credentialRefs !== undefined) {
+        await revokeRemovedCredentials(
+          dbHandle,
+          sidecarRouter,
+          params.agentAddress,
+          result.credentialRefs.credentialIds,
+        );
+      }
 
       return {
         anchorRunId: params.anchorRunId,
