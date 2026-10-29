@@ -80,7 +80,13 @@ export async function pushInstanceSourceUpdate(
       bindings: [],
       materials: resolution.materials,
     };
-    await sidecarRouter.sendCredentialsUpdate(instance.address, delivery);
+    await deliverThenRevokeRemoved(
+      db,
+      sidecarRouter,
+      instance.address,
+      { delivery },
+      resolution.materials.map((material) => material.credentialId),
+    );
   }
   await sidecarRouter.sendSourcesUpdate(
     instance.address,
@@ -321,6 +327,41 @@ export async function revokeRemovedCredentials(
 }
 
 /**
+ * Send a delivery of material read EARLIER, then re-check it with
+ * `revokeRemovedCredentials`. Without the re-check, a removal that commits
+ * after the read and is pushed while the delivery is in flight lands BEFORE the
+ * delivery's upsert, and the upsert puts the removed secret back. The re-check
+ * runs even when the send fails: a lost ack does not prove the sidecar did not
+ * apply the delivery. The send's own failure still propagates.
+ *
+ * `upsertedCredentialIds` names the credential rows the delivery upserts. It
+ * excludes hub run tokens, which are not credential rows: the re-check would
+ * find no row for one and revoke it.
+ */
+async function deliverThenRevokeRemoved(
+  db: DB["db"],
+  sidecarRouter: Pick<SidecarRouter, "sendCredentialsUpdate">,
+  agentAddress: string,
+  frame: { delivery: CredentialDelivery; revoke?: string[] },
+  upsertedCredentialIds: readonly string[],
+): Promise<void> {
+  try {
+    await sidecarRouter.sendCredentialsUpdate(
+      agentAddress,
+      frame.delivery,
+      frame.revoke,
+    );
+  } finally {
+    await revokeRemovedCredentials(
+      db,
+      sidecarRouter,
+      agentAddress,
+      upsertedCredentialIds,
+    );
+  }
+}
+
+/**
  * Reconcile a reconnecting deployment's credentials against its deploy-time set.
  * Re-resolve the CURRENT material for every credentialId the deployment
  * persisted at deploy (`workflow_run.credentialRefs`), then push a MERGE that
@@ -340,6 +381,10 @@ export async function revokeRemovedCredentials(
  * The run's hub credentials ride the same merge: its current run tokens when
  * it has any, and nothing when it has none. They are not credential rows, so
  * they never pass through the re-resolution.
+ *
+ * The upsert carries secrets read before the send, so a revoke that commits in
+ * between could land first and be undone; the send therefore goes through
+ * `deliverThenRevokeRemoved`, which re-checks the upserted ids after it.
  *
  * No-op when the run persisted no credential refs (a folded run, or a
  * deployment with neither credentials nor hub consumers). Fire-and-forget
@@ -390,10 +435,12 @@ export async function pushCredentialReconcile(
       hubConsumers.length > 0 ? await loadRunCredentials(run.id) : null;
     const delivery = withRunCredentials({ bindings, materials }, hub);
 
-    await sidecarRouter.sendCredentialsUpdate(
+    await deliverThenRevokeRemoved(
+      db,
+      sidecarRouter,
       agentAddress,
-      delivery,
-      revoke.length > 0 ? revoke : undefined,
+      { delivery, ...(revoke.length > 0 ? { revoke } : {}) },
+      [...resolvedIds],
     );
   } catch (err: unknown) {
     log.warn`Failed to reconcile credentials for ${agentAddress}: ${String(err)}`;
