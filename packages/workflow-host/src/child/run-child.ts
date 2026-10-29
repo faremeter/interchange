@@ -159,9 +159,10 @@ import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
 import { mergeCredentialDelivery } from "./credential-cell";
 import {
   createCredentialsBackedAuthorize,
-  resolveSnapshotStepGrants,
+  createSnapshotGrantsResolver,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
+  type StepGrantsResolver,
 } from "./credentials-backed-authorize";
 
 const logger = getLogger(["workflow-host", "child"]);
@@ -243,7 +244,7 @@ export type DrainController = WorkflowHostDrainController;
  */
 export interface CredentialWiring {
   readonly materialRef: CredentialMaterialRef;
-  readonly resolveStepGrants: (stepId: string) => readonly unknown[];
+  readonly resolveStepGrants: StepGrantsResolver;
 }
 
 export type ChildStepInvoker = (
@@ -596,27 +597,20 @@ export async function runWorkflowChild(
     current: opts.bindings.initialSources ?? {},
   };
   const credentialMaterialRef: CredentialMaterialRef = { current: null };
+  // The run's grants resolver, shared by `authorize` and the credential
+  // wiring so both read the same grants.
+  const resolveStepGrants = createSnapshotGrantsResolver(
+    credentialsRef,
+    "workflow-child",
+  );
   // The per-run credential wiring the top-level step invoker carries to the
-  // substrate: the live material cell and a resolver for a step's grants from
-  // the same credentials snapshot `authorize` reads. Built once over the two
-  // refs; every step build reads them live, so a rotation -- or a revoking
-  // re-push that swaps a ref -- is reflected without rebuilding the wiring.
+  // substrate: the live material cell and the run's grants resolver. Built
+  // once over the two refs; every step build reads them live, so a rotation
+  // -- or a revoking re-push that swaps a ref -- is reflected without
+  // rebuilding the wiring.
   const credentialWiring: CredentialWiring = {
     materialRef: credentialMaterialRef,
-    resolveStepGrants: (stepId) => {
-      const snapshot = credentialsRef.current;
-      if (snapshot === null) {
-        throw new Error(
-          `workflow-child credential wiring: no credentials snapshot for step ${stepId}; a step that uses credentials cannot resolve its grants before the run carries any`,
-        );
-      }
-      return resolveSnapshotStepGrants(
-        snapshot,
-        stepId,
-        (lookupStepId) =>
-          `workflow-child credential wiring: credentials snapshot has no entry for step ${lookupStepId}`,
-      );
-    },
+    resolveStepGrants,
   };
   const clock = opts.bindings.clock ?? defaultClock;
   const newId = opts.bindings.newId ?? defaultNewId;
@@ -805,7 +799,7 @@ export async function runWorkflowChild(
   }
 
   const authorize = createCredentialsBackedAuthorize(
-    credentialsRef,
+    resolveStepGrants,
     opts.bindings.evaluateGrants,
   );
 

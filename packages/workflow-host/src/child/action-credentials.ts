@@ -10,6 +10,8 @@ import {
 import type { GrantRule } from "@intx/types/authz";
 import type { ActionCredentialsFactory } from "@intx/workflow";
 
+import type { StepGrantsResolver } from "./credentials-backed-authorize";
+
 /**
  * The per-run credential inputs a build resolves a step's credentials from.
  * The live material cell and the grants resolver ride in from the run child
@@ -24,7 +26,7 @@ export interface SidecarStepCredentialContext {
    * snapshot types them `unknown[]`; `stepGrantsResolver` casts them to
    * `GrantRule[]` where Gate 2 reads them.
    */
-  readonly resolveStepGrants: (stepId: string) => readonly unknown[];
+  readonly resolveStepGrants: StepGrantsResolver;
   readonly providers: CredentialProviderRegistry;
 }
 

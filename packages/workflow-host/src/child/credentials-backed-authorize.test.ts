@@ -5,6 +5,7 @@ import type { GrantRule } from "@intx/authz";
 import {
   createCredentialsBackedAuthorize,
   createGrantEvaluator,
+  createSnapshotGrantsResolver,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
 } from "./credentials-backed-authorize";
@@ -51,7 +52,7 @@ describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
   test("a map iteration resolves the base step's grants", async () => {
     const { evaluate, calls } = recordingEvaluator();
     const authorize = createCredentialsBackedAuthorize(
-      refWithSummarize(),
+      createSnapshotGrantsResolver(refWithSummarize(), "test authorize"),
       evaluate,
     );
 
@@ -72,7 +73,7 @@ describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
   test("an unscoped step id resolves unchanged", async () => {
     const { evaluate, calls } = recordingEvaluator();
     const authorize = createCredentialsBackedAuthorize(
-      refWithSummarize(),
+      createSnapshotGrantsResolver(refWithSummarize(), "test authorize"),
       evaluate,
     );
 
@@ -89,7 +90,7 @@ describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
   test("a missing base entry reports the base id and the scoped invocation id", async () => {
     const { evaluate } = recordingEvaluator();
     const authorize = createCredentialsBackedAuthorize(
-      refWithSummarize(),
+      createSnapshotGrantsResolver(refWithSummarize(), "test authorize"),
       evaluate,
     );
 
@@ -101,6 +102,40 @@ describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
       }),
     ).rejects.toThrow(
       /no entry for step other \(normalized from scoped invocation id other\[0\]\)/,
+    );
+  });
+});
+
+describe("createSnapshotGrantsResolver", () => {
+  function entry(stepId: string, grants: unknown[]) {
+    return { stepId, address: stepId, grants, contentHash: "h" };
+  }
+
+  test("reads the ref on every call, so a swapped snapshot takes effect", () => {
+    const ref: CredentialsSnapshotRef = {
+      current: { steps: [entry("s", ["old"])] },
+    };
+    const resolve = createSnapshotGrantsResolver(ref, "lbl");
+    expect(resolve("s")).toEqual(["old"]);
+    ref.current = { steps: [entry("s", ["new"])] };
+    expect(resolve("s")).toEqual(["new"]);
+  });
+
+  test("throws with the label when no snapshot is active", () => {
+    const resolve = createSnapshotGrantsResolver({ current: null }, "lbl");
+    expect(() => resolve("s")).toThrow(
+      "lbl: no credentials snapshot is active for step s",
+    );
+  });
+
+  test("a scoped id resolves to the base entry; a missing entry names both ids", () => {
+    const resolve = createSnapshotGrantsResolver(
+      { current: { steps: [entry("s", ["g"])] } },
+      "lbl",
+    );
+    expect(resolve("s[2]")).toEqual(["g"]);
+    expect(() => resolve("t[1]")).toThrow(
+      "lbl: the credentials snapshot has no entry for step t (normalized from scoped invocation id t[1])",
     );
   });
 });

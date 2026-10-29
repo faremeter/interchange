@@ -48,6 +48,7 @@ import {
   createCredentialsBackedAuthorize,
   createGrantEvaluator,
   createLocalCredentialsSnapshot,
+  createSnapshotGrantsResolver,
   createToolBearingAgentFactory,
   createWorkflowStepInvoker,
   snapshotStepGrants,
@@ -186,7 +187,7 @@ describe("runLocal with the real step invoker", () => {
       }),
     };
     const authorize = createCredentialsBackedAuthorize(
-      snapshotRef,
+      createSnapshotGrantsResolver(snapshotRef, "run-local test"),
       createGrantEvaluator({ floorFor: () => [] }),
     );
     const invokeStep = createWorkflowStepInvoker({
