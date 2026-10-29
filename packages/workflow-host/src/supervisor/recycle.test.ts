@@ -19,6 +19,7 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
+import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import type { RepoId } from "@intx/hub-sessions";
 import {
@@ -47,6 +48,7 @@ import {
 } from "./index";
 import { createRecyclePolicy, type RecyclePolicyBounds } from "./recycle";
 import { waitUntil } from "@intx/types/testing";
+import { mergeCredentialDelivery } from "../child/credential-cell";
 import { parseSpawnTimeEnv } from "../child/env-bootstrap";
 import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
 import {
@@ -2513,6 +2515,61 @@ describe("supervisor recycle: the new child's authority", () => {
     expect(
       authority?.delivery?.materials.map((m) => m.credentialId).sort(),
     ).toEqual(["cred_a", "cred_b"]);
+
+    await supervisor.shutdown();
+  });
+
+  test("an older secret that arrives after a newer one leaves the child and the next child on the newer one", async () => {
+    const baseDir = await makeTempDir("recycle-secret-order-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker({});
+    // The deploy delivery carries no version, as a record sealed before
+    // versions existed restores it.
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      onRunStart: async () => runSnapshot,
+      credentialDelivery: { bindings: [], materials: [material("cred_a")] },
+    });
+    const rotated = (secret: string, secretVersion: number) => ({
+      delivery: {
+        bindings: [],
+        materials: [{ ...material("cred_a"), secret, secretVersion }],
+      },
+    });
+    await supervisor.deliverCredentials(rotated("sk-v3", 3));
+    await supervisor.deliverCredentials(rotated("sk-v2", 2));
+
+    // The child applies `authority.set` as a replace and each
+    // `credentials-updated` frame through the same merge.
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    let cell: CredentialDelivery | null = null;
+    for (const frame of parseControlFrames(first.supervisorToChild.flushed())) {
+      if (frame.type === "authority.set") {
+        cell = frame.data.delivery ?? null;
+      } else if (frame.type === "credentials-updated") {
+        cell = mergeCredentialDelivery(
+          cell,
+          frame.data.delivery,
+          frame.data.revoke,
+        );
+      }
+    }
+    expect(cell?.materials.map((m) => m.secret)).toEqual(["sk-v3"]);
+
+    const recyclePromise = supervisor.recycle({ reason: "authority" });
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recyclePromise;
+    const [authority] = authoritySetFrames(second.supervisorToChild.flushed());
+    expect(authority?.delivery?.materials.map((m) => m.secret)).toEqual([
+      "sk-v3",
+    ]);
 
     await supervisor.shutdown();
   });

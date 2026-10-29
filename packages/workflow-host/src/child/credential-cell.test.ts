@@ -181,4 +181,73 @@ describe("mergeCredentialDelivery", () => {
     const next = mergeCredentialDelivery(current, delivery([]), ["c2"]);
     expect(next.materials).toEqual([material("c1", "sk-1")]);
   });
+
+  describe("secret versions", () => {
+    const v = (secretVersion: number) => ({ secretVersion });
+
+    test("a newer secret replaces an older one", () => {
+      const next = mergeCredentialDelivery(
+        delivery([material("c1", "sk-1", v(1))]),
+        delivery([material("c1", "sk-2", v(2))]),
+        undefined,
+      );
+      expect(next.materials).toEqual([material("c1", "sk-2", v(2))]);
+    });
+
+    test("an older secret that arrives late does not replace a newer one", () => {
+      const next = mergeCredentialDelivery(
+        delivery([material("c1", "sk-2", v(2))]),
+        delivery([material("c1", "sk-1", v(1))]),
+        undefined,
+      );
+      expect(next.materials).toEqual([material("c1", "sk-2", v(2))]);
+    });
+
+    test("an equal version replaces", () => {
+      const next = mergeCredentialDelivery(
+        delivery([material("c1", "sk-2", v(2))]),
+        delivery([material("c1", "sk-2b", v(2))]),
+        undefined,
+      );
+      expect(next.materials).toEqual([material("c1", "sk-2b", v(2))]);
+    });
+
+    test("a material with no version does not replace a versioned one", () => {
+      // A late frame from a hub that sends no versions must not restore its
+      // older secret over a later rotation.
+      const next = mergeCredentialDelivery(
+        delivery([material("c1", "sk-2", v(2))]),
+        delivery([material("c1", "sk-old")]),
+        undefined,
+      );
+      expect(next.materials).toEqual([material("c1", "sk-2", v(2))]);
+    });
+
+    test("a versioned material replaces one with no version", () => {
+      const next = mergeCredentialDelivery(
+        delivery([material("c1", "sk-old")]),
+        delivery([material("c1", "sk-1", v(1))]),
+        undefined,
+      );
+      expect(next.materials).toEqual([material("c1", "sk-1", v(1))]);
+    });
+
+    test("materials with no version on either side replace, as hub tokens do", () => {
+      const next = mergeCredentialDelivery(
+        delivery([material("hub:a", "itx-1")]),
+        delivery([material("hub:a", "itx-2")]),
+        undefined,
+      );
+      expect(next.materials).toEqual([material("hub:a", "itx-2")]);
+    });
+
+    test("a revoke forgets the version, so a later add of any version lands", () => {
+      const next = mergeCredentialDelivery(
+        delivery([material("c1", "sk-2", v(2))]),
+        delivery([material("c1", "sk-1", v(1))]),
+        ["c1"],
+      );
+      expect(next.materials).toEqual([material("c1", "sk-1", v(1))]);
+    });
+  });
 });

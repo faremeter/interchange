@@ -23,6 +23,12 @@
 // different credential) is not garbage-collected -- inference materials never
 // carry a binding, so "unreferenced" is not a drop signal; only an explicit
 // `revoke` removes a material.
+//
+// Producers race: two pushes can read a credential before and after a
+// rotation, and the older frame can arrive last. So an upsert does not replace
+// a material that holds a higher `secretVersion`. An absent version counts as
+// 0: a frame from a hub that sends no versions loses to a versioned one, and
+// hub tokens, which carry no version, still replace each other.
 
 import type {
   CredentialBindingDescriptor,
@@ -37,6 +43,10 @@ import type {
 // or a colon, but by convention never a NUL.
 function bindingKey(binding: CredentialBindingDescriptor): string {
   return `${binding.consumer}\u0000${binding.handle}`;
+}
+
+function secretVersionOf(material: CredentialMaterialEntry): number {
+  return material.secretVersion ?? 0;
 }
 
 /**
@@ -71,6 +81,13 @@ export function mergeCredentialDelivery(
     }
   }
   for (const material of delivery.materials) {
+    const held = materials.get(material.credentialId);
+    if (
+      held !== undefined &&
+      secretVersionOf(material) < secretVersionOf(held)
+    ) {
+      continue;
+    }
     materials.set(material.credentialId, material);
   }
   for (const binding of delivery.bindings) {

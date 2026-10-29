@@ -1,4 +1,11 @@
-import { jsonb, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import {
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  unique,
+} from "drizzle-orm/pg-core";
 
 import { oauthClient } from "./oauth-clients";
 import { principal } from "./principals";
@@ -30,6 +37,10 @@ export const credential = pgTable(
     }).notNull(),
     description: text("description"),
     secret: text("secret").notNull(),
+    // Increments each time `secret` changes (see `credentialSecretColumns`).
+    // A sidecar keeps the material with the highest version, so a delivery
+    // that arrives late cannot restore an older secret.
+    secretVersion: integer("secret_version").notNull().default(1),
     refreshSecret: text("refresh_secret"),
     scopes: text("scopes").array(),
     expiresAt: timestamp("expires_at"),
