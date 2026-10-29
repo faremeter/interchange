@@ -28,13 +28,17 @@ import {
 } from "@intx/db/schema";
 import {
   findRemovedCredentialIds,
+  findRotatedCredentialIds,
   resolveInstanceModelSources,
   getDescendantTenants,
   reresolveCurrentMaterials,
 } from "@intx/db";
 import type { DB } from "@intx/db";
 import type { CredentialCipher } from "@intx/types";
-import type { CredentialDelivery } from "@intx/types/credential-delivery";
+import type {
+  CredentialDelivery,
+  CredentialMaterialEntry,
+} from "@intx/types/credential-delivery";
 
 import type { SidecarRouter } from "./ws/sidecar-handler";
 
@@ -412,6 +416,57 @@ export async function revokeRemovedCredentials(
     );
   } catch (err: unknown) {
     log.warn`Failed to revoke removed credentials for ${agentAddress}: ${String(err)}`;
+  }
+}
+
+/**
+ * Bring a deployment's sidecar up to date with the credentials its deploy
+ * frame delivered, once the deploy's initialization commits `credentialRefs`.
+ * The frame carried material read during prepare. Until that commit, neither
+ * the online revoke nor the rotation push can find the deployment, so a
+ * credential removed or rotated in between is handled here: a removed one is
+ * revoked, and a rotated one is re-sent at its current version. A change that
+ * commits after this read is pushed by its own revoke or rotation, because
+ * the refs are committed by then.
+ *
+ * It reads versions without decrypting, and re-resolves only the rotated
+ * credentials. Fire-and-forget safe: it never rejects; a failure is logged and
+ * dropped, and the reconnect reconcile re-resolves the current secrets.
+ */
+export async function recheckDeliveredCredentials(
+  db: DB["db"],
+  sidecarRouter: Pick<SidecarRouter, "sendCredentialsUpdate">,
+  agentAddress: string,
+  delivered: readonly Pick<
+    CredentialMaterialEntry,
+    "credentialId" | "secretVersion"
+  >[],
+  credentialCipher: CredentialCipher,
+): Promise<void> {
+  await revokeRemovedCredentials(
+    db,
+    sidecarRouter,
+    agentAddress,
+    delivered.map((material) => material.credentialId),
+  );
+  try {
+    const rotated = await findRotatedCredentialIds(db, delivered);
+    if (rotated.length === 0) return;
+    const materials = await reresolveCurrentMaterials(
+      db,
+      rotated,
+      credentialCipher,
+    );
+    if (materials.length === 0) return;
+    await deliverThenRevokeRemoved(
+      db,
+      sidecarRouter,
+      agentAddress,
+      { delivery: { bindings: [], materials } },
+      materials.map((material) => material.credentialId),
+    );
+  } catch (err: unknown) {
+    log.warn`Failed to re-send rotated credentials to ${agentAddress}: ${String(err)}`;
   }
 }
 

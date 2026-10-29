@@ -110,3 +110,5 @@ for the authoritative type shapes.
   after a catalog edit.
 - `revokeRemovedCredentials` — revokes, on one deployment, the delivered
   credentials that were deleted or revoked since they were read.
+- `recheckDeliveredCredentials` — after a deploy commits, revokes the
+  removed credentials it delivered and re-sends the rotated ones.

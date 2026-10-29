@@ -20,6 +20,7 @@ import { credentialSecretColumns } from "@intx/db";
 import {
   pushCredentialReconcile,
   pushCredentialRotation,
+  recheckDeliveredCredentials,
   type RunCredentialsLoader,
   pushSourceUpdatesSubtree,
   revokeRemovedCredentials,
@@ -864,6 +865,83 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
         expect(frames).toEqual([]);
         expect(pushed).toEqual([]);
+      });
+    });
+
+    describe("recheckDeliveredCredentials", () => {
+      async function recheck(
+        delivered: { credentialId: string; secretVersion?: number }[],
+      ): Promise<Reconciled[]> {
+        const captured: Reconciled[] = [];
+        await recheckDeliveredCredentials(
+          h.db,
+          reconcilingRouter(captured),
+          "dep_1@tnt.test",
+          delivered,
+          createNoopCredentialCipher(),
+        );
+        return captured;
+      }
+
+      test("sends nothing when the delivered version is current", async () => {
+        expect(
+          await recheck([{ credentialId: "cred_a", secretVersion: 1 }]),
+        ).toEqual([]);
+      });
+
+      test("re-sends a credential rotated since the delivery read it", async () => {
+        await h.db
+          .update(credentialTable)
+          .set(
+            await credentialSecretColumns(
+              createNoopCredentialCipher(),
+              "cred_a",
+              "sk-rotated",
+            ),
+          )
+          .where(eq(credentialTable.id, "cred_a"));
+        const captured = await recheck([
+          { credentialId: "cred_a", secretVersion: 1 },
+        ]);
+        expect(captured).toHaveLength(1);
+        expect(captured[0]?.revoke).toBeUndefined();
+        expect(
+          captured[0]?.delivery.materials.map((m) => ({
+            id: m.credentialId,
+            secret: m.secret,
+            version: m.secretVersion,
+          })),
+        ).toEqual([{ id: "cred_a", secret: "sk-rotated", version: 2 }]);
+      });
+
+      test("revokes a removed credential and does not re-send it", async () => {
+        await revokeCredA();
+        expect(
+          (await recheck([{ credentialId: "cred_a", secretVersion: 1 }])).map(
+            (c) => c.revoke,
+          ),
+        ).toEqual([["cred_a"]]);
+      });
+
+      test("an unresolvable rotated credential does not block the revoke of another", async () => {
+        await seedProvider(h.db, {
+          id: "prv_no_origin",
+          tenantId: "tnt_root",
+          name: "prv-no-origin",
+        });
+        await seedCredential(h.db, {
+          id: "cred_no_origin",
+          tenantId: "tnt_root",
+          providerId: "prv_no_origin",
+          name: "cred-no-origin",
+        });
+        // Delivered before versions existed, so the live row reads as rotated
+        // and the re-resolve throws on the provider with no API origin.
+        const captured = await recheck([
+          { credentialId: "cred_no_origin" },
+          { credentialId: "cred_deleted", secretVersion: 1 },
+        ]);
+        expect(captured.map((c) => c.revoke)).toEqual([["cred_deleted"]]);
       });
     });
   },

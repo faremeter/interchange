@@ -8,6 +8,7 @@ import {
   pushCredentialRevoke,
   pushCredentialRotation,
   pushSourceUpdatesSubtree,
+  recheckDeliveredCredentials,
   revokeRemovedCredentials,
 } from "./credential-push";
 import type { SidecarRouter } from "./ws/sidecar-handler";
@@ -319,6 +320,22 @@ describe("revokeRemovedCredentials", () => {
         ["gone"],
       ),
     ).resolves.toBeUndefined();
+  });
+
+  test("recheckDeliveredCredentials resolves and sends nothing when every read fails", async () => {
+    const { router, calls } = capturingRouter();
+    await expect(
+      recheckDeliveredCredentials(
+        statusDB(async () => {
+          throw new Error("db down");
+        }),
+        router,
+        "a",
+        [{ credentialId: "x", secretVersion: 1 }],
+        dummyCipher,
+      ),
+    ).resolves.toBeUndefined();
+    expect(calls).toHaveLength(0);
   });
 
   test("resolves and sends nothing when the status read fails", async () => {

@@ -1395,6 +1395,7 @@ describe("deployCodeSourcedWorkflow", () => {
             principalId: null,
             providerId: "prov-test",
             secret: "secret-only-plaintext",
+            secretVersion: 1,
             status: "active",
           }),
       },
@@ -2015,8 +2016,15 @@ describe("deployCodeSourcedWorkflow", () => {
       });
     }
 
-    for (const removed of [true, false]) {
-      test(`prepared deploy re-checks its delivered credentials after completion (removed=${String(removed)})`, async () => {
+    // What the credential row holds when the post-completion re-check reads
+    // it: as delivered, revoked, or rotated after the deploy read it.
+    const recheckCases = {
+      unchanged: { status: "active", secretVersion: 1 },
+      removed: { status: "revoked", secretVersion: 1 },
+      rotated: { status: "active", secretVersion: 2 },
+    } as const;
+    for (const [state, row] of Object.entries(recheckCases)) {
+      test(`prepared deploy re-checks its delivered credentials after completion (${state})`, async () => {
         const writes: Record<string, unknown>[] = [];
         // What the anchor rows held when the re-check read credential status.
         let writesAtRecheck: Record<string, unknown>[] | undefined;
@@ -2048,12 +2056,7 @@ describe("deployCodeSourcedWorkflow", () => {
             from: () => ({
               where: async () => {
                 writesAtRecheck = [...writes];
-                return [
-                  {
-                    id: "secret-only",
-                    status: removed ? "revoked" : "active",
-                  },
-                ];
+                return [{ id: "secret-only", ...row }];
               },
             }),
           }),
@@ -2113,11 +2116,11 @@ describe("deployCodeSourcedWorkflow", () => {
           ),
         ).toBe(true);
 
-        const revokes = router.calls.filter(
+        const updates = router.calls.filter(
           (call) => call.method === "sendCredentialsUpdate",
         );
-        if (removed) {
-          expect(revokes).toEqual([
+        if (state === "removed") {
+          expect(updates).toEqual([
             {
               method: "sendCredentialsUpdate",
               args: [
@@ -2127,8 +2130,32 @@ describe("deployCodeSourcedWorkflow", () => {
               ],
             },
           ]);
+        } else if (state === "rotated") {
+          // The current material is re-sent; the double's row still reads
+          // the same secret, which is enough to show the re-send.
+          expect(updates).toEqual([
+            {
+              method: "sendCredentialsUpdate",
+              args: [
+                DEPLOY_ADDRESS,
+                {
+                  bindings: [],
+                  materials: [
+                    {
+                      credentialId: "secret-only",
+                      providerKey: "anthropic",
+                      origin: "https://api.example/anthropic",
+                      secret: "secret-only-plaintext",
+                      secretVersion: 1,
+                    },
+                  ],
+                },
+                undefined,
+              ],
+            },
+          ]);
         } else {
-          expect(revokes).toEqual([]);
+          expect(updates).toEqual([]);
         }
       });
     }

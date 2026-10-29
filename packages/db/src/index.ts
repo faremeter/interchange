@@ -167,6 +167,7 @@ export {
   resolveInferenceMaterials,
   reresolveCurrentMaterials,
   findRemovedCredentialIds,
+  findRotatedCredentialIds,
   AmbiguousCredentialError,
   CredentialInactiveError,
   CredentialUnauthorizedError,

@@ -102,6 +102,7 @@ export {
   pushCredentialRotation,
   pushCredentialRevoke,
   pushCredentialReconcile,
+  recheckDeliveredCredentials,
   revokeRemovedCredentials,
 } from "./credential-push";
 export {
