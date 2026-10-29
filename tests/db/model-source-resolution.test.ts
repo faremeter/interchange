@@ -367,6 +367,54 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       });
 
+      for (const status of ["expired", "revoked", "error"] as const) {
+        test(`skips a credential with status ${status} as credential_inactive`, async () => {
+          await seedTenants(h.db, [{ id: "tnt_root" }]);
+          await seedProvider(h.db, {
+            id: "prv_x",
+            tenantId: "tnt_root",
+            name: "prv-x",
+          });
+          await seedCredential(h.db, {
+            id: "cred_a",
+            tenantId: "tnt_root",
+            providerId: "prv_x",
+            name: "cred-a",
+            secret: "sk-inactive",
+            status,
+          });
+          await seedModel(h.db, {
+            id: "mdl_opus",
+            tenantId: "tnt_root",
+            canonicalName: "opus",
+          });
+          await seedModelProvider(h.db, {
+            id: "mpv_anthropic",
+            tenantId: "tnt_root",
+            name: "anthropic",
+            credentialId: "cred_a",
+          });
+          await seedModelOffering(h.db, {
+            id: "mof_a",
+            tenantId: "tnt_root",
+            modelId: "mdl_opus",
+            providerId: "mpv_anthropic",
+          });
+          const result = await resolveModelSources(
+            h.db,
+            "tnt_root",
+            REQ_OPUS,
+            noopCipher,
+          );
+          expect(result).toMatchObject({
+            ok: false,
+            reason: "model_unavailable",
+            skips: [{ reason: "credential_inactive", provider: "anthropic" }],
+          });
+          expect(JSON.stringify(result)).not.toContain("sk-inactive");
+        });
+      }
+
       test("refuses a credential on a tenant outside the ancestor chain", async () => {
         // The provider references a real credential, but the credential lives
         // on a sibling tenant outside the resolving chain. resolveCredentialById

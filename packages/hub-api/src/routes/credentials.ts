@@ -370,12 +370,9 @@ export function createCredentialRoutes({
       }
 
       // If the secret was updated, push new inference sources to running
-      // instances -- UNLESS the same request also revokes the credential. A
-      // revoke and a secret re-resolve target overlapping addresses with no
-      // ordering guarantee (both fire-and-forget), and the source re-resolve
-      // does not consult credential status, so it would re-deliver the rotated
-      // material and could re-populate the revoked secret in a live child's
-      // cell. The revoke wins.
+      // instances -- UNLESS the same request also revokes the credential. The
+      // source re-resolve skips a revoked credential, so that push could carry
+      // no rotated material; the revoke below does the eviction.
       if (body.secret !== undefined && body.status !== "revoked") {
         void pushSourceUpdates(
           db,
