@@ -13,6 +13,7 @@ import {
   classifyTerminalEvent,
   enqueueInbox,
   dequeueToProcessing,
+  hasInboxEntries,
   markConsumed,
   NotInProcessingError,
   parseEventSeq,
@@ -3144,6 +3145,54 @@ describe("claim-check API — enqueueInbox", () => {
   });
 });
 
+describe("claim-check API — hasInboxEntries", () => {
+  test("reports mail no dispatch has taken yet", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-has-inbox-");
+    expect(await hasInboxEntries(store, principal, repoId, ADDRESS)).toBe(
+      false,
+    );
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      authenticatedSender: SENDER,
+      receivedAt: 100,
+    });
+    expect(await hasInboxEntries(store, principal, repoId, ADDRESS)).toBe(true);
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    expect(await hasInboxEntries(store, principal, repoId, ADDRESS)).toBe(
+      false,
+    );
+  });
+
+  test("reads the committed inbox, not the checkout", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore(
+      "cc-has-inbox-committed-",
+    );
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      authenticatedSender: SENDER,
+      receivedAt: 100,
+    });
+    // A write that failed after deleting the checkout file leaves the entry in
+    // Git alone, and one that failed before committing leaves only the file.
+    const repoDir = store.getRepoDir(repoId);
+    await fs.promises.rm(
+      path.join(repoDir, inboxPathFor(ADDRESS_SEG, 100, await keyOf("msg-1"))),
+    );
+    expect(await hasInboxEntries(store, principal, repoId, ADDRESS)).toBe(true);
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await fs.promises.writeFile(
+      path.join(repoDir, inboxPathFor(ADDRESS_SEG, 200, "msg-2")),
+      "{}",
+    );
+    expect(await hasInboxEntries(store, principal, repoId, ADDRESS)).toBe(
+      false,
+    );
+  });
+});
+
 describe("claim-check API — markConsumed", () => {
   test("entries written with a since-removed envelope field keep moving", async () => {
     // The real handler refuses a consumed entry with no prior processing
@@ -3377,6 +3426,46 @@ describe("claim-check substrate FIFO invariant", () => {
     expect(next).not.toBeNull();
     if (next === null) throw new Error("unreachable");
     expect(next.envelope.messageId).toBe("msg-1");
+  });
+
+  test("replayProcessingToInbox limited to some identities leaves the other processing entries alone", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-replay-only-");
+    for (const [messageId, receivedAt] of [
+      ["msg-1", 100],
+      ["msg-2", 200],
+    ] as const) {
+      await enqueueInbox(store, principal, repoId, {
+        address: ADDRESS,
+        messageId,
+        authenticatedSender: SENDER,
+        receivedAt,
+      });
+      await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    }
+
+    const replay = await replayProcessingToInbox(
+      store,
+      principal,
+      repoId,
+      ADDRESS,
+      { onlyIdentities: new Set([await keyOf("msg-2")]) },
+    );
+    expect(replay.replayedKeys).toEqual([`200-${await keyOf("msg-2")}`]);
+    expect(replay.retainedIdentities).toEqual([]);
+
+    const back = await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    expect(back?.envelope.messageId).toBe("msg-2");
+    expect(
+      await dequeueToProcessing(store, principal, repoId, ADDRESS),
+    ).toBeNull();
+    // msg-1 is still in processing/, where a consume finds it.
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      identity: await keyOf("msg-1"),
+      runId: "run-1",
+      consumedAt: 300,
+    });
   });
 
   // Regression: lexicographic-sort FIFO bug. Before the fix,

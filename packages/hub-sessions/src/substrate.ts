@@ -21,6 +21,7 @@ export {
   DEFAULT_CONSUMED_RETENTION_MS,
   dequeueToProcessing,
   enqueueInbox,
+  hasInboxEntries,
   markConsumed,
   NotInProcessingError,
   parseEventSeq,

@@ -108,9 +108,10 @@ the deploy program read and write the filesystem.
 ## Supervisor
 
 `createWorkflowSupervisor(bindings)` returns a per-deployment
-supervisor that owns one workflow-process child for the lifetime of
-the deployment. The supervisor is host-agnostic library code; the
-host supplies its own concrete bindings.
+supervisor that owns the deployment's workflow-process child: one at a
+time, replaced across recycles and respawns, and none in standby. The
+supervisor is host-agnostic library code; the host supplies its own
+concrete bindings.
 
 ### `WorkflowSupervisorBindings`
 
@@ -251,6 +252,8 @@ the host. Every bound is operator-overridable via
 - **Stable-run reset.** Once a crash-respawned child stays up for
   `crashLoopStableResetMs` (60s), the crash counter and the backoff
   reset, so a flap followed by stability does not permanently latch.
+  A stop for standby is no crash: the wait goes on while the child is
+  stopped, and starts over for a child woken before it ends.
 
 `crash-looping` is an in-memory, per-process phase — no external reader
 observes it. The durable, externally-queryable signal is the run's
@@ -261,6 +264,122 @@ other terminal run uses. External automation that watches run status
 sees the crash-loop as a failed run. The commit lands before the latch's
 teardown resolves and before the host hears of the self-termination, so a
 host that reads the stopped deployment's history finds it.
+
+### Failed dispatch
+
+A dispatch can fail after it moved its mail from `inbox/` to
+`processing/`. The dispatch loop then settles that mail itself, with the
+child still running:
+
+- Mail no run took goes back to `inbox/` under its original key, so it is
+  dispatched again ahead of newer mail. That covers a failure before the
+  mail reached the child, such as a failed write of its parts, and mail
+  the child declined for a run that is still live. After a decline the
+  supervisor also asks the child what its runs are parked on, since the
+  declined delivery used up the input channel the dispatch knew.
+- Each failure counts against the mail, and the next try waits first:
+  1 s, then four times longer each time
+  (`dispatchRetryBackoffMs`). The fifth failure rejects the mail with
+  `workflow_dispatch_failed`, which the Hub shows on its dispatch. A wait
+  that ran out because the run stayed busy or parked puts the mail back
+  too, without counting and without a wait.
+- Mail the child was handed and has not answered for stays in
+  `processing/`: the child can still commit it. Its `input.taken` answer
+  settles it, even after the dispatch gave up: committed mail is consumed
+  once the run next parks or ends, and declined mail goes back to the
+  inbox. Newer mail is dispatched meanwhile.
+- A write that fails to put mail back or reject it is tried again after a
+  wait, up to 30 s apart, and the dispatch takes no other mail until it
+  lands.
+
+A respawn's replay still puts back whatever is left, and a standby
+attempt is refused while any such mail is not yet back in the inbox or
+with its run.
+
+### Standby
+
+`enterStandby()` stops the child once every run only waits on input
+from outside, and keeps the deployment: its mail subscription,
+address registration, and history stay as they are.
+
+1. Once nothing the supervisor drives is in flight, it asks the child,
+   with `quiet.request`, to report when it is quiet. Dispatch and signals
+   go on meanwhile, so a busy deployment enters standby at its next quiet
+   moment. An input the child took counts as in flight until the child
+   answers it: `input.taken` answers each `trigger.fire` and
+   `signal.deliver` the supervisor sends, saying whether the child
+   committed the input. A dispatch waiting for its run to park or end
+   does not: its mail stays in `processing/` with the run, as it does
+   across any respawn (see Respawn policy).
+2. The child is quiet when no run loop or step works: every step waits
+   on a signal, a timer, or a nested run, and no input it committed is
+   still on its way to the run that waits for it. A map counts as
+   working until it ends, since resume cannot continue one in flight,
+   and so does a step with a timeout, whose deadline lives only in the
+   child (a gate's timeout is a timer in the log, and does not count),
+   and a step waiting to retry, whose wait resume does not
+   continue. It makes every buffered event durable before it answers,
+   and reports the earliest timer its scheduler has queued.
+3. The supervisor then holds dispatch and signals back and asks once
+   more. If the child is still quiet, the supervisor holds the child's
+   further writes and records the correlations the child is parked on.
+   Mail waiting in the inbox refuses the standby attempt, since it
+   would wake the child as soon as it stopped. So does mail the dispatch
+   took that the child has not committed (one behind a run that waits),
+   since nothing would wake the child for it, mail a failed dispatch
+   left in `processing/` that is not yet back in the inbox or with its
+   run (see Failed dispatch), and mail a failed replay left there, which
+   only a respawn puts back. Otherwise the supervisor sends
+   `shutdown`, and kills the child if it does not exit. A write after
+   the quiet answer means the child is working again: before the stop
+   the standby attempt goes back to waiting for quiet, and after it the
+   child is woken for that work.
+
+Once the child is stopped, and before anything can wake it, the supervisor
+calls the host's `recordStandby` with what a restart needs: the correlations
+the child was parked on, its earliest timer, the tip of the run's history
+ref, read before the child reported its parks, and the definition the first
+child verified. A failure there runs the child again and refuses the standby
+attempt.
+
+`enterStandby()` resolves with the earliest timer the child had queued, if
+any. It rejects with `StandbyRefusedError` when the run ends, mail waits
+in the inbox, for the child to commit it, or in `processing/`, the run's
+history or the inbox cannot be read, the child does not report what it is
+parked on, the standby cannot be recorded, or the child reports that its
+quiet check failed. Its subclass `StandbyAbandonedError` is used when
+`wake()`, `abandonStandby()`, a cancellation or a shutdown calls it off,
+and `StandbyDeferredError` is used while the child is
+starting or restarting, so the host can ask again once it runs.
+`abandonStandby()` does nothing to a finished standby attempt, and runs the
+child again when it comes after the stop began; `wake()` and a cancellation
+that abandon one run the child themselves.
+
+A supervisor in standby respawns its child through the recycle path for mail,
+a signal (delivered to the new child), a cancellation (committed first),
+its earliest pending timer, or `wake()`, and then calls `onWake`, with
+`requested` set when `wake()` started it. That respawn waits for a cancellation being committed, since the new child
+applies it from its log. Mail that reaches the inbox after the last read
+before the stop wakes the child as arriving mail does; a redelivery of mail a
+run already took does not. A hub
+re-establishment while in standby, or while the child stops for it,
+re-registers the correlations the child reported, without asking it.
+
+`restoreInStandby(opts, standby)` restores a deployment its host recorded in
+standby. With no child to report the definition, the recorded one lays the
+steps out, once it hashes to the approved one as a child's report must. While
+the run's history tip is still the recorded one, nothing has changed what the
+runs wait on: the supervisor takes the deployment's mail,
+re-sends the recorded correlations on each hub re-establishment, and arms the
+recorded timer, waking at once for one already due, all without a child. The
+boot replay of `processing/` runs as on a spawn, and mail it puts back or that
+waits in the inbox wakes the child, as does a replay that fails. Mail a live
+run took stays with the run. The first wake starts the child through the
+recycle path, from `standby`, after the boot replay. A tip that moved, from a
+child that ran again or a cancellation committed while it was stopped, a tip
+that cannot be read, or a recorded definition that is not the approved one,
+starts the child as `spawn` does, and the result says why, so the host can
+report the deployment woken.
 
 ### Host wiring
 

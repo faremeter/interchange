@@ -148,6 +148,13 @@ type NameSubscription = {
 
 export type SignalChannelHandle = SignalChannel & {
   /**
+   * `deliver`, answering whether a live run holds the signal. A log that
+   * already ended takes none, so nothing is written and the answer is `false`,
+   * also for a `signalId` it took before it ended, which only a read of the
+   * whole log could tell apart. A live log already holds a repeated one.
+   */
+  land(...args: Parameters<SignalChannel["deliver"]>): Promise<boolean>;
+  /**
    * Tear down every slot subscription and reject every pending
    * awaiter. Idempotent. After `stop()` the channel holds no
    * substrate watcher handles.
@@ -305,13 +312,17 @@ export function createWorkflowHostSignalChannel(
     });
   }
 
-  return {
-    async deliver(name, payload, signalId, correlationId) {
+  const handle: SignalChannelHandle = {
+    async deliver(...args) {
+      await handle.land(...args);
+    },
+    async land(name, payload, signalId, correlationId) {
       if (stopped) {
         throw new Error("signal channel: deliver after stop");
       }
       const id = signalId ?? opts.newId();
       const at = opts.clock().toISOString();
+      let landed = true;
       await withRunCommitBarrier(
         { repoStore: opts.runtimeStore },
         opts.runId,
@@ -336,6 +347,7 @@ export function createWorkflowHostSignalChannel(
                 existing,
                 prior,
               );
+              landed = !summary.terminal;
               if (summary.terminal || summary.signalIds.has(id)) return {};
               const nextSeq = (existing.at(-1)?.seq ?? -1) + 1;
               // The workflow-run kind handler's `EventEnvelope`
@@ -358,6 +370,7 @@ export function createWorkflowHostSignalChannel(
             },
           }),
       );
+      return landed;
     },
     async awaitNext(name, onWake, signal, correlationId) {
       if (stopped) {
@@ -434,4 +447,5 @@ export function createWorkflowHostSignalChannel(
       }
     },
   };
+  return handle;
 }
