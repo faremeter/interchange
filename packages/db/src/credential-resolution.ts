@@ -1,4 +1,4 @@
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, inArray, isNull } from "drizzle-orm";
 
 import { credentialBindingConsumer } from "@intx/authz";
 import { credentialAad } from "@intx/types";
@@ -198,6 +198,37 @@ export async function resolveInferenceMaterials(
   return [...materials.values()];
 }
 
+// A delivered credential stays LIVE until its row is gone or deliberately
+// revoked; otherwise its material must leave the sidecar. The one lifecycle
+// rule for eviction, shared by the reconnect re-resolve and the post-send
+// re-check.
+function isLiveCredential<
+  T extends { status: (typeof credential.$inferSelect)["status"] },
+>(row: T | undefined): row is T {
+  return row !== undefined && row.status !== "revoked";
+}
+
+/**
+ * Return the ids among `credentialIds` whose credential is removed: deleted or
+ * `revoked`. A caller that already delivered these ids sends a revoke for the
+ * result. It reads only id and status, so it never decrypts and never fails on
+ * a misconfigured provider -- a removal must not be blocked by an unrelated
+ * fault in a credential that is still alive.
+ */
+export async function findRemovedCredentialIds(
+  db: DB["db"],
+  credentialIds: Iterable<string>,
+): Promise<string[]> {
+  const ids = [...new Set(credentialIds)];
+  if (ids.length === 0) return [];
+  const rows = await db
+    .select({ id: credential.id, status: credential.status })
+    .from(credential)
+    .where(inArray(credential.id, ids));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return ids.filter((id) => !isLiveCredential(byId.get(id)));
+}
+
 /**
  * Re-resolve the CURRENT material for a set of already-authorized credentialIds,
  * for the reconnect resync. Unlike `resolveInferenceMaterials`, a credential
@@ -226,8 +257,7 @@ export async function reresolveCurrentMaterials(
     const row = await db.query.credential.findFirst({
       where: eq(credential.id, credentialId),
     });
-    if (row === undefined) continue; // deleted -> drop
-    if (row.status === "revoked") continue; // revoked -> drop
+    if (!isLiveCredential(row)) continue;
     const providerRow = await db.query.provider.findFirst({
       where: eq(provider.id, row.providerId),
     });

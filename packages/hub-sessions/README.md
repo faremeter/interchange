@@ -105,3 +105,5 @@ for the authoritative type shapes.
   available-skills stanza injected into agent context.
 - `pushSourceUpdates` — pushes credential-source updates to the
   sidecar.
+- `revokeRemovedCredentials` — revokes, on one deployment, the delivered
+  credentials that were deleted or revoked since they were read.

@@ -18,6 +18,7 @@ import {
   pushCredentialReconcile,
   type RunCredentialsLoader,
   pushSourceUpdates,
+  revokeRemovedCredentials,
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
@@ -270,6 +271,76 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       expect(delivered).toHaveLength(0);
       expect(pushed).toHaveLength(0);
+    });
+
+    test("revokeRemovedCredentials revokes only the deleted and revoked ids", async () => {
+      await seedCredential(h.db, {
+        id: "cred_revoked",
+        tenantId: "tnt_root",
+        providerId: "prv_x",
+        name: "cred-revoked",
+        status: "revoked",
+      });
+      await seedCredential(h.db, {
+        id: "cred_expired",
+        tenantId: "tnt_root",
+        providerId: "prv_x",
+        name: "cred-expired",
+        status: "expired",
+      });
+
+      const captured: Reconciled[] = [];
+      await revokeRemovedCredentials(
+        h.db,
+        reconcilingRouter(captured),
+        "run1@tnt.test",
+        ["cred_a", "cred_revoked", "cred_expired", "cred_deleted"],
+      );
+
+      // An expired credential stops new launches but is not evicted.
+      expect(captured).toEqual([
+        {
+          address: "run1@tnt.test",
+          delivery: { bindings: [], materials: [] },
+          revoke: ["cred_revoked", "cred_deleted"],
+        },
+      ]);
+    });
+
+    test("revokeRemovedCredentials sends nothing when every id is alive", async () => {
+      const captured: Reconciled[] = [];
+      await revokeRemovedCredentials(
+        h.db,
+        reconcilingRouter(captured),
+        "run1@tnt.test",
+        ["cred_a"],
+      );
+      expect(captured).toEqual([]);
+    });
+
+    test("revokeRemovedCredentials is not blocked by a live credential with a misconfigured provider", async () => {
+      // The re-resolve throws on a provider with no API origin; the removal
+      // check reads status only, so a dead id is still revoked.
+      await seedProvider(h.db, {
+        id: "prv_no_origin",
+        tenantId: "tnt_root",
+        name: "prv-no-origin",
+      });
+      await seedCredential(h.db, {
+        id: "cred_no_origin",
+        tenantId: "tnt_root",
+        providerId: "prv_no_origin",
+        name: "cred-no-origin",
+      });
+
+      const captured: Reconciled[] = [];
+      await revokeRemovedCredentials(
+        h.db,
+        reconcilingRouter(captured),
+        "run1@tnt.test",
+        ["cred_no_origin", "cred_deleted"],
+      );
+      expect(captured.map((c) => c.revoke)).toEqual([["cred_deleted"]]);
     });
 
     test("reconcile re-resolves a live credential and merges it (no revoke)", async () => {

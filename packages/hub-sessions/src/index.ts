@@ -102,6 +102,7 @@ export {
   pushSourceUpdatesSubtree,
   pushCredentialRevoke,
   pushCredentialReconcile,
+  revokeRemovedCredentials,
 } from "./credential-push";
 export {
   createRunCredentialsLoader,
