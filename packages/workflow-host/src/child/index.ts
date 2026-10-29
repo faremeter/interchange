@@ -1,8 +1,10 @@
 export {
   createCredentialsBackedAuthorize,
   createGrantEvaluator,
+  createSnapshotGrantsResolver,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
+  type StepGrantsResolver,
 } from "./credentials-backed-authorize";
 
 export {

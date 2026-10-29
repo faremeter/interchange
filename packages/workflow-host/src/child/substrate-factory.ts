@@ -146,7 +146,7 @@ import { createProxyWorkflowRunRepoStore } from "./proxy-repo-store";
 import {
   createCredentialsBackedAuthorize,
   createGrantEvaluator,
-  resolveSnapshotStepGrants,
+  createSnapshotGrantsResolver,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
 } from "./credentials-backed-authorize";
@@ -1891,8 +1891,14 @@ async function buildChildRunEnv(args: {
   const credentialsRef: CredentialsSnapshotRef = {
     current: credentialsSnapshot,
   };
-  const authorize = createCredentialsBackedAuthorize(
+  // Shared by `authorize` and the credential context below, so both read the
+  // same grants.
+  const resolveChildStepGrants = createSnapshotGrantsResolver(
     credentialsRef,
+    "sidecar child",
+  );
+  const authorize = createCredentialsBackedAuthorize(
+    resolveChildStepGrants,
     deps.evaluateGrants,
   );
   // An action this env can run needs its own invoker: the same
@@ -1969,13 +1975,7 @@ async function buildChildRunEnv(args: {
       ? undefined
       : {
           materialCell,
-          resolveStepGrants: (stepId) =>
-            resolveSnapshotStepGrants(
-              credentialsSnapshot,
-              stepId,
-              (lookupStepId) =>
-                `sidecar child credential wiring: credentials snapshot has no entry for step ${lookupStepId}`,
-            ),
+          resolveStepGrants: resolveChildStepGrants,
           providers: deps.credentialProviders,
         };
   // Per-step invocation seam. The runtime body invokes `env.invokeStep` with

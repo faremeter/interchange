@@ -1,9 +1,9 @@
 // The workflow-level authorize closure a run child gives its steps, and the
 // grant evaluator it delegates to.
 //
-// The closure resolves a step's grants from the run's credentials snapshot by
-// base step id, and the evaluator ranks those grants (plus any pinned-tool
-// floor) with `evaluateGrants`. Nothing here imports a Node API, so a host
+// The closure resolves a step's grants through a grants resolver, and the
+// evaluator ranks those grants (plus any pinned-tool floor) with
+// `evaluateGrants`. Nothing here imports a Node API, so a host
 // that cannot load the run child can still build the same pair.
 
 import {
@@ -63,18 +63,54 @@ export function resolveSnapshotStepGrants(
 }
 
 /**
- * Construct the workflow-level authorize closure backed by a mutable
- * credentials snapshot reference. The closure evaluates a
- * `(resource, action)` request against the snapshot entry for the
- * originating step, looked up by base step id, through the grant evaluator.
+ * Resolves the grants a step's authority is decided against. One resolver
+ * serves both a run's authorize closure and its step credential context, so
+ * the two read the same grants.
+ */
+export type StepGrantsResolver = (stepId: string) => readonly unknown[];
+
+/**
+ * A grants resolver over a mutable credentials snapshot reference. It reads
+ * the reference on every call, so a swapped snapshot takes effect without a
+ * rebuild. A call before any snapshot is active, or for a step the snapshot
+ * has no entry for, is a programming error: it throws, with `label` naming
+ * the caller.
+ */
+export function createSnapshotGrantsResolver(
+  ref: CredentialsSnapshotRef,
+  label: string,
+): StepGrantsResolver {
+  return (stepId) => {
+    const snapshot = ref.current;
+    if (snapshot === null) {
+      throw new Error(
+        `${label}: no credentials snapshot is active for step ${stepId}; the host must set one before any step runs`,
+      );
+    }
+    return resolveSnapshotStepGrants(
+      snapshot,
+      stepId,
+      (lookupStepId) =>
+        `${label}: the credentials snapshot has no entry for step ${lookupStepId}${
+          lookupStepId === stepId
+            ? ""
+            : ` (normalized from scoped invocation id ${stepId})`
+        }`,
+    );
+  };
+}
+
+/**
+ * Construct the workflow-level authorize closure. The closure evaluates a
+ * `(resource, action)` request against the originating step's grants from
+ * `resolveGrants`, through the grant evaluator.
  *
  * The workflow runtime supplies `stepId` from the `AuthorizeContext` it
- * threads through every step's invoker, so a call without a step id, or
- * before any snapshot is active, is a programming error. The closure throws
- * loudly rather than deciding.
+ * threads through every step's invoker, so a call without a step id is a
+ * programming error. The closure throws loudly rather than deciding.
  */
 export function createCredentialsBackedAuthorize(
-  ref: CredentialsSnapshotRef,
+  resolveGrants: StepGrantsResolver,
   evaluate: GrantEvaluator,
 ): WorkflowAuthorizeFn {
   return async (resource, action, ctx) => {
@@ -84,22 +120,7 @@ export function createCredentialsBackedAuthorize(
         "credentials-backed authorize: missing stepId in AuthorizeContext; the runtime body must thread it through every step invocation",
       );
     }
-    const snapshot = ref.current;
-    if (snapshot === null) {
-      throw new Error(
-        "credentials-backed authorize: no credentials snapshot is active; the host must set one before any step runs",
-      );
-    }
-    const grants = resolveSnapshotStepGrants(
-      snapshot,
-      stepId,
-      (lookupStepId) =>
-        `credentials-backed authorize: the credentials snapshot has no entry for step ${lookupStepId}${
-          lookupStepId === stepId
-            ? ""
-            : ` (normalized from scoped invocation id ${stepId})`
-        }`,
-    );
+    const grants = resolveGrants(stepId);
     return evaluate({
       resource,
       action,

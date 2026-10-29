@@ -215,7 +215,7 @@ const snapshotRef = {
   current: createLocalCredentialsSnapshot({ definition, directors, delivery }),
 };
 const authorize = createCredentialsBackedAuthorize(
-  snapshotRef,
+  createSnapshotGrantsResolver(snapshotRef, "local run"),
   createGrantEvaluator({ floorFor: () => [] }),
 );
 const invokeStep = createWorkflowStepInvoker({

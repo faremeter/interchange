@@ -32,8 +32,10 @@ export {
 export {
   createCredentialsBackedAuthorize,
   createGrantEvaluator,
+  createSnapshotGrantsResolver,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
+  type StepGrantsResolver,
 } from "./child/credentials-backed-authorize";
 export {
   createLocalCredentialsSnapshot,

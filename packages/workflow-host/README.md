@@ -91,8 +91,10 @@ with `runLocal` and the real step invoker, with no hub and no sidecar:
   `attachStepTools`, `attachStepCredentialWiring` and
   `deriveToolMarkFloorGrants` — the step invoker and the step tool builders
   the deployed host uses.
-- `createCredentialsBackedAuthorize` and `createGrantEvaluator` — the
-  authorize closure and grant evaluator a run child authorizes with.
+- `createCredentialsBackedAuthorize`, `createGrantEvaluator` and
+  `createSnapshotGrantsResolver` (with its `StepGrantsResolver` type) — the
+  authorize closure a run child authorizes with, its grant evaluator, and
+  the per-step grants resolver over a credentials snapshot reference.
 - `createLocalCredentialsSnapshot` and `snapshotStepGrants` — the grants a
   deployed source-ref run holds, derived from the definition, and their
   per-step reader for Gate 2.
