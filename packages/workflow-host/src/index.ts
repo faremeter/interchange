@@ -42,6 +42,9 @@ export {
 } from "./adapters/spawn-child";
 export {
   createWorkflowSupervisor,
+  StandbyAbandonedError,
+  StandbyDeferredError,
+  StandbyRefusedError,
   isErrnoNotFound,
   commitCancelRequested,
   createDrainTimeoutAccumulator,
@@ -75,6 +78,9 @@ export {
   type RecyclePolicy,
   type RecyclePolicyBounds,
   type RecyclePolicyOpts,
+  type RecordedStandby,
+  type StandbyOutcome,
+  type StandbyRestore,
   type SignedPayload,
   type SpawnOpts,
   type SpawnResult,

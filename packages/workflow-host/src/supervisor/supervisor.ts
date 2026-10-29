@@ -54,6 +54,7 @@ import { generateKeyPair } from "@intx/crypto";
 import {
   enqueueInbox as defaultEnqueueInbox,
   dequeueToProcessing as defaultDequeueToProcessing,
+  hasInboxEntries as defaultHasInboxEntries,
   markConsumed as defaultMarkConsumed,
   scanRunsForBoot,
   readCommittedWorkflowRunLifecycle,
@@ -71,6 +72,8 @@ import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { signalName } from "@intx/types/signals";
 import { RepoId } from "@intx/types/repo";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
+import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { inboundMessageToRaw } from "@intx/mail-memory";
 import {
   executeSearch,
@@ -152,6 +155,7 @@ import type {
   DispatchStructuralCounters,
   DispatchSubstrateLeg,
   InboxPrimitives,
+  RecordedStandby,
   SubprocessHandle,
   TerminalEventSource,
   TerminalRunEvent,
@@ -234,6 +238,14 @@ export const DEFAULT_RESPAWN_BACKOFF_MAX_MS = 30_000;
  */
 export const DEFAULT_PARKED_QUERY_WATCHDOG_MS = 30_000;
 
+// The wake reason of a respawn `wake()` asked for.
+const REQUESTED_WAKE = "wake";
+
+// A standby attempt's final check holds dispatch and signals back, and a signal
+// holds its address's frames behind it, a forced stop among them. A check that
+// does not finish within this bound counts the child as working and they go on.
+const QUIET_CHECK_WATCHDOG_MS = 30_000;
+
 /**
  * Backstop for `waitForRunTerminalOrPark`. A dispatch waits here for the child
  * to park or terminate the run before releasing `markConsumed`; a lost park
@@ -264,6 +276,16 @@ export interface WorkflowSupervisor {
    * been pushed.
    */
   spawn(opts: SpawnOpts): Promise<SpawnResult>;
+  /**
+   * Restore a deployment its host recorded in standby. While the run's history
+   * is unchanged it takes mail and re-sends its parks without a child, until an
+   * input wakes it; otherwise the child starts as on `spawn`, and the result
+   * says why.
+   */
+  restoreInStandby(
+    opts: SpawnOpts,
+    standby: RecordedStandby,
+  ): Promise<StandbyRestore>;
   /**
    * Sign and commit a CancelRequested event under the named origin.
    * Used by the host directly for `supervisor-operator` and `hub-
@@ -310,7 +332,9 @@ export interface WorkflowSupervisor {
    *
    * Throws when the supervisor is not in a phase where it can address
    * the child (idle / stopping / stopped); the caller is responsible
-   * for serializing delivery against `spawn` completion.
+   * for serializing delivery against `spawn` completion. A standby attempt past
+   * its final check settles first, and a child in standby is respawned and the
+   * signal delivered to the new one.
    */
   deliverSignal(opts: DeliverSignalOpts): Promise<void>;
   /**
@@ -318,7 +342,8 @@ export interface WorkflowSupervisor {
    * agent. Mirrors `deliverSignal`: the supervisor is the single producer
    * of `sources-updated` control frames, and delivery is phase-guarded to
    * starting/running so a frame is never written into a recycling child's
-   * closing pipe. Throws otherwise.
+   * closing pipe. While in standby it returns at once, since the respawn reads
+   * the host's persisted sources; any other phase throws.
    */
   deliverSources(opts: DeliverSourcesOpts): Promise<void>;
   /**
@@ -346,7 +371,8 @@ export interface WorkflowSupervisor {
    * Re-register every correlation the child is currently parked on by
    * querying it for its parked correlations and re-emitting each through
    * `onSuspensionRegister`. Recovers a `park.notify` register the hub may have
-   * missed while it was down at suspend time.
+   * missed while it was down at suspend time. While in standby it re-sends the
+   * correlations the stopped child was parked on.
    *
    * Best-effort and safe to call at any time, including concurrently. Unlike
    * `deliverSignal`/`deliverSources`, which throw when the child is not
@@ -364,6 +390,64 @@ export interface WorkflowSupervisor {
    * the run record. `null` when the deployment has never had any.
    */
   credentialDelivery(): CredentialDelivery | null;
+  /**
+   * Stop the child once every run only waits on input from outside, keeping
+   * the deployment's mail subscription and address registration. The child
+   * reports when it is quiet; dispatch and signals go on meanwhile. Then the
+   * supervisor stops handing it input, asks again, and holds the child's
+   * writes until the child is stopped. A held write means the child is
+   * working again: before the stop begins the standby attempt waits for quiet
+   * once more, and after it the child is woken for that work. Resolves when
+   * the child is stopped. Rejects with `StandbyAbandonedError` when `wake`,
+   * `abandonStandby`, a cancellation or a shutdown calls it off, and with
+   * `StandbyRefusedError` when the child restarts, the run ends, or mail
+   * waits in the inbox.
+   *
+   * A supervisor in standby respawns its child for mail, a signal, a
+   * cancellation, its earliest pending timer, or `wake`.
+   */
+  enterStandby(): Promise<StandbyOutcome>;
+  /** Abandon a standby attempt in progress, or respawn a child in standby. */
+  wake(): Promise<void>;
+  /**
+   * Abandon a standby attempt in progress for `reason`. One whose stop has
+   * begun runs the child again; a child an earlier standby attempt stopped
+   * stays in standby.
+   */
+  abandonStandby(reason: string): void;
+}
+
+/** A standby attempt that stopped the child. */
+export type StandbyOutcome = {
+  /** The earliest timer the child had queued: the supervisor wakes for it. */
+  wakeAt?: string;
+};
+
+/** How `restoreInStandby` restored a deployment. */
+export type StandbyRestore =
+  | { inStandby: true }
+  | {
+      inStandby: false;
+      /** Why the child started, worded to follow "woken by". */
+      reason: string;
+    };
+
+/** A standby attempt that was refused or abandoned. */
+export class StandbyRefusedError extends Error {
+  override name = "StandbyRefusedError";
+}
+
+/**
+ * A standby attempt refused because the child is starting or restarting; it can
+ * be asked for again once the child runs.
+ */
+export class StandbyDeferredError extends StandbyRefusedError {
+  override name = "StandbyDeferredError";
+}
+
+/** A standby attempt called off by a wake, a cancellation, a shutdown or its caller. */
+export class StandbyAbandonedError extends StandbyRefusedError {
+  override name = "StandbyAbandonedError";
 }
 
 export type SpawnOpts = {
@@ -841,6 +925,18 @@ export function createWorkflowSupervisor(
    * fire `setTimeout` after the supervisor has been disposed).
    */
   const drainAccumulators = new Map<string, DrainTimeoutAccumulator>();
+  // Each stop is guarded, so one that throws does not leave the rest armed.
+  function stopDrainAccumulators(during: string): void {
+    for (const accumulator of drainAccumulators.values()) {
+      try {
+        accumulator.stop();
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.warn`drain accumulator stop threw during ${during}: ${message}`;
+      }
+    }
+    drainAccumulators.clear();
+  }
   const accumulatorFactory =
     bindings.drainTimeoutAccumulatorFactory ?? createDrainTimeoutAccumulator;
   const drainNow = bindings.now ?? Date.now;
@@ -1012,6 +1108,7 @@ export function createWorkflowSupervisor(
     dequeueToProcessing: defaultDequeueToProcessing,
     markConsumed: defaultMarkConsumed,
     replayProcessingToInbox: defaultReplayProcessingToInbox,
+    hasInboxEntries: defaultHasInboxEntries,
   };
   const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
@@ -1083,11 +1180,14 @@ export function createWorkflowSupervisor(
   let spawnContext: SpawnContext | null = null;
   /**
    * The step ids the host derived from the first child's verified
-   * definition. Set once, while `spawn` is still starting that child, and
-   * kept for the deployment's life: every later child reports a definition
-   * with the same approved hash.
+   * definition. Set once, while `spawn` is still starting that child or
+   * `restoreInStandby` restores its standby, and kept for the deployment's
+   * life: every later child reports a definition with the same approved hash.
    */
   let stepIds: readonly string[] | null = null;
+  // Recorded with a standby, so a restart can lay the steps out without a
+  // child.
+  let verifiedDefinition: WorkflowProjectionDefinition | null = null;
   function requireStepIds(): readonly string[] {
     if (stepIds === null) {
       throw new Error(
@@ -1102,6 +1202,47 @@ export function createWorkflowSupervisor(
   // caller owns the contention read because the two paths diverge on
   // contention (recycle throws, crash-respawn declines silently).
   let respawnInProgress = false;
+  // A standby attempt in progress. Dispatch and signals go on until the child
+  // reports it is quiet; `frozen` then holds them back for the final check,
+  // and `fence` queues the child's repository writes until the child is
+  // stopped, so the log the child reported quiet on is the log it leaves.
+  type StandbyAttempt = {
+    readonly generation: number;
+    readonly abandon: AbortController;
+    readonly outcome: Promise<StandbyOutcome>;
+    readonly settled: Promise<void>;
+    progress: PromiseWithResolvers<undefined>;
+    frozen: PromiseWithResolvers<undefined> | null;
+    fence: SubstrateWriteRequest[] | null;
+    // Set when the host abandons the standby attempt, which leaves nobody else
+    // to run a child it already stopped.
+    wakeIfStopped: boolean;
+    // Set when the child exits on its own while the standby attempt runs.
+    childExited: boolean;
+    // What the child reported it is parked on, before the stop. A hub
+    // re-establishment while the child stops re-registers these.
+    correlations: ParkedCorrelations | null;
+  };
+  type SubstrateWriteRequest = Extract<
+    ControlPayload,
+    { type: "substrate.write.request" }
+  >["data"];
+  let standbyAttempt: StandbyAttempt | null = null;
+  // While in standby: the correlations the stopped child was parked on, re-sent
+  // on a hub re-establishment, and the timer for its earliest pending timer.
+  let inStandby: {
+    correlations: ParkedCorrelations;
+    outcome: StandbyOutcome;
+    wakeTimer: unknown;
+  } | null = null;
+  let waking: Promise<void> | null = null;
+  // Repository writes the child has asked for, so a standby attempt can tell
+  // that the child wrote after it reported quiet.
+  let childWrites = 0;
+  let deliveringSignals = 0;
+  // The cohort whose dispatch loop is delivering mail. A retired loop that
+  // finishes late must not clear the mark of the loop that replaced it.
+  let dispatching: AbortController | null = null;
   // Monotonic child-cohort generation, bumped atomically with each
   // transition to `running` (initial spawn and every respawn's
   // `installNewChild`). The exit-watcher captures the generation it was
@@ -1115,6 +1256,10 @@ export function createWorkflowSupervisor(
   // and drained by `maybeHandleChildExit` once `runRespawn` clears the
   // latch; a pending exit for a superseded generation is dropped as stale.
   let pendingChildExit: { generation: number; reason: string } | null = null;
+  // The generation whose child last exited. While it is still current, the
+  // child is gone: its respawn waits out the backoff, or it stopped for
+  // standby.
+  let exitedGeneration: number | null = null;
   // Monotonic timestamps (ms, from `crashNow`) of recent unexpected exits,
   // pruned to `crashLoopWindowMs`. The crash-loop guard latches when the
   // count within the window reaches `crashLoopMaxCount`.
@@ -1181,23 +1326,24 @@ export function createWorkflowSupervisor(
   // respawn/crash-loop path a clean death takes -- a violation that emits a
   // garbage frame just before dying must not divert to `stopped` while a
   // clean SIGKILL respawns. In any other phase the owning lifecycle path
-  // (spawn handshake, recycle reap, shutdown) owns teardown.
+  // (spawn handshake, recycle reap, standby, shutdown) owns teardown.
   function onChildCrash(reason: string): void {
+    if (state.phase === "standby" && !respawning()) {
+      logger.info`workflow-process channel ended after the child was put in standby: ${reason}`;
+      return;
+    }
     if (state.phase === "running") {
       logger.error`workflow-process channel crash on live cohort; forcing child down to respawn: ${reason}`;
       state.handle.kill();
       return;
     }
     logger.error`workflow-process channel crash: ${reason}`;
-    // Only a live, registered supervisor driven down by a channel crash is a
-    // self-termination the host must reclaim, and that is `recycling`:
-    // `running` took the kill branch above (its exit reaches the crash-loop
-    // latch, which carries its own flag), `starting` is the pre-registration
-    // initial spawn handshake whose failure the deploy unwind owns, and
-    // `stopping` is a teardown already in flight (a host `shutdown()`, or a
-    // self-termination already firing). An allowlist, not a denylist, so a
-    // future phase defaults to no self-terminate rather than a spurious one.
-    const selfTerminated = state.phase === "recycling";
+    // Only a crash during a respawn is a self-termination the host must
+    // reclaim: `running` took the kill branch above, and its exit reaches the
+    // crash-loop latch; the deploy unwind owns a failed `starting`, and
+    // `stopping` is already tearing down. An allowlist, so a new phase defaults
+    // to no self-termination.
+    const selfTerminated = respawning();
     void shutdownInternal({ reason, selfTerminated });
   }
 
@@ -1219,16 +1365,19 @@ export function createWorkflowSupervisor(
   }
 
   // Arm (or re-arm) the stable-run reset for the cohort that just reached
-  // `running`. If the child is still that same live cohort when the timer
-  // fires, the run has been stable for `crashLoopStableResetMs` and the
-  // crash counter is cleared so a flap-then-stabilize sequence does not
+  // `running`. If that same cohort is still live, or stopped for standby, when
+  // the timer fires, the run has been stable for `crashLoopStableResetMs` and
+  // the crash counter is cleared so a flap-then-stabilize sequence does not
   // latch. A crash before the timer fires re-arms it for the next cohort;
   // teardown clears it.
   function armStableRunResetTimer(generation: number): void {
     clearStableRunResetTimer();
     stableRunResetTimer = readySetTimer(() => {
       stableRunResetTimer = null;
-      if (generation === childGeneration && state.phase === "running") {
+      if (
+        generation === childGeneration &&
+        (state.phase === "running" || state.phase === "standby")
+      ) {
         // The cohort ran stably: reset both the crash counter and the
         // exponential backoff so a flap followed by stability starts over.
         crashTimestamps.length = 0;
@@ -1293,6 +1442,11 @@ export function createWorkflowSupervisor(
   // already installed) are dropped.
   function onChildExited(generation: number, reason: string): void {
     if (generation !== childGeneration) return;
+    exitedGeneration = generation;
+    if (standbyAttempt?.generation === generation) {
+      standbyAttempt.childExited = true;
+      noteStandbyProgress();
+    }
     pendingChildExit = { generation, reason };
     maybeHandleChildExit();
   }
@@ -1648,8 +1802,9 @@ export function createWorkflowSupervisor(
         `inbound mail not accepted: supervisor phase is "${state.phase}"`,
       );
     }
+    let waiting: boolean;
     try {
-      await enqueueInboundMail(rawMessage);
+      waiting = await enqueueInboundMail(rawMessage);
     } catch (cause) {
       // Both branches WITHHOLD (rethrow); the split only sets log severity so
       // a stale refusal surfaces as its own loud signal rather than blending
@@ -1663,9 +1818,17 @@ export function createWorkflowSupervisor(
       }
       throw cause;
     }
+    // The mail is durable in the inbox; the respawned child dispatches it. A
+    // redelivery of mail a run already took leaves nothing to wake for.
+    if (waiting && state.phase === "standby") {
+      void wakeFromStandby("mail").catch((cause: unknown) => {
+        logger.error`waking a child in standby for mail failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    }
   }
 
-  async function enqueueInboundMail(rawMessage: Uint8Array): Promise<void> {
+  // Resolves whether the mail waits in the inbox for dispatch.
+  async function enqueueInboundMail(rawMessage: Uint8Array): Promise<boolean> {
     const messageId = await deriveMessageId(rawMessage);
     const receivedAt = Date.now();
     // Inline the raw mail bytes on the claim-check envelope so the
@@ -1705,12 +1868,13 @@ export function createWorkflowSupervisor(
       // the durable delivery, so this never withholds the ack.
       await commitInboundToMailbox(messageId, rawMessage);
       wakeDispatch();
-    } else {
-      // A redelivery of a message already durably present: the ack still
-      // fires (it is on disk), but no new run is dispatched. Surface it so an
-      // at-least-once redelivery being made effectively-once is observable.
-      logger.info`inbound mail ${messageId} already durably present (${outcome.reason}); acknowledging without re-dispatch`;
+      return true;
     }
+    // A redelivery of a message already durably present: the ack still fires
+    // (it is on disk), but no new run is dispatched. Surface it so an
+    // at-least-once redelivery being made effectively-once is observable.
+    logger.info`inbound mail ${messageId} already durably present (${outcome.reason}); acknowledging without re-dispatch`;
+    return outcome.reason === "duplicate" || outcome.reason === "already_inbox";
   }
 
   /**
@@ -1728,6 +1892,23 @@ export function createWorkflowSupervisor(
     cohortBroadcaster: TerminalBroadcaster,
   ): Promise<void> {
     for await (const payload of iter) {
+      if (payload.type === "input.taken") {
+        const input = inputCommits.get(payload.data.requestId);
+        inputCommits.delete(payload.data.requestId);
+        // A declined delivery leaves the run waiting on that input.
+        if (input !== undefined && input !== null && !payload.data.committed)
+          releaseTakenInput(input);
+        if (payload.data.requestId === dispatchRequestId) {
+          // A declined input leaves its mail untaken, which refuses a standby
+          // attempt as mail still in the inbox does.
+          if (payload.data.committed) untakenMessageId = null;
+          dispatchRequestId = null;
+          dispatchAnswer?.(payload.data.committed);
+          dispatchAnswer = null;
+        }
+        noteStandbyProgress();
+        continue;
+      }
       if (payload.type === "cancel.prepared") {
         const pending = pendingCancellations.get(payload.data.requestId);
         if (pending?.broadcaster === cohortBroadcaster)
@@ -1751,6 +1932,11 @@ export function createWorkflowSupervisor(
         return;
       }
       if (payload.type === "substrate.write.request") {
+        childWrites += 1;
+        if (standbyAttempt !== null && standbyAttempt.fence !== null) {
+          standbyAttempt.fence.push(payload.data);
+          continue;
+        }
         // Run the write off the iterator's loop so the iterator can
         // continue draining other upstream frames (notably the
         // substrate.merge.response that resolves the merge round-trip
@@ -1839,6 +2025,7 @@ export function createWorkflowSupervisor(
         // runs have no dispatch-loop entry, so their cleanup happens here.
         cohortRunIds.delete(payload.data.runId);
         runInputChannels.delete(payload.data.runId);
+        takenInputs.delete(payload.data.runId);
         continue;
       }
       if (payload.type === "park.notify") {
@@ -1900,6 +2087,14 @@ export function createWorkflowSupervisor(
         // Wake any dispatch loop waiting for this run to park.
         resolveParkNotifyWaiter(payload.data.runId);
         consumeOwnedMessages(payload.data.runId);
+        continue;
+      }
+      if (payload.type === "quiet.response") {
+        // A response for a query the standby attempt already gave up on is
+        // dropped.
+        const settle = pendingQuietQueries.get(payload.data.requestId);
+        pendingQuietQueries.delete(payload.data.requestId);
+        settle?.({ ...payload.data, writes: childWrites });
         continue;
       }
       if (payload.type === "parked-correlations.response") {
@@ -1964,15 +2159,44 @@ export function createWorkflowSupervisor(
   >();
   let cancellationSeq = 0;
   const cancellationCommits = new Set<Promise<CancelCommitInfo>>();
+  // Drain deadlines' cancellations, which outlive the accumulator a standby
+  // stop or a recycle drops.
+  const drainCancellations = new Set<Promise<void>>();
+  // Inputs sent to the child that it has not committed yet, by request, with
+  // the run input a mail delivery went to. Its writes are dropped when a
+  // standby attempt stops it, so a standby attempt waits for these.
+  const inputCommits = new Map<string, RunInput | null>();
+  // The input of each run that mail was last delivered to. History the child
+  // read before it committed that input still shows the run waiting on it, so
+  // a re-registration must not register it again.
+  const takenInputs = new Map<string, string>();
+  // A spawn's replay of `processing/` still running: mail it moves to the
+  // inbox after a standby attempt stopped the child would reach no child.
+  let processingReplayPending = false;
+  let inputSeq = 0;
+  // The mail the dispatch took out of the inbox, until the child commits it. A
+  // standby attempt is refused while there is one: the stop reads only the
+  // inbox, so nothing would wake the child for it.
+  let untakenMessageId: string | null = null;
+  // A failed dispatch or replay can leave mail in processing/ until a
+  // respawn's replay puts it back. A standby stop would end the recycles that
+  // respawn the child, so a standby attempt is refused until then.
+  let strandedMail = false;
+  let dispatchRequestId: string | null = null;
+  // Takes the child's answer for the signal the dispatch delivered.
+  let dispatchAnswer: ((committed: boolean) => void) | null = null;
+  // The cohort whose dispatch is waiting on its run or on a standby attempt,
+  // neither of which a standby attempt has to wait out.
+  let dispatchWaiting: AbortController | null = null;
   // Mail a resumed run took before its child was replaced. The dispatch that
   // took it is gone, so it is consumed when the run next parks or ends.
   const ownedMessages = new Set<string>();
   // Retries of a failed consume, which a run that has ended would not
   // trigger again.
   const ownedConsumeRetries = new Set<unknown>();
-  // The boot replay. It read history from before any respawn, so a respawn
-  // waits for it.
-  let bootReplay: Promise<void> | null = null;
+  // The boot replay, and whether it went through. It read history from
+  // before any respawn, so a respawn waits for it.
+  let bootReplay: Promise<boolean> | null = null;
   // Repository writes started off the control pump. Each promise settles
   // without rejecting; its handler logs any failure.
   const detachedWrites = new Set<Promise<unknown>>();
@@ -1986,6 +2210,7 @@ export function createWorkflowSupervisor(
     detachedWrites.add(write);
     void write.then(() => {
       detachedWrites.delete(write);
+      noteStandbyProgress();
     });
   }
 
@@ -2014,6 +2239,11 @@ export function createWorkflowSupervisor(
     for (const pending of pendingCancellations.values())
       pending.resolve(`cohort aborted: ${reason}`);
     pendingCancellations.clear();
+    // A replaced child commits nothing more, and the next one reports a run
+    // input it did not commit as one the run still waits on.
+    for (const input of inputCommits.values())
+      if (input !== null) releaseTakenInput(input);
+    inputCommits.clear();
     for (const [requestId, entry] of pendingMerges) {
       pendingMerges.delete(requestId);
       entry.resolve({ ok: false, reason: `cohort aborted: ${reason}` });
@@ -2022,10 +2252,15 @@ export function createWorkflowSupervisor(
       pendingParkedQueries.delete(requestId);
       entry.settle(null);
     }
+    for (const [requestId, settle] of pendingQuietQueries) {
+      pendingQuietQueries.delete(requestId);
+      settle(null);
+    }
     for (const [runId, resolve] of parkNotifyWaiters.entries()) {
       parkNotifyWaiters.delete(runId);
       resolve();
     }
+    noteStandbyProgress();
   }
 
   function resolveMergeResponse(
@@ -2121,6 +2356,18 @@ export function createWorkflowSupervisor(
   };
   const pendingParkedQueries = new Map<string, PendingParkedQuery>();
   let parkedQuerySeq = 0;
+  // A child's quiet answer, with how many writes it had asked for when the
+  // answer arrived: a later write means it is working again.
+  type QuietAnswer = Extract<
+    ControlPayload,
+    { type: "quiet.response" }
+  >["data"] & { writes: number };
+  // Pending `quiet.request`s, settled with `null` when the cohort goes away.
+  const pendingQuietQueries = new Map<
+    string,
+    (answer: QuietAnswer | null) => void
+  >();
+  let quietQuerySeq = 0;
 
   function resolveParkedResponse(
     data: Extract<
@@ -2138,6 +2385,14 @@ export function createWorkflowSupervisor(
   }
 
   async function reEmitParkedCorrelations(): Promise<void> {
+    // A child in standby, or one being stopped for it, cannot be asked;
+    // re-send what it was parked on.
+    if (state.phase === "standby") {
+      const parked = inStandby?.correlations ?? standbyAttempt?.correlations;
+      if (parked !== null && parked !== undefined)
+        registerParkedCorrelations(parked);
+      return;
+    }
     // No-op (NOT throw) when the child is not addressable. `deliverSignal`
     // throws on non-running/starting (including recycling) because it points a
     // write at the dying child's closing pipe and wants the caller to retry;
@@ -2148,7 +2403,17 @@ export function createWorkflowSupervisor(
       logger.info`reEmitParkedCorrelations: child not addressable (phase=${state.phase}); skipping`;
       return;
     }
-    const controlSender = state.controlSender;
+    const outcome = await queryParkedCorrelations(state.controlSender);
+    // A failed query is re-driven by the next re-establishment.
+    if (typeof outcome !== "string") registerParkedCorrelations(outcome);
+  }
+
+  // Ask the child which correlations its runs are parked on: `timeout` when it
+  // does not answer in time, `unreachable` when the send fails or the cohort
+  // is torn down before it answers.
+  async function queryParkedCorrelations(
+    controlSender: ControlChannelSender,
+  ): Promise<ParkedCorrelations | "timeout" | "unreachable"> {
     const requestId = `pc-${String((parkedQuerySeq += 1))}`;
     const responded = new Promise<ParkedCorrelations | null>((resolve) => {
       pendingParkedQueries.set(requestId, { settle: resolve });
@@ -2169,11 +2434,16 @@ export function createWorkflowSupervisor(
     });
     let outcome: ParkedCorrelations | null | "timeout";
     try {
-      await controlSender.send({
-        type: "parked-correlations.request",
-        data: { requestId },
-      });
-      outcome = await Promise.race([responded, watchdog]);
+      // A wedged child can block the send too, so the watchdog bounds it.
+      outcome = await Promise.race([
+        controlSender
+          .send({
+            type: "parked-correlations.request",
+            data: { requestId },
+          })
+          .then(() => responded),
+        watchdog,
+      ]);
     } catch (cause) {
       // The downstream send failed (a closing pipe). Best-effort: drop the
       // pending entry, log, and return; the next re-establishment re-drives.
@@ -2181,28 +2451,39 @@ export function createWorkflowSupervisor(
       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.warn`reEmitParkedCorrelations query failed: ${message}; re-registration retries on the next re-establishment`;
-      return;
+      return "unreachable";
     }
     if (timeoutHandle !== null) clearTimeout(timeoutHandle);
-    // `timeout` (watchdog fired) or `null` (cohort torn down before the child
-    // answered): nothing to re-emit; the next re-establishment re-drives.
-    if (outcome === "timeout" || outcome === null) return;
-    for (const parked of outcome) {
-      if (parked.parkKind === "input") {
+    return outcome ?? "unreachable";
+  }
+
+  function registerParkedCorrelations(outcome: ParkedCorrelations): void {
+    for (const entry of outcome) {
+      if (entry.parkKind === "input") {
+        // A supervisor in standby has no cohort to route input to; the
+        // respawned child's own re-emit registers the channel.
+        if (state.phase === "standby") continue;
+        if (takenInputs.get(entry.runId) === entry.correlationId) continue;
         // Register cohort membership BEFORE the input channel so the run is
         // never a channel-without-cohort entry: the dispatch loop's routing
         // hygiene drops exactly such entries, and a live resumed run must not
         // be mistaken for a dead one and have its channel deleted.
-        cohortRunIds.add(parked.runId);
-        runInputChannels.set(parked.runId, {
-          correlationId: parked.correlationId,
+        cohortRunIds.add(entry.runId);
+        runInputChannels.set(entry.runId, {
+          correlationId: entry.correlationId,
           parkKind: "input",
         });
+        inputChannelWaiters.get(entry.runId)?.();
       } else {
-        registerSuspension({ ...parked, parkKind: "approval" });
+        registerSuspension({ ...entry, parkKind: "approval" });
       }
     }
   }
+
+  // Mail waiting for a live run to show its input channel, by run. A
+  // re-registration can show it: a run parked before its child started sends no
+  // park notice.
+  const inputChannelWaiters = new Map<string, () => void>();
 
   function resolveParkNotifyWaiter(runId: string): void {
     const resolve = parkNotifyWaiters.get(runId);
@@ -2650,17 +2931,14 @@ export function createWorkflowSupervisor(
   ): Promise<void> {
     const cohort = activeCohort();
     if (cohort === null) {
-      // The request arrived after `activeControlSender()` was
-      // cleared (the supervisor is in `recycling` mid-swap, or
-      // `draining`/`stopping`/`stopped`). The child's read end of
-      // the IPC pipe is being torn down alongside this transition,
-      // so the child's pending waiter will surface a pipe-close
-      // error on its own read rather than wedge. Dropping the
-      // frame here is the only available action -- there is no
-      // sender to write the response on, and routing the response
-      // to whatever next-cohort sender exists would deliver it to
-      // the wrong child. Logged loudly so persistent occurrences
-      // surface in operator logs.
+      // The request arrived with no live cohort: the supervisor is
+      // stopping, stopped, crash-looping or in standby, so the child
+      // that sent it is gone or going, and its pending waiter fails
+      // when its pipe closes rather than wedge. Dropping the frame
+      // here is the only available action -- there is no sender to
+      // write the response on, and routing the response to a later
+      // cohort's sender would deliver it to the wrong child. Logged
+      // loudly so persistent occurrences surface in operator logs.
       logger.warn`substrate.write.request received outside running phase; requestId=${data.requestId} dropped (child waiter will fail on pipe close)`;
       return;
     }
@@ -3080,6 +3358,7 @@ export function createWorkflowSupervisor(
         if (definitionRace.kind === "failed") throw definitionRace.err;
         childPid = definitionRace.report.childPid;
         stepIds = await bindings.layoutSteps(definitionRace.report.projection);
+        verifiedDefinition = definitionRace.report.projection;
         authority = await readAuthority();
       } catch (cause) {
         await killUnpublishedChild();
@@ -3145,7 +3424,8 @@ export function createWorkflowSupervisor(
     // teardown: it kills the handle and releases the mail subscription
     // and address registration installed below.
     try {
-      const { replayed: replayDone, sweepDone } = recoverAtBoot();
+      const { replayed, sweepDone } = recoverAtBoot({ childRunning: true });
+      const replayDone = replayed.then(() => undefined);
       // Hold the replay promise on the active-state record so
       // `shutdownInternal` awaits its settlement before tearing the
       // bindings down. A shutdown that lands while the replay is in
@@ -3325,12 +3605,146 @@ export function createWorkflowSupervisor(
     }
   }
 
+  async function restoreInStandby(
+    opts: SpawnOpts,
+    standby: RecordedStandby,
+  ): Promise<StandbyRestore> {
+    if (state.phase !== "idle") {
+      throw new Error(
+        `supervisor: restoreInStandby called in phase ${state.phase}; expected idle`,
+      );
+    }
+    // Until the restore publishes `state`, the supervisor still reads as
+    // idle, so a shutdown cancels it before it publishes, as it does a spawn.
+    const pending: PendingSpawn = {
+      cancelled: false,
+      cancel: Promise.withResolvers<undefined>(),
+      done: Promise.withResolvers<undefined>(),
+    };
+    pendingSpawn = pending;
+    let startedBy: string | null;
+    try {
+      startedBy = await whyRestoreStartsChild(opts, standby);
+      // No child reports the definition, so the recorded one lays the steps
+      // out.
+      if (startedBy === null) {
+        stepIds = await bindings.layoutSteps(standby.definition);
+        verifiedDefinition = standby.definition;
+      }
+    } finally {
+      pendingSpawn = null;
+      pending.done.resolve(undefined);
+    }
+    if (pending.cancelled) {
+      throw new Error(
+        "workflow-host supervisor: shut down before the restore in standby finished",
+      );
+    }
+    if (startedBy !== null) {
+      await spawn(opts);
+      return { inStandby: false, reason: startedBy };
+    }
+    const now = bindings.recyclePolicyNow ?? defaultNow;
+    spawnContext = {
+      definitionHash: opts.definitionHash,
+      onInferenceEvent: opts.onInferenceEvent,
+      spawnedAt: now(),
+    };
+    const { replayed, sweepDone } = recoverAtBoot({ childRunning: false });
+    const restored: RestoredState = {
+      mailUnsubscribe: null,
+      replayDone: replayed.then(() => undefined),
+      sweepDone,
+    };
+    state = { phase: "standby", restored: true, ...restored };
+    inStandby = {
+      correlations: standby.parked,
+      outcome: standby.wakeAt === undefined ? {} : { wakeAt: standby.wakeAt },
+      wakeTimer:
+        standby.wakeAt === undefined
+          ? null
+          : armStandbyWakeTimer(standby.wakeAt),
+    };
+    try {
+      bindings.mailBus.registerAddress(bindings.deploymentMailAddress);
+      state.mailUnsubscribe = bindings.mailBus.subscribeMailForAddress(
+        bindings.deploymentMailAddress,
+        onMailMessage,
+      );
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      await shutdownInternal({
+        reason: `restoring in standby failed: ${message}`,
+      }).catch((shutdownCause: unknown) => {
+        logger.error`shutdown after a failed restore in standby also threw: ${shutdownCause instanceof Error ? shutdownCause.message : String(shutdownCause)}`;
+      });
+      throw cause;
+    }
+    // Mail the replay put back or that already waited wakes the child, and so
+    // does a replay that failed, which can leave mail behind.
+    void replayed
+      .then(async (ok) => {
+        // A shutdown during the replay leaves nothing to wake.
+        if (state.phase !== "standby") return;
+        const mailWaiting =
+          !ok ||
+          (await inboxHoldsMail().catch((cause: unknown) => {
+            if (state.phase !== "standby") return false;
+            logger.error`reading the inbox of a deployment restored in standby failed; waking it in case mail waits there: ${cause instanceof Error ? cause.message : String(cause)}`;
+            return true;
+          }));
+        if (!mailWaiting) return;
+        await wakeFromStandby(
+          ok ? "mail" : "its restart, which could not recover its mail",
+        );
+      })
+      .catch((cause: unknown) => {
+        logger.error`waking a deployment restored in standby for its mail failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    return { inStandby: true };
+  }
+
+  // Why a restored standby must start its child, or null while its record
+  // holds. History written since the recorded tip, by a child that ran again
+  // or a cancellation, can make the recorded parks stale; the child reads its
+  // own. The recorded definition gets the check a child's report gets.
+  async function whyRestoreStartsChild(
+    opts: SpawnOpts,
+    standby: RecordedStandby,
+  ): Promise<string | null> {
+    try {
+      if ((await readHistoryTip()) !== standby.tip) {
+        return "its restart, which found history written after it stopped";
+      }
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      return `its restart, which could not read its history: ${message}`;
+    }
+    if (
+      (await computeWireDefinitionHash(standby.definition)) !==
+      opts.definitionHash
+    ) {
+      return "its restart, which found a recorded definition that is not the approved one";
+    }
+    return null;
+  }
+
+  // The run's history ref, where its steps record what they are parked on and
+  // the timers they wait for.
+  function readHistoryTip(): Promise<string | null> {
+    return bindings.repoStore.resolveRef(
+      supervisorPrincipal,
+      bindings.workflowRunRepoId,
+      bindings.workflowRunRef,
+    );
+  }
+
   // Move `processing/` entries a crashed incarnation left without an owner back
   // to `inbox/` in arrival order. The write can wait on a slow Hub, so it runs
   // in the background, and dispatch awaits it before its first dequeue so new
   // mail cannot overtake them. The compaction sweep shares its scan of `runs/`.
-  function recoverAtBoot(): {
-    replayed: Promise<void>;
+  function recoverAtBoot(opts: { childRunning: boolean }): {
+    replayed: Promise<boolean>;
     sweepDone: Promise<void>;
   } {
     const scanDone = scanRunsForBoot(
@@ -3339,6 +3753,7 @@ export function createWorkflowSupervisor(
       bindings.workflowRunRepoId,
       bindings.workflowRunRef,
     );
+    processingReplayPending = true;
     const replayed = scanDone
       .then(({ ownedMessageIds }) =>
         inboxPrimitives.replayProcessingToInbox(
@@ -3350,16 +3765,24 @@ export function createWorkflowSupervisor(
         ),
       )
       .then(({ retainedMessageIds }) => {
-        keepOwnedMessages(retainedMessageIds, { childRunning: true });
+        keepOwnedMessages(retainedMessageIds, opts);
         wakeDispatch();
+        return true;
       })
       .catch((cause: unknown) => {
         // Best-effort: entries a failed replay leaves in `processing/` lose
         // their place to newer mail. Making this fatal crashed first spawns
         // with no `processing/` directory; that needs a replay that allows
-        // one, or a periodic sweep for orphans.
+        // one, or a periodic sweep for orphans. A stopped child would leave
+        // them with nothing to bring them back, so standby waits for a respawn.
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.warn`boot recovery scan or processing replay failed: ${message}`;
+        strandedMail = true;
+        return false;
+      })
+      .finally(() => {
+        processingReplayPending = false;
+        noteStandbyProgress();
       });
     bootReplay = replayed;
 
@@ -3515,15 +3938,23 @@ export function createWorkflowSupervisor(
     runId: string,
     payload: Mail,
   ): Promise<string> {
-    await sender.send({
-      type: "trigger.fire",
-      data: {
-        runId,
-        messageId,
-        receivedAt,
-        payload,
-      },
-    });
+    const requestId = nextInputRequest(null);
+    dispatchRequestId = requestId;
+    try {
+      await sender.send({
+        type: "trigger.fire",
+        data: {
+          runId,
+          messageId,
+          receivedAt,
+          requestId,
+          payload,
+        },
+      });
+    } catch (cause) {
+      inputCommits.delete(requestId);
+      throw cause;
+    }
     cohortRunIds.add(runId);
     return runId;
   }
@@ -3691,6 +4122,7 @@ export function createWorkflowSupervisor(
     const envelope = dequeued.envelope;
     const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
     const messageId = envelope.messageId;
+    untakenMessageId = messageId;
     let rejection:
       | {
           code: string;
@@ -3740,14 +4172,7 @@ export function createWorkflowSupervisor(
     if (!cohortRunIds.has(runId)) {
       const lifecycle = terminalRunIds.has(runId)
         ? "terminal"
-        : await readCommittedWorkflowRunLifecycle(
-            await bindings.repoStore.openCommittedReads(
-              supervisorPrincipal,
-              bindings.workflowRunRepoId,
-              bindings.workflowRunRef,
-            ),
-            runId,
-          );
+        : await readRunLifecycle(runId);
       if (lifecycle === "terminal") {
         rejectTerminalRun();
       } else if (lifecycle === "live") {
@@ -3775,6 +4200,7 @@ export function createWorkflowSupervisor(
         // cleaned up by pumpUpstreamControl, but synthetic ones are not).
         cohortRunIds.delete(runId);
         runInputChannels.delete(runId);
+        takenInputs.delete(runId);
       } else {
         // Dispose the pre-created iterator; the normal path creates fresh
         // iterators inside the dispatch-decision loop when waiting.
@@ -3829,18 +4255,35 @@ export function createWorkflowSupervisor(
             // a terminal the resumed run reaches right after applying the signal
             // is not missed; the park watcher is armed inside
             // waitForRunTerminalOrPark.
+            if (!(await deliveryAllowed(cohortAbort))) break;
             const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
             let waitEntered = false;
             try {
-              await sender.send({
-                type: "signal.deliver",
-                data: {
-                  runId,
-                  signalName: signalName(inputChannel.correlationId),
-                  signalId: envelope.messageId,
-                  payload: prepared.mail,
-                },
-              });
+              const input = {
+                runId,
+                correlationId: inputChannel.correlationId,
+              };
+              const requestId = nextInputRequest(input);
+              dispatchRequestId = requestId;
+              const answer = Promise.withResolvers<boolean>();
+              dispatchAnswer = answer.resolve;
+              takenInputs.set(runId, input.correlationId);
+              await sender
+                .send({
+                  type: "signal.deliver",
+                  data: {
+                    runId,
+                    signalName: signalName(inputChannel.correlationId),
+                    signalId: envelope.messageId,
+                    payload: prepared.mail,
+                    requestId,
+                  },
+                })
+                .catch((cause: unknown) => {
+                  inputCommits.delete(requestId);
+                  releaseTakenInput(input);
+                  throw cause;
+                });
               // Invalidate the cached input channel: its correlation is now
               // consumed by this delivery, so the NEXT mail must not reuse it.
               // The resumed run re-parks on a FRESH correlation (a new
@@ -3853,27 +4296,52 @@ export function createWorkflowSupervisor(
               // entry \Seen/$Processed. Fire-and-forget off the dispatch path.
               markMailboxProcessed(envelope.messageId);
               // Durable-consume contract, mirroring the trigger.fire path: hold
-              // markConsumed until the child has durably taken up the signal --
-              // the resumed run re-parks or reaches a terminal event. That gate
-              // is downstream of durability DESPITE the child's fire-and-forget
-              // SignalReceived writer: the runtime reaches re-park/terminal only
-              // by resuming from the COMMITTED SignalReceived, which its per-run
-              // subscribeKind substrate subscription surfaces only after the
-              // commit lands -- so the substrate subscription IS the ack, and a
-              // failed deliver commit is observed by nothing, never re-parks, and
-              // never releases markConsumed (the mail stays reclaimable). A crash
+              // markConsumed until the child has committed the signal and the
+              // run parks or reaches a terminal event. Another step's park ends
+              // this wait too, and a run that ends may never have taken the
+              // signal, so only the child's answer says who holds the mail. A
+              // signal it declined fails the dispatch, which leaves the mail
+              // reclaimable, or is rejected if the run ended. A crash
               // before the child commits the signal leaves the claim-check entry
               // in processing/ for replayProcessingToInbox to re-deliver; after
               // it, the resumed run owns the mail and the supervisor consumes it
               // once the run next parks or ends. On cohort abort the wait returns
-              // and the post-loop guard skips markConsumed.
+              // and the post-loop guard skips markConsumed. A standby attempt
+              // does not wait out this wait, for the same reason: once the
+              // child has committed the signal, the run owns the mail.
               waitEntered = true;
-              await waitForRunTerminalOrPark(
-                iter,
-                cohortAbort.signal,
-                runId,
-                sinceGen,
+              const declined = new AbortController();
+              void answer.promise.then((committed) => {
+                if (!committed) declined.abort();
+              });
+              const outcome = await whileDispatchWaits(
+                cohortAbort,
+                waitForRunTerminalOrPark(
+                  iter,
+                  AbortSignal.any([cohortAbort.signal, declined.signal]),
+                  runId,
+                  sinceGen,
+                ),
               );
+              const committed = await waitForSignalAnswer(
+                cohortAbort,
+                answer.promise,
+                runId,
+              );
+              if (committed === false) {
+                // The child's terminal frame can follow its answer, so the
+                // committed log says whether the run ended.
+                if (
+                  outcome !== "terminal" &&
+                  !terminalRunIds.has(runId) &&
+                  (await readRunLifecycle(runId)) !== "terminal"
+                ) {
+                  throw new Error(
+                    `the workflow child declined mail ${messageId} for live run ${runId}; it stays in processing/ until a respawn replays it`,
+                  );
+                }
+                rejectTerminalRun();
+              }
             } finally {
               // waitForRunTerminalOrPark finalizes the iterator it consumes; the
               // only leak is when `sender.send` throws before the wait is
@@ -3908,6 +4376,7 @@ export function createWorkflowSupervisor(
             // before-fire contract), so a terminal that lands while
             // forwardDispatchedEntry is in flight would be lost and the wait
             // would hang to the backstop.
+            if (!(await deliveryAllowed(cohortAbort))) break;
             const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
             let waitEntered = false;
             try {
@@ -3931,13 +4400,17 @@ export function createWorkflowSupervisor(
               // committed, so a crash before RunStarted leaves the entry in
               // processing/ for replayProcessingToInbox to re-deliver. On cohort
               // abort the wait returns and the post-loop guard skips
-              // markConsumed.
+              // markConsumed. As on the signal path, a standby attempt does not
+              // wait this out once the child has committed `RunStarted`.
               waitEntered = true;
-              await waitForRunTerminalOrPark(
-                iter,
-                cohortAbort.signal,
-                runId,
-                sinceGen,
+              await whileDispatchWaits(
+                cohortAbort,
+                waitForRunTerminalOrPark(
+                  iter,
+                  cohortAbort.signal,
+                  runId,
+                  sinceGen,
+                ),
               );
             } finally {
               // waitForRunTerminalOrPark finalizes the iterator it consumes; the
@@ -3951,14 +4424,33 @@ export function createWorkflowSupervisor(
             }
             break;
           }
+          // The mail waits here undelivered, and a standby attempt is refused
+          // until the child takes it. A re-registration can show the input
+          // channel instead of a park notice.
           const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
-          const outcome = await waitForRunTerminalOrPark(
-            iter,
-            cohortAbort.signal,
-            runId,
-            sinceGen,
-          );
-          if (outcome === "aborted") break;
+          const channelShown = new AbortController();
+          inputChannelWaiters.set(runId, () => channelShown.abort());
+          bindings.onDispatchWait?.(runId);
+          let outcome: Awaited<ReturnType<typeof waitForRunTerminalOrPark>>;
+          try {
+            outcome = await whileDispatchWaits(
+              cohortAbort,
+              waitForRunTerminalOrPark(
+                iter,
+                AbortSignal.any([cohortAbort.signal, channelShown.signal]),
+                runId,
+                sinceGen,
+              ),
+            );
+          } finally {
+            inputChannelWaiters.delete(runId);
+          }
+          if (outcome === "aborted") {
+            // A channel shown first re-evaluates the run, now with its input.
+            if (channelShown.signal.aborted && !cohortAbort.signal.aborted)
+              continue;
+            break;
+          }
           if (outcome === "terminal") {
             // This message was waiting for an already-live run to expose its
             // next input correlation. The run terminated first, so the mail
@@ -4144,6 +4636,48 @@ export function createWorkflowSupervisor(
     }
   }
 
+  async function readRunLifecycle(runId: string) {
+    return readCommittedWorkflowRunLifecycle(
+      await bindings.repoStore.openCommittedReads(
+        supervisorPrincipal,
+        bindings.workflowRunRepoId,
+        bindings.workflowRunRef,
+      ),
+      runId,
+    );
+  }
+
+  // The child's answer for a signal a dispatch delivered, or `undefined` once
+  // the cohort aborts. A child that never answers fails the dispatch, as the
+  // park wait's backstop does, so the mail stays reclaimable.
+  async function waitForSignalAnswer(
+    cohortAbort: AbortController,
+    answered: Promise<boolean>,
+    runId: string,
+  ): Promise<boolean | undefined> {
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const backstop = new Promise<"timeout">((resolve) => {
+      timeoutHandle = setTimeout(
+        () => resolve("timeout"),
+        TERMINAL_OR_PARK_BACKSTOP_MS,
+      );
+    });
+    try {
+      const answer = await whileDispatchWaits(
+        cohortAbort,
+        raceAbort(cohortAbort.signal, Promise.race([answered, backstop])),
+      );
+      if (answer === "timeout") {
+        throw new Error(
+          `the workflow child did not answer for a signal to run ${runId} within ${TERMINAL_OR_PARK_BACKSTOP_MS}ms`,
+        );
+      }
+      return answer;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+  }
+
   /**
    * The dispatch loop body. Runs until the cohort aborts; each
    * iteration drains one inbox entry through the FIFO claim-check
@@ -4177,36 +4711,104 @@ export function createWorkflowSupervisor(
       // dispatchOne would await the fresh, unresolved promise and strand that
       // mail until some later wake.
       const wake = dispatchWake.promise;
+      const frozen = standbyAttempt === null ? null : standbyAttempt.frozen;
+      if (frozen !== null) {
+        // A standby attempt's final check takes no new mail: the child takes it
+        // once the check fails, or is respawned for it once stopped.
+        bindings.onStandbyWait?.("input");
+        await raceAbort(cohortAbort.signal, frozen.promise);
+        continue;
+      }
       let dispatched: boolean;
+      dispatching = cohortAbort;
       try {
         dispatched = await dispatchOne(sender, cohortAbort, broadcaster);
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.error`dispatch loop iteration failed: ${message}`;
+        if (!cohortAbort.signal.aborted && untakenMessageId !== null) {
+          strandedMail = true;
+        }
         // A failure deep inside the substrate is one the operator
         // must see. The loop continues -- a transient failure should
         // not wedge the deployment -- but the loop pauses on the
         // wake so we do not busy-spin against a persistent fault.
         dispatched = false;
+      } finally {
+        if (dispatching === cohortAbort) dispatching = null;
+        // A stopped child leaves its untaken mail for the wake.
+        if (!cohortAbort.signal.aborted) {
+          untakenMessageId = null;
+          dispatchRequestId = null;
+          dispatchAnswer = null;
+        }
+        noteStandbyProgress();
       }
       if (dispatched) continue;
       if (cohortAbort.signal.aborted) return;
-      const abortPromise = new Promise<void>((resolve) => {
-        if (cohortAbort.signal.aborted) {
-          resolve();
-          return;
-        }
-        cohortAbort.signal.addEventListener("abort", () => resolve(), {
-          once: true,
-        });
-      });
-      await Promise.race([wake, abortPromise]);
+      await raceAbort(cohortAbort.signal, wake);
     }
+  }
+
+  async function commitCancellation(
+    opts: CancelRequestOpts,
+  ): Promise<CancelCommitInfo> {
+    const committing = commitCancelRequested({
+      substrate: bindings.repoStore,
+      repoId: bindings.workflowRunRepoId,
+      ref: bindings.workflowRunRef,
+      anchorRunId: bindings.anchorRunId,
+      runId: opts.runId,
+      origin: opts.origin,
+      reason: opts.reason,
+      at: opts.at,
+      signAsPrincipal: bindings.signAsPrincipal,
+    });
+    cancellationCommits.add(committing);
+    try {
+      const result = await committing;
+      return { commitSha: result.commitSha, seq: result.seq };
+    } finally {
+      cancellationCommits.delete(committing);
+      noteStandbyProgress();
+    }
+  }
+
+  // A drain deadline's cancellation. Like a requested one it calls off a
+  // standby attempt, as the child that attempt would stop is the one that
+  // applies it, and a child that stopped anyway is woken to apply it.
+  function commitDrainCancellation(opts: CancelRequestOpts): Promise<void> {
+    const committing = (async () => {
+      const attempt = standbyAttempt;
+      if (attempt !== null) {
+        abandonStandby(attempt, "the drain deadline passed");
+        await attempt.settled;
+      }
+      await commitCancellation(opts);
+      if (state.phase === "standby") {
+        void wakeFromStandby("cancel").catch((cause: unknown) => {
+          logger.error`waking a child in standby for a drain cancellation failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+        });
+      }
+    })();
+    drainCancellations.add(committing);
+    void committing.then(
+      () => drainCancellations.delete(committing),
+      () => drainCancellations.delete(committing),
+    );
+    return committing;
   }
 
   async function requestCancel(
     opts: CancelRequestOpts,
   ): Promise<CancelCommitInfo> {
+    const attempt = standbyAttempt;
+    if (attempt !== null) {
+      abandonStandby(attempt, "a cancellation was requested");
+      await attempt.settled;
+    }
+    // A wake in progress has no child to ask yet; the woken one is.
+    if (waking !== null) await waking;
     if (
       state.phase === "stopping" ||
       state.phase === "stopped" ||
@@ -4214,33 +4816,22 @@ export function createWorkflowSupervisor(
     ) {
       throw new Error("Cannot cancel a stopped workflow supervisor");
     }
-    const commitCancellation = async () => {
-      const committing = commitCancelRequested({
-        substrate: bindings.repoStore,
-        repoId: bindings.workflowRunRepoId,
-        ref: bindings.workflowRunRef,
-        anchorRunId: bindings.anchorRunId,
-        runId: opts.runId,
-        origin: opts.origin,
-        reason: opts.reason,
-        at: opts.at,
-        signAsPrincipal: bindings.signAsPrincipal,
-      });
-      cancellationCommits.add(committing);
-      try {
-        const result = await committing;
-        return { commitSha: result.commitSha, seq: result.seq };
-      } finally {
-        cancellationCommits.delete(committing);
-      }
-    };
     const cohort = state;
+    if (cohort.phase === "standby") {
+      // A child in standby cannot settle the run; the respawned one applies the
+      // committed cancellation when it resumes.
+      const committed = await commitCancellation(opts);
+      void wakeFromStandby("cancel").catch((cause: unknown) => {
+        logger.error`waking a child in standby for a cancellation failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+      return committed;
+    }
     if (
       cohort.phase !== "starting" &&
       cohort.phase !== "running" &&
       cohort.phase !== "recycling"
     )
-      return commitCancellation();
+      return commitCancellation(opts);
     const sender = cohort.controlSender;
 
     const requestId = `cancel-${String((cancellationSeq += 1))}`;
@@ -4259,7 +4850,7 @@ export function createWorkflowSupervisor(
       cohort.terminalCohortAbort.signal.throwIfAborted();
       if (activeControlSender() !== sender)
         throw new Error("Cancellation's workflow child was replaced");
-      const result = await commitCancellation();
+      const result = await commitCancellation(opts);
       await sender
         .send({ type: "cancel.committed", data: { requestId } })
         .catch((cause: unknown) => {
@@ -4279,6 +4870,7 @@ export function createWorkflowSupervisor(
       throw cause;
     } finally {
       pendingCancellations.delete(requestId);
+      noteStandbyProgress();
     }
   }
 
@@ -4331,6 +4923,29 @@ export function createWorkflowSupervisor(
   async function performShutdown(opts: ShutdownOptions): Promise<void> {
     const prior = state;
     state = { phase: "stopping" };
+    // The child's cohort, if any, and what the deployment holds either way: a
+    // restored standby holds the mail subscription and boot recovery alone.
+    const cohort =
+      prior.phase === "starting" ||
+      prior.phase === "running" ||
+      prior.phase === "recycling" ||
+      (prior.phase === "standby" && !prior.restored)
+        ? prior
+        : null;
+    const held = cohort ?? (prior.phase === "standby" ? prior : null);
+    // Waited for below, so a stop it already made is recorded before
+    // shutdown resolves.
+    const abandonedAttempt = standbyAttempt;
+    if (abandonedAttempt !== null) {
+      abandonStandby(
+        abandonedAttempt,
+        "the workflow supervisor is shutting down",
+      );
+    }
+    if (inStandby !== null) {
+      if (inStandby.wakeTimer !== null) readyClearTimer(inStandby.wakeTimer);
+      inStandby = null;
+    }
     for (const retry of ownedConsumeRetries) readyClearTimer(retry);
     ownedConsumeRetries.clear();
     // shutdownInternal is designed to be TOTAL: when a child is up it must
@@ -4350,12 +4965,7 @@ export function createWorkflowSupervisor(
     // invariant survives if that ever changes.)
     const accumulatorsToDispose = [...drainAccumulators.values()];
     const childrenToStop = new Set(uninstalledChildren);
-    if (
-      prior.phase === "starting" ||
-      prior.phase === "running" ||
-      prior.phase === "recycling"
-    )
-      childrenToStop.add(prior.handle);
+    if (cohort !== null) childrenToStop.add(cohort.handle);
     const childTerminations: Promise<void>[] = [];
     let killRequested = false;
     function killChildren(): void {
@@ -4381,28 +4991,14 @@ export function createWorkflowSupervisor(
       // Stop every armed drainTimeout accumulator before tearing the child
       // down. An accumulator left running would otherwise fire its
       // `setTimeout` callback (or its terminal-event watcher's settle hook)
-      // against a shutdown-mid-flight supervisor. Guard each `stop` so one
-      // throwing accumulator does not leave the rest armed.
-      for (const accumulator of accumulatorsToDispose) {
-        try {
-          accumulator.stop();
-        } catch (cause) {
-          const message =
-            cause instanceof Error ? cause.message : String(cause);
-          logger.warn`drain accumulator stop threw during shutdown: ${message}`;
-        }
-      }
-      drainAccumulators.clear();
+      // against a shutdown-mid-flight supervisor.
+      stopDrainAccumulators("shutdown");
       cohortRunIds.clear();
       runInputChannels.clear();
       parkNotifyWaiters.clear();
       parkGenerations.clear();
-      if (
-        prior.phase === "starting" ||
-        prior.phase === "running" ||
-        prior.phase === "recycling"
-      ) {
-        prior.terminalCohortAbort.abort();
+      if (cohort !== null) {
+        cohort.terminalCohortAbort.abort();
         // Reject every pending merge round-trip and park-notify waiter
         // so handler closures awaiting them (including fire-and-forget
         // `handleSubstrateWriteRequest` instances) cannot outlive the
@@ -4414,7 +5010,7 @@ export function createWorkflowSupervisor(
         // with `done: true` -- the dispatch loop's `waitForRunTerminal`
         // and any drainTimeout watcher unblock through the same shutdown
         // path the cohort abort drives.
-        prior.terminalBroadcaster.dispose();
+        cohort.terminalBroadcaster.dispose();
         // Wake the dispatch loop so its `dispatchWake` await settles
         // and the loop notices the cohort abort. Without the wake, the
         // loop's `Promise.race` would sit on the wake promise until
@@ -4437,44 +5033,42 @@ export function createWorkflowSupervisor(
           }),
         ),
       );
+      while (drainCancellations.size > 0) {
+        bindings.onShutdownWait?.("cancellation");
+        await Promise.allSettled([...drainCancellations]);
+      }
       // Includes a loop a recycle has retired from `state`, so its last
       // consumption write lands before shutdown resolves. Each loop's own
       // logger surfaces its failure.
       await Promise.allSettled([...dispatchLoops]);
-      if (
-        (prior.phase === "starting" ||
-          prior.phase === "running" ||
-          prior.phase === "recycling") &&
-        prior.replayDone !== null
-      ) {
+      if (held !== null && held.replayDone !== null) {
         // Await the spawn-time replayProcessingToInbox before tearing
         // the bindings down. The replay's substrate write
         // (`processing/` -> `inbox/` rename via a tree commit) must
         // settle before the supervisor's exit; without the await the
         // substrate I/O outlives the supervisor and a subsequent boot
         // can observe a partially-applied replay.
-        await prior.replayDone.catch(() => {
+        await held.replayDone.catch(() => {
           /* swallowed: the replay's own catch already surfaces the
              failure to the supervisor's warn channel; the shutdown
              path only waits for the substrate write to settle. */
         });
       }
-      if (
-        (prior.phase === "starting" ||
-          prior.phase === "running" ||
-          prior.phase === "recycling") &&
-        prior.sweepDone !== null
-      ) {
+      if (held !== null && held.sweepDone !== null) {
         // Await the spawn-time compaction sweep before teardown so an
         // in-flight fold's substrate commit does not outlive the supervisor
         // and interleave with the next incarnation's boot. Teardown latency
         // is bounded by the recovery backlog (see the `sweepDone` field
         // docstring); a normal boot has zero or one pending fold.
-        await prior.sweepDone.catch(() => {
+        await held.sweepDone.catch(() => {
           /* swallowed: the sweep's own catch already surfaces failures to
              the supervisor's warn channel; the shutdown path only waits for
              the in-flight fold's substrate commit to settle. */
         });
+      }
+      if (abandonedAttempt !== null) {
+        bindings.onShutdownWait?.("attempt");
+        await abandonedAttempt.settled;
       }
       if (respawnReplays.size > 0) {
         bindings.onShutdownWait?.("replay");
@@ -4518,14 +5112,10 @@ export function createWorkflowSupervisor(
       cancelRespawnBackoffWaits();
       pendingChildExit = null;
       spawnContext = null;
-      if (
-        prior.phase === "starting" ||
-        prior.phase === "running" ||
-        prior.phase === "recycling"
-      ) {
-        if (prior.mailUnsubscribe !== null) {
+      if (held !== null) {
+        if (held.mailUnsubscribe !== null) {
           try {
-            prior.mailUnsubscribe();
+            held.mailUnsubscribe();
           } catch (cause) {
             const message =
               cause instanceof Error ? cause.message : String(cause);
@@ -4554,12 +5144,8 @@ export function createWorkflowSupervisor(
           }),
         ),
       );
-      if (
-        prior.phase === "starting" ||
-        prior.phase === "running" ||
-        prior.phase === "recycling"
-      ) {
-        await prior.eventPump.catch(() => {
+      if (cohort !== null) {
+        await cohort.eventPump.catch(() => {
           /* swallowed for the same reason as above. */
         });
       }
@@ -4636,10 +5222,15 @@ export function createWorkflowSupervisor(
     // tick. The supervisor never blocks on the child's acknowledgement
     // -- the accumulator below is the deadline-keeper, not the round
     // trip.
-    await state.controlSender.send({
+    const sender = state.controlSender;
+    await sender.send({
       type: "drain",
       data: { deadlineMs: opts.deadlineMs },
     });
+    // A standby stop or a respawn during the send already dropped the drain
+    // deadlines, and the child they were for is gone.
+    const cohort = activeCohort();
+    if (cohort === null || cohort.controlSender !== sender) return;
     // Arm one accumulator per in-flight run. Each accumulator's
     // `escalate` path commits a signed `CancelRequested{origin:
     // "supervisor-drain"}` against the workflow-run repo via the
@@ -4653,8 +5244,8 @@ export function createWorkflowSupervisor(
     // new mail. The cohort abort on shutdown/recycle will eventually
     // tear the run down.
     const cohortSource = perCohortTerminalSource(
-      state.terminalCohortAbort,
-      state.terminalBroadcaster,
+      cohort.terminalCohortAbort,
+      cohort.terminalBroadcaster,
     );
     for (const runId of cohortRunIds) {
       if (drainAccumulators.has(runId)) continue;
@@ -4665,16 +5256,7 @@ export function createWorkflowSupervisor(
         now: drainNow,
         setTimer: drainSetTimer,
         clearTimer: drainClearTimer,
-        commitCancel: (cancel) =>
-          commitCancelRequested({
-            substrate: bindings.repoStore,
-            repoId: bindings.workflowRunRepoId,
-            ref: bindings.workflowRunRef,
-            anchorRunId: bindings.anchorRunId,
-            runId,
-            ...cancel,
-            signAsPrincipal: bindings.signAsPrincipal,
-          }),
+        commitCancel: (cancel) => commitDrainCancellation({ runId, ...cancel }),
         ...(cohortSource !== null ? { terminalEventSource: cohortSource } : {}),
       });
       drainAccumulators.set(runId, accumulator);
@@ -4718,20 +5300,602 @@ export function createWorkflowSupervisor(
     });
   }
 
+  // `setTimeout` fires at once past this many ms, so a far wake is re-armed.
+  const MAX_TIMER_MS = 2_147_483_647;
+
+  function noteStandbyProgress(): void {
+    const attempt = standbyAttempt;
+    if (attempt === null) return;
+    const reached = attempt.progress;
+    attempt.progress = Promise.withResolvers<undefined>();
+    reached.resolve(undefined);
+  }
+
+  function abandonStandby(attempt: StandbyAttempt, reason: string): void {
+    if (!attempt.abandon.signal.aborted) {
+      attempt.abandon.abort(new StandbyAbandonedError(reason));
+    }
+  }
+
+  function enterStandby(): Promise<StandbyOutcome> {
+    if (
+      state.phase === "idle" ||
+      state.phase === "stopping" ||
+      state.phase === "stopped" ||
+      state.phase === "crash-looping"
+    ) {
+      return Promise.reject(
+        new StandbyRefusedError(`the workflow child is ${state.phase}`),
+      );
+    }
+    // A child being woken is past the standby attempt it had.
+    if (waking !== null || respawnInProgress) {
+      return Promise.reject(
+        new StandbyDeferredError("the workflow child is restarting"),
+      );
+    }
+    // An attempt still settling answers for itself, even once the child it
+    // stopped is recorded.
+    if (standbyAttempt !== null) {
+      // An abandoned attempt refuses with its own reason, which is not this
+      // request's; asked again once it settles, a fresh attempt starts.
+      return standbyAttempt.abandon.signal.aborted
+        ? Promise.reject(
+            new StandbyDeferredError(
+              "an abandoned standby attempt is still settling",
+            ),
+          )
+        : standbyAttempt.outcome;
+    }
+    if (state.phase === "standby" && inStandby !== null) {
+      return Promise.resolve(inStandby.outcome);
+    }
+    // A child that exited is replaced once its respawn backoff passes.
+    if (state.phase !== "running" || exitedGeneration === childGeneration) {
+      return Promise.reject(
+        new StandbyDeferredError("the workflow child is restarting"),
+      );
+    }
+    const done = Promise.withResolvers<StandbyOutcome>();
+    const attempt: StandbyAttempt = {
+      generation: childGeneration,
+      abandon: new AbortController(),
+      outcome: done.promise,
+      settled: done.promise.then(
+        () => undefined,
+        () => undefined,
+      ),
+      progress: Promise.withResolvers<undefined>(),
+      frozen: null,
+      fence: null,
+      wakeIfStopped: false,
+      childExited: false,
+      correlations: null,
+    };
+    standbyAttempt = attempt;
+    void (async () => {
+      let outcome: StandbyOutcome | undefined;
+      let failure: unknown;
+      try {
+        outcome = await runStandbyAttempt(attempt);
+      } catch (cause) {
+        failure = cause;
+      }
+      // Cleared before the outcome settles, so the dispatch loop that wakes
+      // on it sees no standby attempt.
+      if (standbyAttempt === attempt) standbyAttempt = null;
+      wakeDispatch();
+      if (outcome !== undefined) done.resolve(outcome);
+      else done.reject(failure);
+    })();
+    return done.promise;
+  }
+
+  function abandonCurrentStandby(reason: string): void {
+    if (standbyAttempt === null) return;
+    standbyAttempt.wakeIfStopped = true;
+    abandonStandby(standbyAttempt, reason);
+  }
+
+  async function wake(): Promise<void> {
+    const attempt = standbyAttempt;
+    if (attempt !== null) {
+      abandonStandby(attempt, "the deployment was woken");
+      await attempt.settled;
+    }
+    // A standby attempt past its final check stops the child anyway.
+    await wakeFromStandby(REQUESTED_WAKE);
+  }
+
+  async function runStandbyAttempt(
+    attempt: StandbyAttempt,
+  ): Promise<StandbyOutcome> {
+    const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
+    try {
+      for (;;) {
+        await untilStandbyQuiet(attempt);
+        // Wait for the child to report it is quiet while it still takes input.
+        const idle = await askChildQuiet(attempt, runId);
+        if (!idle.quiet) continue;
+        freezeStandby(attempt);
+        const deadline = waitDeadline(readySetTimer, QUIET_CHECK_WATCHDOG_MS);
+        try {
+          if (!(await untilStandbyQuiet(attempt, deadline.promise))) continue;
+          const final = await askChildQuiet(attempt, runId, deadline.promise);
+          if (!final.quiet) continue;
+          attempt.fence = [];
+          if (
+            !(await untilDetachedWritesLand(deadline.promise)) ||
+            childWrites !== final.writes ||
+            !isStandbyQuiet()
+          ) {
+            releaseStandbyFence(attempt);
+            continue;
+          }
+          return await stopChildForStandby(
+            attempt,
+            final.wakeAt === undefined ? {} : { wakeAt: final.wakeAt },
+          );
+        } finally {
+          readyClearTimer(deadline.handle);
+          thawStandby(attempt);
+        }
+      }
+    } catch (cause) {
+      releaseStandbyFence(attempt);
+      throw cause;
+    }
+  }
+
+  // Hold dispatch and signals back for a standby attempt's final check.
+  function freezeStandby(attempt: StandbyAttempt): void {
+    if (attempt.frozen === null) {
+      attempt.frozen = Promise.withResolvers<undefined>();
+    }
+  }
+
+  function thawStandby(attempt: StandbyAttempt): void {
+    const frozen = attempt.frozen;
+    attempt.frozen = null;
+    frozen?.resolve(undefined);
+  }
+
+  // Whether the supervisor went quiet, which `deadline` can cut short.
+  async function untilStandbyQuiet(
+    attempt: StandbyAttempt,
+    deadline?: Promise<void>,
+  ): Promise<boolean> {
+    const expired = deadline?.then(() => false as const);
+    for (;;) {
+      const progress = attempt.progress.promise;
+      currentStandbyCohort(attempt);
+      if (isStandbyQuiet()) return true;
+      bindings.onStandbyWait?.("standby");
+      const going = await Promise.race([
+        untilStandbyProgress(attempt, progress).then(() => true as const),
+        ...(expired === undefined ? [] : [expired]),
+      ]);
+      if (!going) return false;
+    }
+  }
+
+  async function untilDetachedWritesLand(
+    deadline: Promise<void>,
+  ): Promise<boolean> {
+    const expired = deadline.then(() => false as const);
+    while (detachedWrites.size > 0) {
+      const landed = await Promise.race([
+        Promise.all([...detachedWrites]).then(() => true as const),
+        expired,
+      ]);
+      if (!landed) return false;
+    }
+    return true;
+  }
+
+  // Ask the child whether every run only waits on input from outside. Without
+  // a `deadline` the child answers once it is; with one, a child that does not
+  // answer in time counts as working. The child answers only the latest check,
+  // so this is the one sender and one standby attempt asks at a time.
+  async function askChildQuiet(
+    attempt: StandbyAttempt,
+    runId: string,
+    deadline?: Promise<void>,
+  ): Promise<{ quiet: boolean; wakeAt?: string; writes: number }> {
+    const cohort = currentStandbyCohort(attempt);
+    const requestId = `quiet-${String((quietQuerySeq += 1))}`;
+    const answered = new Promise<QuietAnswer | null>((resolve) => {
+      pendingQuietQueries.set(requestId, resolve);
+    });
+    const wait = deadline === undefined;
+    try {
+      // A send fails only once the child is going away. A wedged child can
+      // block it instead, which the abandon and the deadline must still end.
+      const sent = cohort.controlSender
+        .send({ type: "quiet.request", data: { requestId, runId, wait } })
+        .catch((cause: unknown) => {
+          throw new StandbyDeferredError(
+            `the workflow child could not be asked whether it is quiet: ${cause instanceof Error ? cause.message : String(cause)}`,
+            { cause },
+          );
+        });
+      const answer = await raceAbort(
+        attempt.abandon.signal,
+        Promise.race([
+          answered,
+          sent.then(() => answered),
+          ...(deadline === undefined
+            ? []
+            : [deadline.then(() => "late" as const)]),
+        ]),
+      );
+      currentStandbyCohort(attempt);
+      if (answer === undefined || answer === "late") {
+        return { quiet: false, writes: childWrites };
+      }
+      if (answer === null) {
+        throw new StandbyDeferredError(
+          "the workflow child restarted while entering standby",
+        );
+      }
+      if ("ended" in answer) {
+        throw new StandbyRefusedError("the workflow run has ended");
+      }
+      if (answer.error !== undefined) {
+        throw new StandbyRefusedError(
+          `the workflow child could not check that it is quiet: ${answer.error}`,
+        );
+      }
+      return answer;
+    } finally {
+      pendingQuietQueries.delete(requestId);
+    }
+  }
+
+  // The cohort a standby attempt is for, or a refusal when it has been
+  // abandoned or the child it was for is gone.
+  function currentStandbyCohort(
+    attempt: StandbyAttempt,
+  ): Extract<SupervisorState, { phase: "running" }> {
+    attempt.abandon.signal.throwIfAborted();
+    if (
+      state.phase !== "running" ||
+      childGeneration !== attempt.generation ||
+      attempt.childExited
+    ) {
+      throw new StandbyDeferredError(
+        "the workflow child restarted while entering standby",
+      );
+    }
+    return state;
+  }
+
+  // Nothing the supervisor drives for the child is in flight.
+  function isStandbyQuiet(): boolean {
+    return (
+      (dispatching === null || dispatchWaiting === dispatching) &&
+      detachedWrites.size === 0 &&
+      pendingCancellations.size === 0 &&
+      cancellationCommits.size === 0 &&
+      deliveringSignals === 0 &&
+      inputCommits.size === 0 &&
+      !processingReplayPending
+    );
+  }
+
+  async function untilStandbyProgress(
+    attempt: StandbyAttempt,
+    progress: Promise<undefined>,
+  ): Promise<void> {
+    await raceAbort(attempt.abandon.signal, progress);
+    attempt.abandon.signal.throwIfAborted();
+  }
+
+  // Apply the writes the fence held, in the order the child sent them. A child
+  // that exited never has them land, as a completed stop drops them.
+  function releaseStandbyFence(attempt: StandbyAttempt): void {
+    const held = attempt.fence;
+    attempt.fence = null;
+    if (held === null || attempt.childExited) return;
+    for (const data of held) {
+      ownDetachedWrite(
+        handleSubstrateWriteRequest(data).catch((cause) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`substrate.write.request handler crashed: ${message}`;
+        }),
+      );
+    }
+  }
+
+  function inboxHoldsMail(): Promise<boolean> {
+    return inboxPrimitives.hasInboxEntries(
+      bindings.repoStore,
+      inboxWritePrincipal,
+      bindings.workflowRunRepoId,
+      bindings.deploymentMailAddress,
+    );
+  }
+
+  async function stopChildForStandby(
+    attempt: StandbyAttempt,
+    outcome: StandbyOutcome,
+  ): Promise<StandbyOutcome> {
+    const cohort = currentStandbyCohort(attempt);
+    const record = bindings.recordStandby;
+    // Read before the child reports its parks, so history written after the
+    // read ends a standby restored from the record.
+    let tip: string | null = null;
+    if (record !== undefined) {
+      try {
+        tip = await readHistoryTip();
+      } catch (cause) {
+        throw new StandbyRefusedError(
+          `the run's history could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+          { cause },
+        );
+      }
+      currentStandbyCohort(attempt);
+    }
+    const correlations = await queryParkedCorrelations(cohort.controlSender);
+    currentStandbyCohort(attempt);
+    if (correlations === "unreachable") {
+      throw new StandbyDeferredError(
+        "the workflow child could not be asked for the correlations it is parked on",
+      );
+    }
+    // A stopped child's parks are registered again from this record alone, so
+    // a child that does not report them keeps running.
+    if (correlations === "timeout") {
+      throw new StandbyRefusedError(
+        "the workflow child did not report the correlations it is parked on",
+      );
+    }
+    attempt.correlations = correlations;
+    // Mail the dispatch cannot hand over yet, such as mail behind a run that
+    // waits on an approval or a signal. Mail still in the inbox would wake the
+    // child as soon as it stopped, and nothing would wake it for mail the
+    // dispatch took that the child has not committed.
+    if (untakenMessageId !== null) {
+      throw new StandbyRefusedError(
+        "mail the dispatch took is still waiting for the child",
+      );
+    }
+    if (strandedMail) {
+      throw new StandbyRefusedError(
+        "mail a failed dispatch or replay left waits in processing/ for the child to restart",
+      );
+    }
+    const mailQueued = await inboxHoldsMail().catch((cause: unknown) => {
+      throw new StandbyRefusedError(
+        `the deployment's inbox could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      );
+    });
+    if (mailQueued) {
+      throw new StandbyRefusedError(
+        "mail is waiting in the deployment's inbox",
+      );
+    }
+    const live = currentStandbyCohort(attempt);
+    // From here the child's exit is planned, not a crash.
+    state = { ...live, phase: "standby", restored: false };
+    stopRecyclePolicy();
+    // A drain deadline does not carry across standby, as it does not across
+    // a recycle. One that already passed wakes the child for its cancel.
+    stopDrainAccumulators("standby");
+    const exited = live.handle.exited.then(
+      () => true,
+      () => true,
+    );
+    // Not awaited: a wedged child can block the send, and the kill must not
+    // wait for it.
+    void live.controlSender
+      .send({ type: "shutdown", data: { reason: "standby" } })
+      .catch((cause: unknown) => {
+        logger.warn`sending shutdown to the child in standby failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    const deadline = waitDeadline(readySetTimer, DEFAULT_KILL_TIMEOUT_MS);
+    const stopped = await Promise.race([
+      exited,
+      deadline.promise.then(() => false),
+    ]);
+    readyClearTimer(deadline.handle);
+    if (!stopped) {
+      await killChildHandle(live.handle, DEFAULT_KILL_TIMEOUT_MS, {
+        setTimer: readySetTimer,
+        clearTimer: readyClearTimer,
+        logger,
+      }).catch((cause: unknown) => {
+        logger.warn`killing the child in standby failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    }
+    await live.eventPump.catch(() => {
+      /* the child is gone; its event channel ending is expected */
+    });
+    live.terminalCohortAbort.abort();
+    rejectCohortAwaiters("standby");
+    if (pendingChildExit?.generation === attempt.generation) {
+      pendingChildExit = null;
+    }
+    // The stopped child's held writes never land. A child that wrote after it
+    // reported quiet was working again, so it is woken for that work.
+    const wroteAfterQuiet = attempt.fence !== null && attempt.fence.length > 0;
+    attempt.fence = null;
+    // Inputs wait for the attempt to settle, so the host records the child as
+    // it stopped.
+    if (record !== undefined) {
+      try {
+        if (verifiedDefinition === null) {
+          throw new Error("no child has reported a verified definition");
+        }
+        await record({
+          parked: correlations,
+          ...(outcome.wakeAt !== undefined ? { wakeAt: outcome.wakeAt } : {}),
+          tip,
+          definition: verifiedDefinition,
+        });
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        if (state.phase === "standby") {
+          inStandby = { correlations, outcome, wakeTimer: null };
+          void wakeFromStandby("a standby that was not recorded").catch(
+            (wakeCause: unknown) => {
+              logger.error`waking a child whose standby was not recorded failed: ${wakeCause instanceof Error ? wakeCause.message : String(wakeCause)}`;
+            },
+          );
+        }
+        throw new StandbyRefusedError(
+          `the standby could not be recorded: ${message}`,
+          { cause },
+        );
+      }
+    }
+    // Only a shutdown moves the state on before the attempt settles.
+    if (state.phase !== "standby") {
+      throw new StandbyAbandonedError(
+        "the workflow supervisor shut down while entering standby",
+      );
+    }
+    inStandby = {
+      correlations,
+      outcome,
+      wakeTimer:
+        outcome.wakeAt === undefined
+          ? null
+          : armStandbyWakeTimer(outcome.wakeAt),
+    };
+    // Mail enqueued after the check before the stop waits in the inbox; mail
+    // enqueued after this read finds the child in standby and wakes it.
+    const mailWaiting = await inboxHoldsMail().catch((cause: unknown) => {
+      logger.error`reading the inbox of the child in standby failed; waking it in case mail waits there: ${cause instanceof Error ? cause.message : String(cause)}`;
+      return true;
+    });
+    if (mailWaiting) {
+      void wakeFromStandby("mail").catch((cause: unknown) => {
+        logger.error`waking a child in standby for mail waiting in its inbox failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+    } else if (wroteAfterQuiet) {
+      void wakeFromStandby("work it began after it went quiet").catch(
+        (cause: unknown) => {
+          logger.error`waking a child in standby for its interrupted work failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+        },
+      );
+    }
+    // Abandoned too late to keep the child running. A cancellation or a wake
+    // runs the child again itself, and a shutdown keeps it stopped.
+    if (attempt.abandon.signal.aborted) {
+      if (attempt.wakeIfStopped) {
+        void wakeFromStandby("an abandoned standby attempt").catch(
+          (cause: unknown) => {
+            logger.error`waking a child whose standby was abandoned failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+          },
+        );
+      }
+      attempt.abandon.signal.throwIfAborted();
+    }
+    return outcome;
+  }
+
+  function armStandbyWakeTimer(wakeAt: string): unknown {
+    const delay = Math.max(0, Date.parse(wakeAt) - drainNow());
+    return readySetTimer(
+      () => {
+        if (state.phase !== "standby" || inStandby === null) return;
+        if (delay > MAX_TIMER_MS) {
+          inStandby.wakeTimer = armStandbyWakeTimer(wakeAt);
+          return;
+        }
+        void wakeFromStandby("timer").catch((cause: unknown) => {
+          logger.error`waking a child in standby for its timer failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+        });
+      },
+      Math.min(delay, MAX_TIMER_MS),
+    );
+  }
+
+  // Respawn a child in standby through the recycle path: its drain and kill
+  // steps have nothing left to do, and the respawn and cohort install are the
+  // ones a recycle runs.
+  async function wakeFromStandby(reason: string): Promise<void> {
+    // A standby attempt still stopping the child finishes first.
+    const attempt = standbyAttempt;
+    if (attempt !== null) {
+      bindings.onStandbyWait?.("attempt");
+      await attempt.settled;
+    }
+    // The respawned child applies a cancellation from its log, so one being
+    // committed lands first, as does a drain deadline's that waits on the
+    // standby attempt it called off.
+    while (cancellationCommits.size > 0 || drainCancellations.size > 0) {
+      bindings.onStandbyWait?.("cancellation");
+      await Promise.allSettled([...cancellationCommits, ...drainCancellations]);
+    }
+    if (waking !== null) return waking;
+    if (state.phase !== "standby") return;
+    const prior = state;
+    const priorContext = spawnContext;
+    if (priorContext === null) {
+      throw new Error("a workflow supervisor in standby has no spawn context");
+    }
+    if (inStandby !== null && inStandby.wakeTimer !== null) {
+      readyClearTimer(inStandby.wakeTimer);
+    }
+    const woken = runRespawn({
+      origin: "wake",
+      reason,
+      prior,
+      priorContext,
+      drain: async () => undefined,
+    }).then(() => {
+      // A shutdown that began during the respawn left the child uninstalled.
+      if (state.phase === "stopping" || state.phase === "stopped") {
+        throw new Error(
+          "the workflow supervisor shut down before the woken child ran",
+        );
+      }
+      inStandby = null;
+      // A stop and wake are planned, so the woken child can still earn back a
+      // backoff that a crash raised.
+      if (respawnBackoffMs !== respawnBackoffInitialMs) {
+        armStableRunResetTimer(childGeneration);
+      }
+      try {
+        bindings.onWake?.({ reason, requested: reason === REQUESTED_WAKE });
+      } catch (cause) {
+        logger.error`onWake sink threw: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
+    });
+    waking = woken.finally(() => {
+      waking = null;
+    });
+    return waking;
+  }
+
+  // A respawn is starting the next child. A restored standby's wake does so
+  // from `standby`.
+  function respawning(): boolean {
+    return (
+      state.phase === "recycling" ||
+      (state.phase === "standby" && respawnInProgress)
+    );
+  }
+
   /**
    * Shared kill/replay/respawn/install driver. The caller has already
-   * verified the supervisor is `running` with a live spawn context and
-   * snapshotted both as `prior`/`priorContext`; this function transitions
-   * to `recycling`, runs the six-step `triggerRecycle` sequence with the
-   * caller-supplied `drain` step, and swaps in the new cohort via the
-   * inline `installNewChild` callback. The operator/policy/self recycle
-   * path is the sole caller today; the crash-respawn path will call it with
-   * a no-op drain (its child is already dead).
+   * snapshotted the supervisor's active state and spawn context as
+   * `prior`/`priorContext`; this function transitions to `recycling`, runs the
+   * six-step `triggerRecycle` sequence with the caller-supplied `drain` step,
+   * and swaps in the new cohort via the inline `installNewChild` callback. A
+   * recycle, a crash respawn, and the wake of a child in standby call it; the
+   * last two pass a no-op drain, since their child is already dead. A restored
+   * standby has no cohort: it stays in `standby` until its first child is
+   * installed, and replays only mail a failed boot replay left behind.
    */
   async function runRespawn(args: {
     origin: RecycleOrigin;
     reason: string;
-    prior: ActiveState;
+    prior: Extract<SupervisorState, { phase: "running" | "standby" }>;
     priorContext: SpawnContext;
     drain: (deadlineMs: number) => Promise<void>;
   }): Promise<RecycleAttempt> {
@@ -4740,6 +5904,7 @@ export function createWorkflowSupervisor(
     // turn; two respawns can never interleave.
     respawnInProgress = true;
     const { origin, reason, prior, priorContext, drain } = args;
+    const cohort = prior.phase === "standby" && prior.restored ? null : prior;
     // The cohort abort no longer fires up-front. triggerRecycle drives
     // the drain step against a LIVE cohort first, then invokes
     // `abortPriorCohort` (the callback below) between the drain and the
@@ -4747,7 +5912,7 @@ export function createWorkflowSupervisor(
     // up-front would starve drain accumulators of live terminal events;
     // aborting after the kill would race the dispatch loop's next
     // iteration against the controlSender that's about to disappear.
-    const priorDispatchLoop = prior.dispatchLoop;
+    const priorDispatchLoop = cohort === null ? null : cohort.dispatchLoop;
     // Transition to `recycling`. Inbound mail continues to flow through
     // `enqueueInbox` unchanged; the prior dispatch loop is still alive
     // for the drain window and keeps forwarding to the dying child.
@@ -4755,20 +5920,22 @@ export function createWorkflowSupervisor(
     // loop notices the abort and exits before the kill lands. The new
     // dispatch loop picks up the inbox once `installNewChild` swaps
     // the wiring.
-    state = {
-      phase: "recycling",
-      handle: prior.handle,
-      controlSender: prior.controlSender,
-      channelId: prior.channelId,
-      eventPump: prior.eventPump,
-      onInferenceEvent: prior.onInferenceEvent,
-      mailUnsubscribe: prior.mailUnsubscribe,
-      terminalCohortAbort: prior.terminalCohortAbort,
-      terminalBroadcaster: prior.terminalBroadcaster,
-      dispatchLoop: null,
-      replayDone: null,
-      sweepDone: prior.sweepDone,
-    };
+    if (cohort !== null) {
+      state = {
+        phase: "recycling",
+        handle: cohort.handle,
+        controlSender: cohort.controlSender,
+        channelId: cohort.channelId,
+        eventPump: cohort.eventPump,
+        onInferenceEvent: cohort.onInferenceEvent,
+        mailUnsubscribe: cohort.mailUnsubscribe,
+        terminalCohortAbort: cohort.terminalCohortAbort,
+        terminalBroadcaster: cohort.terminalBroadcaster,
+        dispatchLoop: null,
+        replayDone: null,
+        sweepDone: cohort.sweepDone,
+      };
+    }
     let attempt: RecycleAttempt;
     try {
       attempt = await triggerRecycle(
@@ -4776,7 +5943,7 @@ export function createWorkflowSupervisor(
           bindings: {
             ...bindings,
             subprocessSpawner: (spawnArgs) => {
-              if (state.phase !== "recycling") {
+              if (!respawning()) {
                 throw new Error(
                   `Cannot spawn a replacement in supervisor phase ${state.phase}`,
                 );
@@ -4791,19 +5958,24 @@ export function createWorkflowSupervisor(
           },
           definitionHash: priorContext.definitionHash,
           onInferenceEvent: priorContext.onInferenceEvent,
-          current: {
-            handle: prior.handle,
-            controlSender: prior.controlSender,
-            channelId: prior.channelId,
-            eventPump: prior.eventPump,
-          },
+          current:
+            cohort === null
+              ? null
+              : {
+                  handle: cohort.handle,
+                  controlSender: cohort.controlSender,
+                  channelId: cohort.channelId,
+                  eventPump: cohort.eventPump,
+                },
           drain,
           replayProcessingToInbox: async () => {
             // A boot replay still running would put back mail the replacement
-            // takes.
+            // takes. No child has run since a restored standby's boot replay,
+            // so only mail a failed one left behind needs replaying.
             if (bootReplay !== null) {
               bindings.onRespawnWait?.("replay");
-              await bootReplay;
+              const booted = await bootReplay;
+              if (booted && prior.phase === "standby" && prior.restored) return;
             }
             // Mail a live run already took stays in processing/, as on spawn:
             // the resumed run carries on with it. Redelivered, its start mail
@@ -4818,7 +5990,7 @@ export function createWorkflowSupervisor(
             }
             // Shutdown waits for a replay that began before it; one after it
             // would write a repository its host may already have removed.
-            if (state.phase !== "recycling") {
+            if (!respawning()) {
               throw new Error("the workflow supervisor is shutting down");
             }
             const replay = (async () => {
@@ -4837,11 +6009,15 @@ export function createWorkflowSupervisor(
                   bindings.deploymentMailAddress,
                   { ownedMessageIds },
                 );
+              strandedMail = false;
               keepOwnedMessages(retainedMessageIds, { childRunning: false });
             })();
             respawnReplays.add(replay);
             try {
               await replay;
+            } catch (cause) {
+              strandedMail = true;
+              throw cause;
             } finally {
               respawnReplays.delete(replay);
             }
@@ -4850,7 +6026,7 @@ export function createWorkflowSupervisor(
             // Fired by triggerRecycle between the drain and the kill.
             // The prior dispatch loop notices the abort on its next
             // wake and exits before the kill drops the child.
-            prior.terminalCohortAbort.abort();
+            cohort?.terminalCohortAbort.abort();
             wakeDispatch();
           },
           // Kept inline rather than extracted: this cohort-swap closes over
@@ -4875,7 +6051,7 @@ export function createWorkflowSupervisor(
             // Shutdown already owns the uninstalled child's kill and exit.
             // A late ready frame must only drain its IPC resources, never
             // install it as a new running cohort.
-            if (state.phase !== "recycling") {
+            if (!respawning()) {
               void wiring.eventPump.catch((cause: unknown) => {
                 const message =
                   cause instanceof Error ? cause.message : String(cause);
@@ -4896,10 +6072,7 @@ export function createWorkflowSupervisor(
             // child); the resumed child re-discovers any survivors
             // and the next `drain()` mints fresh accumulators
             // against the new cohort.
-            for (const accumulator of drainAccumulators.values()) {
-              accumulator.stop();
-            }
-            drainAccumulators.clear();
+            stopDrainAccumulators("recycle");
             cohortRunIds.clear();
             runInputChannels.clear();
             parkNotifyWaiters.clear();
@@ -4910,11 +6083,14 @@ export function createWorkflowSupervisor(
             // child will re-issue substrate writes through fresh
             // handlers under the new cohort's channel.
             rejectCohortAwaiters("recycle");
+            untakenMessageId = null;
+            dispatchRequestId = null;
+            dispatchAnswer = null;
             // Dispose the prior cohort's broadcaster so any minted
             // iterator still held by the aborted dispatch loop or a
             // stopped accumulator settles with `done: true`. The next
             // cohort gets a fresh broadcaster wired below.
-            prior.terminalBroadcaster.dispose();
+            cohort?.terminalBroadcaster.dispose();
             // Mint a fresh cohort abort and start a new dispatch
             // loop against the new child's controlSender.
             const newCohortAbort = new AbortController();
@@ -5071,6 +6247,29 @@ export function createWorkflowSupervisor(
   }
 
   async function deliverSignal(opts: DeliverSignalOpts): Promise<void> {
+    // A signal delivered during a standby attempt's final check would land
+    // after the child reported quiet, so it waits for the check to end either
+    // way.
+    const frozen = standbyAttempt === null ? null : standbyAttempt.frozen;
+    if (frozen !== null) {
+      bindings.onStandbyWait?.("input");
+      await frozen.promise;
+    }
+    // A child in standby, or one a wake is starting, takes the signal once it
+    // runs.
+    if (state.phase === "standby" || waking !== null) {
+      await wakeFromStandby("signal");
+    }
+    deliveringSignals += 1;
+    try {
+      await deliverSignalToChild(opts);
+    } finally {
+      deliveringSignals -= 1;
+      noteStandbyProgress();
+    }
+  }
+
+  async function deliverSignalToChild(opts: DeliverSignalOpts): Promise<void> {
     // The supervisor is the single producer of `signal.deliver` control
     // IPC frames. Routing every signal delivery through the same child
     // makes the workflow-process the single writer of `runs/<runId>/events/`
@@ -5112,18 +6311,65 @@ export function createWorkflowSupervisor(
         `supervisor: deliverSignal raced a recycle in phase ${phaseAfterRefresh}; expected starting/running`,
       );
     }
-    await state.controlSender.send({
-      type: "signal.deliver",
-      data: {
-        runId: opts.runId,
-        signalName: opts.signalName,
-        signalId: opts.signalId,
-        payload: opts.payload,
-        ...(opts.correlationId !== undefined
-          ? { correlationId: opts.correlationId }
-          : {}),
-      },
-    });
+    const requestId = nextInputRequest(null);
+    try {
+      await state.controlSender.send({
+        type: "signal.deliver",
+        data: {
+          runId: opts.runId,
+          signalName: opts.signalName,
+          signalId: opts.signalId,
+          payload: opts.payload,
+          ...(opts.correlationId !== undefined
+            ? { correlationId: opts.correlationId }
+            : {}),
+          requestId,
+        },
+      });
+    } catch (cause) {
+      inputCommits.delete(requestId);
+      throw cause;
+    }
+  }
+
+  function nextInputRequest(input: RunInput | null): string {
+    const requestId = `input-${String((inputSeq += 1))}`;
+    inputCommits.set(requestId, input);
+    return requestId;
+  }
+
+  function releaseTakenInput(input: RunInput): void {
+    if (takenInputs.get(input.runId) === input.correlationId)
+      takenInputs.delete(input.runId);
+  }
+
+  // A dispatch sends no input during a standby attempt's final check. The
+  // attempt refuses while the dispatch holds mail the child has not taken, so
+  // the input goes out once the check ends.
+  async function deliveryAllowed(cohortAbort: AbortController) {
+    for (;;) {
+      const frozen = standbyAttempt === null ? null : standbyAttempt.frozen;
+      if (frozen === null) return !cohortAbort.signal.aborted;
+      bindings.onStandbyWait?.("input");
+      await whileDispatchWaits(
+        cohortAbort,
+        raceAbort(cohortAbort.signal, frozen.promise),
+      );
+      if (cohortAbort.signal.aborted) return false;
+    }
+  }
+
+  async function whileDispatchWaits<T>(
+    cohortAbort: AbortController,
+    wait: Promise<T>,
+  ): Promise<T> {
+    dispatchWaiting = cohortAbort;
+    noteStandbyProgress();
+    try {
+      return await wait;
+    } finally {
+      if (dispatchWaiting === cohortAbort) dispatchWaiting = null;
+    }
   }
 
   // Mail a replay left with the run that took it. A run that parked or ended
@@ -5201,7 +6447,11 @@ export function createWorkflowSupervisor(
     // `deliverSignal`: `state.controlSender` still points at the dying
     // child, so a frame would either buffer behind the SIGTERM or write
     // into a closed pipe and be lost. Rejecting surfaces the race so the
-    // caller can retry once the recycle completes.
+    // caller can retry once the recycle completes. A child in standby has none
+    // to update: its respawn reads the host's persisted sources. A wake
+    // starting the first child of a restored standby is rejected as a
+    // recycle is.
+    if (state.phase === "standby" && !respawning()) return;
     if (state.phase !== "running" && state.phase !== "starting") {
       throw new Error(
         `supervisor: deliverSources called in phase ${state.phase}; expected starting/running`,
@@ -5363,6 +6613,7 @@ export function createWorkflowSupervisor(
 
   return {
     spawn,
+    restoreInStandby,
     requestCancel,
     shutdown,
     drain,
@@ -5373,8 +6624,14 @@ export function createWorkflowSupervisor(
     deliverGrants,
     reEmitParkedCorrelations,
     credentialDelivery: () => currentCredentialDelivery,
+    enterStandby,
+    wake,
+    abandonStandby: abandonCurrentStandby,
   };
 }
+
+// A run's input a mail was delivered on.
+type RunInput = { runId: string; correlationId: string };
 
 type SupervisorState =
   | { phase: "idle" }
@@ -5388,7 +6645,22 @@ type SupervisorState =
   | { phase: "crash-looping" }
   | ({ phase: "starting" } & ActiveState)
   | ({ phase: "running" } & ActiveState)
-  | ({ phase: "recycling" } & ActiveState);
+  | ({ phase: "recycling" } & ActiveState)
+  // The child was stopped while every run waited. The cohort record is kept,
+  // with its exited handle, so a wake respawns into the same mail
+  // subscription and address registration.
+  | ({ phase: "standby"; restored: false } & ActiveState)
+  // A standby restored after a restart, before any child has run: a wake
+  // starts the first one into the mail subscription the restore took.
+  | ({ phase: "standby"; restored: true } & RestoredState);
+
+// What a standby restored after a restart holds without a child. Its boot
+// replay gates the first child's dispatch, as a spawn's does.
+type RestoredState = {
+  mailUnsubscribe: (() => void) | null;
+  replayDone: Promise<void>;
+  sweepDone: Promise<void>;
+};
 
 type ActiveState = {
   handle: SubprocessHandle;

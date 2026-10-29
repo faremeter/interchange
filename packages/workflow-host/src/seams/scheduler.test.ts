@@ -14,7 +14,12 @@ import type {
   RepoStore,
   ValidatePushResult,
 } from "@intx/hub-sessions";
-import { commitBuffered, dropChain, reloadState } from "@intx/workflow/runtime";
+import {
+  commitBuffered,
+  dropChain,
+  reloadState,
+  whenDelivered,
+} from "@intx/workflow/runtime";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowHostScheduler } from "./scheduler";
@@ -912,6 +917,59 @@ describe("workflow-host scheduler", () => {
       expect(
         (await reloadState({ repoStore: runtimeStore }, runId)).lastSeq,
       ).toBe(3);
+    } finally {
+      await scheduler.stop();
+      dropChain(runId);
+    }
+  });
+
+  // The scheduler reports a failed commit only as an unhandled rejection, which
+  // fails the test that is running.
+  test("a commit that fails once the scheduler stopped is not reported, since the next child queues its timer again", async () => {
+    const dataDir = await makeTempDir("scheduler-stopped-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: {
+        skill: permissiveHandler("workflow-runs-stopped"),
+      },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "skill", id: "deployment-stopped" };
+    const runId = "r-timer-stopped";
+    const runtimeStore = runtimeStoreFor(store, repoId);
+    await runtimeStore.append(runId, {
+      kind: "TimerSet",
+      seq: 1,
+      at: "2026-01-01T00:00:00.000Z",
+      timerId: "t-commit",
+      fireAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const writing = Promise.withResolvers<undefined>();
+    const write = Promise.withResolvers<never>();
+    const timeouts = createManualTimeouts();
+    const scheduler = createWorkflowHostScheduler({
+      repoStore: {
+        ...store,
+        writeTreePreservingPrefix: () => {
+          writing.resolve(undefined);
+          return write.promise;
+        },
+      },
+      runtimeStore,
+      principal,
+      listActiveDeployments: () => [repoId],
+      ref: REF,
+      clock: () => new Date(),
+      scheduleTimeout: timeouts.scheduleTimeout,
+    });
+    try {
+      await scheduler.start();
+      timeouts.fireAll();
+      await writing.promise;
+      await scheduler.stop();
+      write.reject(new Error("write cancelled"));
+      await whenDelivered();
     } finally {
       await scheduler.stop();
       dropChain(runId);

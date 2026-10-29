@@ -146,6 +146,12 @@ type NameSubscription = {
 
 export type SignalChannelHandle = SignalChannel & {
   /**
+   * `deliver`, answering whether the run holds the signal. A log that already
+   * ended takes none, so nothing is written and the answer is `false`; a
+   * repeated `signalId` is already held.
+   */
+  land(...args: Parameters<SignalChannel["deliver"]>): Promise<boolean>;
+  /**
    * Tear down every slot subscription and reject every pending
    * awaiter. Idempotent. After `stop()` the channel holds no
    * substrate watcher handles.
@@ -303,14 +309,18 @@ export function createWorkflowHostSignalChannel(
     });
   }
 
-  return {
-    async deliver(name, payload, signalId, correlationId) {
+  const handle: SignalChannelHandle = {
+    async deliver(...args) {
+      await handle.land(...args);
+    },
+    async land(name, payload, signalId, correlationId) {
       if (stopped) {
         throw new Error("signal channel: deliver after stop");
       }
       const id = signalId ?? opts.newId();
       const at = opts.clock().toISOString();
       const prefix = `runs/${opts.runId}/events/`;
+      let landed = true;
       await withRunCommitBarrier(
         { repoStore: opts.runtimeStore },
         opts.runId,
@@ -357,6 +367,7 @@ export function createWorkflowHostSignalChannel(
                 // past RunFailed/RunCompleted/RunCancelled would make the
                 // next resume disagree with the terminal result already
                 // reported.
+                landed = duplicate || !terminal;
                 if (duplicate || terminal) return out;
                 const nextSeq = maxSeq + 1;
                 // The workflow-run kind handler's `EventEnvelope`
@@ -380,6 +391,7 @@ export function createWorkflowHostSignalChannel(
             },
           ),
       );
+      return landed;
     },
     async awaitNext(name, onWake, signal, correlationId) {
       if (stopped) {
@@ -456,6 +468,7 @@ export function createWorkflowHostSignalChannel(
       }
     },
   };
+  return handle;
 }
 
 function isTerminalOnDiskEvent(parsed: unknown): boolean {

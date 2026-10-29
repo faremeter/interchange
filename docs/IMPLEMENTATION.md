@@ -573,7 +573,7 @@ Implementation lives in
 `packages/workflow-host/src/supervisor/supervisor.ts`. The recycle
 sequence is library code in
 `packages/workflow-host/src/supervisor/recycle.ts`; see the Recycle
-subsection below for the six-step contract and the three trigger
+subsection below for the six-step contract and the five trigger
 origins.
 
 ### Workflow-Process Child
@@ -655,11 +655,19 @@ ChannelSender` writes against; the event channel is the
    - `grants-updated` -> swap the active credentialsSnapshot.
    - `credentials-updated` -> merge into the material cell.
    - `drain` -> flip the drain controller's signal.
+   - `signal.deliver` -> commit the signal as `SignalReceived`. A frame
+     with a `requestId`, like a `trigger.fire` with one, is answered with
+     `input.taken` once the commit settles, saying whether it committed,
+     so a standby request waits for it. A log that already ended takes no
+     signal, and the answer says so. The dispatch that delivered a mail
+     consumes it only once that answer says committed; a declined mail is
+     rejected if the committed log shows its run ended, and otherwise fails
+     the dispatch and stays in `processing/` until a respawn replays it.
    - `quiet.request` -> make every buffered event durable and answer
      whether every run only waits on input from outside, with the
      earliest timer the scheduler has queued; with `wait`, answer once
      that holds. A run that has ended answers `ended`, and a check that
-     fails answers with its error.
+     fails answers with its error; either refuses the standby request.
      A check still waiting when the next one arrives is dropped
      unanswered, since the supervisor gave up on it.
    - `shutdown` -> stop accepting new triggers and exit the loop.
@@ -1019,7 +1027,7 @@ to the channelId's lifetime; the rotation is what defends against
 frame replay across the recycle boundary that monotonic seq alone
 cannot defend against.
 
-**Three trigger origins funnel through `triggerRecycle(reason)`:**
+**Five trigger origins funnel through `triggerRecycle(reason)`:**
 
 - **Operator command.** The host receives a `recycle` request via
   its caller-facing API and routes it to the supervisor's
@@ -1032,7 +1040,8 @@ cannot defend against.
   unless the operator sets a threshold). On a threshold trip the
   policy calls `triggerRecycle` with origin `policy` and a reason
   naming the tripped bound. Each child gets its own check, armed
-  when it starts, so `maxUptimeMs` measures the running child.
+  when it starts, so `maxUptimeMs` measures the running child; a
+  deployment in standby has no child and no check.
 - **Workflow-process self-initiated.** The child sends a
   `recycle.request` payload over control IPC when its own self-
   check decides it needs to be recycled (an internal consistency
@@ -1042,9 +1051,17 @@ cannot defend against.
   IPC payload union extension is the only contract change recycle
   introduces; the envelope, signature, and channelId/seq rules are
   unchanged.
+- **Crash respawn.** A child that exits unexpectedly is respawned
+  with origin `crash` once the respawn backoff has elapsed.
+- **Wake.** A child in standby is respawned with origin `wake` for
+  mail, a signal, a cancellation, its earliest pending timer, or
+  `wake()`.
 
-All three origins land in the same code path. The reason string is
-the only origin-specific data the path carries forward.
+All five origins land in the same code path. The origin tag and the
+reason string are the only origin-specific data it carries forward. A
+crash respawn and a wake drain nothing, since their child is already
+gone, and the first wake of a deployment restored in standby has no
+child to stop and skips the replay its boot already made.
 
 #### Placeholders And Future Work
 

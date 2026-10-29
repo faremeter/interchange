@@ -356,8 +356,9 @@ workflows.** Where it lives, when it tears down, how recycle/drain interact:
   (or eagerly at spawn for a hot path; lazy is the default to avoid paying
   tool construction before any mail arrives).
 - **When it's torn down.** On `agent.undeploy` (deployment teardown), on child
-  `shutdown`, and on recycle. A long-lived agent is _not_ torn down between
-  messages — that is the entire point of warm-keep.
+  `shutdown`, on recycle, and when standby stops the child. A long-lived agent
+  is otherwise _not_ torn down between messages — that is the entire point of
+  warm-keep.
 - **Recycle interaction.** The supervisor's recycle policy
   (`packages/workflow-host/src/supervisor/recycle.ts`) kills and respawns the
   child on drain/SIGTERM/SIGKILL/respawn. On respawn the warm-agent cache is

@@ -22,6 +22,11 @@ export type MockMailBus = MailBusBindings & {
   /** Deliver a raw message to every handler subscribed for `address`. */
   deliver(address: string, message: Uint8Array): void;
   /**
+   * As `deliver`, resolving once every handler is done with the message, for
+   * a test that needs the arrival finished before it goes on.
+   */
+  deliverSettled(address: string, message: Uint8Array): Promise<void>;
+  /**
    * Resolve once `address` is registered, whether it already is or is
    * registered later.
    *
@@ -89,6 +94,11 @@ export function createMockMailBus(): MockMailBus {
       const set = subscribers.get(address);
       if (set === undefined) return;
       for (const handler of set) void handler(message).catch(() => undefined);
+    },
+    async deliverSettled(address: string, message: Uint8Array) {
+      const set = subscribers.get(address);
+      if (set === undefined) return;
+      await Promise.allSettled([...set].map((handler) => handler(message)));
     },
     async awaitRegistered(address: string) {
       for (;;) {

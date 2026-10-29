@@ -27,6 +27,8 @@ export type StubRepoStoreOpts = {
    * fails on the call rather than accepting it.
    */
   writeTree?: boolean;
+  /** Answer `resolveRef` with this tip for every ref; unset, the call fails. */
+  refTip?: string | null;
 };
 
 export function createStubRepoStore(
@@ -47,6 +49,9 @@ export function createStubRepoStore(
             newlyTerminalRuns: [],
           }),
         }
+      : {}),
+    ...(opts.refTip !== undefined
+      ? { resolveRef: async () => opts.refTip ?? null }
       : {}),
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; every method the opts did not enable surfaces a precise failure via the proxy

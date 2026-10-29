@@ -95,6 +95,29 @@ function parseControlFrameTypes(lines: readonly string[]): string[] {
  * Parse every `signal.deliver` frame in the supervisor-to-child stream,
  * returning the `{ signalName, signalId }` for each.
  */
+// The child's answer that it committed the `count`th `signal.deliver` it got.
+async function confirmDelivery(
+  wired: {
+    supervisorToChild: Parameters<typeof waitForUpstreamPayloads>[0];
+    childSender: ReturnType<typeof createControlChannelSender>;
+  },
+  count: number,
+): Promise<void> {
+  const deliveries = await waitForUpstreamPayloads(
+    wired.supervisorToChild,
+    "signal.deliver",
+    count,
+  );
+  const requestId = deliveries[count - 1]?.data.requestId;
+  if (requestId === undefined) {
+    throw new Error("the delivery asked for no confirmation");
+  }
+  await wired.childSender.send({
+    type: "input.taken",
+    data: { requestId, committed: true },
+  });
+}
+
 function parseSignalDelivers(
   lines: readonly string[],
 ): { signalName: string; signalId: string; payload: unknown }[] {
@@ -951,6 +974,9 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
         watermark: 0,
         prunedMessageIds: [],
       };
+    },
+    async hasInboxEntries(_store, _principal, _repoId, address) {
+      return getOrCreate(address).inbox.size > 0;
     },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {
       const state = getOrCreate(address);
@@ -4657,6 +4683,7 @@ describe("createWorkflowSupervisor", () => {
     // resumed run: markConsumed for a signal now holds until the child has
     // durably taken it up (re-parks or terminates), mirroring trigger.fire.
     await waitForUpstreamPayload(wired.supervisorToChild, "signal.deliver");
+    await confirmDelivery(wired, 1);
     // The signal is sent but the run has not taken it up, so msg-2's
     // markConsumed is held until it re-parks or terminates. Only msg-1 is
     // consumed.
@@ -4763,6 +4790,7 @@ describe("createWorkflowSupervisor", () => {
     const firstSignal = signals[0];
     if (firstSignal === undefined) throw new Error("unreachable");
     expect(firstSignal.signalName).toBe(signalName("corr-input-1"));
+    await confirmDelivery(wired, 1);
 
     // msg-1 is consumed off its park, but msg-2's signal is not yet taken up
     // by the run, so its markConsumed is still held.
@@ -5262,6 +5290,7 @@ describe("createWorkflowSupervisor", () => {
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-3"));
 
     await waitSignals(1);
+    await confirmDelivery(wired, 1);
     await wired.childSender.send({
       type: "park.notify",
       data: {
@@ -5273,6 +5302,7 @@ describe("createWorkflowSupervisor", () => {
     await waitConsumed(2);
 
     await waitSignals(2);
+    await confirmDelivery(wired, 2);
     await wired.childSender.send({
       type: "terminal.event",
       data: {
