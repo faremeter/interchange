@@ -396,26 +396,6 @@ export type SidecarRouter = {
     },
   ): Promise<boolean>;
   /**
-   * Update a run's authorization grants independently of mail. For a trigger,
-   * pass `runGrants` to `routeMail` so both frames share one admission decision.
-   * Sends on the live connection, stamped with the incarnation the Hub routes
-   * for the address, and returns `false` whenever the address is unroutable;
-   * the caller keeps any stable-run grant reservation so a later
-   * first-delivery attempt reuses it.
-   *
-   * `senderIdentities` co-delivers the run's authorized senders' resolved keys
-   * on the same barrier as the grant, so a recipient that caches from this
-   * frame binds each sender address to the hub-vouched key. The caller passes
-   * `undefined` when there is no sender to co-deliver (a standing-grant refresh)
-   * or the sender has no resolvable key; a null key is never carried.
-   */
-  sendRunGrants(
-    agentAddress: string,
-    runId: string,
-    stepGrants: RunGrantsFrame["stepGrants"],
-    senderIdentities: RunGrantsFrame["senderIdentities"],
-  ): boolean;
-  /**
    * Report that a run-address sender's deploy has settled, driving any mail the
    * sender parked while its public key was not yet recorded. A `recorded`
    * outcome wakes the parked mail and re-drives its delivery now that the key
@@ -5130,25 +5110,6 @@ export function createSidecarRouter(
     }
   }
 
-  function sendRunGrants(
-    agentAddress: string,
-    runId: string,
-    stepGrants: RunGrantsFrame["stepGrants"],
-    senderIdentities: RunGrantsFrame["senderIdentities"],
-  ): boolean {
-    const routed = routedIncarnation(agentAddress);
-    if (routed === undefined) return false;
-    routed.conn.send({
-      type: "run.grants",
-      agentAddress,
-      generation: routed.binding.generation,
-      runId,
-      stepGrants,
-      ...(senderIdentities !== undefined ? { senderIdentities } : {}),
-    });
-    return true;
-  }
-
   async function sendWorkflowRunDispatchToAllocation(
     target: AllocatedSidecarTarget,
     agentAddress: string,
@@ -6351,7 +6312,6 @@ export function createSidecarRouter(
     handleMessage,
     handleClose,
     routeMail,
-    sendRunGrants,
     noteSenderDeployStarted,
     noteSenderDeploySettled,
     sendProbeToAllocation,

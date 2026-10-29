@@ -287,9 +287,6 @@ function createMockSidecarRouter(
     routeMail(_addr, _msg) {
       return notImpl("routeMail");
     },
-    sendRunGrants(_addr, _runId, _stepGrants) {
-      return notImpl("sendRunGrants");
-    },
     noteSenderDeployStarted(_addr) {
       return notImpl("noteSenderDeployStarted");
     },

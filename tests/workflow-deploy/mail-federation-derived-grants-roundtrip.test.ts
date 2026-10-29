@@ -23,8 +23,8 @@
 // deployment A sends mail to B, and B's run materializes via the real hub
 // path. That is NOT reproducible in this harness: the deploy-flow fixture's
 // inbound-mail path runs against a `fakeDb` and injects grants directly
-// (`fireMailTrigger` -> `sendRunGrants`), and never wires the real
-// `createMailTriggeredRunGrantsMaterializer`, so B's run would never
+// (`fireMailTrigger` -> `routeMail` with the run's grants), and never wires
+// the real `createMailTriggeredRunGrantsMaterializer`, so B's run would never
 // materialize through the real creator-resolution path. Additionally, A's
 // workflow could only mail B from an action step, which this host does not
 // execute. So this test collapses "A mails B" into driving B's `/mail`
@@ -207,7 +207,6 @@ function createRoutingSidecarRouter(): SidecarRouter {
     handleMessage: () => notImplRouter("handleMessage"),
     handleClose: () => notImplRouter("handleClose"),
     routeMail: async () => true,
-    sendRunGrants: () => true,
     noteSenderDeployStarted: () => undefined,
     noteSenderDeploySettled: () => undefined,
     sendAgentUndeploy: () => notImplRouter("sendAgentUndeploy"),

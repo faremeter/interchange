@@ -13,9 +13,9 @@
 //     -> approve via the REAL hub HTTP route with scope "always"
 //        (POST /api/tenants/:tenantId/approvals/:approvalId/approve)
 //     -> the resolver mutates the run's committed grant for the standing-approved
-//        tool in place, ask -> allow, rewrites `grants.json` via `sendRunGrants`,
-//        and the supervisor pushes `grants-updated` to the live child ahead of
-//        the resume signal
+//        tool in place, ask -> allow; the hub router sends the committed grants
+//        ahead of the resume signal, the sidecar rewrites `grants.json`, and
+//        the supervisor pushes `grants-updated` to the live child
 //     -> the parked call RE-DISPATCHES and runs; the agent then makes a SECOND
 //        call to the SAME tool IN THE SAME RUN
 //     -> that second call sees the now-`allow` committed grant and RUNS WITHOUT
@@ -90,7 +90,11 @@ import {
   tenant as tenantTable,
   workflowRun,
 } from "@intx/db/schema";
-import { createApp, type GetSession } from "@intx/hub-api";
+import {
+  createApp,
+  createRunGrantsLoader,
+  type GetSession,
+} from "@intx/hub-api";
 import { generateId } from "@intx/hub-common";
 import {
   createAssetService,
@@ -524,6 +528,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // Wire the real DB co-write so the parked run's register frame writes
         // real approval/correlation rows the approve route resolves.
         registerSignalCorrelation: createRegisterSignalCorrelation(h.db),
+        // Wire the real committed-grants loader, as production does, so the
+        // router sends the standing-approved grant ahead of the resume signal.
+        loadRunGrants: createRunGrantsLoader({ db: h.db }),
       });
     });
 

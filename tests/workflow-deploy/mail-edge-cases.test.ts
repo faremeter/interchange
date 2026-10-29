@@ -414,10 +414,10 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // the message is lost and the run never starts). A single RunStarted and a
     // single consumed dedup entry are NO-DOUBLE-PROCESS.
     //
-    // The run's grants are delivered and allowed to land on the sidecar's disk
-    // BEFORE the connected-window drop: run.grants has no ack handshake, so it
-    // is not part of what this test drops -- only the trigger mail is. The
-    // grants persist on the sidecar across the reconnect.
+    // The run's grants ride the same delivery as the trigger mail, as the
+    // production workflow-trigger route sends them. The hub tracks the grants
+    // with the pending mail, so the reconnect redelivery replays the
+    // `run.grants` frame ahead of the mail.
     const ctx = await deployEdgeWorkflow(env, CONNECTED_WINDOW_DEPLOYMENT_ID);
 
     // Keep the deployment stably routable for a beat so the drop lands well
@@ -451,33 +451,18 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     });
     const runId = deriveWorkflowRunId(ctx.deploymentMailAddress);
 
-    // Deliver the run's grants and let them land durably on the sidecar before
-    // the drop (there is no run.grants ack to wait on, so allow a generous
-    // beat; the frame lands over localhost in well under this window).
-    //
-    // The duration is load-bearing and cannot become a state wait. The
-    // sidecar's `handleRunGrants` writes the grants into its own workflow-run
-    // repo under `SIDECAR_DATA_DIR` and sends no reply frame, so the write
-    // completing changes nothing the harness process holds a handle on.
-    const grantsDelivered = env.hub.router.sendRunGrants(
-      ctx.deploymentMailAddress,
-      runId,
-      [],
-      undefined,
-    );
-    expect(grantsDelivered).toBe(true);
-    await new Promise((r) => setTimeout(r, 1_000));
-
-    // Deliver the trigger mail with its hub-minted messageId (the production
-    // workflow-trigger route carries it; the hub tracks it for redelivery),
-    // then sever the link in the same tick so the ack -- which fires only after
-    // the async durable write -- never round-trips.
+    // Deliver the trigger mail and the run's grants with its hub-minted
+    // messageId (the production workflow-trigger route carries it; the hub
+    // tracks it for redelivery), then sever the link in the same tick so the
+    // ack -- which fires only after the async durable write -- never
+    // round-trips.
     const base64 = base64Encode(raw);
     const delivered = await env.hub.router.routeMail(
       ctx.deploymentMailAddress,
       base64,
       EDGE_SENDER,
       messageId,
+      { runId, stepGrants: [] },
     );
     expect(delivered).toBe(true);
     dropHubLink(env);
@@ -660,17 +645,6 @@ async function routeRaw(
   // runs/<deploymentAddress>/grants.json, regardless of the message's
   // derived messageId.
   const runId = deriveWorkflowRunId(address);
-  const grantsDelivered = env.hub.router.sendRunGrants(
-    address,
-    runId,
-    [],
-    undefined,
-  );
-  if (!grantsDelivered) {
-    throw new Error(
-      `routeRaw: sendRunGrants returned false for ${address}; address is not routable on the hub`,
-    );
-  }
   const base64 = base64Encode(raw);
   // The stamped sender matches the From these messages carry, because the cases
   // under test are Message-Id parsing. Admission rejects a From that disagrees
@@ -679,6 +653,8 @@ async function routeRaw(
     address,
     base64,
     EDGE_SENDER,
+    undefined,
+    { runId, stepGrants: [] },
   );
   if (!delivered) {
     throw new Error(

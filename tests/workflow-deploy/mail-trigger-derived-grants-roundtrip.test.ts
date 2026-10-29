@@ -23,9 +23,9 @@
 //   - `createApp` is wired with the real `h.db`, a real `assetService` +
 //     `repoStore` (so the `/workflows` routes mount), a real DB-backed grant
 //     store, and the fixture's real `env.hub.router`. The route's
-//     `sendRunGrants` and `routeMail` therefore reach the SAME deployed sidecar
-//     the fixture stood up, so a 202 means the run was genuinely accepted for
-//     dispatch.
+//     `routeMail`, which carries the run's grants, therefore reaches the
+//     SAME deployed sidecar the fixture stood up, so a 202 means the run was
+//     genuinely accepted for dispatch.
 //   - The committed rows insert under real foreign keys: `workflow_run`'s
 //     `anchorRunId` references its anchor run's `workflow_run.id`, and the run
 //     principal is a real `principal` row. A broken derivation or a wrong
@@ -109,7 +109,7 @@ import { actionStepEntry } from "./fixtures/action-step";
 // The tenant domain must equal the fixture's deploy domain so the route's
 // derived address (`<anchorRunId>@<tenant.domain>`) matches the
 // address the fixture deployed the sidecar workflow under; otherwise
-// `sendRunGrants`/`routeMail` route to an unknown address and the route
+// `routeMail` routes to an unknown address and the route
 // returns 409 instead of 202.
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_mail-trigger-derived-grants-1";
@@ -298,7 +298,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // freeze writes the deployment's definition + frozen grant snapshot (the
       // effect:fs:write derivation) and the anchor workflow_run row the trigger
       // route reads; the deploy frame makes the address routable so the route's
-      // sendRunGrants + routeMail reach this deployment.
+      // routeMail reaches this deployment.
       const inferenceSource: InferenceSource = {
         id: "anthropic:mock-model",
         provider: "anthropic",
