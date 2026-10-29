@@ -65,7 +65,7 @@ describe("source push error containment", () => {
   });
 });
 
-// A running run's address is the routing key; `null` violates the
+// A live run's address is the routing key; `null` violates the
 // isNotNull(address) filter and must surface, not silently skip.
 function dbWithRuns(runs: { id: string; address: string | null }[]): DB["db"] {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal stand-in for the drizzle relational client
@@ -102,7 +102,7 @@ function capturingRouter(): {
 }
 
 describe("pushCredentialRevoke", () => {
-  test("broadcasts a flat named revoke to each distinct running address", async () => {
+  test("broadcasts a flat named revoke to each distinct live address", async () => {
     const { router, calls } = capturingRouter();
     await pushCredentialRevoke(
       dbWithRuns([
@@ -125,7 +125,7 @@ describe("pushCredentialRevoke", () => {
     }
   });
 
-  test("sends nothing when no running run holds an address", async () => {
+  test("sends nothing when no live run holds an address", async () => {
     const { router, calls } = capturingRouter();
     await pushCredentialRevoke(dbWithRuns([]), router, "tnt_1", "cred_x");
     expect(calls).toHaveLength(0);

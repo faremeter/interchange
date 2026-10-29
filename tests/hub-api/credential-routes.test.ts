@@ -739,7 +739,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 );
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "credential revoke broadcast to running deployments",
+  "credential revoke broadcast to live deployments",
   () => {
     async function createCredential(
       app: Awaited<ReturnType<typeof setup>>,
@@ -763,9 +763,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // One running instance run (anchorRunId null), one running deployment-anchor
-    // run (anchorRunId non-null -- the case the source-update push excludes),
-    // and one completed run. A revoke must reach the two running addresses and
-    // skip the completed run.
+    // run (anchorRunId non-null -- the case the source-update push excludes), one
+    // deployment anchor still "deployed" (never triggered, but already holding
+    // its deploy-time credentials), and one completed run. A revoke must reach
+    // the three live addresses and skip the completed run.
     async function seedRuns(): Promise<void> {
       await seedWorkflowRun(h.db, {
         id: "run_instance",
@@ -781,6 +782,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "running",
       });
       await seedWorkflowRun(h.db, {
+        id: "run_deployed",
+        tenantId: TENANT_ID,
+        anchorRunId: "run_deployed",
+        address: "deployed@test.interchange",
+        status: "deployed",
+      });
+      await seedWorkflowRun(h.db, {
         id: "run_done",
         tenantId: TENANT_ID,
         address: "done@test.interchange",
@@ -788,7 +796,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     }
 
-    test("DELETE broadcasts a flat revoke to every running run, anchor included, and skips a completed run", async () => {
+    test("DELETE broadcasts a flat revoke to every live run, untriggered anchor included, and skips a completed run", async () => {
       const cap = capturingCredentialsRouter();
       const app = await setup({ sidecarRouter: cap.router });
       const credentialId = await createCredential(app);
@@ -802,14 +810,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // pushCredentialRevoke enumerates its address set in one query, then
       // calls sendCredentialsUpdate for every address in one synchronous map,
-      // so the call list is complete the moment it reaches two. A broadcast to
+      // so the call list is complete the moment it reaches three. A broadcast to
       // the completed run would already be recorded here, which is why the
       // exact-length assertion below needs no settling delay ahead of it.
-      await waitUntil(() => cap.calls.length >= 2);
+      await waitUntil(() => cap.calls.length >= 3);
 
-      expect(cap.calls).toHaveLength(2);
+      expect(cap.calls).toHaveLength(3);
       expect(new Set(cap.calls.map((c) => c.address))).toEqual(
-        new Set(["instance@test.interchange", "anchor@test.interchange"]),
+        new Set([
+          "instance@test.interchange",
+          "anchor@test.interchange",
+          "deployed@test.interchange",
+        ]),
       );
       for (const call of cap.calls) {
         // A pure revoke: empty delivery, the deleted id named in revoke.
@@ -834,11 +846,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(res.status).toBe(200);
 
-      // One enumerate-then-fan-out, as in the DELETE case above: reaching two
+      // One enumerate-then-fan-out, as in the DELETE case above: reaching three
       // calls means the revoke pushed to exactly the addresses it resolved.
-      await waitUntil(() => cap.calls.length >= 2);
+      await waitUntil(() => cap.calls.length >= 3);
 
-      expect(cap.calls).toHaveLength(2);
+      expect(cap.calls).toHaveLength(3);
+      expect(new Set(cap.calls.map((c) => c.address))).toEqual(
+        new Set([
+          "instance@test.interchange",
+          "anchor@test.interchange",
+          "deployed@test.interchange",
+        ]),
+      );
       for (const call of cap.calls) {
         expect(call.materialsCount).toBe(0);
         expect(call.revoke).toEqual([credentialId]);
