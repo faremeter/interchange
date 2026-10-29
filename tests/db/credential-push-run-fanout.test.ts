@@ -12,6 +12,8 @@ import { eq } from "drizzle-orm";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   credential as credentialTable,
+  modelOffering as modelOfferingTable,
+  modelProvider as modelProviderTable,
   workflowDefinition,
 } from "@intx/db/schema";
 import {
@@ -409,6 +411,236 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(captured[0]?.delivery.materials).toEqual([]);
       expect(captured[0]?.delivery.bindings).toEqual([]);
       expect(captured[0]?.revoke).toEqual(["cred_a"]);
+    });
+
+    // A router whose first credentials frame runs `duringFirstSend` before it
+    // settles: a removal that commits after the pusher read the credential but
+    // while its upsert is in flight. Every frame is recorded in send order.
+    function racingRouter(
+      captured: Reconciled[],
+      duringFirstSend: () => Promise<void>,
+      opts: { rejectFirst?: boolean } = {},
+    ): SidecarRouter {
+      let sends = 0;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only the credentials + sources push methods are exercised by the push paths
+      return {
+        sendCredentialsUpdate: async (
+          address: string,
+          delivery: CredentialDelivery,
+          revoke?: string[],
+        ) => {
+          captured.push({ address, delivery, revoke });
+          sends += 1;
+          if (sends === 1) {
+            await duringFirstSend();
+            if (opts.rejectFirst === true) throw new Error("ack timed out");
+          }
+        },
+        sendSourcesUpdate: () => Promise.resolve(),
+      } as unknown as SidecarRouter;
+    }
+
+    async function revokeCredA(): Promise<void> {
+      await h.db
+        .update(credentialTable)
+        .set({ status: "revoked" })
+        .where(eq(credentialTable.id, "cred_a"));
+    }
+
+    async function deleteCredA(): Promise<void> {
+      // The catalog provider restricts the delete, so remove it (and its
+      // offering) first, as an operator must before deleting a credential a
+      // provider references.
+      await h.db
+        .delete(modelOfferingTable)
+        .where(eq(modelOfferingTable.providerId, "mpv_anthropic"));
+      await h.db
+        .delete(modelProviderTable)
+        .where(eq(modelProviderTable.id, "mpv_anthropic"));
+      await h.db
+        .delete(credentialTable)
+        .where(eq(credentialTable.id, "cred_a"));
+    }
+
+    for (const [label, remove] of [
+      ["revoked", revokeCredA],
+      ["deleted", deleteCredA],
+    ] as const) {
+      test(`reconcile revokes a credential ${label} while its upsert is in flight`, async () => {
+        await seedWorkflowRun(h.db, {
+          id: "dep_race",
+          tenantId: "tnt_root",
+          definitionId: "wfd_1",
+          anchorRunId: "dep_race",
+          address: "dep_race@tnt.test",
+          status: "running",
+          credentialRefs: { credentialIds: ["cred_a"], bindings: [] },
+        });
+
+        const captured: Reconciled[] = [];
+        await pushCredentialReconcile(
+          h.db,
+          racingRouter(captured, remove),
+          "dep_race@tnt.test",
+          createNoopCredentialCipher(),
+          noRunCredentials,
+        );
+
+        // The upsert carried the secret it read; the revoke goes out after it,
+        // so the sidecar applies the removal last.
+        expect(captured).toHaveLength(2);
+        expect(
+          captured[0]?.delivery.materials.map((m) => m.credentialId),
+        ).toEqual(["cred_a"]);
+        expect(captured[1]).toEqual({
+          address: "dep_race@tnt.test",
+          delivery: { bindings: [], materials: [] },
+          revoke: ["cred_a"],
+        });
+      });
+    }
+
+    test("reconcile still revokes after its upsert send fails", async () => {
+      // A failed send can still have reached the sidecar (a lost ack), so the
+      // re-check runs regardless.
+      await seedWorkflowRun(h.db, {
+        id: "dep_lost_ack",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        anchorRunId: "dep_lost_ack",
+        address: "dep_lost_ack@tnt.test",
+        status: "running",
+        credentialRefs: { credentialIds: ["cred_a"], bindings: [] },
+      });
+
+      const captured: Reconciled[] = [];
+      await pushCredentialReconcile(
+        h.db,
+        racingRouter(captured, revokeCredA, { rejectFirst: true }),
+        "dep_lost_ack@tnt.test",
+        createNoopCredentialCipher(),
+        noRunCredentials,
+      );
+
+      expect(captured.map((c) => c.revoke)).toEqual([undefined, ["cred_a"]]);
+    });
+
+    test("reconcile does not re-check the hub tokens it delivers", async () => {
+      // A hub token has no credential row, so a re-check of it would revoke the
+      // token the reconcile just delivered.
+      await seedWorkflowRun(h.db, {
+        id: "dep_hub",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        anchorRunId: "dep_hub",
+        address: "dep_hub@tnt.test",
+        status: "running",
+        credentialRefs: {
+          credentialIds: ["cred_a"],
+          bindings: [],
+          hubConsumers: ["action:a"],
+        },
+      });
+      const captured: Reconciled[] = [];
+      await pushCredentialReconcile(
+        h.db,
+        reconcilingRouter(captured),
+        "dep_hub@tnt.test",
+        createNoopCredentialCipher(),
+        async () => ({
+          bindings: [
+            {
+              handle: "interchange.hub",
+              credentialId: "hub:action:a",
+              consumer: "action:a",
+            },
+          ],
+          materials: [
+            {
+              credentialId: "hub:action:a",
+              providerKey: "http",
+              origin: "https://hub.test",
+              secret: "itx_run_token",
+            },
+          ],
+        }),
+      );
+      expect(captured).toHaveLength(1);
+      expect(captured[0]?.revoke).toBeUndefined();
+    });
+
+    test("a source push with nothing removed sends a single material frame", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "run_ok",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        address: "run_ok@tnt.test",
+        status: "running",
+      });
+      const captured: Reconciled[] = [];
+      await pushSourceUpdates(
+        h.db,
+        racingRouter(captured, async () => undefined),
+        "tnt_root",
+        createNoopCredentialCipher(),
+      );
+      expect(captured).toHaveLength(1);
+    });
+
+    test("a source push re-checks after its material send fails, and sends no sources", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "run_fail",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        address: "run_fail@tnt.test",
+        status: "running",
+      });
+      const captured: Reconciled[] = [];
+      const pushed: Pushed[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only the credentials + sources push methods are exercised by the push path
+      const router = {
+        ...racingRouter(captured, revokeCredA, { rejectFirst: true }),
+        sendSourcesUpdate: (
+          address: string,
+          sources: InferenceSource[],
+          defaultSource: string,
+        ) => {
+          pushed.push({ address, sources, default: defaultSource });
+          return Promise.resolve();
+        },
+      } as unknown as SidecarRouter;
+      await pushSourceUpdates(
+        h.db,
+        router,
+        "tnt_root",
+        createNoopCredentialCipher(),
+      );
+      expect(captured.map((c) => c.revoke)).toEqual([undefined, ["cred_a"]]);
+      expect(pushed).toEqual([]);
+    });
+
+    test("a source push revokes a credential revoked while its material is in flight", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "run1",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        address: "run1@tnt.test",
+        status: "running",
+      });
+
+      const captured: Reconciled[] = [];
+      await pushSourceUpdates(
+        h.db,
+        racingRouter(captured, revokeCredA),
+        "tnt_root",
+        createNoopCredentialCipher(),
+      );
+
+      expect(captured).toHaveLength(2);
+      expect(
+        captured[0]?.delivery.materials.map((m) => m.credentialId),
+      ).toEqual(["cred_a"]);
+      expect(captured[1]?.revoke).toEqual(["cred_a"]);
     });
 
     test("reconcile is a no-op for a run that persisted no credential refs", async () => {
