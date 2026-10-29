@@ -231,6 +231,47 @@ export async function findRemovedCredentialIds(
 }
 
 /**
+ * Return the ids among `delivered` whose live credential holds a higher
+ * `secretVersion` than the one delivered: rotated since the delivery read it.
+ * A delivery with no version counts as version 0. Like
+ * `findRemovedCredentialIds`, it reads no secret and never decrypts.
+ */
+export async function findRotatedCredentialIds(
+  db: DB["db"],
+  delivered: readonly Pick<
+    CredentialMaterialEntry,
+    "credentialId" | "secretVersion"
+  >[],
+): Promise<string[]> {
+  if (delivered.length === 0) return [];
+  const rows = await db
+    .select({
+      id: credential.id,
+      status: credential.status,
+      secretVersion: credential.secretVersion,
+    })
+    .from(credential)
+    .where(
+      inArray(
+        credential.id,
+        delivered.map((material) => material.credentialId),
+      ),
+    );
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const rotated = new Set<string>();
+  for (const material of delivered) {
+    const row = byId.get(material.credentialId);
+    if (
+      isLiveCredential(row) &&
+      row.secretVersion > (material.secretVersion ?? 0)
+    ) {
+      rotated.add(material.credentialId);
+    }
+  }
+  return [...rotated];
+}
+
+/**
  * Re-resolve the CURRENT material for a set of already-authorized credentialIds,
  * for the reconnect resync. Unlike `resolveInferenceMaterials`, a credential
  * that no longer exists or is `revoked` is DROPPED (omitted) rather than

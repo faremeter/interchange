@@ -58,7 +58,7 @@ import {
 } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
-import { revokeRemovedCredentials } from "./credential-push";
+import { recheckDeliveredCredentials } from "./credential-push";
 import {
   DEFAULT_ASSET_REF,
   type Asset,
@@ -855,11 +855,46 @@ async function emitSourceRefDeployFrame(
   publicKey: string;
   definitionId: string;
   credentialRefs?: WorkflowRunCredentialRefs;
+  // The id and version of each credential-row material the frame carried,
+  // and the cipher to re-resolve them, for the post-completion re-check.
+  // Absent when the frame carried none. Hub tokens are not credential rows
+  // and are left out.
+  deliveredCredentials?: {
+    versions: Pick<CredentialMaterialEntry, "credentialId" | "secretVersion">[];
+    credentialCipher: CredentialCipher;
+  };
 }> {
   const { signal, leaseId } = reconciliation;
   signal.throwIfAborted();
   const { definitionId, sendArgs, hubConsumers } =
     await prepareSourceRefDeploy(args);
+  // Prepare resolves material only with a cipher. The check runs here, before
+  // the frame, because the re-check runs after the deploy commits, where a
+  // failure would report a running deployment as failed.
+  const deliveredMaterials = sendArgs.credentials?.materials ?? [];
+  let deliveredCredentials:
+    | {
+        versions: Pick<
+          CredentialMaterialEntry,
+          "credentialId" | "secretVersion"
+        >[];
+        credentialCipher: CredentialCipher;
+      }
+    | undefined;
+  if (deliveredMaterials.length > 0) {
+    if (args.credentialCipher === undefined) {
+      throw new Error(
+        "emitSourceRefDeployFrame: prepared credential material without a credentialCipher",
+      );
+    }
+    deliveredCredentials = {
+      versions: deliveredMaterials.map(({ credentialId, secretVersion }) => ({
+        credentialId,
+        ...(secretVersion !== undefined ? { secretVersion } : {}),
+      })),
+      credentialCipher: args.credentialCipher,
+    };
+  }
   // A run that resumes in flight on a replacement sidecar can call the Hub
   // before any new `run.grants` barrier brings its tokens, so the frame carries
   // the tokens the anchor already holds. A first deploy has none yet. They stay
@@ -907,6 +942,7 @@ async function emitSourceRefDeployFrame(
       publicKey: result.publicKey,
       definitionId,
       ...credentialRefsField(sendArgs.credentials, hubConsumers),
+      ...(deliveredCredentials !== undefined ? { deliveredCredentials } : {}),
     };
   } catch (cause) {
     if (cause instanceof DeploymentRejectedError && reserved) {
@@ -1771,11 +1807,7 @@ export function createSessionService(
     // Branch on the source discriminant so the emit args match the asset/registry
     // arms: an asset arm carries the rebuilt attachment resolver (asserted
     // non-null to satisfy the union), a registry arm carries none.
-    let result: {
-      publicKey: string;
-      definitionId: string;
-      credentialRefs?: WorkflowRunCredentialRefs;
-    };
+    let result: Awaited<ReturnType<typeof emitSourceRefDeployFrame>>;
     const senderAttempt = {
       ...params.allocationTarget,
       leaseId: params.reconciliation.leaseId,
@@ -1827,20 +1859,20 @@ export function createSessionService(
       });
 
       // The deploy frame carried material read during prepare. A credential
-      // removed after that read and before the hub routed this address had no
-      // route for its online revoke, so re-check now and revoke it. This runs
-      // after the completion above commits `credentialRefs`: a sidecar that
-      // reconnects before that commit finds no refs to reconcile, and this
-      // re-check is what still reaches it. It is awaited so the deploy settles
-      // with its removals sent; it never rejects, and only a removal paired
-      // with an unresponsive sidecar holds the deploy, for one request
-      // timeout.
-      if (result.credentialRefs !== undefined) {
-        await revokeRemovedCredentials(
+      // removed or rotated after that read and before the completion above
+      // commits `credentialRefs` is invisible to its revoke or rotation push,
+      // and a sidecar that reconnects before that commit finds no refs to
+      // reconcile. So re-check now, after the commit. It is awaited so the
+      // deploy settles with its changes sent; it never rejects, and only a
+      // change paired with an unresponsive sidecar holds the deploy, for one
+      // request timeout per frame.
+      if (result.deliveredCredentials !== undefined) {
+        await recheckDeliveredCredentials(
           dbHandle,
           sidecarRouter,
           params.agentAddress,
-          result.credentialRefs.credentialIds,
+          result.deliveredCredentials.versions,
+          result.deliveredCredentials.credentialCipher,
         );
       }
 
