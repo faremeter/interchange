@@ -78,6 +78,18 @@ import type {
 import type { CredentialMaterialRef } from "../child/run-child";
 
 /**
+ * What a spawned child inherits from the top-level run, live: the run's
+ * credential-material cell (the same reference the top-level step invoker
+ * reads), so the child's inference resolves its source secret by
+ * `credentialId` against the run's current delivery, and a rotation the
+ * parent applies reaches the child through the shared reference. A
+ * non-sidecar executor that carries no credential material passes no group.
+ */
+export type ChildInheritance = {
+  readonly material: CredentialMaterialRef;
+};
+
+/**
  * Runtime-supplied child execution callback. The supervisor owns the
  * child `WorkflowRuntimeEnv` construction (per-deployment substrate,
  * per-run blob substrate, child director registry) and the
@@ -93,12 +105,8 @@ import type { CredentialMaterialRef } from "../child/run-child";
  * {@link RunSuspendableChild}), and the spawn `depth` / ceiling so the
  * child run's own spawns keep counting against the tree-wide bound.
  *
- * The callback also receives the parent run's live credential-material cell
- * (the same reference the top-level step invoker reads live), so the child's
- * inference resolves its source secret by `credentialId` against the run's
- * current delivery -- a rotation the parent applies reaches the child through
- * the shared reference. A non-sidecar executor that carries no credential
- * material omits it.
+ * The callback also receives what the child inherits from the top-level run
+ * ({@link ChildInheritance}).
  */
 export type RunChildWorkflow = (
   input: {
@@ -114,7 +122,7 @@ export type RunChildWorkflow = (
     resumeFromEvents?: readonly WorkflowEvent[];
   },
   onEvent: (event: InferenceEvent) => void,
-  credentialMaterial?: CredentialMaterialRef,
+  inherited?: ChildInheritance,
 ) => Promise<SuspendableChildHandle>;
 
 /**
@@ -137,14 +145,13 @@ export type RunChildWorkflow = (
  * carries the narrow `SpawnChildWorkflow` (no event slot); the caller wraps this
  * with its run's `onEvent`, mirroring {@link HostSpawnSuspendableChild}. The
  * sink is a call argument (not closed over at construction) because the resolver
- * is selected once per deployment while `onEvent` is built per run. The run's
- * live credential-material cell rides the same seam, so the child's inference
- * reads the parent's current credential delivery.
+ * is selected once per deployment while `onEvent` is built per run. What the
+ * child inherits from the top-level run rides the same seam.
  */
 export type HostSpawnChild = (
   input: Parameters<SpawnChildWorkflow>[0],
   onEvent: (event: InferenceEvent) => void,
-  credentialMaterial?: CredentialMaterialRef,
+  inherited?: ChildInheritance,
 ) => ReturnType<SpawnChildWorkflow>;
 
 export function createInMemorySpawnChild(opts: {
@@ -164,7 +171,7 @@ export function createInMemorySpawnChild(opts: {
       resumeFromEvents,
     },
     onEvent,
-    credentialMaterial,
+    inherited,
   ) => {
     if (signal.aborted) {
       throw abortError(signal);
@@ -203,7 +210,7 @@ export function createInMemorySpawnChild(opts: {
         ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       },
       onEvent,
-      credentialMaterial,
+      inherited,
     );
   };
 }
@@ -239,13 +246,8 @@ export type RunSuspendableChild = (
    * runtime commits its events under `runs/<childRunId>/events/` regardless.
    */
   onEvent: (event: InferenceEvent) => void,
-  /**
-   * The parent run's live credential-material cell. Threaded so the body's
-   * inference resolves its source secret by `credentialId` against the run's
-   * current delivery, reached live through the shared reference on a rotation.
-   * A non-sidecar executor that carries no credential material omits it.
-   */
-  credentialMaterial?: CredentialMaterialRef,
+  /** What the body inherits from the top-level run. */
+  inherited?: ChildInheritance,
 ) => Promise<SuspendableChildHandle>;
 
 /**
@@ -254,14 +256,13 @@ export type RunSuspendableChild = (
  * calls the narrow `SpawnSuspendableChild` (no event slot); the host binding
  * wired into the runtime env closes over the run's funnel and forwards it here,
  * mirroring how `ChildStepInvoker` widens the runtime `StepInvoker` with
- * `onEvent`. The runtime contract in `@intx/workflow` stays untouched. The
- * run's live credential-material cell rides the same seam, so the body's
- * inference reads the parent's current credential delivery.
+ * `onEvent`. The runtime contract in `@intx/workflow` stays untouched. What
+ * the body inherits from the top-level run rides the same seam.
  */
 export type HostSpawnSuspendableChild = (
   input: Parameters<SpawnSuspendableChild>[0],
   onEvent: (event: InferenceEvent) => void,
-  credentialMaterial?: CredentialMaterialRef,
+  inherited?: ChildInheritance,
 ) => ReturnType<SpawnSuspendableChild>;
 
 /**
@@ -294,7 +295,7 @@ export function createInMemorySpawnSuspendableChild(opts: {
       resumeFromEvents,
     },
     onEvent,
-    credentialMaterial,
+    inherited,
   ) => {
     if (signal.aborted) {
       throw abortError(signal);
@@ -327,7 +328,7 @@ export function createInMemorySpawnSuspendableChild(opts: {
         ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       },
       onEvent,
-      credentialMaterial,
+      inherited,
     );
   };
 }

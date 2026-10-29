@@ -606,7 +606,7 @@ describe("spawned body action credentials", () => {
     const handle = await spawn(
       spawnInput(credentialBody(), "run-body-cred", parentRunId, marker),
       () => undefined,
-      credentialCell(),
+      { material: credentialCell() },
     );
 
     const terminal = await handle.next();
@@ -632,7 +632,7 @@ describe("spawned body action credentials", () => {
         depth: 1,
       },
       () => undefined,
-      credentialCell(),
+      { material: credentialCell() },
     );
 
     const event = await result.next();
@@ -659,7 +659,7 @@ describe("spawned body action credentials", () => {
         marker,
       ),
       () => undefined,
-      credentialCell(),
+      { material: credentialCell() },
     );
 
     const terminal = await handle.next();
@@ -687,7 +687,7 @@ describe("spawned body action credentials", () => {
     const handle = await spawn(
       spawnInput(credentialBody(), childRunId, parentRunId, marker),
       () => undefined,
-      credentialCell(),
+      { material: credentialCell() },
     );
 
     const terminal = await handle.next();

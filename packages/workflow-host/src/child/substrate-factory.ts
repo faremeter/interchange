@@ -58,7 +58,6 @@ import {
   driveConnectorReplies,
   type AgentEventStream,
   type ConnectorReplyDrain,
-  type CredentialMaterialCell,
   type CredentialProviderRegistry,
 } from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
@@ -103,6 +102,7 @@ import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import {
   createInMemorySpawnChild,
   createInMemorySpawnSuspendableChild,
+  type ChildInheritance,
   type RunChildWorkflow,
   type RunSuspendableChild,
 } from "../adapters/spawn-child";
@@ -1458,7 +1458,7 @@ export function createSidecarRunChild(
       resumeFromEvents,
     },
     onEvent,
-    credentialMaterial,
+    inherited,
   ) => {
     const {
       env,
@@ -1477,9 +1477,7 @@ export function createSidecarRunChild(
       // The parent drives this child across its parks and relays each one
       // down onto this channel. The child run itself stays unaddressable.
       hasUpstreamSignalResolver: true,
-      ...(credentialMaterial !== undefined
-        ? { materialCell: credentialMaterial }
-        : {}),
+      ...(inherited !== undefined ? { inherited } : {}),
     });
     // Thread this rung's depth/ceiling into the child run so its own
     // childWorkflow spawns keep counting against the tree-wide bound (the
@@ -1576,7 +1574,7 @@ export function createSidecarSpawnSuspendableChild(
       resumeFromEvents,
     },
     onEvent,
-    credentialMaterial,
+    inherited,
   ) => {
     const {
       env: baseEnv,
@@ -1605,9 +1603,7 @@ export function createSidecarSpawnSuspendableChild(
       // a decision back down onto the body's own channel, so a park here is
       // answerable even though the body run carries no address of its own.
       hasUpstreamSignalResolver: true,
-      ...(credentialMaterial !== undefined
-        ? { materialCell: credentialMaterial }
-        : {}),
+      ...(inherited !== undefined ? { inherited } : {}),
     });
 
     return createSuspendableChildHandle(baseEnv, {
@@ -1735,14 +1731,11 @@ async function buildChildRunEnv(args: {
    */
   onEvent: (event: InferenceEvent) => void;
   /**
-   * The parent run's live credential-material cell. Threaded so the child's
-   * inference resolves its source secret by `credentialId` against the run's
-   * current delivery -- reached live through the shared reference on a rotation.
-   * Absent when a non-sidecar executor carries no credential material, in which
-   * case no credential context is assembled and the child's inference reader
-   * stays unset.
+   * What the child inherits from the top-level run. Absent when a non-sidecar
+   * executor carries no credential material, in which case no credential
+   * context is assembled and the child's inference reader stays unset.
    */
-  materialCell?: CredentialMaterialCell;
+  inherited?: ChildInheritance;
   /**
    * Whether a park in this child can be answered from outside it. The two
    * seams that share this builder differ precisely here, so neither gets a
@@ -1766,7 +1759,7 @@ async function buildChildRunEnv(args: {
     childRunId,
     parentRunId,
     onEvent,
-    materialCell,
+    inherited,
   } = args;
   // A rung may itself embed a child (grandchild recursion) as an inline
   // `childWorkflow`. Lift each to an internal `{ ref }` and run the rewritten
@@ -1960,7 +1953,7 @@ async function buildChildRunEnv(args: {
     runChild,
   });
   const spawnChild: WorkflowRuntimeEnv["spawnChild"] = (spawnInput) =>
-    spawnHost(spawnInput, childOnEvent, materialCell);
+    spawnHost(spawnInput, childOnEvent, inherited);
   // Assemble the per-step credential context from the run's live material cell
   // (threaded in from the parent) when one is present, so the child's inference
   // resolves its source secret by `credentialId` against the parent's current
@@ -1971,10 +1964,10 @@ async function buildChildRunEnv(args: {
   // threaded (a non-sidecar executor), which leaves the child's inference
   // reader unset and gives action handlers no credential source.
   const childCredentialContext: SidecarStepCredentialContext | undefined =
-    materialCell === undefined
+    inherited === undefined
       ? undefined
       : {
-          materialCell,
+          materialCell: inherited.material,
           resolveStepGrants: resolveChildStepGrants,
           providers: deps.credentialProviders,
         };

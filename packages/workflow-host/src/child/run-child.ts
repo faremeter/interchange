@@ -107,6 +107,7 @@ import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createCancellationBarrier } from "./cancellation-barrier";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
 import type {
+  ChildInheritance,
   HostSpawnSuspendableChild,
   HostSpawnChild,
   RunSuspendableChild,
@@ -1744,27 +1745,21 @@ function buildRuntimeEnv(args: {
   // narrow contract with no event slot. The run's live credential-material cell
   // rides the same seam so the body's inference resolves its source secret
   // against the parent's current delivery, reached live on a rotation.
+  const inherited: ChildInheritance = {
+    material: args.credentialWiring.materialRef,
+  };
   const hostSuspendable = args.suspendableChildHost;
   const spawnSuspendableChild: SpawnSuspendableChild | undefined =
     hostSuspendable === undefined
       ? undefined
-      : (spawnInput) =>
-          hostSuspendable(
-            spawnInput,
-            args.onEvent,
-            args.credentialWiring.materialRef,
-          );
+      : (spawnInput) => hostSuspendable(spawnInput, args.onEvent, inherited);
   // Same adaptation for the terminal childWorkflow seam: inject THIS run's event
   // funnel so a child's live inference events ride the parent run's channel, and
   // the live credential-material cell so the child's inference resolves its
   // source secret against the parent's current delivery, while the runtime env
   // keeps the narrow `SpawnChildWorkflow` (no event slot).
   const spawnChild: SpawnChildWorkflow = (spawnInput) =>
-    args.spawnChild(
-      spawnInput,
-      args.onEvent,
-      args.credentialWiring.materialRef,
-    );
+    args.spawnChild(spawnInput, args.onEvent, inherited);
   const env: WorkflowRuntimeEnv = {
     repoStore: args.runtimeRepoStore,
     scheduler: args.bindings.scheduler,
