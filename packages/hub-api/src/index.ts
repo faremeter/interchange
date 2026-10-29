@@ -30,6 +30,7 @@ export {
   collectDeployerInvokerGrants,
   createMailTriggeredRunGrantsMaterializer,
   createCorrespondentGrantMinter,
+  createRunGrantsLoader,
   setRunToolGrantEffect,
   type MailTriggeredRunGrantsDeps,
   type CorrespondentGrantMinterDeps,

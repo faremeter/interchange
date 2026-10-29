@@ -27,6 +27,7 @@ import {
   createAuth,
   createCorrespondentGrantMinter,
   createMailTriggeredRunGrantsMaterializer,
+  createRunGrantsLoader,
 } from "@intx/hub-api";
 import {
   attachSidecarProvisioners,
@@ -368,6 +369,7 @@ export async function createHubServer({
       },
     ),
     loadRunCredentials,
+    loadRunGrants: createRunGrantsLoader({ db }),
     resolveSenderKey: (address) =>
       resolveFrameSenderKey(db, principalKeyStore, address),
     // The strict sibling for reconnect reconciliation: it preserves the strict
