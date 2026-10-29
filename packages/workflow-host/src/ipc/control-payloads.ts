@@ -69,6 +69,18 @@ export const SourcesUpdatedData = type({
 });
 
 /**
+ * One correlation a child's run is parked on, as the child reports it. The
+ * snapshot is required for an approval park and absent for an input park.
+ */
+export const ParkedCorrelation = type({
+  runId: "string > 0",
+  correlationId: "string > 0",
+  parkKind: ControlParkKind,
+  "snapshot?": BoundedApprovalSnapshot,
+});
+export type ParkedCorrelation = typeof ParkedCorrelation.infer;
+
+/**
  * Wire projection of an attachment on an outbound mail message. The
  * runtime `MessageAttachment.data` is raw bytes; the NDJSON control
  * channel is text, so the bytes ride base64-encoded under `dataBase64`.
@@ -528,6 +540,9 @@ const controlPayloadFactories = defineControlPayloadFactories({
         runId: "string",
         messageId: "string",
         receivedAt: "number",
+        // Asks for an `input.taken` reply once the run's `RunStarted` is
+        // committed.
+        "requestId?": "string",
         // The run's inbound-mail input, resolved by the supervisor (the sole
         // mail owner) before the frame: a decoded `Mail` (headers plus part
         // descriptors that reference the part bytes committed to the workflow-run
@@ -548,6 +563,8 @@ const controlPayloadFactories = defineControlPayloadFactories({
         // Addresses one onTrigger relay park. Omitted, the child commits
         // a name-FIFO delivery.
         "correlationId?": "string > 0",
+        // Asks for an `input.taken` reply once the child's commit settles.
+        "requestId?": "string",
         // The resume decision in FINAL form -- the child commits it as the
         // SignalReceived payload verbatim. Each sender owns any
         // provenance-specific preparation BEFORE this frame: the dispatch loop
@@ -557,6 +574,16 @@ const controlPayloadFactories = defineControlPayloadFactories({
         // polymorphic. Do NOT ship raw inbound mail bytes through here.
         payload: "unknown",
       },
+    }),
+  "input.taken": () =>
+    type({
+      // Answers a `trigger.fire` or `signal.deliver` that carried a
+      // `requestId`, once the child has committed the input or declined it. A
+      // standby attempt waits for this, so an input the child took is not
+      // dropped with the stopped child's writes; a declined one still wakes the
+      // child.
+      type: "'input.taken'",
+      data: { requestId: "string", committed: "boolean" },
     }),
   drain: () =>
     type({
@@ -949,13 +976,7 @@ const controlPayloadFactories = defineControlPayloadFactories({
       type: "'parked-correlations.response'",
       data: {
         requestId: "string > 0",
-        parked: type({
-          runId: "string > 0",
-          correlationId: "string > 0",
-          parkKind: ControlParkKind,
-          // Snapshot is required for approval parks and absent for input parks.
-          "snapshot?": BoundedApprovalSnapshot,
-        }).array(),
+        parked: ParkedCorrelation.array(),
       },
     }),
   "quiet.request": () =>
@@ -977,7 +998,8 @@ const controlPayloadFactories = defineControlPayloadFactories({
     type({
       // `ended` when the deployment's run has ended, so there is nothing to
       // stop it for. `wakeAt` is the earliest timer the child has queued.
-      // `error` when the child could not check.
+      // `error` when the child could not check, which refuses the standby
+      // attempt.
       type: "'quiet.response'",
       data: {
         requestId: "string > 0",

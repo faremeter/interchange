@@ -29,6 +29,9 @@ import type {
 import type { RunCancelled, RunCompleted, RunFailed } from "@intx/workflow";
 
 import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
+import type { RecordedStandby } from "./recorded-standby";
+
+export type { RecordedStandby };
 
 /**
  * Terminal workflow-run event the supervisor's drain accumulators
@@ -226,7 +229,7 @@ export type DeriveMailAuditRef = (
  * Inbox claim-check primitives the supervisor's mail-arrival path
  * and dispatch loop reach into. Production wires this against the
  * concrete `enqueueInbox` / `dequeueToProcessing` / `markConsumed`
- * / `replayProcessingToInbox` functions exported from
+ * / `replayProcessingToInbox` / `hasInboxEntries` functions exported from
  * `@intx/hub-sessions`; tests inject a deterministic in-memory
  * stub so the supervisor's dispatch loop is observable without a
  * real git substrate.
@@ -261,6 +264,12 @@ export interface InboxPrimitives {
     address: string,
     opts?: ReplayProcessingToInboxOpts,
   ): Promise<ReplayProcessingToInboxResult>;
+  hasInboxEntries(
+    store: SubstrateRepoStore,
+    principal: Principal,
+    repoId: RepoId,
+    address: string,
+  ): Promise<boolean>;
 }
 
 /**
@@ -346,17 +355,49 @@ export interface WorkflowSupervisorBindings {
     reason: string;
   }) => void;
   /**
-   * Test seam, unset in production. Called each time a shutdown waits for
-   * work it owns before it resolves: `replay` for a respawn's replay of
-   * `processing/`, `writes` for repository writes started off the control
-   * pump.
+   * Fired once a supervisor in standby has a running child again, whatever woke
+   * it: mail, a signal, a cancellation, its earliest pending timer, or
+   * `wake`. `requested` is true only when `wake()` started the respawn.
    */
-  onShutdownWait?: (waiting: "replay" | "writes") => void;
+  onWake?: (info: { reason: string; requested: boolean }) => void;
+  /**
+   * Called once a standby attempt has stopped the child and before anything can
+   * wake it, so a wake's record of the child running lands after it. A
+   * rejection runs the child again and refuses the standby attempt. What it
+   * records is what `restoreInStandby` takes after a restart.
+   */
+  recordStandby?: (standby: RecordedStandby) => Promise<void>;
+  /**
+   * Test seam, unset in production. Called each time a standby attempt makes
+   * something wait: `input` when mail or a signal waits out the final quiet
+   * check, `standby` when the standby attempt waits for work the supervisor
+   * still drives for the child, `attempt` when a wake waits for a standby
+   * attempt to finish stopping the child, `cancellation` when a wake waits
+   * for a cancellation being committed.
+   */
+  onStandbyWait?: (
+    waiting: "input" | "standby" | "attempt" | "cancellation",
+  ) => void;
+  /**
+   * Test seam, unset in production. Called each time a shutdown waits for
+   * work it owns before it resolves: `cancellation` for a drain deadline's
+   * cancellation, `attempt` for a standby attempt it called off, `replay` for
+   * a respawn's replay of `processing/`, `writes` for repository writes
+   * started off the control pump.
+   */
+  onShutdownWait?: (
+    waiting: "cancellation" | "attempt" | "replay" | "writes",
+  ) => void;
   /**
    * Test seam, unset in production. Called each time a respawn waits for
    * repository writes started off the control pump before it scans `runs/`.
    */
   onRespawnWait?: () => void;
+  /**
+   * Test seam, unset in production. Called when the dispatch holds mail for a
+   * live run until the run shows its input, parks or ends.
+   */
+  onDispatchWait?: (runId: string) => void;
   /**
    * Per-run grants source. The dispatch loop consults it before it forwards a
    * `trigger.fire`, and every new child (spawn, crash-respawn, recycle) gets

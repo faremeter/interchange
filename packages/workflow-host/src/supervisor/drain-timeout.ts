@@ -12,11 +12,10 @@
 // while every in-flight step is `"wait"`-behavior does NOT tick the
 // accumulator -- waiting for a human-in-the-loop pause should not
 // burn the drain budget. On `drainTimeout` expiry, the accumulator
-// invokes the supervisor's injected `signAsPrincipal("supervisor",
-// ...)` callback to obtain a signed `CancelRequested{origin:
-// "supervisor-drain"}` and commits it via the injected substrate
-// handle. The runtime body's existing cancellation cascade handles
-// teardown from there.
+// hands a `CancelRequested{origin: "supervisor-drain"}` to the
+// supervisor's injected `commitCancel`, which signs and commits it as
+// the supervisor's own cancellation. The runtime body's existing
+// cancellation cascade handles teardown from there.
 //
 // The accumulator is started by the supervisor on receipt of the
 // host's drain command; it is stopped when (a) drainTimeout expires
@@ -29,12 +28,7 @@ import { getLogger } from "@intx/log";
 
 import type { CancelOrigin } from "@intx/workflow";
 
-import { commitCancelRequested } from "./cancel-signing";
-import type { PrincipalSigner, TerminalEventSource } from "./types";
-import type {
-  RepoId,
-  RepoStore as SubstrateRepoStore,
-} from "@intx/hub-sessions/substrate";
+import type { TerminalEventSource } from "./types";
 
 const logger = getLogger(["workflow-host", "supervisor", "drain-timeout"]);
 
@@ -45,28 +39,19 @@ const logger = getLogger(["workflow-host", "supervisor", "drain-timeout"]);
 export const DEFAULT_DRAIN_TIMEOUT_MS = 60_000;
 
 export type DrainTimeoutOpts = {
-  /**
-   * Substrate handle through which the escalation commit lands.
-   * Reused from the supervisor's bindings -- the accumulator does
-   * not own a substrate of its own.
-   */
-  substrate: SubstrateRepoStore;
-  /** Workflow-run repo for this deployment. */
-  repoId: RepoId;
-  /** Workflow-run repo ref the supervisor commits events to. */
-  ref: string;
-  /** Anchor run id baked into the supervisor's signing principal. */
-  anchorRunId: string;
   /** Run id the drain is being escalated against. */
   runId: string;
-  /**
-   * Host-supplied per-principal signing callback the supervisor uses
-   * to mint the CancelRequested signature. The drain origin is
-   * `supervisor-drain`.
-   */
-  signAsPrincipal: PrincipalSigner;
   /** ISO-8601 reason for the CancelRequested escalation. */
   reason?: string;
+  /**
+   * Commits the escalation's CancelRequested for `runId`. The supervisor
+   * commits it as one of its own cancellations.
+   */
+  commitCancel: (cancel: {
+    origin: CancelOrigin;
+    reason: string;
+    at: string;
+  }) => Promise<unknown>;
   /**
    * Operator-overridable per-deployment timeout. Defaults to
    * `DEFAULT_DRAIN_TIMEOUT_MS`.
@@ -278,17 +263,9 @@ export function createDrainTimeoutAccumulator(
     // resources.
     finaliseTerminalWatcher();
     const origin: CancelOrigin = "supervisor-drain";
-    escalationPending = commitCancelRequested({
-      substrate: opts.substrate,
-      repoId: opts.repoId,
-      ref: opts.ref,
-      anchorRunId: opts.anchorRunId,
-      runId: opts.runId,
-      origin,
-      reason,
-      at: new Date().toISOString(),
-      signAsPrincipal: opts.signAsPrincipal,
-    })
+    const cancel = { origin, reason, at: new Date().toISOString() };
+    escalationPending = opts
+      .commitCancel(cancel)
       .then(() => undefined)
       .catch((cause: unknown) => {
         const message = cause instanceof Error ? cause.message : String(cause);

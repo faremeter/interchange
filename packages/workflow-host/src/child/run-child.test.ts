@@ -519,7 +519,7 @@ describe("parseSpawnTimeEnv", () => {
 });
 
 describe("runWorkflowChild", () => {
-  test("emits ready, processes a trigger.fire frame, and shuts down", async () => {
+  test("emits ready, processes a trigger.fire frame, answers it once the run started, and shuts down", async () => {
     const baseDir = await makeTempDir("child-trigger-");
     const supervisorKeyPair = await generateKeyPair();
     const childKeyPair = await generateKeyPair();
@@ -592,9 +592,26 @@ describe("runWorkflowChild", () => {
         runId: "run-1",
         messageId: "msg-1",
         receivedAt: 1,
+        requestId: "input-1",
         payload: textMail("hello from the inbox"),
       },
     });
+    const taken = await waitForUpstreamPayload(
+      childToSupervisor,
+      "input.taken",
+    );
+    expect(taken.data).toEqual({ requestId: "input-1", committed: true });
+    const events = await fs.readdir(
+      path.join(
+        baseDir,
+        "workflow-run",
+        "deployment-x",
+        "runs",
+        "run-1",
+        "events",
+      ),
+    );
+    expect(events.length).toBeGreaterThan(0);
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },
@@ -1090,6 +1107,120 @@ describe("runWorkflowChild", () => {
     await runPromise;
   });
 
+  test("answers input.taken for a committed signal, a duplicate trigger and a signal for no run", async () => {
+    const baseDir = await makeTempDir("child-input-taken-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-input-taken-def-", {
+        id: "test-workflow",
+        triggers: [],
+        steps: { "step-1": agentStep("step-1") },
+        stepOrder: ["step-1"],
+      });
+    await seedProcessingEntry(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      {
+        address: "deployment-x@example.com",
+        messageId: "msg-1",
+        receivedAt: 1,
+        text: "hello from the inbox",
+      },
+    );
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    // The step holds the run in flight until the test lets it finish.
+    const stepStarted = Promise.withResolvers<undefined>();
+    const finishStep = Promise.withResolvers<undefined>();
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      invokeStep: async () => {
+        stepStarted.resolve(undefined);
+        await finishStep.promise;
+        return { output: null };
+      },
+    };
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+    await waitForUpstreamPayload(childToSupervisor, "ready");
+    const taken = async (requestId: string) =>
+      (
+        await waitForUpstreamPayload(
+          childToSupervisor,
+          "input.taken",
+          (payload) => payload.data.requestId === requestId,
+        )
+      ).data.committed;
+    const trigger = {
+      type: "trigger.fire",
+      data: {
+        runId: "run-1",
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: textMail("hello from the inbox"),
+      },
+    } as const;
+    const signal = (runId: string, requestId: string) => ({
+      type: "signal.deliver" as const,
+      data: {
+        runId,
+        signalName: "gate",
+        signalId: `sig-${requestId}`,
+        payload: { approved: true },
+        requestId,
+      },
+    });
+
+    await supervisorSender.send({
+      ...trigger,
+      data: { ...trigger.data, requestId: "first" },
+    });
+    expect(await taken("first")).toBe(true);
+    await stepStarted.promise;
+    await supervisorSender.send({
+      ...trigger,
+      data: { ...trigger.data, requestId: "duplicate" },
+    });
+    expect(await taken("duplicate")).toBe(false);
+    await supervisorSender.send(signal("run-1", "signal"));
+    expect(await taken("signal")).toBe(true);
+    await supervisorSender.send(signal("run-ghost", "no-run"));
+    expect(await taken("no-run")).toBe(false);
+
+    finishStep.resolve(undefined);
+    await waitForUpstreamPayload(childToSupervisor, "terminal.event");
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+  });
+
   test("routes a mailbox.notify to the watch registry as an exists event", async () => {
     const baseDir = await makeTempDir("child-mailbox-notify-");
     const supervisorKeyPair = await generateKeyPair();
@@ -1182,7 +1313,7 @@ describe("runWorkflowChild", () => {
     ]);
   });
 
-  test("drops a signal.deliver for a run this child is not driving", async () => {
+  test("drops a signal.deliver for a run this child is not driving, and still answers it", async () => {
     const baseDir = await makeTempDir("child-signal-drop-");
     const supervisorKeyPair = await generateKeyPair();
     const childKeyPair = await generateKeyPair();
@@ -1259,8 +1390,16 @@ describe("runWorkflowChild", () => {
         signalName: "go",
         signalId: "sig-1",
         payload: { x: 1 },
+        requestId: "signal-1",
       },
     });
+    // A standby attempt waits for the reply, so a dropped delivery answers too,
+    // as not committed.
+    const delivered = await waitForUpstreamPayload(
+      childToSupervisor,
+      "input.taken",
+    );
+    expect(delivered.data).toEqual({ requestId: "signal-1", committed: false });
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },

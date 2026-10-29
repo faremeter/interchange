@@ -235,6 +235,7 @@ A run needs three kinds of authority: its grants snapshot, its credential materi
 | Deploy                                                    | None until the first trigger; the `run.grants` barrier then brings it | The deploy frame. The Hub tokens arrive on the first `run.grants` barrier                                     |
 | Sidecar restart                                           | The run's grants file                                                 | The sealed mirror in the run record. On reconnect the Hub replays `run.grants` and reconciles the credentials |
 | Crash-respawn, and every recycle (operator, policy, self) | The run's grants file                                                 | The supervisor's mirror                                                                                       |
+| Wake from standby                                         | The run's grants file                                                 | The supervisor's mirror; after a sidecar restart, it starts from the sealed mirror in the run record          |
 | Hub replacement deploy                                    | The run's grants file, after the Hub restores the run's history       | The deploy frame, which also carries the run's existing Hub tokens                                            |
 
 A credential that the Hub revokes while the sidecar is down stays usable by the restored run until the reconnect reconcile revokes it.

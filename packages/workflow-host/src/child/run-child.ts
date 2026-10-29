@@ -1133,7 +1133,8 @@ export async function runWorkflowChild(
 // Whether every run only waits on input from outside, for a supervisor that
 // stops the child once it is. Buffered events are made durable and input on
 // its way to a run is delivered first, so the answer holds for the log the
-// stopped child would leave. A check that fails is reported, not retried.
+// stopped child would leave. A check that fails is reported, not retried:
+// the supervisor refuses the standby attempt with it.
 async function answerQuiet(
   ctx: {
     bindings: RunWorkflowChildBindings;
@@ -1255,6 +1256,12 @@ async function handleControlPayload(
       // (that would block the control loop).
       if (ctx.runsInFlight.has(payload.data.runId)) {
         ctx.triggeredRunIds.push(payload.data.runId);
+        void answerInputTaken(
+          ctx.upstreamSender,
+          payload.data.requestId,
+          payload.data.runId,
+          false,
+        );
         return false;
       }
       // The supervisor resolved the inbound mail to the run's input (the
@@ -1300,6 +1307,14 @@ async function handleControlPayload(
         triggerPayload,
       });
       ctx.runsInFlight.set(payload.data.runId, handle);
+      void handle.started.then((committed) =>
+        answerInputTaken(
+          ctx.upstreamSender,
+          payload.data.requestId,
+          payload.data.runId,
+          committed,
+        ),
+      );
       // Fan the run's terminal status back to the supervisor over the
       // upstream control channel. The supervisor's dispatch loop and
       // any armed drainTimeout accumulator subscribe through the
@@ -1381,8 +1396,16 @@ async function handleControlPayload(
       // re-discovered -- must not commit an orphan `SignalReceived` to a log no
       // awaiter is tailing. `runsInFlight` is the one-driver authority on which
       // runs this child drives.
+      const acknowledge = (committed: boolean) =>
+        answerInputTaken(
+          ctx.upstreamSender,
+          payload.data.requestId,
+          payload.data.runId,
+          committed,
+        );
       if (!ctx.runsInFlight.has(payload.data.runId)) {
         logger.warn`signal.deliver for run ${payload.data.runId} which is not in flight; dropping (signalName=${payload.data.signalName})`;
+        void acknowledge(false);
         return false;
       }
       // Land the signal as a `SignalReceived` commit on the run's
@@ -1422,6 +1445,7 @@ async function handleControlPayload(
         clock: ctx.clock,
       });
       void (async () => {
+        let committed = false;
         try {
           await transientSignalChannel.deliver(
             payload.data.signalName,
@@ -1431,11 +1455,13 @@ async function handleControlPayload(
               ? [payload.data.correlationId]
               : []),
           );
+          committed = true;
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);
           logger.warn`signal.deliver commit failed runId=${payload.data.runId} signalName=${payload.data.signalName}: ${reason}`;
         } finally {
           await transientSignalChannel.stop();
+          await acknowledge(committed);
           endDelivery();
         }
       })();
@@ -1461,6 +1487,9 @@ async function handleControlPayload(
     }
     case "cancel.prepared": {
       throw new Error("workflow-child received an upstream cancellation reply");
+    }
+    case "input.taken": {
+      throw new Error("workflow-child received an upstream input reply");
     }
     case "drain": {
       // The supervisor's `drain` control mail flips the controller's
@@ -2012,6 +2041,28 @@ function buildRuntimeEnv(args: {
     args.bindings.actionCredentials(args.credentialWiring),
   );
   return env;
+}
+
+/**
+ * Tell the supervisor whether the input a `trigger.fire` or `signal.deliver`
+ * carried is committed, when the frame asked. Best-effort like the other
+ * upstream sends: a reply is lost only with the control channel, and until the
+ * child is replaced every standby attempt of this deployment waits for it,
+ * which `wake` abandons.
+ */
+async function answerInputTaken(
+  upstreamSender: ControlChannelSender,
+  requestId: string | undefined,
+  runId: string,
+  committed: boolean,
+): Promise<void> {
+  if (requestId === undefined) return;
+  await upstreamSender
+    .send({ type: "input.taken", data: { requestId, committed } })
+    .catch((cause: unknown) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.warn`input.taken reply failed runId=${runId}: ${message}`;
+    });
 }
 
 /**

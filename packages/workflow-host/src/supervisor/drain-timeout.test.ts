@@ -3,7 +3,8 @@
 // The accumulator ticks against wall-clock time while the supervisor
 // believes the workflow has at least one `"cancel"`-behavior step in
 // flight. On timeout it commits `CancelRequested{origin:
-// "supervisor-drain"}` through the injected substrate. The runtime
+// "supervisor-drain"}` through the supervisor's injected commit, which
+// these tests run against a stub substrate. The runtime
 // body's existing cancellation cascade handles teardown once the
 // CancelRequested event lands on the workflow-run log.
 //
@@ -13,8 +14,8 @@
 // side. The attachment point is the `RepoStore.
 // writeTreePreservingPrefix` interceptor on a stub substrate -- the
 // fake captures every commit's principal/files/ref so the test
-// asserts directly on the CancelRequested blob the accumulator
-// writes, instead of round-tripping through a `subscribeKind`
+// asserts directly on the CancelRequested blob the escalation
+// commits, instead of round-tripping through a `subscribeKind`
 // observer. The same observable is being tested; the attachment
 // point is just one layer closer to the write the accumulator
 // performs.
@@ -31,9 +32,11 @@ import type {
   TerminalRunEvent,
 } from "./types";
 
+import { commitCancelRequested } from "./cancel-signing";
 import {
   createDrainTimeoutAccumulator,
   DEFAULT_DRAIN_TIMEOUT_MS,
+  type DrainTimeoutOpts,
 } from "./drain-timeout";
 import { waitUntil } from "@intx/types/testing";
 
@@ -165,6 +168,24 @@ const REPO_ID: RepoId = { kind: "workflow-run", id: "deployment-x" };
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-x";
 
+// Commits the escalation as the supervisor does, through the stub substrate.
+function commitThrough(
+  substrate: RepoStore,
+  signAsPrincipal: ReturnType<typeof makeSignSpy>["signAsPrincipal"],
+  runId: string,
+): DrainTimeoutOpts["commitCancel"] {
+  return (cancel) =>
+    commitCancelRequested({
+      substrate,
+      repoId: REPO_ID,
+      ref: REF,
+      anchorRunId: DEPLOYMENT_ID,
+      runId,
+      ...cancel,
+      signAsPrincipal,
+    });
+}
+
 describe("createDrainTimeoutAccumulator", () => {
   test("DEFAULT_DRAIN_TIMEOUT_MS is 60 seconds", () => {
     expect(DEFAULT_DRAIN_TIMEOUT_MS).toBe(60_000);
@@ -181,12 +202,8 @@ describe("createDrainTimeoutAccumulator", () => {
     const clock = createFakeClock();
     const host = createFakeTimerHost();
     const accumulator = createDrainTimeoutAccumulator({
-      substrate,
-      repoId: REPO_ID,
-      ref: REF,
-      anchorRunId: DEPLOYMENT_ID,
       runId: "run-1",
-      signAsPrincipal: signSpy.signAsPrincipal,
+      commitCancel: commitThrough(substrate, signSpy.signAsPrincipal, "run-1"),
       drainTimeoutMs: 1_000,
       now: clock.now,
       setTimer: host.setTimer,
@@ -231,12 +248,8 @@ describe("createDrainTimeoutAccumulator", () => {
     const clock = createFakeClock();
     const host = createFakeTimerHost();
     const accumulator = createDrainTimeoutAccumulator({
-      substrate,
-      repoId: REPO_ID,
-      ref: REF,
-      anchorRunId: DEPLOYMENT_ID,
       runId: "run-2",
-      signAsPrincipal: signSpy.signAsPrincipal,
+      commitCancel: commitThrough(substrate, signSpy.signAsPrincipal, "run-2"),
       drainTimeoutMs: 1_000,
       now: clock.now,
       setTimer: host.setTimer,
@@ -272,12 +285,8 @@ describe("createDrainTimeoutAccumulator", () => {
     const clock = createFakeClock();
     const host = createFakeTimerHost();
     const accumulator = createDrainTimeoutAccumulator({
-      substrate,
-      repoId: REPO_ID,
-      ref: REF,
-      anchorRunId: DEPLOYMENT_ID,
       runId: "run-3",
-      signAsPrincipal: signSpy.signAsPrincipal,
+      commitCancel: commitThrough(substrate, signSpy.signAsPrincipal, "run-3"),
       drainTimeoutMs: 1_000,
       now: clock.now,
       setTimer: host.setTimer,
@@ -303,12 +312,8 @@ describe("createDrainTimeoutAccumulator", () => {
     const clock = createFakeClock();
     const host = createFakeTimerHost();
     const accumulator = createDrainTimeoutAccumulator({
-      substrate,
-      repoId: REPO_ID,
-      ref: REF,
-      anchorRunId: DEPLOYMENT_ID,
       runId: "run-4",
-      signAsPrincipal: signSpy.signAsPrincipal,
+      commitCancel: commitThrough(substrate, signSpy.signAsPrincipal, "run-4"),
       drainTimeoutMs: 1_000,
       now: clock.now,
       setTimer: host.setTimer,
@@ -345,12 +350,12 @@ describe("createDrainTimeoutAccumulator", () => {
     const clock = createFakeClock();
     const host = createFakeTimerHost();
     const accumulator = createDrainTimeoutAccumulator({
-      substrate,
-      repoId: REPO_ID,
-      ref: REF,
-      anchorRunId: DEPLOYMENT_ID,
       runId: "parent-run",
-      signAsPrincipal: signSpy.signAsPrincipal,
+      commitCancel: commitThrough(
+        substrate,
+        signSpy.signAsPrincipal,
+        "parent-run",
+      ),
       drainTimeoutMs: 1_000,
       now: clock.now,
       setTimer: host.setTimer,
@@ -379,12 +384,12 @@ describe("createDrainTimeoutAccumulator", () => {
     const clock = createFakeClock();
     const host = createFakeTimerHost();
     const accumulator = createDrainTimeoutAccumulator({
-      substrate,
-      repoId: REPO_ID,
-      ref: REF,
-      anchorRunId: DEPLOYMENT_ID,
       runId: "parent-run",
-      signAsPrincipal: signSpy.signAsPrincipal,
+      commitCancel: commitThrough(
+        substrate,
+        signSpy.signAsPrincipal,
+        "parent-run",
+      ),
       drainTimeoutMs: 1_000,
       now: clock.now,
       setTimer: host.setTimer,
@@ -425,12 +430,12 @@ describe("createDrainTimeoutAccumulator", () => {
       };
     };
     const accumulator = createDrainTimeoutAccumulator({
-      substrate,
-      repoId: REPO_ID,
-      ref: REF,
-      anchorRunId: DEPLOYMENT_ID,
       runId: "run-terminal-1",
-      signAsPrincipal: signSpy.signAsPrincipal,
+      commitCancel: commitThrough(
+        substrate,
+        signSpy.signAsPrincipal,
+        "run-terminal-1",
+      ),
       drainTimeoutMs: 1_000,
       now: clock.now,
       setTimer: host.setTimer,
@@ -501,12 +506,12 @@ describe("createDrainTimeoutAccumulator", () => {
       },
     });
     const accumulator = createDrainTimeoutAccumulator({
-      substrate,
-      repoId: REPO_ID,
-      ref: REF,
-      anchorRunId: DEPLOYMENT_ID,
       runId: "run-timeout-1",
-      signAsPrincipal: signSpy.signAsPrincipal,
+      commitCancel: commitThrough(
+        substrate,
+        signSpy.signAsPrincipal,
+        "run-timeout-1",
+      ),
       drainTimeoutMs: 1_000,
       now: clock.now,
       setTimer: host.setTimer,
@@ -548,12 +553,12 @@ describe("createDrainTimeoutAccumulator", () => {
       },
     });
     const accumulator = createDrainTimeoutAccumulator({
-      substrate,
-      repoId: REPO_ID,
-      ref: REF,
-      anchorRunId: DEPLOYMENT_ID,
       runId: "run-stop-terminal-1",
-      signAsPrincipal: signSpy.signAsPrincipal,
+      commitCancel: commitThrough(
+        substrate,
+        signSpy.signAsPrincipal,
+        "run-stop-terminal-1",
+      ),
       drainTimeoutMs: 1_000,
       now: clock.now,
       setTimer: host.setTimer,

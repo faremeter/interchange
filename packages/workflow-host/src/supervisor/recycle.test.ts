@@ -27,6 +27,7 @@ import { type } from "arktype";
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import { signalName } from "@intx/types/signals";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { NotInProcessingError } from "@intx/hub-sessions";
 import {
@@ -38,6 +39,7 @@ import {
   createChangeNotifier,
   waitForTriggerFireRunIds,
   waitForUpstreamPayload,
+  waitForUpstreamPayloads,
   createStubRepoStore,
   sendDefinition,
   TEST_DEFINITION,
@@ -46,8 +48,12 @@ import {
 
 import {
   createWorkflowSupervisor,
+  StandbyAbandonedError,
+  StandbyDeferredError,
+  StandbyRefusedError,
   type InboxPrimitives,
   type MailBusBindings,
+  type RecordedStandby,
   type SignedPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
@@ -67,6 +73,7 @@ import {
   ControlPayload,
   SignedEnvelope,
 } from "../ipc/index";
+import type { ParkedCorrelation } from "../ipc/control-payloads";
 
 function parseSignalDeliverRunIds(lines: readonly string[]): string[] {
   const ids: string[] = [];
@@ -153,6 +160,8 @@ type SpawnTracker = {
 function createSpawnTracker(opts: {
   sigtermExits?: boolean;
   killThrows?: boolean;
+  // Fails the supervisor's control write of a line, as a closing pipe does.
+  controlWriteFails?: (line: string) => boolean;
 }): SpawnTracker {
   const children: FakeChild[] = [];
   const spawnEnvs: Record<string, string>[] = [];
@@ -181,9 +190,19 @@ function createSpawnTracker(opts: {
     };
     children.push(child);
     changes.notify();
+    const controlWriteFails = opts.controlWriteFails;
     const handle: SubprocessHandle = {
       pid: child.pid,
-      controlWriter: supervisorToChild.writer,
+      controlWriter:
+        controlWriteFails === undefined
+          ? supervisorToChild.writer
+          : {
+              write: (line) => {
+                if (controlWriteFails(line))
+                  throw new Error("the child's control pipe is closed");
+                return supervisorToChild.writer.write(line);
+              },
+            },
       controlReader: childToSupervisor.reader,
       eventReader: eventChildToSupervisor.reader,
       kill: (signal) => {
@@ -384,6 +403,9 @@ function createMemoryInboxPrimitives(): InboxPrimitives & {
         watermark: 0,
         prunedMessageIds: [],
       };
+    },
+    async hasInboxEntries(_store, _principal, _repoId, address) {
+      return getOrCreate(address).inbox.size > 0;
     },
     async replayProcessingToInbox(_store, _principal, _repoId, address, opts) {
       const s = getOrCreate(address);
@@ -2856,6 +2878,19 @@ describe("supervisor recycle: the new child's authority", () => {
 
 const RUN = "run_deployment-x";
 const ADDRESS = "run_deployment-x@example.com";
+// The tip of the run's history that the standby tests' store reports.
+const HISTORY_TIP = "tip-at-stop";
+const GATE_PARK: RecordedStandby["parked"][number] = {
+  runId: RUN,
+  correlationId: "corr-gate",
+  parkKind: "approval",
+  snapshot: {
+    name: "charge_card",
+    description: "Charge the customer's card",
+    inputSchema: { type: "object" },
+    arguments: { amount: 100 },
+  },
+};
 
 // The run's log in the stub store's directory, which the stub serves as its
 // committed history.
@@ -2883,28 +2918,28 @@ function runStarted(): Record<string, unknown> {
   };
 }
 
+// Move a mail to processing/, as a dispatch that took it would.
+async function takeMail(
+  inbox: ReturnType<typeof createMemoryInboxPrimitives>,
+  baseDir: string,
+  messageId: string,
+  receivedAt: number,
+): Promise<void> {
+  const store = createStubRepoStore(baseDir);
+  const repoId = { kind: "workflow-run", id: RUN } as const;
+  const principal = { kind: "supervisor", anchorRunId: RUN } as const;
+  await inbox.enqueueInbox(store, principal, repoId, {
+    address: ADDRESS,
+    messageId,
+    receivedAt,
+    mailAuditRef: { store: "memory", path: messageId },
+  });
+  await inbox.dequeueToProcessing(store, principal, repoId, ADDRESS);
+}
+
 // A respawned child resumes the run from its log, so mail the run already
 // took stays in processing/ with it instead of being delivered again.
 describe("supervisor respawn: mail a resumed run took", () => {
-  // Move a mail to processing/, as a dispatch that took it would.
-  async function takeMail(
-    inbox: ReturnType<typeof createMemoryInboxPrimitives>,
-    baseDir: string,
-    messageId: string,
-    receivedAt: number,
-  ): Promise<void> {
-    const store = createStubRepoStore(baseDir);
-    const repoId = { kind: "workflow-run", id: RUN } as const;
-    const principal = { kind: "supervisor", anchorRunId: RUN } as const;
-    await inbox.enqueueInbox(store, principal, repoId, {
-      address: ADDRESS,
-      messageId,
-      receivedAt,
-      mailAuditRef: { store: "memory", path: messageId },
-    });
-    await inbox.dequeueToProcessing(store, principal, repoId, ADDRESS);
-  }
-
   async function setupOwned(opts: {
     inbox: ReturnType<typeof createMemoryInboxPrimitives>;
     inboxPrimitives?: Partial<InboxPrimitives>;
@@ -3502,5 +3537,2691 @@ describe("supervisor respawn: mail a resumed run took", () => {
 
       await owned.supervisor.shutdown();
     });
+  });
+});
+
+// Answer the `count`th correlation query on the child's channel. Every spawn
+// sends one of its own, so a standby attempt's query is the second.
+async function answerParkedQuery(
+  child: FakeChild,
+  childSender: ReturnType<typeof createControlChannelSender>,
+  count: number,
+  parked: ParkedCorrelation[] = [],
+): Promise<void> {
+  const queries = await waitForUpstreamPayloads(
+    child.supervisorToChild,
+    "parked-correlations.request",
+    count,
+  );
+  const query = queries[count - 1];
+  if (query === undefined) throw new Error("correlation query missing");
+  await childSender.send({
+    type: "parked-correlations.response",
+    data: { requestId: query.data.requestId, parked },
+  });
+}
+
+// Answer the `count`th quiet query on the child's channel, and return it.
+async function answerQuiet(
+  child: FakeChild,
+  childSender: ReturnType<typeof createControlChannelSender>,
+  count: number,
+  answer: { quiet: boolean; wakeAt?: string; ended?: true; error?: string },
+): Promise<{ wait: boolean }> {
+  const queries = await waitForUpstreamPayloads(
+    child.supervisorToChild,
+    "quiet.request",
+    count,
+  );
+  const query = queries[count - 1];
+  if (query === undefined) throw new Error("quiet query missing");
+  await childSender.send({
+    type: "quiet.response",
+    data: { requestId: query.data.requestId, ...answer },
+  });
+  return query.data;
+}
+
+// The fake child reports quiet for the wait and the final check, answers the
+// standby attempt's correlation query, and exits on its `shutdown`, as the real
+// child's control loop does. `firstQuery` numbers the wait's query.
+async function actAsChildEnteringStandby(
+  child: FakeChild,
+  childSender: ReturnType<typeof createControlChannelSender>,
+  opts: { firstQuery?: number; wakeAt?: string } = {},
+): Promise<void> {
+  const first = opts.firstQuery ?? 1;
+  const answer = {
+    quiet: true,
+    ...(opts.wakeAt !== undefined ? { wakeAt: opts.wakeAt } : {}),
+  };
+  expect((await answerQuiet(child, childSender, first, answer)).wait).toBe(
+    true,
+  );
+  expect((await answerQuiet(child, childSender, first + 1, answer)).wait).toBe(
+    false,
+  );
+  await answerParkedQuery(child, childSender, 2);
+  await waitForUpstreamPayload(child.supervisorToChild, "shutdown");
+  child.eventChildToSupervisor.close();
+  child.childToSupervisor.close();
+  child.resolveExit?.(0);
+}
+
+function sentFrameTypes(child: FakeChild): string[] {
+  return parseControlFrames(child.supervisorToChild.flushed()).map(
+    (frame) => frame.type,
+  );
+}
+
+// The fake child commits the trigger the supervisor fired at it.
+async function takeTrigger(
+  child: FakeChild,
+  childSender: ReturnType<typeof createControlChannelSender>,
+): Promise<void> {
+  const fire = await waitForUpstreamPayload(
+    child.supervisorToChild,
+    "trigger.fire",
+  );
+  const requestId = fire.data.requestId;
+  if (requestId === undefined) throw new Error("the trigger has no requestId");
+  await childSender.send({
+    type: "input.taken",
+    data: { requestId, committed: true },
+  });
+}
+
+describe("supervisor standby and wake", () => {
+  async function setup(
+    opts: {
+      onWake?: WorkflowSupervisorBindings["onWake"];
+      recordStandby?: (standby: RecordedStandby) => Promise<void>;
+      inboxPrimitives?: InboxPrimitives;
+      beforeSpawn?: (baseDir: string) => Promise<void>;
+      repoStore?: (baseDir: string) => RepoStore;
+      onSuspensionRegister?: WorkflowSupervisorBindings["onSuspensionRegister"];
+      onStandbyWait?: WorkflowSupervisorBindings["onStandbyWait"];
+      onShutdownWait?: WorkflowSupervisorBindings["onShutdownWait"];
+      onDispatchWait?: WorkflowSupervisorBindings["onDispatchWait"];
+      parkedQueryWatchdogMs?: number;
+      timers?: Pick<WorkflowSupervisorBindings, "setTimer" | "clearTimer">;
+      recyclePolicy?: Partial<WorkflowSupervisorBindings>;
+      drainTimeoutAccumulatorFactory?: WorkflowSupervisorBindings["drainTimeoutAccumulatorFactory"];
+      respawnBackoffInitialMs?: number;
+      controlWriteFails?: (line: string) => boolean;
+    } = {},
+  ) {
+    const baseDir = await makeTempDir("standby-");
+    await opts.beforeSpawn?.(baseDir);
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker(
+      opts.controlWriteFails !== undefined
+        ? { controlWriteFails: opts.controlWriteFails }
+        : {},
+    );
+    const { supervisor, firstSender } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      overrides: {
+        repoStore:
+          opts.repoStore?.(baseDir) ??
+          createStubRepoStore(baseDir, {
+            writeTree: true,
+            refTip: HISTORY_TIP,
+          }),
+        ...(opts.onSuspensionRegister !== undefined
+          ? { onSuspensionRegister: opts.onSuspensionRegister }
+          : {}),
+        ...(opts.onWake !== undefined ? { onWake: opts.onWake } : {}),
+        ...(opts.recordStandby !== undefined
+          ? { recordStandby: opts.recordStandby }
+          : {}),
+        ...(opts.onStandbyWait !== undefined
+          ? { onStandbyWait: opts.onStandbyWait }
+          : {}),
+        ...(opts.onShutdownWait !== undefined
+          ? { onShutdownWait: opts.onShutdownWait }
+          : {}),
+        ...(opts.onDispatchWait !== undefined
+          ? { onDispatchWait: opts.onDispatchWait }
+          : {}),
+        ...(opts.parkedQueryWatchdogMs !== undefined
+          ? { parkedQueryWatchdogMs: opts.parkedQueryWatchdogMs }
+          : {}),
+        ...(opts.inboxPrimitives !== undefined
+          ? { inboxPrimitives: opts.inboxPrimitives }
+          : {}),
+        ...(opts.drainTimeoutAccumulatorFactory !== undefined
+          ? {
+              drainTimeoutAccumulatorFactory:
+                opts.drainTimeoutAccumulatorFactory,
+            }
+          : {}),
+        ...(opts.respawnBackoffInitialMs !== undefined
+          ? { respawnBackoffInitialMs: opts.respawnBackoffInitialMs }
+          : {}),
+        ...opts.timers,
+        ...opts.recyclePolicy,
+      },
+    });
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    return {
+      supervisor,
+      firstSender,
+      first,
+      tracker,
+      mailBus,
+      ipcKeypair,
+    };
+  }
+
+  test("a child in standby has no recycle policy, and the woken child's uptime counts from its start", async () => {
+    const woke = Promise.withResolvers<string>();
+    const policy = manualRecyclePolicy(60_000);
+    const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+      await setup({
+        onWake: ({ reason }) => woke.resolve(reason),
+        recyclePolicy: policy.bindings,
+      });
+    expect(policy.armed()).toBe(1);
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    expect(await inStandby).toEqual({});
+    expect(policy.armed()).toBe(0);
+
+    policy.advance(120_000);
+    const armed = policy.nextArm();
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("wake up"));
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("mail");
+    await armed;
+
+    const ticked = policy.nextArm();
+    policy.tick();
+    await ticked;
+    expect(tracker.totalSpawns).toBe(2);
+
+    await supervisor.shutdown();
+  });
+
+  test("stops the child once it reports quiet, and mail respawns it", async () => {
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+      await setup({ onWake: ({ reason }) => woke.resolve(reason) });
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    expect(await inStandby).toEqual({});
+    expect(tracker.totalSpawns).toBe(1);
+
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("wake up"));
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("mail");
+
+    await supervisor.shutdown();
+  });
+
+  // The inbox as the standby attempt reads it right before the stop, empty, and
+  // as `after` once the child stopped.
+  function emptyUntilStopped(
+    after: InboxPrimitives["hasInboxEntries"],
+  ): InboxPrimitives["hasInboxEntries"] {
+    let reads = 0;
+    return async (...args) => {
+      reads += 1;
+      return reads === 1 ? false : after(...args);
+    };
+  }
+
+  // Mail enqueued between the last read before the stop and the stop is in the
+  // inbox but was never dispatched.
+  const waitingInboxes: [string, InboxPrimitives["hasInboxEntries"]][] = [
+    ["holds mail", async () => true],
+    [
+      "cannot be read",
+      async () => {
+        throw new Error("the inbox is unreadable");
+      },
+    ],
+  ];
+  test.each(waitingInboxes)(
+    "a child whose inbox %s once it stops is respawned",
+    async (_case, hasInboxEntries) => {
+      const woke = Promise.withResolvers<string>();
+      const { supervisor, firstSender, first, tracker, ipcKeypair } =
+        await setup({
+          onWake: ({ reason }) => woke.resolve(reason),
+          inboxPrimitives: {
+            ...createMemoryInboxPrimitives(),
+            hasInboxEntries: emptyUntilStopped(hasInboxEntries),
+          },
+        });
+
+      const inStandby = supervisor.enterStandby();
+      await actAsChildEnteringStandby(first, firstSender);
+      expect(await inStandby).toEqual({});
+
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      const secondSender = await driveReady(second, ipcKeypair);
+      await answerParkedQuery(second, secondSender, 1);
+      expect(await woke.promise).toBe("mail");
+
+      await supervisor.shutdown();
+    },
+  );
+
+  test("mail that lands while the last read before the stop runs wakes the stopped child", async () => {
+    const woke = Promise.withResolvers<string>();
+    const memory = createMemoryInboxPrimitives();
+    let deliverMail = (): Promise<void> => Promise.resolve();
+    let reads = 0;
+    const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+      await setup({
+        onWake: ({ reason }) => woke.resolve(reason),
+        inboxPrimitives: {
+          ...memory,
+          // The read began before the mail landed, and the mail's arrival
+          // finds the child still running, so only the read after the stop
+          // can wake it.
+          async hasInboxEntries(...args) {
+            reads += 1;
+            if (reads > 1) return memory.hasInboxEntries(...args);
+            await deliverMail();
+            return false;
+          },
+        },
+      });
+    deliverMail = () =>
+      mailBus.deliverSettled(ADDRESS, new TextEncoder().encode("late mail"));
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    expect(await inStandby).toEqual({});
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("mail");
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt is refused while mail waits in the inbox, and the child keeps running", async () => {
+    const { supervisor, firstSender, first, tracker } = await setup({
+      inboxPrimitives: {
+        ...createMemoryInboxPrimitives(),
+        // Mail behind a run that waits on an approval.
+        async hasInboxEntries() {
+          return true;
+        },
+      },
+    });
+
+    const inStandby = supervisor.enterStandby();
+    expect(
+      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+    ).toBe(true);
+    expect(
+      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+    ).toBe(false);
+    await answerParkedQuery(first, firstSender, 2);
+    await expect(inStandby).rejects.toThrow(
+      "mail is waiting in the deployment's inbox",
+    );
+    expect(sentFrameTypes(first)).not.toContain("shutdown");
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt is refused when the inbox cannot be read before the stop, and the child keeps running", async () => {
+    const { supervisor, firstSender, first, tracker } = await setup({
+      inboxPrimitives: {
+        ...createMemoryInboxPrimitives(),
+        async hasInboxEntries() {
+          throw new Error("the inbox is unreadable");
+        },
+      },
+    });
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerParkedQuery(first, firstSender, 2);
+    await expect(inStandby).rejects.toThrow(
+      "the deployment's inbox could not be read: the inbox is unreadable",
+    );
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyRefusedError);
+    expect(sentFrameTypes(first)).not.toContain("shutdown");
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt is refused when the run's history cannot be read, and nothing is recorded", async () => {
+    const records: RecordedStandby[] = [];
+    const { supervisor, firstSender, first, tracker } = await setup({
+      recordStandby: async (standby) => {
+        records.push(standby);
+      },
+      repoStore: (baseDir) => {
+        const base = createStubRepoStore(baseDir, { writeTree: true });
+        return new Proxy(base, {
+          get(target, prop, receiver) {
+            if (prop !== "resolveRef")
+              return Reflect.get(target, prop, receiver);
+            return async () => {
+              throw new Error("the history ref is unreadable");
+            };
+          },
+        });
+      },
+    });
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await expect(inStandby).rejects.toThrow(
+      "the run's history could not be read: the history ref is unreadable",
+    );
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyRefusedError);
+    expect(sentFrameTypes(first)).not.toContain("shutdown");
+    expect(records).toEqual([]);
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a child that crashes during the final check puts the standby attempt off, and the respawned child takes mail", async () => {
+    const waits: string[] = [];
+    const waited = createChangeNotifier();
+    const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+      await setup({
+        onStandbyWait: (waiting) => {
+          waits.push(waiting);
+          waited.notify();
+        },
+      });
+
+    const inStandby = supervisor.enterStandby();
+    await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+    // A signal the child has not taken yet holds the final check back.
+    await supervisor.deliverSignal({
+      runId: RUN,
+      signalName: "gate",
+      signalId: "sig-1",
+      payload: { approved: true },
+    });
+    const before = waits.length;
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await waited.until(() => waits.slice(before).includes("standby"));
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(1);
+
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyDeferredError);
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("hello"));
+    await takeTrigger(second, secondSender);
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt waits while the child works, and mail still reaches it", async () => {
+    const { supervisor, firstSender, first, mailBus } = await setup();
+
+    const inStandby = supervisor.enterStandby();
+    expect(
+      (await answerQuiet(first, firstSender, 1, { quiet: false })).wait,
+    ).toBe(true);
+    // Not quiet yet: the child is asked again, and dispatch goes on.
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("hello"));
+    await takeTrigger(first, firstSender);
+    expect(first.killSignals).toEqual([]);
+
+    await actAsChildEnteringStandby(first, firstSender, { firstQuery: 2 });
+    expect(await inStandby).toEqual({});
+
+    await supervisor.shutdown();
+  });
+
+  test("a child working again at the final check lets held mail through and waits for quiet once more", async () => {
+    const held = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, mailBus } = await setup({
+      onStandbyWait: (waiting) => {
+        if (waiting === "input") held.resolve(undefined);
+      },
+    });
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
+    // Mail during the final check is held back.
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("hello"));
+    await held.promise;
+    expect(sentFrameTypes(first)).not.toContain("trigger.fire");
+
+    expect(
+      (await answerQuiet(first, firstSender, 2, { quiet: false })).wait,
+    ).toBe(false);
+    await takeTrigger(first, firstSender);
+    expect(first.killSignals).toEqual([]);
+
+    await actAsChildEnteringStandby(first, firstSender, { firstQuery: 3 });
+    expect(await inStandby).toEqual({});
+
+    await supervisor.shutdown();
+  });
+
+  test("a write that lands after the child reports quiet sends the standby attempt back to waiting", async () => {
+    // The first write the child asks for waits until the test lets it land.
+    const firstWrite = Promise.withResolvers<undefined>();
+    const registered = Promise.withResolvers<undefined>();
+    let writes = 0;
+    const { supervisor, firstSender, first } = await setup({
+      onSuspensionRegister: () => registered.resolve(undefined),
+      repoStore: (baseDir) => {
+        const base = createStubRepoStore(baseDir, { writeTree: true });
+        return new Proxy(base, {
+          get(target, prop, receiver) {
+            if (prop !== "writeTreePreservingPrefix") {
+              return Reflect.get(target, prop, receiver);
+            }
+            return async (
+              ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
+            ) => {
+              writes += 1;
+              if (writes === 1) await firstWrite.promise;
+              return target.writeTreePreservingPrefix(...args);
+            };
+          },
+        });
+      },
+    });
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
+    // A write still landing when the child answers holds the final check.
+    await sendChildWrite(firstSender, "landing");
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    // A write after the answer is held by the fence and found by the check,
+    // which waits for the landing write. The supervisor takes frames in order,
+    // so once it registers the park sent next, it has taken that write.
+    await sendChildWrite(firstSender, "after-quiet");
+    await firstSender.send({
+      type: "park.notify",
+      data: { runId: RUN, correlationId: "corr-marker", parkKind: "approval" },
+    });
+    await registered.promise;
+    firstWrite.resolve(undefined);
+
+    expect(
+      (await answerQuiet(first, firstSender, 3, { quiet: true })).wait,
+    ).toBe(true);
+    expect(first.killSignals).toEqual([]);
+    expect(sentFrameTypes(first)).not.toContain("shutdown");
+
+    await supervisor.wake();
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyRefusedError);
+    await supervisor.shutdown();
+  });
+
+  test("writes a crashed child left behind the fence never land", async () => {
+    // The first write the child asks for waits until the test lets it land.
+    const firstWrite = Promise.withResolvers<undefined>();
+    const registered = Promise.withResolvers<undefined>();
+    const messages: string[] = [];
+    const { supervisor, firstSender, first } = await setup({
+      onSuspensionRegister: () => registered.resolve(undefined),
+      repoStore: (baseDir) => {
+        const base = createStubRepoStore(baseDir, { writeTree: true });
+        return new Proxy(base, {
+          get(target, prop, receiver) {
+            if (prop !== "writeTreePreservingPrefix") {
+              return Reflect.get(target, prop, receiver);
+            }
+            return async (
+              ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
+            ) => {
+              if (messages.length === 0) await firstWrite.promise;
+              messages.push(args[3].message);
+              return target.writeTreePreservingPrefix(...args);
+            };
+          },
+        });
+      },
+    });
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
+    await sendChildWrite(firstSender, "landing");
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    // Held by the fence; the park sent next shows the supervisor took it.
+    await sendChildWrite(firstSender, "after-quiet");
+    await firstSender.send({
+      type: "park.notify",
+      data: { runId: RUN, correlationId: "corr-marker", parkKind: "approval" },
+    });
+    await registered.promise;
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(1);
+    // The supervisor watched this exit first, so it has seen it once this
+    // await returns, before the landing write lets the standby attempt go on.
+    await first.exited;
+    firstWrite.resolve(undefined);
+
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyDeferredError);
+    expect(messages).toEqual(["child write landing"]);
+    await supervisor.shutdown();
+  });
+
+  test("a child that writes after the stop began is woken for that work once it stops", async () => {
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      { onWake: ({ reason }) => woke.resolve(reason) },
+    );
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await waitForUpstreamPayloads(
+      first.supervisorToChild,
+      "parked-correlations.request",
+      2,
+    );
+    await sendChildWrite(firstSender, "after-stop");
+    await answerParkedQuery(first, firstSender, 2);
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    expect(await inStandby).toEqual({});
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("work it began after it went quiet");
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt waits for a mail the child has not taken yet", async () => {
+    const waits = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, mailBus } = await setup({
+      onStandbyWait: (waiting) => {
+        if (waiting === "standby") waits.resolve(undefined);
+      },
+    });
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("hello"));
+    const fire = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "trigger.fire",
+    );
+    const requestId = fire.data.requestId;
+    if (requestId === undefined)
+      throw new Error("the trigger has no requestId");
+
+    const inStandby = supervisor.enterStandby();
+    await waits.promise;
+    expect(sentFrameTypes(first)).not.toContain("quiet.request");
+    await firstSender.send({
+      type: "input.taken",
+      data: { requestId, committed: true },
+    });
+    await actAsChildEnteringStandby(first, firstSender);
+    expect(await inStandby).toEqual({});
+
+    await supervisor.shutdown();
+  });
+
+  test("a run in standby keeps the mail it took", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const { supervisor, firstSender, first, mailBus } = await setup({
+      inboxPrimitives: inbox,
+    });
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("hello"));
+    const fire = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "trigger.fire",
+    );
+    const requestId = fire.data.requestId;
+    if (requestId === undefined)
+      throw new Error("the trigger has no requestId");
+    await firstSender.send({
+      type: "input.taken",
+      data: { requestId, committed: true },
+    });
+
+    // The dispatch for a mail waits until its run parks or ends; it does not
+    // hold up a standby attempt, since the run keeps that mail across a
+    // respawn.
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    expect(await inStandby).toEqual({});
+    expect(inbox.messageIds(ADDRESS)).toEqual({
+      inbox: [],
+      processing: [fire.data.messageId],
+      consumed: [],
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt is refused while a mail the child declined waits for it", async () => {
+    const { supervisor, firstSender, first, tracker, mailBus } = await setup();
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("hello"));
+    const fire = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "trigger.fire",
+    );
+    const requestId = fire.data.requestId;
+    if (requestId === undefined)
+      throw new Error("the trigger has no requestId");
+    await firstSender.send({
+      type: "input.taken",
+      data: { requestId, committed: false },
+    });
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerParkedQuery(first, firstSender, 2);
+    await expect(inStandby).rejects.toThrow(
+      "mail the dispatch took is still waiting for the child",
+    );
+    expect(first.killSignals).toEqual([]);
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  // The dispatch's holds on mail for a live run, in order.
+  function dispatchWaits() {
+    const held: PromiseWithResolvers<undefined>[] = [];
+    const at = (n: number) => {
+      while (held.length < n) held.push(Promise.withResolvers());
+      const entry = held[n - 1];
+      if (entry === undefined) throw new Error("no dispatch hold");
+      return entry;
+    };
+    let count = 0;
+    return {
+      onDispatchWait: () => {
+        count += 1;
+        at(count).resolve(undefined);
+      },
+      nth: (n: number) => at(n).promise,
+    };
+  }
+
+  // A run that is live on the first child.
+  async function setupLiveRun() {
+    const waits = dispatchWaits();
+    const harness = await setup({
+      beforeSpawn: (baseDir) => writeWorkingRunLog(baseDir, [runStarted()]),
+      onDispatchWait: waits.onDispatchWait,
+    });
+    return { ...harness, waits };
+  }
+
+  // The child's answer to the `count`th `signal.deliver` it was sent.
+  async function confirmDelivery(
+    child: FakeChild,
+    childSender: ReturnType<typeof createControlChannelSender>,
+    count: number,
+    committed: boolean,
+  ): Promise<void> {
+    const deliveries = await waitForUpstreamPayloads(
+      child.supervisorToChild,
+      "signal.deliver",
+      count,
+    );
+    const requestId = deliveries[count - 1]?.data.requestId;
+    if (requestId === undefined) {
+      throw new Error("the delivery asked for no confirmation");
+    }
+    await childSender.send({
+      type: "input.taken",
+      data: { requestId, committed },
+    });
+  }
+
+  test("mail that wakes the child reaches a run the new child resumed parked on input", async () => {
+    const {
+      supervisor,
+      firstSender,
+      first,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      waits,
+    } = await setupLiveRun();
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    expect(await inStandby).toEqual({});
+
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("next turn"));
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    // The dispatch holds the mail before the new child says what its resumed
+    // run is parked on, and a park the run already holds sends no notice.
+    await waits.nth(1);
+    await answerParkedQuery(second, secondSender, 1, [
+      { runId: RUN, correlationId: "corr-next-turn", parkKind: "input" },
+    ]);
+    const delivered = await waitForUpstreamPayload(
+      second.supervisorToChild,
+      "signal.deliver",
+    );
+    expect(delivered.data).toMatchObject({
+      runId: RUN,
+      signalName: signalName("corr-next-turn"),
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("a later re-registration delivers mail waiting for the run's input", async () => {
+    const { supervisor, firstSender, first, mailBus, waits } =
+      await setupLiveRun();
+    // The child's first answer shows no park, so the mail waits.
+    await answerParkedQuery(first, firstSender, 1);
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("next turn"));
+    await waits.nth(1);
+
+    const reEmitted = supervisor.reEmitParkedCorrelations();
+    await answerParkedQuery(first, firstSender, 2, [
+      { runId: RUN, correlationId: "corr-next", parkKind: "input" },
+    ]);
+    await reEmitted;
+    const delivered = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "signal.deliver",
+    );
+    expect(delivered.data).toMatchObject({
+      runId: RUN,
+      signalName: signalName("corr-next"),
+    });
+
+    await supervisor.shutdown();
+  });
+
+  // History the child answers from can lag an input it took, so a
+  // re-registration can still show it, before or after the child confirms it.
+  const takenOrders: ["confirmation" | "re-registration"][] = [
+    ["confirmation"],
+    ["re-registration"],
+  ];
+  test.each(takenOrders)(
+    "an input the child took is not registered again when its %s comes first",
+    async (comesFirst) => {
+      const { supervisor, firstSender, first, mailBus, waits } =
+        await setupLiveRun();
+      await answerParkedQuery(first, firstSender, 1, [
+        { runId: RUN, correlationId: "corr-taken", parkKind: "input" },
+      ]);
+      mailBus.deliver(ADDRESS, new TextEncoder().encode("turn one"));
+      const reRegister = async () => {
+        const reEmitted = supervisor.reEmitParkedCorrelations();
+        await answerParkedQuery(first, firstSender, 2, [
+          { runId: RUN, correlationId: "corr-taken", parkKind: "input" },
+        ]);
+        await reEmitted;
+      };
+      if (comesFirst === "confirmation") {
+        await confirmDelivery(first, firstSender, 1, true);
+        await reRegister();
+      } else {
+        await waitForUpstreamPayload(first.supervisorToChild, "signal.deliver");
+        await reRegister();
+        await confirmDelivery(first, firstSender, 1, true);
+      }
+
+      // The run then waits on an approval, which shows no input channel, so
+      // the next mail waits for the run's next input.
+      mailBus.deliver(ADDRESS, new TextEncoder().encode("turn two"));
+      await firstSender.send({ type: "park.notify", data: GATE_PARK });
+      await waits.nth(1);
+      await firstSender.send({
+        type: "park.notify",
+        data: { runId: RUN, correlationId: "corr-next", parkKind: "input" },
+      });
+      const deliveries = await waitForUpstreamPayloads(
+        first.supervisorToChild,
+        "signal.deliver",
+        2,
+      );
+      expect(deliveries[1]?.data).toMatchObject({
+        runId: RUN,
+        signalName: signalName("corr-next"),
+      });
+
+      await supervisor.shutdown();
+    },
+  );
+
+  test("an input the child declined is registered again for the next mail", async () => {
+    const { supervisor, firstSender, first, mailBus, waits } =
+      await setupLiveRun();
+    await answerParkedQuery(first, firstSender, 1, [
+      { runId: RUN, correlationId: "corr-declined", parkKind: "input" },
+    ]);
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("turn one"));
+    await confirmDelivery(first, firstSender, 1, false);
+    // Another step of the run parks on an approval, which ends turn one's
+    // wait, and the next mail waits for the run's input.
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("turn two"));
+    await firstSender.send({ type: "park.notify", data: GATE_PARK });
+    await waits.nth(1);
+
+    const reEmitted = supervisor.reEmitParkedCorrelations();
+    await answerParkedQuery(first, firstSender, 2, [
+      { runId: RUN, correlationId: "corr-declined", parkKind: "input" },
+    ]);
+    await reEmitted;
+    const deliveries = await waitForUpstreamPayloads(
+      first.supervisorToChild,
+      "signal.deliver",
+      2,
+    );
+    expect(deliveries[1]?.data).toMatchObject({
+      runId: RUN,
+      signalName: signalName("corr-declined"),
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("an input whose child crashed before committing it goes to the next child", async () => {
+    const {
+      supervisor,
+      firstSender,
+      first,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      waits,
+    } = await setupLiveRun();
+    await answerParkedQuery(first, firstSender, 1, [
+      { runId: RUN, correlationId: "corr-lost", parkKind: "input" },
+    ]);
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("turn one"));
+    await waitForUpstreamPayload(first.supervisorToChild, "signal.deliver");
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(1);
+
+    // The replay puts the mail back, and the new child's run still waits on
+    // the input the first child never committed.
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await waits.nth(1);
+    await answerParkedQuery(second, secondSender, 1, [
+      { runId: RUN, correlationId: "corr-lost", parkKind: "input" },
+    ]);
+    const delivered = await waitForUpstreamPayload(
+      second.supervisorToChild,
+      "signal.deliver",
+    );
+    expect(delivered.data).toMatchObject({
+      runId: RUN,
+      signalName: signalName("corr-lost"),
+    });
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt is refused while a dispatch holds mail for the run's next input", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const dequeued = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, tracker, mailBus } = await setup({
+      // The run is live, but the supervisor knows no input channel for it.
+      beforeSpawn: (baseDir) => writeWorkingRunLog(baseDir, [runStarted()]),
+      inboxPrimitives: {
+        ...inbox,
+        async dequeueToProcessing(...args) {
+          const entry = await inbox.dequeueToProcessing(...args);
+          if (entry !== null) dequeued.resolve(undefined);
+          return entry;
+        },
+      },
+    });
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("follow-up"));
+    await dequeued.promise;
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerParkedQuery(first, firstSender, 2);
+    await expect(inStandby).rejects.toThrow(
+      "mail the dispatch took is still waiting for the child",
+    );
+    expect(first.killSignals).toEqual([]);
+    expect(tracker.totalSpawns).toBe(1);
+    // The child was not handed the mail yet.
+    expect(
+      sentFrameTypes(first).filter(
+        (frameType) =>
+          frameType === "trigger.fire" || frameType === "signal.deliver",
+      ),
+    ).toEqual([]);
+
+    await supervisor.shutdown();
+  });
+
+  test("a final check the child does not answer in time counts it as working", async () => {
+    // Quiet-check watchdogs are the test's to fire; every other timer runs.
+    const watchdogs: (() => void)[] = [];
+    const timers = {
+      setTimer: (callback: () => void, ms: number): unknown => {
+        if (ms === 30_000) {
+          watchdogs.push(callback);
+          return null;
+        }
+        const handle = setTimeout(callback, ms);
+        return { clear: () => clearTimeout(handle) };
+      },
+      clearTimer: (handle: unknown): void => {
+        if (
+          typeof handle === "object" &&
+          handle !== null &&
+          "clear" in handle &&
+          typeof handle.clear === "function"
+        )
+          handle.clear();
+      },
+    };
+    const { supervisor, firstSender, first } = await setup({
+      timers,
+      parkedQueryWatchdogMs: 45_000,
+    });
+
+    const inStandby = supervisor.enterStandby();
+    expect(
+      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+    ).toBe(true);
+    const queries = await waitForUpstreamPayloads(
+      first.supervisorToChild,
+      "quiet.request",
+      2,
+    );
+    expect(queries[1]?.data.wait).toBe(false);
+    const watchdog = watchdogs.at(-1);
+    if (watchdog === undefined) throw new Error("no quiet-check watchdog");
+    watchdog();
+    // Back to waiting until the child says it is quiet.
+    const again = await waitForUpstreamPayloads(
+      first.supervisorToChild,
+      "quiet.request",
+      3,
+    );
+    expect(again[2]?.data.wait).toBe(true);
+    expect(sentFrameTypes(first)).not.toContain("shutdown");
+
+    const woken = supervisor.wake();
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyAbandonedError);
+    await woken;
+    await supervisor.shutdown();
+  });
+
+  test("reports the earliest queued timer, and wakes for it", async () => {
+    const hour = 60 * 60 * 1000;
+    const fireAt = new Date(Date.now() + hour).toISOString();
+    // The wake timer is the test's to fire; every other timer runs as usual.
+    let wakeTimer: (() => void) | undefined;
+    const timers = {
+      setTimer: (callback: () => void, ms: number): unknown => {
+        if (ms > hour - 60_000) {
+          wakeTimer = callback;
+          return null;
+        }
+        const handle = setTimeout(callback, ms);
+        return { clear: () => clearTimeout(handle) };
+      },
+      clearTimer: (handle: unknown): void => {
+        if (
+          typeof handle === "object" &&
+          handle !== null &&
+          "clear" in handle &&
+          typeof handle.clear === "function"
+        )
+          handle.clear();
+      },
+    };
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      { onWake: ({ reason }) => woke.resolve(reason), timers },
+    );
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender, { wakeAt: fireAt });
+    expect(await inStandby).toEqual({ wakeAt: fireAt });
+    expect(tracker.totalSpawns).toBe(1);
+
+    if (wakeTimer === undefined) throw new Error("no wake timer was armed");
+    wakeTimer();
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    expect(await woke.promise).toBe("timer");
+
+    await supervisor.shutdown();
+  });
+
+  test("a wake further off than a timer can wait is armed again when that timer fires", async () => {
+    // `setTimeout` fires at once past this many ms.
+    const maxTimerMs = 2_147_483_647;
+    const fireAt = new Date(
+      Date.now() + 40 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const wakeTimers: { callback: () => void; ms: number }[] = [];
+    const timers = {
+      setTimer: (callback: () => void, ms: number): unknown => {
+        if (ms === maxTimerMs) {
+          wakeTimers.push({ callback, ms });
+          return null;
+        }
+        const handle = setTimeout(callback, ms);
+        return { clear: () => clearTimeout(handle) };
+      },
+      clearTimer: (handle: unknown): void => {
+        if (
+          typeof handle === "object" &&
+          handle !== null &&
+          "clear" in handle &&
+          typeof handle.clear === "function"
+        )
+          handle.clear();
+      },
+    };
+    const { supervisor, firstSender, first, tracker } = await setup({ timers });
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender, { wakeAt: fireAt });
+    expect(await inStandby).toEqual({ wakeAt: fireAt });
+    expect(wakeTimers).toHaveLength(1);
+
+    wakeTimers[0]?.callback();
+    expect(wakeTimers.map((timer) => timer.ms)).toEqual([
+      maxTimerMs,
+      maxTimerMs,
+    ]);
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a signal respawns a child in standby and is delivered to the new one", async () => {
+    const { supervisor, firstSender, first, tracker, ipcKeypair } =
+      await setup();
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    await inStandby;
+
+    const delivered = supervisor.deliverSignal({
+      runId: RUN,
+      signalName: "gate",
+      signalId: "sig-1",
+      payload: { approved: true },
+    });
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await delivered;
+    const signal = await waitForUpstreamPayload(
+      second.supervisorToChild,
+      "signal.deliver",
+    );
+    expect(signal.data.signalId).toBe("sig-1");
+    expect(parseSignalDeliverRunIds(first.supervisorToChild.flushed())).toEqual(
+      [],
+    );
+
+    await supervisor.shutdown();
+  });
+
+  test("a signal that arrives while another signal's wake respawns the child reaches the new one", async () => {
+    const { supervisor, firstSender, first, tracker, ipcKeypair } =
+      await setup();
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    await inStandby;
+
+    const signal = (signalId: string) =>
+      supervisor.deliverSignal({
+        runId: RUN,
+        signalName: "gate",
+        signalId,
+        payload: { approved: true },
+      });
+    const waking = signal("sig-1");
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const during = signal("sig-2");
+    await driveReady(second, ipcKeypair);
+    await Promise.all([waking, during]);
+    const signals = await waitForUpstreamPayloads(
+      second.supervisorToChild,
+      "signal.deliver",
+      2,
+    );
+    expect(signals.map((frame) => frame.data.signalId).sort()).toEqual([
+      "sig-1",
+      "sig-2",
+    ]);
+
+    await supervisor.shutdown();
+  });
+
+  test("a cancellation asked for while a wake respawns the child goes to the new one", async () => {
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      { repoStore: (baseDir) => mergingRepoStore(baseDir) },
+    );
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    await inStandby;
+
+    const woken = supervisor.wake();
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const cancelled = supervisor.requestCancel({
+      runId: RUN,
+      origin: "hub-admin",
+      reason: "Stop",
+      at: "2026-10-01T00:00:00.000Z",
+    });
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    await woken;
+    const prepare = await waitForUpstreamPayload(
+      second.supervisorToChild,
+      "cancel.prepare",
+    );
+    await secondSender.send({
+      type: "cancel.prepared",
+      data: { requestId: prepare.data.requestId },
+    });
+    await cancelled;
+    expect(sentFrameTypes(first)).not.toContain("cancel.prepare");
+
+    await supervisor.shutdown();
+  });
+
+  test("a signal during the final check waits for it and reaches the respawned child", async () => {
+    const { supervisor, firstSender, first, tracker, ipcKeypair } =
+      await setup();
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
+
+    const delivered = supervisor.deliverSignal({
+      runId: RUN,
+      signalName: "gate",
+      signalId: "sig-1",
+      payload: { approved: true },
+    });
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerParkedQuery(first, firstSender, 2);
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    expect(await inStandby).toEqual({});
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await delivered;
+    expect(parseSignalDeliverRunIds(first.supervisorToChild.flushed())).toEqual(
+      [],
+    );
+    const signal = await waitForUpstreamPayload(
+      second.supervisorToChild,
+      "signal.deliver",
+    );
+    expect(signal.data.signalId).toBe("sig-1");
+
+    await supervisor.shutdown();
+  });
+
+  test("a hub reconnect while the child stops re-registers the correlations it reported", async () => {
+    const registered: string[] = [];
+    const { supervisor, firstSender, first } = await setup({
+      onSuspensionRegister: (registration) => {
+        registered.push(registration.correlationId);
+      },
+    });
+
+    const entering = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    const queries = await waitForUpstreamPayloads(
+      first.supervisorToChild,
+      "parked-correlations.request",
+      2,
+    );
+    const query = queries[1];
+    if (query === undefined) throw new Error("correlation query missing");
+    await firstSender.send({
+      type: "parked-correlations.response",
+      data: {
+        requestId: query.data.requestId,
+        parked: [
+          {
+            runId: RUN,
+            correlationId: "corr-gate",
+            parkKind: "approval",
+            snapshot: {
+              name: "charge_card",
+              description: "Charge the customer's card",
+              inputSchema: { type: "object" },
+              arguments: { amount: 100 },
+            },
+          },
+        ],
+      },
+    });
+    // The child has been told to stop and has not exited yet.
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    await supervisor.reEmitParkedCorrelations();
+    expect(registered).toEqual(["corr-gate"]);
+
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    expect(await entering).toEqual({});
+    await supervisor.shutdown();
+  });
+
+  test("a standby is recorded once the child stopped, and only once", async () => {
+    let childExited = false;
+    const records: boolean[] = [];
+    const { supervisor, firstSender, first } = await setup({
+      recordStandby: async () => {
+        records.push(childExited);
+      },
+    });
+    void first.exited.then(() => {
+      childExited = true;
+    });
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    expect(await inStandby).toEqual({});
+    expect(await supervisor.enterStandby()).toEqual({});
+    expect(records).toEqual([true]);
+
+    await supervisor.shutdown();
+  });
+
+  // A run sleeping on a timer sends no park, so a drain arms a timer for it.
+  // The supervisor takes frames in order, so once it registers the park sent
+  // next, the run is one it drains.
+  async function drainSleepingRun(
+    supervisor: WorkflowSupervisor,
+    firstSender: ReturnType<typeof createControlChannelSender>,
+    registered: Promise<undefined>,
+  ): Promise<void> {
+    await firstSender.send({ type: "resumed.runs", data: { runIds: [RUN] } });
+    await firstSender.send({
+      type: "park.notify",
+      data: {
+        runId: "run-marker",
+        correlationId: "corr-marker",
+        parkKind: "approval",
+      },
+    });
+    await registered;
+    await supervisor.drain({ deadlineMs: 60_000 });
+  }
+
+  // A drain timer whose deadline the test passes: it commits its cancellation
+  // through the commit the supervisor gave it, as the real one does.
+  function passableDrainDeadline() {
+    let commitCancel:
+      | ((cancel: {
+          origin: "supervisor-drain";
+          reason: string;
+          at: string;
+        }) => Promise<unknown>)
+      | undefined;
+    const factory: WorkflowSupervisorBindings["drainTimeoutAccumulatorFactory"] =
+      (opts) => {
+        commitCancel = opts.commitCancel;
+        return {
+          start: () => undefined,
+          pause: () => undefined,
+          resume: () => undefined,
+          stop: () => undefined,
+          accumulatedMs: () => 0,
+          escalated: false,
+          disposed: () => Promise.resolve(),
+        };
+      };
+    return {
+      factory,
+      pass(): Promise<unknown> {
+        if (commitCancel === undefined) throw new Error("no drain was armed");
+        return commitCancel({
+          origin: "supervisor-drain",
+          reason: "drainTimeout expired",
+          at: "2026-10-01T00:00:00.000Z",
+        });
+      },
+    };
+  }
+
+  test("a standby stop stops the drain timers its child's runs armed", async () => {
+    const registered = Promise.withResolvers<undefined>();
+    const stopped: string[] = [];
+    const { supervisor, firstSender, first } = await setup({
+      onSuspensionRegister: () => registered.resolve(undefined),
+      drainTimeoutAccumulatorFactory: ({ runId }) => ({
+        start: () => undefined,
+        pause: () => undefined,
+        resume: () => undefined,
+        stop: () => {
+          stopped.push(runId);
+        },
+        accumulatedMs: () => 0,
+        escalated: false,
+        disposed: () => Promise.resolve(),
+      }),
+    });
+    await drainSleepingRun(supervisor, firstSender, registered.promise);
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    expect(await inStandby).toEqual({});
+    expect(stopped).toEqual([RUN]);
+
+    await supervisor.shutdown();
+  });
+
+  test("a drain deadline that passes during the final check calls the standby attempt off, and the child keeps running", async () => {
+    const registered = Promise.withResolvers<undefined>();
+    const deadline = passableDrainDeadline();
+    let writes = 0;
+    const { supervisor, firstSender, first, tracker } = await setup({
+      onSuspensionRegister: () => registered.resolve(undefined),
+      drainTimeoutAccumulatorFactory: deadline.factory,
+      repoStore: (baseDir) =>
+        mergingRepoStore(baseDir, async () => {
+          writes += 1;
+        }),
+    });
+    await drainSleepingRun(supervisor, firstSender, registered.promise);
+
+    const inStandby = supervisor.enterStandby();
+    expect(
+      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+    ).toBe(true);
+    await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
+    const committed = deadline.pass();
+    await expect(inStandby).rejects.toThrow("the drain deadline passed");
+    await committed;
+    expect(writes).toBe(1);
+    expect(sentFrameTypes(first)).not.toContain("shutdown");
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a drain deadline that passes once the standby stop is under way wakes the child for its cancellation", async () => {
+    const registered = Promise.withResolvers<undefined>();
+    const deadline = passableDrainDeadline();
+    const reasons: string[] = [];
+    const woke = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      {
+        onWake: ({ reason }) => {
+          reasons.push(reason);
+          woke.resolve(undefined);
+        },
+        onSuspensionRegister: () => registered.resolve(undefined),
+        drainTimeoutAccumulatorFactory: deadline.factory,
+        repoStore: (baseDir) => mergingRepoStore(baseDir),
+      },
+    );
+    await drainSleepingRun(supervisor, firstSender, registered.promise);
+
+    const inStandby = supervisor.enterStandby();
+    expect(
+      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+    ).toBe(true);
+    expect(
+      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+    ).toBe(false);
+    await answerParkedQuery(first, firstSender, 2);
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    // Past the point a stop can be called off.
+    const committed = deadline.pass();
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    await expect(inStandby).rejects.toThrow("the drain deadline passed");
+    await committed;
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    await woke.promise;
+    expect(reasons).toEqual(["cancel"]);
+
+    await supervisor.shutdown();
+  });
+
+  test("a shutdown waits for a drain deadline's cancellation the standby stop left in flight", async () => {
+    const registered = Promise.withResolvers<undefined>();
+    const deadline = passableDrainDeadline();
+    const shutdownWaits = Promise.withResolvers<undefined>();
+    let landed = false;
+    const { supervisor, firstSender, first, tracker } = await setup({
+      onSuspensionRegister: () => registered.resolve(undefined),
+      onShutdownWait: (waiting) => {
+        if (waiting === "cancellation") shutdownWaits.resolve(undefined);
+      },
+      drainTimeoutAccumulatorFactory: deadline.factory,
+      repoStore: (baseDir) =>
+        mergingRepoStore(baseDir, async () => {
+          await shutdownWaits.promise;
+          landed = true;
+        }),
+    });
+    await drainSleepingRun(supervisor, firstSender, registered.promise);
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerParkedQuery(first, firstSender, 2);
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    const committed = deadline.pass();
+
+    // The shutdown kills the child the stop waits on.
+    await supervisor.shutdown();
+    expect(landed).toBe(true);
+    await expect(inStandby).rejects.toThrow();
+    await committed;
+    expect(tracker.totalSpawns).toBe(1);
+  });
+
+  test("mail that lands while the standby is recorded wakes the child once the record lands", async () => {
+    const memory = createMemoryInboxPrimitives();
+    const recording = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const wakeWaits = Promise.withResolvers<undefined>();
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+      await setup({
+        onWake: ({ reason }) => {
+          woke.resolve(reason);
+        },
+        recordStandby: async () => {
+          recording.resolve(undefined);
+          await release.promise;
+        },
+        onStandbyWait: (waiting) => {
+          if (waiting === "attempt") wakeWaits.resolve(undefined);
+        },
+        inboxPrimitives: memory,
+      });
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    await recording.promise;
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("wake up"));
+    await wakeWaits.promise;
+    expect(tracker.totalSpawns).toBe(1);
+    release.resolve(undefined);
+    expect(await inStandby).toEqual({});
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("mail");
+
+    await supervisor.shutdown();
+  });
+
+  test("records the parks, the timer and the history tip it read before the child reported its parks", async () => {
+    const records: RecordedStandby[] = [];
+    const parkQueriesAtTipRead: number[] = [];
+    // The correlation queries sent to the child so far, once it exists.
+    let parkQueries = (): number => -1;
+    const { supervisor, firstSender, first } = await setup({
+      recordStandby: async (standby) => {
+        records.push(standby);
+      },
+      repoStore: (baseDir) => {
+        const base = createStubRepoStore(baseDir, { writeTree: true });
+        return new Proxy(base, {
+          get(target, prop, receiver) {
+            if (prop !== "resolveRef")
+              return Reflect.get(target, prop, receiver);
+            return async () => {
+              parkQueriesAtTipRead.push(parkQueries());
+              return HISTORY_TIP;
+            };
+          },
+        });
+      },
+    });
+    parkQueries = () =>
+      sentFrameTypes(first).filter(
+        (type) => type === "parked-correlations.request",
+      ).length;
+    const wakeAt = new Date(Date.now() + 3_600_000).toISOString();
+
+    const entering = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true, wakeAt });
+    await answerQuiet(first, firstSender, 2, { quiet: true, wakeAt });
+    const queries = await waitForUpstreamPayloads(
+      first.supervisorToChild,
+      "parked-correlations.request",
+      2,
+    );
+    const query = queries[1];
+    if (query === undefined) throw new Error("correlation query missing");
+    await firstSender.send({
+      type: "parked-correlations.response",
+      data: { requestId: query.data.requestId, parked: [GATE_PARK] },
+    });
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    expect(await entering).toEqual({ wakeAt });
+
+    // Only the spawn's own correlation query had gone out.
+    expect(parkQueriesAtTipRead).toEqual([1]);
+    expect(records).toEqual([
+      { parked: [GATE_PARK], wakeAt, tip: HISTORY_TIP },
+    ]);
+    await supervisor.shutdown();
+  });
+
+  test("a shutdown while the standby is recorded says the shutdown called it off", async () => {
+    const recording = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first } = await setup({
+      recordStandby: async () => {
+        recording.resolve(undefined);
+        await release.promise;
+      },
+    });
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    await recording.promise;
+    const shutdown = supervisor.shutdown();
+    release.resolve(undefined);
+    const cause = await inStandby.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(cause).toBeInstanceOf(StandbyAbandonedError);
+    expect(cause).toHaveProperty(
+      "message",
+      "the workflow supervisor shut down while entering standby",
+    );
+    await shutdown;
+  });
+
+  test("a shutdown resolves once the standby it called off is recorded", async () => {
+    const recording = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const shutdownWaits = Promise.withResolvers<undefined>();
+    let recorded = false;
+    const { supervisor, firstSender, first } = await setup({
+      recordStandby: async () => {
+        recording.resolve(undefined);
+        await release.promise;
+        recorded = true;
+      },
+      onShutdownWait: (waiting) => {
+        if (waiting === "attempt") shutdownWaits.resolve(undefined);
+      },
+    });
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    await recording.promise;
+    const shutdown = supervisor.shutdown();
+    await shutdownWaits.promise;
+    release.resolve(undefined);
+    await shutdown;
+    expect(recorded).toBe(true);
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyAbandonedError);
+  });
+
+  test("a standby attempt its host cannot record runs the child again", async () => {
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      {
+        onWake: ({ reason }) => woke.resolve(reason),
+        recordStandby: () => Promise.reject(new Error("disk full")),
+      },
+    );
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    await expect(inStandby).rejects.toThrow(
+      "the standby could not be recorded: disk full",
+    );
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("a standby that was not recorded");
+
+    await supervisor.shutdown();
+  });
+
+  test("a child that does not report its parked correlations is not in standby", async () => {
+    const { supervisor, firstSender, first } = await setup({
+      parkedQueryWatchdogMs: 1,
+    });
+    const inStandby = supervisor.enterStandby();
+    expect(
+      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+    ).toBe(true);
+    expect(
+      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+    ).toBe(false);
+    await expect(inStandby).rejects.toThrow(
+      "the workflow child did not report the correlations it is parked on",
+    );
+    expect(sentFrameTypes(first)).not.toContain("shutdown");
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt abandoned while its child stops runs the child again", async () => {
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      { onWake: ({ reason }) => woke.resolve(reason) },
+    );
+
+    const inStandby = supervisor.enterStandby();
+    expect(
+      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+    ).toBe(true);
+    expect(
+      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+    ).toBe(false);
+    await answerParkedQuery(first, firstSender, 2);
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    // Past the point a stop can be called off.
+    supervisor.abandonStandby("the Hub that asked for it disconnected");
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    await expect(inStandby).rejects.toThrow(
+      "the Hub that asked for it disconnected",
+    );
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    expect(await woke.promise).toBe("an abandoned standby attempt");
+
+    await supervisor.shutdown();
+  });
+
+  // A store whose writes run their merge, as a cancellation's commit needs;
+  // `beforeWrite` runs ahead of each one.
+  function mergingRepoStore(
+    baseDir: string,
+    beforeWrite: () => Promise<void> = async () => undefined,
+  ): RepoStore {
+    const base = createStubRepoStore(baseDir, { writeTree: true });
+    return new Proxy(base, {
+      get(target, prop, receiver) {
+        if (prop !== "writeTreePreservingPrefix") {
+          return Reflect.get(target, prop, receiver);
+        }
+        return async (
+          ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
+        ) => {
+          await beforeWrite();
+          await args[3].merge(new Map());
+          return target.writeTreePreservingPrefix(...args);
+        };
+      },
+    });
+  }
+
+  test("a cancellation that abandons a standby attempt while its child stops runs the child itself", async () => {
+    const reasons: string[] = [];
+    const woke = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      {
+        onWake: ({ reason }) => {
+          reasons.push(reason);
+          woke.resolve(undefined);
+        },
+        repoStore: (baseDir) => mergingRepoStore(baseDir),
+      },
+    );
+
+    const inStandby = supervisor.enterStandby();
+    expect(
+      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+    ).toBe(true);
+    expect(
+      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+    ).toBe(false);
+    await answerParkedQuery(first, firstSender, 2);
+    await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+    // Past the point a stop can be called off.
+    const cancelled = supervisor.requestCancel({
+      runId: RUN,
+      origin: "hub-admin",
+      reason: "Stop",
+      at: "2026-10-01T00:00:00.000Z",
+    });
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(0);
+    await expect(inStandby).rejects.toThrow("a cancellation was requested");
+    await cancelled;
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    await woke.promise;
+    expect(reasons).toEqual(["cancel"]);
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt waiting on a cancellation commit goes on once it lands", async () => {
+    const committing = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const waiting = Promise.withResolvers<undefined>();
+    let hold = true;
+    const { supervisor, firstSender, first } = await setup({
+      onStandbyWait: (on) => {
+        if (on === "standby") waiting.resolve(undefined);
+      },
+      repoStore: (baseDir) =>
+        mergingRepoStore(baseDir, async () => {
+          if (!hold) return;
+          hold = false;
+          committing.resolve(undefined);
+          await release.promise;
+        }),
+    });
+
+    const cancelled = supervisor.requestCancel({
+      runId: RUN,
+      origin: "hub-admin",
+      reason: "Stop",
+      at: "2026-10-01T00:00:00.000Z",
+    });
+    // The running child prepares the cancellation before it is committed.
+    const prepare = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "cancel.prepare",
+    );
+    await firstSender.send({
+      type: "cancel.prepared",
+      data: { requestId: prepare.data.requestId },
+    });
+    await committing.promise;
+    const entering = supervisor.enterStandby();
+    void entering.catch(() => undefined);
+    await waiting.promise;
+    expect(sentFrameTypes(first)).not.toContain("quiet.request");
+
+    release.resolve(undefined);
+    await cancelled;
+    await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt waiting on a cancellation the child has not prepared goes on once it lands", async () => {
+    const waiting = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first } = await setup({
+      onStandbyWait: (on) => {
+        if (on === "standby") waiting.resolve(undefined);
+      },
+      repoStore: (baseDir) => mergingRepoStore(baseDir),
+    });
+
+    const cancelled = supervisor.requestCancel({
+      runId: RUN,
+      origin: "hub-admin",
+      reason: "Stop",
+      at: "2026-10-01T00:00:00.000Z",
+    });
+    const prepare = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "cancel.prepare",
+    );
+    const entering = supervisor.enterStandby();
+    void entering.catch(() => undefined);
+    await waiting.promise;
+    expect(sentFrameTypes(first)).not.toContain("quiet.request");
+
+    await firstSender.send({
+      type: "cancel.prepared",
+      data: { requestId: prepare.data.requestId },
+    });
+    await cancelled;
+    await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+
+    await supervisor.shutdown();
+  });
+
+  test("a child in standby runs again only once a cancellation being committed lands", async () => {
+    const committing = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const waiting = Promise.withResolvers<undefined>();
+    let hold = false;
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      {
+        onStandbyWait: (on) => {
+          if (on === "cancellation") waiting.resolve(undefined);
+        },
+        repoStore: (baseDir) =>
+          mergingRepoStore(baseDir, async () => {
+            if (!hold) return;
+            hold = false;
+            committing.resolve(undefined);
+            await release.promise;
+          }),
+      },
+    );
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    await inStandby;
+    hold = true;
+    const cancelled = supervisor.requestCancel({
+      runId: RUN,
+      origin: "hub-admin",
+      reason: "Stop",
+      at: "2026-10-01T00:00:00.000Z",
+    });
+    await committing.promise;
+    const woken = supervisor.wake();
+    await waiting.promise;
+    expect(tracker.totalSpawns).toBe(1);
+
+    release.resolve(undefined);
+    await cancelled;
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    await woken;
+    expect(tracker.totalSpawns).toBe(2);
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt asked for while an abandoned stop finishes is put off, not answered as done", async () => {
+    const inboxRead = Promise.withResolvers<undefined>();
+    const releaseRead = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      {
+        inboxPrimitives: {
+          ...createMemoryInboxPrimitives(),
+          hasInboxEntries: emptyUntilStopped(async () => {
+            inboxRead.resolve(undefined);
+            await releaseRead.promise;
+            return false;
+          }),
+        },
+      },
+    );
+
+    const abandoned = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    // The child is stopped and recorded; the stop still reads the inbox.
+    await inboxRead.promise;
+    supervisor.abandonStandby("the Hub that asked for it disconnected");
+    await expect(supervisor.enterStandby()).rejects.toBeInstanceOf(
+      StandbyDeferredError,
+    );
+    releaseRead.resolve(undefined);
+    await expect(abandoned).rejects.toThrow(
+      "the Hub that asked for it disconnected",
+    );
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt asked for while an abandoned one settles is put off, not refused", async () => {
+    const { supervisor, firstSender, first, tracker } = await setup();
+
+    const abandoned = supervisor.enterStandby();
+    expect(
+      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+    ).toBe(true);
+    expect(
+      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+    ).toBe(false);
+    await waitForUpstreamPayloads(
+      first.supervisorToChild,
+      "parked-correlations.request",
+      2,
+    );
+    supervisor.abandonStandby("the Hub that asked for it disconnected");
+    await expect(supervisor.enterStandby()).rejects.toBeInstanceOf(
+      StandbyDeferredError,
+    );
+
+    await answerParkedQuery(first, firstSender, 2);
+    await expect(abandoned).rejects.toThrow(
+      "the Hub that asked for it disconnected",
+    );
+    expect(first.killSignals).toEqual([]);
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt asked for while the child wakes is put off, not refused", async () => {
+    const woke = Promise.withResolvers<string>();
+    const { supervisor, firstSender, first, tracker, ipcKeypair } = await setup(
+      { onWake: ({ reason }) => woke.resolve(reason) },
+    );
+
+    const inStandby = supervisor.enterStandby();
+    await actAsChildEnteringStandby(first, firstSender);
+    expect(await inStandby).toEqual({});
+
+    const woken = supervisor.wake();
+    await expect(supervisor.enterStandby()).rejects.toBeInstanceOf(
+      StandbyDeferredError,
+    );
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await answerParkedQuery(second, secondSender, 1);
+    await woken;
+    expect(await woke.promise).toBe("wake");
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby request while a crashed child waits out its respawn backoff is put off", async () => {
+    // A backoff no other timer here shares, which is never let fire.
+    const backoffMs = 54_321;
+    const backoffArmed = Promise.withResolvers<undefined>();
+    const { supervisor, first } = await setup({
+      respawnBackoffInitialMs: backoffMs,
+      timers: {
+        setTimer: (callback, ms) => {
+          if (ms !== backoffMs) return setTimeout(callback, ms);
+          backoffArmed.resolve(undefined);
+          return callback;
+        },
+      },
+    });
+
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(1);
+    await backoffArmed.promise;
+    await expect(supervisor.enterStandby()).rejects.toBeInstanceOf(
+      StandbyDeferredError,
+    );
+    expect(sentFrameTypes(first)).not.toContain("quiet.request");
+
+    await supervisor.shutdown();
+  });
+
+  test("a quiet check the child can no longer be sent puts the standby attempt off", async () => {
+    let pipeClosed = false;
+    const { supervisor } = await setup({
+      controlWriteFails: () => pipeClosed,
+    });
+
+    pipeClosed = true;
+    await expect(supervisor.enterStandby()).rejects.toBeInstanceOf(
+      StandbyDeferredError,
+    );
+
+    pipeClosed = false;
+    await supervisor.shutdown();
+  });
+
+  test("a correlation query the child can no longer be sent puts the standby attempt off", async () => {
+    let queryFails = false;
+    const { supervisor, firstSender, first } = await setup({
+      controlWriteFails: (line) =>
+        queryFails && line.includes('"parked-correlations.request"'),
+    });
+
+    queryFails = true;
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyDeferredError);
+    expect(sentFrameTypes(first)).not.toContain("shutdown");
+
+    queryFails = false;
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt is refused once the run has ended", async () => {
+    const { supervisor, firstSender, first, tracker } = await setup();
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, { quiet: true, ended: true });
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyRefusedError);
+    expect(first.killSignals).toEqual([]);
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a standby attempt is refused when the child cannot check that it is quiet", async () => {
+    const { supervisor, firstSender, first, tracker } = await setup();
+
+    const inStandby = supervisor.enterStandby();
+    await answerQuiet(first, firstSender, 1, {
+      quiet: false,
+      error: "store read failed",
+    });
+    await expect(inStandby).rejects.toThrow(/store read failed/);
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyRefusedError);
+    // Refused at the first failed check, not asked again.
+    expect(
+      sentFrameTypes(first).filter((type) => type === "quiet.request"),
+    ).toHaveLength(1);
+    expect(first.killSignals).toEqual([]);
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("wake abandons a standby attempt the child has not reported quiet for", async () => {
+    const { supervisor, first, tracker } = await setup();
+
+    const inStandby = supervisor.enterStandby();
+    await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+    await supervisor.wake();
+    await expect(inStandby).rejects.toBeInstanceOf(StandbyRefusedError);
+    expect(first.killSignals).toEqual([]);
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+});
+
+describe("supervisor restored in standby", () => {
+  const SPAWN_OPTS = {
+    stepOrder: ["step-1"],
+    definitionHash: "def-hash-abc",
+    warmKeep: false,
+    onInferenceEvent: () => undefined,
+  };
+
+  // A store over a run whose history tip is `tip`, and whose writes merge, so
+  // a cancellation can be committed. `undefined` leaves the tip unreadable.
+  // `beforeTipRead` runs ahead of each read of the tip.
+  function historyStore(
+    baseDir: string,
+    tip: string | null | undefined,
+    beforeTipRead?: () => Promise<void>,
+  ) {
+    const base = createStubRepoStore(baseDir, {
+      writeTree: true,
+      ...(tip !== undefined ? { refTip: tip } : {}),
+    });
+    return new Proxy(base, {
+      get(target, prop, receiver) {
+        if (prop === "resolveRef" && beforeTipRead !== undefined) {
+          return async (...args: Parameters<RepoStore["resolveRef"]>) => {
+            await beforeTipRead();
+            return target.resolveRef(...args);
+          };
+        }
+        if (prop !== "writeTreePreservingPrefix") {
+          return Reflect.get(target, prop, receiver);
+        }
+        return async (
+          ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
+        ) => {
+          await args[3].merge(new Map());
+          return target.writeTreePreservingPrefix(...args);
+        };
+      },
+    });
+  }
+
+  // Restore a supervisor from `standby` over a run whose history tip is
+  // `tip`, the recorded one unless a test moves it.
+  async function restore(
+    standby: RecordedStandby,
+    opts: {
+      tip?: string | null | undefined;
+      onWake?: WorkflowSupervisorBindings["onWake"];
+      onSelfTerminate?: WorkflowSupervisorBindings["onSelfTerminate"];
+      onSuspensionRegister?: WorkflowSupervisorBindings["onSuspensionRegister"];
+      inbox?: ReturnType<typeof createMemoryInboxPrimitives>;
+      inboxPrimitives?: Partial<InboxPrimitives>;
+      beforeRestore?: (
+        baseDir: string,
+        inbox: ReturnType<typeof createMemoryInboxPrimitives>,
+      ) => Promise<void>;
+      spawner?: (tracker: SpawnTracker) => SubprocessSpawner;
+      recyclePolicy?: Partial<WorkflowSupervisorBindings>;
+      beforeTipRead?: () => Promise<void>;
+    } = {},
+  ) {
+    const baseDir = await makeTempDir("standby-restore-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ runId: RUN, stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const inbox = opts.inbox ?? createMemoryInboxPrimitives();
+    await opts.beforeRestore?.(baseDir, inbox);
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: opts.spawner?.(tracker) ?? tracker.spawner,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: { ...inbox, ...opts.inboxPrimitives },
+    });
+    const supervisor = createWorkflowSupervisor({
+      ...bindings,
+      repoStore: historyStore(
+        baseDir,
+        "tip" in opts ? opts.tip : standby.tip,
+        opts.beforeTipRead,
+      ),
+      ...(opts.onWake !== undefined ? { onWake: opts.onWake } : {}),
+      ...(opts.onSelfTerminate !== undefined
+        ? { onSelfTerminate: opts.onSelfTerminate }
+        : {}),
+      ...(opts.onSuspensionRegister !== undefined
+        ? { onSuspensionRegister: opts.onSuspensionRegister }
+        : {}),
+      ...opts.recyclePolicy,
+    });
+    const restoring = supervisor.restoreInStandby(SPAWN_OPTS, standby);
+    return { supervisor, restoring, tracker, mailBus, ipcKeypair, inbox };
+  }
+
+  // Drive the `count`th child through its handshake and the correlation query
+  // its install sends.
+  async function driveStartedChild(
+    tracker: SpawnTracker,
+    ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array },
+    count: number,
+  ) {
+    await tracker.awaitChildren(count);
+    const child = tracker.children[count - 1];
+    if (child === undefined) throw new Error(`child ${String(count)} missing`);
+    const sender = await driveReady(child, ipcKeypair);
+    await answerParkedQuery(child, sender, 1);
+    return { child, sender };
+  }
+
+  const recorded: RecordedStandby = { parked: [GATE_PARK], tip: HISTORY_TIP };
+
+  test("a shutdown while the restore reads the history tip waits for it, and the restore stops", async () => {
+    const reading = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const { supervisor, restoring, tracker, mailBus } = await restore(
+      recorded,
+      {
+        beforeTipRead: async () => {
+          reading.resolve(undefined);
+          await release.promise;
+        },
+      },
+    );
+    await reading.promise;
+
+    const shutdown = supervisor.shutdown();
+    release.resolve(undefined);
+    await expect(restoring).rejects.toThrow("shut down before the restore");
+    await shutdown;
+    expect(mailBus.registered()).toEqual([]);
+    expect(tracker.totalSpawns).toBe(0);
+  });
+
+  test("a restored standby arms no recycle policy before its first child, and measures that child from its start", async () => {
+    const policy = manualRecyclePolicy(60_000);
+    const { supervisor, restoring, tracker, ipcKeypair } = await restore(
+      recorded,
+      { recyclePolicy: policy.bindings },
+    );
+    expect(await restoring).toEqual({ inStandby: true });
+    expect(policy.armed()).toBe(0);
+
+    policy.advance(120_000);
+    const armed = policy.nextArm();
+    const woken = supervisor.wake();
+    await driveStartedChild(tracker, ipcKeypair, 1);
+    await woken;
+    await armed;
+
+    const ticked = policy.nextArm();
+    policy.tick();
+    await ticked;
+    expect(tracker.totalSpawns).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("the first child of a restored standby whose boot replay went through does not replay again", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    let replays = 0;
+    const { supervisor, restoring, tracker, ipcKeypair } = await restore(
+      recorded,
+      {
+        inbox,
+        inboxPrimitives: {
+          async replayProcessingToInbox(...args) {
+            replays += 1;
+            return inbox.replayProcessingToInbox(...args);
+          },
+        },
+      },
+    );
+    expect(await restoring).toEqual({ inStandby: true });
+
+    const woken = supervisor.wake();
+    await driveStartedChild(tracker, ipcKeypair, 1);
+    await woken;
+    expect(replays).toBe(1);
+
+    await supervisor.shutdown();
+  });
+
+  test("a wake that reaches its replay after a shutdown began does not replay", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const bootReplay = Promise.withResolvers<undefined>();
+    let replays = 0;
+    const { supervisor, restoring } = await restore(recorded, {
+      inbox,
+      inboxPrimitives: {
+        async replayProcessingToInbox(...args) {
+          replays += 1;
+          if (replays > 1) return inbox.replayProcessingToInbox(...args);
+          await bootReplay.promise;
+          throw new Error("the boot replay failed");
+        },
+      },
+    });
+    expect(await restoring).toEqual({ inStandby: true });
+
+    const woken = supervisor.wake().catch(() => undefined);
+    const stopped = supervisor.shutdown();
+    bootReplay.resolve(undefined);
+    await stopped;
+    await woken;
+    expect(replays).toBe(1);
+  });
+
+  test("a standby restored over unchanged history starts no child and re-sends what it was parked on", async () => {
+    const registered: string[] = [];
+    const { supervisor, restoring, tracker, mailBus } = await restore(
+      recorded,
+      {
+        onSuspensionRegister: (registration) => {
+          registered.push(registration.correlationId);
+        },
+      },
+    );
+    expect(await restoring).toEqual({ inStandby: true });
+    expect(mailBus.registered()).toEqual([ADDRESS]);
+
+    await supervisor.reEmitParkedCorrelations();
+    expect(registered).toEqual(["corr-gate"]);
+    expect(await supervisor.enterStandby()).toEqual({});
+    expect(supervisor.getCredentialsSnapshot()).toBeNull();
+
+    await supervisor.shutdown();
+    expect(mailBus.registered()).toEqual([]);
+    expect(tracker.totalSpawns).toBe(0);
+  });
+
+  const wakes: [
+    string,
+    Partial<RecordedStandby>,
+    (setup: Awaited<ReturnType<typeof restore>>) => Promise<unknown>,
+  ][] = [
+    [
+      "mail",
+      {},
+      async ({ mailBus }) => {
+        mailBus.deliver(ADDRESS, new TextEncoder().encode("wake up"));
+      },
+    ],
+    [
+      "timer",
+      { wakeAt: new Date(Date.now() - 1_000).toISOString() },
+      async () => undefined,
+    ],
+    ["wake", {}, ({ supervisor }) => supervisor.wake()],
+    [
+      "signal",
+      {},
+      ({ supervisor }) =>
+        supervisor.deliverSignal({
+          runId: RUN,
+          signalName: "gate",
+          signalId: "sig-1",
+          payload: { approved: true },
+        }),
+    ],
+    [
+      "cancel",
+      {},
+      ({ supervisor }) =>
+        supervisor.requestCancel({
+          runId: RUN,
+          origin: "hub-admin",
+          reason: "Stop",
+          at: "2026-10-01T00:00:00.000Z",
+        }),
+    ],
+  ];
+  test.each(wakes)(
+    "%s starts the first child of a restored standby",
+    async (reason, standby, trigger) => {
+      const woke = Promise.withResolvers<{
+        reason: string;
+        requested: boolean;
+      }>();
+      const restored = await restore(
+        { ...recorded, ...standby },
+        { onWake: (info) => woke.resolve(info) },
+      );
+      expect(await restored.restoring).toEqual({ inStandby: true });
+      const triggered = trigger(restored);
+      const { child } = await driveStartedChild(
+        restored.tracker,
+        restored.ipcKeypair,
+        1,
+      );
+      await triggered;
+      // Only a wake asked for through `wake()` is requested.
+      expect(await woke.promise).toEqual({
+        reason,
+        requested: reason === "wake",
+      });
+      expect(sentFrameTypes(child)[0]).toBe("authority.set");
+      if (reason === "signal") {
+        expect(
+          parseSignalDeliverRunIds(child.supervisorToChild.flushed()),
+        ).toEqual([RUN]);
+      }
+
+      await restored.supervisor.shutdown();
+    },
+  );
+
+  const startedAwake: [string, string | null | undefined, string][] = [
+    [
+      "written since it stopped",
+      "tip-after-a-cancellation",
+      "its restart, which found history written after it stopped",
+    ],
+    [
+      "that cannot be read",
+      undefined,
+      "its restart, which could not read its history: stub RepoStore: resolveRef not implemented for this test",
+    ],
+  ];
+  test.each(startedAwake)(
+    "a standby restored over history %s starts the child, and says why",
+    async (_case, tip, reason) => {
+      const { supervisor, restoring, tracker, ipcKeypair } = await restore(
+        recorded,
+        { tip },
+      );
+      await tracker.awaitChildren(1);
+      const child = tracker.children[0];
+      if (child === undefined) throw new Error("child missing");
+      const sender = await driveReady(child, ipcKeypair);
+      expect(await restoring).toEqual({ inStandby: false, reason });
+
+      // A running child is asked whether it is quiet, not answered for.
+      const entering = supervisor.enterStandby();
+      await answerQuiet(child, sender, 1, { quiet: false, ended: true });
+      await expect(entering).rejects.toThrow("the workflow run has ended");
+
+      await supervisor.shutdown();
+    },
+  );
+
+  test("a restored standby whose boot replay puts mail back in the inbox wakes for it", async () => {
+    const woke = Promise.withResolvers<string>();
+    const { restoring, tracker, ipcKeypair, supervisor } = await restore(
+      recorded,
+      {
+        onWake: (info) => woke.resolve(info.reason),
+        beforeRestore: (baseDir, memory) =>
+          takeMail(memory, baseDir, "mail-orphan", 1),
+      },
+    );
+    expect(await restoring).toEqual({ inStandby: true });
+    await driveStartedChild(tracker, ipcKeypair, 1);
+    expect(await woke.promise).toBe("mail");
+
+    await supervisor.shutdown();
+  });
+
+  test("a restored standby keeps mail a live run took, and stays stopped", async () => {
+    const replayed = Promise.withResolvers<undefined>();
+    const { restoring, tracker, supervisor, inbox } = await restore(recorded, {
+      beforeRestore: async (baseDir, memory) => {
+        await writeWorkingRunLog(baseDir, [
+          { ...runStarted(), consumedMessageId: "mail-owned" },
+        ]);
+        await takeMail(memory, baseDir, "mail-owned", 1);
+      },
+      inboxPrimitives: {
+        async hasInboxEntries(...args) {
+          replayed.resolve(undefined);
+          return createMemoryInboxPrimitives().hasInboxEntries(...args);
+        },
+      },
+    });
+    expect(await restoring).toEqual({ inStandby: true });
+    await replayed.promise;
+    expect(inbox.messageIds(ADDRESS)).toEqual({
+      inbox: [],
+      processing: ["mail-owned"],
+      consumed: [],
+    });
+
+    await supervisor.shutdown();
+    expect(tracker.totalSpawns).toBe(0);
+  });
+
+  test("a restored standby whose boot replay fails wakes in case it left mail behind", async () => {
+    const woke = Promise.withResolvers<string>();
+    const { restoring, tracker, ipcKeypair, supervisor } = await restore(
+      recorded,
+      {
+        onWake: (info) => woke.resolve(info.reason),
+        inboxPrimitives: {
+          async replayProcessingToInbox() {
+            throw new Error("the claim-check tree is unreadable");
+          },
+        },
+      },
+    );
+    expect(await restoring).toEqual({ inStandby: true });
+    await driveStartedChild(tracker, ipcKeypair, 1);
+    expect(await woke.promise).toBe(
+      "its restart, which could not recover its mail",
+    );
+
+    await supervisor.shutdown();
+  });
+
+  test("a credential update while restored reaches the first child's authority.set", async () => {
+    const { restoring, tracker, ipcKeypair, supervisor } =
+      await restore(recorded);
+    expect(await restoring).toEqual({ inStandby: true });
+    const delivery = {
+      bindings: [],
+      materials: [
+        {
+          credentialId: "cred-1",
+          providerKey: "provider",
+          origin: "tenant",
+          secret: "s3cret",
+        },
+      ],
+    };
+    await supervisor.deliverCredentials({ delivery });
+
+    const woken = supervisor.wake();
+    const { child } = await driveStartedChild(tracker, ipcKeypair, 1);
+    await woken;
+    const authority = await waitForUpstreamPayload(
+      child.supervisorToChild,
+      "authority.set",
+    );
+    expect(authority.data.delivery).toEqual(delivery);
+
+    await supervisor.shutdown();
+  });
+
+  test("calls that need a child do nothing to a restored standby, or are refused", async () => {
+    const { restoring, tracker, supervisor } = await restore(recorded);
+    expect(await restoring).toEqual({ inStandby: true });
+
+    await supervisor.drain({ deadlineMs: 1_000 });
+    await supervisor.deliverSources({
+      sources: [
+        {
+          id: "primary",
+          provider: "anthropic",
+          baseURL: "https://api.anthropic.com",
+          credentialId: "sk-x",
+          model: "claude-test",
+        },
+      ],
+      defaultSource: "primary",
+    });
+    expect(await supervisor.deliverGrants(RUN)).toBe("skipped");
+    await expect(
+      supervisor.recycle({ reason: "policy", origin: "operator" }),
+    ).rejects.toThrow("recycle called in phase standby");
+    supervisor.abandonStandby("the Hub went away");
+    expect(tracker.totalSpawns).toBe(0);
+
+    await supervisor.shutdown();
+  });
+
+  test("a shutdown while a restored standby's first child starts stops that child", async () => {
+    const { restoring, tracker, supervisor } = await restore(recorded);
+    expect(await restoring).toEqual({ inStandby: true });
+    const woken = supervisor.wake();
+    await tracker.awaitChildren(1);
+    const child = tracker.children[0];
+    if (child === undefined) throw new Error("child missing");
+
+    await supervisor.shutdown();
+    await expect(woken).rejects.toThrow();
+    expect(child.killSignals.length).toBeGreaterThan(0);
+  });
+
+  test("a channel crash while a restored standby's first child starts stops the supervisor and says so", async () => {
+    const stopped = Promise.withResolvers<string>();
+    const { restoring, tracker, supervisor } = await restore(recorded, {
+      onSelfTerminate: (info) => stopped.resolve(info.reason),
+    });
+    expect(await restoring).toEqual({ inStandby: true });
+    const woken = supervisor.wake();
+    await tracker.awaitChildren(1);
+    const child = tracker.children[0];
+    if (child === undefined) throw new Error("child missing");
+    child.childToSupervisor.inject("not-json{{{");
+
+    await expect(woken).rejects.toThrow();
+    expect(await stopped.promise).toContain(
+      "control channel received non-JSON line",
+    );
+  });
+
+  test("a restored standby whose first child cannot start stops the supervisor and says so", async () => {
+    const stopped = Promise.withResolvers<string>();
+    const { restoring, supervisor } = await restore(recorded, {
+      onSelfTerminate: (info) => stopped.resolve(info.reason),
+      spawner: () => () => {
+        throw new Error("the workflow-child binary is missing");
+      },
+    });
+    expect(await restoring).toEqual({ inStandby: true });
+
+    await expect(supervisor.wake()).rejects.toThrow(
+      "the workflow-child binary is missing",
+    );
+    expect(await stopped.promise).toBe(
+      "recycle failed: the workflow-child binary is missing",
+    );
   });
 });

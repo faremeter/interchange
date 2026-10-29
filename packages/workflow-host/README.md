@@ -273,6 +273,79 @@ sees the crash-loop as a failed run. The commit lands before the latch's
 teardown resolves and before the host hears of the self-termination, so a
 host that reads the stopped deployment's history finds it.
 
+### Standby
+
+`enterStandby()` stops the child once every run only waits on input
+from outside, and keeps the deployment: its mail subscription,
+address registration, and history stay as they are.
+
+1. Once nothing the supervisor drives is in flight, it asks the child,
+   with `quiet.request`, to report when it is quiet. Dispatch and signals
+   go on meanwhile, so a busy deployment enters standby at its next quiet
+   moment. An input the child took counts as in flight until the child
+   answers it: `input.taken` answers each `trigger.fire` and
+   `signal.deliver` the supervisor sends, saying whether the child
+   committed the input. A dispatch waiting for its run to park or end
+   does not: its mail stays in `processing/` with the run, as it does
+   across any respawn (see Respawn policy).
+2. The child is quiet when no run loop or step works: every step waits
+   on a signal, a timer, or a nested run, and no input it committed is
+   still on its way to the run that waits for it. A map counts as
+   working until it ends, since resume cannot continue one in flight,
+   and so does a step with a timeout, whose deadline lives only in the
+   child. It makes every buffered event durable before it answers, and
+   reports the earliest timer its scheduler has queued.
+3. The supervisor then holds dispatch and signals back and asks once
+   more. If the child is still quiet, the supervisor holds the child's
+   further writes and records the correlations the child is parked on.
+   Mail waiting in the inbox, or mail the dispatch took that the child
+   has not committed (one it declined, or one behind a run that waits),
+   refuses the standby attempt, since it would wake the child as soon
+   as it stopped. Otherwise the supervisor sends `shutdown`, and kills
+   the child if it does not exit. A write after the quiet answer means
+   the child is working again: before the stop the standby attempt goes
+   back to waiting for quiet, and after it the child is woken for that
+   work.
+
+Once the child is stopped, and before anything can wake it, the supervisor
+calls the host's `recordStandby` with what a restart needs: the correlations
+the child was parked on, its earliest timer, and the tip of the run's history
+ref, read before the child reported its parks. A failure there runs the child
+again and refuses the standby attempt.
+
+`enterStandby()` resolves with the earliest timer the child had queued, if
+any. It rejects with `StandbyRefusedError` when the run ends, mail waits
+in the inbox, the standby cannot be recorded, or the child reports that
+its quiet check failed. Its subclass `StandbyAbandonedError` is used when
+`wake()`, `abandonStandby()`, a cancellation or a shutdown calls it off,
+and `StandbyDeferredError` is used while the child is
+starting or restarting, so the host can ask again once it runs.
+`abandonStandby()` does nothing to a finished standby attempt, and runs the
+child again when it comes after the stop began; `wake()` and a cancellation
+that abandon one run the child themselves.
+
+A supervisor in standby respawns its child through the recycle path for mail,
+a signal (delivered to the new child), a cancellation (committed first),
+its earliest pending timer, or `wake()`, and then calls `onWake`, with
+`requested` set when `wake()` started it. That respawn waits for a cancellation being committed, since the new child
+applies it from its log. Mail that reaches the inbox after the last read
+before the stop wakes the child as arriving mail does. A hub
+re-establishment while in standby, or while the child stops for it,
+re-registers the correlations the child reported, without asking it.
+
+`restoreInStandby(opts, standby)` restores a deployment its host recorded in
+standby. While the run's history tip is still the recorded one, nothing has
+changed what the runs wait on: the supervisor takes the deployment's mail,
+re-sends the recorded correlations on each hub re-establishment, and arms the
+recorded timer, waking at once for one already due, all without a child. The
+boot replay of `processing/` runs as on a spawn, and mail it puts back or that
+waits in the inbox wakes the child, as does a replay that fails. Mail a live
+run took stays with the run. The first wake starts the child through the
+recycle path, from `standby`, after the boot replay. A tip that moved, from a
+child that ran again or a cancellation committed while it was stopped, or a
+tip that cannot be read, starts the child as `spawn` does, and the result
+says why, so the host can report the deployment woken.
+
 ### Host wiring
 
 A host that wants to instantiate a supervisor constructs the
