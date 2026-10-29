@@ -1041,11 +1041,13 @@ export function createSidecarRouter(
      */
     retryLoop: symbol;
     // When this mail triggers a workflow run, the run's already-materialized
-    // grants ride alongside it. Redelivery replays this snapshot as a
-    // `run.grants` frame AHEAD of the mail so the redelivered trigger lands on
-    // a sidecar that has the run's grants, rather than failing its onRunStart
-    // barrier closed. Re-materializing at redelivery time is unsafe (it carries
-    // commit/authority semantics); replaying the same bytes is not. The
+    // grants ride alongside it. Redelivery sends a `run.grants` frame AHEAD of
+    // the mail so the redelivered trigger lands on a sidecar that has the
+    // run's grants, rather than failing its onRunStart barrier closed. The
+    // frame carries the run's committed grants loaded at redelivery time (a
+    // read, never a re-materialization, which carries commit/authority
+    // semantics); a redelivery stores them here, and this snapshot is the
+    // fallback when the load faults. The
     // co-delivered `senderIdentities` ride the same snapshot, so a sidecar that
     // first learns the grant on the reconnect replay also learns the key.
     runGrants?: {
@@ -1317,19 +1319,42 @@ export function createSidecarRouter(
     }
   }
 
+  // A trigger's grants as of now: the run's committed grants when the lookup
+  // loads them, so a decision that committed after the enqueue rides the
+  // trigger and a queued or redelivered trigger does not restore older grants.
+  // A trigger is always for the deployment's own run, so a load that finds no
+  // run principal means the run or its principal is gone: the trigger then
+  // carries no grants and fails closed. Only an unwired lookup or a load
+  // fault falls back to the grants the trigger already holds.
+  async function currentTriggerGrants(
+    runId: string,
+    held: RunGrantsFrame["stepGrants"],
+  ): Promise<RunGrantsFrame["stepGrants"]> {
+    const result = await loadRunGrants(runId);
+    if (!result.loaded) return held;
+    return result.stepGrants === null ? [] : result.stepGrants;
+  }
+
   // Best-effort and NEVER throws, like `loadRunCredentials`: it runs ahead of
-  // a committed signal, where a throw would drop the signal. A fault is logged
-  // and degrades to null, so the signal goes out with no grants frame.
+  // a committed signal or trigger, where a throw would drop it. An unwired
+  // lookup or a fault (logged) reports `loaded: false`; a load reports the
+  // run's committed grants, or null when the run has no run principal.
   async function loadRunGrants(
     runId: string,
-  ): Promise<RunGrantsFrame["stepGrants"] | null> {
-    if (lookups.loadRunGrants === undefined) return null;
+  ): Promise<
+    | { loaded: true; stepGrants: RunGrantsFrame["stepGrants"] | null }
+    | { loaded: false }
+  > {
+    if (lookups.loadRunGrants === undefined) return { loaded: false };
     try {
-      return await lookups.loadRunGrants(runId);
+      return {
+        loaded: true,
+        stepGrants: await lookups.loadRunGrants(runId),
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logger.error`Failed to load the grants of run ${runId}; sending its signal without them: ${message}`;
-      return null;
+      logger.error`Failed to load the grants of run ${runId}; sending without the current grants: ${message}`;
+      return { loaded: false };
     }
   }
 
@@ -1349,8 +1374,9 @@ export function createSidecarRouter(
     runId: string,
   ): Promise<Extract<HubFrame, { type: "run.grants" }> | undefined> {
     if (runId !== parseRunAddress(agentAddress)?.runId) return undefined;
-    const stepGrants = await loadRunGrants(runId);
-    if (stepGrants === null) return undefined;
+    const loaded = await loadRunGrants(runId);
+    if (!loaded.loaded || loaded.stepGrants === null) return undefined;
+    const stepGrants = loaded.stepGrants;
     const credentials = await loadRunCredentials(runId);
     return {
       type: "run.grants",
@@ -1408,12 +1434,19 @@ export function createSidecarRouter(
       senderIdentities = senderIdentitiesFromKey(authenticatedSender, key);
     }
     const credentials = await loadRunCredentials(entry.runGrants.runId);
+    const stepGrants = await currentTriggerGrants(
+      entry.runGrants.runId,
+      entry.runGrants.stepGrants,
+    );
+    // Keep the newest grants on the entry, so a later redelivery whose load
+    // faults falls back to them, not to the grants it was tracked with.
+    entry.runGrants = { ...entry.runGrants, stepGrants };
     return {
       type: "run.grants",
       agentAddress: entry.agentAddress,
       generation: entry.frame.generation,
       runId: entry.runGrants.runId,
-      stepGrants: entry.runGrants.stepGrants,
+      stepGrants,
       ...(senderIdentities !== undefined ? { senderIdentities } : {}),
       ...(credentials !== null ? { credentials } : {}),
     };
@@ -5163,7 +5196,7 @@ export function createSidecarRouter(
         : undefined;
     const runGrants = {
       runId,
-      stepGrants,
+      stepGrants: await currentTriggerGrants(runId, stepGrants),
       ...(senderIdentities !== undefined ? { senderIdentities } : {}),
     };
     // Loaded at send time, never persisted with the dispatch row: the run's
