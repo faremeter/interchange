@@ -57,7 +57,7 @@ import {
   dequeueToProcessing as defaultDequeueToProcessing,
   markConsumed as defaultMarkConsumed,
   scanRunsForBoot,
-  readWorkflowRunLifecycle,
+  readCommittedWorkflowRunLifecycle,
   replayProcessingToInbox as defaultReplayProcessingToInbox,
   StaleInboxEnqueueError,
   DEFAULT_CONSUMED_RETENTION_MS,
@@ -1022,12 +1022,12 @@ export function createWorkflowSupervisor(
     markConsumed: defaultMarkConsumed,
     replayProcessingToInbox: defaultReplayProcessingToInbox,
   };
-  const defaultInboxWritePrincipal: WorkflowRunSupervisorPrincipal = {
+  const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
     anchorRunId: bindings.anchorRunId,
   };
   const inboxWritePrincipal: Principal =
-    bindings.inboxWritePrincipal ?? defaultInboxWritePrincipal;
+    bindings.inboxWritePrincipal ?? supervisorPrincipal;
   // Resolve the consumed-dedup retention horizon once at the bindings
   // edge (the layer that owns the operator config); every markConsumed
   // is threaded the concrete value. See `WorkflowSupervisorBindings.
@@ -3300,7 +3300,9 @@ export function createWorkflowSupervisor(
       // scan.
       const scanDone = scanRunsForBoot(
         bindings.repoStore,
+        supervisorPrincipal,
         bindings.workflowRunRepoId,
+        bindings.workflowRunRef,
       );
       const replayDone = scanDone
         .then(({ ownedIdentities }) =>
@@ -3887,13 +3889,18 @@ export function createWorkflowSupervisor(
     // a child is rediscovering a live run after restart. Consult the durable
     // log before deciding that "no cohort" means "fire". A live log is added
     // back to cohort tracking so the existing terminal/park wait handles the
-    // recovery window; a terminal log is rejected permanently.
+    // recovery window; a terminal log is rejected permanently. The log is the
+    // committed one, which boot recovery and the child read too: a failed
+    // write can leave a run's start in the checkout alone.
     if (!cohortRunIds.has(runId)) {
       const lifecycle = terminalRunIds.has(runId)
         ? "terminal"
-        : await readWorkflowRunLifecycle(
-            bindings.repoStore,
-            bindings.workflowRunRepoId,
+        : await readCommittedWorkflowRunLifecycle(
+            await bindings.repoStore.openCommittedReads(
+              supervisorPrincipal,
+              bindings.workflowRunRepoId,
+              bindings.workflowRunRef,
+            ),
             runId,
           );
       if (lifecycle === "terminal") {

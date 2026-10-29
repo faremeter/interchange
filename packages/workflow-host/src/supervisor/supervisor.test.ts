@@ -592,6 +592,12 @@ function createStubRepoStore(opts: {
    * tests that assert per-call shape from racing across calls.
    */
   statefulWrites?: boolean;
+  /** History the repo already holds, as a restart finds it. */
+  committedFiles?: {
+    repoId: RepoId;
+    ref: string;
+    files: Record<string, string>;
+  };
 }): RepoStore {
   const committed = new Map<string, Map<string, Uint8Array>>();
   // Tracks the latest commit sha per (repoId, ref) so `resolveRef` answers the
@@ -605,6 +611,18 @@ function createStubRepoStore(opts: {
   }
   function keyFor(repoId: RepoId, ref: string, preservePrefix: string): string {
     return `${repoId.kind}/${repoId.id}\x00${ref}\x00${preservePrefix}`;
+  }
+  if (opts.committedFiles !== undefined) {
+    const { repoId, ref, files } = opts.committedFiles;
+    committed.set(
+      keyFor(repoId, ref, ""),
+      new Map(
+        Object.entries(files).map(([filePath, content]) => [
+          filePath,
+          new TextEncoder().encode(content),
+        ]),
+      ),
+    );
   }
   // Merge every committed submap for a (repoId, ref) across preserve-prefixes
   // into one repo-root-relative path -> bytes map, the coherent tree snapshot
@@ -1043,6 +1061,8 @@ async function buildBindings(opts: {
     message: string;
   }) => void | Promise<void>;
   statefulWrites?: boolean;
+  // Committed files of the deployment's workflow-run repo.
+  committedRunFiles?: Record<string, string>;
   inboxPrimitives?: InboxPrimitives;
 }): Promise<WorkflowSupervisorBindings> {
   const repoStore = createStubRepoStore({
@@ -1052,6 +1072,15 @@ async function buildBindings(opts: {
       ? { beforeWrite: opts.beforeWrite }
       : {}),
     ...(opts.statefulWrites === true ? { statefulWrites: true } : {}),
+    ...(opts.committedRunFiles !== undefined
+      ? {
+          committedFiles: {
+            repoId: { kind: "workflow-run", id: "run_deployment-x" },
+            ref: "refs/heads/main",
+            files: opts.committedRunFiles,
+          },
+        }
+      : {}),
   });
   return {
     repoStore,
@@ -1280,6 +1309,7 @@ describe("createWorkflowSupervisor", () => {
     inboxPrimitives?: MemoryInboxPrimitives;
     mailBus?: ReturnType<typeof createMockMailBus>;
     statefulWrites?: boolean;
+    committedRunFiles?: Record<string, string>;
     failControlWrite?: () => boolean;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -1336,6 +1366,9 @@ describe("createWorkflowSupervisor", () => {
         ? { beforeWrite: opts.beforeWrite }
         : {}),
       ...(opts.statefulWrites === true ? { statefulWrites: true } : {}),
+      ...(opts.committedRunFiles !== undefined
+        ? { committedRunFiles: opts.committedRunFiles }
+        : {}),
     });
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
@@ -5158,26 +5191,18 @@ describe("createWorkflowSupervisor", () => {
       { resource: "thing", action: "read" },
     ]);
 
-    const runEventsDir = path.join(
-      baseDir,
-      "workflow-run",
-      "run_deployment-x",
-      "runs",
-      "run_deployment-x",
-      "events",
-    );
-    await fs.mkdir(runEventsDir, { recursive: true });
-    await fs.writeFile(
-      path.join(runEventsDir, "0.json"),
-      JSON.stringify({ type: "RunStarted", seq: 0 }),
-    );
-    await fs.writeFile(
-      path.join(runEventsDir, "1.json"),
-      JSON.stringify({ type: "RunCompleted", seq: 1 }),
-    );
-
     const wired = await spawnWithRunStart({
       baseDir,
+      committedRunFiles: {
+        "runs/run_deployment-x/events/0.json": JSON.stringify({
+          type: "RunStarted",
+          seq: 0,
+        }),
+        "runs/run_deployment-x/events/1.json": JSON.stringify({
+          type: "RunCompleted",
+          seq: 1,
+        }),
+      },
       onRunStart: async () => {
         return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
@@ -5200,6 +5225,39 @@ describe("createWorkflowSupervisor", () => {
         (entry) => entry.rejection?.code === "workflow_run_terminal",
       ),
     ).toBe(true);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("a run whose start only the checkout holds is fired, not waited on", async () => {
+    const baseDir = await makeTempDir("supervisor-uncommitted-start-");
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
+    // A write that failed before it committed left the start in the checkout.
+    const runEventsDir = path.join(
+      baseDir,
+      "workflow-run",
+      "run_deployment-x",
+      "runs",
+      "run_deployment-x",
+      "events",
+    );
+    await fs.mkdir(runEventsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(runEventsDir, "0.json"),
+      JSON.stringify({ type: "RunStarted", seq: 0 }),
+    );
+
+    const wired = await spawnWithRunStart({ baseDir });
+
+    wired.mailBus.deliver(
+      "run_deployment-x@example.com",
+      inboundDelivery(new TextEncoder().encode("msg-1")),
+    );
+    expect(await waitForTriggerFireRunIds(wired.supervisorToChild, 1)).toEqual([
+      "run_deployment-x",
+    ]);
 
     await wired.supervisor.shutdown();
   });

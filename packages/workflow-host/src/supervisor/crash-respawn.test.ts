@@ -108,6 +108,8 @@ function createStubRepoStore(
       }
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
+    // Its writes land nowhere, so it holds no history.
+    openCommittedReads: async () => null,
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy
   return new Proxy(stub as RepoStore, {
