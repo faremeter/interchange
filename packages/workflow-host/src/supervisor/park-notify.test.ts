@@ -55,6 +55,9 @@ function createNoopInboxPrimitives(): InboxPrimitives {
     async replayProcessingToInbox() {
       return { commitSha: "noop", replayedKeys: [], retainedIdentities: [] };
     },
+    async hasInboxEntries() {
+      return false;
+    },
   };
 }
 

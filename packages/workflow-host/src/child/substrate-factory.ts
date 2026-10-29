@@ -2849,6 +2849,7 @@ export function createSidecarSubstrateFactory(
       },
       scheduler,
       earliestQueuedTimer: () => hostScheduler.earliestQueuedTimer(),
+      stopScheduler: () => hostScheduler.stop(),
       evaluateGrants: evaluateGrantsAdapter,
       ...parkHooks,
       // The same registry the warm agent's transport registers `watch`

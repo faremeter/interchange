@@ -269,6 +269,9 @@ export function createWorkflowHostScheduler(
     const delayMs = Math.max(0, fireAtMs - opts.clock().getTime());
     const cancelTimeout = schedule(() => {
       void fireTimer(runId, timerId).catch((cause) => {
+        // A stop overtook this commit. The timer stays unfired in the log, so
+        // the next child's recovery queues it again.
+        if (stopped) return;
         // The scheduler's commit failed. Surface as unhandled so
         // operators see it; the runtime body's awaiter will hang
         // until restart triggers recovery.

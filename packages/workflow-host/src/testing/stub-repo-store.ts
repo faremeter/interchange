@@ -22,11 +22,14 @@ import type { CommittedReads, RepoId, RepoStore } from "@intx/hub-sessions";
 
 export type StubRepoStoreOpts = {
   /**
-   * Permit `writeTreePreservingPrefix`, returning a fixed commit and no
-   * newly-terminal runs. Off by default, so a test that does not ask for it
-   * fails on the call rather than accepting it.
+   * Permit `writeTreePreservingPrefix` and `writeTreeDelta`, returning a fixed
+   * commit and no newly-terminal runs. A delta is computed against the repo's
+   * directory and then dropped. Off by default, so a test that does not ask
+   * for it fails on the call rather than accepting it.
    */
   writeTree?: boolean;
+  /** Answer `resolveRef` with this tip for every ref; unset, the call fails. */
+  refTip?: string | null;
 };
 
 export function createStubRepoStore(
@@ -46,7 +49,20 @@ export function createStubRepoStore(
             commitSha: "deadbeefcafef00d",
             newlyTerminalRuns: [],
           }),
+          async writeTreeDelta(_principal, repoId, _ref, args) {
+            const reads = directoryReads(
+              path.join(baseDir, repoId.kind, repoId.id),
+            );
+            await args.computeDelta(null, {
+              readBlobByOid: reads.readBlobByOid,
+              listDirOids: reads.listDir,
+            });
+            return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
+          },
         }
+      : {}),
+    ...(opts.refTip !== undefined
+      ? { resolveRef: async () => opts.refTip ?? null }
       : {}),
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; every method the opts did not enable surfaces a precise failure via the proxy

@@ -451,7 +451,7 @@ Every agent step keeps its durable state (conversation turns, pending operations
 
 The sidecar commits the state after every turn and restores from it whenever the agent is rebuilt, including on a replacement host the Hub restores a parked run onto (see [Workflow lifetime and capacity retention](./workflow-lifecycle-policy.md)):
 
-- A single-step deployment's agent is kept warm across messages, and its conversation spans the deployment's life. Its state lives under the deployment's top-level run; the sidecar commits it at every run boundary and restores it when a child respawns. A turn that finished but whose boundary commit fails fails the step with its retries exhausted, as an uncommitted multi-step turn does; when the turn itself failed, its error wins over the commit's and the step follows its retry policy.
+- A single-step deployment's agent is kept warm across messages while its child runs, and its conversation spans the deployment's life. Its state lives under the deployment's top-level run; the sidecar commits it at every run boundary and restores it when a child respawns. A turn that finished but whose boundary commit fails fails the step with its retries exhausted, as an uncommitted multi-step turn does; when the turn itself failed, its error wins over the commit's and the step follows its retry policy.
 - An agent step of a multi-step workflow (including a step in a child run) runs cold: each invocation restores the step's state, runs one turn, and commits the result before the invoker returns. The runtime therefore records a step's output or park only after that turn is durable. That includes a conversational step's input park between turns and a pending approval. When a turn that finished or parked cannot be committed, which includes a turn the agent failed to save to its local store first, or its agent fails to close after it, the step fails with its retries exhausted: its work already happened, so the runtime neither retries the step nor routes it to an `onFailure` handler. The scheduler never starts a handler off a failure that did not route. A failure whose handler a branch skips, before or after the unit fails, fails the run instead of going unhandled. The runtime writes the failure durably at once and then skips the handler's branch; a run that cannot write the skip ends without running the handler. A failure that never became durable, because the host was lost or the run log could not be written, leaves no trace that the turn ran, so recovery settles the step as one that crashed mid-turn, which does route to its `onFailure` handler.
 - A multi-step step's state is stamped with the attempt that wrote it. A retried attempt starts its conversation over, and its first commit replaces the earlier attempt's state.
 
@@ -477,7 +477,7 @@ The settlement projection currently scans the retained consumed-mail index and w
 
 ## Workflow Process: Supervisor/Child IPC
 
-A deployed workflow runs in two processes per active deployment. The supervisor lives in the sidecar — it holds the mail-bus identity for the deployment's addresses, owns the per-deployment Ed25519 signing key the hub trusts, and passes each run's grants to the child as a per-step credential snapshot. The workflow-process is a Bun child the supervisor spawns; it loads operator-supplied workflow code (tools, directors, agent prompts) and executes runs against the runtime adapters. The supervisor is the authoritative side; the workflow-process is the untrusted side.
+A deployed workflow runs in two processes per active deployment, and in the supervisor alone while the deployment is in standby. The supervisor lives in the sidecar — it holds the mail-bus identity for the deployment's addresses, owns the per-deployment Ed25519 signing key the hub trusts, and passes each run's grants to the child as a per-step credential snapshot. The workflow-process is a Bun child the supervisor spawns; it loads operator-supplied workflow code (tools, directors, agent prompts) and executes runs against the runtime adapters. The supervisor is the authoritative side; the workflow-process is the untrusted side.
 
 The IPC between them is the airlock between those two halves. Per-frame crypto is what makes the airlock seal: nothing the child receives is acted on until its signature verifies under the supervisor's public key, and nothing the supervisor accepts from the child is acted on until its HMAC verifies under the shared key. The implementation lives at `packages/workflow-host/src/ipc/` with the threat model at the top of `packages/workflow-host/src/ipc/index.ts`.
 
@@ -574,7 +574,7 @@ Implementation lives in
 `packages/workflow-host/src/supervisor/supervisor.ts`. The recycle
 sequence is library code in
 `packages/workflow-host/src/supervisor/recycle.ts`; see the Recycle
-subsection below for the six-step contract and the three trigger
+subsection below for the six-step contract and the five trigger
 origins.
 
 ### Workflow-Process Child
@@ -656,11 +656,19 @@ ChannelSender` writes against; the event channel is the
    - `grants-updated` -> swap the active credentialsSnapshot.
    - `credentials-updated` -> merge into the material cell.
    - `drain` -> flip the drain controller's signal.
+   - `signal.deliver` -> commit the signal as `SignalReceived`. A frame
+     with a `requestId`, like a `trigger.fire` with one, is answered with
+     `input.taken` once the commit settles, saying whether it committed,
+     so a standby request waits for it. A log that already ended takes no
+     signal, and the answer says so. The dispatch that delivered a mail
+     consumes it only once that answer says committed; a declined mail is
+     rejected if the committed log shows its run ended, and otherwise fails
+     the dispatch, which puts it back in the inbox and delivers it again, rejecting it after five failed attempts.
    - `quiet.request` -> make every buffered event durable and answer
      whether every run only waits on input from outside, with the
      earliest timer the scheduler has queued; with `wait`, answer once
      that holds. A run that has ended answers `ended`, and a check that
-     fails answers with its error.
+     fails answers with its error; either refuses the standby request.
      A check still waiting when the next one arrives is dropped
      unanswered, since the supervisor gave up on it.
    - `shutdown` -> stop accepting new triggers and exit the loop.
@@ -1021,7 +1029,7 @@ to the channelId's lifetime; the rotation is what defends against
 frame replay across the recycle boundary that monotonic seq alone
 cannot defend against.
 
-**Three trigger origins funnel through `triggerRecycle(reason)`:**
+**Five trigger origins funnel through `triggerRecycle(reason)`:**
 
 - **Operator command.** The host receives a `recycle` request via
   its caller-facing API and routes it to the supervisor's
@@ -1034,7 +1042,8 @@ cannot defend against.
   unless the operator sets a threshold). On a threshold trip the
   policy calls `triggerRecycle` with origin `policy` and a reason
   naming the tripped bound. Each child gets its own check, armed
-  when it starts, so `maxUptimeMs` measures the running child.
+  when it starts, so `maxUptimeMs` measures the running child; a
+  deployment in standby has no child and no check.
 - **Workflow-process self-initiated.** The child sends a
   `recycle.request` payload over control IPC when its own self-
   check decides it needs to be recycled (an internal consistency
@@ -1044,9 +1053,17 @@ cannot defend against.
   IPC payload union extension is the only contract change recycle
   introduces; the envelope, signature, and channelId/seq rules are
   unchanged.
+- **Crash respawn.** A child that exits unexpectedly is respawned
+  with origin `crash` once the respawn backoff has elapsed.
+- **Wake.** A child in standby is respawned with origin `wake` for
+  mail, a signal, a cancellation, its earliest pending timer, or
+  `wake()`.
 
-All three origins land in the same code path. The reason string is
-the only origin-specific data the path carries forward.
+All five origins land in the same code path. The origin tag and the
+reason string are the only origin-specific data it carries forward. A
+crash respawn and a wake drain nothing, since their child is already
+gone, and the first wake of a deployment restored in standby has no
+child to stop and skips the replay its boot already made.
 
 #### Placeholders And Future Work
 

@@ -221,6 +221,9 @@ function createGatedInboxPrimitives(): {
         prunedIdentities: [],
       };
     },
+    async hasInboxEntries(_store, _principal, _repoId, address) {
+      return getOrCreate(address).inbox.size > 0;
+    },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {
       await gate;
       const s = getOrCreate(address);
@@ -598,8 +601,15 @@ describe("supervisor spawn-time replay FIFO contract", () => {
       readPayloadsOfType(harness.supervisorToChild.flushed(), "trigger.fire"),
     ).toHaveLength(1);
 
-    // Complete the resumed run so the fresh mail's durable-consume wait
-    // releases, then verify both entries left the queue in FIFO order.
+    // Commit the signal and complete the resumed run so the fresh mail's
+    // durable-consume wait releases, then verify both entries left the queue
+    // in FIFO order.
+    const requestId = freshSignal.data.requestId;
+    if (requestId === undefined) throw new Error("no answer was asked for");
+    await harness.childSender.send({
+      type: "input.taken",
+      data: { requestId, committed: true },
+    });
     await harness.childSender.send({
       type: "terminal.event",
       data: {

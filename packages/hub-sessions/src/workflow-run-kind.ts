@@ -4319,6 +4319,29 @@ export async function readProcessingEntry(
   return null;
 }
 
+/**
+ * Whether `address` holds inbox entries no dispatch has taken yet. Reads the
+ * committed tree, as dequeue does: a failed write can leave the checkout
+ * without an entry Git still holds.
+ */
+export async function hasInboxEntries(
+  store: RepoStore,
+  principal: Principal,
+  repoId: RepoId,
+  address: string,
+): Promise<boolean> {
+  const reads = await store.openCommittedReads(
+    principal,
+    repoId,
+    claimCheckCommitRef(),
+  );
+  if (reads === null) return false;
+  const inbox = await reads.listDir(
+    `${addressPrefix(addressSegmentFor(address))}${WORKFLOW_RUN_INBOX_DIR}`,
+  );
+  return inbox.some((entry) => entry.name.endsWith(".json"));
+}
+
 export type MarkConsumedArgs = {
   address: string;
   /** The processing entry's identity (see `claimCheckIdentity`). */
@@ -4758,6 +4781,13 @@ export type ReplayProcessingToInboxOpts = {
    * behaviour: recover all orphans).
    */
   ownedIdentities?: ReadonlySet<string>;
+  /**
+   * Replay only the entries with these claim-check identities, and leave
+   * every other processing entry where it is, unreported. For a caller that
+   * knows no run took these while runs are still going, which makes a scan
+   * for `ownedIdentities` race the runs it reads.
+   */
+  onlyIdentities?: ReadonlySet<string>;
 };
 
 /**
@@ -4820,6 +4850,12 @@ export async function replayProcessingToInbox(
           bytes,
           `${processingDir}${entry.name}`,
         );
+        if (
+          opts.onlyIdentities !== undefined &&
+          !opts.onlyIdentities.has(claimCheckIdentity(envelope))
+        ) {
+          continue;
+        }
         if (ownedIdentities.has(claimCheckIdentity(envelope))) {
           retainedIdentities.push(claimCheckIdentity(envelope));
           continue;

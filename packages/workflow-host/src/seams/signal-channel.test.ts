@@ -612,6 +612,60 @@ describe("workflow-host signal channel", () => {
     }
   });
 
+  test("land says a live log holds a repeated signal, and a log that ended took none", async () => {
+    const dataDir = await makeTempDir("sigchan-land-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { skill: permissiveHandler("workflow-runs-land") },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "skill", id: "deployment-land" };
+    const runId = "r-land";
+    const box = makeStateBox(runId);
+    const runtimeStore = runtimeStoreFor(store, repoId);
+    const at = "2026-01-01T00:00:00.000Z";
+    const channel = createWorkflowHostSignalChannel({
+      repoStore: store,
+      runtimeStore,
+      principal,
+      repoId,
+      ref: REF,
+      runId,
+      readState: () => box.state,
+      newId: makeIdGen("sig"),
+      clock: () => new Date(at),
+    });
+    try {
+      expect(await channel.land("approve", { ok: true }, "sig-early")).toBe(
+        true,
+      );
+      expect(await channel.land("approve", { ok: true }, "sig-early")).toBe(
+        true,
+      );
+      await runtimeStore.append(runId, {
+        kind: "RunFailed",
+        seq: 1,
+        at,
+        error: { message: "already failed" },
+      });
+      expect(await channel.land("approve", { ok: true }, "sig-late")).toBe(
+        false,
+      );
+      expect(await channel.land("approve", { ok: true }, "sig-early")).toBe(
+        false,
+      );
+      const events = await runtimeStore.read(runId);
+      expect(events.map((event) => event.kind)).toEqual([
+        "SignalReceived",
+        "RunFailed",
+      ]);
+    } finally {
+      await channel.stop();
+      dropChain(runId);
+    }
+  });
+
   test("peek reads the name queue and the matching correlation separately", async () => {
     const dataDir = await makeTempDir("sigchan-peek-");
     const store = createRepoStore({
