@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { afterAll, describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +20,20 @@ import { collectParkedApprovalCorrelations } from "./parked-correlations";
 
 const at = new Date().toISOString();
 const repoId: RepoId = { kind: "workflow-run", id: "dep-1" };
+
+const tempDirs: string[] = [];
+
+async function makeTempDir(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "parked-corr-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterAll(async () => {
+  for (const dir of tempDirs.splice(0)) {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
 
 const snapshot: ApprovalSnapshot = {
   name: "charge_card",
@@ -120,7 +134,7 @@ async function setup(
   substrate: SubstrateRepoStore;
   runtimeRepoStore: RuntimeRepoStore;
 }> {
-  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "parked-corr-"));
+  const baseDir = await makeTempDir();
   const runsDir = path.join(baseDir, repoId.kind, repoId.id, "runs");
   const runtimeRepoStore = createInMemoryRepoStore();
   for (const run of runs) {
@@ -164,7 +178,7 @@ describe("collectParkedApprovalCorrelations", () => {
   });
 
   test("enumerates parked correlations across multiple runs and steps", async () => {
-    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "parked-corr-"));
+    const baseDir = await makeTempDir();
     const runsDir = path.join(baseDir, repoId.kind, repoId.id, "runs");
     const runtimeRepoStore = createInMemoryRepoStore();
     // run-a parks two steps concurrently; run-b parks one. The enumeration
@@ -238,7 +252,7 @@ describe("collectParkedApprovalCorrelations", () => {
     // loadParkedApproval binding wired. Were it not skipped, its mere presence
     // would take the whole deployment's approval re-registration down on every
     // reconnect.
-    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "parked-corr-"));
+    const baseDir = await makeTempDir();
     const runsDir = path.join(baseDir, repoId.kind, repoId.id, "runs");
     const runtimeRepoStore = createInMemoryRepoStore();
     await fs.mkdir(path.join(runsDir, "run-input"), { recursive: true });
@@ -303,7 +317,7 @@ describe("collectParkedApprovalCorrelations", () => {
   });
 
   test("a relayed approval loads the snapshot from the child step", async () => {
-    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "parked-corr-"));
+    const baseDir = await makeTempDir();
     const runsDir = path.join(baseDir, repoId.kind, repoId.id, "runs");
     const runtimeRepoStore = createInMemoryRepoStore();
     await fs.mkdir(path.join(runsDir, "parent-run"), { recursive: true });

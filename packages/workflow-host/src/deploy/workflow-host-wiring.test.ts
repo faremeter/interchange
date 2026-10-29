@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach, spyOn } from "bun:test";
+import { describe, test, expect, afterAll, afterEach, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -381,9 +381,19 @@ afterEach(() => {
   }
 });
 
-function createTempBaseDir(prefix: string): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+const tempDirs: string[] = [];
+
+async function createTempBaseDir(prefix: string): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
 }
+
+afterAll(async () => {
+  for (const dir of tempDirs.splice(0)) {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
 
 // The supervisor's `parked-correlations.request` control-frame discriminator.
 // The re-emit-parked-correlations tests assert this reaches the downstream

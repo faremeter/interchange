@@ -465,10 +465,19 @@ function readCancelRequestedBlob(
   return validated;
 }
 
+const tempDirs: string[] = [];
+
 async function makeTempDir(prefix: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
   return dir;
 }
+
+afterAll(async () => {
+  for (const dir of tempDirs.splice(0)) {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
 
 // A mail bus that exposes the durable settlement of a delivery via `settle`
 // (the subscribed handler's returned promise), so the ack/withhold mapping can
