@@ -344,7 +344,9 @@ a live child when the top-level run's grants update arrives (ahead of
 a signal delivery or a trigger, or in `authority.set` on a restart).
 A decision on a call that matched a wildcard `tool:*` `ask` changes
 nothing, because the hub changes only an exact `tool:<name>` grant.
-The child's grants file is not rewritten.
+Two grant sends for one run can arrive out of order, and then the run
+holds the older grants until the next send. The child's grants file is
+not rewritten.
 
 ## Hosting the workflow-process child
 

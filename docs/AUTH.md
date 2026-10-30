@@ -322,7 +322,12 @@ For a given principal attempting an operation:
 4. The strongest matching grant under that ordering wins.
 5. A no match returns no decision (`effect: null`), not an explicit `deny`; the enforcement layer fails closed when no grant allows the action.
 
-The `ask` effect blocks execution and surfaces an approval request to the appropriate human. The human can respond with `once` (allow this instance), `always` (create a persistent grant), or `reject` (deny with optional feedback).
+An `ask` decision on a tool call in a workflow run suspends the call and creates an approval request for a human. On a hub REST route, `ask` does not allow the request: the route returns 403 and creates no approval. The human approves or rejects the tool call, with a scope:
+
+- Approve with `once` allows this call only. Approve with `always` also changes the run principal's `ask` grant for that tool to `allow`. The run then does not ask again for the rest of the run.
+- Reject denies this call, with an optional message as feedback. Its scope defaults to `once`. Reject with `always` also changes the grant to `deny`. The run then blocks the tool and does not ask again.
+
+A standing decision changes the effect of an existing grant whose resource is the exact `tool:<name>`. It never creates a grant. It applies across every trigger of the deployment and in its child runs. Two grant sends for one run can arrive out of order: a send that loaded the grants earlier can arrive later. The run then holds the older grants until the next send, and it can ask again.
 
 ### Conditions
 
@@ -349,11 +354,11 @@ Specificity still decides between grants: a broad conditioned `deny` loses to a 
 
 Grant revocation is policy-driven with a default of fail-secure.
 
-**Creator grant revocation**: If the creator's authority is revoked after workflow runs have been launched with creator-sourced grants, those running workflow runs must lose the affected grants. The harness authorizes each tool call against its live materialized grant set before the call executes, so a revoked capability is blocked once that set no longer contains it; a tool call already in flight is not interrupted. Propagating a revocation to an already-running deployment is not currently implemented — the earlier `grants.update` wire mechanism has been retired, and its supervised replacement is designed separately. Until then, the change takes effect when the deployment next loads its grants (the deploy pack at spawn, and the `authority.set` frame that every new child receives; see _Restoring a run's authority in a new process_). Tenants can configure grace periods or notification-only behavior for specific grant types.
+**Creator grant revocation**: The policy is that a running workflow run loses a creator-sourced grant when the creator loses that authority. The code does not do this yet. The hub copies a run's grants from its delegators into the run principal's own grant rows one time, at the run's first trigger. After that, a standing approval decision can change the effect of a row, and the run's outbound mail to a new correspondent can add a `mail:accept` row, but nothing derives the rows again from the delegators. A revoke of the creator's grant deletes the creator's row only, so the run keeps the capability for the rest of the run. The hub sends the run's grants to the sidecar ahead of each signal delivery and each trigger, and a new child gets them in its `authority.set` frame (see _Restoring a run's authority in a new process_). These sends carry the run's own rows, so they do not carry a creator revocation. The harness checks each tool call against the run's grants before the call starts, and it does not interrupt a call that is in progress.
 
 **Invoker grant revocation**: Invoker-granted capabilities carry a fixed 24-hour TTL from the run's first trigger (`INVOKER_GRANT_TTL_MS`), not a lifetime tied to when the run stops. Approving an invoker-granted `ask` with `always` changes its effect to `allow` and keeps its expiry.
 
-**Tenant policy changes**: When tenant policies change (role modifications, system role updates), the control plane re-evaluates affected runs. Propagating the resulting grant changes to already-running deployments shares the retired-mechanism gap described above; a change takes effect when each deployment next loads its grants.
+**Tenant policy changes**: A change to a tenant policy (a role change or a system role update) does not change the grants of a run that has already started, for the same reason: the run's grants are its own copied rows, and the hub does not derive them again.
 
 This parallels the credential revocation model described in CREDENTIALS.md — both follow the same fail-secure default with configurable tenant policies.
 
