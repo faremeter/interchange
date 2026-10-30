@@ -1133,48 +1133,6 @@ describe("SidecarRouter allocation control protocols", () => {
     expect(called).toBe(false);
   });
 
-  test("routes source updates through the owned address and waits for its ack", async () => {
-    const router = createAllocatedRouter();
-    const ws = await connectAllocated(router, [
-      TEST_IDENTITY.workflowRunAddress,
-    ]);
-    const updating = router.sendSourcesUpdate(
-      TEST_IDENTITY.workflowRunAddress,
-      [
-        {
-          id: "replacement",
-          provider: "test",
-          baseURL: "https://api.example.test",
-          credentialId: "new-credential",
-          model: "new-model",
-        },
-      ],
-      "replacement",
-    );
-    await tick();
-    const frame = framesOfType(ws, "sources.update")[0];
-    expect(frame).toBeDefined();
-    const requestId = frame?.["requestId"];
-    if (typeof requestId !== "string") {
-      throw new Error("Expected sources.update requestId");
-    }
-
-    router.handleMessage(
-      ws,
-      JSON.stringify({ type: "session.ack", requestId }),
-    );
-
-    await expect(updating).resolves.toBeUndefined();
-  });
-
-  test("rejects source updates when the address is disconnected", async () => {
-    const router = createAllocatedRouter();
-
-    await expect(
-      router.sendSourcesUpdate("missing@tenant.example", [], "missing"),
-    ).rejects.toThrow("No sidecar connected");
-  });
-
   test("sends drain control only to the sidecar owning the deployment", async () => {
     const router = createAllocatedRouter();
     const ws = await connectAllocated(router, [

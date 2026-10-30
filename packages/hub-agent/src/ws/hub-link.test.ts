@@ -311,6 +311,11 @@ type TestEnv = {
    * -- the heartbeat is one -- has this to wait on instead of a duration.
    */
   sidecarFrames: string[];
+  /**
+   * Send a frame to the sidecar that connected last, for a frame type the
+   * hub router does not send but a sidecar still handles.
+   */
+  sendToSidecar(frame: object): void;
 };
 
 function startTestServer(): TestEnv {
@@ -336,6 +341,7 @@ function startTestServer(): TestEnv {
     },
   );
 
+  const handles: WsHandle[] = [];
   const app = new Hono();
   app.get(
     "/ws",
@@ -351,6 +357,7 @@ function startTestServer(): TestEnv {
               ws.close();
             },
           };
+          handles.push(handle);
           router.handleOpen(handle);
         },
         onMessage(evt, _ws) {
@@ -373,7 +380,20 @@ function startTestServer(): TestEnv {
     port: 0,
   });
 
-  return { server, router, agentEvents, outboundMail, sidecarFrames };
+  return {
+    server,
+    router,
+    agentEvents,
+    outboundMail,
+    sidecarFrames,
+    sendToSidecar(frame) {
+      const handle = handles.at(-1);
+      if (handle === undefined) {
+        throw new Error("No sidecar is connected to the test hub");
+      }
+      handle.send(JSON.stringify(frame));
+    },
+  };
 }
 
 // A bare hub endpoint that welcomes every hello, answers pings, and records
@@ -1777,6 +1797,32 @@ describe("sidecar↔hub integration", () => {
     model: "claude-rotation",
   };
 
+  // An older hub can still send `sources.update`; send it raw and return the
+  // sidecar's answer to it.
+  async function answerToSourcesUpdate(
+    agentAddress: string,
+    requestId: string,
+  ): Promise<{ type?: string; error?: string }> {
+    env.sendToSidecar({
+      type: "sources.update",
+      requestId,
+      agentAddress,
+      generation: 1,
+      sources: [ROTATION_SOURCE],
+      defaultSource: "primary",
+    });
+    const answer = () =>
+      env.sidecarFrames
+        .map((raw): { requestId?: string; type?: string; error?: string } =>
+          JSON.parse(raw),
+        )
+        .find((frame) => frame.requestId === requestId);
+    await waitUntil(() => answer() !== undefined);
+    const found = answer();
+    if (found === undefined) throw new Error("no answer");
+    return found;
+  }
+
   test("sourcesInboundRouter acks an inbound sources.update round-trip", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
@@ -1809,14 +1855,11 @@ describe("sidecar↔hub integration", () => {
       await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
-      // Resolves on the sidecar's session.ack. Without a reply this would
-      // await the full request timeout, so a prompt resolution is the proof
-      // the round-trip no longer hangs.
-      await env.router.sendSourcesUpdate(
-        deploymentAddress,
-        [ROTATION_SOURCE],
-        "primary",
-      );
+      // The sidecar answers with session.ack. Without a reply the hub that
+      // sent it would wait for its full request timeout.
+      expect(
+        await answerToSourcesUpdate(deploymentAddress, "sources-ack"),
+      ).toMatchObject({ type: "session.ack" });
       expect(routed).toHaveLength(1);
       expect(routed[0]?.agentAddress).toBe(deploymentAddress);
     } finally {
@@ -1857,13 +1900,12 @@ describe("sidecar↔hub integration", () => {
       await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
-      await expect(
-        env.router.sendSourcesUpdate(
-          deploymentAddress,
-          [ROTATION_SOURCE],
-          "primary",
-        ),
-      ).rejects.toThrow(/no deployment registered/);
+      const answer = await answerToSourcesUpdate(
+        deploymentAddress,
+        "sources-unrouted",
+      );
+      expect(answer.type).toBe("session.error");
+      expect(answer.error).toMatch(/no deployment registered/);
     } finally {
       client.close();
       await waitUntil(
@@ -1903,13 +1945,12 @@ describe("sidecar↔hub integration", () => {
       await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
-      await expect(
-        env.router.sendSourcesUpdate(
-          deploymentAddress,
-          [ROTATION_SOURCE],
-          "primary",
-        ),
-      ).rejects.toThrow(/supervisor is recycling/);
+      const answer = await answerToSourcesUpdate(
+        deploymentAddress,
+        "sources-reject",
+      );
+      expect(answer.type).toBe("session.error");
+      expect(answer.error).toMatch(/supervisor is recycling/);
     } finally {
       client.close();
       await waitUntil(
@@ -1943,13 +1984,12 @@ describe("sidecar↔hub integration", () => {
       await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
-      await expect(
-        env.router.sendSourcesUpdate(
-          deploymentAddress,
-          [ROTATION_SOURCE],
-          "primary",
-        ),
-      ).rejects.toThrow(/no sourcesInboundRouter/);
+      const answer = await answerToSourcesUpdate(
+        deploymentAddress,
+        "sources-norouter",
+      );
+      expect(answer.type).toBe("session.error");
+      expect(answer.error).toMatch(/no sourcesInboundRouter/);
     } finally {
       client.close();
       await waitUntil(

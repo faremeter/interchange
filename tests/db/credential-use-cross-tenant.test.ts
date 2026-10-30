@@ -32,8 +32,8 @@ import {
 // principal-owned credential is not a tenant resource and is never usable
 // through a shared catalog offering. These pin the ownership boundary on the
 // secret-injecting launch path (resolveModelSources) across a parent
-// `tnt_root` and a child `tnt_child` that inherits from it. Ownership needs no creator, so a
-// definition with none still launches a tenant-owned source.
+// `tnt_root` and a child `tnt_child` that inherits from it. Ownership needs
+// no creator, so a definition with none still launches a tenant-owned source.
 
 const SECRET = "sk-parent-tenant-credential";
 const REQ_OPUS: ModelRequirement[] = [{ model: "opus" }];
