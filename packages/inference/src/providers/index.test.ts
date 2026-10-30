@@ -10,6 +10,8 @@ const builtinProviders = [
   "openai",
   "openai-compatible",
   "google-genai",
+  "openai-responses",
+  "openai-compatible-responses",
 ];
 
 function createSource(provider: string): LastCycleSource {

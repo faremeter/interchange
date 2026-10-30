@@ -10,6 +10,7 @@ export type CatalogPlugin =
   | "anthropic"
   | "openai"
   | "openai-compatible"
+  | "openai-responses"
   | "google-genai";
 
 export type DiscoverySource = {
@@ -107,6 +108,32 @@ const OPENAI_REASONING_NO_VISION_CAPABILITIES: Capability[] = [
   "reasoning-content-streaming",
   "structured-output",
   "structured-output-streaming",
+];
+
+// The Responses-wire sets proven by the openai-responses matrix rows:
+// gpt-5-mini carries the full builder surface; every other offering carries
+// the representative streaming, buffered, tool follow-up, and reasoning
+// subset. The guard test re-bakes each offering from its provenance tuple.
+const OPENAI_RESPONSES_FULL_OFFERING_CAPABILITIES: Capability[] = [
+  "plain-text",
+  "plain-text-streaming",
+  "function-calling",
+  "function-calling-multi-turn",
+  "vision-input",
+  "document-input",
+  "code-execution",
+  "code-execution-streaming",
+  "reasoning-content",
+  "reasoning-content-streaming",
+  "grounding",
+  "grounding-streaming",
+];
+
+const OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES: Capability[] = [
+  "plain-text",
+  "plain-text-streaming",
+  "function-calling-multi-turn",
+  "reasoning-content",
 ];
 
 // Plain-text + reasoning only (no vision, no structured output): glm-5, glm-5.1,
@@ -507,6 +534,102 @@ export const catalogProviders: CatalogProviderSpec[] = [
           "function-calling-multi-turn",
         ],
         quirks: OPENAI_FIRSTPARTY_QUIRKS,
+      },
+    ],
+  },
+  {
+    name: "OpenAI Responses",
+    plugin: "openai-responses",
+    baseURL: "https://api.openai.com/v1",
+    offerings: [
+      {
+        model: "gpt-6-astra",
+        priority: 0,
+        discoverySource: { provider: "openai-responses", model: "gpt-6-astra" },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES,
+        quirks: {},
+      },
+      {
+        model: "gpt-6.1-sol",
+        priority: 5,
+        discoverySource: { provider: "openai-responses", model: "gpt-6.1-sol" },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES,
+        quirks: {},
+      },
+      {
+        model: "gpt-6.1-terra",
+        priority: 10,
+        discoverySource: {
+          provider: "openai-responses",
+          model: "gpt-6.1-terra",
+        },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES,
+        quirks: {},
+      },
+      {
+        model: "gpt-6-luna",
+        priority: 15,
+        discoverySource: { provider: "openai-responses", model: "gpt-6-luna" },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES,
+        quirks: {},
+      },
+      {
+        model: "gpt-6-sol",
+        priority: 20,
+        discoverySource: { provider: "openai-responses", model: "gpt-6-sol" },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES,
+        quirks: {},
+      },
+      {
+        model: "gpt-5.6-sol",
+        priority: 25,
+        discoverySource: { provider: "openai-responses", model: "gpt-5.6-sol" },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES,
+        quirks: {},
+      },
+      {
+        model: "gpt-5.6-terra",
+        priority: 30,
+        discoverySource: {
+          provider: "openai-responses",
+          model: "gpt-5.6-terra",
+        },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES,
+        quirks: {},
+      },
+      {
+        model: "gpt-5.6-luna",
+        priority: 35,
+        discoverySource: {
+          provider: "openai-responses",
+          model: "gpt-5.6-luna",
+        },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES,
+        quirks: {},
+      },
+      {
+        model: "gpt-5.5",
+        priority: 40,
+        discoverySource: { provider: "openai-responses", model: "gpt-5.5" },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES,
+        quirks: {},
+      },
+      {
+        model: "gpt-5-mini",
+        priority: 45,
+        discoverySource: { provider: "openai-responses", model: "gpt-5-mini" },
+        curatedCapabilities: [],
+        capabilities: OPENAI_RESPONSES_FULL_OFFERING_CAPABILITIES,
+        quirks: {},
       },
     ],
   },

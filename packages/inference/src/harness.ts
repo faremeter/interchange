@@ -552,10 +552,34 @@ async function* runSingleAttempt(
         yield adapter.parseJSONResponse(body);
         return;
       }
+      // Set only when the loop below stops on a terminal chunk while the
+      // server holds the connection open. A normal `[DONE]`/close ending
+      // leaves this false, so the body below is untouched and adapters
+      // without the predicate keep today's behavior byte-for-byte.
+      let stoppedOnTerminalChunk = false;
       for await (const sseData of parseSSE(responseBody)) {
         // Reset inactivity timer — we just got something from the wire.
         armInactivity();
         yield adapter.parseResponse(sseData);
+        if (adapter.isStreamTerminal?.(sseData) === true) {
+          // The protocol ended on a semantic terminal event while the
+          // server holds the connection open (a Responses
+          // `response.completed` with no `[DONE]` or close to follow).
+          // The batch above is already queued for the accumulator, so
+          // stopping here processes the terminal chunk's events —
+          // including usage — through the normal completion path below.
+          // Adapters without the predicate keep today's `[DONE]`/close
+          // behavior: the predicate is never consulted for them.
+          stoppedOnTerminalChunk = true;
+          break;
+        }
+      }
+      if (stoppedOnTerminalChunk) {
+        // Release the held-open socket: the break above leaves the body
+        // open, and an unread open body pins the connection. parseSSE
+        // already released the reader on its way out, so this cancel
+        // lands on an unlocked stream.
+        await responseBody.cancel().catch(() => undefined);
       }
     };
 

@@ -1,0 +1,116 @@
+{
+  "id": "resp_0339316430271cb9006ae42ea5681c87d0b0f45d3b10ac7640",
+  "object": "response",
+  "created_at": 1793339045,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793339046,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.6-terra",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_0339316430271cb9006ae42ea5f7f087d0bf6400c3bbf5f546",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5C6mVashaVZFpRwHRJNuKrXXqDYam7C4d6Ui6jDsAQjF1lamey7NlmVkE3Xx0_huvr_s9lNS5tyuPD4bo-D72BlnbzETQUKnm3TSRdlmeutkJCE53n4yGl7RCrryMpAXDg9Ak4e5RYiFEZEK7lyZZE2kIY7EuG24iFz8jlP9gbB-_mm0aroMYghKW_1OcTMPsm0ZG8hSTybRLhr1Zt56B9zR1oU4h339W9CLZTTTQih4zTCQxFzmU1xm5J4AaQ0jtIH-ucbn0m37KeD3lT3gwtlYxku1PMRSr6Ek-KnSB6Tv7WmClXgvfmF_TNB9trtxdgTnUY5psd-q0qHhIM0SBGvmBsDh7l6ktzPZZEilamJ7_dvcNnLsnJ1ogs5JMQElyJEFVYZwmxwE5MvS_EZKjtkU2IwiFyazLY37DgFsqEzt-9K-AE8oTZbSM2wd-rN4KM6MzIVUJXvatLApH4CrFYpUpRC4z3Pby9661ehZHe4Lue9Sz1BgIOHnZVd65aO0_r61dTC6jZBM-tv5GQ5WX4qZWAQ70BagU5KtDiDY3_wIXMOIcTCq837tfLyRObjBBqng_TZzGPyXgXdOTMIiAUiwHqgr3TBbxxwp0V4yr-m-3QH830yYsZf3ttyb7Hv0AdGh4ZMLt_MCS3EQOXgW0p0OlBK4EZOcLptNxb2ZDJHlrAM8lAOrkYeME0mNL0XWp0Tan8JnNs2X-5LGIQRsllHebfWBHvKlH5i3Zwza8Bs9LKZHNNR52FHe_siTILCDVZv9ozWnvUF37TqylPFJjP5TKZHI1RZwZB8j1E0vRhz4JaVNfo7Ei01P88wgPTcgbk_ctL-HAnt7cbrNA44HedQznpW7HrW7J-mefoI4UayDX68FuhAY2mjgCf5JkxntOS5g0b8AxNyS6y3GHznPIQW9ANaZZriUoBftcJn_usnkt58gRjQkDJrTLQKJZY3VhatYbjSBx9Oo8a4z-SsCBprs0HIvIst4x87IiRB8FGC6ObQShNkZKBc2x8GklNawM9QklUJKE_0aCOjt8_nSh-flpudbLg1Qydm5WvujmEy19cXZVRmvlKaGxbrBeUzcRCtwW1IuGgxVRqwMu7xkseaH6EcE8UoFhsbiGxlvYI7jWYQYcBPt6c4boRD5tTyVyvSYJjOkB4Cewt79vB-QrSs_FMAyD7h4J8i3uAxWL0y0Z7rWFqu9iee6ObWruKNoIOTijNkmx2ZxMT7TMpNmbCd1qzAxK541vp22QL5TXauFZG1IklfSe_HKPItq_qOqScGuxXmap9oExVrSFYLpw4Ys9Nf3kAtOBOxXchsj5hvsrl0VVYdNiUgjwjMnxL2_wYRny03Mk2Jo7kVlBN2uUfQfjB-qznlJmgNJZn4h2mxeWRMB0pJXtnGR4qhUog0QzlM4umoWjkZwrTbxSuh6yvNn9PMZEsZWK7cJvkz8oGvO3oXtCST53cA5R__PfWkdcfPBWbalpXSJTom8DMY3blL20eQPavg7fcKdBMUGSBgmjP0=",
+      "summary": []
+    },
+    {
+      "id": "fc_0339316430271cb9006ae42ea60ab487d0b4bebdc14c9bda79",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"location\":\"Boston, MA\"}",
+      "call_id": "call_35dYCCFCw5SJXLVUghZJitV4",
+      "name": "get_weather"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [
+    {
+      "type": "function",
+      "description": "Look up the current weather for a city.",
+      "name": "get_weather",
+      "output_schema": null,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and optional region, e.g. 'Boston, MA'."
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 73,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 30,
+    "output_tokens_details": {
+      "reasoning_tokens": 8
+    },
+    "total_tokens": 103
+  },
+  "user": null,
+  "metadata": {}
+}

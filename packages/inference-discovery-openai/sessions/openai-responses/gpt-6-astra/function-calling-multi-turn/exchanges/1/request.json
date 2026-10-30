@@ -1,0 +1,41 @@
+{
+  "model": "gpt-6-astra",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "What is the weather in Boston, MA? Use the provided tool."
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_Qr4LStPKZotOdwGuFNu0cs4S",
+      "name": "get_weather",
+      "arguments": "{\"location\":\"Boston, MA\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_Qr4LStPKZotOdwGuFNu0cs4S",
+      "output": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Look up the current weather for a city.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and optional region, e.g. 'Boston, MA'."
+          }
+        },
+        "required": [
+          "location"
+        ]
+      }
+    }
+  ],
+  "tool_choice": "auto"
+}

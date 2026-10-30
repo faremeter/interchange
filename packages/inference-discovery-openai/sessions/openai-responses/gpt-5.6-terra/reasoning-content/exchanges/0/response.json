@@ -1,0 +1,102 @@
+{
+  "id": "resp_05f97aa467cbbc37006ae42ea7d7b087d0afaf41a145d212a1",
+  "object": "response",
+  "created_at": 1793339047,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793339049,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.6-terra",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_05f97aa467cbbc37006ae42ea8859887d08ff80702718e39e5",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5C6p_n_l7rOqH6dB8_18dq7VPQeDPloqYQTdyYnUGzCS95FRS0v1zhPk47D3PqWVkXsKF7qfeoZvcLazDFE0FJN2lZFR9eNmkymmep3_Gad00OIM0XQgNkGvQOxIndQpVVsvD0VjEbQsPa83cjdYZkFlZtjCVWiG88vq8cIMJJ2yKi3huu9ZAwAU7XjPkY5OCQHhG96xpDT88aCtiMj8Besp1_YhBP82LWvEpc2uA8AMDcEFmiddVpAsVmkBwSGi2d3Pekbn1TaPzmbFldLj9Rk1JakvoxGIhaNeLQEai8tnKjICYH0WoCl6kzJFesFd42jiOnQdKer_CDPfKfWPHgF1cDUV09qRXn3Q9yaIhIB8VAr8pSO8rp_3SH06oS7TTZ9CeRkNySjVMny1_TeiE3jPoenU5_udD7Kmy3jEJgAqkb3Pdcw9AOCZrEgFJaqJPz0-wXKlsTXu3GbX8spTV3-dR6O6nF_Xdgoteyv64_79GtPbktngAtuR08EmnEAlusYpBD83ez_gY3H7TyptH-osW427oGRs7SWJAkEZ2dMRcETqPfS2YnPhKXMDg3xES9fwyBorBc4t4QYYh5hgRKP-L9qs5t9W7_qxsEy5sqTqa6qL3CNbe5zZTSQ_PGkslJciAHgPFwvRc1s5wiDBWjNW5Pz31xn5FjF6i4ARgpTJK2CqwL8ptyqC9xFb3vewmKBq3EkxZ5Xo22R4C2vV5B_Djy-h1lLr9tdjLiGBo4xET_f_D88zIMqT-VW068nOA6YnqH23z26DATgUMcCdniY7q-mnnXPt8J3VtsXZ-YUYRfWFu38gWoQWNMfX9ibdVqqb7gtk4h1NujrX1XPkRjkWJF6HJpBLBojNGvNoW-Z9QUFeu9F_BqSsSMsNQGTaUlotERDbdbwwFeb-R5OiU1KyTN0SjndHhdJJaAbmwMYm8pCsdis2tVBwfwYcVigvwJneOeQ4IPGmwSO01HtmHZpgV4G51vTXQI2_cI8Hu9kTeDCSEuwTe1qWi-x-AKx4efkjUTrpMw9VWu8DHVcZd1t3G_I6DDPiA51OMmE8O0nvRoMXuKQTvY3b6tEwOVOPtWhYOWH80hRJFSrrEE9mUlRdw0_7juZ3k65l88jkKFNfnXnN2S8dt_6uRz814m2vvuyGVlacEwGwulFhR9DYh_A9ISQVpOq3WCNu9lcGIJ8i8piGNxmR5RFQsG9qelBFl1O8-Xde0LJKQ3D6MWyi8wiyURUPwdSQRabvLvKKol5BCunuyW-n-RSn2xVHfwpNRaSp8B5hjKaxJz5T0AFi8RfIhZgPNUiz-2lH_W9GwQ_WNrgvSurMHeuHIdnCO0tg4h0z2v5HF5_-jy_LaftyHusyDIZrD9l7O9O7fndWwzNZrk-ixsP7SjvUDMcBQ2MIklUQWEzt3hRzrrTArc1xXyRLUwTqAIqXWSu54vL05RETkIlyaoctcgMhPurrAIT_-yXmINFbQdwQjD0C6PO6vGi0NcxkwQox-G6pghRcUTGDMI6YWqK9faJ6BwgfXaNNnP17qvEoFqUehAFV6U3XPohApsgti6FiTeHEozhKGmVvU3LiIlo0XOKXKlANetyLXlapSuwzJuQXXl4ZfsF-ooMQO4EOmvuJ89JuaahyO6f3H1H7X80ofzwf2lyHJmTiJWYESqWUmDv99a21hSIPqaT6behNO2izpoojgvGiJVKyjSp68BZ_EycA6vdNh4VSjIo0",
+      "summary": []
+    },
+    {
+      "id": "msg_05f97aa467cbbc37006ae42ea8dd1087d089942d2942ff3cc2",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost \\(x\\) dollars.\n\nThen the bat costs \\(x + 1.00\\) dollars.\n\nTogether:\n\n\\[\nx + (x + 1.00) = 1.10\n\\]\n\n\\[\n2x + 1.00 = 1.10\n\\]\n\n\\[\n2x = 0.10\n\\]\n\n\\[\nx = 0.05\n\\]\n\n**The ball costs 5 cents.**"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 136,
+    "output_tokens_details": {
+      "reasoning_tokens": 34
+    },
+    "total_tokens": 181
+  },
+  "user": null,
+  "metadata": {}
+}

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-responses",
+    "model": "gpt-6-astra",
+    "baseURL": "https://api.openai.com/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-10-30T05:41:33.866Z",
+  "capability": "reasoning-content"
+}

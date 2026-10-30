@@ -1,0 +1,19 @@
+{
+  "model": "gpt-5-mini",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "Compute the 12th Fibonacci number by running code."
+    }
+  ],
+  "tools": [
+    {
+      "type": "code_interpreter",
+      "container": {
+        "type": "auto",
+        "memory_limit": "4g"
+      }
+    }
+  ]
+}

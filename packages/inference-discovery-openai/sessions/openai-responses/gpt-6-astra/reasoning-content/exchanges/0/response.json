@@ -1,0 +1,102 @@
+{
+  "id": "resp_0fc4c22829d07aee006ae42e0b8eec87d0a3df3cbb41144dac",
+  "object": "response",
+  "created_at": 1793338891,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793338893,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-6-astra",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_0fc4c22829d07aee006ae42e0c957487d093b32471d10f0783",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5C4NAiNAs74g7qQlyjOrqZDh6D1dM_rucKa_1dOah-W7Uni6CkMcPEsRabB_f42fZiHDth6P2xO4hfNF1oJLszROsP0e2T7XAwF3KRsVPjpwHoeBSF_NgTHoZ5zKG9Dg5IZv3AxHNlbEyEdWjsOXZnM_nfN2gNklL_mTFQBMzLjHkF7GC_tLFK334xWwBd7XkJWYXpN0ltex6IOOCKSK1CmNdUpGeQok-h5bQ33mk4PeTEmYfsV5CkNacWb9bqScQqgiMSNH6xsFMfKQB51qd0LwIm7URk5hJ8k7o7wk0WAjp5EStSwQkGvpcNrSQg8ygXhvAkZ227SPcgdTaSbdfkb8_NOGSLAkH1mdcBv9AekqUXI3PZq1_nV6x_se8W2RNVg2nE-x0z1Vrncs3icsFnVTXpwyGOa5FDITElN7sONCJ_IFMEl_pPbKx_PGt8MMhMJvIE2CKNFmB64F2FMYgjsGN-9TxQwuNi7S_5bWkKtEZITkd4UhULqcajRYT0QAooLADloff8zu3v5cuTMwB5kKL9hfGRtSLBcdnz2aSEK7jNtxfLYmGUshtKNWWTbZHszC9S0PvhQ34xZNN4Id6PfQ2Oqe06JiBG02WzGDYiW2oFAI8RiT0jvII0gqKpWRxzE3bbs1jtPTLuBhlR9iDg1ewBZQM2127I3WtNVmNm1445aMQ6UJfZCdRbyL2sNtv8z9c99XmQf8sppcKB54Goz_zi7qzwep4GZ9Mej_OUQGNBRIUJCvoVsLtDTOLVie5vPdjo3LiSHdpwuoGs9Vn4QWlE4rZiDks9bVw-K9Rb6f0vAkFoGhg7MOsC8DBK0Kc1ITrmzJKybdVKL_k30mD0X0078KG30DUuJH1Klk1WcOWg0SBI0zgSPjoJ5K2KNz4iE8vJ0iamYeZs1m5xBtPtxxAupm5Ta7oYfidoCaMljTu3QS967ReWgdsK9AvrRfT2W-LU0x24hUeIvKlSsghmuHe-EaAtKxIFDB1L1JCslQDhH_kn3BRbTJsNeuCZlL5tMClYayCIluhZh5BIzIcaTuukyiBtqrqD2f4w2AbTfR2qny8iL1PSncGmqbofCrU2aNjguEh_DXxfwGDaWin7qcFm7FXaZrYcolxcDrOWbu3WWMrOZk8Stp8zp-xr5xJnkn6TIzbYErWvSBj7WwG2SiXMX-gCJPUqi5SPAvuxuDmAP15YcAgMpRHUietk5ZhrQxsrvMge32tWDkX7_518NX1bmRbiWxBmXniEC9uuRkHiWOmsqN9WItw7tSLRjNv2e3ByxCxA4YvZl8FV2pCx8YAFw5zG2_pFyHtVUe9B5fWOD-74uYkP22Rl0XcvUkLcx5yTZWsQA8VJx_OHFEmlEjkx5Bxpmz_Rsm4l64bEKPaFCVTd8WWcufQlaF-0X4LzWW0COovu7u2gC21JvEjQFq9bzNIch-G4kqXuj_ncpmQSR7BZsM-186T6kLq-wq7u6T5cmtPxumOAoeoFer-TYUQhKNHFzhtG-g_dz-fD2XWjX711G2olD7w4LGI2hkk28lOMq8a2WKkiOpvcEHjnIrLQ==",
+      "summary": []
+    },
+    {
+      "id": "msg_0fc4c22829d07aee006ae42e0ce55c87d0abd79ac307e8ad7e",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost \\(x\\) dollars. The bat costs \\(x + 1.00\\).\n\nTogether:\n\\[\nx + (x + 1.00) = 1.10\n\\]\n\\[\n2x = 0.10 \\quad\\Rightarrow\\quad x = 0.05\n\\]\n\n**The ball costs $0.05 (5 cents).**"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 99,
+    "output_tokens_details": {
+      "reasoning_tokens": 11
+    },
+    "total_tokens": 144
+  },
+  "user": null,
+  "metadata": {}
+}
