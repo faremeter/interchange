@@ -452,7 +452,7 @@ export function mountHubRoutes(
   );
   app.route(
     "/api/tenants/:tenantId/providers",
-    createProviderRoutes({ db, requireGrant }),
+    createProviderRoutes({ db, sidecarRouter, requireGrant }),
   );
   app.route(
     "/api/tenants/:tenantId/oauth-clients",

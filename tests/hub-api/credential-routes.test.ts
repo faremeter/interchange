@@ -178,7 +178,10 @@ beforeEach(async () => {
   await h.reset();
 });
 
-async function setup(opts?: { sidecarRouter?: SidecarRouter }) {
+async function setup(opts?: {
+  sidecarRouter?: SidecarRouter;
+  extraGrants?: GrantRule[];
+}) {
   await seedTenants(h.db, [{ id: TENANT_ID }]);
   await seedPrincipal(h.db, {
     id: ACTOR_PRINCIPAL_ID,
@@ -203,6 +206,7 @@ async function setup(opts?: { sidecarRouter?: SidecarRouter }) {
     grantStore: createInMemoryGrantStore([
       createGrant("create"),
       createGrant("manage"),
+      ...(opts?.extraGrants ?? []),
     ]),
     sidecarRouter: opts?.sidecarRouter ?? createMockSidecarRouter(),
     sessionService: createMockSessionService(),
@@ -902,6 +906,47 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // calls means the revoke pushed to exactly the addresses it resolved.
       await waitUntil(() => cap.calls.length >= 3);
 
+      expect(cap.calls).toHaveLength(3);
+      expect(new Set(cap.calls.map((c) => c.address))).toEqual(
+        new Set([
+          "instance@test.interchange",
+          "anchor@test.interchange",
+          "deployed@test.interchange",
+        ]),
+      );
+      for (const call of cap.calls) {
+        expect(call.materialsCount).toBe(0);
+        expect(call.revoke).toEqual([credentialId]);
+      }
+    });
+
+    test("a provider DELETE broadcasts a revoke for each credential its cascade deletes", async () => {
+      const cap = capturingCredentialsRouter();
+      const app = await setup({
+        sidecarRouter: cap.router,
+        extraGrants: [
+          {
+            ...createGrant("manage"),
+            id: "grant-actor-provider-manage",
+            resource: "provider:*",
+          },
+        ],
+      });
+      const credentialId = await createCredential(app);
+      await seedRuns();
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/providers/${PROVIDER_ID}`,
+        { method: "DELETE" },
+      );
+      expect(res.status).toBe(204);
+      const [row] = await h.db
+        .select({ id: credential.id })
+        .from(credential)
+        .where(eq(credential.id, credentialId));
+      expect(row).toBeUndefined();
+
+      await waitUntil(() => cap.calls.length >= 3);
       expect(cap.calls).toHaveLength(3);
       expect(new Set(cap.calls.map((c) => c.address))).toEqual(
         new Set([
