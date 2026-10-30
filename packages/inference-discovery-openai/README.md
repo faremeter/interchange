@@ -115,12 +115,13 @@ excluded pending verification that those models serve `/responses`.
 
 The Responses body builder emits `plain-text`, `plain-text-streaming`,
 `function-calling`, `function-calling-multi-turn`, `reasoning-content`,
-`reasoning-content-streaming`, `vision-input`, and `document-input`.
-Structured output and URL-form file input are out of scope until the
-runtime adapter supports them and discovery verifies them; audio, video,
-image-output, code execution, and grounding are not built. Refresh the
-fixtures with a live capture run (`bin/discover --provider
-openai-responses --all` against a funded account).
+`reasoning-content-streaming`, `vision-input`, `document-input`,
+`code-execution`, `code-execution-streaming`, `grounding`, and
+`grounding-streaming`. Structured output and URL-form file input are out of
+scope until the runtime adapter supports them and discovery verifies them;
+audio, video, and image-output are not built. Refresh the fixtures with a
+live capture run (`bin/discover --provider openai-responses --all` against
+a funded account).
 
 ### Environment
 
