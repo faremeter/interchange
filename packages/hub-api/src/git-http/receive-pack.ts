@@ -136,6 +136,7 @@ const ERROR_PREFIXES = [
   "path_violation:",
   "authorize_denied:",
   "sha_mismatch:",
+  "missing_objects:",
 ] as const;
 
 type SubstrateErrorPrefix = (typeof ERROR_PREFIXES)[number];
@@ -172,6 +173,8 @@ function translateError(err: unknown, ref: string): RefStatus {
       return { kind: "ng", ref, reason: "forbidden" };
     case "sha_mismatch:":
       return { kind: "ng", ref, reason: "sha-mismatch" };
+    case "missing_objects:":
+      return { kind: "ng", ref, reason: "missing-objects" };
   }
 }
 
