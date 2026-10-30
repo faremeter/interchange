@@ -9,7 +9,7 @@ For the underlying authorization model — the relationship between session-auth
 Two repo families speak the smart-HTTP wire:
 
 - **Assets.** Operator-curated, tenant-scoped repositories spanning the `skill`, `agent-state`, `package-registry`, and `workflow` kinds. Both `git clone` (upload-pack) and `git push` (receive-pack) are supported.
-- **Agent state.** Two URL grammars, both read-only over HTTP. The per-run grammar exposes the runtime state of a single folded run; the per-definition grammar exposes the deploy artifacts the hub materializes at instance launch.
+- **Agent state.** Two URL grammars, both read-only over HTTP. The per-run grammar exposes the runtime state of a run that the retired agent-instance launch route created (a run with an address and no deployment); the per-definition grammar exposes the deploy artifacts the hub wrote when it staged an agent for a launch. No production route creates such a run or stages such an agent now, so both grammars serve only state written before that.
 
 Anonymous access is not supported. Every smart-HTTP request must present a hub-issued bearer token. Unauthenticated clones receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="Interchange"` challenge so stock git falls into its credential helper or askpass prompt.
 
@@ -186,7 +186,7 @@ git clone https://hub.example/api/tenants/tnt_abc/workflows/runs/run_xyz/state.g
 ```
 
 - `:agentId` is the `agt_*` ID.
-- Read-only over HTTP. The `deploy/` prefix is populated by the hub at instance launch time.
+- Read-only over HTTP. The hub wrote the `deploy/` prefix when it staged the agent for a launch; no production route stages an agent now.
 
 ```
 git clone https://hub.example/api/tenants/tnt_abc/agents/definitions/agt_xyz/state.git

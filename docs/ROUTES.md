@@ -45,7 +45,7 @@ A user who belongs to multiple tenants needs dashboard views: "all my definition
 
 This is clearer for clients: `/api/me/principals` aggregates a user's principals across every tenant they belong to and tags each result with `tenantId` — a cross-tenant view rather than a per-tenant one. No mode-switching, no ambiguity about what "list principals" means in a given context.
 
-Cross-tenant `/api/me/...` endpoints exist for the dashboard resources — running instances, approvals, principals, and sessions — the cross-tenant views of what's running and what needs a user's attention. The instances and principals views aggregate live across tenants; the approvals and sessions endpoints are deferred stubs that currently return an empty array.
+Cross-tenant `/api/me/...` endpoints exist for the dashboard resources — running workflow runs, approvals, principals, and sessions — the cross-tenant views of what's running and what needs a user's attention. The principals view aggregates live across tenants. The running-runs view (`/api/me/workflows/runs`) lists only runs that have an address and no deployment, which the retired agent-instance launch route created, so it lists no run of a deployment. The approvals and sessions endpoints are deferred stubs that currently return an empty array.
 
 ## Conventions
 
@@ -124,7 +124,7 @@ Three route groups expose the wire:
   - The repo is lazily materialized: a never-pushed run advertises an empty repository (the `capabilities^{}` empty-repo record) so a stock `git clone` succeeds against an empty tree rather than 404'ing.
 
 - **Agent-state per-definition smart-HTTP** under `/api/tenants/:tenantId/agents/definitions/:agentId/state.git/...`.
-  - Read-only, same handler shape as the per-run grammar. The `deploy/` prefix is populated by the hub at instance launch.
+  - Read-only, same handler shape as the per-run grammar. The hub wrote the `deploy/` prefix when it staged the agent for a launch; no production route stages an agent now.
 
 - **Git-tokens REST** under two scopes:
   - `/api/tenants/:tenantId/git-tokens` mints, lists, and revokes tenant-bound service tokens (`kind: "svc"`). The token speaks as a specific tenant member; the route group is gated by `requireGrant("git-token:*", ...)`.
