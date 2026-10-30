@@ -210,7 +210,6 @@ function createRoutingSidecarRouter(): SidecarRouter {
     noteSenderDeployStarted: () => undefined,
     noteSenderDeploySettled: () => undefined,
     sendAgentUndeploy: () => notImplRouter("sendAgentUndeploy"),
-    sendSourcesUpdate: () => notImplRouter("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImplRouter("sendCredentialsUpdate"),
     sendSignalDeliver: () => notImplRouter("sendSignalDeliver"),
     sendDrain: () => notImplRouter("sendDrain"),

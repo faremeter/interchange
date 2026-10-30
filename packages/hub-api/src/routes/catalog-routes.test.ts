@@ -136,9 +136,6 @@ function createMockDB(opts: CatalogDBOpts) {
     query: {
       tenant: {
         findFirst: async () => testTenant,
-        // getDescendantTenants (via the post-mutation source push) walks the
-        // subtree; no children in tests.
-        findMany: async () => [],
       },
       principal: {
         findFirst: async () => testPrincipal,
@@ -210,9 +207,7 @@ function createMockSidecarRouter(): SidecarRouter {
     noteSenderDeployStarted: () => notImpl("noteSenderDeployStarted"),
     noteSenderDeploySettled: () => notImpl("noteSenderDeploySettled"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
-    // Mutations fire a fire-and-forget source push; resolve so it is a no-op.
-    sendSourcesUpdate: () => Promise.resolve(),
-    sendCredentialsUpdate: () => Promise.resolve(),
+    sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
     sendSignalDeliver: () => notImpl("sendSignalDeliver"),
     sendDrain: () => notImpl("sendDrain"),
     subscribeAgent: () => notImpl("subscribeAgent"),

@@ -198,7 +198,6 @@ export {
 } from "./catalog-resolution";
 export {
   resolveModelSources,
-  resolveInferencePreferences,
   resolveSourcesByOfferingIds,
   type CatalogSourceResolution,
   type OfferingSourceResolution,

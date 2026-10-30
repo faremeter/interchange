@@ -178,7 +178,6 @@ function createMockSidecarRouter(): SidecarRouter {
     noteSenderDeployStarted: () => notImpl("noteSenderDeployStarted"),
     noteSenderDeploySettled: () => notImpl("noteSenderDeploySettled"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
-    sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
     sendSignalDeliver: () => notImpl("sendSignalDeliver"),
     sendDrain: () => notImpl("sendDrain"),

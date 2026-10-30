@@ -52,11 +52,7 @@ import {
 } from "@intx/types/sidecar";
 import { RepoId } from "@intx/types/repo";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
-import type {
-  ConnectorThreadState,
-  HarnessConfig,
-  InferenceSource,
-} from "@intx/types/runtime";
+import type { ConnectorThreadState, HarnessConfig } from "@intx/types/runtime";
 import type {
   SidecarCredentialIdentity,
   SidecarCredentials,
@@ -432,11 +428,6 @@ export type SidecarRouter = {
    */
   getConnectorState(agentAddress: string): ConnectorThreadState | null;
   sendAgentUndeploy(agentAddress: string, reason: string): Promise<void>;
-  sendSourcesUpdate(
-    agentAddress: string,
-    sources: InferenceSource[],
-    defaultSource: string,
-  ): Promise<void>;
   sendCredentialsUpdate(
     agentAddress: string,
     delivery: CredentialDelivery,
@@ -6211,21 +6202,6 @@ export function createSidecarRouter(
     return connectorStates.get(agentAddress) ?? null;
   }
 
-  async function sendSourcesUpdate(
-    agentAddress: string,
-    sources: InferenceSource[],
-    defaultSource: string,
-  ): Promise<void> {
-    await sendRequest(agentAddress, (requestId, generation) => ({
-      type: "sources.update",
-      requestId,
-      agentAddress,
-      generation,
-      sources,
-      defaultSource,
-    }));
-  }
-
   async function sendCredentialsUpdate(
     agentAddress: string,
     delivery: CredentialDelivery,
@@ -6359,7 +6335,6 @@ export function createSidecarRouter(
     getRetentionCandidates,
     getSidecarInventory,
     waitForSidecarInventory,
-    sendSourcesUpdate,
     sendCredentialsUpdate,
     sendPackToAllocation,
     sendWorkflowRunPackToAllocation,

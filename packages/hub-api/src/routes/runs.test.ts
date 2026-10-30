@@ -296,9 +296,6 @@ function createMockSidecarRouter(
     sendAgentUndeploy(_addr, _reason) {
       return notImpl("sendAgentUndeploy");
     },
-    sendSourcesUpdate(_addr, _sources, _defaultSource) {
-      return notImpl("sendSourcesUpdate");
-    },
     sendCredentialsUpdate(_addr, _delivery) {
       return notImpl("sendCredentialsUpdate");
     },

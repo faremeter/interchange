@@ -2347,8 +2347,7 @@ export function createSidecarDeployRouter<
                 // before the next one for that address starts, so no second
                 // rotation is in flight whose committed table this rollback
                 // could clobber. This does NOT rely on the hub pacing its
-                // sends -- the hub dispatches sources.update fire-and-forget;
-                // the frame lane is the sole serializer. Handling one
+                // sends; the frame lane is the sole serializer. Handling one
                 // address's frames concurrently would break this rollback.
                 currentSources = prevSources;
                 throw cause;
