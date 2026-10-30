@@ -12,6 +12,7 @@ import { initAgentRepo } from "./node";
 import { createIsogitStorage } from "./index";
 import {
   applyPack,
+  removeOrphanPackIndexes,
   removeStagedPacks,
   stagePack,
   type CommitVerifier,
@@ -584,6 +585,29 @@ describe("stagePack", () => {
       ),
     ).rejects.toThrow();
     expect(await packDirEntries(targetDir)).toEqual([]);
+  });
+
+  test("removeOrphanPackIndexes removes only an index whose pack is gone", async () => {
+    const source = await makeSourceRepo();
+    const pack = await createPackFromRepo(source.dir, source.oids);
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+    await (await stagePack(targetDir, pack, "kept")).publish();
+    await (await stagePack(targetDir, pack, "lost")).publish();
+    const packDir = path.join(targetDir, ".git", "objects", "pack");
+    await fs.promises.rm(path.join(packDir, "pack-recv-lost.pack"));
+
+    expect(await removeOrphanPackIndexes(targetDir)).toEqual([
+      path.join(packDir, "pack-recv-lost.idx"),
+    ]);
+    expect((await packDirEntries(targetDir)).sort()).toEqual([
+      "pack-recv-kept.idx",
+      "pack-recv-kept.pack",
+    ]);
+    expect(
+      (await git.readCommit({ fs, dir: targetDir, oid: source.commitSha })).oid,
+    ).toBe(source.commitSha);
+    expect(await removeOrphanPackIndexes(targetDir)).toEqual([]);
   });
 
   test("publish renames the completed pack before its index", async () => {

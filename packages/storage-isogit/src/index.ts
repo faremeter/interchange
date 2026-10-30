@@ -7,7 +7,12 @@ import {
   switchBranch,
 } from "./history";
 import { initAgentRepo, initRepo } from "./init";
-import { applyPack, removeStagedPacks, stagePack } from "./pack-receive";
+import {
+  applyPack,
+  removeOrphanPackIndexes,
+  removeStagedPacks,
+  stagePack,
+} from "./pack-receive";
 import { createDeployPack, createNegotiatedPack } from "./pack-send";
 import { collectReachableObjects } from "./object-walk";
 import { createObjectPresence } from "./object-presence";
@@ -86,6 +91,10 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     applyPack: bindRepoDir(storageRuntime, applyPack),
     stagePack: bindRepoDir(storageRuntime, stagePack),
     removeStagedPacks: bindRepoDir(storageRuntime, removeStagedPacks),
+    removeOrphanPackIndexes: bindRepoDir(
+      storageRuntime,
+      removeOrphanPackIndexes,
+    ),
     createDeployPack: bindRepoDir(storageRuntime, createDeployPack),
     createNegotiatedPack: bindRepoDir(storageRuntime, createNegotiatedPack),
     collectReachableObjects: bindRepoDir(
