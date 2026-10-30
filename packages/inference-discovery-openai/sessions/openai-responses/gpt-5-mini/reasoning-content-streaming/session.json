@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-responses",
+    "model": "gpt-5-mini",
+    "baseURL": "https://api.openai.com/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-10-30T05:36:14.247Z",
+  "capability": "reasoning-content-streaming"
+}

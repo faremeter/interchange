@@ -1,0 +1,102 @@
+{
+  "id": "resp_09fff4c30f7bd4c0006ae42e896d7087d098ec0afb831ace5e",
+  "object": "response",
+  "created_at": 1793339017,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793339019,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-6.1-sol",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_09fff4c30f7bd4c0006ae42e8a6b1087d08a89ec1abdf2e76f",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5C6Lts1oJBr1VMKT9LoftyTo_nysqsCNFwM9Fs0w13DM1dmSeXCp4aL3rmY72DNV7IVDpNZxBFNsPs6v-NEKr8owGnasW6kax0B9Hqx7i0OBOORVYk_E_mPpgl7Fsv0gC7xTfuBE7CsRC98OdesIJyidM-V4S7TKtJCq8gjpPARknVOzfZOKhlePY6D1e4jgtY2XGBtNIMWD91sY_2GVBWQBpFEFkE9MOMTO13iHOx8sNwy14LRnB_QtAzVBgZMzaCEwQynp2kYnW3bU5ZBFpRewiWFN0UmuGAx_lIFF8bVRz40tsxWamQxI26nSW7g3FDxh_n2C6iaKytiYRVdFqdtJjUQZJtaabg-3bDY96VfowYPQaT6xpcAwa6lE2Eh6OZE8maSGwYPnfPXqiAiGHtyMDF5SIjn8FKxFNyaQPJbdvA8UygnmJtGl7oo3MTgwkg717nBo4mt5REBk2FSiGDFfWZWdHDo2CokJ972hUZuCNmcDmgjRx19EAJhruT7tls75L1JCr87OvcC4komgFAYyp83MrrdrkYS_9zIB94SHd02gl863szU0oukvqwSGLQVAiRum3bESdbyKobJzLWQo73MVL7znzzYMbp9AWHVyesb9QEsCYm09FQ9YfX5zqns1GZThwoLRD8dKaIaBKJ_Jg4hNuzlBX3AynAujkAK6JX0gOLnD2vFRnE8wnokVRZXueS7EgyelKZAOijEsuDifdv8v1_Hbcgjld86F8QYzJkqsYdll9XMIZDPREX-OdmUrfo0vwcBitfrEaSNXrlXZg8QBEhtInlJF5k3iuJAub7cOAUhvDvJ9yLntMktV9luvDPJ88d-5FUZYk3eCN22dk9BfT00PuKaKFOae_Nbv--T0pHaDNtecmteoI3XAxd0xywr_S0N6_vIme9Xs60Wn2-MhlwEXssDettN2U0ulNxSsI08VchsuEKSGy7Th27NQQQDa0EZ4lDRkcjjf_jUlyc4b3fx4cBGkmzN0OgywjYbz1KDZRZ74czeHKp3MiWZIgjKGNKdJXBE53PlHSTCuObT5JKtq-RFWtXqzif2k1pcNbJk0JtKKYMu74DpbOXNX_iiLaHyPSod-sFu7lPrYFKGToSW-Ji58KFjgZNh7jB_CqAM1541qKyarHUSuvXaz_GrzbwsmOYYl4fOk8x8VUjCqoTG9cnQkbJPD2qaDc-WSdPV3RhmD1vO6CCOsxY1a2NJuRI83teZISUCYWDyrO7ipQqrq2c0WTn7hp37WHx7xD4bxFkmXUM9b4svzo8j66j5_2yzfrxaeqWmTd4Pq_-vbryhbI2e0J7cAWPt3ZVDDmDiNQaHMoaJPUHBP9rZpdrlBoUbZBITltW534N5SifH_DejZGZtt0srHkmKYwwu4kpaq2lSgmuDpoeNxMYXS0FU-XmXqJQPGf71Cyank_b5bklw0maI7fZwVc82WyYPPEcOOPo6cNVk8JziIukAb8lOKld9oXEjlA0019p9qyK1mPdLxIbsQvvUai_HKnni8KhSfEsgFtbCRLQgpuUyqUUlbrGnioyQ8Y8nA8K1ywWo2BRIEK4qLWHDY4btL6VLnvssb1dM6pAQdWsgqKqaX3HgwVxKuj7F7-1MyZpqF3i4gHwmQeJLBsQEm8U27kGI=",
+      "summary": []
+    },
+    {
+      "id": "msg_09fff4c30f7bd4c0006ae42e8adc8c87d08d7bece8ed8ff9ae",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost \\(x\\) dollars. Then the bat costs \\(x + 1.00\\) dollars.\n\nTogether:\n\\[\nx + (x + 1.00) = 1.10\n\\]\nSo \\(2x = 0.10\\), giving \\(x = 0.05\\).\n\n**The ball costs 5 cents.**"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 98,
+    "output_tokens_details": {
+      "reasoning_tokens": 15
+    },
+    "total_tokens": 143
+  },
+  "user": null,
+  "metadata": {}
+}

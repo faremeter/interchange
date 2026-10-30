@@ -1,0 +1,122 @@
+{
+  "id": "resp_067130acb713b52e006ae42cc2e06887d0aecdca54be200389",
+  "object": "response",
+  "created_at": 1793338562,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793338565,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5-mini-2025-08-07",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_067130acb713b52e006ae42cc37a3487d0ae3a5dd38d314057",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5CzF1mvjgFenSylgOX_yQdzzUX0Aiyk3j56nMMY-g0pPsBb5VOaJJaMj2DI1grWFCWX89XB2sc1BANYUnFXklxTmXzEG4tbQhbTEQbjktoA2wXUZIHH0a3vAZuhczGLOp3Ci49EfGBYe7JJ731MQR8-suPlm8NvhYhG9ETee550gW3XC8dO5pGl-pBQvIltCawklseCBIySmmfPlLpxTBs3oguvnp7-Wy9GpXsDEdlBg8KBA9Bt7jk7qDGtk69suuKpKrTiRYei5G1NHILlx2WFLA1epRfZWitUlDq3-7QZBT-9DaGzRloj7G_jAkQap4vm2KzyBJVQXgt8d4YfvYtGMFHxrWpHYXs3GUgS79jR6654JrV8vC_9P3eM5b-3ZZfXT2a54-K1bBGpAbDDLml1K52gs-s5XPavMtbViO05HDia2AtFYVXAAomqNAfyrBEX2Mj7aVdx7SiSo878RkAwQ8OEPt4Zsii_GV4peZBepQWr3WcLh5TbXHG88y2tCJX0yAk1oRdwxMAUcfTiKTC9y2CHlSYcI4Mffkxbsm2Q6CTORTp_89mA9VThbmBnStwYpqRY6uEf_v9O0xKUE47E6WF2j1rFds0eOyzqC4w1yYNthYYQt_ql_Wg467R5HkfLdb-5Fbj3I2TbCqLbDNmgG2c9iLr29cw8iAr60pZ9Hy_iGEXg8CmgCad0QnKlcwFe2XBRpbhXiHveCI12b3V34qobreUC2NzRe69iXqiPte_ldi6S-_huxffGnQAycNipW9g5ULI_5FcxDZm8Lz9gFj7pGQoFT4H2st-eAuAaJQqjpC-HJlwOaRI6O4_AByiBfkI4z0MxO3ENQnTkKw5dBG7R64ZTtfLknGEkU_4WVmikdB9X8UElfIB-Uz-A2RySGlUzEvEE-dB7axHXjoYHIAx4jHHWfxRumM85DuNrhO2NaG8F4viy35wfu8IpbCeUdfwxg4wdW1LBnRmKKx8gIKNNLqS5CrmYduO4KyMte65hT0XArzzdFpuD1VJNESCcSboFG4P34dpT9ScbPLFl_vdFWXnY3CuaByUS-Ut1Z8wnulTNyb6QBpFn9me2qEjTob7KEf87y_LpfP-_qiZ_DLoNSNf9afWq9VljfCWKIbrmt1_XLzQoqaA74gos1mgmdP9zoFXY0AujAh8p8wBQlGJiBA2nP9tYC-t3M1FCb4chWrx4f55vTrU12jvPR4b-iObDYnKTV2xLuGO_P5-VjLrGpdzk9c3FGMkYSnTHxHp33t648xAAIs4vAMLuj1VwUKld1JEsaHl0BT4VoGm3Fvpq0n8Lgox3q7uiNwbUKBvT3guIiue-XLi1XVGZolQqG_QVOHO-fMaSjvxaOniZtPoDpFf_6ZYJT7lcmMu8WbKsCZB_1L_5qqc8_i9de47rvewbKz8HE6hKnubLkC-zI-3bEVdNmNxpTryHFt6Cl9BQfG3t7KG_Cds6bxKdviaP1EuxMN4-CxEbd5rsE8t1B5ee7ZXfOycHucmFnG20LQxveCosgq6kaLjBmAMV52OpS1vqFBx2PdB_RqexD3TIwHVGtqx4opmqBV_A-P3_qa8aNdInuRG8dlJjDBUIv0Y8tM2Ng-EdcgCIR17wh0YnMsYMPN4Tf6Xfn3xKP36JxFfqC-SjEwB-o7yRAPVFpe0KSyVODsw1gsJyJTmAXeW6mLHhFZOyhSHpaYZ3eRI9HmiH8U9x1kYcmz2Mt_bye_f0jb860dQMegFrVH4mQphKGfK3uSZlwVTLHp8cdWR8MRsdpWW-z0T-7mlXI0s6FauxuyLE66PCRvZuFdGqCj5Wblauv0T8_5tIl5rjYw6jutYoPbQQa4TEBNU0gfoT264xAAgIyrXMOcDUloVXj-rQ3KOa1AZBZe9DarXsYMvSZeLb6yp8yC69Wr6DDttdgJVF5MY_vjxd8_Ke3fh-BR0N84G2AZWBrw2PMfJhHV8M18i6hZ6yY8OiTOJTyxFq_1Sv4aLULJo8V9Qetf94X0p5_TGDaXRfUZ3U3aQQu1Re7zx5Nd_g_w3oOkfBVQm2n7Fc3RtsSU1HZMVlV1X7Av7klKHJje4Z0cCIwQ3StOrzm8HQ3_T-PsFiyxW0kWbgzvf-LE0vnV48WoVs4i5eFou7AETAd4yb-hQWdoY4kBZdd8xuhLEu_SMiwjA0HsgfNoGWcTPbqi1y9q8KnrXAaiBqhfKsaH3CXcb_LlkWLHsMYdflbIhCx7pIjDiEdO060TU5ab7lUkuB1BjaqlyAhI0I2-KmFTei5893Ksh4urtUkvGu8wsJScdYKWRbqAAT_s-qaC1z7DiSinvrp9filE2QTVQ0PPwU9Z5C3fP8H8A3irYJEzL7sq3BeKInUVRf1Gl_l08VsuU0AmjYwRMEm_BN6V23mbV9mJPs97ZbZ1FVyyFcuwFhSY1r3rBNvSvzfJ5EwMQIzVGzXyMhc65rswLRuSWjeluWoSSvCoNFmb1h-uwO-IfrL5A4QLgPeyvJeyP-uXnZ168u8ogihJ1IYK8sOVmW33-qmbdBv5afI80jPI3EdNHPN2lQ41Umy1iUolm9pnPoR96jMtZEj2eTJ8UkvfWyry0COgcRzFXrIGbhoJsnPwWIyefnzetOSTt1uPusc5fd1Q9kDkynAQ2UhXlHwt8R3unn3liSLV51mAB-2KrDSQemHQRUdc6ePQWM6w_cRiOKg3WOG05_5E7wvF6bDOLQWJBaRo_g9AbI1or4GK80VV1Fjy2nhDyOD_uZfVPfKuGP7ntFTR4yufC_-npn780L-sRcem6Zo0H8_o-k1Oc3scMhYUO9GAck2SRLZQumudKQOTawHFFDLnqsaGWdqHgo1SuoxitHAyLntQo2dfiM9aMF58LWWVOG4yCH5f7WWqBAqPf2Kc_bWV7aSz4UzsvoGwUl9C7BEzXp1L0Cf8g7lkRFCY8yNV2WIyAQ99tN-2VVkOiFT-2aHSucYN_V-iacQ-VlvQVs9efSEgC-hFuS61WehOygVjtlCHamdFCT9UV_oW8Kr7qsTAGgQ6OotfLFaO8oEXbiW7rrvgZHcTbPNdTBMmdkZQaqrSyHXhBs0jR0jLiKK4cY2YJsb7mjQug==",
+      "summary": []
+    },
+    {
+      "id": "msg_067130acb713b52e006ae42cc4b0dc87d0860432fd7de9d256",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Right now in Boston, MA it's 68\u00b0F (about 20\u00b0C) and clear. Would you like a forecast, wind/humidity details, or a temperature in a different unit?"
+        }
+      ],
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "in_memory",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [
+    {
+      "type": "function",
+      "description": "Look up the current weather for a city.",
+      "name": "get_weather",
+      "output_schema": null,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and optional region, e.g. 'Boston, MA'."
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 1.0,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 117,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 179,
+    "output_tokens_details": {
+      "reasoning_tokens": 128
+    },
+    "total_tokens": 296
+  },
+  "user": null,
+  "metadata": {}
+}

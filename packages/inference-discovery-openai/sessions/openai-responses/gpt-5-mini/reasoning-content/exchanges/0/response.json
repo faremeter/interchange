@@ -1,0 +1,101 @@
+{
+  "id": "resp_0c69db4fc4ddc3ac006ae42cc571b887d0afac8ab768799d27",
+  "object": "response",
+  "created_at": 1793338565,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793338570,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5-mini-2025-08-07",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_0c69db4fc4ddc3ac006ae42cc5df0087d0b9f13a53b2ce9f3a",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5CzKq3knV8dcnKZ1nV4y7nGuBei7jqzHlgp3hcNmLO6ei8dt2L2HcLhLnr7uD00AWDpOPihjH1OdmHzfB8nvd0XeS-i2-pWegUyLSDyW2dWuhjw-ZEYFobnLpC5cz4LYVYZAkpmv8BJlSCNBHGz_jKjQofOCMpoizNoMZjrfq2YrdOtWubgHmG10ZTbpKC3Lblf-dDe6VlD7j7npeGZ0zG6QcP7uTnkfGfGKuX5chTKsuLxWSku4xe-2X2DMFZC72YjBqtRMrSvGcxJkAFUILacHRuietYgEDys9efAkrPDEbpfHWBTU1No0VeHUqT_kgCGQvvhtBfnRbHX-9EhGjiAX_eV94yEOQ_bOI_Ql27MnAuQiWBzQFS89l1lfR_mX54RnOnGUQ-Z_lHsWwPHjc4vz4UgjO_ufKSYHr8o67Ay7B2jdIKkaPchlVkuiNW2S8G-cQPwwBKgUr77IRqL7_cPJfW0FuZ-piSGbMGOZjTKBAtMn4QxIVEJ8ev5ptNyUbGNEEgCCMD3BPOL4LEjkCMwoIji638A6lnzABoaKD2vFe9eTeRF53X-uyUakDeVhClMe5eB4MxY1-bwVdzD3jwgpDjyjs2YGfhPsK3Gc3B4u1aAuKpuO1pX-Eqr9YvW_3Q6B0sYlYRNQrnM1dJ_xxU0DlemOu24cxamDlNkhPA0D6jolZPBm3Qajz1ngH1LRTxLSHWHmm8_e4NfYE18kWl-cvkoLIF_fFmK2Ic7HAy5Mufs1KaJ2IQri45kGUSeCF-PzbzNxpNtXzCz-fRDnIJe29MPxDFDrnAFBPLRUxU4yVrd6ATFOTC9a0mkg2DkWAL--b3BtGn88TuzOtm84p0sENr_l736ZtTrgGZFASmNyKs6EnBsknMOen8iIKZ_rvB_JiiStU0aNZalvRfeuuilEUG0wtIPF97M3-B1_w3vaR9WpHv9n2_DJV7aIL1BbWAOxq2xkEJHDFuJ7b_MonHu4EAETEV-p5LpcEzuSdUQQfT8Rh1hItth4UcVSlFl8bJ1KuovOsCt_5f3m4tUBiqmXknh00j_7lqMVFfiXAKwwIE2giEgfyHRFU_CPlJlyCk2xjxprnCCJQK4etQvDMMemnsE57xqKk0gSrIA26mvM79bxx98kbmQLtS7HO1vb7NHvLQ8NoIZi_iT8j9wdsHhLLzU0_wuPKl-Krz1Qxgg-6yWZH_xrBoHDmjVPAlA66ch0NMrXNyqolQye4FcbnVibAhrd1Eprmj5iG-nLJ1MTZrhC1VQhEovf4WvsbmEJawn2G5Yhsk4cLPF9K3fBULgWMWUNm5--3-gg0XXMTjHLGPMnCJMi7LIWAS5-z9OdB7krGMoVKUOkEP7Gt-J6Obo8YP5y9CPMS_nB1uS01JnjzB_AxKkqSKC34EMj50iAvTsuIUBfTOA50g0m_Wyrk0fPhHWEEF98DP1B254wgJm_oajKTA9dZx7Er_Ry9FxllDsPf8KQu_UPVX5hI0UZ7HLYUxvCXPoWSf9tL7-6WFee4ZrLqXuf-RvdARI9Xn6_OEFkejfu47efWW64MJC_ECo91Yt131OzdJ7JwGPRAHLb2hMNT-EdYPR5QNDljrPPgQKfeG7E1dmc7c6Zaq1QjoLtTh9q8Z8V7m-Oj9itQSsyb3v3qVxf0bULOH3Rk5EjCJdpZzv8Np_hsM6m266BFLJ5rJ0gtvdLCTEJH3UklLdrSVt8kiDvPb9nLl1Igz5asxm_a8o3Vlti2o4ew4XyG75P-G2Ko06fZud89nMFeG1Q-WxKhfALZXMsLqxIMuZKR9mzIyySwMXzvC8Kk9aZ_3Z5vWQICErgiAsiLd7U2wJgqEVwoBctiKOFRAvkK3sqFmAGkeR9BAW88Zj9ONbtnVTT8c13pM8jqRsy3DwsZitNTExNf_-JmGzAjgSILeeCeu7wEQbd-KLGhq6kPls_4x9tIwjZTt4B5AN-BVEOFsilR9_VSJMaqNOMp46xpfEF_A5BlivjX8mzWM3McqRoff4G_KYQW0Q1z-3PqJhLk9H3e3WQIoq_bNzKk95ijR2p3-4sa--yckX1x_WtYhKcfjrxi1h0CCXVXrGLF6UsrfOyU_36x3yIUHxuByZkXhVUu_Equ7dZtD1tRro19g_lmudoV1GG5m8SPEUjMrOVAXgW3jAWIL-95OvPuN0f1r0mI-ublGF90XEQAmWHGo99pcPT21Szh0VGxZREqU7xZJy_vW8WC5ROErT_2UCfxELbLaYSpalQoRrZ2YcaxwwV2tJTFFIgXdFRUpKfqAVRHJGUVJRGBMxu5Vfq7wxeU27Lqtm89QX76AFwd_T_ARJvKlZBDZn13YRIyA4hJaeZm6TGTTq4ur0R-ijOTweBaMlaLGyJWwRzWP-YKVQFkKqi3AXn0UB_Se8BVVI-ObPzjW5nnHCg2muZyUQkJorqOyayiXEgMnB4iwIgZPwKhZ2MuI0wEJT1CS2MbUWftdoK0kAd8qFRcZGwRlLAyDeBED3UUNJRP5hlSe_lScDkBKYGDJSPeOBkhV5RH3Kt4kJLJBbHZ546K2Lhv1du_cLHVA97atrgeqN37MjdGnusrqjOIXa5YyzQ4CasWtexijwdTO4oXbthq779o4MBpvo2gNbpw-3-6KC3EMDNlnd0jj0OiDOeuELnAMIAJddnCwdlE6uhXe60JSjp7OeZVMYroGexC4nTrOh_mYw5JOWdUvTu6hjgugCZiSJL1G9QrGMj9wAmKDW1U_GvCZzyVVA9s2eKmLSlFFSe-pQhaIqGoknu_v-6msTxe1sxgpGnSP7EIfzu7O62sZ80DtKYDoBp0Jej4rkwTEeDunp2OkoDGnqCR-4vwf_NKvZfBo9n7wFDQ8d47UUVGKkSntQIycvNCcPbjxrbD9de8ola042KDeh-t2fAV4X3WGmJKKWBSkP4gpsJ5NloabTMlvnQ2rpt2qJE0jDTrIgYHDocUuQuJedeHpuUnecqCYFls1voQesil8bU4NNVOzgY_KWxr_1lCu3aoOWiP-GpDSfcL5_vOQbApgvW_gvnPiqq8WNa1R_3nuHZW7QEWhwP7TDDDyqUdtrMB-YtFAYHZYIpSpRJxnQFRnkFasVRAAzNNHJCyCfKv9kuSMwPxRQK9J_tSh6KyICi_qCb66WhIEcz24Kk-TPO0Zg024eSQEmEbFeWMmpRAOSaf2Uj6UX8NULVrM8OSAYynGNXbhKOSEZ57DgrysY0z2Yy1GNDSJnaxfDAyzbBAg3DaN770DuGDdnbQ2vPkgP6M1PTV7Dhpt98B5CR1WiGaZSMQjWAlbfFTzm5xQ6cumQgO3jVyTBbu4oHRTmoG5nInkvXlo3yr1T_kdv6AM4yMxpzItHt3E9QYI2PzlRZe9zaeDPAVbvA5qKbeM3X-Vynd7RbIcEsjjle-CY0yrhxcCU56CNb_UJ9uSeI3vpEvE28zlZzTjB7KHbF26CT6aE20Sr2DfdHq45CUNLjWIr6xuF2iK7Jo2-oirjXqK95-VEtZIcwQ9GVuWOx7iBWubVxq-4laPqNX9iwsl1M9kSBIadgWwccgvQvYPhRroWgxT0BEQN3SgDgBIclN3cAtcNHVdhJVHAxWKFIsoFwX1AT_wKPQMrua94lc1vpbfHJ5rjSX_FYH93iV2fQH89L3-9yiYcnN7frIyejV9rLrPKE0GsuVJfePgT-aFDb2xXl_O73Mb-J7G6SxHQmMc6ncdb0mdCH99piBZeKUZ5GPQbcRGcRswfjN64eATOs8HmCMgHpBBAbcy-o8f2vCNx4ML45hHpkAU8VwzIfP7KzRvmCRBydsrozc8hd4lAY45qlT0GvWPaBYWDY0s1En2xJLiX8oD3KLzeICkKZ7cQ3j5v-VoSish59zJCalPE7AzNAJV7Vv5q44R4hyPod6Ek94tv5LxgGsq-EhlKX68ZFGijI7N9gs7TaLWKYnVX_1YmODJBRb9zcPjhXM-MLeu3rCJNHpCxK_pZcYXBdQHQr3QqmeD8V7yhiRbS4FooMbe10eZpVTDUrt2hXT0dVGtWOJDNsGXMZHxOpDqtCz239ASkLxl19OBcxUaF-GBJQyWUsicXmHHn2k2mW4oFH8-6skkqWr9Jtot5JU6YL77kWTM7l7E6oyB5Xoo_ngfMWIv2lWfrcobvaho8XHDiIG9WCvX0cA0UfAmveMl4oERoOm47_NTIJXLGbo_-XUziEjt9m1GFIF1Q0ksAWoK3pwgPQKg2YthRtApKEa2lfM3gdLZsiPmEtHsxSApwtDiidio8vO4OndCunqvcc_biqoXotMmIEIoFjadsXfAZG7ZgikVmLi033nP0uwD-Ctm2CEJtwQ11dnYOvpmC7akoXtTTMvMMJx8u6c4W2t9E0G-jxRGhBQV4oVVAMylL-kr8aFtc_GHZ6QAK4kOtCYVvw8pq0elNx21gPHkpMryP4odvhgkx7hvBmDHQrvr5ESBfjxrdmTooGRrJFh5b24lN8nGNljjWof2ug_5mS3dM-ER_oZ5tScltL6ITJkb-m4ZAHEgAuv8Csy5GnbLtD2qc4stUDD1krZEbPOyMvmRN5X9Bo0LqYbdZk9mDlNCUie5YJcbd6os8ft6Irv9KFOJgsfzKBE6EH5uBiMZ05r2c9eXtMSaXaqQBc6zf3mSJBIxGOOqi4HC_Ae9bKo4qQBYcoqzEx3gP10A8QQSLrlCOTeF7cHd9-MnSI2zGvcSpJFLnJUQQvsw7ZcNXAE4oKHS5sfUC394MCjERdHLvvWc2_jROxB9qcm6-mxWSpOAanoTPtcm4FRwSaTQ65S4cphJ8bEBPcfqYn5Ei_U-n6nQuLqJCbFmSqdEBhRijhL1YCZIeTbPcsBG_JVjwOOMt-YmEsg45NLERDu6dS5S-wI2hcas7ETd6WCuy8elialMdsa9SI5KSwEDMZ3oqyPqr_F18caMMlFGyx4FTx",
+      "summary": []
+    },
+    {
+      "id": "msg_0c69db4fc4ddc3ac006ae42cc8b44887d0acb4106911745ae4",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Reasoning:\nLet the ball cost x dollars. The bat costs $1.00 more than the ball, so the bat costs x + 1.00 dollars. Together they cost 1.10, so\nx + (x + 1.00) = 1.10.\nThis gives 2x + 1.00 = 1.10, so 2x = 0.10 and x = 0.05.\n\n(Check: ball $0.05 + bat $1.05 = $1.10, and the bat is $1.00 more than the ball.)\n\nFinal answer: The ball costs $0.05 (5 cents)."
+        }
+      ],
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "in_memory",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 1.0,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 453,
+    "output_tokens_details": {
+      "reasoning_tokens": 256
+    },
+    "total_tokens": 498
+  },
+  "user": null,
+  "metadata": {}
+}

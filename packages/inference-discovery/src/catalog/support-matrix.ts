@@ -236,6 +236,46 @@ const OPENAI_GPT4_MULTIMODAL_NOTE =
   "image or document content parts. Multimodal input on this Chat Completions " +
   "wire arrived with gpt-4o and gpt-4-turbo, not gpt-4.";
 
+const OPENAI_RESPONSES_PROVIDER = "openai-responses";
+
+// First-party OpenAI on the Responses wire (`/v1/responses`), probed by the
+// openai-responses plug-in. gpt-5-mini carries the full surface the Responses
+// body builder builds; gpt-5.5 carries the representative streaming,
+// buffered, reasoning, and tool follow-up subset. Structured output and
+// URL-form file input stay out until the runtime adapter supports them and
+// discovery verifies them.
+const OPENAI_RESPONSES_FULL_CAPABILITIES = [
+  "plain-text",
+  "plain-text-streaming",
+  "function-calling",
+  "function-calling-multi-turn",
+  "reasoning-content",
+  "reasoning-content-streaming",
+  "vision-input",
+  "document-input",
+] as const satisfies readonly SupportEntry["capability"][];
+
+const OPENAI_RESPONSES_REPRESENTATIVE_CAPABILITIES = [
+  "plain-text",
+  "plain-text-streaming",
+  "function-calling-multi-turn",
+  "reasoning-content",
+] as const satisfies readonly SupportEntry["capability"][];
+
+// The current GPT-6 / 6.1 lines and the 5.6 variants, carried at the same
+// representative subset to bound capture cost on the pricey flagships
+// (gpt-6-astra lists at $10/M input, $50/M output).
+const OPENAI_RESPONSES_NEWLINEUP_MODELS = [
+  "gpt-6-astra",
+  "gpt-6.1-sol",
+  "gpt-6.1-terra",
+  "gpt-6-luna",
+  "gpt-6-sol",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+] as const;
+
 // Builds one SupportEntry per capability for a single (provider, model,
 // outcome). notes is included only when supplied, so captured rows stay
 // notes-free while misled/unsupported rows carry their explanation. rows does
@@ -705,6 +745,26 @@ const MATRIX: SupportEntry[] = [
     "unsupported",
     OPENAI_GPT4_MULTIMODAL_NOTE,
   ),
+  ...rows(
+    OPENAI_RESPONSES_PROVIDER,
+    "gpt-5-mini",
+    OPENAI_RESPONSES_FULL_CAPABILITIES,
+    "captured",
+  ),
+  ...rows(
+    OPENAI_RESPONSES_PROVIDER,
+    "gpt-5.5",
+    OPENAI_RESPONSES_REPRESENTATIVE_CAPABILITIES,
+    "captured",
+  ),
+  ...OPENAI_RESPONSES_NEWLINEUP_MODELS.flatMap((model) =>
+    rows(
+      OPENAI_RESPONSES_PROVIDER,
+      model,
+      OPENAI_RESPONSES_REPRESENTATIVE_CAPABILITIES,
+      "captured",
+    ),
+  ),
   ...XAI_MODELS.flatMap((model) =>
     rows(XAI_PROVIDER, model, XAI_BASE_CAPTURED_CAPABILITIES, "captured"),
   ),
@@ -750,6 +810,7 @@ const SESSION_ROOTS: Record<string, string> = {
   "google-genai": "packages/inference-discovery-google-genai/sessions",
   "opencode-zen": "packages/inference-discovery-openai/sessions",
   openai: "packages/inference-discovery-openai/sessions",
+  "openai-responses": "packages/inference-discovery-openai/sessions",
   xai: "packages/inference-discovery-openai/sessions",
 };
 

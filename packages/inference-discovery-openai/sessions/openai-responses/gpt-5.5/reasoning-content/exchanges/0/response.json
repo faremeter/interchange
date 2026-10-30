@@ -1,0 +1,102 @@
+{
+  "id": "resp_0f094257e856e13b006ae42cdc1cb487d0a27a7d7abc640da3",
+  "object": "response",
+  "created_at": 1793338588,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793338590,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.5-2026-04-23",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_0f094257e856e13b006ae42cdcd7d887d0aed39632434d1608",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5CzeBYIQBcPf0cDDnFkh8LlnZVmQvYYdAsERNtnHYc5ZEu9ZOUX3YgeMrsHhcmwLlwn_ViiMM42ClUdmw9sXvJFbCXYcWaShN6wxCWUB_1q12BT1zVpFj_wA3z4RVN9pMnens7M_PONo5OLZ0XHFRZvdzcRnecQDDUN5l9m7B-yoizmlmu7mHn0wYo07rbZNwzPyENxBVDIEAgwRUPPoiLN9qxcCWTwEkIdOUGxUAA-wpc6NrmN-OXj_rugNF3V0ipCFyN6tbJcH6rMl__It9QPBoI6XD5OosGB2JNul_sSv-z56voeAEBi2VmujhWg1lJDWttiAm24iKoTOP3e4csux-7esCcn8dsYyP_c79mJ9urt7xI-klxpu1uJpz8lGiGVEb80C_ngwAw9obzxJ13qiKiYEJVv9idZvDi5JWCJUEyfVamwQ-NUqSBGw5rTDy5gAU2XXuOVxMKRSkn0Fq1PasT_BOCAEm7z2S8rK4EXaBP7Mwophnd5NtFqpDJjflsK6brHHWQlE5CTvOjqKGSWgX4Q0qScft5BPp6d-BEf2S7K2DBSj3p0jKvKq8ksBJSeNtshxhhkNWgqHNhL4LuAHZTsqtAWnITddjD-JW9h3ovJSZZ5if3SjStyaxiObljtCWnJxbXCLmjPFUv6tlSqgPdX8V80SsZRP3N3YTnHDJVO7gNrByh9L0gsWjE3D-ZkaLbCCFYTtUI9y8p-KRHtD8udUGyXlqiWEL7U2diLRk2MIAWPrAUxQHhmkLOonPjzvqdJ9o1bnETkRHetiIuV32d1QbQE4CJSPJScQevomKleq9E9CiP-Xwp_rWBHSBzldXu81sNQKPWprZOB87Vnw3XH6SqLtOD76S-nWpuv_fmZpQLDOnwB5PuRWamzYSR7T5zWTBzvEzn8Aj224wmQzurr6f-SIV-Xua_b1s37DmaUfrWU7c1V1gMQ6v2cFDir5RmLMr9qqx9zJsQPfLLErlkVWFOg04AcTTmQE96a9Pc0pqHUzozdQUemJXxFC4fXZLSpKEL9z9WbdFVJcq5bIgcur5naPHobN7DoWXzQCX-4XSX58tg-c-ATaF8gO8aGsaMRqctu_v1-MoopZz2hUTMYqX9pQx4E-j4VKHzMPzlZlqT4OaZQWNry12MfQZ40YDvLscKGZ5Hf4OWHx3289E030AiFd1eiFJJ57zLUQdILEmkCxTnXLX8Z8qkuW9dv-Xc_ayTCMRheFf966NalKZh0nN82uL33K8W89lnvFS0F7FMYnBH5_Fe-wcQFXdTTMw-sBBqEApm3Qwgbmfen69uHL4rl46-211eD8tNCx-Ba5S6jMSKS6es29Bz2WuqO05NCL3lP63VhGk3efojuvOKyQF_eix-aLI3QvsswUVtSoWVCdIbTk3HHAuXiJOA7SUKfcJ4GyAO_dzznG4egeMu18HyDcvD_DTSfAkJpJdbdA36KceYFA2TqtwgouyOKE5l7vzFmWlzI8NSQwzhs5o8IVdbgLmNGf57hqca6AlCGdaXrkw8nAUJPjz13RXvWtH7lkG3SR3mkVxKHe-LRbz9Bu3OiLo-VkPFrcPlxxXqoxYENCOx2zwWNM-nzAOhoNklOLus9wAih5FBJs7mFtVnvi50BCHB2BUG3LpIORdQlVAe76W5wgqZ8Rl4xBeX2ibvqceRWzVO9GZQ9OWVMaFq0sS5YKFUne0McCQnWOEjGx8p8ozmjJJBn7W_YUP6Dus0JR-8xSG-_4myYRaAwSSw==",
+      "summary": []
+    },
+    {
+      "id": "msg_0f094257e856e13b006ae42cdd592c87d0b5d97f2c868184aa",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost **x** dollars.\n\nThe bat costs **$1.00 more**, so the bat costs:\n\n**x + 1.00**\n\nTogether they cost **$1.10**:\n\n**x + (x + 1.00) = 1.10**\n\nCombine terms:\n\n**2x + 1.00 = 1.10**\n\nSubtract 1.00 from both sides:\n\n**2x = 0.10**\n\nDivide by 2:\n\n**x = 0.05**\n\nSo the ball costs **$0.05**, or **5 cents**."
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 155,
+    "output_tokens_details": {
+      "reasoning_tokens": 26
+    },
+    "total_tokens": 200
+  },
+  "user": null,
+  "metadata": {}
+}
