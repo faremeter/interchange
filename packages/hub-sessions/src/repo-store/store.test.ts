@@ -3725,12 +3725,15 @@ describe("RepoStore", () => {
         handlers: { "workflow-run": permissiveWorkflowRun() },
         authorize: allowAll,
       });
-      const target = createRepoStore({
-        dataDir: await makeTempDir("repo-store-lost-target-"),
-        signingKey,
-        handlers: { "workflow-run": permissiveWorkflowRun() },
-        authorize: allowAll,
-      });
+      const targetDataDir = await makeTempDir("repo-store-lost-target-");
+      const openTarget = () =>
+        createRepoStore({
+          dataDir: targetDataDir,
+          signingKey,
+          handlers: { "workflow-run": permissiveWorkflowRun() },
+          authorize: allowAll,
+        });
+      const target = openTarget();
       await target.initRepo(wfRepoId);
       const targetDir = target.getRepoDir(wfRepoId);
       const packDir = path.join(targetDir, ".git", "objects", "pack");
@@ -3784,6 +3787,7 @@ describe("RepoStore", () => {
       return {
         source,
         target,
+        openTarget,
         targetDir,
         secondSha,
         thirdSha,
@@ -3821,6 +3825,32 @@ describe("RepoStore", () => {
         oid: lostBlob,
       });
       expect(new TextDecoder().decode(blob)).toBe("zero");
+    });
+
+    test("a restarted receiver removes an index whose pack is gone, and the full history restores the pack's objects", async () => {
+      const {
+        source,
+        openTarget,
+        secondSha,
+        thirdSha,
+        lostBlob,
+        firstPackFile,
+        ship,
+      } = await setUp();
+      const orphanIndex = firstPackFile(".idx");
+      await fs.promises.rm(firstPackFile(".pack"));
+      const restarted = openTarget();
+
+      await expect(ship(restarted, secondSha)).rejects.toThrow(
+        `missing_objects: commit ${thirdSha} names blob ${lostBlob} at runs/r1/events/0.json, which is neither in the receiver's store nor in the pack`,
+      );
+      expect(fs.existsSync(orphanIndex)).toBe(false);
+
+      source.forgetPackedTip(wfRepoId, REF);
+      await ship(restarted, secondSha);
+      expect(await restarted.resolveRef(principal, wfRepoId, REF)).toBe(
+        thirdSha,
+      );
     });
   });
 

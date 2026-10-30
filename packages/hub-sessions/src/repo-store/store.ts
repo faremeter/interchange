@@ -12,6 +12,7 @@ import {
   createObjectPresence,
   HUB_REF_NAMESPACE,
   maybeGC,
+  removeOrphanPackIndexes,
   removeStagedPacks,
   stagePack,
   syncDirectoryDurable,
@@ -2043,6 +2044,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const handler = handlerFor(repoId);
     return withReceiveCache(dir, async (cache) => {
       chargePrebuiltScan(dir, prebuilt);
+      // An index whose pack is gone fails each read of an object it names,
+      // the history scan below included, so no receive could reach the
+      // full resend that brings those objects back.
+      for (const removed of await removeOrphanPackIndexes(dir)) {
+        logger.error`Removed ${removed} from ${repoId.kind}/${repoId.id}: its pack is gone, and with it every object the index named`;
+      }
       const existingKey = indexCacheKey(repoId);
       let existingCommits = existingCommitsCache.get(existingKey);
       if (existingCommits === undefined) {

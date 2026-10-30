@@ -537,6 +537,39 @@ export async function removeStagedPacks(
 }
 
 /**
+ * Remove each pack index under `dir` whose pack is gone, and return the
+ * paths removed. A publish renames the pack before its index and GC
+ * moves the index out first, so no write leaves an index without its
+ * pack; a lost rename or a lost file does. A read of an object that
+ * such an index names fails as an internal error instead of finding no
+ * object, so a caller removes the index before it reads the repository.
+ * The objects it names went with the pack.
+ */
+export async function removeOrphanPackIndexes(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<string[]> {
+  const packDir = runtime.path.join(dir, ".git", "objects", "pack");
+  let files: string[];
+  try {
+    files = await runtime.fs.readdir(packDir);
+  } catch (cause) {
+    if (hasCode(cause) && cause.code === "ENOENT") return [];
+    throw cause;
+  }
+  const listed = new Set(files);
+  const removed: string[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".idx")) continue;
+    if (listed.has(`${file.slice(0, -".idx".length)}.pack`)) continue;
+    const filepath = runtime.path.join(packDir, file);
+    await runtime.fs.remove(filepath, { force: true });
+    removed.push(filepath);
+  }
+  return removed;
+}
+
+/**
  * Apply a git packfile to a repository, check out the working tree, and
  * update the ref.
  *
