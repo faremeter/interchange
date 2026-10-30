@@ -25,6 +25,7 @@ export {
   type MailAcceptGrantSource,
 } from "./capability-walk";
 export {
+  applyStandingDecisions,
   collectDeclaredCredentialConsumers,
   collectDeclaredResources,
   filterGrantsToDeclaredResources,

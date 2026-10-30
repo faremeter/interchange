@@ -149,6 +149,7 @@ import {
   createSnapshotGrantsResolver,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
+  type StepGrantsResolver,
 } from "./credentials-backed-authorize";
 import {
   eagerlyResolveActionHandlers,
@@ -451,6 +452,12 @@ interface SidecarSubstrateFactoryDeps {
   ) => ReadonlySet<string>;
   filterGrantsToDeclaredResources: (
     parentGrants: readonly unknown[],
+    declared: ReadonlySet<string>,
+    credentialConsumers: ReadonlySet<string>,
+  ) => readonly unknown[];
+  applyStandingDecisions: (
+    childGrants: readonly unknown[],
+    rootGrants: readonly unknown[],
     declared: ReadonlySet<string>,
     credentialConsumers: ReadonlySet<string>,
   ) => readonly unknown[];
@@ -1331,8 +1338,10 @@ interface SidecarRunChildDeps {
   /**
    * Collect the resources the child body declares, the credential consumers
    * it instantiates, and narrow the parent grant array to that pair. The
-   * process that boots the child supplies all three. This factory persists
-   * the filter's array and does not import the walk.
+   * process that boots the child supplies all three, and the read-time
+   * overlay of the top-level run's standing decisions on a live child's
+   * grants. This factory persists the filter's array and does not import the
+   * walk.
    */
   collectDeclaredResources: (
     definition: WorkflowDefinition,
@@ -1346,6 +1355,12 @@ interface SidecarRunChildDeps {
   ) => ReadonlySet<string>;
   filterGrantsToDeclaredResources: (
     parentGrants: readonly unknown[],
+    declared: ReadonlySet<string>,
+    credentialConsumers: ReadonlySet<string>,
+  ) => readonly unknown[];
+  applyStandingDecisions: (
+    childGrants: readonly unknown[],
+    rootGrants: readonly unknown[],
     declared: ReadonlySet<string>,
     credentialConsumers: ReadonlySet<string>,
   ) => readonly unknown[];
@@ -1621,14 +1636,15 @@ export function createSidecarSpawnSuspendableChild(
 }
 
 /**
- * Read the parent run's grants, cap them to what `definition` declares, and
+ * Read the parent run's grants, cap them to what the child body declares
+ * (`capInputs`), and
  * persist the capped set as the child run's own `runs/<childRunId>/grants.json`
  * -- the file the next spawn hop (a childWorkflow grandchild) reads back as its
  * ceiling. Returns the capped grants so a caller building a fresh child env can
  * also key its credentials snapshot on them.
  *
- * `definition` MUST be the PRE-rewrite body, its childWorkflow grandchildren
- * still INLINE: both collectors skip a `{ ref }` body, so a rewritten
+ * `capInputs` MUST collect from the PRE-rewrite body, its childWorkflow
+ * grandchildren still INLINE: both collectors skip a `{ ref }` body, so a rewritten
  * definition would drop the grandchild's declared resources and the factories
  * only its inline body instantiates, and under-authorize it. Every birth path
  * materializes a run's grants file, so a
@@ -1651,11 +1667,12 @@ export function createSidecarSpawnSuspendableChild(
  */
 async function capAndPersistChildGrants(args: {
   deps: SidecarRunChildDeps;
-  definition: WorkflowDefinition;
   childRunId: string;
   parentRunId: string;
+  // Called only when the grants file is born, so a read-back costs nothing.
+  capInputs: () => Promise<ChildCapInputs>;
 }): Promise<readonly unknown[]> {
-  const { deps, definition, childRunId, parentRunId } = args;
+  const { deps, childRunId, parentRunId } = args;
   const existingChildGrants = await readRunGrants({
     repoStore: deps.substrate,
     anchorRunId: deps.workflowRunRepoId.id,
@@ -1672,23 +1689,7 @@ async function capAndPersistChildGrants(args: {
       `sidecar runChild: parent run ${parentRunId} has no grants file at ${runGrantsPath(parentRunId)}; refusing to spawn child ${childRunId} under-authorized`,
     );
   }
-  const pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]> =
-    deps.closurePackageDir === undefined
-      ? new Map<string, readonly ToolDeclaration[]>()
-      : await loadWorkflowPluginToolDefinitionsFromClosure({
-          packageDir: deps.closurePackageDir,
-          plugins: collectDeclaredPluginNames(definition),
-        });
-  const declaredResources = deps.collectDeclaredResources(
-    definition,
-    deps.directors,
-    pluginDefs,
-  );
-  const credentialConsumers = deps.collectDeclaredCredentialConsumers(
-    definition,
-    deps.directors,
-    pluginDefs,
-  );
+  const { declaredResources, credentialConsumers } = await args.capInputs();
   const childGrants = deps.filterGrantsToDeclaredResources(
     parentGrants,
     declaredResources,
@@ -1703,6 +1704,104 @@ async function capAndPersistChildGrants(args: {
     grants: childGrants,
   });
   return childGrants;
+}
+
+// What a child body declares: the inputs of its grant cap.
+type ChildCapInputs = {
+  declaredResources: ReadonlySet<string>;
+  credentialConsumers: ReadonlySet<string>;
+};
+
+/**
+ * Collect a child body's cap inputs. `definition` MUST be the PRE-rewrite
+ * body, for the reason `capAndPersistChildGrants` states.
+ */
+async function collectChildCapInputs(
+  deps: SidecarRunChildDeps,
+  definition: WorkflowDefinition,
+): Promise<ChildCapInputs> {
+  const pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]> =
+    deps.closurePackageDir === undefined
+      ? new Map<string, readonly ToolDeclaration[]>()
+      : await loadWorkflowPluginToolDefinitionsFromClosure({
+          packageDir: deps.closurePackageDir,
+          plugins: collectDeclaredPluginNames(definition),
+        });
+  return {
+    declaredResources: deps.collectDeclaredResources(
+      definition,
+      deps.directors,
+      pluginDefs,
+    ),
+    credentialConsumers: deps.collectDeclaredCredentialConsumers(
+      definition,
+      deps.directors,
+      pluginDefs,
+    ),
+  };
+}
+
+/**
+ * The grants resolver of a live child run: its capped snapshot with the
+ * top-level run's standing decisions applied (`applyStandingDecisions`).
+ * An approval with scope `always` updates the top-level run's grants
+ * snapshot, and the child reads the decision on its next step. The overlaid
+ * snapshot is built again only when the top-level snapshot object changes,
+ * which a `grants-updated` or `authority.set` frame does by replacing it.
+ * A top-level snapshot that is not active throws, as the top-level resolver
+ * does: a child must not keep running on frozen grants after the top-level
+ * run loses its authority.
+ */
+function createStandingDecisionGrantsResolver(args: {
+  childSnapshot: CredentialsSnapshot;
+  rootGrants: CredentialsSnapshotRef;
+  capInputs: ChildCapInputs;
+  applyStandingDecisions: SidecarRunChildDeps["applyStandingDecisions"];
+}): StepGrantsResolver {
+  let cached:
+    | { root: CredentialsSnapshot; resolve: StepGrantsResolver }
+    | undefined;
+  return (stepId) => {
+    const root = args.rootGrants.current;
+    if (root === null) {
+      throw new Error(
+        `sidecar child: the top-level run has no credentials snapshot active for step ${stepId}; the host must set one before any step runs`,
+      );
+    }
+    if (cached === undefined || cached.root !== root) {
+      const rootGrants = root.steps.flatMap((step) => step.grants);
+      // The child's steps share one grants array; overlay each array once.
+      const overlaid = new Map<readonly unknown[], readonly unknown[]>();
+      const overlay = (grants: readonly unknown[]): readonly unknown[] => {
+        let result = overlaid.get(grants);
+        if (result === undefined) {
+          result = args.applyStandingDecisions(
+            grants,
+            rootGrants,
+            args.capInputs.declaredResources,
+            args.capInputs.credentialConsumers,
+          );
+          overlaid.set(grants, result);
+        }
+        return result;
+      };
+      cached = {
+        root,
+        resolve: createSnapshotGrantsResolver(
+          {
+            current: {
+              steps: args.childSnapshot.steps.map((step) => ({
+                ...step,
+                grants: overlay(step.grants),
+              })),
+            },
+          },
+          "sidecar child",
+        ),
+      };
+    }
+    return cached.resolve(stepId);
+  };
 }
 
 /**
@@ -1818,11 +1917,18 @@ async function buildChildRunEnv(args: {
   // the capped set as the child's own `runs/<childRunId>/grants.json` (the file
   // a grandchild reads as its ceiling). `definition` here is the childWorkflow-
   // inline form, so the cap keeps a grandchild's declared resources.
+  // The cap inputs are needed on a birth and, for the overlay, on every
+  // build of a live child; collect them once.
+  let capInputsOnce: Promise<ChildCapInputs> | undefined;
+  const capInputs = (): Promise<ChildCapInputs> => {
+    capInputsOnce ??= collectChildCapInputs(deps, definition);
+    return capInputsOnce;
+  };
   const childGrants = await capAndPersistChildGrants({
     deps,
-    definition,
     childRunId,
     parentRunId,
+    capInputs,
   });
   // The child's credentials snapshot applies the capped grant set
   // uniformly across every step the child definition declares, keyed on
@@ -1885,11 +1991,18 @@ async function buildChildRunEnv(args: {
     current: credentialsSnapshot,
   };
   // Shared by `authorize` and the credential context below, so both read the
-  // same grants.
-  const resolveChildStepGrants = createSnapshotGrantsResolver(
-    credentialsRef,
-    "sidecar child",
-  );
+  // same grants. A child that inherits from a top-level run reads the
+  // top-level standing decisions through the overlay; one with no
+  // inheritance (a non-sidecar executor) reads its capped snapshot.
+  const resolveChildStepGrants =
+    inherited === undefined
+      ? createSnapshotGrantsResolver(credentialsRef, "sidecar child")
+      : createStandingDecisionGrantsResolver({
+          childSnapshot: credentialsSnapshot,
+          rootGrants: inherited.rootGrants,
+          capInputs: await capInputs(),
+          applyStandingDecisions: deps.applyStandingDecisions,
+        });
   const authorize = createCredentialsBackedAuthorize(
     resolveChildStepGrants,
     deps.evaluateGrants,
@@ -2054,9 +2167,9 @@ async function buildChildRunEnv(args: {
         // iteration appends its first event.
         await capAndPersistChildGrants({
           deps,
-          definition: preRewriteBody,
           childRunId: loopInput.childRunId,
           parentRunId: loopInput.parentRunId,
+          capInputs: () => collectChildCapInputs(deps, preRewriteBody),
         });
         const iterationSignalChannel = createWorkflowHostSignalChannel({
           repoStore: deps.substrate,
@@ -2641,6 +2754,7 @@ export function createSidecarSubstrateFactory(
       collectDeclaredCredentialConsumers:
         deps.collectDeclaredCredentialConsumers,
       filterGrantsToDeclaredResources: deps.filterGrantsToDeclaredResources,
+      applyStandingDecisions: deps.applyStandingDecisions,
       // A spawned child's steps resolve `director` refs against the same
       // closure-composed registry the parent's steps use.
       directors: stepDirectors,
@@ -2763,9 +2877,9 @@ export function createSidecarSubstrateFactory(
       }) => {
         await capAndPersistChildGrants({
           deps: childRunDeps,
-          definition,
           childRunId,
           parentRunId,
+          capInputs: () => collectChildCapInputs(childRunDeps, definition),
         });
       },
       scheduler,

@@ -908,6 +908,7 @@ export async function runWorkflowChild(
       warmCache,
       sourcesRef,
       credentialWiring,
+      credentialsRef,
       ...(opts.mailboxCallBridge !== undefined
         ? { mailboxCallBridge: opts.mailboxCallBridge }
         : {}),
@@ -1186,6 +1187,7 @@ async function handleControlPayload(
         warmCache: ctx.warmCache,
         sourcesRef: ctx.sourcesRef,
         credentialWiring: ctx.credentialWiring,
+        credentialsRef: ctx.credentialsRef,
         ...(ctx.mailboxCallBridge !== undefined
           ? { mailboxCallBridge: ctx.mailboxCallBridge }
           : {}),
@@ -1687,6 +1689,7 @@ function buildRuntimeEnv(args: {
   warmCache: WarmAgentCache | undefined;
   sourcesRef: SourcesSnapshotRef;
   credentialWiring: CredentialWiring;
+  credentialsRef: CredentialsSnapshotRef;
   mailboxCallBridge?: ChildMailboxCallBridge;
   onEvent: (event: EventPayload) => void;
   upstreamSender: ControlChannelSender;
@@ -1747,6 +1750,7 @@ function buildRuntimeEnv(args: {
   // against the parent's current delivery, reached live on a rotation.
   const inherited: ChildInheritance = {
     material: args.credentialWiring.materialRef,
+    rootGrants: args.credentialsRef,
   };
   const hostSuspendable = args.suspendableChildHost;
   const spawnSuspendableChild: SpawnSuspendableChild | undefined =

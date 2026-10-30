@@ -13,6 +13,7 @@
 // directory must reject at spawn, before the handler runs.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { applyStandingDecisions } from "@intx/workflow-deploy/child-grants";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -298,6 +299,7 @@ function makeDeps(
     ...(packageDir !== undefined ? { closurePackageDir: packageDir } : {}),
     collectDeclaredResources: () => new Set([SHIP_RESOURCE]),
     collectDeclaredCredentialConsumers: () => new Set<string>(),
+    applyStandingDecisions,
     filterGrantsToDeclaredResources: (parentGrants, declared) =>
       parentGrants.filter((grantRule) =>
         keepInheritedGrant(grantRule, declared),
@@ -518,6 +520,18 @@ function credentialUseGrant(consumer: string): GrantRule {
 }
 
 // The run's live material cell: one http credential bound to the handler.
+// A top-level snapshot with no standing decisions, so the overlay leaves the
+// child's capped grants as they are.
+function noStandingDecisions() {
+  return {
+    current: {
+      steps: [
+        { stepId: "root", address: "root", grants: [], contentHash: "h" },
+      ],
+    },
+  };
+}
+
 function credentialCell() {
   return {
     current: {
@@ -550,6 +564,7 @@ function credentialDeps(
   return {
     ...makeDeps(substrate, closurePackageDir),
     collectDeclaredCredentialConsumers: () => consumers,
+    applyStandingDecisions,
     filterGrantsToDeclaredResources: (parentGrants, declared) =>
       parentGrants.filter((grantRule) => {
         if (
@@ -606,7 +621,7 @@ describe("spawned body action credentials", () => {
     const handle = await spawn(
       spawnInput(credentialBody(), "run-body-cred", parentRunId, marker),
       () => undefined,
-      { material: credentialCell() },
+      { material: credentialCell(), rootGrants: noStandingDecisions() },
     );
 
     const terminal = await handle.next();
@@ -632,7 +647,7 @@ describe("spawned body action credentials", () => {
         depth: 1,
       },
       () => undefined,
-      { material: credentialCell() },
+      { material: credentialCell(), rootGrants: noStandingDecisions() },
     );
 
     const event = await result.next();
@@ -659,7 +674,52 @@ describe("spawned body action credentials", () => {
         marker,
       ),
       () => undefined,
-      { material: credentialCell() },
+      { material: credentialCell(), rootGrants: noStandingDecisions() },
+    );
+
+    const terminal = await handle.next();
+    if (terminal.kind !== "terminal") throw new Error("expected a terminal");
+    expect(terminal.terminalStatus).toBe("completed");
+    expect(await fs.promises.readFile(marker, "utf8")).toBe("http");
+  });
+
+  test("an action inside a loop in a spawned body reads an always decision of the top-level run", async () => {
+    // The parent grants the effect as ask. The top-level run holds the same
+    // grant id as allow, so the loop iteration's action reads the decision
+    // through the body's grants overlay and runs without a park.
+    const substrate = await makeSubstrate("child-action-standing-loop-");
+    const parentRunId = "run-parent-standing-loop";
+    const askShip: GrantRule = { ...grant(SHIP_RESOURCE), effect: "ask" };
+    await seedRunGrants(substrate, parentRunId, [
+      askShip,
+      credentialUseGrant(RESOLVE_CONSUMER),
+    ]);
+    const marker = await markerPath();
+    const spawn = createSidecarSpawnSuspendableChild(credentialDeps(substrate));
+
+    const handle = await spawn(
+      spawnInput(
+        credentialLoopBody(),
+        "run-body-standing-loop",
+        parentRunId,
+        marker,
+      ),
+      () => undefined,
+      {
+        material: credentialCell(),
+        rootGrants: {
+          current: {
+            steps: [
+              {
+                stepId: "root",
+                address: "root",
+                grants: [{ ...askShip, effect: "allow" }],
+                contentHash: "h",
+              },
+            ],
+          },
+        },
+      },
     );
 
     const terminal = await handle.next();
@@ -687,7 +747,7 @@ describe("spawned body action credentials", () => {
     const handle = await spawn(
       spawnInput(credentialBody(), childRunId, parentRunId, marker),
       () => undefined,
-      { material: credentialCell() },
+      { material: credentialCell(), rootGrants: noStandingDecisions() },
     );
 
     const terminal = await handle.next();

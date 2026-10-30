@@ -1444,7 +1444,19 @@ one of those consumers. The comparison is exact. An unconditioned credential
 allow, a non-string `{ tool }` value, and a condition that names a consumer the
 body does not run are dropped, and that branch does not fall through
 to `matchPattern`. The parent stays the ceiling — the filter only removes
-rules, never adds or rewrites one. The capped set is applied **uniformly
+rules, never adds or rewrites one. A read-time overlay then applies the
+top-level run's standing approval decisions to a live child: a child `ask`
+grant whose id the top-level run holds as `deny` reads as `deny`, and one it
+holds as `allow` reads as `allow` only when the filter above keeps that
+`allow`. The overlay changes only the effect of an existing `ask`, within the
+cap, and never adds a grant; the child's grants file is not rewritten.
+The decision reaches a live child when the top-level run's grants update
+arrives: the hub sends the run's committed grants ahead of each signal
+delivery and each trigger, and the supervisor sends them again in
+`authority.set` when the run child restarts. An `always` decision on a
+call that matched a wildcard `tool:*` `ask` changes nothing at any
+level, because the hub changes only a `tool:<name>` grant that matches
+the tool name exactly. The capped set is applied **uniformly
 across the child's steps** (matching the top level's flat-union model, not
 per-step distinctness) and written into **both** grant sinks: the
 `CredentialsSnapshot.steps[].grants` the per-child authorize closure reads for all
@@ -1619,7 +1631,9 @@ INTR-209 end state; the hardened boundaries (Phase 6) are a follow-on.
 8. **Credentials snapshot / grants flow to a sandboxed sub-child.** The rung-0
    supervisor assembles the credentials snapshot and pushes it over the control
    IPC (`assembleCredentialsSnapshot`, `grants-updated`). For an **in-process**
-   rung the snapshot is shared from the parent (same process). For a **sandboxed**
+   rung the snapshot is shared from the parent (same process): each in-process
+   child reads the top-level run's live snapshot reference, so a standing
+   approval decision reaches it through the overlay above. For a **sandboxed**
    rung, the sub-child needs its own `grants-updated` push over its own control
    channel — and the grants it receives must be the node's grants, not the
    parent's (a stricter-isolation node may intentionally run with a narrower
