@@ -699,6 +699,24 @@ const OutputItemDoneEvent = type({
     "encrypted_content?": "string",
   },
 });
+const CodeInterpreterDoneEvent = type({
+  item: {
+    type: "'code_interpreter_call'",
+    id: "string",
+    status: "'completed' | 'failed'",
+    code: "string",
+    "container_id?": "string",
+    "outputs?": "unknown",
+  },
+});
+const CodeInterpreterCodeDeltaEvent = type({
+  item_id: "string > 0",
+  delta: "string",
+});
+const ContentPartDoneEvent = type({
+  item_id: "string > 0",
+  part: type({ type: "string" }),
+});
 const ResponsesUsage = type({
   "input_tokens?": "number",
   "output_tokens?": "number",
@@ -1021,8 +1039,152 @@ export function parseResponse(
           });
         }
       }
+      if (item.type === "code_interpreter_call") {
+        const call = CodeInterpreterDoneEvent(parsed);
+        if (call instanceof type.errors) {
+          throw protocolMismatch(
+            provider,
+            `output_item.done failed schema validation: ${call.summary}`,
+            parsed,
+          );
+        }
+        const callItem = call.item;
+        if (callItem.outputs !== undefined && callItem.outputs !== null) {
+          throw protocolMismatch(
+            provider,
+            "output_item.done code_interpreter_call carries outputs the neutral code-execution result does not model",
+            parsed,
+          );
+        }
+        if (!indexer.items.has(callItem.id)) {
+          events.push({
+            type: "inference.code_execution.start",
+            seq,
+            data: {
+              request: {
+                type: "code_execution_request",
+                id: callItem.id,
+                code: callItem.code,
+              },
+              index: getOrAssignBlockIndex(
+                indexer,
+                callItem.id,
+                "code_execution_request",
+              ),
+            },
+          });
+        }
+        events.push({
+          type: "inference.code_execution.result",
+          seq,
+          data: {
+            result: {
+              type: "code_execution_result",
+              requestId: callItem.id,
+              status: callItem.status === "completed" ? "ok" : "error",
+              providerOutcome: callItem.status,
+            },
+            index: getOrAssignBlockIndex(
+              indexer,
+              `${callItem.id}#result`,
+              "code_execution_result",
+            ),
+          },
+        });
+      }
       return events;
     }
+    case "response.code_interpreter_call_code.delta": {
+      const validated = CodeInterpreterCodeDeltaEvent(parsed);
+      if (validated instanceof type.errors) {
+        throw protocolMismatch(
+          provider,
+          `code_interpreter_call_code.delta failed schema validation: ${validated.summary}`,
+          parsed,
+        );
+      }
+      const itemId = validated.item_id;
+      const existing = indexer.items.get(itemId);
+      if (
+        existing !== undefined &&
+        existing.kind !== "code_execution_request"
+      ) {
+        throw protocolMismatch(
+          provider,
+          `code_interpreter_call_code.delta for item_id ${itemId} routed to a ${existing.kind} block`,
+          parsed,
+        );
+      }
+      const blockIndex =
+        existing === undefined
+          ? getOrAssignBlockIndex(indexer, itemId, "code_execution_request")
+          : existing.index;
+      if (existing === undefined) {
+        events.push({
+          type: "inference.code_execution.start",
+          seq,
+          data: {
+            request: { type: "code_execution_request", id: itemId, code: "" },
+            index: blockIndex,
+          },
+        });
+      }
+      if (validated.delta.length > 0) {
+        events.push({
+          type: "inference.code_execution.delta",
+          seq,
+          data: {
+            requestId: itemId,
+            codeFragment: validated.delta,
+            index: blockIndex,
+          },
+        });
+      }
+      return events;
+    }
+    case "response.content_part.done": {
+      const validated = ContentPartDoneEvent(parsed);
+      if (validated instanceof type.errors) {
+        throw protocolMismatch(
+          provider,
+          `content_part.done failed schema validation: ${validated.summary}`,
+          parsed,
+        );
+      }
+      if (validated.part.type !== "output_text") return events;
+      const part = OutputTextPart(validated.part);
+      if (part instanceof type.errors) {
+        throw protocolMismatch(
+          provider,
+          `content_part.done output_text part failed schema validation: ${part.summary}`,
+          parsed,
+        );
+      }
+      const annotations = part.annotations ?? [];
+      if (annotations.length === 0) return events;
+      if (part.text.length === 0) {
+        throw protocolMismatch(
+          provider,
+          "content_part.done output_text part carries annotations but no text to anchor them against",
+          parsed,
+        );
+      }
+      const index = getOrAssignBlockIndex(indexer, validated.item_id, "text");
+      for (const annotation of annotations) {
+        events.push(
+          urlCitationEvent(provider, part.text, annotation, index, seq, parsed),
+        );
+      }
+      return events;
+    }
+    case "response.web_search_call.in_progress":
+    case "response.web_search_call.searching":
+    case "response.web_search_call.completed":
+    case "response.code_interpreter_call.in_progress":
+    case "response.code_interpreter_call.interpreting":
+    case "response.code_interpreter_call.completed":
+    case "response.code_interpreter_call.done":
+      return events;
     case "response.function_call_arguments.delta": {
       const validated = FunctionCallArgsDeltaEvent(parsed);
       if (validated instanceof type.errors) {
@@ -1186,8 +1348,33 @@ export function isResponsesStreamTerminal(sseData: string): boolean {
 // them on first observation.
 // ---------------------------------------------------------------------------
 
-const OutputTextPart = type({ type: "'output_text'", text: "string" });
+const UrlCitationAnnotation = type({
+  type: "'url_citation'",
+  start_index: "number",
+  end_index: "number",
+  url: "string",
+  "title?": "string",
+});
+const OutputTextPart = type({
+  type: "'output_text'",
+  text: "string",
+  "annotations?": UrlCitationAnnotation.array(),
+});
 const RefusalPart = type({ type: "'refusal'", refusal: "string" });
+const WebSearchCallItem = type({
+  type: "'web_search_call'",
+  id: "string",
+  "status?": "string",
+  "action?": "unknown",
+});
+const CodeInterpreterCallItem = type({
+  type: "'code_interpreter_call'",
+  id: "string",
+  status: "'completed' | 'failed'",
+  code: "string",
+  "container_id?": "string",
+  "outputs?": "unknown",
+});
 // Content parts are validated individually by kind, same rationale as
 // output items below: an "unknown kind, ignore it" fallback branch defeats
 // narrowing on the known branches.
@@ -1221,9 +1408,50 @@ const CompleteResponse = type({
   "usage?": ResponsesUsage,
   "status?":
     "'completed' | 'failed' | 'incomplete' | 'in_progress' | 'cancelled' | 'queued'",
-  "error?": { "message?": "string" },
-  "incomplete_details?": { "reason?": "string" },
+  "error?": type({ "message?": "string" }).or("null"),
+  "incomplete_details?": type({ "reason?": "string" }).or("null"),
 });
+
+function urlCitationEvent(
+  provider: string,
+  text: string,
+  annotation: typeof UrlCitationAnnotation.infer,
+  index: number,
+  seq: number,
+  raw: unknown,
+): InferenceEvent {
+  const start = annotation.start_index;
+  const end = annotation.end_index;
+  if (
+    !Number.isInteger(start) ||
+    !Number.isInteger(end) ||
+    start < 0 ||
+    end <= start ||
+    end > text.length
+  ) {
+    throw new ProtocolMismatchError(
+      `${provider} parseJSONResponse: url_citation annotation has an invalid span: ${JSON.stringify({ start_index: start, end_index: end, textLength: text.length })}`,
+      raw,
+    );
+  }
+  const source =
+    annotation.title === undefined
+      ? { uri: annotation.url }
+      : { uri: annotation.url, title: annotation.title };
+  return {
+    type: "inference.citation",
+    seq,
+    data: {
+      citation: {
+        type: "citation",
+        citedText: text.slice(start, end),
+        source,
+        textOffset: { start, end },
+      },
+      index,
+    },
+  };
+}
 
 export function parseJSONResponse(
   body: string,
@@ -1283,6 +1511,13 @@ export function parseJSONResponse(
               rawPart,
             );
           }
+          const annotations = part.annotations ?? [];
+          if (annotations.length > 0 && part.text.length === 0) {
+            throw new ProtocolMismatchError(
+              `${provider} parseJSONResponse: output_text part carries annotations but no text to anchor them against`,
+              rawPart,
+            );
+          }
           if (part.text.length > 0) {
             events.push({
               type: "inference.text.delta",
@@ -1293,6 +1528,18 @@ export function parseJSONResponse(
                 index: nextIndex,
               },
             });
+            for (const annotation of annotations) {
+              events.push(
+                urlCitationEvent(
+                  provider,
+                  part.text,
+                  annotation,
+                  nextIndex,
+                  seq,
+                  rawPart,
+                ),
+              );
+            }
             nextIndex += 1;
           }
         } else if (rawPart.type === "refusal") {
@@ -1377,6 +1624,60 @@ export function parseJSONResponse(
           },
         });
       }
+    } else if (rawItem.type === "web_search_call") {
+      const item = WebSearchCallItem(rawItem);
+      if (item instanceof type.errors) {
+        throw new ProtocolMismatchError(
+          `${provider} parseJSONResponse: web_search_call output item failed schema validation: ${item.summary}`,
+          rawItem,
+        );
+      }
+      // A web_search_call is provider-executed: the model-visible evidence is
+      // the url_citation annotations on the message text, parsed above. The
+      // call item itself carries no neutral block, so it contributes no event.
+    } else if (rawItem.type === "code_interpreter_call") {
+      const item = CodeInterpreterCallItem(rawItem);
+      if (item instanceof type.errors) {
+        throw new ProtocolMismatchError(
+          `${provider} parseJSONResponse: code_interpreter_call output item failed schema validation: ${item.summary}`,
+          rawItem,
+        );
+      }
+      if (item.outputs !== undefined && item.outputs !== null) {
+        throw new ProtocolMismatchError(
+          `${provider} parseJSONResponse: code_interpreter_call carries outputs the neutral code-execution result does not model`,
+          rawItem,
+        );
+      }
+      const requestIndex = nextIndex;
+      nextIndex += 1;
+      const resultIndex = nextIndex;
+      nextIndex += 1;
+      events.push({
+        type: "inference.code_execution.start",
+        seq,
+        data: {
+          request: {
+            type: "code_execution_request",
+            id: item.id,
+            code: item.code,
+          },
+          index: requestIndex,
+        },
+      });
+      events.push({
+        type: "inference.code_execution.result",
+        seq,
+        data: {
+          result: {
+            type: "code_execution_result",
+            requestId: item.id,
+            status: item.status === "completed" ? "ok" : "error",
+            providerOutcome: item.status,
+          },
+          index: resultIndex,
+        },
+      });
     }
     // Unknown output item kinds are protocol-legal extensions this adapter
     // has nothing to do with; ignored, mirroring the SSE default case.

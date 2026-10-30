@@ -164,6 +164,21 @@ export function buildResponsesMultiTurnTurn2Body(opts: {
   return body;
 }
 
+function buildServerToolBody(
+  model: string,
+  intent: CapabilityIntent,
+  stream: boolean,
+  tool: unknown,
+): ResponsesRequest {
+  const body: ResponsesRequest = {
+    model,
+    input: buildTextInput(intent),
+    tools: [tool],
+  };
+  if (stream) body.stream = true;
+  return body;
+}
+
 function buildReasoningBody(
   model: string,
   intent: CapabilityIntent,
@@ -249,6 +264,24 @@ export function buildResponsesRequestBody(
       return buildReasoningBody(model, intent, false);
     case "reasoning-content-streaming":
       return buildReasoningBody(model, intent, true);
+    case "code-execution":
+      return buildServerToolBody(model, intent, false, {
+        type: "code_interpreter",
+        container: { type: "auto", memory_limit: "4g" },
+      });
+    case "code-execution-streaming":
+      return buildServerToolBody(model, intent, true, {
+        type: "code_interpreter",
+        container: { type: "auto", memory_limit: "4g" },
+      });
+    case "grounding":
+      return buildServerToolBody(model, intent, false, {
+        type: "web_search",
+      });
+    case "grounding-streaming":
+      return buildServerToolBody(model, intent, true, {
+        type: "web_search",
+      });
     case "vision-input":
       return buildMediaInputBody(
         model,

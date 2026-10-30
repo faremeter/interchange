@@ -246,6 +246,74 @@ describe("buildResponsesRequestBody capability dispatch", () => {
     ).toBe(true);
   });
 
+  test("grounding declares the web_search server tool", () => {
+    const body = buildResponsesRequestBody({
+      model: "gpt-5-mini",
+      capability: "grounding",
+      intent: INTENTS["grounding"],
+    });
+    expect(body).toEqual({
+      model: "gpt-5-mini",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: INTENTS["grounding"].prompt,
+        },
+      ],
+      tools: [{ type: "web_search" }],
+    });
+  });
+
+  test("code-execution declares the code_interpreter server tool", () => {
+    const body = buildResponsesRequestBody({
+      model: "gpt-5-mini",
+      capability: "code-execution",
+      intent: INTENTS["code-execution"],
+    });
+    expect(body).toEqual({
+      model: "gpt-5-mini",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: INTENTS["code-execution"].prompt,
+        },
+      ],
+      tools: [
+        {
+          type: "code_interpreter",
+          container: { type: "auto", memory_limit: "4g" },
+        },
+      ],
+    });
+  });
+
+  test("streaming server-tool variants set stream without changing tools", () => {
+    const grounding = buildResponsesRequestBody({
+      model: "gpt-5-mini",
+      capability: "grounding-streaming",
+      intent: INTENTS["grounding-streaming"],
+    });
+    if (!isRecord(grounding)) throw new Error("expected record body");
+    expect(grounding["stream"]).toBe(true);
+    expect(grounding["tools"]).toEqual([{ type: "web_search" }]);
+
+    const execution = buildResponsesRequestBody({
+      model: "gpt-5-mini",
+      capability: "code-execution-streaming",
+      intent: INTENTS["code-execution-streaming"],
+    });
+    if (!isRecord(execution)) throw new Error("expected record body");
+    expect(execution["stream"]).toBe(true);
+    expect(execution["tools"]).toEqual([
+      {
+        type: "code_interpreter",
+        container: { type: "auto", memory_limit: "4g" },
+      },
+    ]);
+  });
+
   test("unsupported capabilities throw CapabilityNotBuildableError", () => {
     for (const capability of [
       "audio-input",
@@ -253,8 +321,6 @@ describe("buildResponsesRequestBody capability dispatch", () => {
       "structured-output",
       "structured-output-streaming",
       "image-output",
-      "code-execution",
-      "grounding",
     ] as const) {
       expect(() =>
         buildResponsesRequestBody({

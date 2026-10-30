@@ -650,6 +650,77 @@ describe("openai-responses parseResponse", () => {
     ]);
   });
 
+  test("code interpreter deltas accumulate before the done result", () => {
+    const events = parse([
+      {
+        type: "response.code_interpreter_call_code.delta",
+        item_id: "ci-1",
+        delta: "print(",
+      },
+      {
+        type: "response.code_interpreter_call_code.delta",
+        item_id: "ci-1",
+        delta: "1)",
+      },
+      {
+        type: "response.output_item.done",
+        item: {
+          type: "code_interpreter_call",
+          id: "ci-1",
+          status: "completed",
+          code: "print(1)",
+          outputs: null,
+        },
+      },
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.code_execution.start",
+      "inference.code_execution.delta",
+      "inference.code_execution.delta",
+      "inference.code_execution.result",
+    ]);
+    const result = events.find(
+      (e) => e.type === "inference.code_execution.result",
+    );
+    if (result?.type !== "inference.code_execution.result") {
+      throw new Error("expected a code execution result");
+    }
+    expect(result.data.result).toMatchObject({
+      requestId: "ci-1",
+      status: "ok",
+    });
+  });
+
+  test("content_part.done emits citations without duplicating text", () => {
+    const events = parse([
+      {
+        type: "response.output_text.delta",
+        item_id: "m1",
+        delta: "hello world",
+      },
+      {
+        type: "response.content_part.done",
+        item_id: "m1",
+        part: {
+          type: "output_text",
+          text: "hello world",
+          annotations: [
+            {
+              type: "url_citation",
+              start_index: 0,
+              end_index: 5,
+              url: "https://example.com",
+            },
+          ],
+        },
+      },
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.text.delta",
+      "inference.citation",
+    ]);
+  });
+
   test("orphan argument delta throws protocol mismatch", () => {
     const adapter = createOpenAIResponsesAdapter(createSource());
     expect(() =>
@@ -826,6 +897,89 @@ describe("openai-responses parseJSONResponse", () => {
     const usage = events.at(-1);
     if (usage?.type !== "inference.usage") throw new Error("mistyped");
     expect(usage.data.usage).toMatchObject({ input: 10, output: 5 });
+  });
+
+  test("explicit null error and incomplete_details decode", () => {
+    const events = parseJson({
+      status: "completed",
+      output: [
+        {
+          type: "message",
+          content: [{ type: "output_text", text: "hello" }],
+        },
+      ],
+      error: null,
+      incomplete_details: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.text.delta",
+      "inference.usage",
+    ]);
+  });
+
+  test("url_citation annotations emit anchored citations", () => {
+    const events = parseJson({
+      output: [
+        {
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: "hello world",
+              annotations: [
+                {
+                  type: "url_citation",
+                  start_index: 0,
+                  end_index: 5,
+                  url: "https://example.com",
+                  title: "Example",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const citation = events.find((e) => e.type === "inference.citation");
+    if (citation?.type !== "inference.citation") {
+      throw new Error("expected a citation event");
+    }
+    expect(citation.data.citation).toMatchObject({
+      citedText: "hello",
+      source: { uri: "https://example.com", title: "Example" },
+      textOffset: { start: 0, end: 5 },
+    });
+  });
+
+  test("code_interpreter_call emits code execution request and result", () => {
+    const events = parseJson({
+      output: [
+        {
+          type: "code_interpreter_call",
+          id: "ci-1",
+          status: "completed",
+          code: "print(1)",
+          outputs: null,
+        },
+      ],
+    });
+    expect(events.map((e) => e.type)).toEqual([
+      "inference.code_execution.start",
+      "inference.code_execution.result",
+      "inference.usage",
+    ]);
+    const result = events.find(
+      (e) => e.type === "inference.code_execution.result",
+    );
+    if (result?.type !== "inference.code_execution.result") {
+      throw new Error("expected a code execution result");
+    }
+    expect(result.data.result).toMatchObject({
+      requestId: "ci-1",
+      status: "ok",
+      providerOutcome: "completed",
+    });
   });
 
   test("failed status throws instead of decoding an empty turn", () => {

@@ -240,10 +240,10 @@ const OPENAI_RESPONSES_PROVIDER = "openai-responses";
 
 // First-party OpenAI on the Responses wire (`/v1/responses`), probed by the
 // openai-responses plug-in. gpt-5-mini carries the full surface the Responses
-// body builder builds; gpt-5.5 carries the representative streaming,
-// buffered, reasoning, and tool follow-up subset. Structured output and
-// URL-form file input stay out until the runtime adapter supports them and
-// discovery verifies them.
+// body builder builds, including the code-execution and grounding server
+// tools; gpt-5.5 carries the representative streaming, buffered, reasoning,
+// and tool follow-up subset. Structured output and URL-form file input stay
+// out until the runtime adapter supports them and discovery verifies them.
 const OPENAI_RESPONSES_FULL_CAPABILITIES = [
   "plain-text",
   "plain-text-streaming",
@@ -253,6 +253,10 @@ const OPENAI_RESPONSES_FULL_CAPABILITIES = [
   "reasoning-content-streaming",
   "vision-input",
   "document-input",
+  "code-execution",
+  "code-execution-streaming",
+  "grounding",
+  "grounding-streaming",
 ] as const satisfies readonly SupportEntry["capability"][];
 
 const OPENAI_RESPONSES_REPRESENTATIVE_CAPABILITIES = [

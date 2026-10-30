@@ -121,8 +121,12 @@ const OPENAI_RESPONSES_FULL_OFFERING_CAPABILITIES: Capability[] = [
   "function-calling-multi-turn",
   "vision-input",
   "document-input",
+  "code-execution",
+  "code-execution-streaming",
   "reasoning-content",
   "reasoning-content-streaming",
+  "grounding",
+  "grounding-streaming",
 ];
 
 const OPENAI_RESPONSES_REPRESENTATIVE_OFFERING_CAPABILITIES: Capability[] = [
