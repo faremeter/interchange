@@ -1,0 +1,107 @@
+{
+  "id": "resp_05a6d27313fc952f006ae54bef397487d087a049ad1ca58448",
+  "object": "response",
+  "created_at": 1793412079,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793412082,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-6.1-sol",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_05a6d27313fc952f006ae54bf0092c87d08dbf77de28d920c9",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5Uvytc-03J3ka6UqtpTSBhqWtOPzg3tP9RVtpJcmWbaC6_ZOBOEW9Ayt-bzl-n9dI7wTkwE5AdqI_H3HekFn6tMCjs3e4-feRpna1tpJcBRo6-a15NG6pSUWxh6wblB_x7rkc6Jj5FHrXowcbRSxonA3WpHgCxpxbJm4X5sZrOBwCVkBheZSoLitNiM-9-m6Bv5qdyekltG2WVybE6AwC_Mdunsc_yUDXIDtwFo9UwL1BJpqclYdk86_MvochPSxerL0RNs8hfesJ6lbhVrImP7sX54n2W--Jnqeol7mkMjg4KGHakAShulfzD-dwKB672JEnXaI9O6QMNXmkFQJWTlBqVumsn2JAHzu9GP-HrCrKw_Y9XwG-4rC6SP9BUz0XvkG1Bv2Du6RtDv5m8g_D2zCvoD9qSKzkVJWEw8ONUmLWZ9AC5_yH5k2x8Amk1zQ1da6S4eQziaQYQI86EHFYw6bqg1IzNDK2DRROGb00KtCb1WKcON9NbVnn1kxGSEn5-XDIOev5932NErjho0HCbzuqCLiBZ3hI-27hlsPtpknSdh9DpWBP-5-AR2gN-U-EAPMYxfn9PjoV2HLuc60ujsbLghICAvd7c2YSGSp6D5610E25FFEB-Pif952HsJ-zphj-2x8m8Yjfi7T-zX0KZ2_xAV687QJG9-ukwcthzoBgiTSvfaeAu3Cpt9tk1GSolUPxkgAQ74u6L3cHG_GPMCCzib09A-MhVd2tKcG3iMojhvo4YaBHLea6ovRNY4exDSWrFRebn07eho4gYaqYHgVeJmATd8k-f5kElpJVgvwvFSuPcLMSdDBohUyV52CE3GK4LV_QWatcZgdwJEQtyOPUvGPc4Lmh7ao-Jf3TegmZcFV2B7JTEA2eu28i16o4GlGGn4qcZA9nQfA0vuPOmPWFGL57XUZWv5Em04csSus5h_wngXp2Ux6JhGPVvb1bt5rx7vbZ64_xqhUbnZOUoityIr1a0E7bB4z1e-7SMTKTrYZwPBKo6Wk7EMCbFI-azJvoTjXAhUOlpJjyaGImaRkhctSUE_ujGJw5qm2a2YRpEsEHp59byacdkVRjkJ3NJ-WdXWsnDIEZGhT6GT0mqp2GhYyZHVy0-jM31ErL75QJ9EzdHAj8GiJr-hDjYUJxsAkai07wTTNzvsvksCfpcmDcKIS1DScjRGslyzzFXOz6Nq107rrdKsv1HdtGlN6CjwcPS3KytKA-6vQMOhD3798wLinMRO1DwqTecw_I2NnSQ4z0eOiLbTkUT3XNlp0f3qPtgLdbikRji9p1wWnVxQSF8BDyYxqsJmXbWyS4VhDPG2ApjJjmY7fiOrNAtAApXQIzLDdzfWdZaG1fwmomxS0n1J-VyBwMuQnPmfyAPoTEUuvHFN-DVymj9E3dfMYoUzaUgsYiA-XgU_JX1F_k6tlKjuIsQtmPx9XJy1H6H2qtWPjXWQAo6Xs3eyS_GNOGAVfqhWl6bK5CxeVyEHSPwt6hdhXQbkQyQX647P8aXp4NHejJoXS8THk8z0Njs4sKM4LTigZrWRF00YDAi1xNlZ7BkYwNr6lFkiMeKG9QPXcwGxC_fP3wxQul_UD7mJivQ8oAej8wc7C7y7rDNwxZUjc1XD2_m3vk3EUtU4V7_dvx97ciWvqXgMFCOVrqd1bEdFbf_jKEswvGOWDuBVWa1eCjsQZbWxlHDMSen6O_OUY2aFYAgsyBwAye48DrRpZCnIffCXJbN7K4qgWkwQ9JFUrQc4UeCvS5e5N8eSim6v3ePAELmQUL3XdjT-byfrfTniub9PQvKl_MVxbuGzqArVtE1HXQRiFn66pmhgOQ53jP5CYVAU0n1Cm_uhb_BGwswFG",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "**Clarifying math reasoning**\n\nI need to ensure I'm providing clear and straightforward math reasoning based on the user\u2019s request. I'll keep the equations concise, like showing how to calculate x, x+1, and 2x + 1 using simple terms. For instance, I can break down factors like 1.10, x, and 0.05. The goal is to present everything in a way that's conventional and easily comprehensible for the user. Let's get into it!"
+        }
+      ]
+    },
+    {
+      "id": "msg_05a6d27313fc952f006ae54bf1c5f887d0aba2381475a5e35d",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost \\(x\\) dollars. Then the bat costs \\(x + 1.00\\) dollars.\n\nTogether:\n\\[\nx + (x + 1.00) = 1.10\n\\]\n\\[\n2x = 0.10 \\quad\\Rightarrow\\quad x = 0.05\n\\]\n\n**The ball costs $0.05 (5 cents).**"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": "detailed"
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 130,
+    "output_tokens_details": {
+      "reasoning_tokens": 39
+    },
+    "total_tokens": 175
+  },
+  "user": null,
+  "metadata": {}
+}

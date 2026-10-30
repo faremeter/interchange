@@ -1,0 +1,107 @@
+{
+  "id": "resp_05932fc289e2c490006ae54be2c85887d0946bacd22f3e5a55",
+  "object": "response",
+  "created_at": 1793412066,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793412069,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.5-2026-04-23",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_05932fc289e2c490006ae54be392f087d096598f7d9b80b25f",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5Uvl6eiF4I8eTWC177QLenDms4k7CCVOko-YOgj_gGurufVyvt-yakUjEHjp8FVybMqtx1rwQODCS-pqzVyq755XvrXVFyP2AaCBffb_NSZ7F9u3UkQe0IZpY1YEGu-0ECQjeKW4sW7w9Bqz7Lqdz2G0RO6TP-oDUnU6cVRLzKpZlsxV9qSOkX7FTpi0WdbQmq7InwF-s2lC2UxxrCzRetIbhbGESt3LhG42GB4so9KSc1CzsRhqkQnpFyuhSVQsnxxBKq0nlPRyiZV9V_XkE408W1osMH_jAhC5tmLfir0YX3ENLZNuGlWve-axTuF_dOPd9PA0KW6-RmqUNRlzE8P93PX1ZVEyueu0Ng-2IRqpCDuz7WL_VEkRcGaR2V4LfT7JYiy3JFoqXwEUhNJ6w268jCEiD7ai8pCpUi5I2QFXlNvrjPom_MV9M8okUkIEb41ZgjGi9-NwQOHkzwEg4XAwtu4uD6SxFtFCpBnnv7Eb5XP9qTNRexm4zElnx2DK59wv5z1K5K4Jh1ic1UM1WvAU7qZORKHtGV0sAG9lBcGTffSP-Nf3CfVX0zYopEwax08Bg3XDM4QsWO4VttHYXAG_mXhChbsKQsJ42xTNOb8HyywaSduKOP8z3ZTxKwT-eZ5iidNDv3rk9fwW9CBdtN6jT31Zz1heOrphHFevy4mbchzBzpFAckTtxFLlGkUFZBsLUA2XKVWgzQTuS0_IaE5XSAGr5F9xPQoISlguzw6uhhLqI1Qr3jSr09PuVnk3uXGaqZBHClGUmfP8zKSMwNPewig0xukv9evwooZ8AnRIuIBM5bb2eS8VssLiHFYboJzE4KMznVckBoiAfVK8Mpl3QTFiG1nT0Ap1_3X6pIwzDPrnqx15htnucQl2EOyUWx4K0orPbHK_5KRGqRy9pB5e5dm2RRdHZkAigDiSACzqiGurS_UQZ5NxY4mPHXAZP92wzxEc9-fHuUSxz5DlDSf-W201NSG-_1qqZ6Upwca17Y0tL_TTLCrNdH9jMnyoe_X2saSNYCScsTGnz4NhWkklshHmKnkkud42XAKe2Cr53SP2CbHwhGqwClKoGdi_O66NvlAJbTdEINrTqCnXXzo_2ub0T83se7lAsa_hpg-3R9nFPK3d9pNObzYlUaGf3DpS8vGde2soEXDpatpfWcq8B3ZOtClADpicivXW8tvpxWeMosnCevcDLwZ3C4g1LtIdnSBGqsZuF_dH20Nq3vfomu6aceUMAqCd8EiTq5NIiiowQR-KzD-6hPeFQ5v_tw_u6Zw4XmMWwEQ5hOODtrohoo2Uoa91EUeLrk6Y7ewwz9gbc6fM3HjHaUkyfJOyn3LJG5eg6AMiGdg9ZkqCig9wTkMr2PVMFumWAlxu-82MmgJM-uQwhJFtf9AArsXtAM0R6hFzrqNFMf8cLFWPSYlsyxKV6S9q_YddT6fTDFRrfs-vzDZjpQyPkfMm_qceGrRmENsw-mFnwDMA0Pm8w8X0IQsRls36dD4qdseFtqCrybxD_4eujzduO7jdx6ts2d18LGjsFAvm5_lf5XIC5PmR1fqBui5GZGoB742_7acB81EZLgkU3Vzgfuf8wwLUI-Tx6zz9Agh3UjDH-HTU8WKG7Fc2ApKWriGhTWNpOQKOTnYx9fbxGyO2i4P7kSOA7pCtv3bcK2nLG-Xj7M0f-S0MBOv4cXlWSy8beNL0YGmJw3UQAGmP7TVUX22e5Wt1hBgX",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "**Clarifying my approach**\n\nI realize I need to provide an answer with clear reasoning before getting to the final conclusion. I want to make sure it's concise, sticking to the point without unnecessary fluff. I'm thinking it's important to be careful in how I express my thoughts, so the reasoning is solid and easily understood. Let\u2019s keep it classic, like the good old five-cent advice! I\u2019m just trying to make it as straightforward as possible."
+        }
+      ]
+    },
+    {
+      "id": "msg_05932fc289e2c490006ae54be4b75487d0b8495fe27b3cc2b4",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost **x** dollars.\n\nThen the bat costs **x + 1.00** dollars.\n\nTogether they cost $1.10:\n\n\\[\nx + (x + 1.00) = 1.10\n\\]\n\n\\[\n2x + 1.00 = 1.10\n\\]\n\n\\[\n2x = 0.10\n\\]\n\n\\[\nx = 0.05\n\\]\n\nSo the ball costs **$0.05**, or **5 cents**."
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": "detailed"
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 137,
+    "output_tokens_details": {
+      "reasoning_tokens": 24
+    },
+    "total_tokens": 182
+  },
+  "user": null,
+  "metadata": {}
+}

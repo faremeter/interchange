@@ -1,0 +1,102 @@
+{
+  "id": "resp_00cce71b2be0bb23006ae42cd51fd887d09600b0f2509022ef",
+  "object": "response",
+  "created_at": 1793338581,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793338582,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.5-2026-04-23",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_00cce71b2be0bb23006ae42cd6087087d08ee5217964220591",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5CzWDhrOwP-NtAxhdIWCFIsDxFydGh0Po0hNJpockT3uxtNV6AOZEg_igSDaMs6XYHVz94hYtjtuCLfecJntjDVYt-1kbhVLIRuhKz_VWZFTOOcQ_xM-tSEBoOJxkMcGd6qqA9oalHlLed4aFlhT1wLumlkvCz66cavtxXzHmcSupnSEehFcE4llos3PiZT9TVGeSgo5C4jQI513hekGTpFHxwSTAdTHQkZSgD0YBUYGNVqMMgFFGjvfJei9nJ4FoFPy42dC5tpvjuAQbTg1UvWsyaHDwztbLp_ZYuvL2HFC-IE0510yGOj7MCjVJdH1iip1tdUvZiWlHwg5glr0DE2YIeeg25PHXEzxxoBXq27dHkOH_aX7nl7QB6c5K5Fv_jxIT9IjK_RQKACDTSazDzeSphL7iMRfpmp99cj9x6vT9llbMKtz0GCsrlPG2sCt40MkhkcWlRLEpbyILLNQiTcWAYfQb8G7UmCi3tH_paf1s7AvMzyzw1FO_PRB8YuK-FJ4D5AXMldpJLPjYsshA-NaQkvyKMl4u9BIvUoyXKEpG0R29danTutq9_4ciTPGK3wHHYh6K3Xs_rNRpqlUN8kcSoESgwgaeQHNhNp48kyBoLrJVzYKMIVPJwHt8kusAk2pagT5ObT8C638tAOhwvnBnSr5shD57o6k5eiaEq0YEAbvmWc-cfut0RNsGd7Nu7Ln_LdFV_Tnd2rjBmbY5DEyhUCKFxwhcxcTePcoCrxDKs317CzS1umShWv3WLDxSQ-9DknRyDtoaTYnmoD2PrNcA8dlcAg1cay0YooWTdsUiyYQUjZZFt-2ltC7SgWOyM1gO8t-moqqoBwoEOWw4darXpr24lDsjzH87SHAnprBZzS2gGN4pJaXFQtQLHpb6dO-7cm4d2X3X_jjVQSR5pbwFsD0YL7WW35qJjg7W7DunifjLY7tS6isiY2VLslDkBhL5EtqndnGY6j9gD2wIGkIe5imEhU4MXDsh35w8ZnICQq0dKvGHlVIbhfpaZfUCUmArbJLHqtTTgyxDJ77e8uyoy5pDuvmnrZkTnyPhtpH74z5rKXc8ce7NtzzwZDkqTaTXCgNGu20PjOxPdOMh3T9GDD8flOyTp-y9Z4QT5C7EPpIkW6bZ2beuBVrs8GysBHNBbjqKzFfd_5ucoerzSPRcOy1hvs0F-38TNGfKUdxTCuBcL1Lr9xzJRIw4HpRq0XXixZbHBmVLIJeizN6aWF_AzNykXl6b27HnVBNPeJQe1p73GCTIMAam4tJSpBllQRkdyIpKTJJIHMEGprMii2syG2hbFZZsbzqvtAd57RLD-NXPzRw9n-qX7Z1Z9OjYS2-y2mj2kwCeXZ1U6-N2uKECbtwI6O9f3GdSmxrESX4oSpdfiN2aUUJ2JO6Y9-e1hApoaaNLnMfP_C0OAsggPUNv6EkhMFAOMCmVh7FjBE2K_oBSQRXmDP0iUcO5maeCyP9n-gbHn1XGoCXkDBng1WxfKpjCMyHPYbSZokR_YRBVOFPiTsWwE_PcMbDCk8Xi7TmUkXdPq4CPBMLW-aV0fR9WpaHjv89stUVaXTkn7cpkb0=",
+      "summary": []
+    },
+    {
+      "id": "msg_00cce71b2be0bb23006ae42cd649f487d0a521032b90dc4c44",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "The capital of France is Paris."
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 19,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 24,
+    "output_tokens_details": {
+      "reasoning_tokens": 11
+    },
+    "total_tokens": 43
+  },
+  "user": null,
+  "metadata": {}
+}

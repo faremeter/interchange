@@ -1,0 +1,116 @@
+{
+  "id": "resp_035f7b620c6bc4e2006ae42cbe593c87d0af9484a05f0469a9",
+  "object": "response",
+  "created_at": 1793338558,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793338560,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5-mini-2025-08-07",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_035f7b620c6bc4e2006ae42cbf9f7487d08ffe76ddf013d225",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5CzASO_jZA-17rBVWqR9CsmtLilE90OmYPOSKRUqFR0hkpLqY60SW9pgPWP3pB4BT_8ycO7uL6SWiBkjCjT7dVQtnCPqMAzvHX-U4NTDqi7aLatNPhV755Y91zfSt_HHigd7Bz8386Y5cPEPZDRiDXEHBKgdZG9MzpsB39ma0qV27j4DriI3f0Hr714o6kp49du8lcJFDx0gH9W0Kdqr-fcohPBPmmerwNpUtkseWWjj4Ybr7VKZcfKLmqfbkj_3us8pJYp3ilu9GQwSGImzxPLn_ClfqIZVQp3suGOCi8HCYjC_jN0PUUy2ow7qFD4tqn6gq0Ff36Yi6bR7L0IY07Ulpy2HfSFz3zOCfv5THmbolFJ7VihfXgu4-5JjAPYzl_Vw3lyA7jnl91lZzwSlXnJ0NXwqEeawX2cJ8GKmroC36U36yMQjfn8JeHdGFX9Zzf1SPSwRy8qU2JYHdbl_w3CZOD7lgx2J3IWf3wj7IGdEQnb4CQ0p6tI7TBJ7MYR8UaPlSvRZzbImPxkHzz3OKg-oAoif_a3k8p9laUxZwGiU1BGaExYbgP5uFL7PnT4LDMnoUoCh3Rn173W3WpqLhTtcrDt-uU17zKBPnn4_6xDQ6EA6XLgv_YEeQIqVlO9PO6MF5H7ItMTdfMU8N_40Auhu70cFANlH-Wl5_O25YHxsOUkS_hkFSy6pnCKS_zjKiSWJgIYCVUlpmFMIoC7c0NYfdRQxVpT6QR-OTGCPGWmAEDTOwWoI1EfdVv_j5G_TdOhmplLZe8FmPCysKkiS0OKpMHNxdDzNX4LrDufrTANQl2UZgkmIgt4uhMjygojSqo_CvEehfJap1G-EtFXmI7z-CLX1FPpXMdYUREVT6MtPw6lXBKGGTH4T8xyIo9H7qju1p6vUig8VB6Zt_BcZ04PBxIEsbTTW9wQK8n6ckIYZT4IAqXxhriQ-6nm-dH5XPOVIM78sQQrRHNnLirh9AgDOwXk-HHXg3sPLpavNnJcM-zcsYALtjOlZLU35Y0CPMcflNADXSnrSedv05sG9oA9ZSI50tEHvFw-NbiUYb_B9vTEoJOyhly0TvpdlRii0IVvK1SuFmewPnTjqb2pSUwHD9Jo2QQ4d5svbkUHVzI1SUPFP3YFo5eOO7JAej2l5eRMcnYgr0-r_bEqrcOJDUscIA-1yNptuKyWExDrNeQUkVfdGQxm0v6WHmnP6mK4HHyYwGrE6QXpEyfmZTGJKqZEeq_9z_cBo_qpEN4CbCI0EdorzTshtqbALAdLO5I07ILRI0zcnzVZeYvkNAkxqBnsauC0QROmPYnbaV46SQl9yTKGcqJsvwXCFeA9yMOj721ZzYgVQBYO3Pm7T_U5xkVFr9Bs3xF1kvkRKsyV0xs3pLI4-HqTsMg9qScZAJ_zdL68xpBCGZ-L_M5La_adHIGHaNKtydQSIIpf6Zv1KFgs2nbltuqVMuUlIk_DEpT7MC7RM0KJoqcPJlCK3vnH2UsLvYjdmt-cMxB0fo6RmGFjBxYFn7r8yJOaDMKtZAQt-0jGng9J6ycm6peIYzDmB7HKttkVnC4_zm48dyCKqUMWCuKOijgAtU7Rd-JN8vh2NRERmNCA0S6M9msMRD8o7fKfiwfYYMSJT8EgsOvnaJm9f4Gpb7UengjbNAHIGdLnRL9wWL0lFNRaVHXv_RaWIodR5zeTiYidGJglXVMZXo0hNbH70Q8kvtjuxyCxn0YJvDmmUdlnV7riK23XXg0kn-t8O7wDdiWYsxB8xEGM9JZE5c-QaCPC7Glrh0fidWrEln1s1YZ0gDsNuuxwzVyKiNIv1RLtQv_4t_zis34eVZfpZBxgazDD3vS4sqjPDzmStxC2pQZVA6VUEKw0NhimAlVBRtpVtZ25dPErkpfU1al62bR2O71dLvVBL15gh9mgLo3PYO3VtROdNF7mkphd9bhPVs-3M-_kGaHJF3XFJUdicf53EY63qv8dpYaxaVCqWJ71mR-FtOZUr1Lvb765H88Lnxgib0ABMrPC6bzbgAb1ReE19RHRKP5_eX-cnDvGOyp2l9OdJTWkyL0L5gvnj1bG7IwMJq56oxpe-8VSJpAOlvwsr2gMkmQH8bcxTC-xMNYgV1RnYCQOKamJ8T0gJiBuTw8MFuOYBzUNRuDxoXy6vh8LpTpSJJzQHf9oPxl5EjW0LkYLFSfftFSicjMTiyVijEehqKwgzjmrkj_eS7XqOD2vVApOFLmD1CW77B63qmwu_ml0PXNWzo0p0xf9ZDyTM7MOXVQUnl9yrX0ulAJGZloI=",
+      "summary": []
+    },
+    {
+      "id": "fc_035f7b620c6bc4e2006ae42cc03fe887d0aa42f62d667e84c6",
+      "type": "function_call",
+      "status": "completed",
+      "arguments": "{\"location\":\"Boston, MA\"}",
+      "call_id": "call_CETI8e9aBonMt2moFrzKkZrb",
+      "name": "get_weather"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "in_memory",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [
+    {
+      "type": "function",
+      "description": "Look up the current weather for a city.",
+      "name": "get_weather",
+      "output_schema": null,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and optional region, e.g. 'Boston, MA'."
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 1.0,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 73,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 81,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 154
+  },
+  "user": null,
+  "metadata": {}
+}

@@ -1,0 +1,102 @@
+{
+  "id": "resp_0ba5f6c9f6a0bdf5006ae42ddcef2c87d0ae6e79349d6d2fd5",
+  "object": "response",
+  "created_at": 1793338844,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793338845,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-6-luna",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_0ba5f6c9f6a0bdf5006ae42ddd87f487d0a4452802d80bccae",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5C3epAXEZyv9ISpwsywkVjzUSQN2JyGVYgOtKAknoGoNnhuti0EIxg0lRvYqlFUnRxLOu7bidvj5Df7y0ClDt9yQ836YhjKf94VLSIkTdEjjIiGf_pL5tVXX0qzMapZBqd2qyq0_EpL79rHuPq2RTlUUTkBqnBSIpcm6AywF8GF9ZzncMpP8iGsCe2oDoe4O61BcD3kaCt1h3Irl1_JluB30opu5Ry7idTeTglCJQTshGNbqAYwUGrJQFf65S_JKX93_06aJp1hcgEbAuMUdbHGisD4dv9-BVwTABgtapiJS-YIuPKcAaysPN4Jb_QZS_pPpmWy1Qngxg5o3oN28Wxfx9DdzN1xBpNmfkriCM3MCnAZY1oZWsfHK98XIpX1s06x1-2facGU26UxeyI34ZyTkYQ-mJwfn2v3dTXCmAjTewGD2DVN4I_6huNpWi3QLs9We6FQ7kjIGIQ5_axAy3TDifooU-jheM5f73z1EWHHqepxY9Byv1BVgnu5cJTb2Uk38d25J22B7mlu3dIRPBXEhECyZUHJppQs9Aotf_aOeQKK0nQEijL-jXOF4XygSguYO577VoXuM0LjOH515WLgW5w0N281fFUcGx0GnksDi8Ctz43fW2ub9e1Vhl9sZP5xyndwJHHUmjud0aqMIPO84qjs6gL1qIFHcil8S6HTUS1MzfrwjkuJyAOgVpQA6ROYzxbH4reNshl8OgsTMZvaKzjiUPMljIkOdYuSHMM9B3N15ztxfhItPgy75-eoO5y1EzMlh1I96y4HKJ2xFHvmTLTldet6c59v-CYCEWr-Pt-kcSaxaJYbShwanT-BQzVilyURjTZDmOruNSiop-4vflWXkM7EFeNHfBJmZrR8Kz39vW1-gJdnpH_qNDM6rMNXWBY5qsyD5hIk-Vu4LG0nX7Y8DBhAheJ3_zdVdlzkpuFM9rRHxNhKSyrOXuLXChRJt8BAqDfg5_xe1z3X-suiGrae5dauNZiXx82ri0TYNuD01rW1PJsM4ifxVuXFj-TjumL0XByrz2eCIbCvhXT8yM2uWJebc2jI5PhXR-3yQweuuypIIt53LR5gnLNqHqwGgofnNdE6kclJCLsFYJec1PAJjd8nC4ZHohFPBNF30UnCoBdIm9b7oYe9fO-NRL8GFTVXb2_I263FAE6s8A9iurUlwmN3RsUTzcZFK57cxqucNzJBYjO6JuMib9WMYfwXTZHQJnR9KjD4VEQU0e4AunVxMKYSPzxKNWbQWBy3VEL5yN4yekqpac69TJmH-23y9TU5OnyXASFW_1CEqRx8WPPHRvKx2GEwtdrAMOUesf0xBc-Od0QYbV9vjKaTz2NQvOkxokgYhFeL9OBDWRU-OeTJRvhty-oxnYzqJ7dL0mFPoaVXIMP7pTEE4ZN3HbZSmSzeb9j2MjtiNvEbEAcEUKJF7OcVnfTxtk3zNDCk45vg36DqosnFiurTDEkpmI7ViJ-hCBryTr0iUXTa0Ukh6A_E29ZPtWHTWzBRLpDv9gfkS0J9TCUKcNC5QTDRjTfuZd5WQn7HiVUnp-zn24skyAL278rR03TKK-r8ZgKkaLzkfV1TFNUgBeSoRXr98xwp8-Lx-u19wS8Hc8w-CsZcoHF4GyrYcnNTfESaIN7f7WEaalvFYRCrX7BhgOdggR0jz4HhmWAl5MRuVOOOeedav_ncJlNnXOaPzaY9rN7vMUcvAbNT6-u27Lnux5gKfOreVLg7gQkiQNVsKhOxdYDeWZZIiG2PWkm6qob6zChCnx4fuwLeNl7lrr4lDHdmITrQjHh7vIhu-J2KQLPi947TG7G_6z1UmC5DIUqgvlh0SFpyuIFiG-lfp82vKozdoaDZk-o3zLrOzPf73U_HM62MgIg==",
+      "summary": []
+    },
+    {
+      "id": "msg_0ba5f6c9f6a0bdf5006ae42dddcf2487d094e6ffcf2e78d39c",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "The capital of France is Paris."
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 19,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 48,
+    "output_tokens_details": {
+      "reasoning_tokens": 35
+    },
+    "total_tokens": 67
+  },
+  "user": null,
+  "metadata": {}
+}

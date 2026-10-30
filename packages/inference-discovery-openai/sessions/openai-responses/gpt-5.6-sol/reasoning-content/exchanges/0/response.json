@@ -1,0 +1,107 @@
+{
+  "id": "resp_0156f31c49625c42006ae54c0310e487d0ba43c1df483c19e5",
+  "object": "response",
+  "created_at": 1793412099,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793412101,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.6-sol",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_0156f31c49625c42006ae54c03c3ac87d09d39a0f05f228ba3",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5UwFQp4yIO3HtUVi2P5uHv2Yt7X81NyfEqanfPpoIC95k7VU9Wko1Nk6Trk07bE0IVs_fb9Jr-t0njcPvOpbf0eq3-wtSX5Xm3o09YNP3MGQZQ1MpZw5S_ivtfZIFRAmV2vG2xEZcmq5CIDnTBE1NsTEUB6fYKXqcuXOkDbhC6keUj-H9dUF3tmCXmTnGe0J0iaMTDdXW8CMWqePAruIgjlw6B7RlgOAERFgWiBYOC-6yoqfsZsDUCUnGmHvnol4Zif0WUhDmd1gfqatnP5_DeBjZnkeIyxq-fMEV758G0cljnWi04keJ084AvvCxLW5nhAJ7rlMzCIMwSUPAwBComVh5By02uyth1GLiz7M_CxrYHPhsoj0V5G3vD_JWlG1UBmTg9eyLs64RQ1TfafdqozG555Innc0Ofe4-zcPJ5WkBQr6GC4p96eFBAtBidkE-gqSHkVlpRZ6hFmkS55zXZdxJPT92fC5QyAXKpPdGKkrh8lT1TDTo5COYwRskP9Nb99AJnODJaXKIDIatuwGXPeQO4Jm4xU9fMdcxgHlsyiHf6A1A9FJL8VkSFnoBEDmGUqbVQPDdRp9YiSs_zA2tHaA-vbKfDjKPTb41zkstQ_VWuTwz73OaGDvnz9xC26Lxld3wNX1GPqPp7VATMw5gUBmjC9c0mV-ViF6ue0IIogZ93bnxc6CeEWEi1d6dqxudqoRnMWxOcBNql4kk2rGmU55TNXHmnyIeuICf7N4O3jRbTVabERF-5nP6hyNwsg1fpDTchDn7vdhd1MHkiNanqAVDPfzEUBSff97eDs4sj1r4Tf5PVsYKL6AIHGqRunEC9ag_hQLKQeiVBCHqtuOol1_Sba_NnNhUkWIiI_3H9q6YOOG7ddQQubwXdKTxANrXWZKrapM9meCyCUBk4CPiJWD-CuEKrqCJ-GiApU1_8Flqbb7AjdUvsY7efYfIrf9AfFNlahPgGcBy2Gei6kKBPdm0XU0Wzwmjuo5C5LST4EIJT8JxjNLJh8uIiamcdX6CKRCdl1CNLFRtQeszsDjckrOc8bZVtk_5qPiF0ndd6I2-H-sB-gfhUMB592Q8LvRlViBTj0vr0ilZI3c_z0cZ2RvKYASxYoaWSinyVQcQMbB4Mlrw9xI66Zk_NNz96S9fIr-wd6Z5fZHZIoD1v95HakAWZ4U8Fhb7s5vyWsZ1FY-waT9msAwqbM54Toqd5aW8DCAB5gmz849G8uvL1bOOpxqzFOgPXFXHYTwTwJHW4PuFmGYvkjJW-IddK87ITZaBAf9g-QsSXse1E-0xGD6c9c3SzZHmizoM8z0W5fH0ImbSWYZ7HR2u_V4nufnXZkIgNYHBvjrFBZwTb85hiyp9qc3YKHtu48Ya5rUY_MvTUlLcYZOeCb_WEnp0aLHooDSfxljqFxz9MTCN3y1dWyMFAMTqsbtVs61vB_4hLShjnXVtcXNpwMt7ZaW-60DvZSrEeFmOH1fpsg-a4IekVL_3V4dZ77oJc8phQeMOI8OcuGAGWMgx3rp1CPEeI2TRynwCSFGWaMq58BNFdYltsH869bE23sBjjSJO6mR_-eEbMEFcbqixSkyrsua1ArHHifplRGZw3vFp6TIR1jMYNWkYhoZOpnhF3jcSdq32RGRl4g1btcqCPBs6GjGVN2htWqiTRssdgkMTXq33TtD5EOh__q1PKnu5egQOX1WlLJFIgSt1ly2224ylDZPGoVNmFjc3jJEuhLcNtKFnn3PfiZyAB8Tz6ppfv4jYFBZSdBXBPnNHADjl3EEDo3dZivo6Jh7Ku21ZHD9jZ8uXM2Xj14pEhVFQxCvHAVKhJoiPnmmgml_YwQTMX19IkZkRbCnTuqwcr9iKmJuEKU5D92OEggy34o5_A==",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "**Clarifying a math problem**\n\nI\u2019m working through a math equation, needing to reason out my answer clearly. I have the equation: x + x + 1 = 1.10. Simplifying, I get 2x = 0.10, which gives me x = 0.05. But, wait\u2014I think I need to distinguish that maybe the intuitive answer of 10 cents seems wrong. I really want to ensure everything is making sense here!"
+        }
+      ]
+    },
+    {
+      "id": "msg_0156f31c49625c42006ae54c0529e087d090db1a2dffecbedf",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost \\(x\\) dollars. Then the bat costs \\(x + 1.00\\).\n\n\\[\nx + (x + 1.00) = 1.10\n\\]\n\n\\[\n2x = 0.10\n\\]\n\n\\[\nx = 0.05\n\\]\n\n**Final answer: The ball costs \\(\\boxed{\\$0.05}\\).**"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": "detailed"
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 135,
+    "output_tokens_details": {
+      "reasoning_tokens": 45
+    },
+    "total_tokens": 180
+  },
+  "user": null,
+  "metadata": {}
+}

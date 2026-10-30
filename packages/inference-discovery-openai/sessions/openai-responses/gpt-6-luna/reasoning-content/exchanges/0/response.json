@@ -1,0 +1,107 @@
+{
+  "id": "resp_091f8a39efebfea0006ae54bf9aa4c87d0a0c430bbece5b595",
+  "object": "response",
+  "created_at": 1793412089,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793412091,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-6-luna",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_091f8a39efebfea0006ae54bfa135087d09fb31aaad2077d64",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5Uv76AdE-q0KSPngkytJFQ9VYHR5Gpd-lQUa6kOA0XMjuBlKV_yv7EuaqUwzdljIN9gKps9tisyz0ewL-nEDwfXcKxN8yXBcmzEjj4Gt1qk7506KczLdLXowLM5Bycb-WmmZzGfRU9jLBvqx6IfRuvYVGA1wYmA5H320pm3tPp5KtdrRg2niC7JJDw1FcqPOu1jsqRNl9Ega6Yekw-IxdsdorYhgXGg_QRcIHra1JG0ugkTaII9tmO1JSHuPbTMh9bBzdVED_v2TcyN-XVbF4yAnHLyYHxEXgtGkPiK4tx11PBsZUV1IKIO-JdvWHfPLpEm5Cmg_f04Hjn484wHeCyXL-9zg8zFub_AI6cZNUp79DqGhFUSik2O5OSCu3COekTUSto6Vu-V7mgKjGROnf_7jOO-3aIzRsr4Hl-DYpoE9qsY-4NqpnDmjvm82-1Dl6isp6deb-jkcYmuqBRBFcPnx1ivbA2t0_jNWvOinf8BlXAJ9rlc1Jdq6Ye35QeBTnrrLGTUCOu5nl8fkRivA64zT4xDY5CKh9v37CLVZppVgAVWEGsHddr4SU_y4v4VMdZ0UbyR_TshxXECqiLwbyLkTQDRomSe65HcnueaGirnP-CiIU3qvrOfLwObrc33At_v-3zj4j_Jjio5Vejq97ewjP31JhrxUfCSRNi6St39UiW-2f_uZkK6dAW_15th4gQI0FyJfSFJotku7S4yoJPYbYY89g___ScX_L7d9qv2qPlpl8X2pdqmVSaSxR_gosdo7LT2_Sn3q505nh8_bxPsdyq7LwrkE-TnNDyR1KmKX4gKVo2cFwb0oJQPEfB57gWP2A9iJvcTGWtZpHDu_htVZUXuMxB-alEZU4wjzOWtjrW0zA7jWMQpPbHjCgbVIA-7j9RfaXtWdHT-hxXDlFVt8kE5SdmeC1-QOiW2fETNr6YAT_KU_TwlCg9dSEeJCbfAqPUmFtoIBRdmSbe9h-L9t5tqGwwQ3QHjiXC8mOvlEnxpFAlDDFwcmUTIcfyebpduLePI9E_tjo65YQ7_-5QnuFriR21Uz_kRLvMVB_nA4IqhjVRLyRbLUaID_uKRr4Jghkl9_L5zc-sYh6SGdBLwZ6McippJPqGKItTZnfRgP6nGPeGJztu-59fQnYYyPJdfxrsUXo2l3t1olg25LESmGzUw3SHdPMo4Ozwlt-rMbQLFfmRE8Pn3jiJRfoe1wLWNVJF_hnOiaWaPRYddwXPvzVMpCoWOvhHSh_R2a8k0IpPANF0Pcxf-FZrAzprySJvLYSPZpscEbEpiMtXiaUi5_bHeFhlY6L7i8cKclfo8Rv2Mcwdr5LLYOhy7Mzem_z_17yl0uqyFG0gJXH1JdamzxyAkn8gvcnUVwLi1yuoRgA_vKoq2Lhio3RvKs6JbhS-uElf_e_JbiO09K9cfg9igBmdwlZ7cMeYKzuiy1dWB9M9F5TYkilbE5T4I4kAzARZ2K7Sn9aU3ZpP3pw1JwtDz0o4ouWSG57KupZ8uyXmNe_V25TydagkoSJasp1oUvcIzzNBV3Pb0B1xsLtHcjiDAXeHBrg9K2Z-X28X2kSthtqJP52pNbnoudTmdmkhm7ekNoHFN_acP84PZHfUd_tU_Ne0T7-Uf2zjcxtnvUjWRohwe5ZZiReF2YrJjpJKVuGDlr2XvZUWFMEQqF05mExFhLdHJZC62-PTHO4CzdgD1XV7cbkeg1ZLePeTH7a5FRL6agLlVBNlZ963isHgqAJCLcnUQRGLeGKSypX1jyH7cI16VcC8dwYvRdZnCqH9JPA7vGzVg_A6wwtQPB1xM7BIQTQa88Q95mTn6thsn8sOca-XGLeQ_7Bf6LcpVO3LnFirvOeL1dat1EyIUGuoXzF2dj5A==",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "**Explaining the trap scenario**\n\nI need to provide a clear explanation of a trap in this context. I\u2019ll assign a variable, let\u2019s say ball is represented by x, and bat by x+1. The sum comes to 2x + 1, which equals 1.10. So when I divide .10 by 2, I get .05. I have to ensure the reasoning is laid out logically before I give the final answer, making everything easy to understand for the user."
+        }
+      ]
+    },
+    {
+      "id": "msg_091f8a39efebfea0006ae54bfb443c87d0a2ea2c648bb4ce43",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost \\(x\\) dollars. Then the bat costs \\(x + \\$1.00\\).\n\nTogether they cost:\n\\[\nx + (x + \\$1.00) = \\$1.10\n\\]\nSo \\(2x = \\$0.10\\), which means \\(x = \\$0.05\\).\n\n**The ball costs 5 cents.**"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": "detailed"
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 131,
+    "output_tokens_details": {
+      "reasoning_tokens": 47
+    },
+    "total_tokens": 176
+  },
+  "user": null,
+  "metadata": {}
+}

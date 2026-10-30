@@ -1,0 +1,6 @@
+{
+  "args": {
+    "location": "Boston, MA"
+  },
+  "result": "{\"location\":\"Boston, MA\",\"temperatureF\":68,\"conditions\":\"clear\"}"
+}
