@@ -10,6 +10,7 @@ import {
   initRepo as storageInitRepo,
   createDeployPack,
   collectReachableObjects,
+  createObjectPresence,
   HUB_REF_NAMESPACE,
   maybeGC,
   removeStagedPacks,
@@ -18,6 +19,7 @@ import {
   syncRemovedPathDurable,
   type CommitSigner,
   type GCPolicy,
+  type ObjectPresence,
   type StagedPack,
 } from "@intx/storage-isogit/node";
 import { hasCode } from "@intx/types/has-code";
@@ -289,6 +291,22 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   function chargeGitCache(dir: string, cache: object, ops: number): void {
     const entry = gitCaches.get(dir);
     if (entry !== undefined && entry.cache === cache) entry.ops += ops;
+  }
+
+  // Each repo's pack-index names, kept across receives so a receive reads
+  // only the indexes published since the last one. Bounded like the git
+  // caches.
+  const objectPresences = new Map<string, ObjectPresence>();
+  function presenceFor(dir: string): ObjectPresence {
+    const presence = objectPresences.get(dir) ?? createObjectPresence(dir);
+    objectPresences.delete(dir);
+    objectPresences.set(dir, presence);
+    while (objectPresences.size > GIT_CACHE_MAX_REPOS) {
+      const lru = objectPresences.keys().next().value;
+      if (lru === undefined) break;
+      objectPresences.delete(lru);
+    }
+    return presence;
   }
 
   // A parsed tree with its entries also keyed by name, so a path
@@ -1093,15 +1111,22 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // serves the other. It reads trees only, never blobs; `seen` deduplicates
   // shared subtree oids across the commits of one pack so a subtree is
   // walked once.
-  async function findDisallowedTreeMode(
+  //
+  // A pack may leave out objects the receiver already holds, so the walk
+  // also returns the first blob `holds` does not find, which proves the
+  // commit complete before the ref can name it. A missing tree fails its
+  // read instead.
+  async function findInadmissibleTreeEntry(
     reads: ObjectReads,
+    holds: (oid: string) => Promise<boolean>,
     treeOid: string,
     seen: Set<string>,
     prefix = "",
-  ): Promise<{
-    path: string;
-    kind: "symlink" | "submodule" | "repeated name";
-  } | null> {
+  ): Promise<
+    | { path: string; kind: "symlink" | "submodule" | "repeated name" }
+    | { path: string; kind: "missing blob"; oid: string }
+    | null
+  > {
     if (seen.has(treeOid)) return null;
     seen.add(treeOid);
     const names = new Set<string>();
@@ -1118,13 +1143,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         return { path: entryPath, kind: "submodule" };
       }
       if (entry.type === "tree") {
-        const nested = await findDisallowedTreeMode(
+        const nested = await findInadmissibleTreeEntry(
           reads,
+          holds,
           entry.oid,
           seen,
           entryPath,
         );
         if (nested !== null) return nested;
+      } else if (!(await holds(entry.oid))) {
+        return { path: entryPath, kind: "missing blob", oid: entry.oid };
       }
     }
     return null;
@@ -2125,15 +2153,19 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       const receive = receiveReads(dir, s.staged.fs, cache);
       const { reads } = receive;
       // Shared across the pack's commits so a subtree common to several is
-      // walked once by the disallowed-mode gate below.
+      // walked once by the admission gate below.
       const seenTreeOids = new Set<string>();
+      const inPack = new Set(s.staged.oids);
+      const storePresence = presenceFor(dir);
+      await storePresence.update();
+      const holds = async (oid: string) =>
+        inPack.has(oid) || (await storePresence.holds(oid));
       // One scope for every commit of the pack, so a handler parses
       // a blob that many commits carry once per receive.
       const validationScope = {};
-      const runs: NewlyTerminalRun[][] = [];
-      for (const newCommit of s.chain) {
-        // The memo window now holds this commit and its parent.
-        receive.advance();
+      const validateCommit = async (
+        newCommit: string,
+      ): Promise<NewlyTerminalRun[]> => {
         const parsed = await reads.readCommit(newCommit);
         const parents = parsed.parent;
         const declaredParent =
@@ -2148,10 +2180,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         // entry slip through unchecked — append-only enforcement
         // accepts a brand-new path, not a path that contradicts
         // an entry the handler cannot read. The workflow-run
-        // `createPack` above ships the full parent chain, so this
-        // branch is unreachable on the production pack-push path
-        // for that kind; a producer that does ship an incomplete
-        // chain is rejected outright.
+        // `createPack` above starts each pack at the last commit the
+        // receiver acked, so this fires only when the receiver no
+        // longer holds a commit it acked; the pack is rejected as
+        // missing objects.
         //
         // Other kinds ship deploy-shape packs (tip commit + tree
         // only) as their normal flow and their handlers do not
@@ -2168,7 +2200,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
             if (!hasCode(err) || err.code !== "NotFoundError") throw err;
             if (repoId.kind === "workflow-run") {
               throw new Error(
-                `pack_walk_dangling_parent: commit ${newCommit} declares parent ${declaredParent} which is neither in the receiver's store nor in the pack`,
+                `missing_objects: commit ${newCommit} declares parent ${declaredParent} which is neither in the receiver's store nor in the pack`,
               );
             }
           }
@@ -2189,15 +2221,21 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         // materialization as the defense-in-depth backstop. Per-commit, so
         // an intermediate commit that adds a symlink a later commit deletes
         // is still caught.
-        const disallowed = await findDisallowedTreeMode(
+        const inadmissible = await findInadmissibleTreeEntry(
           reads,
+          holds,
           parsed.tree,
           seenTreeOids,
         );
-        if (disallowed !== null) {
+        if (inadmissible?.kind === "missing blob") {
+          throw new Error(
+            `missing_objects: commit ${newCommit} names blob ${inadmissible.oid} at ${inadmissible.path}, which is neither in the receiver's store nor in the pack`,
+          );
+        }
+        if (inadmissible !== null) {
           // The substrate owns the `path_violation:` prefix on the thrown
           // message, so the reason omits it (matching every handler reason).
-          const reason = `${disallowed.kind} at ${disallowed.path} is not allowed in a pushed asset tree (commit ${newCommit})`;
+          const reason = `${inadmissible.kind} at ${inadmissible.path} is not allowed in a pushed asset tree (commit ${newCommit})`;
           logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref} at commit ${newCommit}: ${reason}`;
           throw new Error(`path_violation: ${reason}`);
         }
@@ -2219,7 +2257,24 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref} at commit ${newCommit}: ${result.reason}`;
           throw new Error(`path_violation: ${result.reason}`);
         }
-        runs.push(result.newlyTerminalRuns ?? []);
+        return result.newlyTerminalRuns ?? [];
+      };
+      const runs: NewlyTerminalRun[][] = [];
+      for (const newCommit of s.chain) {
+        // The memo window now holds this commit and its parent.
+        receive.advance();
+        try {
+          runs.push(await validateCommit(newCommit));
+        } catch (err) {
+          // Every object read here is one this commit needs, so a read that
+          // finds none means the pack assumed the receiver holds an object
+          // it does not, not that the pack is malformed.
+          if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+          throw new Error(
+            `missing_objects: commit ${newCommit} needs an object that is neither in the receiver's store nor in the pack`,
+            { cause: err },
+          );
+        }
       }
       return runs;
     });
@@ -2858,6 +2913,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         existingCommitsEpochs.delete(indexCacheKey(repoId));
         existingCommitsScans.delete(indexCacheKey(repoId));
         cleanedStagingDirs.delete(dir);
+        objectPresences.delete(dir);
         const refPrefix = `${indexCacheKey(repoId)}/`;
         for (const key of [...seqCache.keys()]) {
           if (key.startsWith(refPrefix)) seqCache.delete(key);

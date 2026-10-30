@@ -3318,9 +3318,10 @@ describe("RepoStore", () => {
   // missing prior entry accepts only a genuinely new path; a path
   // that contradicts a prior-tree entry the handler cannot read
   // would slip through unchecked. The substrate refuses workflow-run
-  // packs with a dangling parent outright; the production
-  // workflow-run `createPack` ships the full parent chain, so the
-  // branch is unreachable on the production path.
+  // packs with a dangling parent outright, as missing objects; the
+  // production workflow-run `createPack` starts at the last commit
+  // the receiver acked, so the branch fires only when the receiver
+  // lost a commit it acked.
   //
   // The substrate keeps the silent-degrade behavior for other kinds
   // (e.g. agent-state) whose deploy-shape packs intentionally omit
@@ -3409,7 +3410,7 @@ describe("RepoStore", () => {
       targetStore.receivePack(principal, wfRepoId, REF, pack, thirdSha, null),
     ).rejects.toThrow(
       new RegExp(
-        `pack_walk_dangling_parent: commit ${thirdSha} declares parent ${secondSha} which is neither in the receiver's store nor in the pack`,
+        `missing_objects: commit ${thirdSha} declares parent ${secondSha} which is neither in the receiver's store nor in the pack`,
       ),
     );
 
@@ -3418,6 +3419,172 @@ describe("RepoStore", () => {
     const resolved = await targetStore.resolveRef(principal, wfRepoId, REF);
     expect(resolved).toBeNull();
     expect(targetHandler.onRefUpdatedCalls).toHaveLength(0);
+  });
+
+  // A pack may leave out the objects the receiver already holds from the
+  // commit's parent. The receiver accepts it only when every object the
+  // commit names is in the pack or the store, so the ref never names a
+  // commit the receiver cannot read in full.
+  describe("receivePack of a pack that leaves out objects", () => {
+    const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+    const permissiveWorkflowRun = (): TestHandler => ({
+      ...createTestHandler(),
+      kind: "workflow-run",
+      directoryPrefix: "workflow-runs-under-test",
+    });
+
+    // A receiver that holds the first commit, and the objects of the
+    // second commit that the first does not reach.
+    async function setUp() {
+      const sourceStore = createRepoStore({
+        dataDir: await makeTempDir("repo-store-omit-source-"),
+        signingKey,
+        handlers: { "workflow-run": permissiveWorkflowRun() },
+        authorize: allowAll,
+      });
+      const { commitSha: firstSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        {
+          files: {
+            "runs/r1/events/0.json": "zero",
+            "runs/r1/blobs/b0": "spilled output",
+          },
+          message: "v1",
+        },
+      );
+      const firstPack = await sourceStore.createPack(principal, wfRepoId, REF);
+      const { commitSha: secondSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/1.json": "one" }, message: "v2" },
+      );
+
+      const targetHandler = permissiveWorkflowRun();
+      const targetStore = createRepoStore({
+        dataDir: await makeTempDir("repo-store-omit-target-"),
+        signingKey,
+        handlers: { "workflow-run": targetHandler },
+        authorize: allowAll,
+      });
+      await targetStore.initRepo(wfRepoId);
+      await targetStore.receivePack(
+        principal,
+        wfRepoId,
+        REF,
+        firstPack.pack,
+        firstSha,
+        null,
+      );
+
+      const sourceDir = sourceStore.getRepoDir(wfRepoId);
+      const held = new Set(await collectReachableObjects(sourceDir, firstSha));
+      const newObjects = (
+        await collectReachableObjects(sourceDir, secondSha)
+      ).filter((oid) => !held.has(oid));
+      const oidAt = async (filepath: string) =>
+        (await git.readBlob({ fs, dir: sourceDir, oid: secondSha, filepath }))
+          .oid;
+      const treeAt = async (filepath: string) =>
+        (await git.readTree({ fs, dir: sourceDir, oid: secondSha, filepath }))
+          .oid;
+      const packOf = async (oids: string[]) => {
+        const { packfile } = await git.packObjects({
+          fs,
+          dir: sourceDir,
+          oids,
+          write: false,
+        });
+        if (packfile === undefined) {
+          throw new Error("git.packObjects returned no packfile");
+        }
+        return packfile;
+      };
+      return {
+        targetStore,
+        targetHandler,
+        firstSha,
+        secondSha,
+        newObjects,
+        oidAt,
+        treeAt,
+        packOf,
+      };
+    }
+
+    test("accepts a pack of only the objects the parent does not reach", async () => {
+      const { targetStore, firstSha, secondSha, newObjects, packOf } =
+        await setUp();
+
+      await targetStore.receivePack(
+        principal,
+        wfRepoId,
+        REF,
+        await packOf(newObjects),
+        secondSha,
+        firstSha,
+      );
+
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        secondSha,
+      );
+    });
+
+    test("rejects a commit that names a blob neither the pack nor the store holds", async () => {
+      const {
+        targetStore,
+        targetHandler,
+        firstSha,
+        secondSha,
+        newObjects,
+        oidAt,
+        packOf,
+      } = await setUp();
+      const missing = await oidAt("runs/r1/events/1.json");
+
+      await expect(
+        targetStore.receivePack(
+          principal,
+          wfRepoId,
+          REF,
+          await packOf(newObjects.filter((oid) => oid !== missing)),
+          secondSha,
+          firstSha,
+        ),
+      ).rejects.toThrow(
+        `missing_objects: commit ${secondSha} names blob ${missing} at runs/r1/events/1.json, which is neither in the receiver's store nor in the pack`,
+      );
+
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        firstSha,
+      );
+      expect(targetHandler.onRefUpdatedCalls).toHaveLength(1);
+    });
+
+    test("rejects a commit whose tree neither the pack nor the store holds", async () => {
+      const { targetStore, firstSha, secondSha, newObjects, treeAt, packOf } =
+        await setUp();
+      const missing = await treeAt("runs/r1/events");
+
+      await expect(
+        targetStore.receivePack(
+          principal,
+          wfRepoId,
+          REF,
+          await packOf(newObjects.filter((oid) => oid !== missing)),
+          secondSha,
+          firstSha,
+        ),
+      ).rejects.toThrow(
+        `missing_objects: commit ${secondSha} needs an object that is neither in the receiver's store nor in the pack`,
+      );
+
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        firstSha,
+      );
+    });
   });
 
   // A workflow-run pack transfer cancelled by a reconnect never lands
@@ -3484,7 +3651,7 @@ describe("RepoStore", () => {
     // commit references a parent the receiver cannot resolve. Under a
     // build-time tip advance the rebuild's chain would stop at
     // `firstSha` and omit it, and this receive would reject with
-    // `pack_walk_dangling_parent` on the second commit's parent.
+    // `missing_objects` on the second commit's parent.
     const rebuildTargetDir = await makeTempDir("repo-store-ack-tip-rebuild-");
     const rebuildTargetHandler = makePermissiveWorkflowRunHandler();
     const rebuildTargetStore = createRepoStore({
