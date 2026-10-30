@@ -8,6 +8,7 @@ import {
   AnthropicQuirks,
   GoogleGenAIQuirks,
   OpenAIQuirks,
+  ResponsesQuirks,
 } from "@intx/inference/providers";
 import {
   baseURLForCatalogProvider,
@@ -26,6 +27,7 @@ const quirkValidatorByPlugin: Record<CatalogPlugin, Type> = {
   anthropic: AnthropicQuirks,
   openai: OpenAIQuirks,
   "openai-compatible": OpenAIQuirks,
+  "openai-responses": ResponsesQuirks,
   "google-genai": GoogleGenAIQuirks,
 };
 
