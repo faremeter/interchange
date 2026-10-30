@@ -1075,6 +1075,7 @@ export const PackRejectReason = type.enumerated(
   "corrupt",
   "sha_mismatch",
   "timeout",
+  "missing_objects",
 );
 export type PackRejectReason = typeof PackRejectReason.infer;
 

@@ -388,7 +388,9 @@ The repository store stages a workflow-run pack and validates it before it decid
 
 The Hub lookup validates a workflow-run pack before it takes the deployment's `sidecar_allocation` row lock, and it holds that row only for the ref decision. First, with no lock, it checks that the anchor is live and that the source owns the current generation of an `allocated` allocation. It rejects a fenced or stale source with `path_violation` before the repository store stages anything. Then it prepares the pack with no database transaction open, so a pack that fails validation writes no row. After that it opens the pending projection and locks the allocation row. Under the lock it runs the same ownership check and the live check again, and only then calls the commit step. Git therefore still moves only under the allocation lock. A release or a recorded stop that commits while the pack validates makes the locked check reject the pack, and the receive discards the staged pack. The commit step fails with `RepoRemovedDuringReceiveError` only before it publishes, so that receive clears its pending projection and gets `path_violation`.
 
-A pack whose tip the ref already holds, at prepare or at commit, is accepted with no runs, and it runs neither the terminal projection nor the dispatch projection. Git did not change, and the receive that moved the ref to that tip runs both projections after its own ref write. Lifecycle recovery and the periodic dispatch projection pass retry what that receive could not finish.
+A pack whose tip the ref already holds, at prepare or at commit, is accepted with no runs, and it runs neither the terminal projection nor the dispatch projection. The ref does not move, and the receive that moved the ref to that tip runs both projections after its own ref write. Lifecycle recovery and the periodic dispatch projection pass retry what that receive could not finish.
+
+Such a pack is still checked against the store, because the ack tells the sender never to send that tip's objects again. When the store lost objects of the tip after it acked them, the pack must bring them or the receive fails with `missing_objects`, and the sender's full resend then brings them. The commit step publishes a pack that brings objects the store lacks, without moving the ref.
 
 This order has limits:
 
@@ -1498,6 +1500,7 @@ Pack transfers share the WebSocket with live session traffic. To prevent interfe
 | `backpressure`      | Receiver is overwhelmed                                                                        | Pause and retry after a delay  |
 | `conflict`          | Ref update conflicts with receiver state                                                       | Reconcile before retrying      |
 | `corrupt`           | Packfile failed index verification                                                             | Resend from scratch            |
+| `missing_objects`   | A commit needs an object that neither the pack nor the receiver holds                          | Resend the full history once   |
 
 The Hub answers every transfer, rejecting one for an address the connection does not host rather than dropping it, and one it failed to parse or receive with `corrupt`: the sender holds a transfer open until it is answered and queues later pushes to the same repository ref behind it.
 

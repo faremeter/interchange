@@ -402,6 +402,9 @@ function createReaderRepoStore(dir: string): RepoStore {
     commitPackedTip: () => {
       throw new Error("runs route test: RepoStore method not wired");
     },
+    forgetPackedTip: () => {
+      throw new Error("runs route test: RepoStore method not wired");
+    },
     resolveRef: unused,
     listRefs: unused,
     resolveHead: unused,

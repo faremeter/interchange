@@ -861,6 +861,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await pendingRows()).toEqual([]);
     });
 
+    test("a pack that omits objects the Hub lacks is rejected as missing_objects", async () => {
+      const agentRepoStore = await createRepoStore(() => async () => {
+        throw new Error(
+          "missing_objects: commit abc needs an object that is neither in the receiver's store nor in the pack",
+        );
+      });
+      expect(await receivePack(createLookups(agentRepoStore))).toEqual({
+        accepted: false,
+        reason: "missing_objects",
+      });
+      expect(await pendingRows()).toEqual([]);
+    });
+
     test("a commit that finds its repository removed clears its pending projection", async () => {
       const agentRepoStore = await createRepoStore(() =>
         preparedWith(async () => {

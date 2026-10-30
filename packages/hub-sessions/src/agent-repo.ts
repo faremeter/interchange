@@ -92,10 +92,13 @@ export type AgentRepoStore = {
    * a working tree.
    *
    * The sidecar's pushes can land out of order, so a pack whose tip the
-   * ref already holds (its tip or a first-parent ancestor) changes
-   * nothing: prepare or `commit()` answers `already_applied`, and the ref
-   * keeps the newer tip. Any other pack goes through the usual receive
-   * checks, and one on a new line of history is not rejected for that.
+   * ref already holds (its tip or a first-parent ancestor) moves no ref:
+   * prepare or `commit()` answers `already_applied`, and the ref keeps
+   * the newer tip. When the store lost objects of that tip, such a pack
+   * must bring them, or it is rejected as `missing_objects`, and
+   * `commit()` publishes them. Any other pack goes through the usual
+   * receive checks, and one on a new line of history is not rejected for
+   * that.
    *
    * `repoId.kind` must be `"workflow-run"`. Stamps a
    * `WorkflowRunSupervisorPrincipal` whose `anchorRunId` equals

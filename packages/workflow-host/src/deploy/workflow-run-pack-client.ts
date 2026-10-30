@@ -16,6 +16,7 @@
 import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
+import { PackRejectedError } from "@intx/pack-transport";
 import { SourcesUpdatedData } from "../ipc/control-payloads";
 import type { InferenceSource } from "@intx/types/runtime";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
@@ -40,7 +41,9 @@ export type WorkflowRunPackClient = {
    * `repo.pack.reject`, on a disconnect that cancels the in-flight
    * transfer, or on a substrate-side `createPack` failure. The push
    * failure shape is intentionally loud per the project's
-   * defensive-coding rule.
+   * defensive-coding rule. A `missing_objects` reject means the hub no
+   * longer holds what it acked, so the push forgets the acked tip and
+   * ships the full history once before it gives up.
    */
   push(opts: {
     agentAddress: string;
@@ -142,19 +145,38 @@ export function createWorkflowRunPackClient(
       if (tip !== null && tip === lastAckedSha.get(ackKey(repoId, ref))) {
         return;
       }
-      const { pack, commitSha } = await substrate.createPack(
-        principal,
-        repoId,
-        ref,
-      );
-      await hubLink.pushWorkflowRunPack({
-        agentAddress,
-        generation,
-        repoId,
-        pack,
-        ref,
-        commitSha,
-      });
+      const ship = async () => {
+        const { pack, commitSha } = await substrate.createPack(
+          principal,
+          repoId,
+          ref,
+        );
+        await hubLink.pushWorkflowRunPack({
+          agentAddress,
+          generation,
+          repoId,
+          pack,
+          ref,
+          commitSha,
+        });
+        return commitSha;
+      };
+      let commitSha: string;
+      try {
+        commitSha = await ship();
+      } catch (err) {
+        if (
+          !(err instanceof PackRejectedError) ||
+          err.reason !== "missing_objects" ||
+          pushTokens.get(repoId.id) !== token
+        ) {
+          throw err;
+        }
+        logger.error`The hub lacks objects of ${repoId.id} ${ref} that it acked; sending the full history`;
+        substrate.forgetPackedTip(repoId, ref);
+        lastAckedSha.delete(ackKey(repoId, ref));
+        commitSha = await ship();
+      }
       // `pushWorkflowRunPack` resolves only on the hub's
       // `repo.pack.ack` and rejects on a reject or a reconnect that
       // cancels the transfer. Advancing the substrate's shipped-tip
@@ -951,6 +973,7 @@ export function createWorkflowRunPackPushingRepoStore(
     receivePack: underlying.receivePack.bind(underlying),
     createPack: underlying.createPack.bind(underlying),
     commitPackedTip: underlying.commitPackedTip.bind(underlying),
+    forgetPackedTip: underlying.forgetPackedTip.bind(underlying),
     resolveRef: underlying.resolveRef.bind(underlying),
     listRefs: underlying.listRefs.bind(underlying),
     resolveHead: underlying.resolveHead.bind(underlying),

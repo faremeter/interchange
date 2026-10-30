@@ -3484,6 +3484,14 @@ describe("RepoStore", () => {
       const newObjects = (
         await collectReachableObjects(sourceDir, secondSha)
       ).filter((oid) => !held.has(oid));
+      const targetDir = targetStore.getRepoDir(wfRepoId);
+      const packDir = path.join(targetDir, ".git", "objects", "pack");
+      const firstPackFiles = await fs.promises.readdir(packDir);
+      const removeFirstPack = async () => {
+        for (const file of firstPackFiles) {
+          await fs.promises.rm(path.join(packDir, file));
+        }
+      };
       const oidAt = async (filepath: string) =>
         (await git.readBlob({ fs, dir: sourceDir, oid: secondSha, filepath }))
           .oid;
@@ -3503,7 +3511,10 @@ describe("RepoStore", () => {
         return packfile;
       };
       return {
+        sourceStore,
+        sourceDir,
         targetStore,
+        targetDir,
         targetHandler,
         firstSha,
         secondSha,
@@ -3511,7 +3522,24 @@ describe("RepoStore", () => {
         oidAt,
         treeAt,
         packOf,
+        removeFirstPack,
       };
+    }
+
+    async function prepareOn(
+      receiver: ReturnType<typeof createRepoStore>,
+      pack: Uint8Array,
+      commitSha: string,
+    ) {
+      const prepared = await receiver.prepareReceivePack(
+        principal,
+        wfRepoId,
+        REF,
+        pack,
+        commitSha,
+      );
+      if (prepared.kind !== "prepared") throw new Error("expected prepared");
+      return prepared;
     }
 
     test("accepts a pack of only the objects the parent does not reach", async () => {
@@ -3584,6 +3612,93 @@ describe("RepoStore", () => {
       expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
         firstSha,
       );
+    });
+
+    test("a retried tip the ref holds is rejected while it lacks a lost object, and the full history restores it without moving the ref", async () => {
+      const {
+        sourceStore,
+        targetStore,
+        targetDir,
+        targetHandler,
+        firstSha,
+        secondSha,
+        newObjects,
+        oidAt,
+        packOf,
+        removeFirstPack,
+      } = await setUp();
+      const lostBlob = await oidAt("runs/r1/events/0.json");
+      sourceStore.commitPackedTip(wfRepoId, REF, firstSha);
+      // The receiver applies the second commit, but the ack never reaches
+      // the sender, which retries the same pack once the first is lost.
+      const retry = await packOf(newObjects);
+      await (await prepareOn(targetStore, retry, secondSha)).commit();
+      await removeFirstPack();
+      const updatesBefore = targetHandler.onRefUpdatedCalls.length;
+
+      await expect(prepareOn(targetStore, retry, secondSha)).rejects.toThrow(
+        /^missing_objects:/,
+      );
+
+      sourceStore.forgetPackedTip(wfRepoId, REF);
+      const full = await sourceStore.createPack(principal, wfRepoId, REF);
+      const repair = await prepareOn(targetStore, full.pack, secondSha);
+      expect(await repair.commit()).toEqual({ kind: "already_applied" });
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        secondSha,
+      );
+      expect(targetHandler.onRefUpdatedCalls).toHaveLength(updatesBefore);
+      const { blob } = await git.readBlob({
+        fs,
+        dir: targetDir,
+        oid: lostBlob,
+      });
+      expect(new TextDecoder().decode(blob)).toBe("zero");
+    });
+
+    test("an older tip's history restores a lost object and leaves the ref at the newer tip", async () => {
+      const {
+        sourceStore,
+        sourceDir,
+        targetStore,
+        targetDir,
+        secondSha,
+        newObjects,
+        oidAt,
+        packOf,
+        removeFirstPack,
+      } = await setUp();
+      const lostBlob = await oidAt("runs/r1/events/0.json");
+      const older = await sourceStore.createPack(principal, wfRepoId, REF);
+      await (
+        await prepareOn(targetStore, await packOf(newObjects), secondSha)
+      ).commit();
+      const { commitSha: thirdSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/2.json": "two" }, message: "v3" },
+      );
+      const held = new Set(await collectReachableObjects(sourceDir, secondSha));
+      const thirdObjects = (
+        await collectReachableObjects(sourceDir, thirdSha)
+      ).filter((oid) => !held.has(oid));
+      await (
+        await prepareOn(targetStore, await packOf(thirdObjects), thirdSha)
+      ).commit();
+      await removeFirstPack();
+
+      const repair = await prepareOn(targetStore, older.pack, secondSha);
+      expect(await repair.commit()).toEqual({ kind: "already_applied" });
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        thirdSha,
+      );
+      const { blob } = await git.readBlob({
+        fs,
+        dir: targetDir,
+        oid: lostBlob,
+      });
+      expect(new TextDecoder().decode(blob)).toBe("zero");
     });
   });
 
@@ -3698,6 +3813,58 @@ describe("RepoStore", () => {
     );
     expect(await rebuildTargetStore.resolveRef(principal, wfRepoId, REF)).toBe(
       thirdSha,
+    );
+  });
+
+  test("forgetPackedTip makes the next createPack ship the full history", async () => {
+    const handler = (): TestHandler => ({
+      ...createTestHandler(),
+      kind: "workflow-run",
+      directoryPrefix: "workflow-runs-under-test",
+    });
+    const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+    const sourceStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-forget-tip-source-"),
+      signingKey,
+      handlers: { "workflow-run": handler() },
+      authorize: allowAll,
+    });
+    const { commitSha: firstSha } = await sourceStore.writeTree(
+      principal,
+      wfRepoId,
+      REF,
+      { files: { "runs/r1/events/0.json": "v1" }, message: "v1" },
+    );
+    sourceStore.commitPackedTip(wfRepoId, REF, firstSha);
+    const { commitSha: secondSha } = await sourceStore.writeTree(
+      principal,
+      wfRepoId,
+      REF,
+      { files: { "runs/r1/events/1.json": "v2" }, message: "v2" },
+    );
+
+    sourceStore.forgetPackedTip(wfRepoId, REF);
+    const { pack } = await sourceStore.createPack(principal, wfRepoId, REF);
+
+    // A receiver that never saw the first commit accepts the pack, so the
+    // pack starts at the root rather than at the forgotten tip.
+    const targetStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-forget-tip-target-"),
+      signingKey,
+      handlers: { "workflow-run": handler() },
+      authorize: allowAll,
+    });
+    await targetStore.initRepo(wfRepoId);
+    await targetStore.receivePack(
+      principal,
+      wfRepoId,
+      REF,
+      pack,
+      secondSha,
+      null,
+    );
+    expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+      secondSha,
     );
   });
 
