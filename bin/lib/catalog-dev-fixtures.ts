@@ -47,6 +47,10 @@ export const credentialFixtures: Record<string, CredentialFixture> = {
     credentialName: "xAI Direct Key",
     credentialSecret: "xai-fake-key-for-seed-data",
   },
+  "OpenAI Responses": {
+    credentialName: "OpenAI Responses Key",
+    credentialSecret: "sk-responses-fake-key-for-seed-data",
+  },
 };
 
 // Dev pricing as decimal strings, matching the API's string money fields.
@@ -87,6 +91,18 @@ export const priceFixtures: Record<string, Record<string, PriceFixture>> = {
   "xAI Direct": {
     "grok-4.5": { input: "0.000002", output: "0.000006" },
     "grok-4.6": { input: "0.000002", output: "0.000006" },
+  },
+  "OpenAI Responses": {
+    "gpt-6-astra": { input: "0.00001", output: "0.00005" },
+    "gpt-6.1-sol": { input: "0.000002", output: "0.00001" },
+    "gpt-6.1-terra": { input: "0.000001", output: "0.000005" },
+    "gpt-6-luna": { input: "0.0000001", output: "0.0000005" },
+    "gpt-6-sol": { input: "0.000002", output: "0.00001" },
+    "gpt-5.6-sol": { input: "0.000004", output: "0.00002" },
+    "gpt-5.6-terra": { input: "0.000002", output: "0.000012" },
+    "gpt-5.6-luna": { input: "0.0000002", output: "0.0000012" },
+    "gpt-5.5": { input: "0.000005", output: "0.00003" },
+    "gpt-5-mini": { input: "0.00000025", output: "0.000002" },
   },
 };
 
