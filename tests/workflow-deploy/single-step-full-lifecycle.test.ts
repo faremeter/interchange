@@ -76,10 +76,12 @@ import {
 } from "@intx/workflow-deploy";
 import {
   createDurableConversationRegistry,
-  reconstructDurableConversation,
+  readStepState,
 } from "@intx/workflow-host";
 import {
   createAgentRepoStore,
+  type RepoId,
+  type RepoStore,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import { tenant as tenantTable } from "@intx/db/schema";
@@ -354,18 +356,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // ---- STAGE 4: DURABLE CONVERSATION SNAPSHOT (4.4) ----
 
       // The run-boundary hook mirrors the warm agent's conversation into the
-      // workflow-run substrate. The stable per-agent store is keyed by stepId,
-      // not by the terminal run or its attempt.
-      const agentStateDir = substrateAgentStateDir(
-        env,
-        workflowRunRepoId.id,
-        STEP_ID,
-      );
+      // step's state directory under the deployment's top-level run, keyed
+      // by stepId rather than by the attempt. Read it from the sidecar's
+      // on-disk workflow-run substrate (the supervisor's single-writer
+      // substrate): deterministic, no hub pack-push timing dependency.
+      const sidecarSubstrate = createAgentRepoStore({
+        dataDir: env.sidecar.dataDir,
+        signingKey: await generateKeyPair(),
+      }).repoStore;
       await waitFor(
-        async () => (await readSnapshotUserTexts(agentStateDir)).length >= 1,
+        async () =>
+          (await readSnapshotUserTexts(sidecarSubstrate, workflowRunRepoId))
+            .length >= 1,
         { diagnostics: env.sidecarDiagnostics },
       );
-      const afterBoundary = await readSnapshotUserTexts(agentStateDir);
+      const afterBoundary = await readSnapshotUserTexts(
+        sidecarSubstrate,
+        workflowRunRepoId,
+      );
       expect(afterBoundary.some((t) => t.includes(FIRST_BODY))).toBe(true);
 
       // The warm agent's conversation `.git` lives at the stable per-agent
@@ -402,8 +410,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(fs.existsSync(freshLocalStoreDir)).toBe(false);
 
       // Reopen the subprocess's substrate in-process. The durable registry's
-      // restore path only reads the substrate working tree (`getRepoDir` +
-      // `fs.readFile`), so a throwaway signing key is sufficient.
+      // restore path only reads the substrate's committed tree, so a throwaway
+      // signing key is sufficient.
       const respawnSubstrate = createAgentRepoStore({
         dataDir: env.sidecar.dataDir,
         signingKey: await generateKeyPair(),
@@ -417,6 +425,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         dataDir: freshLocalDataDir,
         workflowRunRepoId,
         workflowRunRef: WORKFLOW_RUN_REF,
+        runId: DEPLOYMENT_ID,
         substrate: respawnSubstrate,
         principal: respawnPrincipal,
         signer: respawnSigner,
@@ -493,26 +502,6 @@ function stepWorkspaceSentinelPath(
   );
 }
 
-/**
- * Path of the per-agent conversation snapshot the durable store mirrors to
- * the sidecar's on-disk workflow-run substrate (the supervisor's
- * single-writer substrate). Deterministic, no hub pack-push timing
- * dependency.
- */
-function substrateAgentStateDir(
-  deployEnv: DeployFlowEnv,
-  workflowRunRepoSlug: string,
-  stepId: string,
-): string {
-  return path.join(
-    deployEnv.sidecar.dataDir,
-    "workflow-runs",
-    workflowRunRepoSlug,
-    "agent-state",
-    encodeURIComponent(stepId),
-  );
-}
-
 const ReceiptSentinel = type({
   messageId: "string",
   status: "string",
@@ -541,16 +530,22 @@ const TurnShape = type({
 
 /**
  * Reconstruct the durable conversation from the two-tier substrate layout
- * (checkpoint + WAL) at the per-agent `agent-state/<stepId>/` dir and
- * return the user-turn texts. Goes through the production
- * `reconstructDurableConversation` so the test reads the conversation the
- * same way the warm agent's restore does.
+ * (checkpoint + WAL) in the step's state directory and return the
+ * user-turn texts. Goes through the production `readStepState` so the test
+ * reads the conversation the same way the warm agent's restore does.
  */
-async function readSnapshotUserTexts(agentStateDir: string): Promise<string[]> {
-  const reconstructed = await reconstructDurableConversation(
-    agentStateDir,
-    STEP_ID,
-  );
+async function readSnapshotUserTexts(
+  substrate: RepoStore,
+  workflowRunRepoId: RepoId,
+): Promise<string[]> {
+  const reconstructed = await readStepState({
+    substrate,
+    workflowRunRepoId,
+    workflowRunRef: WORKFLOW_RUN_REF,
+    principal: { kind: "hub" },
+    runId: DEPLOYMENT_ID,
+    stepId: STEP_ID,
+  });
   if (reconstructed === null) return [];
   const texts: string[] = [];
   for (const rawTurn of reconstructed.turns) {

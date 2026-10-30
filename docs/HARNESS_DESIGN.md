@@ -35,7 +35,7 @@ The per-deployment disk layout and the hub WebSocket protocol live in
 `@intx/hub-agent`, which takes the deploy router as an injected
 factory. `@intx/workflow-host` owns that router, the per-deployment
 `WorkflowSupervisor`, the child substrate factory, the probe protocol,
-durable conversation state (`conversation-state.ts`), and step tool
+durable agent step state (`conversation-state.ts`), and step tool
 attachment (`child/step-tools.ts`). The in-process agent runtime
 (`createAgent(def, env)` wrapping the reactor exactly once) lives in
 `@intx/agent` and runs inside that child. The sidecar draws runtime
@@ -123,7 +123,7 @@ SIDECAR_DATA_DIR/
     <runId>/                     # workflow-run substrate for one run
       deployment.json            # per-run restore record (mode 0600); see below
   workflow-step-state/
-    <runId>/                     # ephemeral per-step scratch, reclaimed on undeploy
+    <runId>/                     # per-step scratch and working stores, reclaimed on undeploy
   agent-conversation-state/
     <runId>/                     # local conversation copy, reclaimed on undeploy
 ```

@@ -7,7 +7,7 @@ import { generateKeyPair } from "@intx/crypto";
 import { collectReachableObjects, runGC } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
 import { waitUntil } from "@intx/types/testing";
-import { createRepoStore } from "./store";
+import { createRepoStore, type LocalRepoStore } from "./store";
 import { workflowAuthorize, workflowKindHandler } from "../workflow-kind";
 import { RepoRemovedDuringReceiveError } from "./types";
 import type {
@@ -913,6 +913,66 @@ describe("RepoStore", () => {
     expect(secondCall.newSha).toBe(second.commitSha);
   });
 
+  test("writeTree parents a never-written ref on the initial commit once HEAD has moved on", async () => {
+    const dataDir = await makeTempDir("repo-store-new-ref-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const initial = await git.resolveRef({ fs, dir, ref: "HEAD" });
+
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: { "deploy/a.md": "on main" },
+      message: "advance main",
+    });
+    const { commitSha } = await store.writeTree(
+      principal,
+      repoId,
+      "refs/heads/side",
+      { files: { "deploy/b.md": "on side" }, message: "first side write" },
+    );
+
+    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    expect(commit.parent).toEqual([initial]);
+  });
+
+  test("writeTree to a never-written ref whose initial commit is missing fails before touching the working tree", async () => {
+    const dataDir = await makeTempDir("repo-store-new-ref-no-root-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const initial = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: { "deploy/a.md": "on main" },
+      message: "advance main",
+    });
+    await fs.promises.rm(
+      path.join(dir, ".git", "objects", initial.slice(0, 2), initial.slice(2)),
+    );
+
+    await expect(
+      store.writeTree(principal, repoId, "refs/heads/side", {
+        files: { "deploy/b.md": "on side" },
+        message: "first side write",
+      }),
+    ).rejects.toThrow(/missing commits between HEAD and its initial commit/);
+    expect(fs.existsSync(path.join(dir, "deploy", "b.md"))).toBe(false);
+    expect(
+      await store.resolveRef(principal, repoId, "refs/heads/side"),
+    ).toBeNull();
+  });
+
   test("writeTree with clearPrefix clears stale tracked files under that prefix", async () => {
     const dataDir = await makeTempDir("repo-store-clear-");
     const handler = createTestHandler();
@@ -1027,6 +1087,79 @@ describe("RepoStore", () => {
     expect(rootEntries).toContain("fresh");
   });
 
+  test("writeTree rejects a path that is not plain relative segments before writing anything", async () => {
+    const dataDir = await makeTempDir("repo-store-path-invalid-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const first = await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/a.md": "a" },
+      message: "first",
+    });
+
+    for (const bad of [
+      "deploy/../runs/x.json",
+      "deploy/./x.json",
+      "deploy//x.json",
+      "deploy/",
+      "/deploy/x.json",
+      "",
+      ".git/config",
+      "deploy/.Git/config",
+      "deploy\\x.json",
+      "deploy/x\0.json",
+    ]) {
+      for (const clear of [{}, { clearPrefix: "deploy/" }]) {
+        await expect(
+          store.writeTree(principal, repoId, REF, {
+            files: { "deploy/b.md": "b", [bad]: "{}" },
+            ...clear,
+            message: "bad path",
+          }),
+        ).rejects.toThrow(`tree_path_invalid: ${JSON.stringify(bad)}`);
+      }
+    }
+    for (const clearPrefix of [
+      "deploy/../",
+      "deploy/./",
+      "deploy//",
+      "/",
+      ".git/",
+      ".GIT/",
+      "deploy\\x/",
+      "deploy\0/",
+    ]) {
+      await expect(
+        store.writeTree(principal, repoId, REF, {
+          files: { "deploy/b.md": "b" },
+          clearPrefix,
+          message: "bad prefix",
+        }),
+      ).rejects.toThrow(`clear_prefix_invalid: ${clearPrefix}`);
+    }
+    for (const bad of ["deploy/./b.md", "deploy//b.md"]) {
+      await expect(
+        store.writeTreeDelta(principal, repoId, REF, {
+          changedPathPrefixes: new Set(["deploy/"]),
+          message: "bad delta",
+          computeDelta: async () => ({ puts: { [bad]: "b" }, deletes: [] }),
+        }),
+      ).rejects.toThrow(`delta_path_invalid: ${JSON.stringify(bad)}`);
+    }
+
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(
+      first.commitSha,
+    );
+    expect(fs.existsSync(path.join(dir, "runs"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "deploy", "b.md"))).toBe(false);
+  });
+
   test("writeTree without clearPrefix is purely additive", async () => {
     const dataDir = await makeTempDir("repo-store-additive-");
     const handler = createTestHandler();
@@ -1062,6 +1195,100 @@ describe("RepoStore", () => {
     const xPaths = await readTreePaths(dir, xEntry.oid);
     expect(xPaths).toContain("a");
     expect(xPaths).toContain("b");
+  });
+
+  test("writeTreePreservingPrefix rejects a merge that returns a file outside its prefix", async () => {
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-preserve-scope-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const prefix = "runs/r1/steps/s1/state/";
+    const first = await store.writeTreePreservingPrefix(
+      principal,
+      repoId,
+      REF,
+      {
+        preservePrefix: prefix,
+        merge: () => Promise.resolve({ [`${prefix}checkpoint.json`]: "{}" }),
+        message: "in prefix",
+      },
+    );
+
+    for (const outside of [
+      "runs/r1/steps/s2/seed.json",
+      `${prefix}../../s2/seed.json`,
+      `${prefix}./checkpoint.json`,
+      `${prefix}wal//0.json`,
+      `${prefix}wal/`,
+    ]) {
+      await expect(
+        store.writeTreePreservingPrefix(principal, repoId, REF, {
+          preservePrefix: prefix,
+          merge: () =>
+            Promise.resolve({
+              [`${prefix}checkpoint.json`]: "{}",
+              [outside]: "{}",
+            }),
+          message: "outside prefix",
+        }),
+      ).rejects.toThrow(
+        `preserve_prefix_out_of_scope: merge returned ${JSON.stringify(outside)}`,
+      );
+    }
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(
+      first.commitSha,
+    );
+  });
+
+  test("a clearPrefix write scopes files outside its prefix to their own directories", async () => {
+    const seen: (string[] | undefined)[] = [];
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-prefix-scope-"),
+      signingKey,
+      handlers: {
+        "agent-state": {
+          ...createTestHandler(),
+          validatePush({ changedPathPrefixes }) {
+            seen.push(
+              changedPathPrefixes === undefined
+                ? undefined
+                : [...changedPathPrefixes].sort(),
+            );
+            return { ok: true };
+          },
+        },
+      },
+      authorize: allowAll,
+    });
+    const prefix = "runs/r1/steps/s1/state/";
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { [`${prefix}checkpoint.json`]: "{}" },
+      clearPrefix: prefix,
+      message: "in prefix",
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: {
+        [`${prefix}checkpoint.json`]: "{}",
+        "runs/r1/events/1.json": "{}",
+        "runs/r1/steps/s2/seed.json": "{}",
+      },
+      clearPrefix: prefix,
+      message: "outside prefix",
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { [`${prefix}checkpoint.json`]: "{}", "top.json": "{}" },
+      clearPrefix: prefix,
+      message: "outside any directory",
+    });
+
+    expect(seen).toEqual([
+      [prefix],
+      ["runs/r1/events/", "runs/r1/steps/s1/state/", "runs/r1/steps/s2/"],
+      undefined,
+    ]);
   });
 
   test("interleaved writes to two refs of one repo never contaminate either ref's tree", async () => {
@@ -1221,6 +1448,203 @@ describe("RepoStore", () => {
       rejectStore.receivePack(principal, repoId, REF, pack, commitSha, null),
     ).rejects.toThrow(/^path_violation/);
     expect(await rejectStore.resolveRef(principal, repoId, REF)).toBeNull();
+  });
+
+  test("receivePack scopes a commit that changes only a run's step state to those step directories", async () => {
+    const sourceStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-steps-source-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const seen: {
+      prefixes: string[] | undefined;
+      hasListDirOids: boolean;
+    }[] = [];
+    const recordingHandler: KindHandler = {
+      ...createTestHandler(),
+      validatePush({ changedPathPrefixes, listDirOids }) {
+        seen.push({
+          prefixes:
+            changedPathPrefixes === undefined
+              ? undefined
+              : [...changedPathPrefixes].sort(),
+          hasListDirOids: listDirOids !== undefined,
+        });
+        return { ok: true };
+      },
+    };
+    const targetStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-steps-target-"),
+      signingKey,
+      handlers: { "agent-state": recordingHandler },
+      authorize: allowAll,
+    });
+    const push = async (
+      files: Record<string, string>,
+      expectedOldSha: string | null,
+    ): Promise<string> => {
+      await sourceStore.writeTree(principal, repoId, REF, {
+        files,
+        message: "write",
+      });
+      const { pack, commitSha } = await sourceStore.createPack(
+        principal,
+        repoId,
+        REF,
+      );
+      await targetStore.receivePack(
+        principal,
+        repoId,
+        REF,
+        pack,
+        commitSha,
+        expectedOldSha,
+      );
+      return commitSha;
+    };
+
+    const base = await push(
+      {
+        "runs/r1/events/1.json": "{}",
+        "runs/r1/steps/s1/state/checkpoint.json": "{}",
+        "runs/r1/steps/s2/state/checkpoint.json": "{}",
+      },
+      null,
+    );
+    seen.length = 0;
+    const stepsOnly = await push(
+      { "runs/r1/steps/s1/state/wal/0/0.json": "{}" },
+      base,
+    );
+    await push(
+      {
+        "runs/r1/events/2.json": "{}",
+        "runs/r1/steps/s2/state/wal/0/0.json": "{}",
+      },
+      stepsOnly,
+    );
+
+    expect(seen).toEqual([
+      { prefixes: ["runs/r1/steps/s1/"], hasListDirOids: true },
+      { prefixes: ["runs/r1/"], hasListDirOids: true },
+    ]);
+  });
+
+  test("receivePack scopes a commit that changes only an entry's mode to that entry", async () => {
+    const sourceDir = await makeTempDir("repo-store-mode-source-");
+    const sourceHandler = createTestHandler();
+    const sourceStore = createRepoStore({
+      dataDir: sourceDir,
+      signingKey,
+      handlers: { "agent-state": sourceHandler },
+      authorize: allowAll,
+    });
+    const seen: (string[] | undefined)[] = [];
+    const recordingHandler: KindHandler = {
+      ...createTestHandler(),
+      validatePush({ changedPathPrefixes }) {
+        seen.push(
+          changedPathPrefixes === undefined
+            ? undefined
+            : [...changedPathPrefixes].sort(),
+        );
+        return { ok: true };
+      },
+    };
+    const targetStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-mode-target-"),
+      signingKey,
+      handlers: { "agent-state": recordingHandler },
+      authorize: allowAll,
+    });
+    const dir = path.join(sourceDir, sourceHandler.directoryPrefix, repoId.id);
+    const push = async (expectedOldSha: string | null): Promise<string> => {
+      const { pack, commitSha } = await sourceStore.createPack(
+        principal,
+        repoId,
+        REF,
+      );
+      await targetStore.receivePack(
+        principal,
+        repoId,
+        REF,
+        pack,
+        commitSha,
+        expectedOldSha,
+      );
+      return commitSha;
+    };
+    const setMode = async (
+      treeOid: string,
+      segments: readonly string[],
+      mode: string,
+    ): Promise<string> => {
+      const { tree } = await git.readTree({ fs, dir, oid: treeOid });
+      const [name, ...rest] = segments;
+      const entries = await Promise.all(
+        tree.map(async (entry) => {
+          if (entry.path !== name) return entry;
+          if (rest.length === 0) return { ...entry, mode };
+          return { ...entry, oid: await setMode(entry.oid, rest, mode) };
+        }),
+      );
+      return git.writeTree({ fs, dir, tree: entries });
+    };
+    // Commit the source tip's tree with `filepath`'s entry set to `mode`, as
+    // a child of `parent`.
+    const commitWithMode = async (
+      filepath: string,
+      mode: string,
+      parent: string,
+    ): Promise<void> => {
+      const tip = await git.resolveRef({ fs, dir, ref: REF });
+      const { commit } = await git.readCommit({ fs, dir, oid: tip });
+      const sha = await git.writeCommit({
+        fs,
+        dir,
+        commit: {
+          tree: await setMode(commit.tree, filepath.split("/"), mode),
+          parent: [parent],
+          message: "change mode",
+          author: commit.author,
+          committer: commit.committer,
+        },
+      });
+      await git.writeRef({ fs, dir, ref: REF, value: sha, force: true });
+    };
+
+    await sourceStore.writeTree(principal, repoId, REF, {
+      files: {
+        "top.txt": "top",
+        "runs/r1/meta.json": "{}",
+        "runs/r1/steps/s1/state/checkpoint.json": "{}",
+        "runs/r1/steps/s2/seed.json": "{}",
+      },
+      message: "write",
+    });
+    const base = await push(null);
+    await commitWithMode("top.txt", "100755", base);
+    const topModeOnly = await push(base);
+    await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/steps/s1/state/wal/0/0.json": "{}" },
+      message: "write",
+    });
+    await commitWithMode("runs/r1/meta.json", "100755", topModeOnly);
+    const runModeOnly = await push(topModeOnly);
+    // Read as a file, s2's directory no longer holds its seed.
+    await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/steps/s1/state/wal/0/1.json": "{}" },
+      message: "write",
+    });
+    await commitWithMode("runs/r1/steps/s2", "100644", runModeOnly);
+    await push(runModeOnly);
+
+    expect(seen.slice(1)).toEqual([
+      ["top.txt/"],
+      ["runs/r1/"],
+      ["runs/r1/steps/s1/", "runs/r1/steps/s2/"],
+    ]);
   });
 
   // Build a pack carrying one commit whose root tree holds a single symlink or
@@ -3534,6 +3958,108 @@ describe("RepoStore", () => {
     );
   });
 
+  describe("a workflow-run pack must build on the ref's tip", () => {
+    const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+
+    async function workflowRunStore(prefix: string): Promise<LocalRepoStore> {
+      return createRepoStore({
+        dataDir: await makeTempDir(prefix),
+        signingKey,
+        handlers: {
+          "workflow-run": {
+            kind: "workflow-run",
+            directoryPrefix: "workflow-runs-under-test",
+            validatePush: () => ({ ok: true }),
+            onRefUpdated: () => undefined,
+          },
+        },
+        authorize: allowAll,
+      });
+    }
+
+    async function push(
+      from: LocalRepoStore,
+      to: LocalRepoStore,
+      ref: string,
+    ): Promise<void> {
+      const { pack, commitSha } = await from.createPack(
+        principal,
+        wfRepoId,
+        ref,
+      );
+      await to.receivePack(
+        principal,
+        wfRepoId,
+        ref,
+        pack,
+        commitSha,
+        await to.resolveRef(principal, wfRepoId, ref),
+      );
+    }
+
+    test("refuses a pack that rewinds, forks or replaces the history", async () => {
+      const source = await workflowRunStore("repo-store-ff-source-");
+      const hub = await workflowRunStore("repo-store-ff-hub-");
+      await hub.initRepo(wfRepoId);
+      const { commitSha: first } = await source.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/0.json": "v1" }, message: "v1" },
+      );
+      await push(source, hub, REF);
+      // A worker holding only the first commit forks off it.
+      const fork = await workflowRunStore("repo-store-ff-fork-");
+      await push(source, fork, REF);
+      const { commitSha: second } = await source.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/1.json": "v2" }, message: "v2" },
+      );
+      await push(source, hub, REF);
+      await fork.writeTree(principal, wfRepoId, REF, {
+        files: { "runs/r1/events/1.json": "other" },
+        message: "fork",
+      });
+      const unrelated = await workflowRunStore("repo-store-ff-unrelated-");
+      await unrelated.writeTree(principal, wfRepoId, REF, {
+        files: { "runs/r1/events/0.json": "other" },
+        message: "unrelated",
+      });
+
+      const rewind = await source.createPack(principal, wfRepoId, REF);
+      await expect(
+        hub.receivePack(principal, wfRepoId, REF, rewind.pack, first, second),
+      ).rejects.toThrow(/does not build on the tip/);
+      await expect(push(fork, hub, REF)).rejects.toThrow(
+        /does not build on the tip/,
+      );
+      await expect(push(unrelated, hub, REF)).rejects.toThrow(
+        /does not build on the tip/,
+      );
+      expect(await hub.resolveRef(principal, wfRepoId, REF)).toBe(second);
+    });
+
+    test("lets a pack replace a tip that holds only the initial .gitignore", async () => {
+      const source = await workflowRunStore("repo-store-ff-genesis-source-");
+      const hub = await workflowRunStore("repo-store-ff-genesis-hub-");
+      await hub.initRepo(wfRepoId);
+      const { commitSha } = await source.writeTree(
+        principal,
+        wfRepoId,
+        "refs/heads/main",
+        { files: { "runs/r1/events/0.json": "v1" }, message: "v1" },
+      );
+
+      await push(source, hub, "refs/heads/main");
+
+      expect(await hub.resolveRef(principal, wfRepoId, "refs/heads/main")).toBe(
+        commitSha,
+      );
+    });
+  });
+
   test("openCommittedReads lists committed entries and reads blobs by oid", async () => {
     const dataDir = await makeTempDir("repo-store-committed-reads-");
     const handler = createTestHandler();
@@ -3622,6 +4148,127 @@ describe("RepoStore", () => {
     expect(
       await store.openCommittedReads(principal, repoId, "refs/heads/absent"),
     ).toBeNull();
+  });
+
+  test("a ref that exists but cannot be read throws rather than reading as absent", async () => {
+    const dataDir = await makeTempDir("repo-store-unreadable-ref-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+    const refFile = path.join(
+      dataDir,
+      handler.directoryPrefix,
+      repoId.id,
+      ".git",
+      ...REF.split("/"),
+    );
+
+    // isomorphic-git reads an empty ref file as a missing ref; a crash while
+    // it writes the ref in place can leave one.
+    const sha = await fs.promises.readFile(refFile, "utf8");
+    await fs.promises.writeFile(refFile, "");
+    await expect(
+      store.openCommittedReads(principal, repoId, REF),
+    ).rejects.toThrow(/exists but could not be read/);
+    await expect(store.resolveRef(principal, repoId, REF)).rejects.toThrow(
+      /exists but could not be read/,
+    );
+    await expect(
+      store.writeTree(principal, repoId, REF, {
+        files: { "runs/r1/events/1.json": "one" },
+        message: "append",
+      }),
+    ).rejects.toThrow(/exists but could not be read/);
+
+    await fs.promises.writeFile(refFile, sha);
+    const reads = await store.openCommittedReads(principal, repoId, REF);
+    if (reads === null) throw new Error("expected committed reads");
+    expect((await reads.listDir("runs/r1/events")).map((e) => e.name)).toEqual([
+      "0.json",
+    ]);
+  });
+
+  test("a repository whose directory cannot be inspected throws rather than reading as absent", async () => {
+    const dataDir = await makeTempDir("repo-store-unreadable-repo-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+    const gitDir = path.join(
+      dataDir,
+      handler.directoryPrefix,
+      repoId.id,
+      ".git",
+    );
+
+    // A `.git` that links to itself fails every stat with ELOOP, which no
+    // file mode can do for root.
+    await fs.promises.rename(gitDir, `${gitDir}-moved`);
+    await fs.promises.symlink(".git", gitDir);
+    try {
+      await expect(
+        store.openCommittedReads(principal, repoId, REF),
+      ).rejects.toThrow();
+      await expect(store.listRefs(principal, repoId)).rejects.toThrow();
+    } finally {
+      await fs.promises.rm(gitDir);
+      await fs.promises.rename(`${gitDir}-moved`, gitDir);
+    }
+    expect(
+      await store.openCommittedReads(principal, repoId, REF),
+    ).not.toBeNull();
+  });
+
+  test("a ref whose name holds other refs reads as absent", async () => {
+    const dataDir = await makeTempDir("repo-store-ref-directory-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    const { commitSha } = await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+    const nested = path.join(
+      dataDir,
+      handler.directoryPrefix,
+      repoId.id,
+      ".git",
+      "refs",
+      "heads",
+      "feature",
+      "x",
+    );
+    await fs.promises.mkdir(path.dirname(nested), { recursive: true });
+    await fs.promises.writeFile(nested, `${commitSha}\n`);
+
+    expect(
+      await store.resolveRef(principal, repoId, "refs/heads/feature"),
+    ).toBeNull();
+    expect(
+      await store.openCommittedReads(principal, repoId, "refs/heads/feature"),
+    ).toBeNull();
+    expect(
+      await store.resolveRef(principal, repoId, "refs/heads/feature/x"),
+    ).toBe(commitSha);
   });
 
   test("openCommittedReads listing an absent directory returns the empty array", async () => {
@@ -4547,6 +5194,7 @@ describe("RepoStore prepared pack receive", () => {
     id: RepoId,
     pack: Uint8Array,
     commitSha: string,
+    ref = REF,
   ): Promise<{
     commit: () => Promise<PackCommitResult>;
     discard: () => Promise<void>;
@@ -4554,7 +5202,7 @@ describe("RepoStore prepared pack receive", () => {
     const prepared = await store.prepareReceivePack(
       principal,
       id,
-      REF,
+      ref,
       pack,
       commitSha,
     );
@@ -5398,9 +6046,10 @@ describe("RepoStore prepared pack receive", () => {
   async function replayedSeq(
     store: ReturnType<typeof createRepoStore>,
     commitSha: string,
+    id: RepoId = repoId,
   ): Promise<number> {
     const ac = new AbortController();
-    const replay = store.subscribe(principal, repoId, REF, {
+    const replay = store.subscribe(principal, id, REF, {
       from: { seq: 0 },
       signal: ac.signal,
     });
@@ -5473,24 +6122,42 @@ describe("RepoStore prepared pack receive", () => {
     const tipA = lineA.commits.at(-1);
     const tipB = lineB.commits.at(-1);
     if (tipA === undefined || tipB === undefined) throw new Error("line");
-    const { store } = await targetStore(runsHandler());
-    await (
-      await prepare(store, repoId, await lineA.packAt(tipA), tipA)
-    ).commit();
+    // A workflow-run history only grows, so the line is replaced on a
+    // kind that allows it.
+    const stateId: RepoId = { kind: "agent-state", id: "subject" };
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-replaced-line-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    await store.receivePack(
+      principal,
+      stateId,
+      REF,
+      await lineA.packAt(tipA),
+      tipA,
+      null,
+    );
     const ac = new AbortController();
-    const live = store.subscribe(principal, repoId, REF, {
+    const live = store.subscribe(principal, stateId, REF, {
       from: "head",
       signal: ac.signal,
     });
     try {
       const next = live.next();
-      await (
-        await prepare(store, repoId, await lineB.packAt(tipB), tipB)
-      ).commit();
+      await store.receivePack(
+        principal,
+        stateId,
+        REF,
+        await lineB.packAt(tipB),
+        tipB,
+        tipA,
+      );
       const entry = await next;
       if (entry.done) throw new Error("Missing update");
       expect(asRefUpdated(entry.value.event).newSha).toBe(tipB);
-      expect(entry.value.seq).toBe(await replayedSeq(store, tipB));
+      expect(entry.value.seq).toBe(await replayedSeq(store, tipB, stateId));
     } finally {
       ac.abort();
     }
@@ -5680,10 +6347,13 @@ describe("RepoStore prepared pack receive", () => {
 
       // The scan did not see the second write's commit. The locked
       // step adds it from the other ref's moved tip, so a receive of
-      // that commit validates nothing.
+      // that commit validates nothing. It goes to a new ref, since a
+      // workflow-run ref takes only a history that builds on its tip.
       validated.length = 0;
       const w2Pack = await historyPack(repoDir, w2);
-      await (await prepare(store, scanRepoId, w2Pack, w2)).commit();
+      await (
+        await prepare(store, scanRepoId, w2Pack, w2, "refs/heads/probe")
+      ).commit();
       expect(validated).toEqual([]);
     } finally {
       readCommit.mockRestore();
@@ -5897,11 +6567,19 @@ describe("RepoStore prepared pack receive", () => {
       if (second?.status !== "fulfilled") throw new Error("second receive");
       await second.value.commit();
 
-      // The second receive's set holds w2, so a receive of w2 validates
-      // nothing.
+      // The second receive's set holds w2, so a receive of w2 into a new
+      // ref validates nothing.
       validated.length = 0;
       const w2Pack = await historyPack(repoDir, w2.commitSha);
-      await (await prepare(store, failRepoId, w2Pack, w2.commitSha)).commit();
+      await (
+        await prepare(
+          store,
+          failRepoId,
+          w2Pack,
+          w2.commitSha,
+          "refs/heads/probe",
+        )
+      ).commit();
       expect(validated).toEqual([]);
     } finally {
       readCommit.mockRestore();

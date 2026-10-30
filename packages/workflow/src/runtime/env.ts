@@ -161,7 +161,11 @@ export interface SignalChannel {
  * runtime body works against a real agent (production) or a stub
  * (tests). The callback's contract: invoke the agent's send-and-respond
  * loop with the materialized input, and return the captured
- * `AgentResult`. Any thrown error propagates as `StepFailed`.
+ * `AgentResult`. Any thrown error propagates as `StepFailed`. An invoker
+ * whose agent ran but whose host could not commit the turn or close the agent
+ * throws `StepOutcomeCommitError`, which lands with retries exhausted and is
+ * never retried or routed within its run, since the step's work already
+ * happened. A parent run handles the failed child run like any other.
  *
  * The callback receives the per-step `AuthorizeContext` so it can
  * build an `env.authorize` closure that delegates to the runtime's
@@ -648,6 +652,20 @@ export type ReadParkedApprovalOps = (args: {
 }) => Promise<ParkedApprovalOp[]>;
 
 /**
+ * Recovery hook the resume classifier awaits before it commits the
+ * `SignalAwaited` of a park it recovered through `ReadParkedApprovalOps`: make
+ * the step state behind the park durable wherever the run log is, so a host
+ * that later resumes the run from the log finds the pending operation the
+ * park names. See `WorkflowRuntimeEnv.persistRecoveredPark`.
+ */
+export type PersistRecoveredPark = (args: {
+  runId: string;
+  stepId: string;
+  attempt: number;
+  correlationId: string;
+}) => Promise<void>;
+
+/**
  * The runtime body's full env surface. The two implementations
  * (`runLocal` and the production child-process entry point) construct
  * differently-flavoured concrete values for each field but the body
@@ -802,6 +820,15 @@ export interface WorkflowRuntimeEnv {
    * the pre-recovery behavior.
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
+  /**
+   * Optional companion to `readParkedApprovalOps`, awaited once per recovered
+   * park before its `SignalAwaited` is committed. The read can answer from
+   * state only this host holds (a store the crash left ahead of the durable
+   * copy); a park recorded over such state would name a pending operation no
+   * other host can find. A rejection leaves the `SignalAwaited` uncommitted.
+   * A host whose read answers only from durable state leaves it unset.
+   */
+  persistRecoveredPark?: PersistRecoveredPark;
 }
 
 /**

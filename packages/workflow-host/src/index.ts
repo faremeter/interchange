@@ -210,11 +210,11 @@ export {
 export {
   createDurableConversationRegistry,
   createDurableConversationStore,
-  reconstructDurableConversation,
+  readStepState,
+  type DurableConversationLifetime,
   type DurableConversationRegistry,
   type DurableConversationRegistryOpts,
   type DurableConversationStore,
   type DurableConversationStoreOpts,
-  type ReconstructedConversation,
 } from "./conversation-state";
 export { readRunGrants, runGrantsPath } from "./run-grants";
