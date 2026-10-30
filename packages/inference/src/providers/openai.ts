@@ -1055,7 +1055,9 @@ function parseJSONResponse(
   return events;
 }
 
-function extractRetryAfterMs(headers: Headers): number | undefined {
+// Shared with the Responses adapter: the Responses surface carries the same
+// OpenAI rate-limit headers byte-for-byte.
+export function extractRetryAfterMs(headers: Headers): number | undefined {
   // OpenAI's non-standard millisecond header takes priority
   const retryMs = headers.get("retry-after-ms");
   if (retryMs !== null) {
@@ -1072,7 +1074,9 @@ function extractRetryAfterMs(headers: Headers): number | undefined {
   return undefined;
 }
 
-function extractPacingDelayMs(headers: Headers): number | undefined {
+// Shared with the Responses adapter: the Responses surface carries the same
+// OpenAI rate-limit headers byte-for-byte.
+export function extractPacingDelayMs(headers: Headers): number | undefined {
   const remaining = headers.get("x-ratelimit-remaining-requests");
   if (remaining === null) return undefined;
   const n = Number(remaining);

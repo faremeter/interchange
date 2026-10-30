@@ -72,12 +72,23 @@ export type RetryAfterExtractor = (headers: Headers) => number | undefined;
 // wait before the next request, or undefined if no pacing is needed.
 export type PacingExtractor = (headers: Headers) => number | undefined;
 
+// Reports whether one SSE data payload is the stream's semantic terminal
+// event. Streams whose protocol ends on `[DONE]` or a socket close leave
+// this absent and behave exactly as before; a present predicate lets the
+// harness stop after a terminal chunk (e.g. a Responses
+// `response.completed`) even when the server holds the connection open.
+// The predicate sees only raw payload strings and never throws for
+// malformed input — a payload that fails to parse reports "not terminal"
+// and defers to `parseResponse` as the single error site.
+export type StreamTerminalPredicate = (sseData: string) => boolean;
+
 export type ProviderAdapter = {
   buildRequest: RequestBuilder;
   parseResponse: ResponseParser;
   parseJSONResponse: JSONResponseParser;
   extractRetryAfterMs?: RetryAfterExtractor;
   extractPacingDelayMs?: PacingExtractor;
+  isStreamTerminal?: StreamTerminalPredicate;
 };
 
 // Builds a fresh adapter for one inference call. Invoked per call so the
