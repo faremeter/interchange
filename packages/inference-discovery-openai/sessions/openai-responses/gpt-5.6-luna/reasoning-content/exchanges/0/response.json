@@ -1,0 +1,107 @@
+{
+  "id": "resp_02a9b72448a865c5006ae54c0cbbfc87d0b18d8f23ab7a2073",
+  "object": "response",
+  "created_at": 1793412108,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793412111,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.6-luna",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_02a9b72448a865c5006ae54c0d339087d097a802c5cc797649",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5UwP90cORDa30IpnHUBL8cxiwDQj-D2eXT6z1GZyhG9Md4-eUOCH1tpxJhaedMSj3d--dVijDdw9XisBwBUw9LjWvzf6-ebenfrFv1PLPpoHpIZrTLfjuzzh0rMrcaGlO_jI845Dcwl1rEwxcZCcnFbP_umdH-b9LztWVnKeCEHbj0uTm4M1Ag4LRD4qYTw1H8qvD-an3WKnq8jC_cvWQbA_-lRlv6OeSAny3KAYRJWx3Hr8bQ1Aaw-NvMt0KJ6gyc_dQCEGZN8HrQJWy-VL1fPfStnoOHym13SxHNFvtiZ53QPZZejDQje2rB6vKcPLGyp1t8nt7flEOOiGEbAyvqTCvUKI53RGcByusq8YkkLvLXSD-T5eGchu027EHsLlbk5btxUwm4UAG-tW2oZikJ7T56cNosgPaJEF7vRFgEVjRRjh3--Gze8fCpZ8hJDsvt-mpQsJNw_RYoo4mUc3YjoOuYg4Yu-_UNgearTg0mPgRixIDcjuunCXiOEx6bwmHZu3GQ67yotIkYKXiSTb-QKbr212TCxwABqW1zyZW0jCqhhD8Zvnp_ZDHwGl8Gj6TZ15VDfxUbC6x4SARWzFuFFXCFyHMkrQk5rBpf5rEfIdmUzTN2wsjZFn-MDQWH6NyeiXyRK2UCUf7uRGKojfbbjv3NMGr4TSVGQ_g04K2Wmeva79TaAxFv492SFSxgdcUNSIURSikxvmM85lF8N8pk9qmIHuvgVksgJRjYEwnE77E4etHZqdjuME6Ba5NK99ZIZ5e1qZ0vfrPp-pGt3vk_iwKjAdyDHfKnoyfu5eeC7vFaFjIxZKEmB9yp6OIW98fKdoFDaCItSFoYk1125tqEI4ghOpv3IuBT9zcQttN3utkHegvFDOJ3BfqY9IVsTzZDMkrd0A8ZGZ6wc0IOfLUTNfSEDPDZP50N7sBLJFZ-Y4Huu_QB_gRE3kc6lgogQtX-noN_JcYJQfnZioqgHPVQW2BB_U1cT3n30iNcBDvXdgGPoEcY-BZIQwPmDhe5ULVhSYp6gVgUfqaYKAlG5G0RNhpf9XT4powsDvYDwlUGonJBcvfeyg_RQ6CTAdSdd-ME1K1DT620SCEbLghRBm4V5d4l4Au2NsrNCGbq0Pk48sGIFg-_6Pl3PtQAg_FDQcNHn0ZpQH7awl8ltvcLNx29jRGJh5zuaJoqXfa1Bizm7aR0fW9PLLGysug8ofTAIdqZWNtKrEa2HepCRAfQq224iuLa8v2p8m3YiweBahSFHyhnWO9EVvZekP4m62Q9gh4ylk3zsgSrxJfso2fM6w1P_6kA21ocVhgyYaAUynOvaW2NZsgUmAYMnQPa8DTdCaO3YxbsD8xIRvgXwKy2soCbZv06le36EfKhbm5n9SsWOfNlcRKLMfty-cXEa_GMkhByxYvdxMiAU_RJrPzMIPO6cFbqDGAdX9i44O2pxFHnaZIh4UncRrg_HFWsUqKRyWXXo4Mr1tH2IVQaMBnH3aGnYuQT1OP23yFdsPJ-yxqz3O_TtdfFN0C5zNhyJ1RO0ksCpz9CkDj7ioBHfELpwnAJqkMXTbE1-Kp3J35rI9l2eI6kQnARGkCAdyznmgZubAzlHFEbqUvy_VWBnOIdaDlEaWWiW3EXDhxw0-1yXE5LyiHbZZnIp0CrJemYIY5PupFy82ymHlCZ5zjP-nwjC25PUrdjLwnIdXn4xSxmDrbFq_az8=",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "**Explaining the reasoning trap**\n\nI need to provide reasoning here and be careful about a potential trap. For the equation, x + x + 1 = 1.10, it may lead to confusion. I should clarify that simplifying it leads to 2x + 1 = 1.10, which requires careful manipulation to avoid mistakes. I want to ensure the user understands how to isolate x correctly and find its value as 0.05. It\u2019s crucial to break this down step by step!"
+        }
+      ]
+    },
+    {
+      "id": "msg_02a9b72448a865c5006ae54c0e7f9c87d0a94fe11de5870cee",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost \\(x\\) dollars. Then the bat costs \\(x + \\$1.00\\).\n\n\\[\nx + (x + 1.00) = 1.10\n\\]\n\n\\[\n2x + 1.00 = 1.10\n\\]\n\n\\[\n2x = 0.10\n\\]\n\n\\[\nx = 0.05\n\\]\n\nThe ball costs **\\$0.05 (5 cents)**."
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": "detailed"
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 130,
+    "output_tokens_details": {
+      "reasoning_tokens": 28
+    },
+    "total_tokens": 175
+  },
+  "user": null,
+  "metadata": {}
+}
