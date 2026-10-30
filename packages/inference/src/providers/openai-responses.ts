@@ -195,7 +195,10 @@ function parseResponsesQuirks(raw: unknown): ResolvedResponsesQuirks {
 // Tool results carry a content array; the Responses API wants a string. Join
 // the text parts; non-text content is not representable here and is dropped
 // with a marker so the model is not misled into thinking it went missing
-// silently.
+// silently. Only the join and the `<error>` wrapping match the Chat
+// Completions adapter's `role: "tool"` encoding (whose schema likewise has
+// no `is_error` field); the Chat adapter drops non-text content with no
+// marker, so the two wires differ there.
 function toolResultText(
   block: Extract<ContentBlock, { type: "tool_result" }>,
 ): string {
@@ -204,7 +207,8 @@ function toolResultText(
     if (c.type === "text") parts.push(c.text);
     else parts.push(`[unsupported ${c.type} content omitted]`);
   }
-  return parts.join("");
+  const text = parts.join("\n");
+  return block.isError ? `<error>\n${text}\n</error>` : text;
 }
 
 // Converts one content block to zero or one Responses content part. Blocks
