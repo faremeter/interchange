@@ -358,6 +358,36 @@ describe("openai-responses buildRequest", () => {
     ).toBe(false);
   });
 
+  test("error tool results use the shared Chat wire encoding", () => {
+    const body = requestBodyOf(
+      [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              callId: "call-1",
+              content: [
+                { type: "text", text: "first" },
+                { type: "text", text: "second" },
+              ],
+              isError: true,
+            },
+          ],
+          timestamp: 2,
+        },
+      ],
+      "gpt-5-mini",
+      {},
+    );
+    const input = requestInput(body);
+    expect(input).toContainEqual({
+      type: "function_call_output",
+      call_id: "call-1",
+      output: "<error>\nfirst\nsecond\n</error>",
+    });
+  });
+
   test("untagged signatures are never replayed", () => {
     const body = requestBodyOf(
       [

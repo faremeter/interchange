@@ -106,8 +106,9 @@ const plugin = createOpenAIResponsesPlugin({
 // Hand off to runCapture from @intx/inference-discovery.
 ```
 
-Models: the reasoning-capable first-party models (`gpt-5.5`,
-`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5-mini`,
+Models: the reasoning-capable first-party models (`gpt-6-astra`,
+`gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna`, `gpt-6-sol`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5`, `gpt-5-mini`,
 `gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`,
 `gpt-5.4-nano`, `o1`, `o3`, `o3-mini`, `o4-mini`). The gpt-4 family is
 excluded pending verification that those models serve `/responses`.
