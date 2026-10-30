@@ -20,6 +20,7 @@ import {
 } from "@intx/inference-discovery-google-genai";
 import {
   createOpenAIPlugin,
+  createOpenAIResponsesPlugin,
   createOpencodeZenPlugin,
   createXaiPlugin,
 } from "@intx/inference-discovery-openai";
@@ -79,6 +80,14 @@ function opencodeZenCreate(env: Record<string, string>): ProviderPlugin {
   return createOpencodeZenPlugin({ apiKey, baseUrl });
 }
 
+function openaiResponsesCreate(env: Record<string, string>): ProviderPlugin {
+  const apiKey = env.OPENAI_API_KEY;
+  if (apiKey === undefined) {
+    throw new Error("OPENAI_API_KEY missing from validated env");
+  }
+  return createOpenAIResponsesPlugin({ apiKey });
+}
+
 function xaiCreate(env: Record<string, string>): ProviderPlugin {
   const apiKey = env.XAI_API_KEY;
   if (apiKey === undefined) {
@@ -107,6 +116,11 @@ export const PLUGIN_REGISTRY: readonly RegisteredPlugin[] = [
     name: "openai",
     requiredEnv: ["OPENAI_API_KEY"],
     create: openaiCreate,
+  },
+  {
+    name: "openai-responses",
+    requiredEnv: ["OPENAI_API_KEY"],
+    create: openaiResponsesCreate,
   },
   {
     name: "xai",
