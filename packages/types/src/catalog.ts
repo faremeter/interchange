@@ -6,6 +6,8 @@ export const modelProviderPlugins = [
   "anthropic",
   "openai",
   "openai-compatible",
+  "openai-responses",
+  "openai-compatible-responses",
   "google-genai",
 ] as const;
 // Open-ended so an operator-registered adapter (SIDECAR_ADAPTER_MANIFEST) is

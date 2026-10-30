@@ -19,6 +19,7 @@ export type {
   BuiltRequest,
   AdapterRegistry,
   AdapterFactory,
+  StreamTerminalPredicate,
 } from "./adapter";
 export { CREDENTIAL_SENTINEL, BEARER_CREDENTIAL_SENTINEL } from "./auth";
 export {

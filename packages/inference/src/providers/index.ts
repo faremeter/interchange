@@ -7,6 +7,7 @@ import type { AdapterManifest } from "@intx/types";
 import { createAnthropicAdapter } from "./anthropic";
 import { createGoogleGenAIAdapter } from "./google-genai";
 import { createOpenAIAdapter } from "./openai";
+import { createOpenAIResponsesAdapter } from "./openai-responses";
 
 export {
   createAnthropicAdapter,
@@ -16,6 +17,12 @@ export {
 } from "./anthropic";
 export { createGoogleGenAIAdapter, GoogleGenAIQuirks } from "./google-genai";
 export { createOpenAIAdapter, OpenAIQuirks } from "./openai";
+export {
+  createOpenAIResponsesAdapter,
+  ResponsesQuirks,
+  OPENAI_RESPONSES_PROVIDER,
+  OPENAI_COMPATIBLE_RESPONSES_PROVIDER,
+} from "./openai-responses";
 
 function builtinFactories(): Record<string, AdapterFactory> {
   return {
@@ -23,6 +30,8 @@ function builtinFactories(): Record<string, AdapterFactory> {
     openai: createOpenAIAdapter,
     "openai-compatible": createOpenAIAdapter,
     "google-genai": createGoogleGenAIAdapter,
+    "openai-responses": createOpenAIResponsesAdapter,
+    "openai-compatible-responses": createOpenAIResponsesAdapter,
   };
 }
 
