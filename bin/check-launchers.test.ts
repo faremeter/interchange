@@ -37,13 +37,19 @@ function makeRepo(files: Record<string, string>): string {
 }
 
 test("importsIntx sees a direct @intx import", () => {
-  expect(importsIntx(`import { x } from "@intx/agent";\n`)).toBe(true);
-  expect(importsIntx(`import "@intx/log";\n`)).toBe(true);
+  expect(importsIntx(`import { x } from "@intx/agent";\n`, "source.ts")).toBe(
+    true,
+  );
+  expect(importsIntx(`import "@intx/log";\n`, "source.ts")).toBe(true);
+});
+
+test("importsIntx sees an @intx import written with backticks", () => {
+  expect(importsIntx("await import(`@intx/log`);\n", "source.ts")).toBe(true);
 });
 
 test("importsIntx ignores @intx inside strings and comments", () => {
   const code = `// resolves @intx/agent at run time\nconst s = "@intx/agent";\nimport { readFileSync } from "node:fs";\n`;
-  expect(importsIntx(code)).toBe(false);
+  expect(importsIntx(code, "source.ts")).toBe(false);
 });
 
 test("bunTsTarget resolves the dirname form against the wrapper's directory", () => {
@@ -121,15 +127,15 @@ test("scanLauncher skips comment lines and the shebang", () => {
 
 test("shadowingImports flags a bare ./<name> that a wrapper shadows", () => {
   const wrappers = new Set(["seed", "db-reset"]);
-  expect(shadowingImports(`import { x } from "./seed";\n`, wrappers)).toEqual([
-    "./seed",
-  ]);
+  expect(
+    shadowingImports(`import { x } from "./seed";\n`, wrappers, "source.ts"),
+  ).toEqual(["./seed"]);
 });
 
 test("shadowingImports ignores lib subpaths and explicit .ts and packages", () => {
   const wrappers = new Set(["seed"]);
   const code = `import { a } from "./lib/seed-config";\nimport { b } from "./seed.ts";\nimport { c } from "@intx/agent";\nimport { d } from "./other";\n`;
-  expect(shadowingImports(code, wrappers)).toEqual([]);
+  expect(shadowingImports(code, wrappers, "source.ts")).toEqual([]);
 });
 
 test("checkLaunchers flags a bin/*.ts importing a wrapper-shadowed name", () => {

@@ -10,7 +10,6 @@ keypairs
 .env.hub
 .env.migrate
 .env-checked
-.eslintcache
 .DS_Store
 opencode-*.md
 dispatch/

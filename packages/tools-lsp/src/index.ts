@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import type { ToolPlugin } from "@intx/tools-posix";
 import { createLSPManager } from "./lsp";
 import { createLSPMiddleware } from "./middleware";
@@ -11,6 +13,10 @@ export interface LSPPluginOptions {
   cwd: string;
   worktree?: string;
   minSeverity?: number;
+  /** A tsserver script for typescript-language-server to run, for a
+   *  workspace whose own TypeScript ships none (TypeScript 7). Relative
+   *  paths resolve from process.cwd() when the plugin is created. */
+  tsserverPath?: string;
 }
 
 export interface LSPPlugin extends ToolPlugin {
@@ -23,9 +29,15 @@ export interface LSPPlugin extends ToolPlugin {
 }
 
 export function createLSPPlugin(opts: LSPPluginOptions): LSPPlugin {
+  const tsserverPath =
+    opts.tsserverPath === undefined ? undefined : resolve(opts.tsserverPath);
+  if (tsserverPath !== undefined && !existsSync(tsserverPath)) {
+    throw new Error(`tsserverPath does not exist: ${tsserverPath}`);
+  }
   const lsp = createLSPManager({
     cwd: opts.cwd,
     ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
+    ...(tsserverPath !== undefined ? { tsserverPath } : {}),
   });
 
   return {

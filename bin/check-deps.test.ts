@@ -98,6 +98,24 @@ test("a clean workspace produces no violations", async () => {
   expect(v).toEqual([]);
 });
 
+test("a source parse failure identifies the workspace member", async () => {
+  const root = makeWorkspace({
+    members: {
+      "packages/a": {
+        manifest: { name: "@x/a" },
+        files: { "src/index.ts": "export {};" },
+      },
+      "packages/b": {
+        manifest: { name: "@x/b" },
+        files: { "src/index.ts": "import {" },
+      },
+    },
+  });
+  await expect(checkWorkspace(root)).rejects.toThrow(
+    "Cannot parse packages/b/src/index.ts:",
+  );
+});
+
 test("an undeclared value import is flagged", async () => {
   const v = await violationsFor({
     members: {
@@ -146,6 +164,66 @@ test("a declared import is not flagged", async () => {
     },
   });
   expect(v).toEqual([]);
+});
+
+test("an augmentation target must be declared by the member even when root declares it", async () => {
+  const v = await violationsFor({
+    rootDeps: { "http-core": "^1" },
+    members: {
+      "packages/plugin": {
+        manifest: { name: "@x/plugin", dependencies: { framework: "^1" } },
+        files: {
+          "src/index.ts": `import type { Request } from "framework";
+export type PluginRequest = Request;
+declare module "http-core" { interface Request { plugin?: string } }
+`,
+        },
+      },
+    },
+  });
+  expect(v).toEqual([
+    '@x/plugin: imports "http-core" (packages/plugin/src/index.ts) but does not declare it in package.json',
+  ]);
+});
+
+test("inherited forced module detection counts source augmentations but not ambient definitions", async () => {
+  const v = await violationsFor({
+    members: {
+      "packages/plugin": {
+        manifest: { name: "@x/plugin" },
+        tsconfig: { extends: "../../tsconfig.base.json" },
+        files: {
+          "src/plugin.ts": 'declare module "http-core" {}',
+          "src/ambient.d.ts": 'declare module "ambient" {}',
+        },
+      },
+    },
+    extraFiles: {
+      "tsconfig.base.json": JSON.stringify({
+        compilerOptions: { moduleDetection: "force" },
+      }),
+    },
+  });
+  expect(v).toEqual([
+    '@x/plugin: imports "http-core" (packages/plugin/src/plugin.ts) but does not declare it in package.json',
+  ]);
+});
+
+test("a bodyless ambient declaration does not abort dependency scanning", async () => {
+  const v = await violationsFor({
+    members: {
+      "packages/a": {
+        manifest: { name: "@x/a" },
+        files: {
+          "src/types.d.ts": 'declare module "untyped-lib";',
+          "src/index.ts": 'import "undeclared";',
+        },
+      },
+    },
+  });
+  expect(v).toEqual([
+    '@x/a: imports "undeclared" (packages/a/src/index.ts) but does not declare it in package.json',
+  ]);
 });
 
 test("a subpath import resolves to its package name", async () => {
@@ -209,6 +287,60 @@ test("emitted output under dist/ and the tsconfig outDir is not scanned", async 
   expect(v.some((m) => m.includes("phantom-dist"))).toBe(false);
   expect(v.some((m) => m.includes("phantom-outdir"))).toBe(false);
   expect(v.some((m) => m.includes("phantom-redist"))).toBe(true);
+});
+
+test("JSONC extends preserves aliases and resolves inherited output relative to its config", async () => {
+  const v = await violationsFor({
+    members: {
+      "packages/a": {
+        manifest: { name: "@x/a" },
+        tsconfig: { extends: "../../tsconfig.base.json" },
+        files: {
+          "src/index.ts": 'import { value } from "@/value";\n',
+          "build/index.js": 'import value from "emitted-only";\n',
+          "src/real.ts": 'import value from "undeclared";\n',
+        },
+      },
+    },
+    extraFiles: {
+      "tsconfig.base.json": `{
+        // The paths below are relative to the base config.
+        "compilerOptions": {
+          "outDir": "./packages/a/build",
+          "paths": { "@/*": ["./packages/a/src/*"] },
+        },
+      }`,
+    },
+  });
+  expect(v).toEqual([
+    '@x/a: imports "undeclared" (packages/a/src/real.ts) but does not declare it in package.json',
+  ]);
+});
+
+test("an unresolved tsconfig extends target fails the dependency scan", async () => {
+  const root = makeWorkspace({
+    members: {
+      "packages/a": {
+        manifest: { name: "@x/a" },
+        tsconfig: { extends: "./missing.json" },
+      },
+    },
+  });
+  await expect(checkWorkspace(root)).rejects.toThrow("cannot resolve");
+});
+
+test("a backtick dynamic import of an undeclared package is a violation", async () => {
+  const v = await violationsFor({
+    members: {
+      "packages/a": {
+        manifest: { name: "@x/a" },
+        files: { "src/index.ts": "await import(`undeclared`);\n" },
+      },
+    },
+  });
+  expect(v).toEqual([
+    '@x/a: imports "undeclared" (packages/a/src/index.ts) but does not declare it in package.json',
+  ]);
 });
 
 test("import-like text inside a template literal is not a real import", async () => {
@@ -333,6 +465,21 @@ test("a tests/ file importing an external undeclared in root is flagged", async 
     },
   });
   expect(v.some((m) => m.includes("undeclared-spec-dep"))).toBe(true);
+});
+
+test("root-script augmentations use the source directory's module detection setting", async () => {
+  const v = await violationsFor({
+    extraFiles: {
+      "tests/plugin/tsconfig.json": JSON.stringify({
+        compilerOptions: { moduleDetection: "force" },
+      }),
+      "tests/plugin/augment.ts": 'declare module "http-core" {}',
+      "tests/plugin/ambient.d.ts": 'declare module "ambient" {}',
+    },
+  });
+  expect(v).toEqual([
+    'tests/plugin/augment.ts: imports "http-core" but the root package.json does not declare it',
+  ]);
 });
 
 test("a bin/ import declared in the root manifest is accepted", async () => {
