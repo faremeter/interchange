@@ -9,7 +9,6 @@ import { createSSHSignature } from "@intx/crypto";
 import {
   initRepo as storageInitRepo,
   createDeployPack,
-  collectReachableObjects,
   createObjectPresence,
   HUB_REF_NAMESPACE,
   maybeGC,
@@ -468,16 +467,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return `${repoId.kind}/${repoId.id}`;
   }
 
-  // Per-commit reachable-object cache, keyed by repository and commit so
-  // removing a repository can drop its entries. createPack for a
-  // workflow-run ref walks the first-parent chain and unions every commit's
-  // reachable objects so the receiver gets the full history needed to
-  // validate per-commit transitions. Without this cache the walk
-  // recomputes the reachable set for every ancestor on every push, so
-  // a long-running deployment's createPack cost scales as O(N^2) in
-  // the number of commits.
-  const chainReachabilityCache = new Map<string, string[]>();
-
   // Per-repoId cache of "every commit OID currently reachable from
   // any branch or tag in the repo". The substrate uses this in
   // `receivePack` to skip per-commit validation for commits the
@@ -511,9 +500,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // Per-(repoId, ref) cache of "the commit OID the receiver has acked
   // for a workflow-run pack". After the first push lands a ref's tip on
   // the receiver, every subsequent push only needs to carry the commits
-  // added since then — the parent chain older than this tip is already
-  // on the receiver, so re-shipping it wastes pack bytes and inflates
-  // `receivePack` time per push. The cursor advances in
+  // added since then and the objects they changed — the history up to
+  // this tip, with its trees and blobs, is already on the receiver, so
+  // re-shipping it wastes pack bytes and inflates `receivePack` time
+  // per push. The cursor advances in
   // `commitPackedTip`, which the push pipeline calls once the receiver
   // acks the transfer — NOT when `createPack` builds the pack. Advancing
   // on build would strand the receiver whenever a transfer is cancelled
@@ -2531,21 +2521,17 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // receiver starts from genesis and applies the tree wholesale).
     // The workflow-run kind ships incrementally and the receiver
     // (the hub) needs to validate per-commit transitions against the
-    // sender's prior tree, so the pack must carry the full parent
-    // chain from the supplied ref's tip. Walking the chain here keeps
-    // the kind-specific branching at the substrate boundary so the
-    // kind handler stays receive-side only.
+    // sender's prior tree, so the pack must carry every commit since
+    // the tip the receiver acked, with the objects those commits
+    // changed. Walking the chain here keeps the kind-specific branching
+    // at the substrate boundary so the kind handler stays receive-side
+    // only.
     if (repoId.kind === "workflow-run") {
       const dir = repoDir(repoId);
       const commitSha = await git.resolveRef({ fs, dir, ref });
       const tipKey = lastPackedTipKey(repoId, ref);
       const stopAt = lastPackedTip.get(tipKey) ?? null;
-      const oids = await collectChainReachableObjects(
-        repoId,
-        dir,
-        commitSha,
-        stopAt,
-      );
+      const oids = await collectChainObjects(dir, commitSha, stopAt);
       const result = await git.packObjects({
         fs,
         dir,
@@ -2591,52 +2577,67 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     lastPackedTip.delete(lastPackedTipKey(repoId, ref));
   }
 
-  // Collect every object OID reachable from `tipSha` and from every
-  // ancestor commit along its first-parent chain. Mirrors what the
-  // upload-pack layer's negotiated walker produces when the requester
-  // advertises no `haves` but is sized for the substrate's own use:
-  // a workflow-run pack push from the supervisor needs to carry every
-  // commit the hub does not yet have, and the substrate has no
-  // negotiation channel to ask the hub what it already has. The walk
-  // stops at the first parent whose commit object is not in the local
-  // store — that commit is by definition not part of the local
-  // supervisor's history and so cannot be a relevant ancestor.
-  async function collectChainReachableObjects(
-    repoId: RepoId,
+  // Collect the objects a workflow-run pack carries: each commit on the
+  // first-parent chain from `tipSha` back to `stopAt`, the tip the
+  // receiver acked, and the objects its tree holds at a path where its
+  // parent's tree holds something else. The receiver holds the acked
+  // tip's objects and every other parent is in the pack, so the receiver
+  // can read each commit in full. The diff enters only subtrees whose oid
+  // changed, so it costs the size of each change, not of the tree. Each
+  // commit is diffed on its own: skipping a subtree another commit
+  // already collected would lose objects, because that commit diffed it
+  // against a different base. A commit with no parent, or whose parent
+  // the local store does not hold, is diffed against nothing, so with no
+  // `stopAt` the pack holds the full history.
+  async function collectChainObjects(
     dir: string,
     tipSha: string,
     stopAt: string | null,
   ): Promise<string[]> {
-    const seen = new Set<string>();
-    let current: string | null = tipSha;
-    while (current !== null) {
-      if (current === stopAt) break;
-      const cacheKey = `${indexCacheKey(repoId)}/${current}`;
-      let perCommit = chainReachabilityCache.get(cacheKey);
-      if (perCommit === undefined) {
-        perCommit = await collectReachableObjects(dir, current);
-        chainReachabilityCache.set(cacheKey, perCommit);
+    const reads = readsWith(dir, fs, () => cacheFor(dir));
+    const objects = new Set<string>();
+    const collectChanged = async (
+      treeOid: string,
+      priorOid: string | null,
+    ): Promise<void> => {
+      if (treeOid === priorOid) return;
+      objects.add(treeOid);
+      const prior = priorOid === null ? null : await reads.readTree(priorOid);
+      for (const entry of (await reads.readTree(treeOid)).entries) {
+        const priorEntry = prior?.byName.get(entry.path);
+        if (priorEntry?.oid === entry.oid) continue;
+        if (entry.type === "tree") {
+          await collectChanged(
+            entry.oid,
+            priorEntry?.type === "tree" ? priorEntry.oid : null,
+          );
+        } else {
+          objects.add(entry.oid);
+        }
       }
-      for (const o of perCommit) seen.add(o);
-      let parsed: Awaited<ReturnType<typeof git.readCommit>>;
+    };
+    const readParent = async (sha: string): Promise<CommitObject | null> => {
       try {
-        parsed = await git.readCommit({
-          fs,
-          dir,
-          cache: cacheFor(dir),
-          oid: current,
-        });
+        return await reads.readCommit(sha);
       } catch (err) {
-        if (hasCode(err) && err.code === "NotFoundError") break;
+        if (hasCode(err) && err.code === "NotFoundError") return null;
         throw err;
       }
-      const parents = parsed.commit.parent;
-      if (parents.length === 0) break;
-      const next = parents[0];
-      if (next === undefined) throw new Error("unreachable");
-      current = next;
+    };
+
+    let sha = tipSha;
+    let commit = await reads.readCommit(sha);
+    while (sha !== stopAt) {
+      objects.add(sha);
+      const parentSha = commit.parent[0];
+      const parent =
+        parentSha === undefined ? null : await readParent(parentSha);
+      await collectChanged(commit.tree, parent === null ? null : parent.tree);
+      if (parentSha === undefined || parent === null) break;
+      sha = parentSha;
+      commit = parent;
     }
-    return Array.from(seen);
+    return [...objects];
   }
 
   async function resolveRef(
@@ -2953,9 +2954,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         }
         for (const key of [...lastPackedTip.keys()]) {
           if (key.startsWith(refPrefix)) lastPackedTip.delete(key);
-        }
-        for (const key of [...chainReachabilityCache.keys()]) {
-          if (key.startsWith(refPrefix)) chainReachabilityCache.delete(key);
         }
       }
     });

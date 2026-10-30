@@ -3702,6 +3702,128 @@ describe("RepoStore", () => {
     });
   });
 
+  // A receiver that acked a push and then lost the pack it stored must
+  // not accept a later commit that still names an object of that pack,
+  // even one the commit did not change: the sender would never send it
+  // again.
+  describe("receivePack after the receiver lost a pack", () => {
+    const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+    const permissiveWorkflowRun = (): TestHandler => ({
+      ...createTestHandler(),
+      kind: "workflow-run",
+      directoryPrefix: "workflow-runs-under-test",
+    });
+
+    // The receiver acks two pushes and stores each as its own pack. The
+    // second commit replaces every tree of the first, so only the first
+    // event's blob, which the second still names, is left in the first
+    // pack alone.
+    async function setUp() {
+      const source = createRepoStore({
+        dataDir: await makeTempDir("repo-store-lost-source-"),
+        signingKey,
+        handlers: { "workflow-run": permissiveWorkflowRun() },
+        authorize: allowAll,
+      });
+      const target = createRepoStore({
+        dataDir: await makeTempDir("repo-store-lost-target-"),
+        signingKey,
+        handlers: { "workflow-run": permissiveWorkflowRun() },
+        authorize: allowAll,
+      });
+      await target.initRepo(wfRepoId);
+      const targetDir = target.getRepoDir(wfRepoId);
+      const packDir = path.join(targetDir, ".git", "objects", "pack");
+
+      const write = async (filepath: string, body: string) =>
+        (
+          await source.writeTree(principal, wfRepoId, REF, {
+            files: { [filepath]: body },
+            message: filepath,
+          })
+        ).commitSha;
+      const ship = async (
+        receiver: ReturnType<typeof createRepoStore>,
+        priorSha: string | null,
+      ) => {
+        const { pack, commitSha } = await source.createPack(
+          principal,
+          wfRepoId,
+          REF,
+        );
+        await receiver.receivePack(
+          principal,
+          wfRepoId,
+          REF,
+          pack,
+          commitSha,
+          priorSha,
+        );
+        source.commitPackedTip(wfRepoId, REF, commitSha);
+      };
+
+      const firstSha = await write("runs/r1/events/0.json", "zero");
+      await ship(target, null);
+      const firstPack = await fs.promises.readdir(packDir);
+      const secondSha = await write("runs/r1/events/1.json", "one");
+      await ship(target, firstSha);
+      const thirdSha = await write("runs/r1/events/2.json", "two");
+      const lostBlob = (
+        await git.readBlob({
+          fs,
+          dir: source.getRepoDir(wfRepoId),
+          oid: firstSha,
+          filepath: "runs/r1/events/0.json",
+        })
+      ).oid;
+      const firstPackFile = (suffix: string) => {
+        const name = firstPack.find((file) => file.endsWith(suffix));
+        if (name === undefined) throw new Error(`no ${suffix} file`);
+        return path.join(packDir, name);
+      };
+      return {
+        source,
+        target,
+        targetDir,
+        secondSha,
+        thirdSha,
+        lostBlob,
+        firstPackFile,
+        ship,
+      };
+    }
+
+    test("rejects a commit that names a blob of the lost pack, and the full history restores it", async () => {
+      const {
+        source,
+        target,
+        targetDir,
+        secondSha,
+        thirdSha,
+        lostBlob,
+        firstPackFile,
+        ship,
+      } = await setUp();
+      await fs.promises.rm(firstPackFile(".pack"));
+      await fs.promises.rm(firstPackFile(".idx"));
+
+      await expect(ship(target, secondSha)).rejects.toThrow(
+        `missing_objects: commit ${thirdSha} names blob ${lostBlob} at runs/r1/events/0.json, which is neither in the receiver's store nor in the pack`,
+      );
+      expect(await target.resolveRef(principal, wfRepoId, REF)).toBe(secondSha);
+
+      source.forgetPackedTip(wfRepoId, REF);
+      await ship(target, secondSha);
+      expect(await target.resolveRef(principal, wfRepoId, REF)).toBe(thirdSha);
+      const { blob } = await git.readBlob({
+        fs,
+        dir: targetDir,
+        oid: lostBlob,
+      });
+      expect(new TextDecoder().decode(blob)).toBe("zero");
+    });
+  });
+
   // A workflow-run pack transfer cancelled by a reconnect never lands
   // an ack. The send-side "last shipped tip" must therefore advance on
   // the ack, not when the pack is built: an un-acked build has to leave
@@ -3814,6 +3936,208 @@ describe("RepoStore", () => {
     expect(await rebuildTargetStore.resolveRef(principal, wfRepoId, REF)).toBe(
       thirdSha,
     );
+  });
+
+  // After an ack, a workflow-run pack carries only what the receiver
+  // lacks: the new commits and the objects each one changed against its
+  // parent, not every object those commits reach.
+  describe("createPack after an acked tip", () => {
+    const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+    const permissiveWorkflowRun = (): TestHandler => ({
+      ...createTestHandler(),
+      kind: "workflow-run",
+      directoryPrefix: "workflow-runs-under-test",
+    });
+    const newStore = async (prefix: string) =>
+      createRepoStore({
+        dataDir: await makeTempDir(prefix),
+        signingKey,
+        handlers: { "workflow-run": permissiveWorkflowRun() },
+        authorize: allowAll,
+      });
+
+    async function packObjectIds(pack: Uint8Array): Promise<string[]> {
+      const dir = await makeTempDir("repo-store-pack-contents-");
+      await git.init({ fs, dir });
+      const filepath = path.join(".git", "objects", "pack", "pack-test.pack");
+      await fs.promises.mkdir(path.join(dir, ".git", "objects", "pack"), {
+        recursive: true,
+      });
+      await fs.promises.writeFile(path.join(dir, filepath), pack);
+      const { oids } = await git.indexPack({ fs, dir, filepath });
+      return [...oids].sort();
+    }
+
+    // A receiver that holds the source's history up to `tip`.
+    async function receiverAt(
+      sourceStore: Awaited<ReturnType<typeof newStore>>,
+      tip: string,
+    ) {
+      const targetStore = await newStore("repo-store-thin-target-");
+      await targetStore.initRepo(wfRepoId);
+      const { pack } = await sourceStore.createPack(principal, wfRepoId, REF);
+      await targetStore.receivePack(principal, wfRepoId, REF, pack, tip, null);
+      sourceStore.commitPackedTip(wfRepoId, REF, tip);
+      return targetStore;
+    }
+
+    test("a one-file change carries the commit, the trees on its path, and the new blob", async () => {
+      const sourceStore = await newStore("repo-store-thin-source-");
+      const { commitSha: firstSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        {
+          files: {
+            "runs/r1/events/0.json": "zero",
+            "runs/r1/blobs/b0": "spilled output",
+            "addresses/a/inbox/m1": "mail",
+          },
+          message: "v1",
+        },
+      );
+      sourceStore.commitPackedTip(wfRepoId, REF, firstSha);
+      const { commitSha: secondSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/1.json": "one" }, message: "v2" },
+      );
+
+      const { pack } = await sourceStore.createPack(principal, wfRepoId, REF);
+
+      const dir = sourceStore.getRepoDir(wfRepoId);
+      const treeAt = async (filepath: string) =>
+        (await git.readTree({ fs, dir, oid: secondSha, filepath })).oid;
+      const expected = [
+        secondSha,
+        await treeAt(""),
+        await treeAt("runs"),
+        await treeAt("runs/r1"),
+        await treeAt("runs/r1/events"),
+        (
+          await git.readBlob({
+            fs,
+            dir,
+            oid: secondSha,
+            filepath: "runs/r1/events/1.json",
+          })
+        ).oid,
+      ].sort();
+      expect(await packObjectIds(pack)).toEqual(expected);
+    });
+
+    test("a receiver holding the acked tip accepts the changes of several commits", async () => {
+      const sourceStore = await newStore("repo-store-thin-source-");
+      const { commitSha: firstSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        {
+          files: {
+            "runs/r1/events/0.json": "zero",
+            "runs/r1/blobs/b0": "spilled output",
+          },
+          message: "v1",
+        },
+      );
+      const targetStore = await receiverAt(sourceStore, firstSha);
+      const { commitSha: secondSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/1.json": "one" }, message: "v2" },
+      );
+      const { commitSha: thirdSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        {
+          files: {
+            "runs/r1/events/2.json": "two",
+            "runs/r1/blobs/b1": "more output",
+          },
+          message: "v3",
+        },
+      );
+
+      const { pack } = await sourceStore.createPack(principal, wfRepoId, REF);
+
+      const ids = await packObjectIds(pack);
+      expect(ids).toContain(secondSha);
+      expect(ids).toContain(thirdSha);
+      expect(ids).not.toContain(firstSha);
+      const dir = sourceStore.getRepoDir(wfRepoId);
+      const firstBlob = await git.readBlob({
+        fs,
+        dir,
+        oid: firstSha,
+        filepath: "runs/r1/blobs/b0",
+      });
+      expect(ids).not.toContain(firstBlob.oid);
+      await targetStore.receivePack(
+        principal,
+        wfRepoId,
+        REF,
+        pack,
+        thirdSha,
+        firstSha,
+      );
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        thirdSha,
+      );
+    });
+
+    // Two directories that swap contents between commits: each commit's
+    // diff leaves out the blob they share, because its parent holds it at
+    // the same path. Only the older commit's own diff, against the acked
+    // tip, carries it.
+    test("a subtree that moves between paths keeps every object it needs", async () => {
+      const sourceStore = await newStore("repo-store-thin-source-");
+      const { commitSha: firstSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/0.json": "zero" }, message: "v1" },
+      );
+      const targetStore = await receiverAt(sourceStore, firstSha);
+      await sourceStore.writeTree(principal, wfRepoId, REF, {
+        files: {
+          "swap/a/z": "shared",
+          "swap/x/z": "shared",
+          "swap/x/w": "only in x",
+        },
+        message: "v2",
+      });
+      const { commitSha: thirdSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        {
+          clearPrefix: "swap/",
+          files: {
+            "swap/a/z": "shared",
+            "swap/a/w": "only in x",
+            "swap/x/z": "shared",
+          },
+          message: "v3",
+        },
+      );
+
+      const { pack } = await sourceStore.createPack(principal, wfRepoId, REF);
+
+      await targetStore.receivePack(
+        principal,
+        wfRepoId,
+        REF,
+        pack,
+        thirdSha,
+        firstSha,
+      );
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        thirdSha,
+      );
+    });
   });
 
   test("forgetPackedTip makes the next createPack ship the full history", async () => {
