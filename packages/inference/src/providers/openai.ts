@@ -79,14 +79,15 @@ type ResolvedOpenAIQuirks = {
 // Request building
 // ---------------------------------------------------------------------------
 
-// low, medium, and high are reasoning_effort values every OpenAI reasoning
+// low, medium, and high are reasoning effort values every OpenAI reasoning
 // model accepts, so they pass as given. "max" names the highest level, which
 // is a per-model value the deployment supplies through the maxEffort quirk.
-function toReasoningEffort(
+// Shared with the Responses adapter so the two wires cannot drift apart.
+export function wireReasoningEffort(
   model: string,
-  effort: InferenceEffort,
+  effort: InferenceEffort | undefined,
   maxEffort: "xhigh" | "max" | null,
-): string {
+): string | undefined {
   if (effort !== "max") return effort;
   if (maxEffort !== null) return maxEffort;
   warnDroppedOption(
@@ -130,7 +131,7 @@ function buildRequest(
       model === "gpt-5.6-luna");
 
   if (options.effort !== undefined && !forceNoReasoning) {
-    body["reasoning_effort"] = toReasoningEffort(
+    body["reasoning_effort"] = wireReasoningEffort(
       model,
       options.effort,
       quirks.maxEffort,
@@ -352,10 +353,16 @@ function toOpenAIMessage(
   return [{ role: msg.role, content: "" }];
 }
 
-function filenameForDocumentMime(mimeType: string): string {
+// Shared with the Responses adapter: a base64 document synthesizes a
+// deterministic filename from its mimeType, since MediaSource carries no
+// filename field of its own. Only PDF is supported on both wires.
+export function filenameForDocumentMime(
+  mimeType: string,
+  adapter: string,
+): string {
   if (mimeType === "application/pdf") return "document.pdf";
   throw new Error(
-    `OpenAI Chat Completions document input currently supports ` +
+    `${adapter} document input currently supports ` +
       `application/pdf only; received mimeType: ${mimeType}`,
   );
 }
@@ -423,7 +430,10 @@ function toOpenAIContentPart(block: ContentBlock): unknown {
         return {
           type: "file",
           file: {
-            filename: filenameForDocumentMime(source.mimeType),
+            filename: filenameForDocumentMime(
+              source.mimeType,
+              "OpenAI Chat Completions",
+            ),
             file_data: `data:${source.mimeType};base64,${source.data}`,
           },
         };
@@ -1055,7 +1065,9 @@ function parseJSONResponse(
   return events;
 }
 
-function extractRetryAfterMs(headers: Headers): number | undefined {
+// Shared with the Responses adapter: the Responses surface carries the same
+// OpenAI rate-limit headers byte-for-byte.
+export function extractRetryAfterMs(headers: Headers): number | undefined {
   // OpenAI's non-standard millisecond header takes priority
   const retryMs = headers.get("retry-after-ms");
   if (retryMs !== null) {
@@ -1072,7 +1084,9 @@ function extractRetryAfterMs(headers: Headers): number | undefined {
   return undefined;
 }
 
-function extractPacingDelayMs(headers: Headers): number | undefined {
+// Shared with the Responses adapter: the Responses surface carries the same
+// OpenAI rate-limit headers byte-for-byte.
+export function extractPacingDelayMs(headers: Headers): number | undefined {
   const remaining = headers.get("x-ratelimit-remaining-requests");
   if (remaining === null) return undefined;
   const n = Number(remaining);
