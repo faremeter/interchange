@@ -10,8 +10,9 @@ is organised in two layers:
 - `deployments/` — concrete deployments built on the protocol
   layer. Each deployment names a provider, lists its models,
   declares its auth and redaction policy, and (where needed)
-  overrides reasoning extraction. Three deployments ship today: the
-  OpenCode Zen relay, first-party OpenAI, and first-party xAI.
+  overrides reasoning extraction. Four deployments ship today: the
+  OpenCode Zen relay, first-party OpenAI (Chat Completions), first-party
+  OpenAI Responses, and first-party xAI.
 
 See [`@intx/inference-discovery`](../inference-discovery/README.md)
 for the runtime, the plug-in contract, and the `discover` CLI.
@@ -81,6 +82,44 @@ which this plug-in does not probe). The `function-calling-multi-turn`,
 `vision-input`, and `document-input` streaming variants carry no rows
 because the body builder does not build them — a rig gap, not a provider
 limitation.
+
+### Environment
+
+| Variable         | Purpose                                                      |
+| ---------------- | ------------------------------------------------------------ |
+| `OPENAI_API_KEY` | Sent as `Authorization: Bearer <key>`. Redacted in fixtures. |
+
+## OpenAI Responses
+
+The `openai-responses` deployment probes first-party `api.openai.com` on
+the Responses wire (`/v1/responses`), under provider name
+`openai-responses` (sessions land in this package's `sessions/` tree
+alongside the Chat Completions deployments). The base URL is fixed to
+`https://api.openai.com/v1`; the deployment reads only `OPENAI_API_KEY`.
+
+```ts
+import { createOpenAIResponsesPlugin } from "@intx/inference-discovery-openai";
+
+const plugin = createOpenAIResponsesPlugin({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+// Hand off to runCapture from @intx/inference-discovery.
+```
+
+Models: the reasoning-capable first-party models (`gpt-5.5`,
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5`, `gpt-5-mini`,
+`gpt-5-nano`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`,
+`gpt-5.4-nano`, `o1`, `o3`, `o3-mini`, `o4-mini`). The gpt-4 family is
+excluded pending verification that those models serve `/responses`.
+
+The Responses body builder emits `plain-text`, `plain-text-streaming`,
+`function-calling`, `function-calling-multi-turn`, `reasoning-content`,
+`reasoning-content-streaming`, `vision-input`, and `document-input`.
+Structured output and URL-form file input are out of scope until the
+runtime adapter supports them and discovery verifies them; audio, video,
+image-output, code execution, and grounding are not built. Refresh the
+fixtures with a live capture run (`bin/discover --provider
+openai-responses --all` against a funded account).
 
 ### Environment
 
