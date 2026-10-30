@@ -1,0 +1,107 @@
+{
+  "id": "resp_0e0153589798e224006ae54c081dac87d091908a6f014ea6e9",
+  "object": "response",
+  "created_at": 1793412104,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793412106,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5.6-terra",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_0e0153589798e224006ae54c08cdbc87d0948bea17c3683321",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5UwKsMky_MVpinRxlq_amcomHbkYAPOlPSmqAKa8LRNEoa1aZMq7QAt22SGVwASpRLFyBCrwbgoqFB3At_DNa0Ty6mhxAOc6GnC9fakb1njppHSYx5Nki81BP6SgM_8t3nQix_ciILWV7DSZtYGQyxuGbOwLOZa-EWI8cBKhFklxonUV0jhQsM_qA_rjiKkzE2JZF1bF_OiGDti4DJkS2je-THhxTlmJVOAf6Rc2G82i60jtDOwN6JRrxyfUNz3d1zL5ACiWqOwRerFves7i29OGF2f2YICicarmZNtsg-wU9wE5mGzdN9vAwAQqyWtTW_5us9bg17HYufjCzMZZ7EafoKRQ30rsCp-9LETBm_K0ihNHEihA7zGUJk3xuqmoWgu4Ya2llA8gM1J8b1xHUF94fjrwzEyLmr51LZu1FEUJ1h59iwHE3taXWUvINBUzPRaQj341igrjl6Zn2KuPAKKJvLhAyAdSYfmW9Ap28FgI1HUhA11u1Kp_RqAyephhmoQRtZGkP4FLqBHD2ymSFNPVDHkm40KVXetdcRDNkceH6UyMSWEW71DU_NoFjnyzDeVBggTiePHupUfA8quln1_0sCtw8u_XbLDcVTb6Wfuo5eE7VU1vmv2tkJw2JlkCBLDf6b1OjnlzFN_-aONy941M2jlg6KjmO-N-dIrOCWoKuvMCFTuaMjHd4zUcMi0pEzAJ_l_0egZkefrKOUcIzibT-eRavi8l0OEYLXRze9inleLi5QcXvkVOKDr5cRJBXYz5RIwehLWi7RLwt2UWlIB_SmAFDKeekPQdrEZ2tF5FFLUxzehDzd9e0gz2tS3zktptRbxBPjPAO__tRiRdwxSLefokwn_AtKWOek0IBoliMpXuQ4XrQjnXs9UBRo4-qeS9YaU4Zev_qsfBJp_E4Y5CIeXE7WrMw9KKxju9xJ2C738TbjuVli0AqDVYkVT61LQdUqd175ebiKycozeVTTclZ7VGiw_mIrSdjR1DbAKrJ3tMSN6TlK-w2xeOzqTb8Nfhf037RfjmWpdrRsOEfYBQviyhy9LUwIFUJGTpBz-UuRMn4BxK1AS6tkvzgxwxyWo8d6a0lJOFDhQmx5mYx-riIQdJwKj75GgInDKj0iYZvEnhyKK7dfIQFCGo7gaaRNocLcwsqH7DWRbGm-wftOlJvulPmTpsWLzjJzJIpGLISyeQFJTlCT5pu2OBRGZryks7svGZ6i0LCjVKkBVSFNMfyFTKD67T7_XaazXyILzNv25T7WeseNTNAnxYYC3mHIX2jCurbN5Nmweh98PGdK3igbCibobPlDV_RvzQLMafMYP3i9OiEdcgtyi3JriMYp4UOlo-Hep7rGbC9d5cduygoGDBNXNBTiLxfY0mkY1zzPvMtnTZgCUcWkxiMRc9yTYTTDCpxbRyrb6OuE9SzYNuAAqCDbuLUOh_XOpYtdcSd6SJcDX5I9HO0D4UZdQ3kq9o0--oQwDqgJ2QcdvWQj4PGdaWn2xsST49fml586V0KtkMtuZ2PnBvQUyHR4vmhdhjlVR_SYIxINdHwPlHqdpY_kNFITv73sN-0S-RMSxW7UKmQYOD8xBe-moS-i9AR5HFQhh2thIwO9vN5EKSoUJXvQ==",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "**Explaining algebra concisely**\n\nI'm focusing on how to explain algebra clearly! It's important for me to be concise and straightforward. I want to make sure I highlight key concepts without overwhelming details. One thing I should keep in mind is to avoid confusing jargon and stick to the essentials, like operations and equations. I wonder if drawing diagrams might help too. I really want to communicate these ideas effectively while being mindful of clarity!"
+        }
+      ]
+    },
+    {
+      "id": "msg_0e0153589798e224006ae54c0a398487d0b4ac4a0dd193f6f3",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost \\(x\\) dollars.\n\nThen the bat costs \\(x + 1.00\\) dollars.\n\nTogether:\n\n\\[\nx + (x + 1.00) = 1.10\n\\]\n\n\\[\n2x + 1.00 = 1.10\n\\]\n\n\\[\n2x = 0.10\n\\]\n\n\\[\nx = 0.05\n\\]\n\n**The ball costs 5 cents.**"
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": "detailed"
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 120,
+    "output_tokens_details": {
+      "reasoning_tokens": 18
+    },
+    "total_tokens": 165
+  },
+  "user": null,
+  "metadata": {}
+}

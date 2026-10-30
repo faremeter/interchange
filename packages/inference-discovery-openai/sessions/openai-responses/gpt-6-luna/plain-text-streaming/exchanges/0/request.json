@@ -1,0 +1,11 @@
+{
+  "model": "gpt-6-luna",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "Reply with a single sentence: the capital of France is Paris."
+    }
+  ],
+  "stream": true
+}
