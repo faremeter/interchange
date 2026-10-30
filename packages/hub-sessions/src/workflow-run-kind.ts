@@ -169,6 +169,7 @@ import { getLogger } from "@intx/log";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy/addresses";
 import {
   authorizeUserPrincipal,
+  NoBlobAtPathError,
   type AuthorizeFn,
   type CommittedReads,
   type CommittedTreeEntry,
@@ -1307,6 +1308,7 @@ async function parseEventBlob(
   try {
     raw = await readBlob(entry.blobPath);
   } catch (cause) {
+    if (!(cause instanceof NoBlobAtPathError)) throw cause;
     return {
       ok: false,
       reason: `event ${entry.blobPath} could not be read from the tree: ${
@@ -1623,6 +1625,7 @@ async function readWatermark(
   try {
     raw = await readBlob(watermarkPath);
   } catch (cause) {
+    if (!(cause instanceof NoBlobAtPathError)) throw cause;
     return {
       ok: false,
       reason: `watermark ${watermarkPath} could not be read from the tree: ${
@@ -1677,6 +1680,7 @@ async function parseConsumedBlobFrom(
   try {
     raw = await readBlob(entry.blobPath);
   } catch (cause) {
+    if (!(cause instanceof NoBlobAtPathError)) throw cause;
     return {
       ok: false,
       reason: `consumed ${entry.blobPath} could not be read from the tree: ${
@@ -1733,6 +1737,7 @@ async function parseQueueBlob(
   try {
     raw = await readBlob(entry.blobPath);
   } catch (cause) {
+    if (!(cause instanceof NoBlobAtPathError)) throw cause;
     return {
       ok: false,
       reason: `${entry.kind} ${entry.blobPath} could not be read from the tree: ${

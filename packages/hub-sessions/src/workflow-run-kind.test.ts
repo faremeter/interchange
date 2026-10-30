@@ -4772,6 +4772,105 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
   });
 });
 
+// A push that replaces the watermark makes the handler read the parent's
+// watermark, which only the parent names. A receiver that lost it must
+// fail the push as missing objects, which makes the sender resend the
+// full history, not reject the push's content.
+describe("claim-check API — a receive whose prior watermark the receiver lost", () => {
+  test("rejects as missing_objects, and the full history restores the watermark", async () => {
+    const hub = await makeClaimCheckStore("cc-lost-hub-");
+    const { repoId, principal } = hub;
+    await enqueueInbox(hub.store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      receivedAt: 1000,
+      mailAuditRef: { store: "audit", path: "mail/msg-1" },
+    });
+    await dequeueToProcessing(hub.store, principal, repoId, ADDRESS);
+    await markConsumed(hub.store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-1",
+      runId: "run-1",
+      consumedAt: 100_000,
+      retentionHorizonMs: 1000,
+    });
+    const hubDir = hub.store.getRepoDir(repoId);
+    const ackedSha = await hub.store.resolveRef(principal, repoId, REF);
+    if (ackedSha === null) throw new Error("no claim-check commit");
+
+    // The sender starts from a copy of the receiver's repository, so the
+    // two share the history up to `ackedSha`.
+    const sender = createRepoStore({
+      dataDir: await makeClaimCheckTempDir("cc-lost-sender-"),
+      signingKey: claimCheckSigningKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await fs.promises.cp(hubDir, sender.getRepoDir(repoId), {
+      recursive: true,
+    });
+    sender.commitPackedTip(repoId, REF, ackedSha);
+    const ship = async (priorSha: string) => {
+      const { pack, commitSha } = await sender.createPack(
+        principal,
+        repoId,
+        REF,
+      );
+      await hub.store.receivePack(
+        principal,
+        repoId,
+        REF,
+        pack,
+        commitSha,
+        priorSha,
+      );
+      sender.commitPackedTip(repoId, REF, commitSha);
+      return commitSha;
+    };
+
+    await enqueueInbox(sender, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-2",
+      receivedAt: 150_000,
+      mailAuditRef: { store: "audit", path: "mail/msg-2" },
+    });
+    await dequeueToProcessing(sender, principal, repoId, ADDRESS);
+    const parentSha = await ship(ackedSha);
+    const { oid: lostWatermark } = await git.readBlob({
+      fs,
+      dir: hubDir,
+      oid: parentSha,
+      filepath: watermarkPathFor(ADDRESS_SEG),
+    });
+    await fs.promises.rm(
+      path.join(
+        hubDir,
+        ".git",
+        "objects",
+        lostWatermark.slice(0, 2),
+        lostWatermark.slice(2),
+      ),
+    );
+
+    await markConsumed(sender, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-2",
+      runId: "run-2",
+      consumedAt: 200_000,
+      retentionHorizonMs: 1000,
+    });
+    await expect(ship(parentSha)).rejects.toThrow(
+      /^missing_objects: commit [0-9a-f]{40} needs an object that is neither in the receiver's store nor in the pack$/,
+    );
+    expect(await hub.store.resolveRef(principal, repoId, REF)).toBe(parentSha);
+
+    sender.forgetPackedTip(repoId, REF);
+    const tipSha = await ship(parentSha);
+    expect(await hub.store.resolveRef(principal, repoId, REF)).toBe(tipSha);
+    await git.readBlob({ fs, dir: hubDir, oid: lostWatermark });
+  });
+});
+
 describe("parseEventSeq", () => {
   test("accepts canonical <seq>.json names", () => {
     expect(parseEventSeq("0.json")).toBe(0);

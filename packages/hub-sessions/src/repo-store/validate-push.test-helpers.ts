@@ -6,6 +6,7 @@ import type {
   Principal,
   RepoId,
 } from "./types";
+import { NoBlobAtPathError } from "./types";
 
 /** A tree as a map from repo-root-relative blob path to its bytes. */
 export type TreeFiles = Readonly<Record<string, string | Uint8Array>>;
@@ -111,8 +112,9 @@ export function validatePushArgs(opts: {
     topLevelTreePaths: opts.topLevelTreePaths ?? topLevelsOf(files),
     readBlob: async (blobPath) => {
       const body = files[blobPath];
-      if (body === undefined)
-        throw new Error(`readBlob: ${blobPath} not found`);
+      if (body === undefined) {
+        throw new NoBlobAtPathError(`readBlob: ${blobPath} not found`);
+      }
       return bytesOf(body);
     },
     listDir: prospective.listDir,

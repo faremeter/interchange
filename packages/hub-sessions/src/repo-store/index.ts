@@ -20,7 +20,11 @@ export type {
   WriteResult,
   WriteTreePreservingPrefixArgs,
 } from "./types";
-export { RepoRemovedDuringReceiveError, UserPrincipal } from "./types";
+export {
+  NoBlobAtPathError,
+  RepoRemovedDuringReceiveError,
+  UserPrincipal,
+} from "./types";
 export {
   authorizeUserPrincipal,
   type AuthorizeUserPrincipalArgs,

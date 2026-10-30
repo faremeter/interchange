@@ -253,7 +253,14 @@ export interface KindHandler {
    * enumerates the names directly under a tree-root-relative POSIX
    * directory path (no trailing slash, no leading slash); pass the
    * empty string to list the root. Handlers that only need path-level
-   * checks can ignore `readBlob` and `listDir`.
+   * checks can ignore `readBlob` and `listDir`. `readBlob` throws
+   * `NoBlobAtPathError` when the prospective tree holds no blob at the
+   * path.
+   *
+   * Any other error from a read is a fault of the store, not of the
+   * content. A handler that lets it propagate lets the substrate reject
+   * a missing object as `missing_objects`, which makes a workflow-run
+   * sender resend the full history; a returned rejection hides it.
    *
    * `priorReadBlob` and `priorListDir` mirror `readBlob` / `listDir`
    * against the parent commit's tree — the ref's tip at the moment
@@ -671,6 +678,14 @@ export type PreparedReceivePack =
       commit(): Promise<PackCommitResult>;
       discard(): Promise<void>;
     };
+
+/** A `validatePush` read found no blob at its path in the prospective tree. */
+export class NoBlobAtPathError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoBlobAtPathError";
+  }
+}
 
 /**
  * A prepared receive found that its repository was removed after the

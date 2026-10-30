@@ -45,7 +45,11 @@ import type {
   WriteTreeDeltaArgs,
   WriteTreePreservingPrefixArgs,
 } from "./types";
-import { RepoRemovedDuringReceiveError, SAFE_REPO_ID } from "./types";
+import {
+  NoBlobAtPathError,
+  RepoRemovedDuringReceiveError,
+  SAFE_REPO_ID,
+} from "./types";
 
 const DEFAULT_SUBSCRIBE_BUFFER_LIMIT = 1024;
 const DEFINITION_REF_NAMESPACE = `${HUB_REF_NAMESPACE}/workflow-definitions`;
@@ -1527,7 +1531,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const readBlob = async (relPath: string): Promise<Uint8Array> => {
       const blob = await paths.blobAt(relPath);
       if (blob === null) {
-        throw new Error(
+        throw new NoBlobAtPathError(
           `readBlob: path ${relPath} not present in prospective tree`,
         );
       }
