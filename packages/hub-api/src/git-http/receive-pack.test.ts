@@ -106,6 +106,9 @@ function createStubStore(stub: ReceivePackStub): {
     commitPackedTip: () => {
       throw new Error("commitPackedTip: not used in this test");
     },
+    forgetPackedTip: () => {
+      throw new Error("forgetPackedTip: not used in this test");
+    },
     resolveRef: async () => {
       throw new Error("resolveRef: not used in this test");
     },

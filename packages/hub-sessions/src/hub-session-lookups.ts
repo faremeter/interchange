@@ -78,6 +78,12 @@ function packFailureReason(
     logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${msg}`;
     return "path_violation";
   }
+  // The pack is well formed but assumed the Hub holds an object it does
+  // not, so the sidecar answers with the full history.
+  if (msg.startsWith("missing_objects")) {
+    logger.error`Workflow-run pack rejected for ${workflowRunRepoId}: ${msg}`;
+    return "missing_objects";
+  }
   // Mirror the agent-state branch's catch-all: any other failure
   // (transaction failures, filesystem races, a staged pack whose bytes do
   // not match its tip, kind-handler diagnostics surfaced as Error messages,
@@ -647,11 +653,12 @@ export function createHubSessionLookups(
         }
       }
 
-      // Another receive moved the ref to or past this tip while this one
-      // validated, so Git did not change here. That receive runs the dispatch
-      // projection after its own ref write, and the periodic dispatch
-      // projection pass retries any anchor that still has unsettled
-      // dispatches.
+      // The ref already held this tip, or another receive moved it to or past
+      // this tip while this one validated, so the ref did not move here; this
+      // receive at most restored objects the store had lost. The receive that
+      // moved the ref runs the dispatch projection after its own ref write,
+      // and the periodic dispatch projection pass retries any anchor that
+      // still has unsettled dispatches.
       if (!applied) return { accepted: true };
 
       // Git acceptance survives projection failures. The terminal recovery pass

@@ -213,6 +213,7 @@ export function createProxyWorkflowRunRepoStore(
     },
     createPack: bareStore.createPack.bind(bareStore),
     commitPackedTip: bareStore.commitPackedTip.bind(bareStore),
+    forgetPackedTip: bareStore.forgetPackedTip.bind(bareStore),
     resolveRef: bareStore.resolveRef.bind(bareStore),
     listRefs: bareStore.listRefs.bind(bareStore),
     resolveHead: bareStore.resolveHead.bind(bareStore),

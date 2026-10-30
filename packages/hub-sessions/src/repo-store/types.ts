@@ -491,6 +491,14 @@ export interface RepoStore {
    * kinds whose packs are not incremental.
    */
   commitPackedTip(repoId: RepoId, ref: string, commitSha: string): void;
+  /**
+   * Drop the "last shipped tip" of an incremental (`workflow-run`) pack
+   * ref, so the next `createPack` ships the ref's full history. The
+   * caller invokes this when the receiver reports that it lacks objects
+   * the cursor says it holds. A no-op for kinds whose packs are not
+   * incremental.
+   */
+  forgetPackedTip(repoId: RepoId, ref: string): void;
   resolveRef(
     principal: Principal,
     repoId: RepoId,
@@ -639,7 +647,8 @@ export type RepoStoreSubscribeEvent = {
 
 /**
  * The outcome of a prepared receive's `commit()`. `already_applied`
- * means the ref already held the pack's tip, so nothing changed.
+ * means the ref already held the pack's tip, so the ref did not move.
+ * The pack is still published when it brings objects the store lacks.
  */
 export type PackCommitResult =
   | { readonly kind: "already_applied" }
@@ -652,7 +661,8 @@ export type PackCommitResult =
  * A pack that `prepareReceivePack` staged and validated. `commit()`
  * publishes it and moves the ref; `discard()` removes it.
  * `already_applied` means the ref already held the pack's tip when the
- * receive began, so nothing was staged.
+ * receive began, the store held every object of that tip, and the pack
+ * brought no object the store lacked, so nothing is published.
  */
 export type PreparedReceivePack =
   | { readonly kind: "already_applied" }

@@ -247,6 +247,9 @@ function unusedRepoStore(): LocalRepoStore {
     commitPackedTip: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },
+    forgetPackedTip: () => {
+      throw new Error("mock AgentRepoStore.repoStore is not wired");
+    },
     resolveRef: unused,
     listRefs: unused,
     resolveHead: unused,

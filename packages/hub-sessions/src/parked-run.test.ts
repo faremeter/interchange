@@ -29,6 +29,9 @@ function repoStoreFor(root: string): RepoStore {
     commitPackedTip: () => {
       throw new Error("parked-run test: method not wired");
     },
+    forgetPackedTip: () => {
+      throw new Error("parked-run test: method not wired");
+    },
     resolveRef: unused,
     listRefs: unused,
     resolveHead: unused,

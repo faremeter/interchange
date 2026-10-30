@@ -765,6 +765,9 @@ function createStubRepoStore(
     commitPackedTip: () => {
       throw new Error("stub repoStore is not wired in workflow tests");
     },
+    forgetPackedTip: () => {
+      throw new Error("stub repoStore is not wired in workflow tests");
+    },
     resolveRef: unused,
     listRefs: unused,
     resolveHead: unused,

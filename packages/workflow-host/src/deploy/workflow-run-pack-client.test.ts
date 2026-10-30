@@ -3,6 +3,7 @@ import { describe, test, expect } from "bun:test";
 import type { InferenceSource } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import { PackRejectedError } from "@intx/pack-transport";
 import { waitUntil } from "@intx/types/testing";
 import {
   createDeploymentAddressRegistry,
@@ -36,6 +37,7 @@ function createRecordingUnderlyingRepoStore(
   }[];
   packs: { principal: { kind: string }; repoId: RepoId; ref: string }[];
   packedTipCommits: { repoId: RepoId; ref: string; commitSha: string }[];
+  forgottenTips: { repoId: RepoId; ref: string }[];
 } {
   const preserveCalls: {
     principal: { kind: string };
@@ -52,6 +54,7 @@ function createRecordingUnderlyingRepoStore(
     ref: string;
     commitSha: string;
   }[] = [];
+  const forgottenTips: { repoId: RepoId; ref: string }[] = [];
   const stub: Partial<RepoStore> = {
     getRepoDir(_repoId: RepoId): string {
       return "/tmp/unused";
@@ -84,6 +87,9 @@ function createRecordingUnderlyingRepoStore(
     commitPackedTip(repoId, ref, commitSha) {
       packedTipCommits.push({ repoId, ref, commitSha });
     },
+    forgetPackedTip(repoId, ref) {
+      forgottenTips.push({ repoId, ref });
+    },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- in-test stub; the unused RepoStore methods are guarded by the Proxy below
   const store = new Proxy(stub as RepoStore, {
@@ -97,7 +103,7 @@ function createRecordingUnderlyingRepoStore(
       };
     },
   });
-  return { store, preserveCalls, packs, packedTipCommits };
+  return { store, preserveCalls, packs, packedTipCommits, forgottenTips };
 }
 
 // Yield to the macrotask queue so the facade's coalescing loop settles a push
@@ -187,6 +193,89 @@ describe("createWorkflowRunPackClient", () => {
     // A cancelled/rejected transfer never acks, so the packed tip must
     // not advance: the retry rebuild re-includes the un-acked commits.
     expect(packedTipCommits).toHaveLength(0);
+  });
+
+  test("push ships the full history once when the hub reports missing objects", async () => {
+    const { store, packs, packedTipCommits, forgottenTips } =
+      createRecordingUnderlyingRepoStore();
+    let attempts = 0;
+    const client = createWorkflowRunPackClient({
+      substrate: store,
+      hubLink: {
+        pushWorkflowRunPack: () => {
+          attempts += 1;
+          return attempts === 1
+            ? Promise.reject(new PackRejectedError("t1", "missing_objects"))
+            : Promise.resolve();
+        },
+      },
+    });
+
+    await client.push({
+      agentAddress: "agent@example.com",
+      generation: 1,
+      repoId: { kind: "workflow-run", id: "agent-example-com" },
+      ref: "refs/heads/main",
+    });
+
+    // The cursor is dropped before the rebuild, so the second pack carries
+    // the full history, and the ack of that pack commits the tip.
+    expect(forgottenTips).toEqual([
+      {
+        repoId: { kind: "workflow-run", id: "agent-example-com" },
+        ref: "refs/heads/main",
+      },
+    ]);
+    expect(packs).toHaveLength(2);
+    expect(packedTipCommits.map((c) => c.commitSha)).toEqual(["stub-pack-sha"]);
+  });
+
+  test("push fails when the full history is also missing objects", async () => {
+    const { store, packs, packedTipCommits } =
+      createRecordingUnderlyingRepoStore();
+    const client = createWorkflowRunPackClient({
+      substrate: store,
+      hubLink: {
+        pushWorkflowRunPack: () =>
+          Promise.reject(new PackRejectedError("t", "missing_objects")),
+      },
+    });
+
+    await expect(
+      client.push({
+        agentAddress: "agent@example.com",
+        generation: 1,
+        repoId: { kind: "workflow-run", id: "agent-example-com" },
+        ref: "refs/heads/main",
+      }),
+    ).rejects.toThrow(/reason=missing_objects/);
+
+    expect(packs).toHaveLength(2);
+    expect(packedTipCommits).toHaveLength(0);
+  });
+
+  test("push does not resend on another reject reason", async () => {
+    const { store, packs, forgottenTips } =
+      createRecordingUnderlyingRepoStore();
+    const client = createWorkflowRunPackClient({
+      substrate: store,
+      hubLink: {
+        pushWorkflowRunPack: () =>
+          Promise.reject(new PackRejectedError("t", "corrupt")),
+      },
+    });
+
+    await expect(
+      client.push({
+        agentAddress: "agent@example.com",
+        generation: 1,
+        repoId: { kind: "workflow-run", id: "agent-example-com" },
+        ref: "refs/heads/main",
+      }),
+    ).rejects.toThrow(/reason=corrupt/);
+
+    expect(packs).toHaveLength(1);
+    expect(forgottenTips).toHaveLength(0);
   });
 
   test("forgetting a repository drops its acknowledged tips", async () => {

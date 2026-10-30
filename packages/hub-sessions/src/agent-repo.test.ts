@@ -500,7 +500,7 @@ describe("AgentRepoStore", () => {
       );
     });
 
-    test("a held tip is answered at prepare, with nothing staged", async () => {
+    test("a held tip the store holds whole is answered at prepare, with nothing left staged", async () => {
       const dataDir = await makeTempDir("agent-repo-wfr-held-prepare-");
       const store = createAgentRepoStore({ dataDir, signingKey });
       const repoId = { kind: "workflow-run" as const, id: "dep-wfr-held" };
