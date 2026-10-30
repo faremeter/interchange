@@ -7,7 +7,6 @@ import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import {
   pushCredentialRevoke,
   pushCredentialRotation,
-  pushSourceUpdatesSubtree,
   recheckDeliveredCredentials,
   revokeRemovedCredentials,
 } from "./credential-push";
@@ -35,17 +34,7 @@ const dummyRouter = {} as unknown as SidecarRouter;
 // reached; a noop stands in for the required parameter.
 const dummyCipher = createNoopCredentialCipher();
 
-describe("source push error containment", () => {
-  test("pushSourceUpdatesSubtree resolves when descendant lookup fails", async () => {
-    const result = await pushSourceUpdatesSubtree(
-      rejectingDB(),
-      dummyRouter,
-      "tnt_1",
-      dummyCipher,
-    );
-    expect(result).toBeUndefined();
-  });
-
+describe("push error containment", () => {
   test("pushCredentialRotation resolves when the descendant lookup fails", async () => {
     const result = await pushCredentialRotation(
       rejectingDB(),
@@ -57,7 +46,7 @@ describe("source push error containment", () => {
     expect(result).toBeUndefined();
   });
 
-  test("pushCredentialRotation resolves when both run scans fail", async () => {
+  test("pushCredentialRotation resolves when the deployment scan fails", async () => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal stand-in for the drizzle client
     const db = {
       query: {
@@ -170,25 +159,12 @@ describe("pushCredentialRevoke", () => {
 });
 
 describe("pushCredentialRotation", () => {
-  // The folded-instance scan names no columns; the deployment scan selects
-  // the refs. Each scan fails or answers on its own.
-  function rotationDB(scans: {
-    instances: () => Promise<unknown[]>;
-    deployments: () => Promise<unknown[]>;
-  }): { db: DB["db"]; scanned: string[] } {
-    const scanned: string[] = [];
+  function rotationDB(deployments: () => Promise<unknown[]>): DB["db"] {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- minimal stand-in for the drizzle client
-    const db = {
+    return {
       query: {
         tenant: { findMany: async () => [] },
-        workflowRun: {
-          findMany: (args: { columns?: unknown }) => {
-            const scan =
-              args.columns === undefined ? "instances" : "deployments";
-            scanned.push(scan);
-            return scans[scan]();
-          },
-        },
+        workflowRun: { findMany: deployments },
         credential: {
           findFirst: async () => ({
             id: "cred_x",
@@ -213,7 +189,6 @@ describe("pushCredentialRotation", () => {
         }),
       }),
     } as unknown as DB["db"];
-    return { db, scanned };
   }
 
   const holder = {
@@ -222,14 +197,10 @@ describe("pushCredentialRotation", () => {
     credentialRefs: { credentialIds: ["cred_x"], bindings: [] },
   };
 
-  test("pushes to a deployment holding the credential when the instance scan fails", async () => {
+  test("pushes the current material to a deployment holding the credential", async () => {
     const { router, calls } = capturingRouter();
-    const { db } = rotationDB({
-      instances: () => Promise.reject(new Error("db boom")),
-      deployments: async () => [holder],
-    });
     await pushCredentialRotation(
-      db,
+      rotationDB(async () => [holder]),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only sendCredentialsUpdate is reached
       router as unknown as SidecarRouter,
       "tnt_1",
@@ -256,36 +227,15 @@ describe("pushCredentialRotation", () => {
     ]);
   });
 
-  test("runs the instance scan when the deployment scan fails", async () => {
-    const { router } = capturingRouter();
-    const { db, scanned } = rotationDB({
-      instances: async () => [],
-      deployments: () => Promise.reject(new Error("db boom")),
-    });
-    await pushCredentialRotation(
-      db,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- no send is reached
-      router as unknown as SidecarRouter,
-      "tnt_1",
-      "cred_x",
-      dummyCipher,
-    );
-    expect(scanned.sort()).toEqual(["deployments", "instances"]);
-  });
-
   test("skips a deployment whose refs do not name the credential", async () => {
     const { router, calls } = capturingRouter();
-    const { db } = rotationDB({
-      instances: async () => [],
-      deployments: async () => [
+    await pushCredentialRotation(
+      rotationDB(async () => [
         {
           ...holder,
           credentialRefs: { credentialIds: ["cred_y"], bindings: [] },
         },
-      ],
-    });
-    await pushCredentialRotation(
-      db,
+      ]),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- no send is reached
       router as unknown as SidecarRouter,
       "tnt_1",

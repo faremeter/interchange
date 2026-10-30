@@ -8,7 +8,7 @@ import {
 } from "bun:test";
 
 import { createNoopCredentialCipher } from "@intx/crypto";
-import { resolveInstanceModelSources, resolveModelSources } from "@intx/db";
+import { resolveModelSources } from "@intx/db";
 import { workflowDefinition } from "@intx/db/schema";
 import type { ModelRequirement } from "@intx/types";
 import {
@@ -30,10 +30,9 @@ import {
 // within the hierarchy: a credential owned by the resolving tenant OR an
 // ancestor is usable (descendants inherit) and needs no grant. A
 // principal-owned credential is not a tenant resource and is never usable
-// through a shared catalog offering. These pin the ownership boundary on both
-// secret-injecting paths -- launch (resolveModelSources) and rotation
-// (resolveInstanceModelSources) -- across a parent `tnt_root` and a child
-// `tnt_child` that inherits from it. Ownership needs no creator, so a
+// through a shared catalog offering. These pin the ownership boundary on the
+// secret-injecting launch path (resolveModelSources) across a parent
+// `tnt_root` and a child `tnt_child` that inherits from it. Ownership needs no creator, so a
 // definition with none still launches a tenant-owned source.
 
 const SECRET = "sk-parent-tenant-credential";
@@ -145,22 +144,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(result.materials.map((m) => m.secret)).toEqual([SECRET]);
       });
 
-      test("rotation re-resolution emits the inherited secret by ownership", async () => {
-        await seed({
-          credentialPrincipalId: null,
-          creatorPrincipalId: "prn_child_creator",
-        });
-        const result = await resolveInstanceModelSources(
-          h.db,
-          "tnt_child",
-          { definitionId: "wfd_1", modelPreferences: null },
-          noopCipher,
-        );
-        expect(result.ok).toBe(true);
-        if (!result.ok) return;
-        expect(result.materials.map((m) => m.secret)).toEqual([SECRET]);
-      });
-
       test("a definition with no creator still launches a tenant-owned source", async () => {
         await seed({ credentialPrincipalId: null, creatorPrincipalId: null });
         const launch = await resolveModelSources(
@@ -170,13 +153,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           noopCipher,
         );
         expect(launch.ok).toBe(true);
-        const rotation = await resolveInstanceModelSources(
-          h.db,
-          "tnt_child",
-          { definitionId: "wfd_1", modelPreferences: null },
-          noopCipher,
-        );
-        expect(rotation.ok).toBe(true);
       });
     });
 
@@ -197,21 +173,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           h.db,
           "tnt_child",
           REQ_OPUS,
-          noopCipher,
-        );
-        expect(JSON.stringify(result)).not.toContain(SECRET);
-        expect(result).toMatchObject(denial);
-      });
-
-      test("rotation re-resolution withholds a personal credential", async () => {
-        await seed({
-          credentialPrincipalId: "prn_owner",
-          creatorPrincipalId: "prn_child_creator",
-        });
-        const result = await resolveInstanceModelSources(
-          h.db,
-          "tnt_child",
-          { definitionId: "wfd_1", modelPreferences: null },
           noopCipher,
         );
         expect(JSON.stringify(result)).not.toContain(SECRET);

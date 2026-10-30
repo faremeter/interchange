@@ -112,10 +112,10 @@ export type DeliverableCredentialResolution =
  * binding path's lifecycle rule, so a revoked, expired or errored credential is
  * never delivered (`inactive`).
  *
- * Every delivery rail calls this live -- launch, deploy, and each rotation or
- * catalog-edit re-push -- so a catalog edit that adds an eligible credential is
- * picked up without re-materializing any grant, and a re-push after a revoke
- * cannot deliver the revoked secret again.
+ * The launch and deploy resolvers call this live, so a credential that becomes
+ * eligible is picked up without re-materializing any grant. A credential that
+ * a deployment already holds is re-resolved by `reresolveCurrentMaterials`
+ * instead, which keeps an expired or errored credential.
  */
 export async function resolveDeliverableCredential(
   db: DB["db"],
@@ -273,7 +273,8 @@ export async function findRotatedCredentialIds(
 
 /**
  * Re-resolve the CURRENT material for a set of already-authorized credentialIds,
- * for the reconnect resync. Unlike `resolveInferenceMaterials`, a credential
+ * for the reconnect resync, the rotation push and the deploy-start re-check.
+ * Unlike `resolveInferenceMaterials`, a credential
  * that no longer exists or is `revoked` is DROPPED (omitted) rather than
  * throwing: the resync reflects credential lifecycle, so a dead id is simply
  * absent from the reconciled delivery and the child evicts it.

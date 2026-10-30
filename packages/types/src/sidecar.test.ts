@@ -250,10 +250,8 @@ describe("SourcesUpdateFrame", () => {
   });
 
   test("rejects a frame whose sources list is empty", () => {
-    // The hub never emits an empty rotation -- `pushInstanceSourceUpdate`
-    // returns early when there is no head source -- so the boundary
-    // rejects an empty `sources` rather than accepting a rotation the
-    // agent could not swap to any live source.
+    // The boundary rejects an empty `sources` rather than accepting an
+    // update the agent could not swap to any live source.
     const result = SourcesUpdateFrame({ ...base, sources: [] });
     expect(result instanceof type.errors).toBe(true);
   });

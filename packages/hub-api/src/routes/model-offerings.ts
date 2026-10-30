@@ -19,11 +19,6 @@ import {
   PricingRowResponse,
   paginatedSchema,
 } from "@intx/types";
-import {
-  pushSourceUpdatesSubtree,
-  type SidecarRouter,
-} from "@intx/hub-sessions";
-import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
@@ -81,16 +76,12 @@ export function formatPricingRow(row: typeof modelPricing.$inferSelect) {
 
 export type CreateModelOfferingRoutesDeps = {
   db: DB["db"];
-  sidecarRouter: SidecarRouter;
   requireGrant: RequireGrant;
-  credentialCipher: CredentialCipher;
 };
 
 export function createModelOfferingRoutes({
   db,
-  sidecarRouter,
   requireGrant,
-  credentialCipher,
 }: CreateModelOfferingRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -218,12 +209,6 @@ export function createModelOfferingRoutes({
           .returning(),
       );
 
-      void pushSourceUpdatesSubtree(
-        db,
-        sidecarRouter,
-        tenantCtx.id,
-        credentialCipher,
-      );
       return c.json(formatModelOffering(row), 201);
     },
   );
@@ -296,12 +281,6 @@ export function createModelOfferingRoutes({
         return errorResponse(c, "not_found", "Offering not found");
       }
 
-      void pushSourceUpdatesSubtree(
-        db,
-        sidecarRouter,
-        tenantCtx.id,
-        credentialCipher,
-      );
       return c.json(formatModelOffering(updated));
     },
   );
@@ -313,7 +292,7 @@ export function createModelOfferingRoutes({
       tags: ["Catalog"],
       summary: "Delete a model offering",
       description:
-        "Removes the offering and its pricing history. Running instances resolved through it fail over to the next eligible source.",
+        "Removes the offering and its pricing history. A running deployment keeps the sources it resolved at deploy.",
       responses: {
         204: { description: "Offering removed" },
         404: jsonResponse("Offering not found", ErrorResponse),
@@ -334,12 +313,6 @@ export function createModelOfferingRoutes({
       if (deleted.length === 0) {
         return errorResponse(c, "not_found", "Offering not found");
       }
-      void pushSourceUpdatesSubtree(
-        db,
-        sidecarRouter,
-        tenantCtx.id,
-        credentialCipher,
-      );
       return c.body(null, 204);
     },
   );
@@ -465,9 +438,6 @@ export function createModelOfferingRoutes({
           .returning(),
       );
 
-      // No source-update push: pricing is catalog metadata and does not
-      // participate in inference-source resolution, so a price change cannot
-      // alter any running instance's resolved sources.
       return c.json(formatPricingRow(row), 201);
     },
   );

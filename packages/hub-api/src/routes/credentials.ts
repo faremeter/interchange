@@ -375,11 +375,11 @@ export function createCredentialRoutes({
         return errorResponse(c, "not_found", "Credential not found");
       }
 
-      // If the secret was updated, push it to the live holders -- UNLESS the
-      // same request also revokes the credential. The rotation would deliver
-      // no secret for a revoked credential, but it would still re-push the
-      // sources of every running instance in the subtree. The revoke below
-      // does the eviction.
+      // If the secret was updated, push it to the live deployments that hold
+      // the credential -- UNLESS the same request also revokes it. The
+      // rotation re-resolves the credential after this update commits and
+      // finds nothing to deliver for a revoked one, so skipping it only saves
+      // the lookup. The revoke below does the eviction.
       if (body.secret !== undefined && body.status !== "revoked") {
         void pushCredentialRotation(
           db,

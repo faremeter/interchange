@@ -95,11 +95,10 @@ agent a managed principal instead of a loose script:
   durable deliveries when the provisioner preserves the required storage.
   A deployment it cannot restore is failed rather than silently lost.
 - **Model-agnostic inference with failover.** A definition declares the
-  models it needs; the hub resolves an ordered provider list at launch.
+  models it needs; the hub resolves an ordered provider list at deploy,
+  and a running deployment keeps that list until its next deploy.
   Inference fails over per call across providers _and_ protocols
-  (Anthropic ↔ OpenAI-compatible ↔ Gemini), and the provider list is
-  hot-swappable on a running agent without interrupting in-flight
-  calls.
+  (Anthropic ↔ OpenAI-compatible ↔ Gemini).
 - **Multi-tenant isolation.** Agents, data, credentials, and message
   buses are tenant-scoped and isolated by default, and tenants nest
   into policy-inheriting hierarchies. The stock sidecar does not
@@ -273,8 +272,8 @@ not yet in the tree.
       across a reconnect, without a redeploy
 - [x] **Inference** — Anthropic and OpenAI-compatible adapters plus
       Google Gemini, streaming, compaction, the director system, and
-      per-call provider failover with live source hot-swap, backed by a
-      provider wire-capture rig with deterministic replay tests
+      per-call provider failover, backed by a provider wire-capture rig
+      with deterministic replay tests
 - [x] **Admin UI** — React 19 + TanStack Router tenant-management
       console
 - [x] **Web Crypto migration** — the portability foundation that

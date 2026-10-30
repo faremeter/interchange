@@ -199,7 +199,6 @@ export {
 export {
   resolveModelSources,
   resolveInferencePreferences,
-  resolveInstanceModelSources,
   resolveSourcesByOfferingIds,
   type CatalogSourceResolution,
   type OfferingSourceResolution,

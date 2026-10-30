@@ -69,9 +69,9 @@ export async function resolveTenantSidecarCapabilityPolicies(
 /**
  * Returns the tenant and every distinct tenant in its subtree (children,
  * their children, and so on), discovered breadth-first. Used to find every
- * tenant whose resolved catalog a change at `tenantId` affects — descendants
- * inherit the ancestor's catalog, so a catalog edit must reach their running
- * agents too.
+ * tenant that a credential change at `tenantId` affects: descendants resolve
+ * an ancestor's credentials, so a credential revoke or rotation must reach
+ * their running deployments too.
  *
  * Each level queries children by `parentId` membership rather than walking
  * one tenant at a time. A `visited` set both deduplicates the result and

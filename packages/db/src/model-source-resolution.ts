@@ -1,8 +1,4 @@
-import { and, eq } from "drizzle-orm";
-
 import {
-  InvokerModelPreferences,
-  ModelRequirements,
   credentialAad,
   type CredentialCipher,
   type ModelRequirement,
@@ -21,7 +17,6 @@ import {
   type DeliverableCredentialResolution,
 } from "./credential-resolution";
 import { parseModelOfferingRow } from "./parse-row";
-import { workflowDefinition } from "./schema/workflow-definitions";
 
 /**
  * Why a single offering could not be turned into a launchable source.
@@ -420,58 +415,4 @@ export async function resolveInferencePreferences(
     seen.add(key);
   }
   return preferences;
-}
-
-/**
- * Resolves the ordered sources for a running instance from persisted state:
- * the definition's model requirements and the invoker's launch-time
- * preferences stored on the instance row. The credential-rotation and
- * catalog-edit source push resolves through this, so a running instance's
- * source list is a pure function of persisted state — re-resolution
- * reproduces the launch ordering, including the invoker's reorder/restrict.
- */
-export async function resolveInstanceModelSources(
-  db: DB["db"],
-  tenantId: string,
-  instance: { definitionId: string; modelPreferences: unknown },
-  credentialCipher: CredentialCipher,
-): Promise<CatalogSourceResolution> {
-  // Resolve from the run's own definition by primary key. This is the SAME row
-  // the launch resolves its requirements from, so a rotation or catalog edit
-  // reproduces the launch's model resolution rather than drifting. Scope to the
-  // resolving tenant, matching the launch route: a definition in another tenant
-  // resolves to nothing rather than contributing another tenant's models. A
-  // definition with no creator principal cannot authorize a credential-backed
-  // source, so it fails closed like a missing definition.
-  const definitionRow = await db.query.workflowDefinition.findFirst({
-    where: and(
-      eq(workflowDefinition.id, instance.definitionId),
-      eq(workflowDefinition.tenantId, tenantId),
-    ),
-  });
-  // A credential-backed source is authorized by tenant ownership of the
-  // credential (walked in `buildSource`), not by the definition's creator, so a
-  // definition with no creator can still launch a tenant-owned inference
-  // source. Only a missing definition (or one in another tenant) fails closed.
-  if (definitionRow === undefined) {
-    return { ok: false, reason: "no_requirements" };
-  }
-
-  const requirements =
-    definitionRow.modelRequirements !== null
-      ? ModelRequirements.assert(definitionRow.modelRequirements)
-      : [];
-
-  const preferences =
-    instance.modelPreferences !== null
-      ? InvokerModelPreferences.assert(instance.modelPreferences)
-      : [];
-  const invokerPreferences: Record<string, ProviderPreference> = {};
-  for (const preference of preferences) {
-    invokerPreferences[preference.model] = preference.providers;
-  }
-
-  return resolveModelSources(db, tenantId, requirements, credentialCipher, {
-    invokerPreferences,
-  });
 }
