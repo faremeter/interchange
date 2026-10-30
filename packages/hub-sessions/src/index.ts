@@ -98,7 +98,6 @@ export {
   type HubSessionRouterFacade,
 } from "./hub-session-orchestrator";
 export {
-  pushSourceUpdatesSubtree,
   pushCredentialRotation,
   pushCredentialRevoke,
   pushCredentialReconcile,

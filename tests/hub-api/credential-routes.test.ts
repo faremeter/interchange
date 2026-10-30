@@ -17,11 +17,7 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import { pgErrorCode } from "@intx/db";
-import {
-  credential,
-  grant as grantTable,
-  workflowDefinition,
-} from "@intx/db/schema";
+import { credential, grant as grantTable } from "@intx/db/schema";
 import type { GrantRule } from "@intx/types/authz";
 import { credentialAad } from "@intx/types";
 import { waitUntil } from "@intx/types/testing";
@@ -33,8 +29,6 @@ import {
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
   seedCredential,
-  seedModel,
-  seedModelOffering,
   seedModelProvider,
   seedPrincipal,
   seedProvider,
@@ -821,11 +815,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return body["id"];
     }
 
-    // One running instance run (anchorRunId null), one running deployment-anchor
-    // run (anchorRunId non-null -- the case the source-update push excludes), one
-    // deployment anchor still "deployed" (never triggered, but already holding
-    // its deploy-time credentials), and one completed run. A revoke must reach
-    // the three live addresses and skip the completed run.
+    // Three live addressable runs of different shapes (anchorRunId null, a run
+    // anchored on another run, and a deployment anchor still "deployed": never
+    // triggered, but already holding its deploy-time credentials) and one
+    // completed run. A revoke must reach the three live addresses and skip the
+    // completed run.
     async function seedRuns(): Promise<void> {
       await seedWorkflowRun(h.db, {
         id: "run_instance",
@@ -1029,66 +1023,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("a PATCH that rotates and revokes in one request sends only the revoke", async () => {
+      // The rotation finds nothing to deliver for a revoked credential, so the
+      // live deployment gets the revoke and no material, with or without the
+      // route's skip of the rotation.
       const cap = capturingCredentialsRouter();
-      const sources: string[] = [];
-      const app = await setup({
-        sidecarRouter: {
-          ...cap.router,
-          sendSourcesUpdate: async (address) => {
-            sources.push(address);
-          },
-        },
-      });
+      const app = await setup({ sidecarRouter: cap.router });
       const credentialId = await seedRotation(app);
-      // A running instance whose model has a second offering behind another
-      // credential. A rotation push would re-push its sources onto that
-      // offering.
-      await seedCredential(h.db, {
-        id: "crd_other",
-        tenantId: TENANT_ID,
-        providerId: ROTATION_PROVIDER_ID,
-        name: "other",
-        type: "api_key",
-        secret: await createTestCredentialCipher().encrypt(
-          "sk-other",
-          credentialAad("crd_other", "secret"),
-        ),
-      });
-      await seedModel(h.db, {
-        id: "mdl_opus",
-        tenantId: TENANT_ID,
-        canonicalName: "opus",
-      });
-      for (const [index, credId] of [credentialId, "crd_other"].entries()) {
-        await seedModelProvider(h.db, {
-          id: `mpv_${String(index)}`,
-          tenantId: TENANT_ID,
-          name: `mpv-${String(index)}`,
-          credentialId: credId,
-        });
-        await seedModelOffering(h.db, {
-          id: `mof_${String(index)}`,
-          tenantId: TENANT_ID,
-          modelId: "mdl_opus",
-          providerId: `mpv_${String(index)}`,
-          priority: index,
-          capabilities: [],
-        });
-      }
-      await h.db.insert(workflowDefinition).values({
-        id: "wfd_instance",
-        tenantId: TENANT_ID,
-        creatorPrincipalId: null,
-        name: "instance",
-        modelRequirements: [{ model: "opus" }],
-      });
-      await seedWorkflowRun(h.db, {
-        id: "run_instance",
-        tenantId: TENANT_ID,
-        definitionId: "wfd_instance",
-        address: "instance@test.interchange",
-        status: "running",
-      });
 
       const res = await app.request(
         `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
@@ -1100,19 +1040,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(res.status).toBe(200);
 
-      await waitUntil(() => cap.calls.length >= 2);
+      await waitUntil(() => cap.calls.length >= 1);
       // A rotation push would arrive after the revoke's single fan-out; the
       // same elapsed-time negative as the no-revoke PATCH case above.
       await new Promise((r) => setTimeout(r, 30));
-      expect(new Set(cap.calls.map((c) => c.address))).toEqual(
-        new Set(["run_live@test.interchange", "instance@test.interchange"]),
-      );
-      for (const call of cap.calls) {
-        expect(call.materialsCount).toBe(0);
-        expect(call.revoke).toEqual([credentialId]);
-      }
-      expect(cap.calls).toHaveLength(2);
-      expect(sources).toEqual([]);
+      expect(cap.calls).toEqual([
+        {
+          address: "run_live@test.interchange",
+          revoke: [credentialId],
+          materialsCount: 0,
+          secretVersions: [],
+        },
+      ]);
     });
   },
 );

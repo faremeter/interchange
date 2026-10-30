@@ -12,11 +12,6 @@ import {
   ModelProviderResponse,
   paginatedSchema,
 } from "@intx/types";
-import {
-  pushSourceUpdatesSubtree,
-  type SidecarRouter,
-} from "@intx/hub-sessions";
-import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
@@ -50,16 +45,12 @@ export function formatModelProvider(row: typeof modelProvider.$inferSelect) {
 
 export type CreateModelProviderRoutesDeps = {
   db: DB["db"];
-  sidecarRouter: SidecarRouter;
   requireGrant: RequireGrant;
-  credentialCipher: CredentialCipher;
 };
 
 export function createModelProviderRoutes({
   db,
-  sidecarRouter,
   requireGrant,
-  credentialCipher,
 }: CreateModelProviderRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -304,12 +295,6 @@ export function createModelProviderRoutes({
         return errorResponse(c, "not_found", "Provider not found");
       }
 
-      void pushSourceUpdatesSubtree(
-        db,
-        sidecarRouter,
-        tenantCtx.id,
-        credentialCipher,
-      );
       return c.json(formatModelProvider(updated));
     },
   );
@@ -321,7 +306,7 @@ export function createModelProviderRoutes({
       tags: ["Catalog"],
       summary: "Delete a model provider",
       description:
-        "Removes the provider and cascades to the offerings that reference it. Running instances resolved through those offerings fail over to the next eligible source.",
+        "Removes the provider and cascades to the offerings that reference it. A running deployment keeps the sources it resolved at deploy.",
       responses: {
         204: { description: "Provider removed" },
         404: jsonResponse("Provider not found", ErrorResponse),
@@ -342,12 +327,6 @@ export function createModelProviderRoutes({
       if (deleted.length === 0) {
         return errorResponse(c, "not_found", "Provider not found");
       }
-      void pushSourceUpdatesSubtree(
-        db,
-        sidecarRouter,
-        tenantCtx.id,
-        credentialCipher,
-      );
       return c.body(null, 204);
     },
   );

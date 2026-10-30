@@ -13,11 +13,6 @@ import {
   ModelInfo,
   paginatedSchema,
 } from "@intx/types";
-import {
-  pushSourceUpdatesSubtree,
-  type SidecarRouter,
-} from "@intx/hub-sessions";
-import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
@@ -50,16 +45,12 @@ export function formatModel(row: typeof model.$inferSelect) {
 
 export type CreateModelCatalogRoutesDeps = {
   db: DB["db"];
-  sidecarRouter: SidecarRouter;
   requireGrant: RequireGrant;
-  credentialCipher: CredentialCipher;
 };
 
 export function createModelCatalogRoutes({
   db,
-  sidecarRouter,
   requireGrant,
-  credentialCipher,
 }: CreateModelCatalogRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -148,12 +139,6 @@ export function createModelCatalogRoutes({
           .returning(),
       );
 
-      void pushSourceUpdatesSubtree(
-        db,
-        sidecarRouter,
-        tenantCtx.id,
-        credentialCipher,
-      );
       return c.json(formatModel(row), 201);
     },
   );
@@ -216,12 +201,6 @@ export function createModelCatalogRoutes({
         return errorResponse(c, "not_found", "Model not found");
       }
 
-      void pushSourceUpdatesSubtree(
-        db,
-        sidecarRouter,
-        tenantCtx.id,
-        credentialCipher,
-      );
       return c.json(formatModel(updated));
     },
   );
@@ -233,7 +212,7 @@ export function createModelCatalogRoutes({
       tags: ["Catalog"],
       summary: "Delete a model",
       description:
-        "Removes the model and cascades to the offerings that reference it. Running instances resolved through those offerings fail over to the next eligible source.",
+        "Removes the model and cascades to the offerings that reference it. A running deployment keeps the sources it resolved at deploy.",
       responses: {
         204: { description: "Model removed" },
         404: jsonResponse("Model not found", ErrorResponse),
@@ -249,12 +228,6 @@ export function createModelCatalogRoutes({
       if (deleted.length === 0) {
         return errorResponse(c, "not_found", "Model not found");
       }
-      void pushSourceUpdatesSubtree(
-        db,
-        sidecarRouter,
-        tenantCtx.id,
-        credentialCipher,
-      );
       return c.body(null, 204);
     },
   );

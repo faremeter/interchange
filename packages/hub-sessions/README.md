@@ -103,11 +103,9 @@ for the authoritative type shapes.
 
 - `buildAvailableSkillsStanza` / `AvailableSkillEntry` — renders the
   available-skills stanza injected into agent context.
-- `pushCredentialRotation` — after a secret rotation, re-pushes the
-  sources of every running instance and pushes the new secret to every live
-  deployment that holds the credential, in the tenant and its descendants.
-- `pushSourceUpdatesSubtree` — re-resolves and pushes inference sources
-  after a catalog edit.
+- `pushCredentialRotation` — after a secret rotation, pushes the new secret
+  to every live deployment that holds the credential, in the tenant and its
+  descendants.
 - `revokeRemovedCredentials` — revokes, on one deployment, the delivered
   credentials that were deleted or revoked since they were read.
 - `recheckDeliveredCredentials` — after a deploy commits, revokes the

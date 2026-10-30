@@ -1051,7 +1051,7 @@ Body: UpdateModel
 ### DELETE /api/tenants/:tenantId/catalog/models/:modelId
 Delete a model
 
-Removes the model and cascades to the offerings that reference it. Running instances resolved through those offerings fail over to the next eligible source.
+Removes the model and cascades to the offerings that reference it. A running deployment keeps the sources it resolved at deploy.
 
 204: (no content) -- Model removed
 404: ErrorResponse -- Model not found
@@ -1097,7 +1097,7 @@ Body: UpdateModelProvider
 ### DELETE /api/tenants/:tenantId/catalog/providers/:providerId
 Delete a model provider
 
-Removes the provider and cascades to the offerings that reference it. Running instances resolved through those offerings fail over to the next eligible source.
+Removes the provider and cascades to the offerings that reference it. A running deployment keeps the sources it resolved at deploy.
 
 204: (no content) -- Provider removed
 404: ErrorResponse -- Provider not found
@@ -1139,7 +1139,7 @@ Body: UpdateModelOffering
 ### DELETE /api/tenants/:tenantId/catalog/offerings/:offeringId
 Delete a model offering
 
-Removes the offering and its pricing history. Running instances resolved through it fail over to the next eligible source.
+Removes the offering and its pricing history. A running deployment keeps the sources it resolved at deploy.
 
 204: (no content) -- Offering removed
 404: ErrorResponse -- Offering not found

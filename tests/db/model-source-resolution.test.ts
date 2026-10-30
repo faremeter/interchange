@@ -13,10 +13,9 @@ import { eq } from "drizzle-orm";
 import {
   credentialSecretColumns,
   resolveInferencePreferences,
-  resolveInstanceModelSources,
   resolveModelSources,
 } from "@intx/db";
-import { credential, workflowDefinition } from "@intx/db/schema";
+import { credential } from "@intx/db/schema";
 import { credentialAad, type ModelRequirement } from "@intx/types";
 import {
   createTestDb,
@@ -26,11 +25,9 @@ import {
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
   seedCredential,
-  seedGrant,
   seedModel,
   seedModelOffering,
   seedModelProvider,
-  seedPrincipal,
   seedProvider,
   seedTenants,
   seedWallet,
@@ -528,112 +525,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
             h.db,
             "tnt_root",
             [{ model: "not-in-catalog" }],
-            noopCipher,
-          ),
-        ).rejects.toThrow();
-      });
-    });
-
-    describe("resolveInstanceModelSources", () => {
-      async function seedDefinitionWithRelay(
-        modelRequirements: unknown,
-      ): Promise<void> {
-        await seedBase();
-        await addRelay(1);
-        await seedPrincipal(h.db, {
-          id: "prn_creator",
-          tenantId: "tnt_root",
-        });
-        // The creator is authorized to use every catalog credential, so
-        // rotation-time re-resolution keeps emitting the secret. The
-        // authorization gate itself is exercised by a dedicated suite.
-        await seedGrant(h.db, {
-          id: "grt_creator_use",
-          tenantId: "tnt_root",
-          principalId: "prn_creator",
-          resource: "credential:*",
-          action: "use",
-        });
-        // resolveInstanceModelSources reads the requirements off the
-        // definition -- so seed them there (mirroring the launch path, which
-        // also resolves off the definition, so reconnect reproduces the launch
-        // ordering).
-        await h.db.insert(workflowDefinition).values({
-          id: "wfd_1",
-          tenantId: "tnt_root",
-          creatorPrincipalId: "prn_creator",
-          name: "agent-1",
-          modelRequirements,
-        });
-      }
-
-      test("resolves from the folded definition's persisted modelRequirements", async () => {
-        await seedDefinitionWithRelay([{ model: "opus" }]);
-        const result = await resolveInstanceModelSources(
-          h.db,
-          "tnt_root",
-          { definitionId: "wfd_1", modelPreferences: null },
-          noopCipher,
-        );
-        expect(result.ok).toBe(true);
-        if (!result.ok) return;
-        // mof_a (priority 0) before mof_relay (priority 1).
-        expect(result.sources.map((s) => s.id)).toEqual(["mof_a", "mof_relay"]);
-      });
-
-      test("applies the invoker preferences persisted on the instance", async () => {
-        await seedDefinitionWithRelay([{ model: "opus" }]);
-        const result = await resolveInstanceModelSources(
-          h.db,
-          "tnt_root",
-          {
-            definitionId: "wfd_1",
-            modelPreferences: [
-              { model: "opus", providers: { mode: "pin", order: ["relay"] } },
-            ],
-          },
-          noopCipher,
-        );
-        expect(result.ok).toBe(true);
-        if (!result.ok) return;
-        // The invoker pin restricts to relay despite mof_a's better priority.
-        expect(result.sources.map((s) => s.id)).toEqual(["mof_relay"]);
-      });
-
-      test("returns no_requirements when the definition has none", async () => {
-        await seedDefinitionWithRelay(null);
-        const result = await resolveInstanceModelSources(
-          h.db,
-          "tnt_root",
-          { definitionId: "wfd_1", modelPreferences: null },
-          noopCipher,
-        );
-        expect(result).toEqual({ ok: false, reason: "no_requirements" });
-      });
-
-      test("returns no_requirements when no definition matches in the tenant", async () => {
-        await seedDefinitionWithRelay([{ model: "opus" }]);
-        const result = await resolveInstanceModelSources(
-          h.db,
-          "tnt_root",
-          { definitionId: "wfd_missing", modelPreferences: null },
-          noopCipher,
-        );
-        expect(result).toEqual({ ok: false, reason: "no_requirements" });
-      });
-
-      test("throws on malformed persisted modelPreferences", async () => {
-        await seedDefinitionWithRelay([{ model: "opus" }]);
-        await expect(
-          resolveInstanceModelSources(
-            h.db,
-            "tnt_root",
-            {
-              definitionId: "wfd_1",
-              modelPreferences: [
-                { model: "opus", providers: { mode: "force" } },
-              ],
-            },
             noopCipher,
           ),
         ).rejects.toThrow();
