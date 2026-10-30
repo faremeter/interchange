@@ -2,7 +2,7 @@ import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 
-import { provider } from "@intx/db/schema";
+import { credential, provider } from "@intx/db/schema";
 import { getAncestorChain, parseProviderRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
@@ -27,6 +27,7 @@ import {
   pageParameters,
 } from "../pagination";
 import { jsonResponse } from "../openapi";
+import { pushCredentialRevoke, type SidecarRouter } from "@intx/hub-sessions";
 
 function formatProvider(row: typeof provider.$inferSelect) {
   const parsed = parseProviderRow(row);
@@ -48,11 +49,13 @@ function formatProvider(row: typeof provider.$inferSelect) {
 
 export type CreateProviderRoutesDeps = {
   db: DB["db"];
+  sidecarRouter: SidecarRouter;
   requireGrant: RequireGrant;
 };
 
 export function createProviderRoutes({
   db,
+  sidecarRouter,
   requireGrant,
 }: CreateProviderRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
@@ -281,15 +284,38 @@ export function createProviderRoutes({
       const tenantCtx = c.get("tenant");
       const providerId = c.req.param("providerId");
 
-      const deleted = await db
-        .delete(provider)
-        .where(
-          and(eq(provider.id, providerId), eq(provider.tenantId, tenantCtx.id)),
-        )
-        .returning();
+      // The delete cascades to every credential of the provider. Read their ids
+      // in the same transaction, under a lock on the provider row so that no
+      // new credential can reference it before the delete.
+      const removed = await db.transaction(async (tx) => {
+        const [locked] = await tx
+          .select({ id: provider.id })
+          .from(provider)
+          .where(
+            and(
+              eq(provider.id, providerId),
+              eq(provider.tenantId, tenantCtx.id),
+            ),
+          )
+          .for("update");
+        if (locked === undefined) return null;
+        const credentials = await tx
+          .select({ id: credential.id, tenantId: credential.tenantId })
+          .from(credential)
+          .where(eq(credential.providerId, providerId));
+        await tx.delete(provider).where(eq(provider.id, providerId));
+        return credentials;
+      });
 
-      if (deleted.length === 0) {
+      if (removed === null) {
         return errorResponse(c, "not_found", "Provider not found");
+      }
+
+      // The cascade deleted these credentials; evict their material from any
+      // live deployment that still holds it, as a credential delete does.
+      // Fire-and-forget, best effort.
+      for (const row of removed) {
+        void pushCredentialRevoke(db, sidecarRouter, row.tenantId, row.id);
       }
 
       return c.body(null, 204);
