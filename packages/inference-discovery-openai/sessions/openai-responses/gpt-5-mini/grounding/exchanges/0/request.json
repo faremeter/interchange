@@ -1,0 +1,15 @@
+{
+  "model": "gpt-5-mini",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "What is today's top news headline? Cite a web source."
+    }
+  ],
+  "tools": [
+    {
+      "type": "web_search"
+    }
+  ]
+}
