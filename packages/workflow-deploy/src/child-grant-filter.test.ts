@@ -25,6 +25,7 @@ import {
 } from "@intx/workflow";
 
 import {
+  applyStandingDecisions,
   collectDeclaredCredentialConsumers,
   collectDeclaredResources,
   filterGrantsToDeclaredResources,
@@ -552,5 +553,101 @@ describe("action credential consumers", () => {
     expect(
       filterGrantsToDeclaredResources([allow], new Set(), runsOther),
     ).toEqual([]);
+  });
+});
+
+describe("applyStandingDecisions", () => {
+  const declared = new Set(["tool:probe"]);
+
+  // A root grant with the same id as a child `ask`, decided to `effect`.
+  function decided(child: GrantRule, effect: GrantRule["effect"]): GrantRule {
+    return { ...child, effect };
+  }
+
+  test("an allow decision on a declared tool turns the child ask into allow", () => {
+    const ask = rule("tool:probe", "ask");
+    expect(
+      applyStandingDecisions(
+        [ask],
+        [decided(ask, "allow")],
+        declared,
+        NO_CONSUMERS,
+      ),
+    ).toEqual([{ ...ask, effect: "allow" }]);
+  });
+
+  test("an allow decision on an undeclared tool leaves the child ask", () => {
+    const ask = rule("tool:other", "ask");
+    expect(
+      applyStandingDecisions(
+        [ask],
+        [decided(ask, "allow")],
+        declared,
+        NO_CONSUMERS,
+      ),
+    ).toEqual([ask]);
+  });
+
+  test("a deny decision turns the child ask into deny, declared or not", () => {
+    const ask = rule("tool:other", "ask");
+    expect(
+      applyStandingDecisions(
+        [ask],
+        [decided(ask, "deny")],
+        declared,
+        NO_CONSUMERS,
+      ),
+    ).toEqual([{ ...ask, effect: "deny" }]);
+  });
+
+  test("deny wins when the root holds one id as allow and deny", () => {
+    const ask = rule("tool:probe", "ask");
+    for (const root of [
+      [decided(ask, "allow"), decided(ask, "deny")],
+      [decided(ask, "deny"), decided(ask, "allow")],
+    ]) {
+      expect(
+        applyStandingDecisions([ask], root, declared, NO_CONSUMERS),
+      ).toEqual([{ ...ask, effect: "deny" }]);
+    }
+  });
+
+  test("a child allow or deny, an undecided ask, and a non-rule are unchanged", () => {
+    const allow = rule("tool:probe", "allow");
+    const deny = rule("tool:probe", "deny", "write");
+    const ask = rule("tool:probe", "ask", "read");
+    const nonRule = { note: "not a rule" };
+    const child = [allow, deny, ask, nonRule];
+    expect(
+      applyStandingDecisions(
+        child,
+        [decided(allow, "deny"), decided(deny, "allow")],
+        declared,
+        NO_CONSUMERS,
+      ),
+    ).toEqual(child);
+  });
+
+  test("a child ask with no string id is unchanged", () => {
+    const { id: _id, ...noId } = rule("tool:probe", "ask");
+    expect(
+      applyStandingDecisions(
+        [noId],
+        [rule("tool:probe", "allow")],
+        declared,
+        NO_CONSUMERS,
+      ),
+    ).toEqual([noId]);
+  });
+
+  test("a credential allow decision follows the consumer rule", () => {
+    const ask = rule("credential:cred-1", "ask", "use", { tool: CONSUMER });
+    const root = [decided(ask, "allow")];
+    expect(
+      applyStandingDecisions([ask], root, declared, new Set([CONSUMER])),
+    ).toEqual([{ ...ask, effect: "allow" }]);
+    expect(
+      applyStandingDecisions([ask], root, declared, new Set([OTHER_CONSUMER])),
+    ).toEqual([ask]);
   });
 });

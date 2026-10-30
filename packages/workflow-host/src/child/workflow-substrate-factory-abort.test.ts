@@ -14,6 +14,7 @@
 // settled.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { applyStandingDecisions } from "@intx/workflow-deploy/child-grants";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -240,6 +241,7 @@ function sharedDeps(
     ),
     collectDeclaredResources: () => new Set<string>(),
     collectDeclaredCredentialConsumers: () => new Set<string>(),
+    applyStandingDecisions,
     filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
       parentGrants,
     directors: createDefaultDirectorRegistry(),

@@ -14,6 +14,7 @@
 // the abort threads through `handle.cancel` and the run settles.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { applyStandingDecisions } from "@intx/workflow-deploy/child-grants";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -242,6 +243,7 @@ function makeSpawner(
     ),
     collectDeclaredResources: () => new Set<string>(),
     collectDeclaredCredentialConsumers: () => new Set<string>(),
+    applyStandingDecisions,
     filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
       parentGrants,
     directors: createDefaultDirectorRegistry(),

@@ -335,6 +335,17 @@ without reconstructing the env. The closure looks up the
 originating step's grants by `stepId` and delegates to a
 host-supplied `GrantEvaluator`.
 
+A spawned child run reads its capped grants through an overlay of
+the top-level run's live snapshot, which it inherits with the
+credential material (`ChildInheritance`). A child `ask` grant takes
+the top-level `deny` for the same grant id, or the top-level `allow`
+when the child's cap keeps it. A standing approval decision reaches
+a live child when the top-level run's grants update arrives (ahead of
+a signal delivery or a trigger, or in `authority.set` on a restart).
+A decision on a call that matched a wildcard `tool:*` `ask` changes
+nothing, because the hub changes only an exact `tool:<name>` grant.
+The child's grants file is not rewritten.
+
 ## Hosting the workflow-process child
 
 `@intx/workflow-host` ships the runtime body

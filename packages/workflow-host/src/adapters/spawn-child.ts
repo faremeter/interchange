@@ -75,18 +75,23 @@ import type {
   WorkflowEvent,
 } from "@intx/workflow";
 
+import type { CredentialsSnapshotRef } from "../child/credentials-backed-authorize";
 import type { CredentialMaterialRef } from "../child/run-child";
 
 /**
- * What a spawned child inherits from the top-level run, live: the run's
- * credential-material cell (the same reference the top-level step invoker
- * reads), so the child's inference resolves its source secret by
- * `credentialId` against the run's current delivery, and a rotation the
- * parent applies reaches the child through the shared reference. A
- * non-sidecar executor that carries no credential material passes no group.
+ * What a spawned child inherits from the top-level run, live, at every depth:
+ *  - `material`: the run's credential-material cell (the same reference the
+ *    top-level step invoker reads), so the child's inference resolves its
+ *    source secret by `credentialId` against the run's current delivery, and
+ *    a rotation the parent applies reaches the child through the shared
+ *    reference.
+ *  - `rootGrants`: the top-level run's credentials snapshot reference, so a
+ *    standing approval decision reaches the child's grants on its next step.
+ * A non-sidecar executor that carries no credential material passes no group.
  */
 export type ChildInheritance = {
   readonly material: CredentialMaterialRef;
+  readonly rootGrants: CredentialsSnapshotRef;
 };
 
 /**

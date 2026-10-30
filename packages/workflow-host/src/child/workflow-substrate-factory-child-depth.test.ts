@@ -17,6 +17,7 @@
 // the guard, landing a clean `StepFailed` that names the offending depth.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { applyStandingDecisions } from "@intx/workflow-deploy/child-grants";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -272,6 +273,7 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
       ),
       collectDeclaredResources: () => new Set<string>(),
       collectDeclaredCredentialConsumers: () => new Set<string>(),
+      applyStandingDecisions,
       filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
         parentGrants,
       directors: createDefaultDirectorRegistry(),
@@ -320,5 +322,84 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
     expect(midStepFailed.error.message).toContain(
       'childWorkflow spawn depth 3 exceeds the maximum 2 at step "spawn"',
     );
+  });
+});
+
+describe("createSidecarRunChild standing decisions at depth", () => {
+  test("a grandchild rung reads an always decision of the top-level run", async () => {
+    const resource = "inference.source:anthropic:m";
+    await stageSources("depth-parent__spawn__spawn__spawn");
+    const substrate = await makeSubstrate();
+    const parentRunId = "run-parent-standing";
+    const ask: GrantRule = { ...grant(resource, "invoke"), effect: "ask" };
+    await seedRunGrants(substrate, parentRunId, [ask]);
+    const decisions: (string | null)[] = [];
+    const recordLeaf: SidecarChildStepInvoker = async (req, authorize) => {
+      const decision = await authorize(resource, "invoke", req.authzContext);
+      decisions.push(decision.effect);
+      return { output: null };
+    };
+
+    const runChild = createSidecarRunChild({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: REF,
+      principal: PRINCIPAL,
+      scheduler: createInMemoryScheduler({
+        repoStore: createInMemoryRepoStore(),
+        clock: () => new Date(),
+      }),
+      invokeStep: recordLeaf,
+      evaluateGrants: evaluateGrantsAdapter,
+      dataDir: sourcesDataDir,
+      bodySources: {},
+      credentialProviders: createCredentialProviderRegistry(
+        builtinCredentialProviders(),
+      ),
+      collectDeclaredResources: () => new Set([resource]),
+      collectDeclaredCredentialConsumers: () => new Set<string>(),
+      applyStandingDecisions,
+      filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
+        parentGrants,
+      directors: createDefaultDirectorRegistry(),
+    });
+
+    // Each rung copies the ask with its id; the top-level run holds the same
+    // id as allow, and every rung inherits the same top-level reference.
+    const result = await runChild(
+      {
+        definition: nestedChain(),
+        definitionRef: REF,
+        childRunId: "run-top-standing",
+        input: null,
+        parentRunId,
+        parentStepId: "s",
+        signal: new AbortController().signal,
+        depth: 0,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+      {
+        material: { current: null },
+        rootGrants: {
+          current: {
+            steps: [
+              {
+                stepId: "top",
+                address: "top",
+                grants: [{ ...ask, effect: "allow" }],
+                contentHash: "h",
+              },
+            ],
+          },
+        },
+      },
+    );
+
+    const event = await result.next();
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
+    expect(decisions).toEqual(["allow"]);
   });
 });

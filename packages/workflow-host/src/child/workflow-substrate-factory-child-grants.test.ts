@@ -8,6 +8,7 @@
 // file fails closed at spawn. The cap itself lives with the capability walk.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { applyStandingDecisions } from "@intx/workflow-deploy/child-grants";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -263,6 +264,7 @@ function makeRunChild(
     collectDeclaredResources: grantCap.collectDeclaredResources,
     collectDeclaredCredentialConsumers:
       grantCap.collectDeclaredCredentialConsumers,
+    applyStandingDecisions,
     filterGrantsToDeclaredResources: grantCap.filterGrantsToDeclaredResources,
     directors: createDefaultDirectorRegistry(),
   });
@@ -444,6 +446,214 @@ describe("createSidecarRunChild grant capping", () => {
     ).rejects.toThrow(/has no grants file/);
     expect(collected).toBe(0);
     expect(consumersCollected).toBe(0);
+    expect(record.decisions).toEqual([]);
+  });
+});
+
+describe("createSidecarRunChild standing decisions", () => {
+  const ASK_ID = "grt-ask-declared";
+  const UNDECLARED_ASK_ID = "grt-ask-undeclared";
+  const askDeclared: GrantRule = {
+    ...grant(DECLARED_RESOURCE, "invoke"),
+    id: ASK_ID,
+    effect: "ask",
+  };
+  const askUndeclared: GrantRule = {
+    ...grant(UNDECLARED_RESOURCE, "invoke"),
+    id: UNDECLARED_ASK_ID,
+    effect: "ask",
+  };
+  // The cap stubs: the child declares DECLARED_RESOURCE only, and the filter
+  // keeps every parent grant, so both asks reach the child file.
+  const keepAll = {
+    collectDeclaredResources: () => new Set([DECLARED_RESOURCE]),
+    collectDeclaredCredentialConsumers: () => new Set<string>(),
+    filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
+      parentGrants,
+  };
+
+  function rootSnapshot(grants: readonly GrantRule[]) {
+    return {
+      steps: [{ stepId: "top", address: "top", grants, contentHash: "h" }],
+    };
+  }
+
+  function decided(rule: GrantRule, effect: GrantRule["effect"]): GrantRule {
+    return { ...rule, effect };
+  }
+
+  // An invoker that checks both resources, runs `between`, then checks them
+  // again, recording each decision.
+  function swappingInvoker(
+    record: { decisions: { resource: string; effect: string | null }[] },
+    between: () => void,
+  ): SidecarChildStepInvoker {
+    return async (req, authorize): Promise<StepInvokeResult> => {
+      for (const pass of [0, 1]) {
+        if (pass === 1) between();
+        for (const resource of [DECLARED_RESOURCE, UNDECLARED_RESOURCE]) {
+          const decision = await authorize(
+            resource,
+            "invoke",
+            req.authzContext,
+          );
+          record.decisions.push({ resource, effect: decision.effect });
+        }
+      }
+      return { output: null };
+    };
+  }
+
+  async function spawn(
+    substrate: ReturnType<typeof createRepoStore>,
+    invokeStep: SidecarChildStepInvoker,
+    parentRunId: string,
+    childRunId: string,
+    rootGrants: { current: ReturnType<typeof rootSnapshot> | null },
+  ) {
+    const runChild = makeRunChild(substrate, invokeStep, keepAll);
+    const handle = await runChild(
+      {
+        definition: childDefinition("child-wf"),
+        definitionRef: REF,
+        childRunId,
+        input: null,
+        parentRunId,
+        parentStepId: "s",
+        signal: new AbortController().signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+      { material: { current: null }, rootGrants },
+    );
+    return handle.next();
+  }
+
+  test("a live child reads an always decision on its next step, and its grants file is unchanged", async () => {
+    const substrate = await makeSubstrate("child-standing-allow-");
+    const parentRunId = "run-parent-standing";
+    const childRunId = "run-child-standing";
+    await seedRunGrants(substrate, parentRunId, [askDeclared, askUndeclared]);
+    const rootGrants = {
+      current: rootSnapshot([askDeclared, askUndeclared]),
+    };
+    const record = {
+      decisions: [] as { resource: string; effect: string | null }[],
+    };
+
+    const event = await spawn(
+      substrate,
+      swappingInvoker(record, () => {
+        // An always approve on both tools, as the top-level grants update
+        // carries it: a new snapshot object.
+        rootGrants.current = rootSnapshot([
+          decided(askDeclared, "allow"),
+          decided(askUndeclared, "allow"),
+        ]);
+      }),
+      parentRunId,
+      childRunId,
+      rootGrants,
+    );
+
+    expect(event.kind).toBe("terminal");
+    // The declared tool turns to allow; the undeclared one stays ask, so the
+    // overlay never authorizes past the cap.
+    expect(record.decisions).toEqual([
+      { resource: DECLARED_RESOURCE, effect: "ask" },
+      { resource: UNDECLARED_RESOURCE, effect: "ask" },
+      { resource: DECLARED_RESOURCE, effect: "allow" },
+      { resource: UNDECLARED_RESOURCE, effect: "ask" },
+    ]);
+    expect(
+      await readRunGrants({
+        repoStore: substrate,
+        anchorRunId: DEPLOYMENT_ID,
+        runId: childRunId,
+      }),
+    ).toEqual([askDeclared, askUndeclared]);
+  });
+
+  test("a reject with scope always turns the child ask into deny, declared or not", async () => {
+    const substrate = await makeSubstrate("child-standing-deny-");
+    const parentRunId = "run-parent-deny";
+    await seedRunGrants(substrate, parentRunId, [askDeclared, askUndeclared]);
+    const rootGrants = {
+      current: rootSnapshot([askDeclared, askUndeclared]),
+    };
+    const record = {
+      decisions: [] as { resource: string; effect: string | null }[],
+    };
+
+    await spawn(
+      substrate,
+      swappingInvoker(record, () => {
+        rootGrants.current = rootSnapshot([
+          decided(askDeclared, "deny"),
+          decided(askUndeclared, "deny"),
+        ]);
+      }),
+      parentRunId,
+      "run-child-deny",
+      rootGrants,
+    );
+
+    expect(record.decisions.slice(2)).toEqual([
+      { resource: DECLARED_RESOURCE, effect: "deny" },
+      { resource: UNDECLARED_RESOURCE, effect: "deny" },
+    ]);
+  });
+
+  test("a resumed child whose top-level run already holds the decision reads it", async () => {
+    const substrate = await makeSubstrate("child-standing-resume-");
+    const parentRunId = "run-parent-resume";
+    const childRunId = "run-child-resume";
+    // The child file was born before the decision, so it still holds ask.
+    await seedRunGrants(substrate, childRunId, [askDeclared]);
+    const record = {
+      decisions: [] as { resource: string; effect: string | null }[],
+    };
+
+    await spawn(
+      substrate,
+      recordingInvoker(record, [DECLARED_RESOURCE]),
+      parentRunId,
+      childRunId,
+      { current: rootSnapshot([decided(askDeclared, "allow")]) },
+    );
+
+    expect(record.decisions).toEqual([
+      { resource: DECLARED_RESOURCE, effect: "allow" },
+    ]);
+    expect(
+      await readRunGrants({
+        repoStore: substrate,
+        anchorRunId: DEPLOYMENT_ID,
+        runId: childRunId,
+      }),
+    ).toEqual([askDeclared]);
+  });
+
+  test("a child whose top-level run has no active snapshot fails its step", async () => {
+    const substrate = await makeSubstrate("child-standing-null-");
+    const parentRunId = "run-parent-null";
+    await seedRunGrants(substrate, parentRunId, [askDeclared]);
+    const record = {
+      decisions: [] as { resource: string; effect: string | null }[],
+    };
+
+    const event = await spawn(
+      substrate,
+      recordingInvoker(record, [DECLARED_RESOURCE]),
+      parentRunId,
+      "run-child-null",
+      { current: null },
+    );
+
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("failed");
     expect(record.decisions).toEqual([]);
   });
 });

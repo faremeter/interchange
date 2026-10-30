@@ -109,6 +109,70 @@ export function filterGrantsToDeclaredResources(
   );
 }
 
+/**
+ * Apply the top-level run's standing decisions to a live child's capped
+ * grants, at read time.
+ *
+ * An approval with scope `always` changes the effect of the top-level run
+ * principal's `ask` grant in place, so the grant keeps its id. A child's
+ * grants file is a filtered copy written once at the child's birth, so its
+ * `ask` grant has the same id and keeps `ask`. This overlay gives each such
+ * child grant the decided effect:
+ *
+ *  - A child `ask` grant whose id the root holds as `deny` becomes `deny`.
+ *    A deny only restricts, so it applies always.
+ *  - A child `ask` grant whose id the root holds as `allow` becomes `allow`
+ *    only when the cap keeps that `allow` (the same rule
+ *    {@link filterGrantsToDeclaredResources} applies). Otherwise it stays
+ *    `ask`, so the overlay never authorizes past the child's declared
+ *    capabilities.
+ *  - When the root holds one id as both `allow` and `deny`, `deny` wins.
+ *  - Any other entry is returned unchanged.
+ *
+ * The overlay changes only the effect of an existing `ask`. It never adds or
+ * removes a grant, and it does not write the child's grants file.
+ */
+export function applyStandingDecisions(
+  childGrants: readonly unknown[],
+  rootGrants: readonly unknown[],
+  declared: ReadonlySet<string>,
+  credentialConsumers: ReadonlySet<string>,
+): readonly unknown[] {
+  const decided = new Map<string, "allow" | "deny">();
+  for (const grant of rootGrants) {
+    if (!isIdentifiedRule(grant)) continue;
+    if (grant.effect === "deny") {
+      decided.set(grant.id, "deny");
+    } else if (grant.effect === "allow" && decided.get(grant.id) !== "deny") {
+      decided.set(grant.id, "allow");
+    }
+  }
+  return childGrants.map((grant) => {
+    if (!isIdentifiedRule(grant) || grant.effect !== "ask") return grant;
+    const effect = decided.get(grant.id);
+    if (effect === "deny") return { ...grant, effect: "deny" };
+    if (effect === "allow") {
+      const allowed = { ...grant, effect: "allow" };
+      return keepGrantForDeclared(allowed, declared, credentialConsumers)
+        ? allowed
+        : grant;
+    }
+    return grant;
+  });
+}
+
+function isIdentifiedRule(
+  grant: unknown,
+): grant is { id: string; effect: unknown } {
+  return (
+    typeof grant === "object" &&
+    grant !== null &&
+    "id" in grant &&
+    typeof grant.id === "string" &&
+    "effect" in grant
+  );
+}
+
 function keepGrantForDeclared(
   grant: unknown,
   declared: ReadonlySet<string>,
