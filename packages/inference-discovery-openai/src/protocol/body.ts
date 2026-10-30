@@ -62,7 +62,7 @@ function mimeTypeFor(ref: MediaRef): string {
   throw new Error(`unsupported media kind: ${String(ref.kind)}`);
 }
 
-function readMediaDataUri(ref: MediaRef): string {
+export function readMediaDataUri(ref: MediaRef): string {
   const abs = resolveMediaPath(ref);
   const bytes = readFileSync(abs);
   const mime = mimeTypeFor(ref);
@@ -126,7 +126,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function findToolFollowUp(intent: CapabilityIntent): {
+export function findToolFollowUp(intent: CapabilityIntent): {
   toolName: string;
   content: string;
 } {

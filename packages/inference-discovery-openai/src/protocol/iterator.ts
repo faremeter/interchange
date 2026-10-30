@@ -1,4 +1,7 @@
-import { type Capability } from "@intx/inference-discovery/catalog";
+import {
+  type Capability,
+  type CapabilityIntent,
+} from "@intx/inference-discovery/catalog";
 import type {
   CaptureStep,
   CapturedResponse,
@@ -15,8 +18,28 @@ const MULTI_TURN_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "function-calling-multi-turn",
 ]);
 
-export function createOpenaiIterator(
+// The four wire-specific pieces of a capture iterator: the endpoint URL
+// plus the three body builders. The Chat and Responses iterators share
+// the multi-turn/single-step flow and differ only in these functions.
+export interface CaptureBuilders<TBody> {
+  buildURL: (baseUrl: string) => string;
+  buildTurn1Body: (opts: { model: string; intent: CapabilityIntent }) => TBody;
+  buildTurn2Body: (opts: {
+    model: string;
+    intent: CapabilityIntent;
+    turn1Body: TBody;
+    turn1Response: unknown;
+  }) => TBody;
+  buildSingleBody: (opts: {
+    model: string;
+    capability: Capability;
+    intent: CapabilityIntent;
+  }) => unknown;
+}
+
+export function createCaptureIterator<TBody>(
   baseUrl: string,
+  builders: CaptureBuilders<TBody>,
 ): (
   opts: IterateCaptureStepsOpts,
 ) => Generator<CaptureStep, void, CapturedResponse> {
@@ -24,16 +47,16 @@ export function createOpenaiIterator(
     opts: IterateCaptureStepsOpts,
   ): Generator<CaptureStep, void, CapturedResponse> {
     const { model, capability, intent } = opts;
-    const url = buildEndpointURL(baseUrl);
+    const url = builders.buildURL(baseUrl);
 
     if (MULTI_TURN_CAPABILITIES.has(capability)) {
-      const turn1 = buildMultiTurnTurn1Body({ model, intent });
+      const turn1 = builders.buildTurn1Body({ model, intent });
       const turn1Response = yield {
         kind: "json",
         url,
         body: turn1,
       };
-      const turn2 = buildMultiTurnTurn2Body({
+      const turn2 = builders.buildTurn2Body({
         model,
         intent,
         turn1Body: turn1,
@@ -50,7 +73,20 @@ export function createOpenaiIterator(
     yield {
       kind: "json",
       url,
-      body: buildRequestBody({ model, capability, intent }),
+      body: builders.buildSingleBody({ model, capability, intent }),
     };
   };
+}
+
+export function createOpenaiIterator(
+  baseUrl: string,
+): (
+  opts: IterateCaptureStepsOpts,
+) => Generator<CaptureStep, void, CapturedResponse> {
+  return createCaptureIterator(baseUrl, {
+    buildURL: buildEndpointURL,
+    buildTurn1Body: buildMultiTurnTurn1Body,
+    buildTurn2Body: buildMultiTurnTurn2Body,
+    buildSingleBody: buildRequestBody,
+  });
 }
