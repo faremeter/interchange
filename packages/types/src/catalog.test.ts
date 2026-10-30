@@ -13,7 +13,7 @@ import {
 
 describe("ModelProviderPlugin", () => {
   test("accepts every built-in key and an operator-registered key", () => {
-    for (const plugin of [...modelProviderPlugins, "openai-responses"]) {
+    for (const plugin of [...modelProviderPlugins, "my-custom-adapter"]) {
       expect(ModelProviderPlugin(plugin)).toBe(plugin);
     }
   });
