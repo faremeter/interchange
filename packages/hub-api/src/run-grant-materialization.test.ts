@@ -16,6 +16,7 @@ import type { PrincipalKeyStore, RunTokenStore } from "@intx/db";
 
 import { makeGrantRow } from "./grant-materialization";
 import {
+  bindSelfRunRequirements,
   createCorrespondentGrantMinter,
   createMailTriggeredRunGrantsMaterializer,
   credentialResolutionUnrecorded,
@@ -296,6 +297,25 @@ function creatorGrant(): GrantRule {
     principalId: CREATOR_PRINCIPAL_ID,
   };
 }
+
+describe("bindSelfRunRequirements", () => {
+  test("binds only the placeholder resource to the run id", () => {
+    const bound = bindSelfRunRequirements(
+      [
+        { resource: SELF_RUN_RESOURCE, action: "read", source: "creator" },
+        { resource: "workflow-run:*", action: "read", source: "invoker" },
+        { resource: "wallet:w1", action: "spend", source: "creator" },
+      ],
+      "run_abc",
+    );
+    expect(bound.map((r) => r.resource)).toEqual([
+      "workflow-run:run_abc",
+      "workflow-run:*",
+      "wallet:w1",
+    ]);
+    expect(bound[0]?.source).toBe("creator");
+  });
+});
 
 describe("stageRunGrantsFromSnapshot with the run's own resource", () => {
   const STAGED_RUN_ID = "run_self";

@@ -84,27 +84,136 @@ export type ResolveGrantMaterializationResult =
 // to the deployer's grants by a day at most.
 export const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
 
+export type ResolveRequirementGrantContext = Omit<
+  ResolveGrantMaterializationArgs,
+  "grantRequirements"
+> & {
+  // The expiry stamped onto an invoker-sourced row.
+  invokerExpiresAt: Date;
+};
+
+export type ResolveRequirementGrantResult =
+  | { ok: true; row: MaterializedGrantRow }
+  | { ok: false; rejection: GrantMaterializationRejection };
+
+// Only system/role/creator grants can be delegated: an invoker-origin allow
+// cannot be re-delegated. An invoker-origin deny or ask still restricts what
+// the invoker holds, so it stays in the set.
+function delegatableInvokerGrants(invokerGrants: GrantRule[]): GrantRule[] {
+  return invokerGrants.filter(
+    (g) => g.origin !== "invoker" || g.effect === "deny" || g.effect === "ask",
+  );
+}
+
+/**
+ * Decide one grant requirement against its delegator's authority and build
+ * the row to materialize for it.
+ *
+ * Pure over its inputs: it runs the creator- or invoker-sourced delegation
+ * check with `authorizeAction` against the supplied collected grants. A
+ * delegation check has no request to evaluate a condition against, so it
+ * evaluates conditions pessimistically: a delegator's conditioned deny or ask
+ * refuses the requirement, and its conditioned allow does not satisfy it. A
+ * run never holds more than its delegator holds without conditions.
+ *
+ * It takes the invoker's grants unfiltered and applies the invoker-origin
+ * filter itself (see `delegatableInvokerGrants`).
+ *
+ * Returns a rejection instead of a row when the delegator lacks the authority
+ * the requirement demands (403 `insufficient_grants`), or when the
+ * requirement carries an unrecognized source (409 `not_launchable`).
+ */
+export async function resolveRequirementGrant(
+  req: GrantRequirement,
+  ctx: ResolveRequirementGrantContext,
+): Promise<ResolveRequirementGrantResult> {
+  const effect = req.effect ?? "allow";
+
+  if (req.source === "creator") {
+    const decision = await authorizeAction(
+      ctx.creatorGrants,
+      req.resource,
+      req.action,
+      { conditions: "pessimistic" },
+    );
+    if (!decision.ok) {
+      return {
+        ok: false,
+        rejection: {
+          status: 403,
+          code: "insufficient_grants",
+          message: `Creator lacks authority to delegate ${req.resource}/${req.action} (${decision.reason})`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      row: makeGrantRow({
+        tenantId: ctx.tenantId,
+        principalId: ctx.targetPrincipalId,
+        resource: req.resource,
+        action: req.action,
+        effect,
+        conditions: req.conditions ?? null,
+        origin: "creator",
+        expiresAt: null,
+        now: ctx.now,
+      }),
+    };
+  }
+
+  if (req.source === "invoker") {
+    const decision = await authorizeAction(
+      delegatableInvokerGrants(ctx.invokerGrants),
+      req.resource,
+      req.action,
+      { conditions: "pessimistic" },
+    );
+    if (!decision.ok) {
+      return {
+        ok: false,
+        rejection: {
+          status: 403,
+          code: "insufficient_grants",
+          message: `Invoker lacks authority for ${req.resource}/${req.action} (${decision.reason})`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      row: makeGrantRow({
+        tenantId: ctx.tenantId,
+        principalId: ctx.targetPrincipalId,
+        resource: req.resource,
+        action: req.action,
+        effect,
+        conditions: req.conditions ?? null,
+        origin: "invoker",
+        expiresAt: ctx.invokerExpiresAt,
+        now: ctx.now,
+      }),
+    };
+  }
+
+  const _exhaustive: never = req.source;
+  return {
+    ok: false,
+    rejection: {
+      status: 409,
+      code: "not_launchable",
+      message: `Unknown grant requirement source: ${String(_exhaustive)}`,
+    },
+  };
+}
+
 /**
  * Resolve an agent's grant requirements into the grant rows to materialize on
  * the target principal.
  *
- * Pure over its inputs: it runs creator- and invoker-sourced delegation
- * checks with `authorizeAction` against the supplied collected grants and
- * accumulates the rows to insert. A delegation check has no request to
- * evaluate a condition against, so it evaluates conditions pessimistically:
- * a delegator's conditioned deny or ask refuses the requirement, and its
- * conditioned allow does not satisfy it. The rows are frozen, so a run never
- * holds more than its delegator holds without conditions.
- *
- * Only `system`/`role`/`creator` grants can be delegated, so invoker-origin
- * allows are filtered out of the invoker's delegatable set before resolving
- * invoker-sourced requirements. An invoker-origin deny or ask stays in the
- * set, because it still restricts the invoker. Nothing is written to the
+ * Decides each requirement with `resolveRequirementGrant` and stops at the
+ * first rejection, so the caller writes every row or none. An invoker-sourced
+ * row expires `INVOKER_GRANT_TTL_MS` after `now`. Nothing is written to the
  * database; the caller inserts the returned rows.
- *
- * Returns a rejection instead of rows when the creator or invoker lacks the
- * authority a requirement demands (403 `insufficient_grants`), or when a
- * requirement carries an unrecognized source (409 `not_launchable`).
  */
 export async function resolveGrantMaterialization({
   tenantId,
@@ -114,91 +223,20 @@ export async function resolveGrantMaterialization({
   creatorGrants,
   now,
 }: ResolveGrantMaterializationArgs): Promise<ResolveGrantMaterializationResult> {
-  // Only system/role/creator grants can be delegated: an invoker-origin allow
-  // cannot be re-delegated. An invoker-origin deny or ask still restricts what
-  // the invoker holds, so it stays in the set.
-  const delegatableInvokerGrants = invokerGrants.filter(
-    (g) => g.origin !== "invoker" || g.effect === "deny" || g.effect === "ask",
-  );
-
-  const invokerExpiresAt = new Date(now.getTime() + INVOKER_GRANT_TTL_MS);
+  const ctx: ResolveRequirementGrantContext = {
+    tenantId,
+    targetPrincipalId,
+    creatorGrants,
+    invokerGrants,
+    now,
+    invokerExpiresAt: new Date(now.getTime() + INVOKER_GRANT_TTL_MS),
+  };
 
   const grantRows: MaterializedGrantRow[] = [];
-
   for (const req of grantRequirements) {
-    const effect = req.effect ?? "allow";
-
-    if (req.source === "creator") {
-      const decision = await authorizeAction(
-        creatorGrants,
-        req.resource,
-        req.action,
-        { conditions: "pessimistic" },
-      );
-      if (!decision.ok) {
-        return {
-          ok: false,
-          rejection: {
-            status: 403,
-            code: "insufficient_grants",
-            message: `Creator lacks authority to delegate ${req.resource}/${req.action} (${decision.reason})`,
-          },
-        };
-      }
-      grantRows.push(
-        makeGrantRow({
-          tenantId,
-          principalId: targetPrincipalId,
-          resource: req.resource,
-          action: req.action,
-          effect,
-          conditions: req.conditions ?? null,
-          origin: "creator",
-          expiresAt: null,
-          now,
-        }),
-      );
-    } else if (req.source === "invoker") {
-      const decision = await authorizeAction(
-        delegatableInvokerGrants,
-        req.resource,
-        req.action,
-        { conditions: "pessimistic" },
-      );
-      if (!decision.ok) {
-        return {
-          ok: false,
-          rejection: {
-            status: 403,
-            code: "insufficient_grants",
-            message: `Invoker lacks authority for ${req.resource}/${req.action} (${decision.reason})`,
-          },
-        };
-      }
-      grantRows.push(
-        makeGrantRow({
-          tenantId,
-          principalId: targetPrincipalId,
-          resource: req.resource,
-          action: req.action,
-          effect,
-          conditions: req.conditions ?? null,
-          origin: "invoker",
-          expiresAt: invokerExpiresAt,
-          now,
-        }),
-      );
-    } else {
-      const _exhaustive: never = req.source;
-      return {
-        ok: false,
-        rejection: {
-          status: 409,
-          code: "not_launchable",
-          message: `Unknown grant requirement source: ${String(_exhaustive)}`,
-        },
-      };
-    }
+    const resolved = await resolveRequirementGrant(req, ctx);
+    if (!resolved.ok) return resolved;
+    grantRows.push(resolved.row);
   }
 
   return { ok: true, grantRows };
