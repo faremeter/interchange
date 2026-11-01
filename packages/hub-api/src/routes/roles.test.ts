@@ -63,20 +63,36 @@ type MockDBOpts = {
 };
 
 function createMockDB(opts: MockDBOpts) {
+  const deleteJoinRow = () => ({
+    where: () => ({
+      returning: async () => {
+        opts.onDelete?.();
+        return opts.deleted ?? [];
+      },
+    }),
+  });
+  // The re-derivation that follows an unassign finds no deployment that
+  // delegates from the principal: every select in the transaction reads no
+  // rows.
+  const noRows = {
+    from: () => noRows,
+    innerJoin: () => noRows,
+    leftJoin: () => noRows,
+    where: () => noRows,
+    then: (resolve: (rows: unknown[]) => unknown) => resolve([]),
+  };
+  const tx = {
+    execute: async () => [],
+    select: () => noRows,
+    delete: deleteJoinRow,
+  };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase cannot be structurally satisfied in tests
   return {
     query: {
       principal: { findFirst: async () => opts.targetPrincipal },
       role: { findFirst: async () => opts.role },
     },
-    delete: () => ({
-      where: () => ({
-        returning: async () => {
-          opts.onDelete?.();
-          return opts.deleted ?? [];
-        },
-      }),
-    }),
+    transaction: async (fn: (handle: typeof tx) => Promise<unknown>) => fn(tx),
   } as unknown as Parameters<typeof createRoleAssignRoutes>[0]["db"];
 }
 
@@ -99,7 +115,12 @@ function createTestApp(opts: { db: MockDBOpts; grants?: GrantRule[] }) {
   });
   app.route(
     "/:principalId/roles",
-    createRoleAssignRoutes({ db: createMockDB(opts.db), requireGrant }),
+    createRoleAssignRoutes({
+      db: createMockDB(opts.db),
+      requireGrant,
+      grantStoreFor: () => grantStore,
+      sidecarRouter: { sendRunGrants: async () => false },
+    }),
   );
   return app;
 }

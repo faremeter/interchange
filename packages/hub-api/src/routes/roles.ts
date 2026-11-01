@@ -3,7 +3,8 @@ import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 
 import { role, principalRole, principal } from "@intx/db/schema";
-import type { DB } from "@intx/db";
+import type { DB, GrantStoreFactory } from "@intx/db";
+import type { SidecarRouter } from "@intx/hub-sessions";
 import {
   CreateRole,
   ErrorResponse,
@@ -26,6 +27,7 @@ import {
   pageParameters,
 } from "../pagination";
 import { jsonResponse } from "../openapi";
+import { changeDelegatorGrants } from "../run-delegated-grants";
 
 function formatRole(row: typeof role.$inferSelect) {
   return {
@@ -42,13 +44,18 @@ function formatRole(row: typeof role.$inferSelect) {
 export type CreateRoleRoutesDeps = {
   db: DB["db"];
   requireGrant: RequireGrant;
+  grantStoreFor: GrantStoreFactory;
+  sidecarRouter: Pick<SidecarRouter, "sendRunGrants">;
 };
 
 export function createRoleRoutes({
   db,
   requireGrant,
+  grantStoreFor,
+  sidecarRouter,
 }: CreateRoleRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
+  const delegatorDeps = { db, grantStoreFor, sidecarRouter };
 
   app.get(
     "/",
@@ -229,19 +236,32 @@ export function createRoleRoutes({
         return errorResponse(c, "forbidden", "Cannot delete system roles");
       }
 
-      const assignments = await db.query.principalRole.findMany({
-        where: eq(principalRole.roleId, roleId),
-      });
+      // The delete cascades to the role's grants. Role assign and member
+      // invite add members under the same tenant lock, so no member can be
+      // added between the check and the delete, and no member loses grants
+      // without a re-derivation.
+      const assigned = await changeDelegatorGrants(
+        delegatorDeps,
+        tenantCtx.id,
+        async (tx) => {
+          const assignments = await tx
+            .select({ principalId: principalRole.principalId })
+            .from(principalRole)
+            .where(eq(principalRole.roleId, roleId));
+          if (assignments.length === 0) {
+            await tx.delete(role).where(eq(role.id, roleId));
+          }
+          return { value: assignments.length, principalIds: [] };
+        },
+      );
 
-      if (assignments.length > 0) {
+      if (assigned > 0) {
         return errorResponse(
           c,
           "bad_request",
-          `Role is still assigned to ${assignments.length} principal(s)`,
+          `Role is still assigned to ${assigned} principal(s)`,
         );
       }
-
-      await db.delete(role).where(eq(role.id, roleId));
 
       return c.body(null, 204);
     },
@@ -254,13 +274,18 @@ export function createRoleRoutes({
 export type CreateRoleAssignRoutesDeps = {
   db: DB["db"];
   requireGrant: RequireGrant;
+  grantStoreFor: GrantStoreFactory;
+  sidecarRouter: Pick<SidecarRouter, "sendRunGrants">;
 };
 
 export function createRoleAssignRoutes({
   db,
   requireGrant,
+  grantStoreFor,
+  sidecarRouter,
 }: CreateRoleAssignRoutesDeps): Hono<TenantEnv> {
   const assignApp = new Hono<TenantEnv>();
+  const delegatorDeps = { db, grantStoreFor, sidecarRouter };
 
   assignApp.post(
     "/:roleId",
@@ -299,20 +324,25 @@ export function createRoleAssignRoutes({
         return errorResponse(c, "not_found", "Role not found");
       }
 
-      const existing = await db.query.principalRole.findFirst({
-        where: and(
-          eq(principalRole.principalId, principalId),
-          eq(principalRole.roleId, roleId),
-        ),
-      });
-
-      if (!existing) {
-        await db.insert(principalRole).values({
+      await changeDelegatorGrants(delegatorDeps, tenantCtx.id, async (tx) => {
+        const [existing] = await tx
+          .select({ roleId: principalRole.roleId })
+          .from(principalRole)
+          .where(
+            and(
+              eq(principalRole.principalId, principalId),
+              eq(principalRole.roleId, roleId),
+            ),
+          )
+          .limit(1);
+        if (existing !== undefined) return { value: null, principalIds: [] };
+        await tx.insert(principalRole).values({
           principalId,
           roleId,
           createdAt: new Date(),
         });
-      }
+        return { value: null, principalIds: [principalId] };
+      });
 
       return c.body(null, 204);
     },
@@ -357,17 +387,27 @@ export function createRoleAssignRoutes({
         return errorResponse(c, "not_found", "Role not found");
       }
 
-      const deleted = await db
-        .delete(principalRole)
-        .where(
-          and(
-            eq(principalRole.principalId, principalId),
-            eq(principalRole.roleId, roleId),
-          ),
-        )
-        .returning();
+      const deleted = await changeDelegatorGrants(
+        delegatorDeps,
+        tenantCtx.id,
+        async (tx) => {
+          const rows = await tx
+            .delete(principalRole)
+            .where(
+              and(
+                eq(principalRole.principalId, principalId),
+                eq(principalRole.roleId, roleId),
+              ),
+            )
+            .returning();
+          return {
+            value: rows.length,
+            principalIds: rows.length === 0 ? [] : [principalId],
+          };
+        },
+      );
 
-      if (deleted.length === 0) {
+      if (deleted === 0) {
         return errorResponse(c, "not_found", "Assignment not found");
       }
 

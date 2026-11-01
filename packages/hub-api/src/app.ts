@@ -336,7 +336,7 @@ export function mountHubRoutes(
   // Tenant-scoped routes
   app.route(
     "/api/tenants/:tenantId/principals",
-    createPrincipalRoutes({ db, requireGrant }),
+    createPrincipalRoutes({ db, requireGrant, grantStoreFor, sidecarRouter }),
   );
   app.route(
     "/api/tenants/:tenantId/members/invite",
@@ -344,15 +344,15 @@ export function mountHubRoutes(
   );
   app.route(
     "/api/tenants/:tenantId/roles",
-    createRoleRoutes({ db, requireGrant }),
+    createRoleRoutes({ db, requireGrant, grantStoreFor, sidecarRouter }),
   );
   app.route(
     "/api/tenants/:tenantId/principals/:principalId/roles",
-    createRoleAssignRoutes({ db, requireGrant }),
+    createRoleAssignRoutes({ db, requireGrant, grantStoreFor, sidecarRouter }),
   );
   app.route(
     "/api/tenants/:tenantId/grants",
-    createGrantRoutes({ db, requireGrant }),
+    createGrantRoutes({ db, requireGrant, grantStoreFor, sidecarRouter }),
   );
   app.route(
     "/api/tenants/:tenantId/principals/:principalId/evaluate",

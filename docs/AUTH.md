@@ -354,11 +354,43 @@ Specificity still decides between grants: a broad conditioned `deny` loses to a 
 
 Grant revocation is policy-driven with a default of fail-secure.
 
-**Creator grant revocation**: The policy is that a running workflow run loses a creator-sourced grant when the creator loses that authority. The code does not do this yet. The hub copies a run's grants from its delegators into the run principal's own grant rows one time, at the run's first trigger. After that, a standing approval decision can change the effect of a row, and the run's outbound mail to a new correspondent can add a `mail:accept` row, but nothing derives the rows again from the delegators. A revoke of the creator's grant deletes the creator's row only, so the run keeps the capability for the rest of the run. The hub sends the run's grants to the sidecar ahead of each signal delivery and each trigger, and a new child gets them in its `authority.set` frame (see _Restoring a run's authority in a new process_). These sends carry the run's own rows, so they do not carry a creator revocation. The harness checks each tool call against the run's grants before the call starts, and it does not interrupt a call that is in progress.
+**Delegated grants follow their delegators**: A run's grant requirements are delegated from its creator (the creator of the definition's asset) or its invoker (the deployment's deployer). At the run's first trigger the hub writes one row on the run principal for each requirement the delegator allows. After that, the hub re-derives those rows whenever a delegator's grants change, so a running run holds what its delegators hold now:
 
-**Invoker grant revocation**: Invoker-granted capabilities carry a fixed 24-hour TTL from the run's first trigger (`INVOKER_GRANT_TTL_MS`), not a lifetime tied to when the run stops. Approving an invoker-granted `ask` with `always` changes its effect to `allow` and keeps its expiry.
+- A requirement the delegator no longer allows loses the run's `allow` rows for it. This includes an `ask` that a standing approval changed to `allow`, because that `allow` exceeds what the delegator holds. The run's `deny` and `ask` rows for it stay as floors.
+- A requirement the delegator allows again gets its row back. A regained invoker row keeps the expiry of the first one (24 hours after the first trigger), so once that time has passed the row does not come back. A regained `tool:` `ask` row gets back the latest `always` decision the run's approver made for that tool.
+- A row the delegator still allows stays as it is, with its id and any standing decision.
 
-**Tenant policy changes**: A change to a tenant policy (a role change or a system role update) does not change the grants of a run that has already started, for the same reason: the run's grants are its own copied rows, and the hub does not derive them again.
+Only the rows that grant requirements produce depend on a delegator. The runtime `tool:` and `effect:` rows, the `mail.accept` rows and the credential-use rows come from the deploy approval, and a delegator change does not touch them. A requirement whose row has the same key as a runtime row is also left alone.
+
+These routes re-derive the runs that delegate from the principals they change:
+
+| Change                                                           | Runs re-derived                                  |
+| ---------------------------------------------------------------- | ------------------------------------------------ |
+| `POST`, `PATCH` or `DELETE` of a grant on a principal            | The runs that delegate from that principal       |
+| `POST`, `PATCH` or `DELETE` of a grant on a role (system or not) | The runs that delegate from a member of the role |
+| Role assign or unassign                                          | The runs that delegate from that principal       |
+| Principal status `PATCH`                                         | The runs that delegate from that principal       |
+| Principal `DELETE`                                               | The runs whose asset the principal created       |
+
+A run whose rows change is itself the delegator of the deployments it deployed and of the assets it created, so those runs are re-derived too.
+
+The change and the re-derivation commit in one transaction, so the hub's REST checks see the new rows at once. After the commit the hub sends each affected live run its grants in a `run.grants` frame, and also each live run whose own rows the route changed. A run whose sidecar is not connected gets its grants when the sidecar reconnects; a send that fails is corrected by the next signal, trigger or reconnect. Until the frame arrives the run's child uses its old grants. The harness checks each tool call against the run's grants before the call starts, and it does not interrupt a call that is in progress. Two grant sends for one run can arrive out of order, and then the sidecar holds the older grants until the next send.
+
+The routes in the table, role delete and member invite take one tenant lock, so their changes in a tenant run one at a time.
+
+Points to know:
+
+- An invoker row expires 24 hours after the run's first trigger (`INVOKER_GRANT_TTL_MS`), not when the run stops. Approving an invoker row's `ask` with `always` changes its effect to `allow` and keeps its expiry.
+- A creator that is suspended or deactivated still delegates; only the deployer must be active. A status change on a creator changes nothing. A deployer that is not active lapses the run's invoker rows.
+- A principal that deployed a workflow cannot be deleted (409). Deleting an asset's creator removes the creator link, and the run's creator rows lapse.
+- An operator `DELETE` of a run's requirement row is undone at the next re-derivation. An operator `PATCH` of its conditions changes its key, so the next re-derivation adds the original row next to it. An operator `PATCH` from `allow` to `deny` stays.
+- A run keeps its `ask` row for a lapsed requirement. An approver can still allow the tool for one call (`once`), or turn the row into `allow` (`always`); that `allow` stays until the next re-derivation removes it.
+- An approval on a deployment with no allocation does not lock the deployment. If it commits while a re-derivation adds a regained `ask` row, the row stays `ask` and the run asks again.
+- A delegator grant that expires with time, and a direct database write (a migration or a seed), do not start a re-derivation.
+- A run that ends does not re-derive the deployments it deployed.
+- A running child body keeps a copy of its grants from its spawn, so it keeps a revoked root `allow` until its next spawn.
+
+**Credential deletion** is not a re-derivation: deleting a credential deletes every `credential:<id>` row, the run principals' rows included, and evicts its secret (see CREDENTIALS.md).
 
 This parallels the credential revocation model described in CREDENTIALS.md — both follow the same fail-secure default with configurable tenant policies.
 

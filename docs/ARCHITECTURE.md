@@ -199,7 +199,7 @@ This three-source model enables important patterns:
 
 **Inherited capabilities** apply when agents create other agents. The parent agent can grant its child a subset of its own creator-sourced capabilities, establishing a delegation chain. Children cannot exceed their parent's authority, but they can carry creator-sourced capabilities that future invokers of the child would not have on their own.
 
-**Grant revocation** is policy-driven with a default of fail-secure. The policy is that a running run loses a creator-sourced grant when the creator loses that authority, but the code does not do this yet. A run's grants are its own rows, copied from its delegators one time at the run's first trigger, and nothing derives them again. So a revoke of the creator's grant does not reach a run that has already started, and the run keeps the capability for the rest of the run. The earlier grants-update wire mechanism has been retired. Invoker-granted capabilities expire 24 hours after the run's first trigger.
+**Grant revocation** is policy-driven with a default of fail-secure. A run's delegated grants follow its delegators: when a change to a creator's or deployer's grants or roles, or to the deployer's status, commits, the hub re-derives the rows that the run's grant requirements produce, so the run loses a revoked capability and gets a regained one back, and it sends the run its new grants. The earlier grants-update wire mechanism has been retired. Invoker-granted capabilities expire 24 hours after the run's first trigger. See AUTH.md, _Grant Revocation_.
 
 Authorization grants are part of the agent's auditable state. The harness logs what was granted, by whom (tenant, creator, or invoker), when, and tracks all usage of delegated credentials.
 
