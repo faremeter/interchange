@@ -435,6 +435,22 @@ export function runGrantToWire(
   };
 }
 
+/**
+ * Bind each requirement on the literal `SELF_RUN_RESOURCE` placeholder to
+ * `workflow-run:<runId>`. The operator approved the placeholder; binding it
+ * before the authority check makes the delegator cover the concrete run id.
+ */
+export function bindSelfRunRequirements(
+  grantRequirements: readonly GrantRequirement[],
+  runId: string,
+): GrantRequirement[] {
+  return grantRequirements.map((req) =>
+    req.resource === SELF_RUN_RESOURCE
+      ? { ...req, resource: `workflow-run:${runId}` }
+      : req,
+  );
+}
+
 export type StageRunGrantsFromSnapshotArgs = {
   /**
    * The deploy-approved grant-walk snapshot frozen at approval. Its per-step
@@ -536,17 +552,13 @@ export async function stageRunGrantsFromSnapshot(
     args.now,
   );
 
-  // The operator approved the literal placeholder; bind it to this run before
-  // the authority check, so the delegator must cover the concrete run id.
-  const grantRequirements = args.grantRequirements.map((req) =>
-    req.resource === SELF_RUN_RESOURCE
-      ? { ...req, resource: `workflow-run:${args.runId}` }
-      : req,
-  );
   const materialization = await resolveGrantMaterialization({
     tenantId: args.tenantId,
     targetPrincipalId: args.runPrincipalId,
-    grantRequirements,
+    grantRequirements: bindSelfRunRequirements(
+      args.grantRequirements,
+      args.runId,
+    ),
     invokerGrants: args.invokerGrants,
     creatorGrants: args.creatorGrants,
     now: args.now,

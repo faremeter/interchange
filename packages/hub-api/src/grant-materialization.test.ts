@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import type { GrantRule } from "@intx/types/authz";
 import {
   resolveGrantMaterialization,
+  resolveRequirementGrant,
   INVOKER_GRANT_TTL_MS,
 } from "./grant-materialization";
 
@@ -283,4 +284,112 @@ describe("resolveGrantMaterialization", () => {
       ["wallet:w2", "invoker"],
     ]);
   });
+});
+
+describe("resolveRequirementGrant", () => {
+  const ctx = {
+    ...base,
+    creatorGrants: [],
+    invokerGrants: [],
+    invokerExpiresAt: new Date("2026-07-21T05:00:00.000Z"),
+  };
+
+  test("a creator allow yields a creator row with no expiry", async () => {
+    const res = await resolveRequirementGrant(
+      { resource: "wallet:w1", action: "spend", source: "creator" },
+      {
+        ...ctx,
+        creatorGrants: [
+          grant({ resource: "wallet:*", action: "spend", origin: "role" }),
+        ],
+      },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.row.origin).toBe("creator");
+    expect(res.row.expiresAt).toBeNull();
+    expect(res.row.resource).toBe("wallet:w1");
+    expect(res.row.principalId).toBe("p_target");
+  });
+
+  test("an invoker allow yields an invoker row with the passed expiry", async () => {
+    const res = await resolveRequirementGrant(
+      { resource: "wallet:w1", action: "spend", source: "invoker" },
+      {
+        ...ctx,
+        invokerGrants: [
+          grant({ resource: "wallet:w1", action: "spend", origin: "creator" }),
+        ],
+      },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.row.origin).toBe("invoker");
+    expect(res.row.expiresAt).toBe(ctx.invokerExpiresAt);
+  });
+
+  test("a delegator deny refuses the requirement", async () => {
+    const res = await resolveRequirementGrant(
+      { resource: "wallet:w1", action: "spend", source: "creator" },
+      {
+        ...ctx,
+        creatorGrants: [
+          grant({ resource: "wallet:*", action: "spend", origin: "role" }),
+          grant({
+            resource: "wallet:w1",
+            action: "spend",
+            origin: "creator",
+            effect: "deny",
+          }),
+        ],
+      },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.rejection.status).toBe(403);
+    expect(res.rejection.code).toBe("insufficient_grants");
+  });
+
+  test("an invoker-origin allow in the raw invoker grants does not delegate", async () => {
+    const res = await resolveRequirementGrant(
+      { resource: "wallet:w1", action: "spend", source: "invoker" },
+      {
+        ...ctx,
+        invokerGrants: [
+          grant({ resource: "wallet:w1", action: "spend", origin: "invoker" }),
+        ],
+      },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.rejection).toEqual({
+      status: 403,
+      code: "insufficient_grants",
+      message:
+        "Invoker lacks authority for wallet:w1/spend (no_matching_grant)",
+    });
+  });
+
+  for (const effect of ["deny", "ask"] as const) {
+    test(`an invoker-origin ${effect} in the raw invoker grants blocks the requirement`, async () => {
+      const res = await resolveRequirementGrant(
+        { resource: "wallet:w1", action: "spend", source: "invoker" },
+        {
+          ...ctx,
+          invokerGrants: [
+            grant({ resource: "wallet:*", action: "spend", origin: "creator" }),
+            grant({
+              resource: "wallet:w1",
+              action: "spend",
+              origin: "invoker",
+              effect,
+            }),
+          ],
+        },
+      );
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.rejection.message).toEndWith(`(${effect})`);
+    });
+  }
 });
