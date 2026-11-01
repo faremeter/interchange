@@ -21,7 +21,7 @@ export {
   backfillPrincipalKeys,
   type BackfillPrincipalKeysReport,
 } from "./backfill-principal-keys";
-export { createGrantStore } from "./grant-store";
+export { createGrantStore, type GrantStoreFactory } from "./grant-store";
 export {
   loadTenantLifecyclePolicies,
   canExecuteWorkflowRun,

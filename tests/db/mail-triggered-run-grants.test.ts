@@ -176,7 +176,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           db: h.db,
           cipher: createTestCredentialCipher(),
         }),
-        grantStore: createGrantStore(h.db),
+        grantStoreFor: createGrantStore,
       });
       return materialize({ agentAddress: WORKFLOW_ADDRESS, runId, ...sender });
     }
@@ -229,7 +229,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           db: h.db,
           cipher: createTestCredentialCipher(),
         }),
-        grantStore: createGrantStore(h.db),
+        grantStoreFor: createGrantStore,
       });
       const runs = [
         { address: WORKFLOW_ADDRESS, runId: RUN_ID },
@@ -976,7 +976,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             db: h.db,
             cipher: createTestCredentialCipher(),
           }),
-          grantStore: countingGrantStore,
+          grantStoreFor: () => countingGrantStore,
         });
 
         const result = await materialize({
@@ -1809,7 +1809,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             }),
             db: h.db,
             principalKeyStore: keyStore(),
-            grantStore: createGrantStore(h.db),
+            grantStoreFor: createGrantStore,
           });
         }
 

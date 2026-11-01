@@ -11,6 +11,7 @@ import {
 } from "@intx/db/schema";
 import type {
   DB,
+  GrantStoreFactory,
   ApprovalStore,
   PrincipalKeyStore,
   RunTokenStore,
@@ -167,6 +168,9 @@ export type CreateRunRoutesDeps = {
   workflowDispatchService?: WorkflowDispatchService;
   workflowLifecycleService?: WorkflowLifecycleService;
   grantStore: GrantStore;
+  // Builds a grant store that reads through the given executor; the mail-send
+  // trigger reads delegator grants with it.
+  grantStoreFor: GrantStoreFactory;
   conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
   // The run approvals-list route reads the run's approval decisions here.
@@ -183,6 +187,7 @@ export function createRunRoutes({
   workflowDispatchService,
   workflowLifecycleService,
   grantStore,
+  grantStoreFor,
   conditionRegistry,
   requireGrant,
   approvalStore,
@@ -209,7 +214,7 @@ export function createRunRoutes({
           db,
           principalKeyStore,
           runTokenStore,
-          grantStore,
+          grantStoreFor,
           sidecarRouter,
           ...(workflowDispatchService !== undefined
             ? { workflowDispatchService }

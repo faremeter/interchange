@@ -61,7 +61,7 @@ function makeTrigger() {
     db: unusedDep("db"),
     principalKeyStore: unusedDep("principalKeyStore"),
     runTokenStore: unusedDep("runTokenStore"),
-    grantStore: unusedDep("grantStore"),
+    grantStoreFor: unusedDep("grantStoreFor"),
     sidecarRouter: unusedDep("sidecarRouter"),
     repoStore: unusedDep("repoStore"),
   });
@@ -169,7 +169,7 @@ describe("triggerWorkflowRun definition asset lookup", () => {
       db: db as unknown as TriggerWorkflowRunDeps["db"],
       principalKeyStore: unusedDep("principalKeyStore"),
       runTokenStore: unusedDep("runTokenStore"),
-      grantStore: unusedDep("grantStore"),
+      grantStoreFor: unusedDep("grantStoreFor"),
       sidecarRouter: unusedDep("sidecarRouter"),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- this branch only opens committed reads and treats a null result as an absent lifecycle
       repoStore: repoStore as unknown as TriggerWorkflowRunDeps["repoStore"],

@@ -892,12 +892,14 @@ function createTestApp(opts: TestAppOpts = {}) {
           ? null
           : snapshotFromWorkflowJson(effectiveWorkflowJson),
   });
+  const grantStore = createInMemoryGrantStore(opts.grants ?? [makeGrant()]);
   return createApp({
     getSession: createMockGetSession(),
     authHandler: () => new Response("", { status: 404 }),
     db,
     principalKeyStore: opts.principalKeyStore ?? createMockPrincipalKeyStore(),
-    grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
+    grantStore,
+    grantStoreFor: () => grantStore,
     sidecarRouter: createMockSidecarRouter(
       opts.signalCalls ?? [],
       opts.routeMailCalls ?? [],

@@ -362,7 +362,7 @@ export async function createHubServer({
         db,
         principalKeyStore,
         runTokenStore,
-        grantStore: createGrantStore(db),
+        grantStoreFor: createGrantStore,
         // The registry createHubApp uses, so a conditioned operator
         // mail.accept deny is evaluated, not skipped, by the admission gate.
         registry: HUB_CONDITION_REGISTRY,
