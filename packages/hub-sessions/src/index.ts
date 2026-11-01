@@ -104,6 +104,7 @@ export {
   recheckDeliveredCredentials,
   revokeRemovedCredentials,
 } from "./credential-push";
+export { pushRunGrants } from "./run-grants-push";
 export {
   createRunCredentialsLoader,
   type CreateRunCredentialsLoaderDeps,

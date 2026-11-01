@@ -717,6 +717,35 @@ describe("SidecarRouter current grants on signals and triggers", () => {
     return router;
   }
 
+  // Connect and wait for the grants the hub sends the newly routed
+  // deployment, so a test sees only the frames it causes. A run whose grants
+  // load returns null or fails is sent no frame.
+  async function connectSettled(
+    router: ReturnType<typeof createGrantsRouter>,
+    sendsGrants = true,
+  ) {
+    const ws = await connect(router, [address]);
+    if (sendsGrants) {
+      await waitForFrame(ws, (frame) => frame.type === "run.grants");
+    }
+    return ws;
+  }
+
+  // The `run.grants` frames that lead a `mail.inbound`.
+  function leadFramesOf(
+    ws: ReturnType<typeof createMockWs>,
+  ): Record<string, unknown>[] {
+    const frames = ws.sent.map(
+      (raw): Record<string, unknown> => JSON.parse(raw),
+    );
+    return frames.flatMap((frame, index) => {
+      const lead = frames[index - 1];
+      return frame.type === "mail.inbound" && lead?.type === "run.grants"
+        ? [lead]
+        : [];
+    });
+  }
+
   function signalFor(id: string) {
     return {
       agentAddress: address,
@@ -739,7 +768,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
       loadRunGrants: async () => stepGrants,
       loadRunCredentials: async () => credentials,
     });
-    const ws = await connect(router, [address]);
+    const ws = await connectSettled(router);
     const before = ws.sent.length;
     await router.sendSignalDeliverToAllocation(runTarget, signalFor(runId));
     const sent = ws.sent
@@ -766,7 +795,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
     const router = createGrantsRouter({
       loadRunGrants: async () => stepGrants,
     });
-    const ws = await connect(router, [address]);
+    const ws = await connectSettled(router);
     const before = ws.sent.length;
     await router.sendSignalDeliver(signalFor(runId));
     expect(
@@ -787,7 +816,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
         throw new Error("db down");
       },
     });
-    const ws = await connect(router, [address]);
+    const ws = await connectSettled(router, false);
     const before = ws.sent.length;
     await router.sendSignalDeliverToAllocation(runTarget, signalFor(runId));
     expect(types(ws).slice(before)).toEqual(["signal.deliver"]);
@@ -796,14 +825,18 @@ describe("SidecarRouter current grants on signals and triggers", () => {
   test("an allocated signal aborted during its grants load sends nothing", async () => {
     const gate = Promise.withResolvers<undefined>();
     const loading = Promise.withResolvers<undefined>();
+    let loads = 0;
     const router = createGrantsRouter({
       loadRunGrants: async () => {
+        // The first load is the send for the newly routed deployment.
+        loads += 1;
+        if (loads === 1) return stepGrants;
         loading.resolve(undefined);
         await gate.promise;
         return stepGrants;
       },
     });
-    const ws = await connect(router, [address]);
+    const ws = await connectSettled(router);
     const before = ws.sent.length;
     const abort = new AbortController();
     const sending = router.sendSignalDeliverToAllocation(
@@ -820,13 +853,14 @@ describe("SidecarRouter current grants on signals and triggers", () => {
 
   test("a run with no grants, a failed load, or another run id sends only the signal", async () => {
     let loads = 0;
-    for (const [loadRunGrants, id] of [
-      [async () => null, runId],
+    for (const [loadRunGrants, id, sendsGrants] of [
+      [async () => null, runId, false],
       [
         async () => {
           throw new Error("db down");
         },
         runId,
+        false,
       ],
       [
         async () => {
@@ -834,19 +868,22 @@ describe("SidecarRouter current grants on signals and triggers", () => {
           return stepGrants;
         },
         "child-run",
+        true,
       ],
     ] as const) {
       const router = createGrantsRouter({ loadRunGrants });
-      const ws = await connect(router, [address]);
+      const ws = await connectSettled(router, sendsGrants);
       const before = ws.sent.length;
       await router.sendSignalDeliver(signalFor(id));
       expect(types(ws).slice(before)).toEqual(["signal.deliver"]);
     }
-    expect(loads).toBe(0);
+    // Only the send for the newly routed deployment loads; the signal for
+    // another run id does not.
+    expect(loads).toBe(1);
   });
 
   function grantsOf(ws: ReturnType<typeof createMockWs>): unknown[] {
-    return framesOf(ws, "run.grants").map((frame) => frame["stepGrants"]);
+    return leadFramesOf(ws).map((frame) => frame["stepGrants"]);
   }
 
   // The grants a trigger was enqueued with, older than the loaded ones.
@@ -884,7 +921,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
     const router = createGrantsRouter({
       loadRunGrants: async () => stepGrants,
     });
-    const ws = await connect(router, [address]);
+    const ws = await connectSettled(router);
     await dispatch(router);
     expect(types(ws).slice(-2)).toEqual(["run.grants", "mail.inbound"]);
     expect(grantsOf(ws)).toEqual([JSON.parse(JSON.stringify(stepGrants))]);
@@ -892,7 +929,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
 
   test("a dispatched trigger for a run with no principal carries no grants", async () => {
     const router = createGrantsRouter({ loadRunGrants: async () => null });
-    const ws = await connect(router, [address]);
+    const ws = await connectSettled(router, false);
     await dispatch(router);
     expect(grantsOf(ws)).toEqual([[]]);
   });
@@ -903,7 +940,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
         throw new Error("db down");
       },
     });
-    const ws = await connect(router, [address]);
+    const ws = await connectSettled(router, false);
     await dispatch(router);
     expect(types(ws).slice(-2)).toEqual(["run.grants", "mail.inbound"]);
     expect(grantsOf(ws)).toEqual([JSON.parse(JSON.stringify(enqueuedGrants))]);
@@ -911,13 +948,16 @@ describe("SidecarRouter current grants on signals and triggers", () => {
 
   test("a dispatched trigger aborted during its grants load sends nothing", async () => {
     const controller = new AbortController();
+    let loads = 0;
     const router = createGrantsRouter({
       loadRunGrants: async () => {
-        controller.abort();
+        // The first load is the send for the newly routed deployment.
+        loads += 1;
+        if (loads > 1) controller.abort();
         return stepGrants;
       },
     });
-    const ws = await connect(router, [address]);
+    const ws = await connectSettled(router);
     const before = ws.sent.length;
     await expect(dispatch(router, controller.signal)).rejects.toThrow();
     expect(ws.sent.length).toBe(before);
@@ -927,7 +967,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
     const router = createGrantsRouter({
       loadRunGrants: async () => stepGrants,
     });
-    const first = await connect(router, [address]);
+    const first = await connectSettled(router);
     expect(
       await router.routeMail(
         address,
@@ -979,7 +1019,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
         return stepGrants;
       },
     });
-    const first = await connect(router, [address]);
+    const first = await connectSettled(router);
     await router.routeMail(address, "aGVsbG8=", "sender@example.test", "m-1", {
       runId,
       stepGrants: enqueuedGrants,
@@ -996,7 +1036,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
       loadRunGrants: async () => stepGrants,
       loadRunCredentials: async () => credentials,
     });
-    const first = await connect(router, [address]);
+    const first = await connectSettled(router);
     const senderIdentities = [
       { address: "sender@example.test", publicKey: "b".repeat(64) },
     ];
@@ -1006,7 +1046,7 @@ describe("SidecarRouter current grants on signals and triggers", () => {
       senderIdentities,
     });
     const second = await reconnect(router, first);
-    expect(framesOf(second, "run.grants")).toEqual([
+    expect(leadFramesOf(second)).toEqual([
       {
         type: "run.grants",
         agentAddress: address,
@@ -1017,6 +1057,195 @@ describe("SidecarRouter current grants on signals and triggers", () => {
         credentials,
       },
     ]);
+  });
+
+  test("sendRunGrants sends the run's current grants on the routed generation", async () => {
+    let current: typeof stepGrants = [];
+    const router = createGrantsRouter({
+      loadRunGrants: async () => current,
+      loadRunCredentials: async () => credentials,
+    });
+    const ws = await connectSettled(router);
+    const before = ws.sent.length;
+    current = stepGrants;
+
+    expect(await router.sendRunGrants(address)).toBe(true);
+
+    expect(
+      ws.sent.slice(before).map((raw): unknown => JSON.parse(raw)),
+    ).toEqual([
+      {
+        type: "run.grants",
+        agentAddress: address,
+        generation: runIdentity.generation,
+        runId,
+        stepGrants: JSON.parse(JSON.stringify(stepGrants)),
+        credentials,
+      },
+    ]);
+  });
+
+  test("sendRunGrants sends an empty grant set when every row is gone", async () => {
+    const router = createGrantsRouter({ loadRunGrants: async () => [] });
+    const ws = await connectSettled(router);
+    const before = ws.sent.length;
+
+    expect(await router.sendRunGrants(address)).toBe(true);
+
+    expect(
+      ws.sent
+        .slice(before)
+        .map((raw): Record<string, unknown> => JSON.parse(raw))
+        .map((frame) => [frame["type"], frame["stepGrants"]]),
+    ).toEqual([["run.grants", []]]);
+  });
+
+  test("sendRunGrants does not load or send for an unrouted address", async () => {
+    let loads = 0;
+    const router = createGrantsRouter({
+      loadRunGrants: async () => {
+        loads += 1;
+        return stepGrants;
+      },
+    });
+    const ws = await connectSettled(router);
+    const before = ws.sent.length;
+    const loadsBefore = loads;
+
+    expect(await router.sendRunGrants("run_elsewhere@deploy.test")).toBe(false);
+    expect(loads).toBe(loadsBefore);
+    expect(ws.sent.length).toBe(before);
+  });
+
+  test("sendRunGrants sends nothing for a run with no principal", async () => {
+    const router = createGrantsRouter({ loadRunGrants: async () => null });
+    const ws = await connectSettled(router, false);
+    const before = ws.sent.length;
+
+    expect(await router.sendRunGrants(address)).toBe(false);
+    expect(ws.sent.length).toBe(before);
+  });
+
+  // A router whose run grants load blocks on its second call, the send under
+  // test; the first is the send for the newly routed deployment.
+  function createBlockingRouter() {
+    let routed = runIdentity;
+    const loading = Promise.withResolvers<undefined>();
+    const gate = Promise.withResolvers<undefined>();
+    let loads = 0;
+    const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
+      ...sidecarAuth(() => [routed]),
+      validateSidecarIdentity: async () => true,
+      hubPublicKey: "a".repeat(64),
+      requestTimeoutMs: 500,
+      lookups: {
+        loadRunGrants: async () => {
+          loads += 1;
+          if (loads === 2) {
+            loading.resolve(undefined);
+            await gate.promise;
+          }
+          return stepGrants;
+        },
+      },
+    });
+    router.fenceAllocation(routed.allocationId, routed.generation);
+    return {
+      router,
+      loading,
+      gate,
+      advance(generation: number) {
+        routed = { ...routed, generation };
+        router.fenceAllocation(routed.allocationId, generation);
+      },
+    };
+  }
+
+  async function connectAt(
+    router: ReturnType<typeof createSidecarRouter>,
+    generation: number,
+  ) {
+    const ws = createMockWs();
+    router.handleOpen(ws);
+    router.handleMessage(
+      ws,
+      helloFrame(
+        runIdentity.sidecarId,
+        liveIncarnations([address], generation),
+      ),
+    );
+    await waitForFrame(ws, (frame) => frame.type === "run.grants");
+    return ws;
+  }
+
+  test("sendRunGrants sends nothing when the route detaches during its load", async () => {
+    const { router, loading, gate, advance } = createBlockingRouter();
+    const ws = await connectAt(router, runIdentity.generation);
+    const before = ws.sent.length;
+
+    const sending = router.sendRunGrants(address);
+    await loading.promise;
+    advance(runIdentity.generation + 1);
+    gate.resolve(undefined);
+
+    expect(await sending).toBe(false);
+    expect(types(ws).slice(before)).not.toContain("run.grants");
+  });
+
+  test("sendRunGrants sends nothing to a generation routed during its load", async () => {
+    const { router, loading, gate, advance } = createBlockingRouter();
+    const first = await connectAt(router, runIdentity.generation);
+
+    const sending = router.sendRunGrants(address);
+    await loading.promise;
+    advance(runIdentity.generation + 1);
+    router.handleClose(first);
+    const second = await connectAt(router, runIdentity.generation + 1);
+    gate.resolve(undefined);
+
+    expect(await sending).toBe(false);
+    expect(
+      framesOf(second, "run.grants").map((frame) => frame["generation"]),
+    ).toEqual([runIdentity.generation + 1]);
+  });
+
+  test("sendRunGrants reaches a run that is no longer executable", async () => {
+    const router = createSidecarRouter({
+      withExecutableWorkflowRun: async () => {
+        throw new Error("the run is stopping");
+      },
+      ...sidecarAuth(() => [runIdentity]),
+      validateSidecarIdentity: async () => true,
+      hubPublicKey: "a".repeat(64),
+      requestTimeoutMs: 500,
+      lookups: { loadRunGrants: async () => stepGrants },
+    });
+    router.fenceAllocation(runIdentity.allocationId, runIdentity.generation);
+    const ws = await connect(router, [address]);
+    await waitForFrame(ws, (frame) => frame.type === "run.grants");
+    const before = ws.sent.length;
+
+    expect(await router.sendRunGrants(address)).toBe(true);
+    expect(framesOf(ws, "run.grants")).toHaveLength(2);
+    expect(ws.sent.length).toBe(before + 1);
+  });
+
+  test("a newly routed deployment is sent its committed grants", async () => {
+    const router = createGrantsRouter({
+      loadRunGrants: async () => stepGrants,
+    });
+    const ws = await connect(router, [address]);
+
+    const frame = await waitForFrame(ws, (f) => f.type === "run.grants");
+
+    expect(frame).toEqual({
+      type: "run.grants",
+      agentAddress: address,
+      generation: runIdentity.generation,
+      runId,
+      stepGrants: JSON.parse(JSON.stringify(stepGrants)),
+    });
   });
 });
 

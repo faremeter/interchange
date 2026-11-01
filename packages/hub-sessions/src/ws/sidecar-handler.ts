@@ -434,6 +434,18 @@ export type SidecarRouter = {
     revoke?: string[],
   ): Promise<void>;
   /**
+   * Send a deployment's run its committed grants now, in a `run.grants`
+   * frame on its own, so a change to the run's grant rows reaches a live run
+   * without waiting for its next signal or trigger. The rows are loaded on
+   * another connection, so a caller sends only after the transaction that
+   * changed them commits. A run whose rows are all gone is sent an empty set.
+   * Resolves false when the address is not routed, the run has no run
+   * principal, the grants load fails, or the route changes during the load;
+   * the reconnect resync sends the grants to a deployment that was not
+   * routed.
+   */
+  sendRunGrants(agentAddress: string): Promise<boolean>;
+  /**
    * Deliver a workflow-run signal to the sidecar that hosts the named
    * deployment-level mail address. The sidecar's hub-link routes the
    * frame through its `signalInboundRouter` into the deployment's
@@ -2955,6 +2967,16 @@ export function createSidecarRouter(
         if (!isRunAddress(address)) continue;
         resyncCredentials(address);
       }
+    }
+    // Send each reconnecting deployment its committed grants, closing the same
+    // window for grant rows: a grant change made while the sidecar was
+    // disconnected reaches the running child now, not at its next signal or
+    // trigger. Fire-and-forget so registration is not blocked.
+    for (const address of newlyRoutedAddresses) {
+      if (!isRunAddress(address)) continue;
+      void sendRunGrants(address).catch((cause: unknown) => {
+        logger.warn`Reconnect grants send to ${address} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
     }
     // Reconcile the sidecar's cached sender keys, closing the offline window: a
     // user-principal key that rotated while the sidecar was disconnected is
@@ -6217,6 +6239,33 @@ export function createSidecarRouter(
     }));
   }
 
+  // No lifecycle admission: the frame can only carry the run's current
+  // grants, and a run that is stopping still runs its child, which must lose
+  // a revoked grant too. The sidecar drops a frame for a stale generation.
+  async function sendRunGrants(agentAddress: string): Promise<boolean> {
+    const runId = parseRunAddress(agentAddress)?.runId;
+    if (runId === undefined) return false;
+    const route = routedIncarnation(agentAddress);
+    if (route === undefined) return false;
+    const frame = await signalGrantsFrame(
+      agentAddress,
+      route.binding.generation,
+      runId,
+    );
+    if (frame === undefined) return false;
+    // The load awaited; send only on the incarnation the frame was stamped for.
+    const current = routedIncarnation(agentAddress);
+    if (
+      current === undefined ||
+      current.ws !== route.ws ||
+      current.binding.generation !== route.binding.generation
+    ) {
+      return false;
+    }
+    current.conn.send(frame);
+    return true;
+  }
+
   async function sendSignalDeliver(opts: {
     agentAddress: string;
     runId: string;
@@ -6336,6 +6385,7 @@ export function createSidecarRouter(
     getSidecarInventory,
     waitForSidecarInventory,
     sendCredentialsUpdate,
+    sendRunGrants,
     sendPackToAllocation,
     sendWorkflowRunPackToAllocation,
     fenceAllocation,
