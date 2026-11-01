@@ -90,7 +90,7 @@ import {
   type MaterializedGrantRow,
 } from "./grant-materialization";
 
-const TOOL_GRANT_PREFIX = "tool:";
+export const TOOL_GRANT_PREFIX = "tool:";
 
 /**
  * Project the frozen grant-walk snapshot into the run's runtime grant rows:
