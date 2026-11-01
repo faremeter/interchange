@@ -5,7 +5,8 @@ import { describeRoute, validator } from "hono-openapi";
 import { authorize } from "@intx/authz";
 import { grant, principal } from "@intx/db/schema";
 import { parseGrantRow } from "@intx/db";
-import type { DB } from "@intx/db";
+import type { DB, DBExecutor, GrantStoreFactory } from "@intx/db";
+import type { SidecarRouter } from "@intx/hub-sessions";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import {
   CreateGrant,
@@ -32,6 +33,10 @@ import {
   pageParameters,
 } from "../pagination";
 import { jsonResponse } from "../openapi";
+import {
+  changeDelegatorGrants,
+  findRolePrincipalIds,
+} from "../run-delegated-grants";
 
 type ResolvedNames = {
   roleNames: Map<string, string>;
@@ -130,13 +135,31 @@ async function resolveGrantNames(
 export type CreateGrantRoutesDeps = {
   db: DB["db"];
   requireGrant: RequireGrant;
+  grantStoreFor: GrantStoreFactory;
+  sidecarRouter: Pick<SidecarRouter, "sendRunGrants">;
 };
+
+// The principals whose effective grants a grant row is part of: its own
+// principal, or every member of its role.
+async function grantHolderIds(
+  tx: DBExecutor,
+  tenantId: string,
+  row: { principalId: string | null; roleId: string | null },
+): Promise<string[]> {
+  if (row.principalId !== null) return [row.principalId];
+  if (row.roleId !== null)
+    return findRolePrincipalIds(tx, tenantId, row.roleId);
+  return [];
+}
 
 export function createGrantRoutes({
   db,
   requireGrant,
+  grantStoreFor,
+  sidecarRouter,
 }: CreateGrantRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
+  const delegatorDeps = { db, grantStoreFor, sidecarRouter };
 
   app.get(
     "/",
@@ -223,24 +246,34 @@ export function createGrantRoutes({
       const body = c.req.valid("json");
 
       const now = new Date();
-      const row = first(
-        await db
-          .insert(grant)
-          .values({
-            id: generateId("grant"),
-            tenantId: tenantCtx.id,
-            roleId: body.roleId ?? null,
-            principalId: body.principalId ?? null,
-            resource: body.resource,
-            action: body.action,
-            effect: body.effect,
-            conditions: body.conditions ?? null,
-            origin: body.origin,
-            expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning(),
+      const row = await changeDelegatorGrants(
+        delegatorDeps,
+        tenantCtx.id,
+        async (tx) => {
+          const inserted = first(
+            await tx
+              .insert(grant)
+              .values({
+                id: generateId("grant"),
+                tenantId: tenantCtx.id,
+                roleId: body.roleId ?? null,
+                principalId: body.principalId ?? null,
+                resource: body.resource,
+                action: body.action,
+                effect: body.effect,
+                conditions: body.conditions ?? null,
+                origin: body.origin,
+                expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
+                createdAt: now,
+                updatedAt: now,
+              })
+              .returning(),
+          );
+          return {
+            value: inserted,
+            principalIds: await grantHolderIds(tx, tenantCtx.id, inserted),
+          };
+        },
       );
 
       return c.json(formatGrant(row), 201);
@@ -300,11 +333,24 @@ export function createGrantRoutes({
         updates["expiresAt"] = body.expiresAt ? new Date(body.expiresAt) : null;
       }
 
-      const [updated] = await db
-        .update(grant)
-        .set(updates)
-        .where(and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)))
-        .returning();
+      const updated = await changeDelegatorGrants(
+        delegatorDeps,
+        tenantCtx.id,
+        async (tx) => {
+          const [row] = await tx
+            .update(grant)
+            .set(updates)
+            .where(and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)))
+            .returning();
+          return {
+            value: row,
+            principalIds:
+              row === undefined
+                ? []
+                : await grantHolderIds(tx, tenantCtx.id, row),
+          };
+        },
+      );
 
       if (!updated) {
         return errorResponse(c, "not_found", "Grant not found");
@@ -331,12 +377,25 @@ export function createGrantRoutes({
       const tenantCtx = c.get("tenant");
       const grantId = c.req.param("grantId");
 
-      const deleted = await db
-        .delete(grant)
-        .where(and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)))
-        .returning();
+      const deleted = await changeDelegatorGrants(
+        delegatorDeps,
+        tenantCtx.id,
+        async (tx) => {
+          const [row] = await tx
+            .delete(grant)
+            .where(and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)))
+            .returning();
+          return {
+            value: row,
+            principalIds:
+              row === undefined
+                ? []
+                : await grantHolderIds(tx, tenantCtx.id, row),
+          };
+        },
+      );
 
-      if (deleted.length === 0) {
+      if (deleted === undefined) {
         return errorResponse(c, "not_found", "Grant not found");
       }
 

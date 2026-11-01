@@ -9,7 +9,8 @@ import {
   isReferencedRowViolation,
   parsePrincipalRow,
 } from "@intx/db";
-import type { DB, PrincipalKeyStore } from "@intx/db";
+import type { DB, GrantStoreFactory, PrincipalKeyStore } from "@intx/db";
+import type { SidecarRouter } from "@intx/hub-sessions";
 import {
   PrincipalResponse,
   ErrorResponse,
@@ -26,6 +27,11 @@ import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import { resolveWorkflowPrincipalLabels } from "./workflow-principal-name";
+import {
+  changeDelegatorGrants,
+  findDelegatedAnchorRunIds,
+  lockTenantRunDelegatedGrants,
+} from "../run-delegated-grants";
 import {
   parsePageParams,
   cursorCondition,
@@ -105,13 +111,18 @@ async function loadRolesForPrincipal(db: DB["db"], principalId: string) {
 export type CreatePrincipalRoutesDeps = {
   db: DB["db"];
   requireGrant: RequireGrant;
+  grantStoreFor: GrantStoreFactory;
+  sidecarRouter: Pick<SidecarRouter, "sendRunGrants">;
 };
 
 export function createPrincipalRoutes({
   db,
   requireGrant,
+  grantStoreFor,
+  sidecarRouter,
 }: CreatePrincipalRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
+  const delegatorDeps = { db, grantStoreFor, sidecarRouter };
 
   app.get(
     "/",
@@ -279,23 +290,32 @@ export function createPrincipalRoutes({
       const body = c.req.valid("json");
 
       // Deactivating a principal also deletes its run tokens, in the same
-      // transaction, so reactivating it cannot bring a token back.
-      const updated = await db.transaction(async (tx) => {
-        const [row] = await tx
-          .update(principal)
-          .set({ status: body.status, updatedAt: new Date() })
-          .where(
-            and(
-              eq(principal.id, principalId),
-              eq(principal.tenantId, tenantCtx.id),
-            ),
-          )
-          .returning();
-        if (row !== undefined && body.status === "deactivated") {
-          await deleteRunTokensForPrincipals(tx, [row.id]);
-        }
-        return row;
-      });
+      // transaction, so reactivating it cannot bring a token back. A deployer
+      // that is not active delegates nothing, so the runs it deployed are
+      // re-derived.
+      const updated = await changeDelegatorGrants(
+        delegatorDeps,
+        tenantCtx.id,
+        async (tx) => {
+          const [row] = await tx
+            .update(principal)
+            .set({ status: body.status, updatedAt: new Date() })
+            .where(
+              and(
+                eq(principal.id, principalId),
+                eq(principal.tenantId, tenantCtx.id),
+              ),
+            )
+            .returning();
+          if (row !== undefined && body.status === "deactivated") {
+            await deleteRunTokensForPrincipals(tx, [row.id]);
+          }
+          return {
+            value: row,
+            principalIds: row === undefined ? [] : [row.id],
+          };
+        },
+      );
 
       if (!updated) {
         return errorResponse(c, "not_found", "Principal not found");
@@ -342,19 +362,38 @@ export function createPrincipalRoutes({
       //     and workflow_definition.creator_principal_id (NO ACTION). The delete
       //     fires a violation only for a row actually being deleted, so the
       //     catch maps it to a 409 instead of a 500.
-      // Grants, role assignments, and principal keys cascade from the principal,
-      // so this delete does not clean them up and needs no transaction.
+      // Grants, role assignments, and principal keys cascade from the
+      // principal. An asset it created loses its creator, so the runs that
+      // delegate from it as creator are found before the delete and
+      // re-derived after it. The violation aborts the transaction, so it is
+      // mapped outside it.
       let deleted;
       try {
-        deleted = await db
-          .delete(principal)
-          .where(
-            and(
-              eq(principal.id, principalId),
-              eq(principal.tenantId, tenantCtx.id),
-            ),
-          )
-          .returning();
+        deleted = await changeDelegatorGrants(
+          delegatorDeps,
+          tenantCtx.id,
+          async (tx) => {
+            const anchorRunIds = await findDelegatedAnchorRunIds(
+              tx,
+              tenantCtx.id,
+              [principalId],
+            );
+            const rows = await tx
+              .delete(principal)
+              .where(
+                and(
+                  eq(principal.id, principalId),
+                  eq(principal.tenantId, tenantCtx.id),
+                ),
+              )
+              .returning();
+            return {
+              value: rows,
+              principalIds: [],
+              anchorRunIds: rows.length === 0 ? [] : anchorRunIds,
+            };
+          },
+        );
       } catch (err) {
         if (!isReferencedRowViolation(err)) {
           throw err;
@@ -439,6 +478,10 @@ export function createInviteRoutes({
         : undefined;
 
       const row = await db.transaction(async (tx) => {
+        // A new principal delegates to no run, so nothing is re-derived. The
+        // tenant lock still orders the role assignment with a role delete,
+        // which checks for members under the same lock.
+        await lockTenantRunDelegatedGrants(tx, tenantCtx.id);
         const invited = await principalStore.create(
           {
             id: generateId("principal"),

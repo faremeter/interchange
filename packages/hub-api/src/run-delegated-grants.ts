@@ -7,6 +7,7 @@ import {
   isLiveWorkflowRunStatus,
   liveWorkflowRunStatuses,
   principal as principalTable,
+  principalRole,
   workflowDefinition,
   workflowRun,
   workflowRunLaunchSpec,
@@ -15,6 +16,7 @@ import {
   loadDeploymentGrantSnapshot,
   parseApprovalRow,
   parseGrantRow,
+  type DB,
   type DBExecutor,
   type GrantStoreFactory,
 } from "@intx/db";
@@ -23,6 +25,7 @@ import { isMailAcceptNamespaceResource } from "@intx/types/mail-accept";
 import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import type { GrantRule } from "@intx/types/authz";
 import { runtimeGrantRules } from "@intx/workflow-deploy/capabilities";
+import { pushRunGrants, type SidecarRouter } from "@intx/hub-sessions";
 
 import {
   INVOKER_GRANT_TTL_MS,
@@ -185,6 +188,100 @@ export async function rederiveRunDelegatedGrants(
   }
 
   return [...changed.values()];
+}
+
+export type DelegatorGrantChange<T> = {
+  value: T;
+  // Principals whose grants, role grants, status or existence the change
+  // touched. Empty when the change touched nothing (a 404).
+  principalIds: readonly string[];
+  // Anchors whose delegator link the change removed (a deleted asset
+  // creator).
+  anchorRunIds?: readonly string[];
+};
+
+export type ChangeDelegatorGrantsDeps = {
+  db: DB["db"];
+  grantStoreFor: GrantStoreFactory;
+  sidecarRouter: Pick<SidecarRouter, "sendRunGrants">;
+};
+
+/**
+ * Apply a change to delegators' grants and re-derive the running runs it
+ * affects, in one transaction, then send each affected live run its grants.
+ *
+ * The tenant lock is taken before `change` writes, so a re-derivation never
+ * waits on rows this transaction wrote while it holds the lock. The runs
+ * sent their grants are the runs whose rows the re-derivation changed and
+ * the live runs whose own principal is in `principalIds` (an operator change
+ * to a run's own rows). The send happens after the commit: the router loads
+ * the committed rows itself. A failed send is logged; the next signal,
+ * trigger or reconnect sends the grants again.
+ *
+ * An error thrown by `change` rolls the transaction back and propagates. A
+ * caller that maps a database error to a response does so around this call,
+ * because the error aborts the transaction.
+ */
+export async function changeDelegatorGrants<T>(
+  deps: ChangeDelegatorGrantsDeps,
+  tenantId: string,
+  change: (tx: DBExecutor) => Promise<DelegatorGrantChange<T>>,
+): Promise<T> {
+  const { value, addresses } = await deps.db.transaction(async (tx) => {
+    await lockTenantRunDelegatedGrants(tx, tenantId);
+    const changed = await change(tx);
+    const rederived = await rederiveRunDelegatedGrants(tx, {
+      grantStoreFor: deps.grantStoreFor,
+      tenantId,
+      principalIds: changed.principalIds,
+      anchorRunIds: changed.anchorRunIds ?? [],
+      now: new Date(),
+    });
+    const ownRuns =
+      changed.principalIds.length === 0
+        ? []
+        : await tx
+            .select({ address: workflowRun.address })
+            .from(workflowRun)
+            .where(
+              and(
+                eq(workflowRun.tenantId, tenantId),
+                inArray(workflowRun.principalId, [...changed.principalIds]),
+                inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+              ),
+            );
+    const addresses = new Set<string>();
+    for (const run of [...rederived, ...ownRuns]) {
+      if (run.address !== null) addresses.add(run.address);
+    }
+    return { value: changed.value, addresses: [...addresses] };
+  });
+  if (addresses.length > 0) {
+    void pushRunGrants(deps.sidecarRouter, addresses);
+  }
+  return value;
+}
+
+/**
+ * The tenant's principals that hold `roleId`, so a change to the role's
+ * grants re-derives the runs that delegate from them.
+ */
+export async function findRolePrincipalIds(
+  tx: DBExecutor,
+  tenantId: string,
+  roleId: string,
+): Promise<string[]> {
+  const rows = await tx
+    .select({ id: principalRole.principalId })
+    .from(principalRole)
+    .innerJoin(principalTable, eq(principalTable.id, principalRole.principalId))
+    .where(
+      and(
+        eq(principalRole.roleId, roleId),
+        eq(principalTable.tenantId, tenantId),
+      ),
+    );
+  return rows.map((row) => row.id);
 }
 
 // A requirement row's identity on the run. A key has one origin, resource
