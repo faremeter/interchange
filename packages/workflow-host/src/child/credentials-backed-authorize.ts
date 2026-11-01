@@ -101,6 +101,68 @@ export function createSnapshotGrantsResolver(
 }
 
 /**
+ * Reads the current grants of a run as one array. The reader returns the same
+ * array object until the run's grants change, so a caller can cache work
+ * derived from it on the array's identity.
+ */
+export type RunGrantsReader = () => readonly unknown[];
+
+/**
+ * A grants reader over a run's mutable credentials snapshot reference: the
+ * union of the grants of every step in the current snapshot, with one entry
+ * per grant id. A row without a string id is kept once per object. The union
+ * is computed again only when the snapshot object changes, which a
+ * `grants-updated` or `authority.set` frame does by replacing it. A read
+ * while no snapshot is active throws, with `label` naming the caller: the
+ * run must not keep running on frozen grants after it loses its authority.
+ */
+export function createSnapshotGrantsReader(
+  ref: CredentialsSnapshotRef,
+  label: string,
+): RunGrantsReader {
+  let cached: { snapshot: CredentialsSnapshot; grants: unknown[] } | undefined;
+  return () => {
+    const snapshot = ref.current;
+    if (snapshot === null) {
+      throw new Error(
+        `${label}: no credentials snapshot is active; the host must set one before any step runs`,
+      );
+    }
+    if (cached?.snapshot !== snapshot) {
+      cached = { snapshot, grants: uniqueGrants(snapshot) };
+    }
+    return cached.grants;
+  };
+}
+
+function uniqueGrants(snapshot: CredentialsSnapshot): unknown[] {
+  const seenIds = new Set<string>();
+  const seenRows = new Set<unknown>();
+  const grants: unknown[] = [];
+  for (const step of snapshot.steps) {
+    for (const grant of step.grants) {
+      const id = grantId(grant);
+      if (id === undefined) {
+        if (seenRows.has(grant)) continue;
+        seenRows.add(grant);
+      } else {
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+      }
+      grants.push(grant);
+    }
+  }
+  return grants;
+}
+
+function grantId(grant: unknown): string | undefined {
+  if (typeof grant !== "object" || grant === null || !("id" in grant)) {
+    return undefined;
+  }
+  return typeof grant.id === "string" ? grant.id : undefined;
+}
+
+/**
  * Construct the workflow-level authorize closure. The closure evaluates a
  * `(resource, action)` request against the originating step's grants from
  * `resolveGrants`, through the grant evaluator.

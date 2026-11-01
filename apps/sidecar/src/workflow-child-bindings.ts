@@ -5,7 +5,6 @@
 // forwards. The binary imports this module and the workflow-host child entry.
 
 import {
-  applyStandingDecisions,
   collectDeclaredCredentialConsumers,
   collectDeclaredResources,
   filterGrantsToDeclaredResources,
@@ -24,5 +23,4 @@ export const createSubstrate = createSidecarSubstrateFactory({
   collectDeclaredResources,
   collectDeclaredCredentialConsumers,
   filterGrantsToDeclaredResources,
-  applyStandingDecisions,
 });

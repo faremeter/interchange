@@ -669,19 +669,23 @@ snapshot arrives in the child's first control frame,
 while the run has no snapshot.
 
 A spawned child run (a `childWorkflow` child or an `onTrigger` body)
-authorizes against its own capped grants, read through an overlay of
-the top-level run's live snapshot: a child `ask` grant takes the
-top-level `deny` for the same grant id, or the top-level `allow` when
-the child's cap keeps it. A loop iteration runs on the env of the run
-that encloses it, so it authorizes as that run does; its own
-`grants.json` is only the ceiling a grandchild it spawns is capped
-against. An approval with scope `always` reaches a live child when
-the top-level run's grants update arrives: the hub sends the run's
-committed grants ahead of each signal delivery and each trigger, and
-the supervisor sends them again in `authority.set` when the run child
-restarts. An `always` decision on a call that matched a wildcard
-`tool:*` `ask` changes nothing at any level, because the hub changes
-only a `tool:<name>` grant that matches the tool name exactly. Two
+authorizes against its cap applied to its parent's current grants: the
+top-level run's live snapshot for a child of the top-level run, and
+the parent rung's capped grants for a deeper child. The child holds
+what a new spawn of the same body would hold, so a grant the top-level
+run loses, regains, or changes (an effect, a condition, or a standing
+decision) reaches the child on its next tool call or step. The child's
+`grants.json` is its birth record and the input that the birth record
+of a later spawn from it is filtered from; no inherited run authorizes
+against the file. A loop iteration runs on the env of the run that
+encloses it, so it authorizes as that run does. A grant change
+reaches a live child when the top-level run's grants update arrives:
+the hub sends the run's committed grants ahead of each signal delivery
+and each trigger, and the supervisor sends them again in
+`authority.set` when the run child restarts. An `always` decision on a
+call that matched a wildcard `tool:*` `ask` changes nothing at any
+level, because the hub changes only a `tool:<name>` grant that matches
+the tool name exactly. Two
 grant sends for one run can arrive out of order: a send that loaded
 the grants earlier can arrive later. The run then holds the older
 grants until the next send, and it can ask again.

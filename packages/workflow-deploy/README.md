@@ -48,16 +48,10 @@ Public surface:
   action it runs that declares credentials. The filter removes a
   non-credential `allow` only when its pattern covers none of the
   declared set, removes a `credential:` `allow` unless `conditions.tool`
-  equals one of those consumers, and keeps every `deny` and `ask`.
-- `applyStandingDecisions(childGrants, rootGrants, declared,
-credentialConsumers)` — the read-time overlay a live child's grants get:
-  a child `ask` grant whose id the top-level run holds as `deny` becomes
-  `deny`, and one it holds as `allow` becomes `allow` only when the cap
-  above keeps that `allow`. It never adds or removes a grant. It reads
-  the top-level grants the run child holds, so a decision applies once
-  the top-level run's grants update arrives, and a wildcard `tool:*`
-  `ask` is never changed, because the hub changes only an exact
-  `tool:<name>` grant.
+  equals one of those consumers, and keeps every `deny` and `ask`. The
+  host applies the filter at a child's birth and again to the parent's
+  current grants on each read of a live child, so a live child holds what
+  a new spawn of the same body would hold.
 - `createApprovalSet(grants, requirements)` — the edge of the approval
   vocabulary. An `ApprovalSet` is one approved surface behind one operator
   decision, carrying the two kinds of approved item in two fields:

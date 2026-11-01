@@ -13,14 +13,13 @@
 // directory must reject at spawn, before the handler runs.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
-import { applyStandingDecisions } from "@intx/workflow-deploy/child-grants";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
-import { createDefaultDirectorRegistry } from "@intx/agent";
+import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import { actionConsumer, evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import {
@@ -41,6 +40,7 @@ import {
   action,
   escalation,
   loop,
+  step,
   createInMemoryScheduler,
   createInMemoryRepoStore,
   defineWorkflow,
@@ -50,6 +50,11 @@ import {
 
 import { createWorkflowRunRepoStore, runGrantsPath } from "@intx/workflow-host";
 
+import {
+  createSnapshotGrantsReader,
+  type CredentialsSnapshotRef,
+  type RunGrantsReader,
+} from "./credentials-backed-authorize";
 import {
   createSidecarRunChild,
   createSidecarSpawnSuspendableChild,
@@ -78,6 +83,7 @@ const CHILD_BODY_ID = "child-allow";
 const CREDENTIAL_BODY_ID = "body-credential";
 const CREDENTIAL_LOOP_BODY_ID = "body-credential-loop";
 const CREDENTIAL_LOOP_ITERATION_ID = "body-credential-loop-iteration";
+const CREDENTIAL_AFTER_STEP_ID = "body-credential-after-step";
 const CREDENTIAL_HANDLE = "api-token";
 const CREDENTIAL_ID = "cred-child-action";
 const RESOLVE_CONSUMER = actionConsumer("resolveToken");
@@ -292,6 +298,7 @@ function makeDeps(
       [CREDENTIAL_BODY_ID]: {},
       [CREDENTIAL_LOOP_BODY_ID]: {},
       [CREDENTIAL_LOOP_ITERATION_ID]: {},
+      [CREDENTIAL_AFTER_STEP_ID]: {},
     },
     credentialProviders: createCredentialProviderRegistry(
       builtinCredentialProviders(),
@@ -299,7 +306,6 @@ function makeDeps(
     ...(packageDir !== undefined ? { closurePackageDir: packageDir } : {}),
     collectDeclaredResources: () => new Set([SHIP_RESOURCE]),
     collectDeclaredCredentialConsumers: () => new Set<string>(),
-    applyStandingDecisions,
     filterGrantsToDeclaredResources: (parentGrants, declared) =>
       parentGrants.filter((grantRule) =>
         keepInheritedGrant(grantRule, declared),
@@ -505,6 +511,33 @@ function credentialLoopBody(): WorkflowDefinition {
   });
 }
 
+// An agent step, then the credential action. The test's step invoker runs
+// the agent step, so a test can change the top-level grants between the two.
+function credentialAfterStepBody(): WorkflowDefinition {
+  return defineWorkflow({
+    id: CREDENTIAL_AFTER_STEP_ID,
+    trigger: { type: "manual" },
+    steps: {
+      work: step({
+        agent: defineAgent({
+          id: "credential-after-step-agent",
+          systemPrompt: "s",
+          tools: [],
+          capabilities: [],
+          inference: { sources: [{ provider: "anthropic", model: "m" }] },
+        }),
+      }),
+      fetch: action({
+        handler: "resolveToken",
+        input: { from: "trigger.payload" },
+        effect: { requires: [SHIP_CAPABILITY] },
+        credentials: [CREDENTIAL_HANDLE],
+        after: ["work"],
+      }),
+    },
+  });
+}
+
 function credentialUseGrant(consumer: string): GrantRule {
   return {
     id: `grant-use-${consumer}`,
@@ -520,16 +553,25 @@ function credentialUseGrant(consumer: string): GrantRule {
 }
 
 // The run's live material cell: one http credential bound to the handler.
-// A top-level snapshot with no standing decisions, so the overlay leaves the
-// child's capped grants as they are.
-function noStandingDecisions() {
+// The grants of the top-level run, which a spawned body caps on each read.
+function rootSnapshot(grants: readonly GrantRule[]) {
   return {
-    current: {
-      steps: [
-        { stepId: "root", address: "root", grants: [], contentHash: "h" },
-      ],
-    },
+    steps: [{ stepId: "root", address: "root", grants, contentHash: "h" }],
   };
+}
+
+function rootGrantsOf(
+  ref: CredentialsSnapshotRef | readonly GrantRule[],
+): RunGrantsReader {
+  return createSnapshotGrantsReader(
+    "current" in ref ? ref : { current: rootSnapshot(ref) },
+    "test root",
+  );
+}
+
+// The effect allow and the credential use allow a credential body needs.
+function shipAndUseGrants(): GrantRule[] {
+  return [grant(SHIP_RESOURCE), credentialUseGrant(RESOLVE_CONSUMER)];
 }
 
 function credentialCell() {
@@ -564,7 +606,6 @@ function credentialDeps(
   return {
     ...makeDeps(substrate, closurePackageDir),
     collectDeclaredCredentialConsumers: () => consumers,
-    applyStandingDecisions,
     filterGrantsToDeclaredResources: (parentGrants, declared) =>
       parentGrants.filter((grantRule) => {
         if (
@@ -611,17 +652,17 @@ describe("spawned body action credentials", () => {
   test("an onTrigger body action resolves its declared credential through the capped grants", async () => {
     const substrate = await makeSubstrate("child-action-cred-");
     const parentRunId = "run-parent-cred";
-    await seedRunGrants(substrate, parentRunId, [
-      grant(SHIP_RESOURCE),
-      credentialUseGrant(RESOLVE_CONSUMER),
-    ]);
+    await seedRunGrants(substrate, parentRunId, shipAndUseGrants());
     const marker = await markerPath();
     const spawn = createSidecarSpawnSuspendableChild(credentialDeps(substrate));
 
     const handle = await spawn(
       spawnInput(credentialBody(), "run-body-cred", parentRunId, marker),
       () => undefined,
-      { material: credentialCell(), rootGrants: noStandingDecisions() },
+      {
+        material: credentialCell(),
+        parentGrants: rootGrantsOf(shipAndUseGrants()),
+      },
     );
 
     const terminal = await handle.next();
@@ -633,10 +674,7 @@ describe("spawned body action credentials", () => {
   test("a childWorkflow body action resolves its declared credential", async () => {
     const substrate = await makeSubstrate("child-action-cred-child-");
     const parentRunId = "run-parent-cred-child";
-    await seedRunGrants(substrate, parentRunId, [
-      grant(SHIP_RESOURCE),
-      credentialUseGrant(RESOLVE_CONSUMER),
-    ]);
+    await seedRunGrants(substrate, parentRunId, shipAndUseGrants());
     const marker = await markerPath();
     const runChild = createSidecarRunChild(credentialDeps(substrate));
 
@@ -647,7 +685,10 @@ describe("spawned body action credentials", () => {
         depth: 1,
       },
       () => undefined,
-      { material: credentialCell(), rootGrants: noStandingDecisions() },
+      {
+        material: credentialCell(),
+        parentGrants: rootGrantsOf(shipAndUseGrants()),
+      },
     );
 
     const event = await result.next();
@@ -659,10 +700,7 @@ describe("spawned body action credentials", () => {
   test("an action inside a loop in a spawned body resolves through the inherited invoker", async () => {
     const substrate = await makeSubstrate("child-action-cred-loop-");
     const parentRunId = "run-parent-cred-loop";
-    await seedRunGrants(substrate, parentRunId, [
-      grant(SHIP_RESOURCE),
-      credentialUseGrant(RESOLVE_CONSUMER),
-    ]);
+    await seedRunGrants(substrate, parentRunId, shipAndUseGrants());
     const marker = await markerPath();
     const spawn = createSidecarSpawnSuspendableChild(credentialDeps(substrate));
 
@@ -674,7 +712,10 @@ describe("spawned body action credentials", () => {
         marker,
       ),
       () => undefined,
-      { material: credentialCell(), rootGrants: noStandingDecisions() },
+      {
+        material: credentialCell(),
+        parentGrants: rootGrantsOf(shipAndUseGrants()),
+      },
     );
 
     const terminal = await handle.next();
@@ -684,9 +725,10 @@ describe("spawned body action credentials", () => {
   });
 
   test("an action inside a loop in a spawned body reads an always decision of the top-level run", async () => {
-    // The parent grants the effect as ask. The top-level run holds the same
-    // grant id as allow, so the loop iteration's action reads the decision
-    // through the body's grants overlay and runs without a park.
+    // The parent grants the effect as ask. The top-level run now holds the
+    // same grant id as allow, so the loop iteration's action reads the
+    // decision through the body's cap of the top-level grants and runs
+    // without a park.
     const substrate = await makeSubstrate("child-action-standing-loop-");
     const parentRunId = "run-parent-standing-loop";
     const askShip: GrantRule = { ...grant(SHIP_RESOURCE), effect: "ask" };
@@ -707,18 +749,10 @@ describe("spawned body action credentials", () => {
       () => undefined,
       {
         material: credentialCell(),
-        rootGrants: {
-          current: {
-            steps: [
-              {
-                stepId: "root",
-                address: "root",
-                grants: [{ ...askShip, effect: "allow" }],
-                contentHash: "h",
-              },
-            ],
-          },
-        },
+        parentGrants: rootGrantsOf([
+          { ...askShip, effect: "allow" },
+          credentialUseGrant(RESOLVE_CONSUMER),
+        ]),
       },
     );
 
@@ -734,10 +768,7 @@ describe("spawned body action credentials", () => {
     // drops the grant from the child's run grants and Gate 2 refuses.
     const substrate = await makeSubstrate("child-action-cred-deny-");
     const parentRunId = "run-parent-cred-deny";
-    await seedRunGrants(substrate, parentRunId, [
-      grant(SHIP_RESOURCE),
-      credentialUseGrant(RESOLVE_CONSUMER),
-    ]);
+    await seedRunGrants(substrate, parentRunId, shipAndUseGrants());
     const marker = await markerPath();
     const childRunId = "run-body-cred-deny";
     const spawn = createSidecarSpawnSuspendableChild(
@@ -747,7 +778,10 @@ describe("spawned body action credentials", () => {
     const handle = await spawn(
       spawnInput(credentialBody(), childRunId, parentRunId, marker),
       () => undefined,
-      { material: credentialCell(), rootGrants: noStandingDecisions() },
+      {
+        material: credentialCell(),
+        parentGrants: rootGrantsOf(shipAndUseGrants()),
+      },
     );
 
     const terminal = await handle.next();
@@ -758,6 +792,102 @@ describe("spawned body action credentials", () => {
     const stepFailed = events.find((event) => event.kind === "StepFailed");
     if (stepFailed === undefined || stepFailed.kind !== "StepFailed") {
       throw new Error(`body run ${childRunId} has no StepFailed event`);
+    }
+    expect(stepFailed.error.message).toContain(
+      `consumer ${RESOLVE_CONSUMER} is not authorized to use credential ${CREDENTIAL_ID}`,
+    );
+    await expect(fs.promises.access(marker)).rejects.toThrow();
+  });
+
+  // Spawn the agent-step-then-action body with a step invoker that runs
+  // `onStep` for the agent step.
+  async function runAfterStepBody(
+    substrate: ReturnType<typeof createRepoStore>,
+    parentRunId: string,
+    childRunId: string,
+    marker: string,
+    root: CredentialsSnapshotRef,
+    onStep: () => void,
+  ) {
+    const runChild = createSidecarRunChild({
+      ...credentialDeps(substrate),
+      invokeStep: async () => {
+        onStep();
+        return { output: null };
+      },
+    });
+    const result = await runChild(
+      {
+        ...spawnInput(
+          credentialAfterStepBody(),
+          childRunId,
+          parentRunId,
+          marker,
+        ),
+        parentStepId: "spawn",
+        depth: 1,
+      },
+      () => undefined,
+      { material: credentialCell(), parentGrants: rootGrantsOf(root) },
+    );
+    return result.next();
+  }
+
+  test("an action after a step resolves its credential while the top-level run holds the use grant", async () => {
+    const substrate = await makeSubstrate("child-action-cred-kept-");
+    const parentRunId = "run-parent-cred-kept";
+    await seedRunGrants(substrate, parentRunId, shipAndUseGrants());
+    const marker = await markerPath();
+    let stepRan = false;
+
+    const event = await runAfterStepBody(
+      substrate,
+      parentRunId,
+      "run-child-cred-kept",
+      marker,
+      { current: rootSnapshot(shipAndUseGrants()) },
+      () => {
+        stepRan = true;
+      },
+    );
+
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
+    expect(stepRan).toBe(true);
+    expect(await fs.promises.readFile(marker, "utf8")).toBe("http");
+  });
+
+  test("a credential use grant the top-level run loses mid-run closes the next resolve", async () => {
+    // The parent file and the top-level run both hold the use grant at the
+    // spawn. The agent step removes it from the top-level run, so the action
+    // that runs next fails Gate 2 although the child's file still holds it.
+    const substrate = await makeSubstrate("child-action-cred-revoked-");
+    const parentRunId = "run-parent-cred-revoked";
+    const childRunId = "run-child-cred-revoked";
+    await seedRunGrants(substrate, parentRunId, shipAndUseGrants());
+    const marker = await markerPath();
+    const root: CredentialsSnapshotRef = {
+      current: rootSnapshot(shipAndUseGrants()),
+    };
+
+    const event = await runAfterStepBody(
+      substrate,
+      parentRunId,
+      childRunId,
+      marker,
+      root,
+      () => {
+        root.current = rootSnapshot([grant(SHIP_RESOURCE)]);
+      },
+    );
+
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("failed");
+    const events: readonly WorkflowEvent[] =
+      await reader(substrate).read(childRunId);
+    const stepFailed = events.find((e) => e.kind === "StepFailed");
+    if (stepFailed === undefined || stepFailed.kind !== "StepFailed") {
+      throw new Error(`child run ${childRunId} has no StepFailed event`);
     }
     expect(stepFailed.error.message).toContain(
       `consumer ${RESOLVE_CONSUMER} is not authorized to use credential ${CREDENTIAL_ID}`,

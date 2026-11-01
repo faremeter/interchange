@@ -1444,16 +1444,19 @@ one of those consumers. The comparison is exact. An unconditioned credential
 allow, a non-string `{ tool }` value, and a condition that names a consumer the
 body does not run are dropped, and that branch does not fall through
 to `matchPattern`. The parent stays the ceiling — the filter only removes
-rules, never adds or rewrites one. A read-time overlay then applies the
-top-level run's standing approval decisions to a live child: a child `ask`
-grant whose id the top-level run holds as `deny` reads as `deny`, and one it
-holds as `allow` reads as `allow` only when the filter above keeps that
-`allow`. The overlay changes only the effect of an existing `ask`, within the
-cap, and never adds a grant; the child's grants file is not rewritten.
-The decision reaches a live child when the top-level run's grants update
-arrives: the hub sends the run's committed grants ahead of each signal
-delivery and each trigger, and the supervisor sends them again in
-`authority.set` when the run child restarts. An `always` decision on a
+rules, never adds or rewrites one. A live child applies the same filter to
+its parent's current grants on each read (the top-level run's live snapshot
+for a child of the top-level run, the parent rung's capped grants for a
+deeper child), so it holds what a new spawn of the same body would hold. A
+grant the top-level run loses, regains, or changes (an effect, a condition,
+or a standing approval decision) reaches the child on its next tool call or
+step; the child's grants file is not rewritten. Each rung filters its own
+parent's grants rather than the top-level grants, because an inline child's
+own triggers and `mailAccept` can declare resources that its parent's walk
+does not fold in. A grant change reaches a live child when the top-level
+run's grants update arrives: the hub sends the run's committed grants ahead
+of each signal delivery and each trigger, and the supervisor sends them again
+in `authority.set` when the run child restarts. An `always` decision on a
 call that matched a wildcard `tool:*` `ask` changes nothing at any
 level, because the hub changes only a `tool:<name>` grant that matches
 the tool name exactly. The capped set is applied **uniformly
@@ -1461,9 +1464,11 @@ across the child's steps** (matching the top level's flat-union model, not
 per-step distinctness) and written into **both** grant sinks: the
 `CredentialsSnapshot.steps[].grants` the per-child authorize closure reads for all
 three decision kinds — tool-invoke, action-step effects, and credential use — and
-the child's own `runs/<childRunId>/grants.json`, which is the ceiling a grandchild
-filters against in turn. A parent-only `effect:` or a bare-name `tool:` the
-child body never declares therefore cannot authorize a child step. A parent
+the child's own `runs/<childRunId>/grants.json`, which is the birth record
+and the input that a grandchild's birth record is filtered from in turn; no
+inherited run authorizes against the file. A parent-only `effect:` or a
+bare-name `tool:` the child body never declares therefore cannot authorize a
+child step. A parent
 `credential:` allow authorizes a child step only when its `{ tool }` condition
 names a consumer that body runs. (The flat-inheritance model was not a privilege-escalation hole
 against the operator — the union is operator-approved — but a child running the
@@ -1632,8 +1637,9 @@ INTR-209 end state; the hardened boundaries (Phase 6) are a follow-on.
    supervisor assembles the credentials snapshot and pushes it over the control
    IPC (`assembleCredentialsSnapshot`, `grants-updated`). For an **in-process**
    rung the snapshot is shared from the parent (same process): each in-process
-   child reads the top-level run's live snapshot reference, so a standing
-   approval decision reaches it through the overlay above. For a **sandboxed**
+   child caps its parent's current grants, which trace back to the top-level
+   run's live snapshot reference, so a grant change reaches it as described
+   above. For a **sandboxed**
    rung, the sub-child needs its own `grants-updated` push over its own control
    channel — and the grants it receives must be the node's grants, not the
    parent's (a stricter-isolation node may intentionally run with a narrower

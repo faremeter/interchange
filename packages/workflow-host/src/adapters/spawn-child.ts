@@ -75,23 +75,27 @@ import type {
   WorkflowEvent,
 } from "@intx/workflow";
 
-import type { CredentialsSnapshotRef } from "../child/credentials-backed-authorize";
+import type { RunGrantsReader } from "../child/credentials-backed-authorize";
 import type { CredentialMaterialRef } from "../child/run-child";
 
 /**
- * What a spawned child inherits from the top-level run, live, at every depth:
- *  - `material`: the run's credential-material cell (the same reference the
- *    top-level step invoker reads), so the child's inference resolves its
- *    source secret by `credentialId` against the run's current delivery, and
- *    a rotation the parent applies reaches the child through the shared
- *    reference.
- *  - `rootGrants`: the top-level run's credentials snapshot reference, so a
- *    standing approval decision reaches the child's grants on its next step.
+ * What a spawned child inherits from the run that spawns it, live, at every
+ * depth:
+ *  - `material`: the top-level run's credential-material cell (the same
+ *    reference the top-level step invoker reads), so the child's inference
+ *    resolves its source secret by `credentialId` against the run's current
+ *    delivery, and a rotation the parent applies reaches the child through
+ *    the shared reference.
+ *  - `parentGrants`: the spawning run's current grants. For a child of the
+ *    top-level run they are the top-level run's grants; for a deeper child
+ *    they are its parent's capped grants. The child applies its own cap to
+ *    them on each read, so a grant change at the top level reaches every
+ *    rung on its next tool call or step.
  * A non-sidecar executor that carries no credential material passes no group.
  */
 export type ChildInheritance = {
   readonly material: CredentialMaterialRef;
-  readonly rootGrants: CredentialsSnapshotRef;
+  readonly parentGrants: RunGrantsReader;
 };
 
 /**
@@ -110,8 +114,8 @@ export type ChildInheritance = {
  * {@link RunSuspendableChild}), and the spawn `depth` / ceiling so the
  * child run's own spawns keep counting against the tree-wide bound.
  *
- * The callback also receives what the child inherits from the top-level run
- * ({@link ChildInheritance}).
+ * The callback also receives what the child inherits from the run that spawns
+ * it ({@link ChildInheritance}).
  */
 export type RunChildWorkflow = (
   input: {
@@ -151,7 +155,7 @@ export type RunChildWorkflow = (
  * with its run's `onEvent`, mirroring {@link HostSpawnSuspendableChild}. The
  * sink is a call argument (not closed over at construction) because the resolver
  * is selected once per deployment while `onEvent` is built per run. What the
- * child inherits from the top-level run rides the same seam.
+ * child inherits from the run that spawns it rides the same seam.
  */
 export type HostSpawnChild = (
   input: Parameters<SpawnChildWorkflow>[0],
