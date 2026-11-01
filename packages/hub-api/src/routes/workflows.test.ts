@@ -504,30 +504,32 @@ function createMockDB(opts: MockDBOpts) {
     };
     return { from };
   };
+  const query = {
+    tenant: {
+      findFirst: async () => ({
+        ...testTenant,
+        config: opts.tenantConfig ?? null,
+      }),
+      findMany: async () => [
+        { id: testTenant.id, config: opts.tenantConfig ?? null },
+      ],
+    },
+    principal: { findFirst: async () => testPrincipal },
+    asset: { findFirst: async () => opts.assetRow },
+  };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
-    query: {
-      tenant: {
-        findFirst: async () => ({
-          ...testTenant,
-          config: opts.tenantConfig ?? null,
-        }),
-        findMany: async () => [
-          { id: testTenant.id, config: opts.tenantConfig ?? null },
-        ],
-      },
-      principal: { findFirst: async () => testPrincipal },
-      asset: { findFirst: async () => opts.assetRow },
-    },
+    query,
     select,
     insert,
     transaction: async (
       fn: (tx: {
+        query: typeof query;
         insert: typeof insert;
         select: typeof select;
       }) => Promise<unknown>,
     ) => {
-      return fn({ insert, select });
+      return fn({ query, insert, select });
     },
   } as unknown as Parameters<typeof createApp>[0]["db"];
 }

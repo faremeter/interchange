@@ -181,6 +181,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return materialize({ agentAddress: WORKFLOW_ADDRESS, runId, ...sender });
     }
 
+    async function waitForBlocked(blockerPid: number) {
+      // Postgres exposes lock waits through its activity view only.
+      for (;;) {
+        const waiting = await h.db.execute(
+          sql`select pid from pg_stat_activity where ${blockerPid} = any(pg_blocking_pids(pid))`,
+        );
+        const pid = waiting[0]?.["pid"];
+        if (typeof pid === "number") return pid;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+
     test("deployments of one definition keep their own frozen snapshots", async () => {
       // Each deployment's launch spec holds the snapshot it was deployed with.
       const second = "run_second";
@@ -1134,18 +1146,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         };
       }
 
-      async function waitForBlocked(blockerPid: number) {
-        // Postgres exposes lock waits through its activity view only.
-        for (;;) {
-          const waiting = await h.db.execute(
-            sql`select pid from pg_stat_activity where ${blockerPid} = any(pg_blocking_pids(pid))`,
-          );
-          const pid = waiting[0]?.["pid"];
-          if (typeof pid === "number") return pid;
-          await new Promise<void>((resolve) => setImmediate(resolve));
-        }
-      }
-
       // Hold the anchor lock while the winner and then the loser pass their
       // staged first-fire admission and queue on it, so the winner commits the
       // run first and the loser reaches the commit with the run already live.
@@ -1272,6 +1272,129 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         expect(winner.outcome).toBe("materialized");
         expect(loser.outcome).toBe("materialized");
+      });
+    });
+
+    describe("a delegator change while the first fire waits on the anchor lock", () => {
+      // Hold the anchor lock, start the first fire and wait until it queues
+      // on the lock, then apply `change` in the lock-holding transaction and
+      // commit it. The first fire must see the change.
+      async function firstFireAcross(
+        change: (
+          tx: Parameters<Parameters<typeof h.db.transaction>[0]>[0],
+        ) => Promise<void>,
+        sender = ADMITTED_SENDER,
+      ) {
+        const locked = Promise.withResolvers<number>();
+        const release = Promise.withResolvers<undefined>();
+        const blocker = h.db.transaction(async (tx) => {
+          await tx
+            .select({ id: workflowRun.id })
+            .from(workflowRun)
+            .where(eq(workflowRun.id, DEPLOYMENT))
+            .for("update");
+          const [backend] = await tx.execute(
+            sql`select pg_backend_pid() as pid`,
+          );
+          const pid = backend?.["pid"];
+          if (typeof pid !== "number") throw new Error("Missing backend PID");
+          locked.resolve(pid);
+          await release.promise;
+          await change(tx);
+        });
+        void blocker.catch(locked.reject);
+        try {
+          const blockerPid = await locked.promise;
+          const fire = materializeOnce(RUN_ID, sender);
+          await waitForBlocked(blockerPid);
+          release.resolve(undefined);
+          await blocker;
+          return await fire;
+        } finally {
+          release.resolve(undefined);
+        }
+      }
+
+      async function runGrantCount() {
+        const rows = await h.db
+          .select({ id: grant.id })
+          .from(grant)
+          .innerJoin(principal, eq(principal.id, grant.principalId))
+          .where(eq(principal.refId, RUN_ID));
+        return rows.length;
+      }
+
+      test("a creator grant revoked during the wait is not committed", async () => {
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+
+        const result = await firstFireAcross(async (tx) => {
+          await tx.delete(grant).where(eq(grant.id, "grt_creator_vault"));
+        });
+
+        expect(result.outcome).toBe("rejected");
+        if (result.outcome === "rejected") {
+          expect(result.code).toBe("insufficient_grants");
+        }
+        expect(await runGrantCount()).toBe(0);
+      });
+
+      test("a deployer deactivated during the wait leaves no deployer", async () => {
+        await seedFrozenSnapshot({
+          ...snapshot("secret:vault"),
+          grantRequirements: [
+            { resource: "secret:vault", action: "use", source: "invoker" },
+          ],
+        });
+
+        const result = await firstFireAcross(async (tx) => {
+          await tx
+            .update(principal)
+            .set({ status: "deactivated" })
+            .where(eq(principal.id, CREATOR));
+        });
+
+        expect(result.outcome).toBe("rejected");
+        if (result.outcome === "rejected") {
+          expect(result.code).toBe("deployer_unavailable");
+        }
+        expect(await runGrantCount()).toBe(0);
+      });
+
+      test("a sender admitted by the deployer rule is refused once the deployer is gone", async () => {
+        // The sender passes the provisional admission as the active deployer.
+        // The deployer is deactivated before the commit, so the committed
+        // rows carry no `mail.accept:invoker` row to admit it.
+        await seedFrozenSnapshot({
+          perStep: [
+            {
+              stepId: "work",
+              grants: [MAIL_TRIGGER_GRANT, "mail.accept:invoker"],
+              grantEffects: {},
+            },
+          ],
+          grantRequirements: [],
+        });
+
+        const result = await firstFireAcross(
+          async (tx) => {
+            await tx
+              .update(principal)
+              .set({ status: "deactivated" })
+              .where(eq(principal.id, CREATOR));
+          },
+          {
+            senderCoordinates: [
+              { coordType: "principal", id: CREATOR },
+              { coordType: "tenant", id: TENANT },
+            ],
+          },
+        );
+
+        expect(result.outcome).toBe("rejected");
+        if (result.outcome === "rejected") {
+          expect(result.code).toBe("mail_admission_denied");
+        }
+        expect(await runGrantCount()).toBe(0);
       });
     });
 
