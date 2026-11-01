@@ -36,6 +36,13 @@ export {
   type CorrespondentGrantMinterDeps,
 } from "./run-grant-materialization";
 export {
+  findDelegatedAnchorRunIds,
+  lockTenantRunDelegatedGrants,
+  rederiveRunDelegatedGrants,
+  type RederiveRunDelegatedGrantsArgs,
+  type RederivedRun,
+} from "./run-delegated-grants";
+export {
   resolveDefinitionSources,
   type DefinitionSourceResolution,
 } from "./run-source-resolution";
