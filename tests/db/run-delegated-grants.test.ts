@@ -25,6 +25,7 @@ import {
   findDelegatedAnchorRunIds,
   lockTenantRunDelegatedGrants,
   rederiveRunDelegatedGrants,
+  sweepLapsedDeployerGrants,
 } from "@intx/hub-api";
 import {
   createTestDb,
@@ -89,6 +90,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       tenantId?: string;
       status?: "deployed" | "running" | "completed";
       principalCreatedAt?: Date;
+      // Seed the launch spec with no grant snapshot, so a re-derivation of a
+      // run that holds rows fails.
+      noSnapshot?: true;
     }): Promise<string> {
       const tenantId = opts.tenantId ?? TENANT;
       const assetId = `ast_${opts.anchorRunId}`;
@@ -129,10 +133,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRunLaunchSpec(h.db, {
         anchorRunId: opts.anchorRunId,
         sourceAuthorityPrincipalId: opts.deployer ?? DEPLOYER,
-        grantSnapshot: {
-          perStep: opts.perStep ?? [],
-          grantRequirements: opts.requirements,
-        },
+        grantSnapshot:
+          opts.noSnapshot === true
+            ? null
+            : {
+                perStep: opts.perStep ?? [],
+                grantRequirements: opts.requirements,
+              },
       });
       return runPrincipalId;
     }
@@ -666,6 +673,214 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await rederive([CREATOR]);
 
       expect(await runGrants(run)).toEqual([]);
+    });
+
+    describe("the lapsed deployer sweep", () => {
+      // The creator holds no `secret:db` grant, so a re-derivation removes
+      // the creator row of a run that requires it. A run the sweep does not
+      // select keeps that row.
+      const SWEPT_REQUIREMENTS: GrantRequirement[] = [
+        { resource: "secret:vault", action: "use", source: "invoker" },
+        { resource: "secret:db", action: "use", source: "creator" },
+      ];
+
+      beforeEach(async () => {
+        await seedGrant(h.db, {
+          id: "grt_deployer_vault",
+          tenantId: TENANT,
+          principalId: DEPLOYER,
+          resource: "secret:vault",
+          action: "use",
+        });
+      });
+
+      async function sweep() {
+        const sent: string[] = [];
+        await sweepLapsedDeployerGrants(
+          {
+            db: h.db,
+            grantStoreFor: createGrantStore,
+            sidecarRouter: {
+              sendRunGrants: async (address) => {
+                sent.push(address);
+                return true;
+              },
+            },
+          },
+          new Date(),
+        );
+        return sent;
+      }
+
+      async function setPrincipalStatus(
+        id: string,
+        status: "active" | "suspended" | "deactivated",
+      ) {
+        await h.db
+          .update(principal)
+          .set({ status })
+          .where(eq(principal.id, id));
+      }
+
+      // A deployment that holds an unexpired invoker row and a creator row.
+      async function seedSweptDeployment(
+        opts: Omit<Parameters<typeof seedDeployment>[0], "requirements">,
+      ) {
+        const tenantId = opts.tenantId ?? TENANT;
+        const run = await seedDeployment({
+          ...opts,
+          requirements: SWEPT_REQUIREMENTS,
+        });
+        await seedGrant(h.db, {
+          id: `grt_${opts.anchorRunId}_vault`,
+          tenantId,
+          principalId: run,
+          resource: "secret:vault",
+          action: "use",
+          origin: "invoker",
+          expiresAt: new Date(Date.now() + 60_000),
+        });
+        await seedGrant(h.db, {
+          id: `grt_${opts.anchorRunId}_db`,
+          tenantId,
+          principalId: run,
+          resource: "secret:db",
+          action: "use",
+          origin: "creator",
+        });
+        return run;
+      }
+
+      const UNCHANGED = [
+        "creator secret:db/use allow",
+        "invoker secret:vault/use allow",
+      ];
+
+      test("a run deployed by an ended run loses its invoker row once", async () => {
+        // run_deployed was deployed by run_deployer's run principal and holds
+        // an invoker row delegated from it.
+        const deployerRun = await seedDeployment({
+          anchorRunId: "run_deployer",
+          requirements: [],
+        });
+        await seedGrant(h.db, {
+          id: "grt_deployer_run_vault",
+          tenantId: TENANT,
+          principalId: deployerRun,
+          resource: "secret:vault",
+          action: "use",
+          origin: "creator",
+        });
+        await setPrincipalStatus(deployerRun, "deactivated");
+        const deployed = await seedDeployment({
+          anchorRunId: "run_deployed",
+          requirements: [
+            { resource: "secret:vault", action: "use", source: "invoker" },
+          ],
+          deployer: deployerRun,
+        });
+        await seedGrant(h.db, {
+          id: "grt_deployed_vault",
+          tenantId: TENANT,
+          principalId: deployed,
+          resource: "secret:vault",
+          action: "use",
+          origin: "invoker",
+          expiresAt: new Date(Date.now() + 60_000),
+        });
+
+        expect(await sweep()).toEqual(["run_deployed@tenant.example"]);
+        expect(await runGrants(deployed)).toEqual([]);
+        expect(await sweep()).toEqual([]);
+      });
+
+      test("a run whose deployer is active is not selected", async () => {
+        const run = await seedSweptDeployment({ anchorRunId: "run_a" });
+
+        expect(await sweep()).toEqual([]);
+        expect(summary(await runGrants(run))).toEqual(UNCHANGED);
+      });
+
+      test("a run whose invoker row has expired is not selected", async () => {
+        await setPrincipalStatus(DEPLOYER, "deactivated");
+        const run = await seedSweptDeployment({ anchorRunId: "run_a" });
+        await h.db
+          .update(grant)
+          .set({ expiresAt: new Date(Date.now() - 1_000) })
+          .where(eq(grant.id, "grt_run_a_vault"));
+
+        expect(await sweep()).toEqual([]);
+        expect(summary(await runGrants(run))).toEqual(UNCHANGED);
+      });
+
+      test("an ended run is not selected", async () => {
+        await setPrincipalStatus(DEPLOYER, "deactivated");
+        const run = await seedSweptDeployment({
+          anchorRunId: "run_a",
+          status: "completed",
+        });
+
+        expect(await sweep()).toEqual([]);
+        expect(summary(await runGrants(run))).toEqual(UNCHANGED);
+      });
+
+      test("a deployer in another tenant counts as not active", async () => {
+        await seedPrincipal(h.db, {
+          id: "prn_foreign",
+          tenantId: "tnt_other",
+          kind: "user",
+          refId: "foreign-user",
+        });
+        const run = await seedSweptDeployment({
+          anchorRunId: "run_a",
+          deployer: "prn_foreign",
+        });
+
+        expect(await sweep()).toEqual(["run_a@tenant.example"]);
+        expect(await runGrants(run)).toEqual([]);
+      });
+
+      test("a suspended deployer counts as not active", async () => {
+        await setPrincipalStatus(DEPLOYER, "suspended");
+        const run = await seedSweptDeployment({ anchorRunId: "run_a" });
+
+        expect(await sweep()).toEqual(["run_a@tenant.example"]);
+        expect(await runGrants(run)).toEqual([]);
+      });
+
+      test("one tenant's failure does not stop another tenant", async () => {
+        await setPrincipalStatus(DEPLOYER, "deactivated");
+        await seedSweptDeployment({ anchorRunId: "run_bad", noSnapshot: true });
+        await seedPrincipal(h.db, {
+          id: "prn_other_deployer",
+          tenantId: "tnt_other",
+          kind: "user",
+          refId: "other-deployer",
+          status: "deactivated",
+        });
+        const other = await seedSweptDeployment({
+          anchorRunId: "run_other",
+          tenantId: "tnt_other",
+          creator: null,
+          deployer: "prn_other_deployer",
+        });
+
+        expect(await sweep()).toEqual(["run_other@tenant.example"]);
+        expect(await runGrants(other)).toEqual([]);
+      });
+
+      test("one broken anchor does not stop another run of its tenant", async () => {
+        await setPrincipalStatus(DEPLOYER, "deactivated");
+        const bad = await seedSweptDeployment({
+          anchorRunId: "run_a_bad",
+          noSnapshot: true,
+        });
+        const good = await seedSweptDeployment({ anchorRunId: "run_b_good" });
+
+        expect(await sweep()).toEqual(["run_b_good@tenant.example"]);
+        expect(await runGrants(good)).toEqual([]);
+        expect(summary(await runGrants(bad))).toEqual(UNCHANGED);
+      });
     });
 
     test("a deployment's run re-derives the deployments it deployed", async () => {

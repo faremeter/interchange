@@ -39,6 +39,7 @@ export {
   findDelegatedAnchorRunIds,
   lockTenantRunDelegatedGrants,
   rederiveRunDelegatedGrants,
+  sweepLapsedDeployerGrants,
   type RederiveRunDelegatedGrantsArgs,
   type RederivedRun,
 } from "./run-delegated-grants";

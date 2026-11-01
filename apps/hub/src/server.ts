@@ -28,6 +28,7 @@ import {
   createCorrespondentGrantMinter,
   createMailTriggeredRunGrantsMaterializer,
   createRunGrantsLoader,
+  sweepLapsedDeployerGrants,
 } from "@intx/hub-api";
 import {
   attachSidecarProvisioners,
@@ -671,8 +672,24 @@ export async function createHubServer({
     },
   });
 
+  // A run that deployed others is deactivated when it ends; the runs it
+  // deployed lose their invoker rows at the next pass.
+  const lapsedDeployerScheduler = createReconciliationScheduler({
+    name: "Lapsed deployer grants",
+    concurrency: 1,
+    intervalMs: 30_000,
+    reconcileNext: async () => {
+      await sweepLapsedDeployerGrants(
+        { db, grantStoreFor: createGrantStore, sidecarRouter },
+        new Date(),
+      );
+      return false;
+    },
+  });
+
   // Initial polls run on the next timer turn, after the websocket endpoint is assembled.
   allocationScheduler.start();
+  lapsedDeployerScheduler.start();
   probeCleanupScheduler.start();
   lifecycleScheduler.start();
   dispatchProjectionScheduler.start();

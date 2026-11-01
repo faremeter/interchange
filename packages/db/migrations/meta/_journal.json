@@ -813,6 +813,13 @@
       "when": 1793295703136,
       "tag": "0116_credential_secret_version",
       "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1793571455962,
+      "tag": "0117_grant_invoker_allow_principal_index",
+      "breakpoints": true
     }
   ]
 }

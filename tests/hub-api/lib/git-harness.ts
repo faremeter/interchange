@@ -424,6 +424,11 @@ export type StartHubOptions = {
    * absent and dropped on stop.
    */
   dbSchemaName?: string;
+  /**
+   * The caller already migrated `dbSchemaName`, for example to seed rows
+   * the hub reads when it starts. The harness does not migrate it again.
+   */
+  migrated?: true;
 };
 
 export type HubHandle = {
@@ -451,7 +456,9 @@ export async function startHub(
   // 1. Provision the schema and migrate it under the migration
   // role. The hub-app role then sees the tables via its own
   // connection.
-  await runMigrations(migrateConfig, { schema });
+  if (options.migrated !== true) {
+    await runMigrations(migrateConfig, { schema });
+  }
 
   // The hub-app role needs explicit grants on this schema, since
   // the default-privileges grants apply only to the public schema.

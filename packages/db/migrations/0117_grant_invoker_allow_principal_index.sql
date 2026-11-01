@@ -1,0 +1,1 @@
+CREATE INDEX "grant_invoker_allow_principal_idx" ON "grant" USING btree ("principal_id") WHERE "grant"."origin" = 'invoker' and "grant"."effect" = 'allow';
