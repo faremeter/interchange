@@ -388,7 +388,7 @@ Points to know:
 - An approval on a deployment with no allocation does not lock the deployment. If it commits while a re-derivation adds a regained `ask` row, the row stays `ask` and the run asks again.
 - A delegator grant that expires with time, and a direct database write (a migration or a seed), do not start a re-derivation. The sweep in the next point still finds a deployer that a direct write made not active.
 - A run that deploys a workflow is the deployer of that deployment. When the run ends, its principal is deactivated, so the deployment's invoker rows lapse. No route makes that change, so a sweep finds it: every 30 seconds the hub re-derives each live run that holds an unexpired invoker `allow` row while its deployer is not active, and sends its grants to each run whose rows changed. Each run is re-derived in its own transaction, so a run that fails does not stop the others. A run whose invoker `allow` row no requirement produces (an operator added it, or an operator `PATCH` changed its conditions) keeps the row, so the sweep selects it again at each pass and changes nothing.
-- A running child body keeps a copy of its grants from its spawn, so it keeps a revoked root `allow` until its next spawn.
+- A running child body authorizes against the root's current grants under its spawn-time cap, from its next tool call or step. Each rung of a deeper child caps the current grants of the rung that spawned it.
 
 **Credential deletion** is not a re-derivation: deleting a credential deletes every `credential:<id>` row, the run principals' rows included, and evicts its secret (see CREDENTIALS.md).
 

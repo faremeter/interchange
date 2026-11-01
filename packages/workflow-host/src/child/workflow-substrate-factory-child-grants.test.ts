@@ -6,9 +6,13 @@
 // `runs/<childRunId>/grants.json`. An existing child file is read back and
 // the collectors are not called again. A child whose parent has no grants
 // file fails closed at spawn. The cap itself lives with the capability walk.
+//
+// A child that inherits from a top-level run authorizes against the cap of
+// the top-level run's current grants, not against its file, so a grant the
+// top-level run loses, regains, or changes reaches the child on its next call.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
-import { applyStandingDecisions } from "@intx/workflow-deploy/child-grants";
+import { filterGrantsToDeclaredResources } from "@intx/workflow-deploy/child-grants";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -40,8 +44,13 @@ import {
   type StepInvokeResult,
   type WorkflowDefinition,
 } from "@intx/workflow";
-import { readRunGrants, runGrantsPath } from "@intx/workflow-host";
+import {
+  createWorkflowRunRepoStore,
+  readRunGrants,
+  runGrantsPath,
+} from "@intx/workflow-host";
 
+import { createSnapshotGrantsReader } from "./credentials-backed-authorize";
 import {
   createSidecarRunChild,
   type SidecarChildStepInvoker,
@@ -264,7 +273,6 @@ function makeRunChild(
     collectDeclaredResources: grantCap.collectDeclaredResources,
     collectDeclaredCredentialConsumers:
       grantCap.collectDeclaredCredentialConsumers,
-    applyStandingDecisions,
     filterGrantsToDeclaredResources: grantCap.filterGrantsToDeclaredResources,
     directors: createDefaultDirectorRegistry(),
   });
@@ -450,7 +458,7 @@ describe("createSidecarRunChild grant capping", () => {
   });
 });
 
-describe("createSidecarRunChild standing decisions", () => {
+describe("createSidecarRunChild root grants", () => {
   const ASK_ID = "grt-ask-declared";
   const UNDECLARED_ASK_ID = "grt-ask-undeclared";
   const askDeclared: GrantRule = {
@@ -463,13 +471,13 @@ describe("createSidecarRunChild standing decisions", () => {
     id: UNDECLARED_ASK_ID,
     effect: "ask",
   };
-  // The cap stubs: the child declares DECLARED_RESOURCE only, and the filter
-  // keeps every parent grant, so both asks reach the child file.
-  const keepAll = {
+  // A creator-origin allow on the declared resource, the only row for it.
+  const allowDeclared = grant(DECLARED_RESOURCE, "invoke");
+  // The real cap: the child declares DECLARED_RESOURCE only.
+  const declaredCap = {
     collectDeclaredResources: () => new Set([DECLARED_RESOURCE]),
     collectDeclaredCredentialConsumers: () => new Set<string>(),
-    filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
-      parentGrants,
+    filterGrantsToDeclaredResources,
   };
 
   function rootSnapshot(grants: readonly GrantRule[]) {
@@ -482,16 +490,25 @@ describe("createSidecarRunChild standing decisions", () => {
     return { ...rule, effect };
   }
 
-  // An invoker that checks both resources, runs `between`, then checks them
-  // again, recording each decision.
+  type DecisionRecord = {
+    decisions: { resource: string; effect: string | null }[];
+  };
+
+  function newRecord(): DecisionRecord {
+    return { decisions: [] };
+  }
+
+  // An invoker that checks `resources`, then for each swap runs it and checks
+  // them again, recording each decision.
   function swappingInvoker(
-    record: { decisions: { resource: string; effect: string | null }[] },
-    between: () => void,
+    record: DecisionRecord,
+    resources: readonly string[],
+    swaps: readonly (() => void)[],
   ): SidecarChildStepInvoker {
     return async (req, authorize): Promise<StepInvokeResult> => {
-      for (const pass of [0, 1]) {
-        if (pass === 1) between();
-        for (const resource of [DECLARED_RESOURCE, UNDECLARED_RESOURCE]) {
+      for (const swap of [undefined, ...swaps]) {
+        swap?.();
+        for (const resource of resources) {
           const decision = await authorize(
             resource,
             "invoke",
@@ -511,7 +528,7 @@ describe("createSidecarRunChild standing decisions", () => {
     childRunId: string,
     rootGrants: { current: ReturnType<typeof rootSnapshot> | null },
   ) {
-    const runChild = makeRunChild(substrate, invokeStep, keepAll);
+    const runChild = makeRunChild(substrate, invokeStep, declaredCap);
     const handle = await runChild(
       {
         definition: childDefinition("child-wf"),
@@ -525,46 +542,54 @@ describe("createSidecarRunChild standing decisions", () => {
         maxChildSpawnDepth: 32,
       },
       noopOnEvent,
-      { material: { current: null }, rootGrants },
+      {
+        material: { current: null },
+        parentGrants: createSnapshotGrantsReader(rootGrants, "test root"),
+      },
     );
     return handle.next();
   }
 
   test("a live child reads an always decision on its next step, and its grants file is unchanged", async () => {
-    const substrate = await makeSubstrate("child-standing-allow-");
-    const parentRunId = "run-parent-standing";
-    const childRunId = "run-child-standing";
+    const substrate = await makeSubstrate("child-root-always-");
+    const parentRunId = "run-parent-always";
+    const childRunId = "run-child-always";
     await seedRunGrants(substrate, parentRunId, [askDeclared, askUndeclared]);
     const rootGrants = {
       current: rootSnapshot([askDeclared, askUndeclared]),
     };
-    const record = {
-      decisions: [] as { resource: string; effect: string | null }[],
-    };
+    const record = newRecord();
 
     const event = await spawn(
       substrate,
-      swappingInvoker(record, () => {
-        // An always approve on both tools, as the top-level grants update
-        // carries it: a new snapshot object.
-        rootGrants.current = rootSnapshot([
-          decided(askDeclared, "allow"),
-          decided(askUndeclared, "allow"),
-        ]);
-      }),
+      swappingInvoker(
+        record,
+        [DECLARED_RESOURCE, UNDECLARED_RESOURCE],
+        [
+          () => {
+            // An always approve on both tools, as the top-level grants update
+            // carries it: a new snapshot object.
+            rootGrants.current = rootSnapshot([
+              decided(askDeclared, "allow"),
+              decided(askUndeclared, "allow"),
+            ]);
+          },
+        ],
+      ),
       parentRunId,
       childRunId,
       rootGrants,
     );
 
     expect(event.kind).toBe("terminal");
-    // The declared tool turns to allow; the undeclared one stays ask, so the
-    // overlay never authorizes past the cap.
+    // The cap keeps every ask, so both tools ask first. After the decision the
+    // declared tool is allowed. The cap drops the allow on the undeclared tool,
+    // so the child holds no row for it and the evaluator decides nothing.
     expect(record.decisions).toEqual([
       { resource: DECLARED_RESOURCE, effect: "ask" },
       { resource: UNDECLARED_RESOURCE, effect: "ask" },
       { resource: DECLARED_RESOURCE, effect: "allow" },
-      { resource: UNDECLARED_RESOURCE, effect: "ask" },
+      { resource: UNDECLARED_RESOURCE, effect: null },
     ]);
     expect(
       await readRunGrants({
@@ -576,24 +601,28 @@ describe("createSidecarRunChild standing decisions", () => {
   });
 
   test("a reject with scope always turns the child ask into deny, declared or not", async () => {
-    const substrate = await makeSubstrate("child-standing-deny-");
+    const substrate = await makeSubstrate("child-root-deny-");
     const parentRunId = "run-parent-deny";
     await seedRunGrants(substrate, parentRunId, [askDeclared, askUndeclared]);
     const rootGrants = {
       current: rootSnapshot([askDeclared, askUndeclared]),
     };
-    const record = {
-      decisions: [] as { resource: string; effect: string | null }[],
-    };
+    const record = newRecord();
 
     await spawn(
       substrate,
-      swappingInvoker(record, () => {
-        rootGrants.current = rootSnapshot([
-          decided(askDeclared, "deny"),
-          decided(askUndeclared, "deny"),
-        ]);
-      }),
+      swappingInvoker(
+        record,
+        [DECLARED_RESOURCE, UNDECLARED_RESOURCE],
+        [
+          () => {
+            rootGrants.current = rootSnapshot([
+              decided(askDeclared, "deny"),
+              decided(askUndeclared, "deny"),
+            ]);
+          },
+        ],
+      ),
       parentRunId,
       "run-child-deny",
       rootGrants,
@@ -605,15 +634,106 @@ describe("createSidecarRunChild standing decisions", () => {
     ]);
   });
 
+  test("a root allow removed mid-run is denied on the next call", async () => {
+    const substrate = await makeSubstrate("child-root-revoke-");
+    const parentRunId = "run-parent-revoke";
+    await seedRunGrants(substrate, parentRunId, [allowDeclared]);
+    const rootGrants = { current: rootSnapshot([allowDeclared]) };
+    const record = newRecord();
+
+    await spawn(
+      substrate,
+      swappingInvoker(
+        record,
+        [DECLARED_RESOURCE],
+        [
+          () => {
+            rootGrants.current = rootSnapshot([]);
+          },
+        ],
+      ),
+      parentRunId,
+      "run-child-revoke",
+      rootGrants,
+    );
+
+    expect(record.decisions).toEqual([
+      { resource: DECLARED_RESOURCE, effect: "allow" },
+      { resource: DECLARED_RESOURCE, effect: null },
+    ]);
+  });
+
+  test("a root allow regained with a new id is allowed on the next call", async () => {
+    const substrate = await makeSubstrate("child-root-regain-");
+    const parentRunId = "run-parent-regain";
+    await seedRunGrants(substrate, parentRunId, [allowDeclared]);
+    const rootGrants = { current: rootSnapshot([allowDeclared]) };
+    const record = newRecord();
+
+    await spawn(
+      substrate,
+      swappingInvoker(
+        record,
+        [DECLARED_RESOURCE],
+        [
+          () => {
+            rootGrants.current = rootSnapshot([]);
+          },
+          () => {
+            rootGrants.current = rootSnapshot([
+              { ...allowDeclared, id: "grt-regained" },
+            ]);
+          },
+        ],
+      ),
+      parentRunId,
+      "run-child-regain",
+      rootGrants,
+    );
+
+    expect(record.decisions).toEqual([
+      { resource: DECLARED_RESOURCE, effect: "allow" },
+      { resource: DECLARED_RESOURCE, effect: null },
+      { resource: DECLARED_RESOURCE, effect: "allow" },
+    ]);
+  });
+
+  test("a root allow changed to deny with the same id is denied on the next call", async () => {
+    const substrate = await makeSubstrate("child-root-patch-");
+    const parentRunId = "run-parent-patch";
+    await seedRunGrants(substrate, parentRunId, [allowDeclared]);
+    const rootGrants = { current: rootSnapshot([allowDeclared]) };
+    const record = newRecord();
+
+    await spawn(
+      substrate,
+      swappingInvoker(
+        record,
+        [DECLARED_RESOURCE],
+        [
+          () => {
+            rootGrants.current = rootSnapshot([decided(allowDeclared, "deny")]);
+          },
+        ],
+      ),
+      parentRunId,
+      "run-child-patch",
+      rootGrants,
+    );
+
+    expect(record.decisions).toEqual([
+      { resource: DECLARED_RESOURCE, effect: "allow" },
+      { resource: DECLARED_RESOURCE, effect: "deny" },
+    ]);
+  });
+
   test("a resumed child whose top-level run already holds the decision reads it", async () => {
-    const substrate = await makeSubstrate("child-standing-resume-");
+    const substrate = await makeSubstrate("child-root-resume-");
     const parentRunId = "run-parent-resume";
     const childRunId = "run-child-resume";
     // The child file was born before the decision, so it still holds ask.
     await seedRunGrants(substrate, childRunId, [askDeclared]);
-    const record = {
-      decisions: [] as { resource: string; effect: string | null }[],
-    };
+    const record = newRecord();
 
     await spawn(
       substrate,
@@ -635,19 +755,38 @@ describe("createSidecarRunChild standing decisions", () => {
     ).toEqual([askDeclared]);
   });
 
+  test("a resumed child whose file holds an allow the top-level run lost is denied", async () => {
+    const substrate = await makeSubstrate("child-root-resume-lost-");
+    const parentRunId = "run-parent-resume-lost";
+    const childRunId = "run-child-resume-lost";
+    await seedRunGrants(substrate, childRunId, [allowDeclared]);
+    const record = newRecord();
+
+    await spawn(
+      substrate,
+      recordingInvoker(record, [DECLARED_RESOURCE]),
+      parentRunId,
+      childRunId,
+      { current: rootSnapshot([]) },
+    );
+
+    expect(record.decisions).toEqual([
+      { resource: DECLARED_RESOURCE, effect: null },
+    ]);
+  });
+
   test("a child whose top-level run has no active snapshot fails its step", async () => {
-    const substrate = await makeSubstrate("child-standing-null-");
+    const substrate = await makeSubstrate("child-root-null-");
     const parentRunId = "run-parent-null";
     await seedRunGrants(substrate, parentRunId, [askDeclared]);
-    const record = {
-      decisions: [] as { resource: string; effect: string | null }[],
-    };
+    const childRunId = "run-child-null";
+    const record = newRecord();
 
     const event = await spawn(
       substrate,
       recordingInvoker(record, [DECLARED_RESOURCE]),
       parentRunId,
-      "run-child-null",
+      childRunId,
       { current: null },
     );
 
@@ -655,5 +794,19 @@ describe("createSidecarRunChild standing decisions", () => {
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("failed");
     expect(record.decisions).toEqual([]);
+    const events = await createWorkflowRunRepoStore({
+      substrate,
+      repoId: WORKFLOW_RUN_REPO_ID,
+      principal: PRINCIPAL,
+      ref: REF,
+    }).read(childRunId);
+    const stepFailed = events.find((e) => e.kind === "StepFailed");
+    if (stepFailed === undefined || stepFailed.kind !== "StepFailed") {
+      throw new Error(`child run ${childRunId} has no StepFailed event`);
+    }
+    expect(stepFailed.error.message).toContain(
+      "no credentials snapshot is active",
+    );
+    expect(stepFailed.error.message).toContain("for step s:");
   });
 });

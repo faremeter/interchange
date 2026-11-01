@@ -17,7 +17,6 @@
 // the guard, landing a clean `StepFailed` that names the offending depth.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
-import { applyStandingDecisions } from "@intx/workflow-deploy/child-grants";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -52,6 +51,7 @@ import {
   type WorkflowEvent,
 } from "@intx/workflow";
 
+import { createSnapshotGrantsReader } from "./credentials-backed-authorize";
 import {
   createSidecarRunChild,
   type SidecarChildStepInvoker,
@@ -273,7 +273,6 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
       ),
       collectDeclaredResources: () => new Set<string>(),
       collectDeclaredCredentialConsumers: () => new Set<string>(),
-      applyStandingDecisions,
       filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
         parentGrants,
       directors: createDefaultDirectorRegistry(),
@@ -325,10 +324,77 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
   });
 });
 
-describe("createSidecarRunChild standing decisions at depth", () => {
-  test("a grandchild rung reads an always decision of the top-level run", async () => {
-    const resource = "inference.source:anthropic:m";
+describe("createSidecarRunChild root grants at depth", () => {
+  const resource = "inference.source:anthropic:m";
+
+  function rootSnapshot(grants: readonly GrantRule[]) {
+    return {
+      steps: [{ stepId: "top", address: "top", grants, contentHash: "h" }],
+    };
+  }
+
+  // Each rung's cap keeps every grant, so the leaf holds what the top-level
+  // run holds now.
+  function makeRunChild(
+    substrate: ReturnType<typeof createRepoStore>,
+    invokeStep: SidecarChildStepInvoker,
+  ) {
+    return createSidecarRunChild({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: REF,
+      principal: PRINCIPAL,
+      scheduler: createInMemoryScheduler({
+        repoStore: createInMemoryRepoStore(),
+        clock: () => new Date(),
+      }),
+      invokeStep,
+      evaluateGrants: evaluateGrantsAdapter,
+      dataDir: sourcesDataDir,
+      bodySources: {},
+      credentialProviders: createCredentialProviderRegistry(
+        builtinCredentialProviders(),
+      ),
+      collectDeclaredResources: () => new Set([resource]),
+      collectDeclaredCredentialConsumers: () => new Set<string>(),
+      filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
+        parentGrants,
+      directors: createDefaultDirectorRegistry(),
+    });
+  }
+
+  async function runChain(
+    runChild: ReturnType<typeof makeRunChild>,
+    parentRunId: string,
+    topRunId: string,
+    rootGrants: { current: ReturnType<typeof rootSnapshot> | null },
+  ) {
+    const result = await runChild(
+      {
+        definition: nestedChain(),
+        definitionRef: REF,
+        childRunId: topRunId,
+        input: null,
+        parentRunId,
+        parentStepId: "s",
+        signal: new AbortController().signal,
+        depth: 0,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+      {
+        material: { current: null },
+        parentGrants: createSnapshotGrantsReader(rootGrants, "test root"),
+      },
+    );
+    return result.next();
+  }
+
+  beforeAll(async () => {
     await stageSources("depth-parent__spawn__spawn__spawn");
+  });
+
+  test("a grandchild rung reads an always decision of the top-level run", async () => {
     const substrate = await makeSubstrate();
     const parentRunId = "run-parent-standing";
     const ask: GrantRule = { ...grant(resource, "invoke"), effect: "ask" };
@@ -340,6 +406,69 @@ describe("createSidecarRunChild standing decisions at depth", () => {
       return { output: null };
     };
 
+    // Each rung's file copies the ask with its id; the top-level run holds the
+    // same id as allow, and every rung caps its parent's current grants.
+    const event = await runChain(
+      makeRunChild(substrate, recordLeaf),
+      parentRunId,
+      "run-top-standing",
+      { current: rootSnapshot([{ ...ask, effect: "allow" }]) },
+    );
+
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
+    expect(decisions).toEqual(["allow"]);
+  });
+
+  test("a grandchild rung loses a root allow on its next call", async () => {
+    const substrate = await makeSubstrate();
+    const parentRunId = "run-parent-revoke";
+    const allow = grant(resource, "invoke");
+    await seedRunGrants(substrate, parentRunId, [allow]);
+    const rootGrants = { current: rootSnapshot([allow]) };
+    const decisions: (string | null)[] = [];
+    const revokingLeaf: SidecarChildStepInvoker = async (req, authorize) => {
+      for (const revoke of [false, true]) {
+        if (revoke) rootGrants.current = rootSnapshot([]);
+        const decision = await authorize(resource, "invoke", req.authzContext);
+        decisions.push(decision.effect);
+      }
+      return { output: null };
+    };
+
+    const event = await runChain(
+      makeRunChild(substrate, revokingLeaf),
+      parentRunId,
+      "run-top-revoke",
+      rootGrants,
+    );
+
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
+    expect(decisions).toEqual(["allow", null]);
+  });
+});
+
+describe("createSidecarRunChild per-rung cap", () => {
+  const resource = "inference.source:anthropic:m";
+
+  test("a leaf does not get a root allow that a middle rung's cap drops", async () => {
+    await stageSources("depth-parent__spawn__spawn__spawn");
+    const substrate = await makeSubstrate();
+    const parentRunId = "run-parent-per-rung";
+    const allow = grant(resource, "invoke");
+    await seedRunGrants(substrate, parentRunId, [allow]);
+    const decisions: (string | null)[] = [];
+    const leafInvoker: SidecarChildStepInvoker = async (req, authorize) => {
+      const decision = await authorize(resource, "invoke", req.authzContext);
+      decisions.push(decision.effect);
+      return { output: null };
+    };
+    // The middle rung (depth-mid, lifted to ref depth-parent__spawn__spawn)
+    // declares nothing; every other rung declares the resource. The cap drops
+    // an allow whose resource is undeclared.
     const runChild = createSidecarRunChild({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
@@ -349,28 +478,41 @@ describe("createSidecarRunChild standing decisions at depth", () => {
         repoStore: createInMemoryRepoStore(),
         clock: () => new Date(),
       }),
-      invokeStep: recordLeaf,
+      invokeStep: leafInvoker,
       evaluateGrants: evaluateGrantsAdapter,
       dataDir: sourcesDataDir,
       bodySources: {},
       credentialProviders: createCredentialProviderRegistry(
         builtinCredentialProviders(),
       ),
-      collectDeclaredResources: () => new Set([resource]),
+      collectDeclaredResources: (definition) =>
+        definition.id === "depth-parent__spawn__spawn"
+          ? new Set<string>()
+          : new Set([resource]),
       collectDeclaredCredentialConsumers: () => new Set<string>(),
-      applyStandingDecisions,
-      filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
-        parentGrants,
+      filterGrantsToDeclaredResources: (parentGrants, declared) =>
+        parentGrants.filter(
+          (g) =>
+            typeof g === "object" &&
+            g !== null &&
+            "resource" in g &&
+            typeof g.resource === "string" &&
+            declared.has(g.resource),
+        ),
       directors: createDefaultDirectorRegistry(),
     });
-
-    // Each rung copies the ask with its id; the top-level run holds the same
-    // id as allow, and every rung inherits the same top-level reference.
-    const result = await runChild(
+    const rootGrants = {
+      current: {
+        steps: [
+          { stepId: "top", address: "top", grants: [allow], contentHash: "h" },
+        ],
+      },
+    };
+    const handle = await runChild(
       {
         definition: nestedChain(),
         definitionRef: REF,
-        childRunId: "run-top-standing",
+        childRunId: "run-top-per-rung",
         input: null,
         parentRunId,
         parentStepId: "s",
@@ -381,25 +523,11 @@ describe("createSidecarRunChild standing decisions at depth", () => {
       noopOnEvent,
       {
         material: { current: null },
-        rootGrants: {
-          current: {
-            steps: [
-              {
-                stepId: "top",
-                address: "top",
-                grants: [{ ...ask, effect: "allow" }],
-                contentHash: "h",
-              },
-            ],
-          },
-        },
+        parentGrants: createSnapshotGrantsReader(rootGrants, "test root"),
       },
     );
-
-    const event = await result.next();
+    const event = await handle.next();
     expect(event.kind).toBe("terminal");
-    if (event.kind !== "terminal") throw new Error("expected a terminal");
-    expect(event.terminalStatus).toBe("completed");
-    expect(decisions).toEqual(["allow"]);
+    expect(decisions).toEqual([null]);
   });
 });

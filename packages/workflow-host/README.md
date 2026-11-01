@@ -335,13 +335,15 @@ without reconstructing the env. The closure looks up the
 originating step's grants by `stepId` and delegates to a
 host-supplied `GrantEvaluator`.
 
-A spawned child run reads its capped grants through an overlay of
-the top-level run's live snapshot, which it inherits with the
-credential material (`ChildInheritance`). A child `ask` grant takes
-the top-level `deny` for the same grant id, or the top-level `allow`
-when the child's cap keeps it. A standing approval decision reaches
-a live child when the top-level run's grants update arrives (ahead of
-a signal delivery or a trigger, or in `authority.set` on a restart).
+A spawned child run applies its cap to its parent's current grants,
+which it inherits with the credential material (`ChildInheritance`):
+the top-level run's live snapshot for a child of the top-level run,
+and the parent rung's capped grants for a deeper child. The child
+holds what a new spawn of the same body would hold, so a grant the
+top-level run loses, regains, or changes reaches a live child on its
+next tool call or step, once the top-level run's grants update
+arrives (ahead of a signal delivery or a trigger, or in
+`authority.set` on a restart).
 A decision on a call that matched a wildcard `tool:*` `ask` changes
 nothing, because the hub changes only an exact `tool:<name>` grant.
 Two grant sends for one run can arrive out of order, and then the run

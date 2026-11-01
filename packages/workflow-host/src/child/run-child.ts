@@ -160,6 +160,7 @@ import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
 import { mergeCredentialDelivery } from "./credential-cell";
 import {
   createCredentialsBackedAuthorize,
+  createSnapshotGrantsReader,
   createSnapshotGrantsResolver,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
@@ -1750,7 +1751,10 @@ function buildRuntimeEnv(args: {
   // against the parent's current delivery, reached live on a rotation.
   const inherited: ChildInheritance = {
     material: args.credentialWiring.materialRef,
-    rootGrants: args.credentialsRef,
+    parentGrants: createSnapshotGrantsReader(
+      args.credentialsRef,
+      "sidecar child: the top-level run",
+    ),
   };
   const hostSuspendable = args.suspendableChildHost;
   const spawnSuspendableChild: SpawnSuspendableChild | undefined =

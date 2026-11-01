@@ -5,6 +5,7 @@ import type { GrantRule } from "@intx/authz";
 import {
   createCredentialsBackedAuthorize,
   createGrantEvaluator,
+  createSnapshotGrantsReader,
   createSnapshotGrantsResolver,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
@@ -137,6 +138,47 @@ describe("createSnapshotGrantsResolver", () => {
     expect(() => resolve("t[1]")).toThrow(
       "lbl: the credentials snapshot has no entry for step t (normalized from scoped invocation id t[1])",
     );
+  });
+});
+
+describe("createSnapshotGrantsReader", () => {
+  function entry(stepId: string, grants: unknown[]) {
+    return { stepId, address: stepId, grants, contentHash: "h" };
+  }
+
+  test("returns one entry per grant id and keeps a row without an id once", () => {
+    const shared = { id: "g1", resource: "tool:a" };
+    const noId = { resource: "tool:b" };
+    const read = createSnapshotGrantsReader(
+      {
+        current: {
+          steps: [
+            entry("s", [shared, noId]),
+            entry("t", [{ ...shared }, noId, { id: "g2" }]),
+          ],
+        },
+      },
+      "lbl",
+    );
+    expect(read()).toEqual([shared, noId, { id: "g2" }]);
+  });
+
+  test("returns the same array until the snapshot object changes", () => {
+    const ref: CredentialsSnapshotRef = {
+      current: { steps: [entry("s", [{ id: "old" }])] },
+    };
+    const read = createSnapshotGrantsReader(ref, "lbl");
+    const first = read();
+    expect(read()).toBe(first);
+    ref.current = { steps: [entry("s", [{ id: "new" }])] };
+    const second = read();
+    expect(second).not.toBe(first);
+    expect(second).toEqual([{ id: "new" }]);
+  });
+
+  test("throws with the label when no snapshot is active", () => {
+    const read = createSnapshotGrantsReader({ current: null }, "lbl");
+    expect(() => read()).toThrow("lbl: no credentials snapshot is active");
   });
 });
 

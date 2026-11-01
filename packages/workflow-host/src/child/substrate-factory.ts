@@ -149,6 +149,7 @@ import {
   createSnapshotGrantsResolver,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
+  type RunGrantsReader,
   type StepGrantsResolver,
 } from "./credentials-backed-authorize";
 import {
@@ -452,12 +453,6 @@ interface SidecarSubstrateFactoryDeps {
   ) => ReadonlySet<string>;
   filterGrantsToDeclaredResources: (
     parentGrants: readonly unknown[],
-    declared: ReadonlySet<string>,
-    credentialConsumers: ReadonlySet<string>,
-  ) => readonly unknown[];
-  applyStandingDecisions: (
-    childGrants: readonly unknown[],
-    rootGrants: readonly unknown[],
     declared: ReadonlySet<string>,
     credentialConsumers: ReadonlySet<string>,
   ) => readonly unknown[];
@@ -1338,10 +1333,10 @@ interface SidecarRunChildDeps {
   /**
    * Collect the resources the child body declares, the credential consumers
    * it instantiates, and narrow the parent grant array to that pair. The
-   * process that boots the child supplies all three, and the read-time
-   * overlay of the top-level run's standing decisions on a live child's
-   * grants. This factory persists the filter's array and does not import the
-   * walk.
+   * process that boots the child supplies all three. This factory persists
+   * the filter's array at the child's birth, applies the same filter to the
+   * parent's current grants on each read of a live child, and does not import
+   * the walk.
    */
   collectDeclaredResources: (
     definition: WorkflowDefinition,
@@ -1355,12 +1350,6 @@ interface SidecarRunChildDeps {
   ) => ReadonlySet<string>;
   filterGrantsToDeclaredResources: (
     parentGrants: readonly unknown[],
-    declared: ReadonlySet<string>,
-    credentialConsumers: ReadonlySet<string>,
-  ) => readonly unknown[];
-  applyStandingDecisions: (
-    childGrants: readonly unknown[],
-    rootGrants: readonly unknown[],
     declared: ReadonlySet<string>,
     credentialConsumers: ReadonlySet<string>,
   ) => readonly unknown[];
@@ -1652,12 +1641,18 @@ export function createSidecarSpawnSuspendableChild(
  * fail closed. The cap only removes rules (the parent stays the ceiling),
  * matching the top level's "authority bounded by declared capabilities" model.
  *
- * The grants file is WRITE-ONCE per run: a run's authorization ceiling is fixed
- * at its birth, so this reads back an existing `runs/<childRunId>/grants.json`
- * rather than rewriting it. Re-writing on a resume re-drive is not just
- * redundant, it is CORRUPTING: `writeChildRunGrants` commits at the shallow
- * `runs/<childRunId>/` prefix through a substrate writer separate from the
- * runtime's event-log writer, so a re-write racing the runtime's replay
+ * The grants file is the child's birth record, and the input that the birth
+ * record of a later spawn from this child (a childWorkflow grandchild or a
+ * loop iteration) is filtered from. No inherited run authorizes against the
+ * file: a child authorizes against its parent's current grants under its cap
+ * (`createInheritedGrantsResolver`), so a grant that the top-level run loses
+ * leaves a running child on its next tool call or step.
+ *
+ * The grants file is WRITE-ONCE per run, so this reads back an existing
+ * `runs/<childRunId>/grants.json` rather than rewriting it. Re-writing on a
+ * resume re-drive is not just redundant, it is CORRUPTING:
+ * `writeChildRunGrants` commits at the shallow `runs/<childRunId>/` prefix
+ * through a substrate writer separate from the runtime's event-log writer, so a re-write racing the runtime's replay
  * re-appends on the shared repo regresses another run's event seq (a
  * single-writer-invariant violation), and its wholesale subtree-delete drops the
  * run's committed `events/`/`blobs/` (the prefix read is non-recursive, so the
@@ -1742,57 +1737,57 @@ async function collectChildCapInputs(
 }
 
 /**
- * The grants resolver of a live child run: its capped snapshot with the
- * top-level run's standing decisions applied (`applyStandingDecisions`).
- * An approval with scope `always` updates the top-level run's grants
- * snapshot, and the child reads the decision on its next step. The overlaid
- * snapshot is built again only when the top-level snapshot object changes,
- * which a `grants-updated` or `authority.set` frame does by replacing it.
- * A top-level snapshot that is not active throws, as the top-level resolver
- * does: a child must not keep running on frozen grants after the top-level
- * run loses its authority.
+ * The grants of a live child run that inherits from the run that spawns it:
+ * its cap applied to its parent's current grants. The result is what a new
+ * spawn of the same body would get, so a parent grant that is removed,
+ * regained, or changed (an effect, a condition, or a standing decision)
+ * reaches the child on its next tool call or step. The cap only removes
+ * rules, so the child never holds more than its parent.
+ *
+ * Each rung filters its own parent's current grants, not the top-level
+ * run's. A grandchild's declared resources are not always a subset of its
+ * parent's: an inline child's own triggers and `mailAccept` add declared
+ * resources that its parent's capability walk does not fold in. Filtering the
+ * top-level grants directly could then give a grandchild an `allow` that its
+ * parent does not hold.
+ *
+ * `read` returns the child's capped grants, for a grandchild to inherit, and
+ * `resolve` returns them for one of the child's steps. The filter runs again
+ * only when the parent's array object changes, and the child returns the same
+ * array until then, so a grandchild's cache keys on it in turn. A read that
+ * the parent cannot serve (a top-level run with no active snapshot) throws,
+ * and `resolve` names the step in the error.
  */
-function createStandingDecisionGrantsResolver(args: {
+function createInheritedGrantsResolver(args: {
+  parentGrants: RunGrantsReader;
   childSnapshot: CredentialsSnapshot;
-  rootGrants: CredentialsSnapshotRef;
   capInputs: ChildCapInputs;
-  applyStandingDecisions: SidecarRunChildDeps["applyStandingDecisions"];
-}): StepGrantsResolver {
+  filterGrantsToDeclaredResources: SidecarRunChildDeps["filterGrantsToDeclaredResources"];
+}): { read: RunGrantsReader; resolve: StepGrantsResolver } {
   let cached:
-    | { root: CredentialsSnapshot; resolve: StepGrantsResolver }
+    | {
+        parent: readonly unknown[];
+        grants: readonly unknown[];
+        resolve: StepGrantsResolver;
+      }
     | undefined;
-  return (stepId) => {
-    const root = args.rootGrants.current;
-    if (root === null) {
-      throw new Error(
-        `sidecar child: the top-level run has no credentials snapshot active for step ${stepId}; the host must set one before any step runs`,
+  const current = () => {
+    const parent = args.parentGrants();
+    if (cached?.parent !== parent) {
+      const grants = args.filterGrantsToDeclaredResources(
+        parent,
+        args.capInputs.declaredResources,
+        args.capInputs.credentialConsumers,
       );
-    }
-    if (cached === undefined || cached.root !== root) {
-      const rootGrants = root.steps.flatMap((step) => step.grants);
-      // The child's steps share one grants array; overlay each array once.
-      const overlaid = new Map<readonly unknown[], readonly unknown[]>();
-      const overlay = (grants: readonly unknown[]): readonly unknown[] => {
-        let result = overlaid.get(grants);
-        if (result === undefined) {
-          result = args.applyStandingDecisions(
-            grants,
-            rootGrants,
-            args.capInputs.declaredResources,
-            args.capInputs.credentialConsumers,
-          );
-          overlaid.set(grants, result);
-        }
-        return result;
-      };
       cached = {
-        root,
+        parent,
+        grants,
         resolve: createSnapshotGrantsResolver(
           {
             current: {
               steps: args.childSnapshot.steps.map((step) => ({
                 ...step,
-                grants: overlay(step.grants),
+                grants,
               })),
             },
           },
@@ -1800,7 +1795,23 @@ function createStandingDecisionGrantsResolver(args: {
         ),
       };
     }
-    return cached.resolve(stepId);
+    return cached;
+  };
+  return {
+    read: () => current().grants,
+    resolve: (stepId) => {
+      let resolved: ReturnType<typeof current>;
+      try {
+        resolved = current();
+      } catch (cause) {
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        throw new Error(
+          `sidecar child: cannot read the grants for step ${stepId}: ${reason}`,
+          { cause },
+        );
+      }
+      return resolved.resolve(stepId);
+    },
   };
 }
 
@@ -1830,9 +1841,11 @@ async function buildChildRunEnv(args: {
    */
   onEvent: (event: InferenceEvent) => void;
   /**
-   * What the child inherits from the top-level run. Absent when a non-sidecar
-   * executor carries no credential material, in which case no credential
-   * context is assembled and the child's inference reader stays unset.
+   * What the child inherits from the run that spawns it: the top-level run's
+   * credential-material cell and its parent's current grants. Absent when a
+   * non-sidecar executor carries no credential material, in which case no
+   * credential context is assembled and the child's inference reader stays
+   * unset.
    */
   inherited?: ChildInheritance;
   /**
@@ -1917,8 +1930,8 @@ async function buildChildRunEnv(args: {
   // the capped set as the child's own `runs/<childRunId>/grants.json` (the file
   // a grandchild reads as its ceiling). `definition` here is the childWorkflow-
   // inline form, so the cap keeps a grandchild's declared resources.
-  // The cap inputs are needed on a birth and, for the overlay, on every
-  // build of a live child; collect them once.
+  // The cap inputs are needed on a birth and, to cap the parent's current
+  // grants, on every build of a live child; collect them once.
   let capInputsOnce: Promise<ChildCapInputs> | undefined;
   const capInputs = (): Promise<ChildCapInputs> => {
     capInputsOnce ??= collectChildCapInputs(deps, definition);
@@ -1991,18 +2004,27 @@ async function buildChildRunEnv(args: {
     current: credentialsSnapshot,
   };
   // Shared by `authorize` and the credential context below, so both read the
-  // same grants. A child that inherits from a top-level run reads the
-  // top-level standing decisions through the overlay; one with no
-  // inheritance (a non-sidecar executor) reads its capped snapshot.
-  const resolveChildStepGrants =
+  // same grants. A child that inherits from a top-level run caps its parent's
+  // current grants on each read, and passes the result down as the grants its
+  // own grandchildren inherit. One with no inheritance (a non-sidecar
+  // executor) reads its capped snapshot.
+  const inheritedGrants =
     inherited === undefined
-      ? createSnapshotGrantsResolver(credentialsRef, "sidecar child")
-      : createStandingDecisionGrantsResolver({
+      ? undefined
+      : createInheritedGrantsResolver({
+          parentGrants: inherited.parentGrants,
           childSnapshot: credentialsSnapshot,
-          rootGrants: inherited.rootGrants,
           capInputs: await capInputs(),
-          applyStandingDecisions: deps.applyStandingDecisions,
+          filterGrantsToDeclaredResources: deps.filterGrantsToDeclaredResources,
         });
+  const resolveChildStepGrants =
+    inheritedGrants === undefined
+      ? createSnapshotGrantsResolver(credentialsRef, "sidecar child")
+      : inheritedGrants.resolve;
+  const grandchildInheritance: ChildInheritance | undefined =
+    inherited === undefined || inheritedGrants === undefined
+      ? undefined
+      : { material: inherited.material, parentGrants: inheritedGrants.read };
   const authorize = createCredentialsBackedAuthorize(
     resolveChildStepGrants,
     deps.evaluateGrants,
@@ -2066,7 +2088,7 @@ async function buildChildRunEnv(args: {
     runChild,
   });
   const spawnChild: WorkflowRuntimeEnv["spawnChild"] = (spawnInput) =>
-    spawnHost(spawnInput, childOnEvent, inherited);
+    spawnHost(spawnInput, childOnEvent, grandchildInheritance);
   // Assemble the per-step credential context from the run's live material cell
   // (threaded in from the parent) when one is present, so the child's inference
   // resolves its source secret by `credentialId` against the parent's current
@@ -2754,7 +2776,6 @@ export function createSidecarSubstrateFactory(
       collectDeclaredCredentialConsumers:
         deps.collectDeclaredCredentialConsumers,
       filterGrantsToDeclaredResources: deps.filterGrantsToDeclaredResources,
-      applyStandingDecisions: deps.applyStandingDecisions,
       // A spawned child's steps resolve `director` refs against the same
       // closure-composed registry the parent's steps use.
       directors: stepDirectors,
