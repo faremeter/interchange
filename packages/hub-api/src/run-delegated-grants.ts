@@ -1,4 +1,16 @@
-import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import {
   approval,
@@ -26,6 +38,7 @@ import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import type { GrantRule } from "@intx/types/authz";
 import { runtimeGrantRules } from "@intx/workflow-deploy/capabilities";
 import { pushRunGrants, type SidecarRouter } from "@intx/hub-sessions";
+import { getLogger } from "@intx/log";
 
 import {
   INVOKER_GRANT_TTL_MS,
@@ -39,6 +52,8 @@ import {
   loadAssetCreatorPrincipalId,
   TOOL_GRANT_PREFIX,
 } from "./run-grant-materialization";
+
+const log = getLogger(["hub-api", "run-delegated-grants"]);
 
 /**
  * Serialize re-derivations of run grants in one tenant for the rest of the
@@ -260,6 +275,82 @@ export async function changeDelegatorGrants<T>(
     void pushRunGrants(deps.sidecarRouter, addresses);
   }
   return value;
+}
+
+/**
+ * Re-derive the live runs that still hold an unexpired invoker `allow` row
+ * while their deployer is not active. A run that deployed others is
+ * deactivated when it ends, with no route to re-derive what it deployed;
+ * this sweep finds those deployments and re-derives them, so their invoker
+ * rows lapse. A deployer that a direct database write made inactive is found
+ * the same way.
+ *
+ * Each selected anchor is re-derived in its own transaction. An anchor whose
+ * re-derivation fails is logged and tried again at the next pass; it does
+ * not stop the other anchors of its tenant.
+ *
+ * A run whose invoker `allow` row no requirement produces (an operator added
+ * it, or changed its conditions) keeps the row, so it is selected again at
+ * each pass; re-deriving it changes nothing.
+ */
+export async function sweepLapsedDeployerGrants(
+  deps: ChangeDelegatorGrantsDeps,
+  now: Date,
+): Promise<void> {
+  const deployer = alias(principalTable, "deployer");
+  // Starts from the live anchors and probes each run principal's invoker
+  // `allow` rows, so the planner can use the partial indexes on both tables
+  // instead of scanning every grant.
+  const rows = await deps.db
+    .select({
+      tenantId: workflowRun.tenantId,
+      anchorRunId: workflowRun.id,
+    })
+    .from(workflowRun)
+    .innerJoin(
+      workflowRunLaunchSpec,
+      eq(workflowRunLaunchSpec.anchorRunId, workflowRun.id),
+    )
+    .innerJoin(
+      deployer,
+      eq(deployer.id, workflowRunLaunchSpec.sourceAuthorityPrincipalId),
+    )
+    .where(
+      and(
+        eq(workflowRun.id, workflowRun.anchorRunId),
+        inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+        or(
+          ne(deployer.status, "active"),
+          ne(deployer.tenantId, workflowRun.tenantId),
+        ),
+        exists(
+          deps.db
+            .select({ id: grantTable.id })
+            .from(grantTable)
+            .where(
+              and(
+                eq(grantTable.principalId, workflowRun.principalId),
+                eq(grantTable.origin, "invoker"),
+                eq(grantTable.effect, "allow"),
+                or(isNull(grantTable.expiresAt), gt(grantTable.expiresAt, now)),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(asc(workflowRun.tenantId), asc(workflowRun.id));
+
+  for (const { tenantId, anchorRunId } of rows) {
+    try {
+      await changeDelegatorGrants(deps, tenantId, async () => ({
+        value: null,
+        principalIds: [],
+        anchorRunIds: [anchorRunId],
+      }));
+    } catch (err: unknown) {
+      log.warn`Re-deriving run ${anchorRunId} with an inactive deployer in tenant ${tenantId} failed: ${String(err)}`;
+    }
+  }
 }
 
 /**

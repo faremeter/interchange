@@ -1,4 +1,11 @@
-import { check, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  check,
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 import { principal } from "./principals";
@@ -35,5 +42,10 @@ export const grant = pgTable(
       "grant_target_exactly_one",
       sql`num_nonnulls(${t.principalId}, ${t.roleId}) = 1`,
     ),
+    // The lapsed deployer sweep looks up the invoker `allow` rows of every
+    // live run every 30 seconds, and grant rows are never pruned.
+    index("grant_invoker_allow_principal_idx")
+      .on(t.principalId)
+      .where(sql`${t.origin} = 'invoker' and ${t.effect} = 'allow'`),
   ],
 );
