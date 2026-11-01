@@ -616,6 +616,7 @@ function createMockSidecarRouter(
     noteSenderDeploySettled: () => notImpl("noteSenderDeploySettled"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
+    sendRunGrants: () => notImpl("sendRunGrants"),
     sendSignalDeliver: async (opts) => {
       signalCalls.push(opts);
     },

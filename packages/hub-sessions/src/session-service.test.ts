@@ -170,6 +170,7 @@ function createMockRouter(): TestSidecarRouter & {
     sendCredentialsUpdate: track(
       "sendCredentialsUpdate",
     ) as SidecarRouter["sendCredentialsUpdate"],
+    sendRunGrants: async () => false,
     sendPack: ((
       agentAddress: string,
       pack: Uint8Array,
