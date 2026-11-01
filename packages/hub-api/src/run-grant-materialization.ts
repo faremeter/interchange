@@ -507,10 +507,7 @@ export type StageRunGrantsFromSnapshotArgs = {
 };
 
 export type StageRunGrantsResult =
-  | {
-      ok: false;
-      rejection: { status: 403 | 409; code: string; message: string };
-    }
+  | { ok: false; rejection: GrantMaterializationRejection }
   | {
       ok: true;
       grantRows: MaterializedGrantRow[];
@@ -857,7 +854,7 @@ export async function lockDispatchableAllocation(
   );
 }
 
-async function loadCommittedRunGrantsFromExecutor(
+export async function loadCommittedRunGrantsFromExecutor(
   executor: DBExecutor,
   tenantId: string,
   runId: string,
@@ -1319,45 +1316,6 @@ export function createMailTriggeredRunGrantsMaterializer(
     });
     if (!admission.admit) return admissionDenied();
 
-    // The definition's FULL declared requirements are resolved -- both creator-
-    // and invoker-sourced -- so an invoker requirement the deployer cannot
-    // satisfy fails the run closed instead of launching under-authorized.
-    // Creator authority is resolved LIVE per run: the definition's grant SHAPE
-    // is frozen in the snapshot, but which grants the creator currently holds
-    // is not part of that shape and can change between triggers.
-    const staged = await stageFirstTriggerRunGrants(
-      deps.db,
-      deps.grantStoreFor(deps.db),
-      {
-        snapshot,
-        tenantId,
-        anchorRunId,
-        runId,
-        runPrincipalId,
-        definitionAssetId,
-        legacyMailAccept: anchor.legacyMailAccept,
-        credentialBindings: credentialUseBindings(anchor.credentialRefs),
-        now,
-      },
-    );
-    if (!staged.ok) {
-      return {
-        outcome: "rejected",
-        status: staged.rejection.status,
-        code: staged.rejection.code,
-        message: staged.rejection.message,
-      };
-    }
-    // Staging reads the deployer again, and it can stop being active between
-    // the two reads. Admit against the staged rows too, so a sender is only
-    // admitted by the `mail.accept` rows the run commits.
-    const stagedAdmission = await evaluateMailAdmission({
-      senderCoordinates,
-      recipientGrants: staged.grantRows.map(materializedRowToGrantRule),
-      ...(deps.registry ? { registry: deps.registry } : {}),
-    });
-    if (!stagedAdmission.admit) return admissionDenied();
-
     const reserved = await deps.db.transaction(async (tx) => {
       const anchorState = await lockWorkflowRunState(
         tx,
@@ -1379,6 +1337,52 @@ export function createMailTriggeredRunGrantsMaterializer(
         runId,
       );
       if (raced !== null) return { committedByAnotherSender: raced };
+
+      // The definition's FULL declared requirements are resolved -- both
+      // creator- and invoker-sourced -- so an invoker requirement the deployer
+      // cannot satisfy fails the run closed instead of launching
+      // under-authorized. Creator authority is resolved LIVE per run: the
+      // definition's grant SHAPE is frozen in the snapshot, but which grants
+      // the creator currently holds is not part of that shape and can change
+      // between triggers. The delegators are read under the anchor lock, so a
+      // delegator change that holds the lock commits before these reads, and
+      // one that waits on the lock finds this run's committed rows.
+      const staged = await stageFirstTriggerRunGrants(
+        tx,
+        deps.grantStoreFor(tx),
+        {
+          snapshot,
+          tenantId,
+          anchorRunId,
+          runId,
+          runPrincipalId,
+          definitionAssetId,
+          legacyMailAccept: anchor.legacyMailAccept,
+          credentialBindings: credentialUseBindings(anchor.credentialRefs),
+          now,
+        },
+      );
+      if (!staged.ok) {
+        return {
+          rejected: {
+            outcome: "rejected",
+            status: staged.rejection.status,
+            code: staged.rejection.code,
+            message: staged.rejection.message,
+          } satisfies MailTriggeredRunGrantsResult,
+        };
+      }
+      // The provisional admission read the deployer before the lock, and the
+      // deployer can stop being active before these reads. Admit against the
+      // staged rows, so a sender is only admitted by the `mail.accept` rows
+      // the run commits.
+      const stagedAdmission = await evaluateMailAdmission({
+        senderCoordinates,
+        recipientGrants: staged.grantRows.map(materializedRowToGrantRule),
+        ...(deps.registry ? { registry: deps.registry } : {}),
+      });
+      if (!stagedAdmission.admit) return { rejected: admissionDenied() };
+
       const resolution = await lockAnchorCredentialResolution(tx, anchorRunId);
       if (resolution === null) {
         throw new Error(
@@ -1391,6 +1395,9 @@ export function createMailTriggeredRunGrantsMaterializer(
         { tenantId, runPrincipalId, now },
       );
       if (grantRows === "not-ready") return grantRows;
+      // `now` stamps both the staged rows and the run principal's creation,
+      // so an invoker row expires `INVOKER_GRANT_TTL_MS` after the principal
+      // is created.
       return commitRunGrants(
         {
           db: deps.db,
@@ -1413,6 +1420,7 @@ export function createMailTriggeredRunGrantsMaterializer(
       return unavailableRunResult(runId, reserved);
     if ("committedByAnotherSender" in reserved)
       return admitToCommittedRun(reserved.committedByAnotherSender);
+    if ("rejected" in reserved) return reserved.rejected;
     return {
       outcome: "materialized",
       stepGrants: reserved,

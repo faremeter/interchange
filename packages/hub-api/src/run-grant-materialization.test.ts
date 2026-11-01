@@ -249,19 +249,21 @@ function mockDb(opts: {
         }),
       }),
   });
+  const query = {
+    asset: { findFirst: async () => opts.assetRow },
+  };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
-    query: {
-      asset: { findFirst: async () => opts.assetRow },
-    },
+    query,
     select,
     insert,
     transaction: async (
       fn: (tx: {
+        query: typeof query;
         select: typeof select;
         insert: typeof insert;
       }) => Promise<unknown> | unknown,
-    ) => fn({ select, insert }),
+    ) => fn({ query, select, insert }),
   } as unknown as Parameters<
     typeof createMailTriggeredRunGrantsMaterializer
   >[0]["db"];
