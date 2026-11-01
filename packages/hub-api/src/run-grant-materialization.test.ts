@@ -384,7 +384,7 @@ describe("createMailTriggeredRunGrantsMaterializer hub tokens", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([]),
+      grantStoreFor: () => createInMemoryGrantStore([]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -634,7 +634,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -656,7 +657,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
     });
 
     await expect(
@@ -689,7 +691,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       // exercises -- the lock, not an insufficient-authority reject, is what
       // rejects here.
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
     });
 
     await expect(
@@ -717,7 +720,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
     });
 
     await expect(
@@ -749,7 +753,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       // exercises -- the lock, not an insufficient-authority reject, is what
       // rejects here.
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
     });
 
     await expect(
@@ -770,7 +775,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       db: mockDb({ deploymentRow, assetRow, grantSnapshot: snapshot() }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
     });
 
     const result = await materialize({
@@ -817,7 +823,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([deployerGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -850,7 +856,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         grantSnapshot: invokerOnlySnapshot(),
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([invokerGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([invokerGrant()]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -876,7 +882,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         grantSnapshot: snapshot,
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([deployerGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -902,7 +908,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         grantSnapshot: invokerOnlySnapshot(),
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([deployerGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     await expect(
       materialize({
@@ -931,7 +937,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         }),
         principalKeyStore: stubPrincipalKeyStore,
         runTokenStore: stubRunTokenStore,
-        grantStore: createInMemoryGrantStore([deployerGrant()]),
+        grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
       });
       const result = await materialize({
         agentAddress: WORKFLOW_ADDRESS,
@@ -956,7 +962,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([]),
+      grantStoreFor: () => createInMemoryGrantStore([]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -983,7 +989,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([deployerGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -1026,7 +1032,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([deployerGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -1059,7 +1065,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([deployerGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -1084,7 +1090,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([deployerGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -1115,7 +1121,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([deployerGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -1132,7 +1138,8 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       db: mockDb({ deploymentRow, assetRow, grantSnapshot: null }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
     });
 
     await expect(
@@ -1225,7 +1232,7 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         grantSnapshot: noAcceptSnapshot(),
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([creatorGrant()]),
+      grantStoreFor: () => createInMemoryGrantStore([creatorGrant()]),
     });
     await expect(
       materialize({
@@ -1249,7 +1256,7 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         grantSnapshot: explicitPrincipalSnapshot(SENDER_PRINCIPAL_ID),
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([]),
+      grantStoreFor: () => createInMemoryGrantStore([]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -1270,7 +1277,7 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         grantSnapshot: explicitPrincipalSnapshot("prn_admitted"),
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([]),
+      grantStoreFor: () => createInMemoryGrantStore([]),
     });
     await expect(
       materialize({
@@ -1310,7 +1317,7 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         grantSnapshot: tenantAcceptSnapshot,
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([]),
+      grantStoreFor: () => createInMemoryGrantStore([]),
     });
     await expect(
       materialize({
@@ -1338,9 +1345,10 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         },
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([
-        runAcceptGrant(`mail.accept:principal:${SENDER_PRINCIPAL_ID}`),
-      ]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([
+          runAcceptGrant(`mail.accept:principal:${SENDER_PRINCIPAL_ID}`),
+        ]),
     });
     const result = await materialize({
       agentAddress: WORKFLOW_ADDRESS,
@@ -1370,9 +1378,10 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       // The run holds no accept-grant naming this sender.
-      grantStore: createInMemoryGrantStore([
-        runAcceptGrant("mail.accept:principal:prn_someone_else"),
-      ]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([
+          runAcceptGrant("mail.accept:principal:prn_someone_else"),
+        ]),
     });
     await expect(
       materialize({
@@ -1403,19 +1412,20 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
       // A broad `*` grant matches `mail.accept:...` under pattern matching, but
       // the admission helper filters to the `mail.accept` namespace first, so it
       // never auto-admits.
-      grantStore: createInMemoryGrantStore([
-        {
-          id: "grant-wildcard",
-          resource: "*",
-          action: "*",
-          effect: "allow",
-          origin: "creator",
-          conditions: null,
-          expiresAt: null,
-          roleId: null,
-          principalId: RUN_PRINCIPAL_ID,
-        },
-      ]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([
+          {
+            id: "grant-wildcard",
+            resource: "*",
+            action: "*",
+            effect: "allow",
+            origin: "creator",
+            conditions: null,
+            expiresAt: null,
+            roleId: null,
+            principalId: RUN_PRINCIPAL_ID,
+          },
+        ]),
     });
     await expect(
       materialize({
@@ -1447,20 +1457,21 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         },
       }),
       principalKeyStore: stubPrincipalKeyStore,
-      grantStore: createInMemoryGrantStore([
-        runAcceptGrant(`mail.accept:principal:${SENDER_PRINCIPAL_ID}`),
-        {
-          id: "grant-operator-deny",
-          resource: `mail.accept:principal:${SENDER_PRINCIPAL_ID}`,
-          action: "accept",
-          effect: "deny",
-          origin: "role",
-          conditions: null,
-          expiresAt: null,
-          roleId: "role-operator",
-          principalId: RUN_PRINCIPAL_ID,
-        },
-      ]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([
+          runAcceptGrant(`mail.accept:principal:${SENDER_PRINCIPAL_ID}`),
+          {
+            id: "grant-operator-deny",
+            resource: `mail.accept:principal:${SENDER_PRINCIPAL_ID}`,
+            action: "accept",
+            effect: "deny",
+            origin: "role",
+            conditions: null,
+            expiresAt: null,
+            roleId: "role-operator",
+            principalId: RUN_PRINCIPAL_ID,
+          },
+        ]),
     });
     await expect(
       materialize({
@@ -1659,9 +1670,10 @@ describe("createMailTriggeredRunGrantsMaterializer committed grants", () => {
       }),
       principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
-      grantStore: createInMemoryGrantStore([
-        runAcceptGrant(`mail.accept:principal:${SENDER_PRINCIPAL_ID}`),
-      ]),
+      grantStoreFor: () =>
+        createInMemoryGrantStore([
+          runAcceptGrant(`mail.accept:principal:${SENDER_PRINCIPAL_ID}`),
+        ]),
     });
 
     const result = await materialize({

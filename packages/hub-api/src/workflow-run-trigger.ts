@@ -26,6 +26,7 @@ import {
 import type {
   DB,
   DBExecutor,
+  GrantStoreFactory,
   PrincipalKeyStore,
   RunTokenStore,
 } from "@intx/db";
@@ -34,7 +35,6 @@ import {
   resolveFrameSenderKey,
   WorkflowRunNotExecutableError,
 } from "@intx/db";
-import type { GrantStore } from "@intx/types/authz";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -60,17 +60,14 @@ import { deriveRunAddress } from "@intx/workflow-deploy";
 
 import type { PrincipalRow, TenantRow } from "./context";
 import {
-  collectCreatorGrants,
   commitRunGrants,
   loadCommittedRunGrants,
   grantRowsWithLockedCredentialResolution,
   lockAnchorCredentialResolution,
   lockDispatchableAllocation,
   lockWorkflowRunState,
-  collectDeployerInvokerGrants,
-  loadActiveDeployerId,
   credentialUseBindings,
-  stageRunGrantsFromSnapshot,
+  stageFirstTriggerRunGrants,
 } from "./run-grant-materialization";
 import type { MaterializedGrantRow } from "./grant-materialization";
 import { readDurableWorkflowRunLifecycle } from "./workflow-run-lifecycle";
@@ -98,7 +95,7 @@ export type TriggerWorkflowRunDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
   runTokenStore: RunTokenStore;
-  grantStore: GrantStore;
+  grantStoreFor: GrantStoreFactory;
   sidecarRouter: SidecarRouter;
   workflowDispatchService?: WorkflowDispatchService;
   repoStore: RepoStore;
@@ -156,7 +153,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     db,
     principalKeyStore,
     runTokenStore,
-    grantStore,
+    grantStoreFor,
     sidecarRouter,
     workflowDispatchService,
     repoStore,
@@ -376,48 +373,19 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       runPrincipalId = await deriveRunPrincipalId(tenant.id, runId);
       // Invoker-sourced requirements resolve against the deployment's
       // deployer, not this caller, so the trigger path cannot change whose
-      // authority a run delegates.
-      const declaredGrantRequirements = snapshot.grantRequirements;
-      const invoker = await collectDeployerInvokerGrants({
-        db,
-        grantStore,
-        tenantId: tenant.id,
-        anchorRunId,
-        grantRequirements: declaredGrantRequirements,
-      });
-      if (!invoker.ok) {
-        const { status, code, message } = invoker.rejection;
-        return { ok: false, status, body: { error: { code, message } } };
-      }
-      const invokerGrants = invoker.invokerGrants;
-      const creatorGrants = await collectCreatorGrants(
-        grantStore,
-        tenant.id,
-        assetRow.creatorPrincipalId,
-        declaredGrantRequirements,
-      );
-      const staged = await stageRunGrantsFromSnapshot({
+      // authority a run delegates. The deployer and the asset behind the
+      // definition also resolve the run's `mail.accept` relation markers, so
+      // an HTTP-launched run still carries them for later mail delivery.
+      const staged = await stageFirstTriggerRunGrants(db, grantStoreFor(db), {
         snapshot,
         tenantId: tenant.id,
+        anchorRunId,
         runId,
         runPrincipalId,
-        now,
-        // The deployer, not the caller, is the run's invoker; the asset behind
-        // the triggered deployment's definition is `self`. Both resolve the
-        // run's declared `mail.accept` relation markers to concrete
-        // accept-grant rows so an HTTP-launched run still carries them for
-        // later mail-transport delivery.
-        invokerPrincipalId: await loadActiveDeployerId(
-          db,
-          tenant.id,
-          anchorRunId,
-        ),
-        assetId: definitionAssetId,
+        definitionAssetId,
         legacyMailAccept: anchor.legacyMailAccept,
-        invokerGrants,
-        creatorGrants,
-        grantRequirements: declaredGrantRequirements,
         credentialBindings: credentialUseBindings(anchor.credentialRefs),
+        now,
       });
       if (!staged.ok) {
         const { status, code, message } = staged.rejection;

@@ -16,10 +16,10 @@ import {
   TenantConfigInvalidError,
   WorkflowRunDispatchPayloadConflictError,
   type DB,
+  type GrantStoreFactory,
   type PrincipalKeyStore,
   type RunTokenStore,
 } from "@intx/db";
-import type { GrantStore } from "@intx/types/authz";
 import {
   correlationIdFromSignalName,
   ErrorResponse,
@@ -206,7 +206,9 @@ export type CreateWorkflowRoutesDeps = {
   workflowDispatchService?: WorkflowDispatchService;
   sidecarRouter: SidecarRouter;
   repoStore: RepoStore;
-  grantStore: GrantStore;
+  // Builds a grant store that reads through the given executor; the trigger
+  // reads delegator grants with it.
+  grantStoreFor: GrantStoreFactory;
   authorizeGrant: AuthorizeGrant;
   requireGrant: RequireGrant;
 };
@@ -219,7 +221,7 @@ export function createWorkflowRoutes({
   workflowDispatchService,
   sidecarRouter,
   repoStore,
-  grantStore,
+  grantStoreFor,
   authorizeGrant,
   requireGrant,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
@@ -229,7 +231,7 @@ export function createWorkflowRoutes({
     db,
     principalKeyStore,
     runTokenStore,
-    grantStore,
+    grantStoreFor,
     sidecarRouter,
     ...(workflowDispatchService !== undefined
       ? { workflowDispatchService }

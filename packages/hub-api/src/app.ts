@@ -8,6 +8,7 @@ import { getLogger } from "@intx/log";
 import type { CredentialCipher } from "@intx/types";
 import {
   type DB,
+  type GrantStoreFactory,
   type ApprovalStore,
   type PrincipalKeyStore,
   type SignalCorrelationStore,
@@ -159,7 +160,18 @@ export type MountHubRoutesDeps = {
    * `PRINCIPAL_KEY_ENCRYPTION_KEY`; tests may omit it.
    */
   principalKeyStore?: PrincipalKeyStore;
+  /**
+   * Serves the routes' authorization checks. Optional: when omitted, a
+   * database-backed store is used.
+   */
   grantStore?: GrantStore;
+  /**
+   * Builds the grant store for the executor of a route's transaction, so a
+   * delegator read inside that transaction sees its own writes. Optional:
+   * when omitted, `createGrantStore` is used. A database-free test supplies
+   * one that returns its in-memory store.
+   */
+  grantStoreFor?: GrantStoreFactory;
   conditionRegistry?: ConditionRegistry;
   approvalStore?: ApprovalStore;
   signalCorrelationStore?: SignalCorrelationStore;
@@ -188,9 +200,9 @@ export type MountHubRoutesDeps = {
  * having mounted the request logger and the context middleware first,
  * and for wiring their own auth handler at the path of their choice.
  *
- * `grantStore` and `conditionRegistry` default to the hub's standard
- * choices (a database-backed grant store and the time-window condition
- * evaluator) when not supplied.
+ * `grantStore`, `grantStoreFor` and `conditionRegistry` default to the
+ * hub's standard choices (a database-backed grant store, a store per
+ * executor, and the time-window condition evaluator) when not supplied.
  */
 export function mountHubRoutes(
   app: Hono<AppEnv>,
@@ -220,7 +232,11 @@ export function mountHubRoutes(
       "mountHubRoutes: assetService and repoStore must be provided together or both omitted",
     );
   }
+  // `grantStore` serves the authorization checks only. A delegator read
+  // inside a route's transaction goes through `grantStoreFor`, so it sees
+  // the transaction's own writes whatever store the checks use.
   const grantStore = opts.grantStore ?? createGrantStore(db);
+  const grantStoreFor = opts.grantStoreFor ?? createGrantStore;
   const conditionRegistry: ConditionRegistry =
     opts.conditionRegistry ?? HUB_CONDITION_REGISTRY;
   const authorizeGrant = createAuthorizeGrant({
@@ -364,6 +380,7 @@ export function mountHubRoutes(
         ? { workflowLifecycleService }
         : {}),
       grantStore,
+      grantStoreFor,
       conditionRegistry,
       requireGrant,
       approvalStore,
@@ -404,7 +421,7 @@ export function mountHubRoutes(
           : {}),
         sidecarRouter,
         repoStore,
-        grantStore,
+        grantStoreFor,
         authorizeGrant,
         requireGrant,
       }),
@@ -579,6 +596,7 @@ export type CreateAppOpts = {
    */
   principalKeyStore?: PrincipalKeyStore;
   grantStore?: GrantStore;
+  grantStoreFor?: GrantStoreFactory;
   approvalStore?: ApprovalStore;
   signalCorrelationStore?: SignalCorrelationStore;
   readRunLifecycles?: ReadRunLifecycles;
@@ -606,6 +624,7 @@ export function createApp({
   credentialCipher,
   principalKeyStore,
   grantStore,
+  grantStoreFor,
   approvalStore,
   signalCorrelationStore,
   readRunLifecycles,
@@ -647,6 +666,7 @@ export function createApp({
     repoStore,
     maxTarballBytes,
     ...(grantStore ? { grantStore } : {}),
+    ...(grantStoreFor ? { grantStoreFor } : {}),
     ...(approvalStore ? { approvalStore } : {}),
     ...(signalCorrelationStore ? { signalCorrelationStore } : {}),
     ...(readRunLifecycles ? { readRunLifecycles } : {}),

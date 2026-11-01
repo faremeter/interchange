@@ -182,7 +182,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           db: h.db,
           cipher: createTestCredentialCipher(),
         }),
-        grantStore: createGrantStore(h.db),
+        grantStoreFor: createGrantStore,
       });
       env = await startDeployFlowEnv({
         // The sender's mock inference calls the mail tool with the RECEIVER

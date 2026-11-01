@@ -2,7 +2,7 @@ import { eq, and, or, isNull, gt, inArray, type SQL } from "drizzle-orm";
 
 import type { GrantRule, GrantStore } from "@intx/types/authz";
 
-import type { DB } from "./client";
+import type { DBExecutor } from "./client";
 import { grant } from "./schema/grants";
 import { principalRole } from "./schema/roles";
 import { parseGrantRow } from "./parse-row";
@@ -30,7 +30,7 @@ function toGrantRule(row: typeof grant.$inferSelect): GrantRule {
  * decides single-tenant versus chain-aware collection.
  */
 async function collectGrantsScoped(
-  db: DB["db"],
+  db: DBExecutor,
   principalId: string,
   tenantScope: SQL,
 ): Promise<GrantRule[]> {
@@ -57,7 +57,10 @@ async function collectGrantsScoped(
   return rows.map(toGrantRule);
 }
 
-export function createGrantStore(db: DB["db"]): GrantStore {
+/** Builds a grant store that reads through the given executor. */
+export type GrantStoreFactory = (executor: DBExecutor) => GrantStore;
+
+export function createGrantStore(db: DBExecutor): GrantStore {
   return {
     async collectGrants(principalId, tenantId) {
       return collectGrantsScoped(db, principalId, eq(grant.tenantId, tenantId));
