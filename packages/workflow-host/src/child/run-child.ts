@@ -238,11 +238,9 @@ export type DrainController = WorkflowHostDrainController;
  * provider registry to assemble each tool bundle's and each action handler's
  * `credentials` capability.
  *
- * Grants are typed `readonly unknown[]` here: this package owns no grant
- * grammar (the credentials snapshot's grants are `unknown[]` throughout), so
- * the substrate casts to its `GrantRule` shape at its own boundary, exactly
- * as the grant evaluator does. The cell is read live per use, so a rotation or
- * a revoking re-push reaches an already-shaped handle without a rebuild.
+ * The resolver parses the snapshot's grants as `GrantRule` rows. The cell is
+ * read live per use, so a rotation or a revoking re-push reaches an
+ * already-shaped handle without a rebuild.
  */
 export interface CredentialWiring {
   readonly materialRef: CredentialMaterialRef;

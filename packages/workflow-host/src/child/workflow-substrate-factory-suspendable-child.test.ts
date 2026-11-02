@@ -160,13 +160,9 @@ function bodyDefinition(id: string): WorkflowDefinition {
 const evaluateGrantsAdapter: Parameters<
   typeof createSidecarSpawnSuspendableChild
 >[0]["evaluateGrants"] = async ({ resource, action, grants }) => {
-  const result = await evaluateGrants(
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the snapshot's grants are typed unknown[] at the workflow-host boundary; the sidecar owns the GrantRule grammar, so the seeded rows narrow here
-    [...(grants as readonly GrantRule[])],
-    resource,
-    action,
-    { conditions: "pessimistic" },
-  );
+  const result = await evaluateGrants([...grants], resource, action, {
+    conditions: "pessimistic",
+  });
   return { effect: result.effect, matchingGrants: [], resolvedBy: null };
 };
 

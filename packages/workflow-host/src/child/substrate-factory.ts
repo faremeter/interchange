@@ -1176,11 +1176,10 @@ export function createSidecarStepBuildEnv(
     attachStepTools(env, materialization);
     // Attach the credential wiring so the `agentFactory` can assemble each
     // bundle's consumer-scoped `credentials` capability. Grants are wired as a
-    // THUNK, resolved (and cast to the sidecar's `GrantRule` grammar, the same
-    // cast `evaluateGrantsAdapter` makes) only when a package actually needs a
-    // capability -- a step with no credential-consuming package never reads
-    // them, so a self-discovery resume that precedes the grants barrier does not
-    // fault on a missing snapshot. Omitted when no credential context was
+    // THUNK, resolved only when a package actually needs a capability -- a
+    // step with no credential-consuming package never reads them, so a
+    // self-discovery resume that precedes the grants barrier does not fault on
+    // a missing snapshot. Omitted when no credential context was
     // threaded, in which case a credential-consuming tool fails closed and loud
     // at its own `resolve("credentials")`.
     if (credentialContext !== undefined) {

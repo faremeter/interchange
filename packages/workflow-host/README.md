@@ -94,10 +94,10 @@ with `runLocal` and the real step invoker, with no hub and no sidecar:
 - `createCredentialsBackedAuthorize`, `createGrantEvaluator` and
   `createSnapshotGrantsResolver` (with its `StepGrantsResolver` type) — the
   authorize closure a run child authorizes with, its grant evaluator, and
-  the per-step grants resolver over a credentials snapshot reference.
-- `createLocalCredentialsSnapshot` and `snapshotStepGrants` — the grants a
-  deployed source-ref run holds, derived from the definition, and their
-  per-step reader for Gate 2.
+  the per-step grants resolver over a credentials snapshot reference, which
+  also gives Gate 2 a step's grants.
+- `createLocalCredentialsSnapshot` — the grants a deployed source-ref run
+  holds, derived from the definition.
 
 Nothing this entry imports is a Node or Bun module, so it bundles for a
 browser; `tests/workflow/local-runtime-browser-bundle.test.ts` checks that.

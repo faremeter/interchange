@@ -39,7 +39,6 @@ export {
 } from "./child/credentials-backed-authorize";
 export {
   createLocalCredentialsSnapshot,
-  snapshotStepGrants,
   type LocalCredentialsSnapshotOpts,
 } from "./local-credentials";
 export type {

@@ -25,6 +25,7 @@ import {
   createSidecarActionCredentialsFactory,
   type SidecarStepCredentialContext,
 } from "./action-credentials";
+import { createSnapshotGrantsResolver } from "./credentials-backed-authorize";
 
 const ORIGIN = "https://api.example.com";
 
@@ -127,6 +128,35 @@ describe("createSidecarActionCredentialsFactory", () => {
     ).resolves.toMatchObject({ kind: "http" });
     expect(stepReads).toEqual(["push"]);
     expect(track.shapes[0]?.readCurrentMaterial()).toEqual({ secret: "sk-1" });
+  });
+  test("a use grant whose expiry has passed fails closed after it crossed JSON", async () => {
+    const track = trackingProvider();
+    const expired: GrantRule = {
+      ...useGrant(actionConsumer("push")),
+      expiresAt: new Date(Date.now() - 60_000),
+    };
+    const grants: unknown = JSON.parse(JSON.stringify([expired]));
+    if (!Array.isArray(grants)) throw new Error("expected an array");
+    const factory = createSidecarActionCredentialsFactory({
+      materialCell: cellFor([{ handler: "push", handle: "github" }]),
+      resolveStepGrants: createSnapshotGrantsResolver(
+        {
+          current: {
+            steps: [
+              { stepId: "push", address: "push", grants, contentHash: "h" },
+            ],
+          },
+        },
+        "lbl",
+      ),
+      providers: createCredentialProviderRegistry([track.provider]),
+    });
+    await expect(
+      factory(request("push", ["github"])).resolve("github"),
+    ).rejects.toThrow(
+      "consumer action:push is not authorized to use credential c1",
+    );
+    expect(track.shapes).toEqual([]);
   });
 });
 

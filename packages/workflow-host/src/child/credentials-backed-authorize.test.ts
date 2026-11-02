@@ -11,13 +11,39 @@ import {
   type GrantEvaluator,
 } from "./credentials-backed-authorize";
 
+function rule(
+  resource: string,
+  effect: GrantRule["effect"],
+  expiresAt: Date | null = null,
+): GrantRule {
+  return {
+    id: `grant:${resource}:${effect}`,
+    resource,
+    action: "invoke",
+    effect,
+    origin: "creator",
+    conditions: null,
+    expiresAt,
+    roleId: null,
+    principalId: null,
+  };
+}
+
+// The grants a run child receives crossed JSON, which turns each `expiresAt`
+// into a string.
+function overJSON(grants: readonly GrantRule[]): unknown[] {
+  const parsed: unknown = JSON.parse(JSON.stringify(grants));
+  if (!Array.isArray(parsed)) throw new Error("expected an array");
+  return parsed;
+}
+
 // The credentials snapshot is keyed per base step. A `map` iteration runs
 // under a scoped step id `<base>[<index>]`, so the authorize closure resolves
 // the scoped id to its base before looking up the step's grant entry -- every
 // iteration shares the base step's grants while the scoped id remains the
 // invocation identity handed to the evaluator.
 describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
-  const summarizeGrant = { resource: "tool:posix", action: "invoke" };
+  const summarizeGrant = rule("tool:posix", "allow");
 
   function refWithSummarize(): CredentialsSnapshotRef {
     return {
@@ -111,15 +137,17 @@ describe("createSnapshotGrantsResolver", () => {
   function entry(stepId: string, grants: unknown[]) {
     return { stepId, address: stepId, grants, contentHash: "h" };
   }
+  const oldGrant = rule("tool:old", "allow");
+  const newGrant = rule("tool:new", "allow");
 
   test("reads the ref on every call, so a swapped snapshot takes effect", () => {
     const ref: CredentialsSnapshotRef = {
-      current: { steps: [entry("s", ["old"])] },
+      current: { steps: [entry("s", [oldGrant])] },
     };
     const resolve = createSnapshotGrantsResolver(ref, "lbl");
-    expect(resolve("s")).toEqual(["old"]);
-    ref.current = { steps: [entry("s", ["new"])] };
-    expect(resolve("s")).toEqual(["new"]);
+    expect(resolve("s")).toEqual([oldGrant]);
+    ref.current = { steps: [entry("s", [newGrant])] };
+    expect(resolve("s")).toEqual([newGrant]);
   });
 
   test("throws with the label when no snapshot is active", () => {
@@ -131,12 +159,49 @@ describe("createSnapshotGrantsResolver", () => {
 
   test("a scoped id resolves to the base entry; a missing entry names both ids", () => {
     const resolve = createSnapshotGrantsResolver(
-      { current: { steps: [entry("s", ["g"])] } },
+      { current: { steps: [entry("s", [oldGrant])] } },
       "lbl",
     );
-    expect(resolve("s[2]")).toEqual(["g"]);
+    expect(resolve("s[2]")).toEqual([oldGrant]);
     expect(() => resolve("t[1]")).toThrow(
       "lbl: the credentials snapshot has no entry for step t (normalized from scoped invocation id t[1])",
+    );
+  });
+
+  test("turns an expiry that crossed JSON back into a Date", () => {
+    const expiresAt = new Date("2026-07-21T00:00:00.000Z");
+    const resolve = createSnapshotGrantsResolver(
+      {
+        current: {
+          steps: [entry("s", overJSON([rule("tool:a", "allow", expiresAt)]))],
+        },
+      },
+      "lbl",
+    );
+    const [grant] = resolve("s");
+    expect(grant?.expiresAt).toBeInstanceOf(Date);
+    expect(grant?.expiresAt?.getTime()).toBe(expiresAt.getTime());
+  });
+
+  test("returns the same parsed array until the step's grants change", () => {
+    const ref: CredentialsSnapshotRef = {
+      current: { steps: [entry("s", overJSON([oldGrant]))] },
+    };
+    const resolve = createSnapshotGrantsResolver(ref, "lbl");
+    const first = resolve("s");
+    expect(resolve("s")).toBe(first);
+    ref.current = { steps: [entry("s", overJSON([newGrant]))] };
+    expect(resolve("s")).not.toBe(first);
+    expect(resolve("s")).toEqual([newGrant]);
+  });
+
+  test("throws, naming the step, when an entry is not a grant rule", () => {
+    const resolve = createSnapshotGrantsResolver(
+      { current: { steps: [entry("s", [{ resource: "tool:a" }])] } },
+      "lbl",
+    );
+    expect(() => resolve("s")).toThrow(
+      "lbl: the grants of step s are not grant rules",
     );
   });
 });
@@ -183,17 +248,6 @@ describe("createSnapshotGrantsReader", () => {
 });
 
 describe("createGrantEvaluator", () => {
-  const rule = (resource: string, effect: GrantRule["effect"]): GrantRule => ({
-    id: `grant:${resource}:${effect}`,
-    resource,
-    action: "invoke",
-    effect,
-    origin: "creator",
-    conditions: null,
-    expiresAt: null,
-    roleId: null,
-    principalId: null,
-  });
   const input = (stepId: string, grants: readonly GrantRule[]) => ({
     resource: "tool:fetch",
     action: "invoke",
@@ -278,5 +332,47 @@ describe("createGrantEvaluator", () => {
         ]),
       ),
     ).rejects.toThrow('Unknown condition: "tool"');
+  });
+});
+
+describe("a run child's authorize closure over grants that crossed JSON", () => {
+  function authorizeOver(grants: readonly GrantRule[]) {
+    return createCredentialsBackedAuthorize(
+      createSnapshotGrantsResolver(
+        {
+          current: {
+            steps: [
+              {
+                stepId: "work",
+                address: "work",
+                grants: overJSON(grants),
+                contentHash: "h",
+              },
+            ],
+          },
+        },
+        "lbl",
+      ),
+      createGrantEvaluator({ floorFor: () => [] }),
+    );
+  }
+  const ctx = { stepId: "work", attempt: 1, runId: "run-1" };
+
+  test("does not allow on a row whose expiry has passed", async () => {
+    const authorize = authorizeOver([
+      rule("tool:fetch", "allow", new Date(Date.now() - 60_000)),
+    ]);
+    await expect(authorize("tool:fetch", "invoke", ctx)).resolves.toMatchObject(
+      { effect: null },
+    );
+  });
+
+  test("allows on a row whose expiry has not passed", async () => {
+    const authorize = authorizeOver([
+      rule("tool:fetch", "allow", new Date(Date.now() + 3_600_000)),
+    ]);
+    await expect(authorize("tool:fetch", "invoke", ctx)).resolves.toMatchObject(
+      { effect: "allow" },
+    );
   });
 });

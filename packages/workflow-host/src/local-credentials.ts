@@ -11,11 +11,9 @@
 
 import type { DirectorRegistry, ToolDeclaration } from "@intx/agent";
 import type { GrantRule } from "@intx/authz";
-import { type } from "arktype";
 
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import { serializeGrantWalk } from "@intx/types/grant-snapshot";
-import { WireGrantRule } from "@intx/types/grant-wire";
 import { executableStepIds, type WorkflowDefinition } from "@intx/workflow";
 import {
   credentialUseGrantRules,
@@ -24,10 +22,6 @@ import {
   type RuntimeGrantRule,
 } from "@intx/workflow-deploy/capabilities";
 
-import {
-  resolveSnapshotStepGrants,
-  type CredentialsSnapshotRef,
-} from "./child/credentials-backed-authorize";
 import type { CredentialsSnapshot } from "./supervisor/credentials";
 
 export type LocalCredentialsSnapshotOpts = {
@@ -102,39 +96,4 @@ function localGrantRule(rule: RuntimeGrantRule, index: number): GrantRule {
     roleId: null,
     principalId: null,
   };
-}
-
-/**
- * The grants of `stepId` in the active snapshot, in the `GrantRule` shape
- * Gate 2 reads: the `resolveGrants` of a step's credential wiring, and the
- * `resolveStepGrants` of an action credentials factory. A map iteration's
- * scoped id resolves to its base step. The snapshot types its grants as
- * `unknown[]` and a caller can pass any snapshot, so the grants are
- * validated as grant rules here. Throws when no snapshot is active, the
- * snapshot has no entry for the step, or an entry is not a grant rule.
- */
-export function snapshotStepGrants(
-  ref: CredentialsSnapshotRef,
-  stepId: string,
-): readonly GrantRule[] {
-  const snapshot = ref.current;
-  if (snapshot === null) {
-    throw new Error(
-      `local credentials: no credentials snapshot is active for step ${stepId}`,
-    );
-  }
-  const grants = WireGrantRule.array()(
-    resolveSnapshotStepGrants(
-      snapshot,
-      stepId,
-      (lookupStepId) =>
-        `local credentials: the credentials snapshot has no entry for step ${lookupStepId}`,
-    ),
-  );
-  if (grants instanceof type.errors) {
-    throw new Error(
-      `local credentials: the grants of step ${stepId} are not grant rules: ${grants.summary}`,
-    );
-  }
-  return grants;
 }

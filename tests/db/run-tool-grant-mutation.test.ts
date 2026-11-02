@@ -18,6 +18,7 @@ import {
 } from "bun:test";
 import { and, eq } from "drizzle-orm";
 
+import { parseGrantRow } from "@intx/db";
 import { grant as grantTable } from "@intx/db/schema";
 import { setRunToolGrantEffect } from "@intx/hub-api";
 import { createGrantEvaluator } from "@intx/workflow-host/local";
@@ -137,7 +138,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           stepId: "work",
           attempt: 1,
           runId: RUN_ID,
-          grants: rows,
+          grants: rows.map(parseGrantRow),
         });
         return decision.effect;
       };
