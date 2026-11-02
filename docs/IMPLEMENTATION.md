@@ -662,7 +662,10 @@ ChannelSender` writes against; the event channel is the
      signal, and the answer says so. The dispatch that delivered a mail
      consumes it only once that answer says committed; a declined mail is
      rejected if the committed log shows its run ended, and otherwise fails
-     the dispatch and stays in `processing/` until a respawn replays it.
+     the dispatch and stays in `processing/` until a respawn replays it. A signal for a park a
+     resumed run holds waits until the run parks on it again, the run ends, or the
+     process goes quiet: landing during the resume would move a step the
+     run has just read as parked.
    - `quiet.request` -> make every buffered event durable and answer
      whether every run only waits on input from outside, with the
      earliest timer the scheduler has queued; with `wait`, answer once

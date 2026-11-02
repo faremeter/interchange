@@ -4721,6 +4721,7 @@ describe("supervisor standby and wake", () => {
   async function setupLiveRun(
     opts: {
       inboxPrimitives?: InboxPrimitives;
+      onSuspensionRegister?: WorkflowSupervisorBindings["onSuspensionRegister"];
     } = {},
   ) {
     const waits = dispatchWaits();
@@ -4943,6 +4944,79 @@ describe("supervisor standby and wake", () => {
       runId: RUN,
       signalName: signalName("corr-lost"),
     });
+
+    await supervisor.shutdown();
+  });
+
+  test("mail the child holds past another step's park is consumed once it commits", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const parked = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, mailBus } = await setupLiveRun({
+      inboxPrimitives: inbox,
+      onSuspensionRegister: () => parked.resolve(undefined),
+    });
+    await answerParkedQuery(first, firstSender, 1, [
+      { runId: RUN, correlationId: "corr-held", parkKind: "input" },
+    ]);
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("held turn"));
+    await waitForUpstreamPayload(first.supervisorToChild, "signal.deliver");
+    await firstSender.send({ type: "park.notify", data: GATE_PARK });
+    await parked.promise;
+    // The forbidden event is a consume before the answer, and overshooting
+    // this window only gives it more room to land.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(inbox.messageIds(ADDRESS).consumed).toEqual([]);
+
+    await confirmDelivery(first, firstSender, 1, true);
+    await waitUntil(() => inbox.messageIds(ADDRESS).consumed.length === 1);
+
+    await supervisor.shutdown();
+  });
+
+  test("mail the child holds past another step's park goes to the next child when it crashes", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const parked = Promise.withResolvers<undefined>();
+    const {
+      supervisor,
+      firstSender,
+      first,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      waits,
+    } = await setupLiveRun({
+      inboxPrimitives: inbox,
+      onSuspensionRegister: () => parked.resolve(undefined),
+    });
+    await answerParkedQuery(first, firstSender, 1, [
+      { runId: RUN, correlationId: "corr-held", parkKind: "input" },
+    ]);
+    mailBus.deliver(ADDRESS, new TextEncoder().encode("held turn"));
+    await waitForUpstreamPayload(first.supervisorToChild, "signal.deliver");
+    await firstSender.send({ type: "park.notify", data: GATE_PARK });
+    await parked.promise;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(1);
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await waits.nth(1);
+    await answerParkedQuery(second, secondSender, 1, [
+      { runId: RUN, correlationId: "corr-held", parkKind: "input" },
+    ]);
+    const delivered = await waitForUpstreamPayload(
+      second.supervisorToChild,
+      "signal.deliver",
+    );
+    expect(delivered.data).toMatchObject({
+      runId: RUN,
+      signalName: signalName("corr-held"),
+    });
+    expect(inbox.messageIds(ADDRESS).consumed).toEqual([]);
 
     await supervisor.shutdown();
   });

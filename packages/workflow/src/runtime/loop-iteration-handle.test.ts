@@ -77,6 +77,29 @@ function buildEnv(
 }
 
 describe("createLoopIterationHandle", () => {
+  test("a body does not take over the sinks of the run that spawns it", () => {
+    const blobs = createInMemoryBlobSubstrate();
+    const resolver = (): ActionHandler => async (input) => input;
+    const handle = createLoopIterationHandle(
+      {
+        ...buildEnv(blobs, resolver),
+        onPark: noWake,
+        onSignalPark: noWake,
+        onSignalAwaiter: noWake,
+      },
+      {
+        definition: body,
+        childRunId: "child-sinks",
+        input: 7,
+        depth: 0,
+        maxChildSpawnDepth: 32,
+        signal: new AbortController().signal,
+        signalChannel: createInMemorySignalChannel(),
+      },
+    );
+    expect(handle.next).toBeDefined();
+  });
+
   test("resumes from a terminal child log without re-running the body", async () => {
     let runs = 0;
     const resolver = (): ActionHandler => async (input) => {

@@ -4648,7 +4648,8 @@ export function createWorkflowSupervisor(
   }
 
   // The child's answer for a signal a dispatch delivered, or `undefined` once
-  // the cohort aborts. A child that never answers fails the dispatch, as the
+  // the cohort aborts. The child can hold a signal for a resumed park well past
+  // another step's park. A child that never answers fails the dispatch, as the
   // park wait's backstop does, so the mail stays reclaimable.
   async function waitForSignalAnswer(
     cohortAbort: AbortController,

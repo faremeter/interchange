@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
-import { base64Encode, hexEncode } from "@intx/types";
+import { base64Encode, hexEncode, signalName } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
   computeLiveDefinitionHash,
@@ -32,6 +32,7 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 
+import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import {
   createWorkflowStepInvoker,
   type StepEnvBase,
@@ -2713,6 +2714,337 @@ describe("runWorkflowChild", () => {
     await expect(runPromise).rejects.toThrow(
       /ended before the supervisor's authority.set frame/,
     );
+  });
+});
+
+describe("a signal for a park a resumed run holds", () => {
+  const RUN_ID = "run-parked";
+  const NAME = signalName("corr-parked");
+  const AT = "2026-01-01T00:00:00.000Z";
+
+  // A child resuming a run parked on an approval, held at the run's first read
+  // of its log, so a signal arrives while the resume is under way.
+  async function resumeParkedRun() {
+    const baseDir = await makeTempDir("child-resume-hold-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const repoId: RepoId = { kind: "workflow-run", id: "deployment-x" };
+    const principalShape = {
+      kind: "workflow-process",
+      anchorRunId: "deployment-x",
+    };
+    const principal: Principal = principalShape;
+    const substrate = createRepoStore({
+      dataDir: baseDir,
+      signingKey: await generateKeyPair(),
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await substrate.writeTree({ kind: "hub" }, repoId, "refs/heads/main", {
+      files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+      message: "genesis",
+    });
+    const seeded = createWorkflowRunRepoStore({
+      substrate,
+      repoId,
+      principal,
+      ref: "refs/heads/main",
+    });
+    await seeded.appendBatch(RUN_ID, [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at: AT,
+        runId: RUN_ID,
+        definitionHash: "definition-hash-abc",
+        trigger: { type: "manual", payload: null },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at: AT,
+        stepId: "step-1",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 3,
+        at: AT,
+        stepId: "step-1",
+        signalName: NAME,
+        parkKind: "approval",
+      },
+    ]);
+    const {
+      packageDir: closurePackageDir,
+      approvedHash: definitionHash,
+      definition,
+    } = await materializeClosure("child-resume-hold-def-", {
+      id: "test-workflow",
+      triggers: [],
+      steps: { "step-1": agentStep("step-1") },
+      stepOrder: ["step-1"],
+    });
+
+    const readHeld = Promise.withResolvers<undefined>();
+    const releaseRead = Promise.withResolvers<undefined>();
+    // Self-discovery reads the log once before the run starts.
+    let reads = 0;
+    const writeHold = {
+      on: false,
+      reached: Promise.withResolvers<undefined>(),
+      release: Promise.withResolvers<undefined>(),
+    };
+    const heldAtFirstRead = new Proxy(substrate, {
+      get(target, prop, receiver) {
+        if (prop === "writeTreePreservingPrefix") {
+          return async (
+            ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
+          ) => {
+            if (writeHold.on) {
+              writeHold.reached.resolve(undefined);
+              await writeHold.release.promise;
+            }
+            return target.writeTreePreservingPrefix(...args);
+          };
+        }
+        if (prop !== "openCommittedReads") {
+          return Reflect.get(target, prop, receiver);
+        }
+        return async (...args: Parameters<RepoStore["openCommittedReads"]>) => {
+          reads += 1;
+          if (reads === 2) {
+            readHeld.resolve(undefined);
+            await releaseRead.promise;
+          }
+          return target.openCommittedReads(...args);
+        };
+      },
+    });
+
+    const decisions: unknown[] = [];
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      substrate: heldAtFirstRead,
+      principal,
+      invokeStep: async (req) => {
+        if (req.resume !== undefined) decisions.push(req.resume.decision);
+        return { output: null };
+      },
+    };
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+    const childDone = runWorkflowChild({
+      env: parseSpawnTimeEnv(
+        makeSpawnEnv({
+          channelId,
+          hmacKeyHex: hexEncode(hmacKey),
+          hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+          definitionHash,
+          closurePackageDir,
+        }),
+      ),
+      definition,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+    await readHeld.promise;
+
+    // Sends the signal, then waits until the child has taken that frame and
+    // has no committed input on its way: a signal not held has landed by then.
+    const deliverAndSettle = async (): Promise<void> => {
+      await supervisorSender.send({
+        type: "signal.deliver",
+        data: {
+          runId: RUN_ID,
+          signalName: NAME,
+          signalId: "sig-1",
+          payload: { outcome: "approved" },
+          requestId: "signal-1",
+        },
+      });
+      await supervisorSender.send({
+        type: "quiet.request",
+        data: { requestId: "settled", runId: RUN_ID, wait: false },
+      });
+      await waitForUpstreamPayload(childToSupervisor, "quiet.response");
+    };
+    const shutDown = async (): Promise<void> => {
+      await supervisorSender.send({
+        type: "shutdown",
+        data: { reason: "test done" },
+      });
+      supervisorToChild.close();
+      await childDone;
+    };
+    return {
+      childToSupervisor,
+      supervisorSender,
+      decisions,
+      deliverAndSettle,
+      releaseRead: () => {
+        releaseRead.resolve(undefined);
+      },
+      seeded,
+      shutDown,
+      writeHold,
+    };
+  }
+
+  test("a signal whose commit is in flight keeps the child from answering quiet", async () => {
+    const child = await resumeParkedRun();
+    child.releaseRead();
+    await child.supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "parked", runId: RUN_ID, wait: true },
+    });
+    const parked = await waitForUpstreamPayload(
+      child.childToSupervisor,
+      "quiet.response",
+    );
+    expect(parked.data).toMatchObject({ requestId: "parked", quiet: true });
+
+    child.writeHold.on = true;
+    await child.supervisorSender.send({
+      type: "signal.deliver",
+      data: {
+        runId: RUN_ID,
+        signalName: NAME,
+        signalId: "sig-1",
+        payload: { outcome: "approved" },
+        requestId: "signal-1",
+      },
+    });
+    await child.writeHold.reached.promise;
+    await child.supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "during-commit", runId: RUN_ID, wait: false },
+    });
+    // Frames are handled in order, so the answer for a run this child does not
+    // drive shows the check has started.
+    await child.supervisorSender.send({
+      type: "signal.deliver",
+      data: {
+        runId: "run-absent",
+        signalName: NAME,
+        signalId: "sig-absent",
+        payload: null,
+        requestId: "after-check",
+      },
+    });
+    await waitForUpstreamPayload(child.childToSupervisor, "input.taken");
+
+    child.writeHold.on = false;
+    child.writeHold.release.resolve(undefined);
+    await waitForUpstreamPayload(child.childToSupervisor, "terminal.event");
+    await waitForUpstreamPayloads(child.childToSupervisor, "quiet.response", 2);
+    // A child that counts the delivery answers only once the commit settled.
+    const frames = child.childToSupervisor.flushed();
+    const committedAt = frames.findIndex((line) => line.includes('"signal-1"'));
+    const answeredAt = frames.findIndex((line) =>
+      line.includes('"during-commit"'),
+    );
+    expect(committedAt).toBeGreaterThanOrEqual(0);
+    expect(answeredAt).toBeGreaterThan(committedAt);
+    await child.shutDown();
+  });
+
+  test("lands once the run waits on the park again", async () => {
+    const child = await resumeParkedRun();
+    await child.deliverAndSettle();
+    expect((await child.seeded.read(RUN_ID)).map((e) => e.kind)).toEqual([
+      "RunStarted",
+      "StepStarted",
+      "SignalAwaited",
+    ]);
+
+    child.releaseRead();
+    const taken = await waitForUpstreamPayload(
+      child.childToSupervisor,
+      "input.taken",
+    );
+    expect(taken.data).toEqual({ requestId: "signal-1", committed: true });
+    const terminal = await waitForUpstreamPayload(
+      child.childToSupervisor,
+      "terminal.event",
+    );
+    expect(terminal.data.runId).toBe(RUN_ID);
+    await child.shutDown();
+
+    expect(child.decisions).toEqual([{ outcome: "approved" }]);
+    const log = await child.seeded.read(RUN_ID);
+    expect(log.filter((e) => e.kind === "SignalAwaited")).toHaveLength(1);
+    expect(log.at(-1)?.kind).toBe("RunCompleted");
+  });
+
+  test("a signal for a run whose log already ended is answered as not committed", async () => {
+    const child = await resumeParkedRun();
+    child.releaseRead();
+    await child.supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "parked", runId: RUN_ID, wait: true },
+    });
+    await waitForUpstreamPayload(child.childToSupervisor, "quiet.response");
+
+    // The end is committed, and the child still counts the run as in flight
+    // until its driver finishes.
+    await child.seeded.append(RUN_ID, {
+      kind: "RunFailed",
+      seq: 4,
+      at: AT,
+      error: { message: "ended" },
+    });
+    await child.supervisorSender.send({
+      type: "signal.deliver",
+      data: {
+        runId: RUN_ID,
+        signalName: NAME,
+        signalId: "sig-1",
+        payload: { outcome: "approved" },
+        requestId: "signal-1",
+      },
+    });
+    const taken = await waitForUpstreamPayload(
+      child.childToSupervisor,
+      "input.taken",
+    );
+    expect(taken.data).toEqual({ requestId: "signal-1", committed: false });
+    await child.shutDown();
+    expect(
+      (await child.seeded.read(RUN_ID)).filter(
+        (e) => e.kind === "SignalReceived",
+      ),
+    ).toEqual([]);
+  });
+
+  test("is answered as not committed when the child shuts down first", async () => {
+    const child = await resumeParkedRun();
+    await child.deliverAndSettle();
+    const shutdown = child.shutDown();
+    const taken = await waitForUpstreamPayload(
+      child.childToSupervisor,
+      "input.taken",
+    );
+    expect(taken.data).toEqual({ requestId: "signal-1", committed: false });
+    child.releaseRead();
+    await shutdown;
+    expect(
+      (await child.seeded.read(RUN_ID)).filter(
+        (e) => e.kind === "SignalReceived",
+      ),
+    ).toEqual([]);
   });
 });
 
