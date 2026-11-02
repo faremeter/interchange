@@ -37,7 +37,6 @@ import {
   createEnvKeyCredentialCipher,
   createNoopCredentialCipher,
 } from "@intx/crypto";
-import { createGrantStore } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
@@ -244,7 +243,6 @@ async function deployBindingThroughRoute(opts: {
     getSession: createMockGetSession(CALLER_USER_ID),
     authHandler: () => new Response("", { status: 404 }),
     db: h.db,
-    grantStore: createGrantStore(h.db),
     sidecarRouter: env.hub.router,
     sessionService,
     workflowAllocationService,

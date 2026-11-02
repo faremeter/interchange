@@ -55,7 +55,6 @@ import {
 import { and, eq } from "drizzle-orm";
 import { type } from "arktype";
 
-import { createGrantStore } from "@intx/db";
 import {
   grant as grantTable,
   principal as principalTable,
@@ -416,7 +415,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         getSession: createMockGetSession(CALLER_USER_ID),
         authHandler: () => new Response("", { status: 404 }),
         db: h.db,
-        grantStore: createGrantStore(h.db),
         sidecarRouter: createRoutingSidecarRouter(),
         sessionService: createMockSessionService(),
         eventCollectors: createMockEventCollectors(),

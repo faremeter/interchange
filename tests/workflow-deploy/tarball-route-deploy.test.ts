@@ -19,7 +19,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 
 import { createNoopCredentialCipher } from "@intx/crypto";
-import { createGrantStore } from "@intx/db";
 import {
   tenant as tenantTable,
   workflowRun as workflowRunTable,
@@ -323,7 +322,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         getSession: createMockGetSession(CALLER_USER_ID),
         authHandler: () => new Response("", { status: 404 }),
         db: h.db,
-        grantStore: createGrantStore(h.db),
         sidecarRouter: env.hub.router,
         sessionService,
         workflowAllocationService,
