@@ -501,7 +501,7 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "Get run authorization",
       description:
-        "Returns the run's effective authorization floor: its committed grants and their resolved effects. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets allow, reject-always sets deny), so a standing-resolved tool reads that effect directly here. This is the floor the runtime enforces, so the view mirrors what the run can do. Complete for the source-ref deploy lineage (the shipping pipeline); a pinned-tool deploy's sidecar-injected ask floor is not reflected here.",
+        "Returns the run's effective authorization floor: its committed grants and their resolved effects. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets allow, reject-always sets deny), so a standing-resolved tool reads that effect directly here. This is the floor the runtime enforces, so the view mirrors what the run can do. A grant whose expiry has passed is left out. Complete for the source-ref deploy lineage (the shipping pipeline); a pinned-tool deploy's sidecar-injected ask floor is not reflected here.",
       responses: {
         200: jsonResponse("Run authorization", RunAuthorizationResponse),
         404: jsonResponse("Run not found", ErrorResponse),
@@ -520,19 +520,24 @@ export function createRunRoutes({
       // ("always") resolution mutates them in place (ask -> allow on
       // approve-always, ask -> deny on reject-always), so what the child
       // enforces and what this returns are the same rows -- the view cannot
-      // drift from enforcement. A run with no committed grants (deployed but
-      // never triggered) has an empty floor.
+      // drift from enforcement. A row past its expiry is left out, as the
+      // hub's checks and the child skip it until a re-derivation deletes it.
+      // A run with no committed grants (deployed but never triggered) has an
+      // empty floor.
       const committed = await loadCommittedRunGrants(db, tenantCtx.id, runId);
       if (committed === null) {
         return c.json({ runId, grants: [] });
       }
+      const now = new Date();
       return c.json({
         runId,
-        grants: committed.stepGrants.map((g) => ({
-          resource: g.resource,
-          action: g.action,
-          effect: g.effect,
-        })),
+        grants: committed.stepGrants
+          .filter((g) => g.expiresAt === null || g.expiresAt > now)
+          .map((g) => ({
+            resource: g.resource,
+            action: g.action,
+            effect: g.effect,
+          })),
       });
     },
   );

@@ -499,7 +499,7 @@ Durably requests cancellation of a live top-level run. Its saved cancellation re
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/authorization
 Get run authorization
 
-Returns the run's effective authorization floor: its committed grants and their resolved effects. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets allow, reject-always sets deny), so a standing-resolved tool reads that effect directly here. This is the floor the runtime enforces, so the view mirrors what the run can do. Complete for the source-ref deploy lineage (the shipping pipeline); a pinned-tool deploy's sidecar-injected ask floor is not reflected here.
+Returns the run's effective authorization floor: its committed grants and their resolved effects. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets allow, reject-always sets deny), so a standing-resolved tool reads that effect directly here. This is the floor the runtime enforces, so the view mirrors what the run can do. A grant whose expiry has passed is left out. Complete for the source-ref deploy lineage (the shipping pipeline); a pinned-tool deploy's sidecar-injected ask floor is not reflected here.
 
 200: RunAuthorizationResponse -- Run authorization
 404: ErrorResponse -- Run not found

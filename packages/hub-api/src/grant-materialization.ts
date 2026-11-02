@@ -1,4 +1,4 @@
-import { authorizeAction } from "@intx/authz";
+import { authorizeActionUntil } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
 import type { GrantEffect, GrantOrigin, GrantRequirement } from "@intx/types";
 import { generateId } from "@intx/hub-common";
@@ -80,21 +80,44 @@ export type ResolveGrantMaterializationResult =
   | { ok: false; rejection: GrantMaterializationRejection };
 
 // Invoker-delegated grants are short-lived: they expire a day after the run's
-// first trigger, and nothing renews them, so a delegation outlives a change
-// to the deployer's grants by a day at most.
+// first trigger at the latest, and nothing renews them.
 export const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type ResolveRequirementGrantContext = Omit<
   ResolveGrantMaterializationArgs,
   "grantRequirements"
 > & {
-  // The expiry stamped onto an invoker-sourced row.
+  // The latest expiry of an invoker-sourced `allow` row.
   invokerExpiresAt: Date;
 };
 
+/**
+ * The expiry of a requirement's row with `effect`. An `allow` row ends at
+ * `allowExpiresAt`, when the delegator's grants stop allowing the
+ * requirement; an invoker `allow` row ends no later than `invokerExpiresAt`.
+ * A `deny` or `ask` row is a floor: it does not end with the delegator's
+ * grants, so it ends at `floorExpiresAt`, which is `invokerExpiresAt` for an
+ * invoker row and never for a creator row.
+ */
+export function requirementRowExpiresAt(
+  expiry: { allowExpiresAt: Date | null; floorExpiresAt: Date | null },
+  effect: GrantEffect,
+): Date | null {
+  return effect === "allow" ? expiry.allowExpiresAt : expiry.floorExpiresAt;
+}
+
 export type ResolveRequirementGrantResult =
-  | { ok: true; row: MaterializedGrantRow }
+  | {
+      ok: true;
+      row: MaterializedGrantRow;
+      allowExpiresAt: Date | null;
+      floorExpiresAt: Date | null;
+    }
   | { ok: false; rejection: GrantMaterializationRejection };
+
+function earlier(a: Date | null, b: Date): Date {
+  return a !== null && a < b ? a : b;
+}
 
 // Only system/role/creator grants can be delegated: an invoker-origin allow
 // cannot be re-delegated. An invoker-origin deny or ask still restricts what
@@ -110,7 +133,7 @@ function delegatableInvokerGrants(invokerGrants: GrantRule[]): GrantRule[] {
  * the row to materialize for it.
  *
  * Pure over its inputs: it runs the creator- or invoker-sourced delegation
- * check with `authorizeAction` against the supplied collected grants. A
+ * check with `authorizeActionUntil` against the supplied collected grants. A
  * delegation check has no request to evaluate a condition against, so it
  * evaluates conditions pessimistically: a delegator's conditioned deny or ask
  * refuses the requirement, and its conditioned allow does not satisfy it. A
@@ -118,6 +141,10 @@ function delegatableInvokerGrants(invokerGrants: GrantRule[]): GrantRule[] {
  *
  * It takes the invoker's grants unfiltered and applies the invoker-origin
  * filter itself (see `delegatableInvokerGrants`).
+ *
+ * The row's expiry follows its effect (see `requirementRowExpiresAt`). The
+ * result also carries the `allow` expiry, so a caller that changes the row's
+ * effect can give it the expiry of the new effect.
  *
  * Returns a rejection instead of a row when the delegator lacks the authority
  * the requirement demands (403 `insufficient_grants`), or when the
@@ -130,7 +157,7 @@ export async function resolveRequirementGrant(
   const effect = req.effect ?? "allow";
 
   if (req.source === "creator") {
-    const decision = await authorizeAction(
+    const decision = await authorizeActionUntil(
       ctx.creatorGrants,
       req.resource,
       req.action,
@@ -146,6 +173,7 @@ export async function resolveRequirementGrant(
         },
       };
     }
+    const expiry = { allowExpiresAt: decision.expiresAt, floorExpiresAt: null };
     return {
       ok: true,
       row: makeGrantRow({
@@ -156,14 +184,15 @@ export async function resolveRequirementGrant(
         effect,
         conditions: req.conditions ?? null,
         origin: "creator",
-        expiresAt: null,
+        expiresAt: requirementRowExpiresAt(expiry, effect),
         now: ctx.now,
       }),
+      ...expiry,
     };
   }
 
   if (req.source === "invoker") {
-    const decision = await authorizeAction(
+    const decision = await authorizeActionUntil(
       delegatableInvokerGrants(ctx.invokerGrants),
       req.resource,
       req.action,
@@ -179,6 +208,10 @@ export async function resolveRequirementGrant(
         },
       };
     }
+    const expiry = {
+      allowExpiresAt: earlier(decision.expiresAt, ctx.invokerExpiresAt),
+      floorExpiresAt: ctx.invokerExpiresAt,
+    };
     return {
       ok: true,
       row: makeGrantRow({
@@ -189,9 +222,10 @@ export async function resolveRequirementGrant(
         effect,
         conditions: req.conditions ?? null,
         origin: "invoker",
-        expiresAt: ctx.invokerExpiresAt,
+        expiresAt: requirementRowExpiresAt(expiry, effect),
         now: ctx.now,
       }),
+      ...expiry,
     };
   }
 
@@ -212,8 +246,8 @@ export async function resolveRequirementGrant(
  *
  * Decides each requirement with `resolveRequirementGrant` and stops at the
  * first rejection, so the caller writes every row or none. An invoker-sourced
- * row expires `INVOKER_GRANT_TTL_MS` after `now`. Nothing is written to the
- * database; the caller inserts the returned rows.
+ * `allow` row expires `INVOKER_GRANT_TTL_MS` after `now` at the latest.
+ * Nothing is written to the database; the caller inserts the returned rows.
  */
 export async function resolveGrantMaterialization({
   tenantId,

@@ -7,8 +7,9 @@ import {
   test,
 } from "bun:test";
 
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 
+import { authorize } from "@intx/authz";
 import { createGrantStore } from "@intx/db";
 import {
   approval,
@@ -22,6 +23,7 @@ import {
 } from "@intx/db/schema";
 import type { GrantRequirement, GrantWalkSnapshot } from "@intx/types";
 import {
+  createRunGrantsLoader,
   findDelegatedAnchorRunIds,
   lockTenantRunDelegatedGrants,
   rederiveRunDelegatedGrants,
@@ -40,6 +42,11 @@ import {
   seedWorkflowRun,
   seedWorkflowRunLaunchSpec,
 } from "@intx/test-harness/seed";
+import {
+  createCredentialsBackedAuthorize,
+  createGrantEvaluator,
+  createSnapshotGrantsResolver,
+} from "@intx/workflow-host/local";
 
 const TENANT = "tnt";
 const CREATOR = "prn_creator";
@@ -167,6 +174,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(eq(grant.principalId, principalId))
         .orderBy(asc(grant.resource), asc(grant.id));
     }
+
+    const inHours = (n: number) => new Date(Date.now() + n * 3_600_000);
 
     function summary(rows: Awaited<ReturnType<typeof runGrants>>) {
       return rows
@@ -613,6 +622,394 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         expect(await rederive([CREATOR])).toEqual([]);
         expect(await runGrants(run)).toHaveLength(1);
+      });
+
+      test("a regained ask row that a standing always makes allow takes the allow expiry", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [ASK_TOOL],
+        });
+        await seedStandingDecision("approved");
+        const until = inHours(2);
+        await seedGrant(h.db, {
+          id: "grt_creator_tools",
+          tenantId: TENANT,
+          principalId: CREATOR,
+          resource: "tool:*",
+          action: "invoke",
+          expiresAt: until,
+        });
+
+        await rederive([CREATOR]);
+
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["creator tool:search/invoke allow"]);
+        expect(rows[0]?.expiresAt).toEqual(until);
+      });
+
+      test("a regained ask row that a standing reject makes deny keeps the floor's null expiry", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [ASK_TOOL],
+        });
+        await seedStandingDecision("rejected");
+        await seedGrant(h.db, {
+          id: "grt_creator_tools",
+          tenantId: TENANT,
+          principalId: CREATOR,
+          resource: "tool:*",
+          action: "invoke",
+          expiresAt: inHours(2),
+        });
+
+        await rederive([CREATOR]);
+
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["creator tool:search/invoke deny"]);
+        expect(rows[0]?.expiresAt).toBeNull();
+      });
+    });
+
+    describe("row expiry", () => {
+      async function seedCreatorGrant(expiresAt: Date | null) {
+        await seedGrant(h.db, {
+          id: "grt_creator_vault",
+          tenantId: TENANT,
+          principalId: CREATOR,
+          resource: "secret:*",
+          action: "use",
+          expiresAt,
+        });
+      }
+
+      async function seedRunRow(
+        run: string,
+        opts: {
+          id?: string;
+          expiresAt: Date | null;
+          effect?: "allow" | "deny" | "ask";
+        },
+      ) {
+        await seedGrant(h.db, {
+          id: opts.id ?? "grt_run_vault",
+          tenantId: TENANT,
+          principalId: run,
+          resource: "secret:vault",
+          action: "use",
+          origin: "creator",
+          effect: opts.effect ?? "allow",
+          expiresAt: opts.expiresAt,
+        });
+      }
+
+      async function setGrantExpiry(id: string, expiresAt: Date | null) {
+        await h.db.update(grant).set({ expiresAt }).where(eq(grant.id, id));
+      }
+
+      async function hubAllows(run: string) {
+        const result = await authorize(
+          createGrantStore(h.db),
+          run,
+          TENANT,
+          "secret:vault",
+          "use",
+          { conditions: "pessimistic" },
+        );
+        return result.effect === "allow";
+      }
+
+      test("a creator grant's expiry becomes the run row's expiry, and the hub skips the row after it", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [VAULT_CREATOR],
+        });
+        const until = inHours(2);
+        await seedCreatorGrant(until);
+
+        await rederive([CREATOR]);
+
+        const [row] = await runGrants(run);
+        expect(row?.expiresAt).toEqual(until);
+        expect(await hubAllows(run)).toBe(true);
+
+        await setGrantExpiry(row?.id ?? "", inHours(-1));
+        expect(await hubAllows(run)).toBe(false);
+      });
+
+      test("the grants the hub sends the run carry the expiry, and the child does not allow after it", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [VAULT_CREATOR],
+        });
+        await seedCreatorGrant(inHours(2));
+        await rederive([CREATOR]);
+        const loadRunGrants = createRunGrantsLoader({ db: h.db });
+
+        async function childAllows() {
+          const stepGrants = await loadRunGrants("run_a");
+          const grants: unknown = JSON.parse(JSON.stringify(stepGrants));
+          if (!Array.isArray(grants)) throw new Error("expected an array");
+          const childAuthorize = createCredentialsBackedAuthorize(
+            createSnapshotGrantsResolver(
+              {
+                current: {
+                  steps: [
+                    {
+                      stepId: "work",
+                      address: "work",
+                      grants,
+                      contentHash: "",
+                    },
+                  ],
+                },
+              },
+              "test child",
+            ),
+            createGrantEvaluator({ floorFor: () => [] }),
+          );
+          const result = await childAuthorize("secret:vault", "use", {
+            stepId: "work",
+            attempt: 1,
+            runId: "run_a",
+          });
+          return result.effect === "allow";
+        }
+
+        expect(await childAllows()).toBe(true);
+        const [row] = await runGrants(run);
+        await setGrantExpiry(row?.id ?? "", inHours(-1));
+        expect(await childAllows()).toBe(false);
+      });
+
+      test("a creator grant renewed after it expired gives the row back and removes the expired row", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [VAULT_CREATOR],
+        });
+        await seedCreatorGrant(inHours(-1));
+        await seedRunRow(run, { expiresAt: inHours(-1) });
+        const until = inHours(4);
+        await setGrantExpiry("grt_creator_vault", until);
+
+        const changed = await rederive([CREATOR]);
+
+        expect(changed).toEqual([
+          { anchorRunId: "run_a", address: "run_a@tenant.example" },
+        ]);
+        const rows = await runGrants(run);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.id).not.toBe("grt_run_vault");
+        expect(rows[0]?.expiresAt).toEqual(until);
+        expect(await hubAllows(run)).toBe(true);
+      });
+
+      test("a creator grant whose expiry moves gives the run's row the new expiry and keeps its id", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [VAULT_CREATOR],
+        });
+        const until = inHours(5);
+        await seedCreatorGrant(until);
+        await seedRunRow(run, { expiresAt: inHours(1) });
+
+        expect(await rederive([CREATOR])).toHaveLength(1);
+
+        const rows = await runGrants(run);
+        expect(rows.map((r) => r.id)).toEqual(["grt_run_vault"]);
+        expect(rows[0]?.expiresAt).toEqual(until);
+      });
+
+      test("a second re-derivation with no delegator change changes nothing", async () => {
+        await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [VAULT_CREATOR],
+        });
+        await seedCreatorGrant(inHours(2));
+
+        expect(await rederive([CREATOR])).toHaveLength(1);
+        expect(await rederive([CREATOR])).toEqual([]);
+      });
+
+      test("deleting an expired row of a lapsed requirement does not count as a change", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [VAULT_CREATOR],
+        });
+        await seedRunRow(run, { expiresAt: inHours(-1) });
+
+        expect(await rederive([CREATOR])).toEqual([]);
+        expect(await runGrants(run)).toEqual([]);
+      });
+
+      test("a role grant's expiry ends the row, and its renewal gives the row back", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [VAULT_CREATOR],
+        });
+        await h.db
+          .insert(role)
+          .values({ id: "rol_vault", tenantId: TENANT, name: "vault" });
+        await h.db
+          .insert(principalRole)
+          .values({ principalId: CREATOR, roleId: "rol_vault" });
+        const until = inHours(2);
+        await seedGrant(h.db, {
+          id: "grt_role_vault",
+          tenantId: TENANT,
+          roleId: "rol_vault",
+          resource: "secret:vault",
+          action: "use",
+          origin: "role",
+          expiresAt: until,
+        });
+
+        await rederive([CREATOR]);
+        const [row] = await runGrants(run);
+        expect(row?.expiresAt).toEqual(until);
+
+        await setGrantExpiry(row?.id ?? "", inHours(-1));
+        await setGrantExpiry("grt_role_vault", inHours(-1));
+        expect(await hubAllows(run)).toBe(false);
+
+        const renewed = inHours(6);
+        await setGrantExpiry("grt_role_vault", renewed);
+        await rederive([CREATOR]);
+        const rows = await runGrants(run);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.expiresAt).toEqual(renewed);
+        expect(await hubAllows(run)).toBe(true);
+      });
+
+      test("an invoker row ends at the deployer grant's expiry when it comes before the TTL", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [{ ...VAULT_CREATOR, source: "invoker" }],
+        });
+        const until = inHours(1);
+        await seedGrant(h.db, {
+          id: "grt_deployer_vault",
+          tenantId: TENANT,
+          principalId: DEPLOYER,
+          resource: "secret:vault",
+          action: "use",
+          expiresAt: until,
+        });
+
+        await rederive([DEPLOYER]);
+
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["invoker secret:vault/use allow"]);
+        expect(rows[0]?.expiresAt).toEqual(until);
+      });
+
+      test("an operator deny on a held requirement gets the creator floor's null expiry", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [VAULT_CREATOR],
+        });
+        await seedCreatorGrant(inHours(2));
+        await seedRunRow(run, { expiresAt: inHours(2), effect: "deny" });
+
+        await rederive([CREATOR]);
+
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["creator secret:vault/use deny"]);
+        expect(rows[0]?.expiresAt).toBeNull();
+      });
+
+      test("a held invoker allow row whose first-trigger TTL has passed is deleted", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [{ ...VAULT_CREATOR, source: "invoker" }],
+          principalCreatedAt: new Date(
+            Date.now() - INVOKER_GRANT_TTL_MS - 60_000,
+          ),
+        });
+        await seedGrant(h.db, {
+          id: "grt_deployer_vault",
+          tenantId: TENANT,
+          principalId: DEPLOYER,
+          resource: "secret:vault",
+          action: "use",
+        });
+        // An approval turned the row into `allow` after the TTL passed, so it
+        // still carries the floor's lack of expiry.
+        await seedGrant(h.db, {
+          id: "grt_run_vault",
+          tenantId: TENANT,
+          principalId: run,
+          resource: "secret:vault",
+          action: "use",
+          origin: "invoker",
+        });
+
+        expect(await rederive([DEPLOYER])).toHaveLength(1);
+
+        expect(await runGrants(run)).toEqual([]);
+      });
+
+      test("an operator deny on a lapsed requirement gets the creator floor's null expiry", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [VAULT_CREATOR],
+        });
+        await seedRunRow(run, { expiresAt: inHours(2), effect: "deny" });
+
+        await rederive([CREATOR]);
+
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["creator secret:vault/use deny"]);
+        expect(rows[0]?.expiresAt).toBeNull();
+      });
+
+      test("an approval that changes the row's effect while a re-derivation waits keeps its own expiry", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [{ ...VAULT_CREATOR, effect: "ask" }],
+        });
+        await seedCreatorGrant(inHours(5));
+        const rowExpiry = inHours(2);
+        await seedRunRow(run, { expiresAt: rowExpiry, effect: "ask" });
+
+        // The approval holds the row's lock after it changes the effect, so
+        // the re-derivation reads `ask` and waits to write the floor expiry.
+        const locked = Promise.withResolvers<number>();
+        const release = Promise.withResolvers<undefined>();
+        const approval = h.db.transaction(async (tx) => {
+          await tx
+            .update(grant)
+            .set({ effect: "allow" })
+            .where(eq(grant.id, "grt_run_vault"));
+          const [backend] = await tx.execute(
+            sql`select pg_backend_pid() as pid`,
+          );
+          const pid = backend?.["pid"];
+          if (typeof pid !== "number") throw new Error("Missing backend PID");
+          locked.resolve(pid);
+          await release.promise;
+        });
+        void approval.catch(locked.reject);
+        try {
+          const approvalPid = await locked.promise;
+          const rederived = rederive([CREATOR]);
+          // Postgres exposes lock waits through its activity view only.
+          for (;;) {
+            const waiting = await h.db.execute(
+              sql`select pid from pg_stat_activity where ${approvalPid} = any(pg_blocking_pids(pid))`,
+            );
+            if (typeof waiting[0]?.["pid"] === "number") break;
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          release.resolve(undefined);
+          await approval;
+
+          expect(await rederived).toEqual([]);
+        } finally {
+          release.resolve(undefined);
+        }
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["creator secret:vault/use allow"]);
+        expect(rows[0]?.expiresAt).toEqual(rowExpiry);
       });
     });
 

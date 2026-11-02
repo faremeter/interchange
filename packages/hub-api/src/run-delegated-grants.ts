@@ -32,7 +32,7 @@ import {
   type DBExecutor,
   type GrantStoreFactory,
 } from "@intx/db";
-import type { GrantOrigin } from "@intx/types";
+import type { GrantEffect, GrantOrigin } from "@intx/types";
 import { isMailAcceptNamespaceResource } from "@intx/types/mail-accept";
 import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import type { GrantRule } from "@intx/types/authz";
@@ -42,6 +42,7 @@ import { getLogger } from "@intx/log";
 
 import {
   INVOKER_GRANT_TTL_MS,
+  requirementRowExpiresAt,
   resolveRequirementGrant,
 } from "./grant-materialization";
 import {
@@ -138,11 +139,15 @@ export type RederivedRun = { anchorRunId: string; address: string | null };
  *
  * Only the rows a definition's grant requirements produce depend on a
  * delegator. For each requirement:
+ *  - a run's row for it that has expired is deleted, and does not count as
+ *    the run's row;
  *  - the delegator allows it and the run has no row for it: the row is
- *    inserted. An invoker row keeps its first-trigger expiry, and a `tool:`
- *    `ask` row gets back a standing `always` decision the run's approver made;
- *  - the delegator allows it and the run has the row: the row stays as it
- *    is, with its id and any standing decision;
+ *    inserted. An invoker `allow` row ends no later than its first-trigger
+ *    expiry, and a `tool:` `ask` row gets back a standing `always` decision
+ *    the run's approver made;
+ *  - the delegator allows it and the run has the row: the row stays, with
+ *    its id and any standing decision, and takes the expiry its effect gets
+ *    from the delegator's grants now (see `requirementRowExpiresAt`);
  *  - the delegator does not allow it: the run's `allow` rows for it are
  *    deleted, including an `ask` that a standing approval changed to `allow`.
  *    Its `deny` and `ask` rows stay as floors.
@@ -511,28 +516,54 @@ async function rederiveRun(
       continue;
     }
     seen.add(key);
-    const existing = rows.filter(
+    const ofKey = rows.filter(
       (row) =>
         requirementKey(row.origin, row.resource, row.action, row.conditions) ===
         key,
     );
+    // An expired row grants and restricts nothing, so it does not stand for
+    // the key. Deleting it changes no authority, so it does not count as a
+    // change on its own.
+    const expired = ofKey.filter((row) => isExpired(row.expiresAt, now));
+    if (expired.length > 0) {
+      await tx.delete(grantTable).where(
+        inArray(
+          grantTable.id,
+          expired.map((row) => row.id),
+        ),
+      );
+    }
+    const existing = ofKey.filter((row) => !isExpired(row.expiresAt, now));
 
     const resolved = await resolveRequirementGrant(req, ctx);
     if (resolved.ok) {
-      if (existing.length > 0) continue;
+      if (existing.length > 0) {
+        // The delegator owns each row's expiry.
+        for (const row of existing) {
+          const expiresAt = requirementRowExpiresAt(resolved, row.effect);
+          if (await setRowExpiry(tx, row, expiresAt, now)) rowsChanged = true;
+        }
+        continue;
+      }
       const row = resolved.row;
-      if (row.expiresAt !== null && row.expiresAt <= now) continue;
       const standing =
         row.effect === "ask" && row.resource.startsWith(TOOL_GRANT_PREFIX)
           ? standingEffects.get(row.resource.slice(TOOL_GRANT_PREFIX.length))
           : undefined;
-      await tx
-        .insert(grantTable)
-        .values({ ...row, effect: standing ?? row.effect });
+      const effect = standing ?? row.effect;
+      const expiresAt = requirementRowExpiresAt(resolved, effect);
+      if (isExpired(expiresAt, now)) continue;
+      await tx.insert(grantTable).values({ ...row, effect, expiresAt });
       rowsChanged = true;
       continue;
     }
 
+    for (const row of existing) {
+      if (row.effect === "allow") continue;
+      const floorExpiresAt =
+        req.source === "invoker" ? ctx.invokerExpiresAt : null;
+      if (await setRowExpiry(tx, row, floorExpiresAt, now)) rowsChanged = true;
+    }
     const lapsed = existing
       .filter((row) => row.effect === "allow")
       .map((row) => row.id);
@@ -543,6 +574,39 @@ async function rederiveRun(
 
   if (!rowsChanged) return null;
   return { run: { anchorRunId, address: run.address }, runPrincipalId };
+}
+
+function isExpired(expiresAt: Date | null, now: Date): boolean {
+  return expiresAt !== null && expiresAt <= now;
+}
+
+function sameInstant(a: Date | null, b: Date | null): boolean {
+  return a === null || b === null ? a === b : a.getTime() === b.getTime();
+}
+
+// Set a run row's expiry, and say whether the row changed. A row whose new
+// expiry has already passed is deleted, as an expired row is. The write
+// matches the effect the re-derivation read, so a row whose effect an
+// approval changed since then does not get the expiry of its old effect.
+async function setRowExpiry(
+  tx: DBExecutor,
+  row: { id: string; effect: GrantEffect; expiresAt: Date | null },
+  expiresAt: Date | null,
+  now: Date,
+): Promise<boolean> {
+  if (sameInstant(row.expiresAt, expiresAt)) return false;
+  const match = and(
+    eq(grantTable.id, row.id),
+    eq(grantTable.effect, row.effect),
+  );
+  const written = isExpired(expiresAt, now)
+    ? await tx.delete(grantTable).where(match).returning({ id: grantTable.id })
+    : await tx
+        .update(grantTable)
+        .set({ expiresAt, updatedAt: now })
+        .where(match)
+        .returning({ id: grantTable.id });
+  return written.length > 0;
 }
 
 // The standing `always` decisions the run's approver made, by tool name. The
