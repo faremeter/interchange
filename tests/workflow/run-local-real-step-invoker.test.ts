@@ -51,7 +51,6 @@ import {
   createSnapshotGrantsResolver,
   createToolBearingAgentFactory,
   createWorkflowStepInvoker,
-  snapshotStepGrants,
 } from "@intx/workflow-host/local";
 
 import { driveUntilSettled, localStepEnvBase } from "./local-step-env";
@@ -186,8 +185,12 @@ describe("runLocal with the real step invoker", () => {
         ...(bound ? { delivery } : {}),
       }),
     };
+    const resolveGrants = createSnapshotGrantsResolver(
+      snapshotRef,
+      "run-local test",
+    );
     const authorize = createCredentialsBackedAuthorize(
-      createSnapshotGrantsResolver(snapshotRef, "run-local test"),
+      resolveGrants,
       createGrantEvaluator({ floorFor: () => [] }),
     );
     const invokeStep = createWorkflowStepInvoker({
@@ -215,7 +218,7 @@ describe("runLocal with the real step invoker", () => {
         });
         attachStepCredentialWiring(env, {
           materialCell,
-          resolveGrants: () => snapshotStepGrants(snapshotRef, stepId),
+          resolveGrants: () => resolveGrants(stepId),
           providers,
         });
         return env;

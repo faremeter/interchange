@@ -377,7 +377,7 @@ function createStepStrategy(args: {
  * Write a grant set into the sidecar's substrate as the canonical
  * `{ grants: WireGrantRule[] }` envelope -- the shape
  * `assembleCredentialsSnapshot` validates (`{ grants: unknown[] }`) and
- * the child's `evaluateGrants` adapter narrows to `GrantRule[]`.
+ * the child's grants resolver parses as `GrantRule[]`.
  *
  * Two destinations share this write machinery, selected by `runId`:
  *

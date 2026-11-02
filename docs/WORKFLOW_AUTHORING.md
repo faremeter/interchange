@@ -214,8 +214,9 @@ does, use the real step invoker from `@intx/workflow-host/local`:
 const snapshotRef = {
   current: createLocalCredentialsSnapshot({ definition, directors, delivery }),
 };
+const resolveGrants = createSnapshotGrantsResolver(snapshotRef, "local run");
 const authorize = createCredentialsBackedAuthorize(
-  createSnapshotGrantsResolver(snapshotRef, "local run"),
+  resolveGrants,
   createGrantEvaluator({ floorFor: () => [] }),
 );
 const invokeStep = createWorkflowStepInvoker({
@@ -235,7 +236,7 @@ const invokeStep = createWorkflowStepInvoker({
     });
     attachStepCredentialWiring(env, {
       materialCell,
-      resolveGrants: () => snapshotStepGrants(snapshotRef, stepId),
+      resolveGrants: () => resolveGrants(stepId),
       providers,
     });
     return env;

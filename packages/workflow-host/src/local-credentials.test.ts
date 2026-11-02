@@ -23,10 +23,7 @@ import {
   type WorkflowDefinition,
 } from "@intx/workflow";
 
-import {
-  createLocalCredentialsSnapshot,
-  snapshotStepGrants,
-} from "./local-credentials";
+import { createLocalCredentialsSnapshot } from "./local-credentials";
 
 function tool(id: string, definitions: readonly ToolDeclaration[]) {
   return defineTool({
@@ -211,47 +208,5 @@ describe("createLocalCredentialsSnapshot", () => {
         directors: createDefaultDirectorRegistry(),
       }),
     ).toThrow("unresolvable director: @acme/missing-director");
-  });
-});
-
-describe("snapshotStepGrants", () => {
-  const snapshot = createLocalCredentialsSnapshot({
-    definition,
-    directors: createDefaultDirectorRegistry(),
-  });
-
-  test("reads a step's grants, resolving a map iteration to its base step", () => {
-    const ref = { current: snapshot };
-    const [first] = snapshot.steps;
-    if (first === undefined) throw new Error("the snapshot has no steps");
-    const grants: readonly unknown[] = snapshotStepGrants(ref, "fan[3]");
-    expect(grants).toBe(first.grants);
-  });
-
-  test("refuses an entry whose grants are not grant rules", () => {
-    const malformed = {
-      current: {
-        steps: [
-          {
-            stepId: "read",
-            address: "read",
-            grants: [{ resource: "tool:read" }],
-            contentHash: "",
-          },
-        ],
-      },
-    };
-    expect(() => snapshotStepGrants(malformed, "read")).toThrow(
-      "local credentials: the grants of step read are not grant rules",
-    );
-  });
-
-  test("refuses when no snapshot is active or the step has no entry", () => {
-    expect(() => snapshotStepGrants({ current: null }, "read")).toThrow(
-      "no credentials snapshot is active for step read",
-    );
-    expect(() => snapshotStepGrants({ current: snapshot }, "missing")).toThrow(
-      "the credentials snapshot has no entry for step missing",
-    );
   });
 });

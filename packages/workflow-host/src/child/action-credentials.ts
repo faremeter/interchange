@@ -21,27 +21,17 @@ import type { StepGrantsResolver } from "./credentials-backed-authorize";
  */
 export interface SidecarStepCredentialContext {
   readonly materialCell: CredentialMaterialCell;
-  /**
-   * The step's grants, resolved live by base step id. The credentials
-   * snapshot types them `unknown[]`; `stepGrantsResolver` casts them to
-   * `GrantRule[]` where Gate 2 reads them.
-   */
+  /** The step's grants, resolved live by base step id. */
   readonly resolveStepGrants: StepGrantsResolver;
   readonly providers: CredentialProviderRegistry;
 }
 
-/**
- * A thunk over one step's grants in the `GrantRule` shape Gate 2 reads. The
- * credentials snapshot carries grants as `unknown[]`; this is the one place
- * the host casts them.
- */
+/** A thunk over one step's grants, which Gate 2 reads. */
 export function stepGrantsResolver(
   context: SidecarStepCredentialContext,
   stepId: string,
 ): () => readonly GrantRule[] {
-  return () =>
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolveStepGrants returns unknown[]; Gate 2 reads GrantRule
-    context.resolveStepGrants(stepId) as readonly GrantRule[];
+  return () => context.resolveStepGrants(stepId);
 }
 
 /**
