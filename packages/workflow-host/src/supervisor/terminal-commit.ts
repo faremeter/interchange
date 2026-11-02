@@ -30,7 +30,7 @@ import {
   appendRunEvents,
   runEventPath,
   workflowEventToOnDisk,
-} from "../adapters/repo-store";
+} from "../adapters/on-disk-event";
 
 const logger = getLogger(["workflow-host", "supervisor", "terminal-commit"]);
 

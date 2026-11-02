@@ -41,11 +41,8 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import { subscribeKind } from "@intx/hub-sessions/substrate";
 import type { RunState, SignalChannel } from "@intx/workflow";
-import {
-  appendRunEvents,
-  readRunEventSummary,
-  runEventPath,
-} from "../adapters/repo-store";
+import { appendRunEvents, runEventPath } from "../adapters/on-disk-event";
+import { readRunEventSummary } from "../adapters/repo-store";
 import {
   withRunCommitBarrier,
   type RepoStore as RuntimeRepoStore,

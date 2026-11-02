@@ -19,11 +19,8 @@ import type {
 } from "@intx/hub-sessions";
 import type { WorkflowEvent } from "@intx/workflow";
 
-import {
-  createWorkflowRunRepoStore,
-  readRunEventSummary,
-  type PriorRunEvent,
-} from "./repo-store";
+import type { PriorRunEvent } from "./on-disk-event";
+import { createWorkflowRunRepoStore, readRunEventSummary } from "./repo-store";
 import { compactRunEvents } from "../supervisor/run-event-compaction";
 
 const tempDirs: string[] = [];
