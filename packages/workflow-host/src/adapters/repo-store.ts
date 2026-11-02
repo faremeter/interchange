@@ -42,6 +42,8 @@ import {
 } from "@intx/hub-sessions/substrate";
 import type { RepoStore, WorkflowEvent } from "@intx/workflow";
 
+import { workflowEventToOnDisk } from "./on-disk-event";
+
 /**
  * Local handle for the runtime-env subscribe options. The workflow
  * package's `RepoStore` interface declares the shape inline but does
@@ -298,22 +300,6 @@ function onDiskToWorkflowEvent(
   // state-machine narrow.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- WorkflowEvent's discriminated union is narrowed downstream by the state machine; no runtime validator at this layer
   return built as unknown as WorkflowEvent;
-}
-
-/**
- * Translate a state-machine `WorkflowEvent` (using `kind` as the
- * discriminator) into the on-disk envelope shape (`{seq, type,
- * ...rest}`) the workflow-run kind handler validates and the
- * substrate's `subscribeKind` helper filters on. Exported so the
- * supervisor's terminal-commit path encodes a supervisor-authored
- * `RunFailed` through the same single source of the on-disk shape.
- */
-export function workflowEventToOnDisk(
-  event: WorkflowEvent,
-  seq: number,
-): Record<string, unknown> {
-  const { kind, seq: _eventSeq, ...rest } = event;
-  return { seq, type: kind, ...rest };
 }
 
 /**
