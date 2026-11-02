@@ -253,13 +253,9 @@ export function createProxyWorkflowRunRepoStore(
       // proxy's `writeTreePreservingPrefix` returns successfully.
       //
       // `from: { seq }` replay against historical commits is not
-      // emitted here today: the runtime body's signal-channel and
-      // similar consumers attach with `from: "head"` so only events
-      // committed after subscription fire. A `from: { seq }` caller
-      // (a resume path that wants to replay) would currently miss
-      // historical commits -- the bare store's `subscribe` is the
-      // path that supports replay today, and resume code can call it
-      // directly if needed.
+      // emitted here. Every consumer attaches with `from: "head"`, and
+      // the workflow-run adapter replays a run's events from the run's
+      // own log.
       const key = refKey(repoId, ref);
       let set = subscribers.get(key);
       if (set === undefined) {

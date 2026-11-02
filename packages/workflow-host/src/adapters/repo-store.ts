@@ -41,6 +41,7 @@ import {
   splitCombinedEventLog,
 } from "@intx/hub-sessions/substrate";
 import type { RepoStore, WorkflowEvent } from "@intx/workflow";
+import { beginDelivery } from "@intx/workflow/runtime";
 
 import { workflowEventToOnDisk } from "./on-disk-event";
 
@@ -414,19 +415,21 @@ async function* subscribeRun(
   // workflow-event `type` keeps the runtime body's contract intact (it
   // wants every event for the run, not a subset). The substrate helper
   // also surfaces per-run attribution via the entry's `runId`, which
-  // we use to filter just this run's events. Replay-then-live mode
-  // mirrors `SubscribeOpts.from`: `"head"` emits only events committed
-  // strictly after subscription, `{ seq }` enumerates prior events at
-  // or after the supplied seq before transitioning to live.
+  // we use to filter just this run's events.
+  //
+  // `{ seq }` is a seq in this run's log, which the substrate's replay does
+  // not count in, and the child's proxy store does not replay at all. So the
+  // tail always starts at head and the replay comes from the run's log.
+  const stopTail = new AbortController();
   const kindOpts: Parameters<typeof subscribeKind>[5] = {
-    signal: subOpts.signal,
-    from: subOpts.from,
+    signal: AbortSignal.any([subOpts.signal, stopTail.signal]),
+    from: "head",
     kinds: ALL_WORKFLOW_EVENT_TYPES,
   };
   if (subOpts.bufferLimit !== undefined) {
     kindOpts.bufferLimit = subOpts.bufferLimit;
   }
-  const iter = subscribeKind(
+  const tail = subscribeKind(
     opts.substrate,
     opts.principal,
     opts.repoId,
@@ -434,9 +437,42 @@ async function* subscribeRun(
     OnDiskEnvelope,
     kindOpts,
   );
-  for await (const entry of iter) {
-    if (entry.runId !== runId) continue;
-    const event = onDiskToWorkflowEvent(entry.event);
-    yield { seq: entry.event.seq, event };
+  // This pull attaches the tail. A commit during the read below is then in the
+  // tail even when the read missed it, and the seq drops it when it did not.
+  let pending = tail.next();
+  void pending.catch(() => undefined);
+  let replayedThrough = 0;
+  try {
+    if (subOpts.from !== "head") {
+      // Committed input can sit in this read with no subscriber to count it,
+      // so it counts until the consumer has taken what the read found.
+      const endRead = beginDelivery();
+      try {
+        for (const event of await readAllEventsForRun(opts, runId)) {
+          if (event.seq < subOpts.from.seq) continue;
+          if (subOpts.signal.aborted) return;
+          replayedThrough = event.seq;
+          yield { seq: event.seq, event };
+        }
+      } finally {
+        endRead();
+      }
+    }
+    for (;;) {
+      const next = await pending;
+      if (next.done === true) return;
+      const entry = next.value;
+      if (entry.runId === runId && entry.event.seq > replayedThrough) {
+        const event = onDiskToWorkflowEvent(entry.event);
+        yield { seq: entry.event.seq, event };
+      }
+      pending = tail.next();
+    }
+  } finally {
+    // A return closes a generator only between its pulls, so end the pull
+    // still pending before closing the tail.
+    stopTail.abort();
+    await pending.catch(() => undefined);
+    await tail.return();
   }
 }
