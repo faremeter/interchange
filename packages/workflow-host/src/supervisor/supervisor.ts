@@ -4925,7 +4925,8 @@ export function createWorkflowSupervisor(
   }
 
   // The child's answer for a signal a dispatch delivered, or `undefined` once
-  // the cohort aborts. A child that does not answer in time fails the
+  // the cohort aborts. The child can hold a signal for a resumed park well past
+  // another step's park. A child that does not answer in time fails the
   // dispatch, as the park wait's backstop does; its mail stays in processing/
   // until it answers, since it can still commit it.
   async function waitForSignalAnswer(
@@ -4940,6 +4941,7 @@ export function createWorkflowSupervisor(
         dispatchWaitBackstopMs,
       );
     });
+    bindings.onDispatchAnswerWait?.(runId);
     try {
       const answer = await whileDispatchWaits(
         cohortAbort,

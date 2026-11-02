@@ -3926,6 +3926,7 @@ describe("supervisor standby and wake", () => {
       onStandbyWait?: WorkflowSupervisorBindings["onStandbyWait"];
       onShutdownWait?: WorkflowSupervisorBindings["onShutdownWait"];
       onDispatchWait?: WorkflowSupervisorBindings["onDispatchWait"];
+      onDispatchAnswerWait?: WorkflowSupervisorBindings["onDispatchAnswerWait"];
       parkedQueryWatchdogMs?: number;
       timers?: Pick<
         WorkflowSupervisorBindings,
@@ -3979,6 +3980,9 @@ describe("supervisor standby and wake", () => {
           : {}),
         ...(opts.onDispatchWait !== undefined
           ? { onDispatchWait: opts.onDispatchWait }
+          : {}),
+        ...(opts.onDispatchAnswerWait !== undefined
+          ? { onDispatchAnswerWait: opts.onDispatchAnswerWait }
           : {}),
         ...(opts.parkedQueryWatchdogMs !== undefined
           ? { parkedQueryWatchdogMs: opts.parkedQueryWatchdogMs }
@@ -5043,6 +5047,8 @@ describe("supervisor standby and wake", () => {
   async function setupLiveRun(
     opts: {
       inboxPrimitives?: InboxPrimitives;
+      onSuspensionRegister?: WorkflowSupervisorBindings["onSuspensionRegister"];
+      onDispatchAnswerWait?: WorkflowSupervisorBindings["onDispatchAnswerWait"];
       respawnBackoffInitialMs?: number;
       dispatchRetryBackoffMs?: number;
       dispatchWaitBackstopMs?: number;
@@ -5441,6 +5447,83 @@ describe("supervisor standby and wake", () => {
       runId: RUN,
       signalName: signalName("corr-lost"),
     });
+
+    await supervisor.shutdown();
+  });
+
+  test("mail the child holds past another step's park is consumed once it commits", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const answerAwaited = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, mailBus } = await setupLiveRun({
+      inboxPrimitives: inbox,
+      onDispatchAnswerWait: () => answerAwaited.resolve(undefined),
+    });
+    await answerParkedQuery(first, firstSender, 1, [
+      { runId: RUN, correlationId: "corr-held", parkKind: "input" },
+    ]);
+    mailBus.deliver(
+      ADDRESS,
+      inboundDelivery(new TextEncoder().encode("held turn")),
+    );
+    await waitForUpstreamPayload(first.supervisorToChild, "signal.deliver");
+    await firstSender.send({ type: "park.notify", data: GATE_PARK });
+    // The dispatch is past the gate's park and waits for the child's answer.
+    await answerAwaited.promise;
+    expect(inbox.messageIds(ADDRESS).consumed).toEqual([]);
+
+    await confirmDelivery(first, firstSender, 1, true);
+    await waitUntil(() => inbox.messageIds(ADDRESS).consumed.length === 1);
+
+    await supervisor.shutdown();
+  });
+
+  test("mail the child holds past another step's park goes to the next child when it crashes", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const answerAwaited = Promise.withResolvers<undefined>();
+    const {
+      supervisor,
+      firstSender,
+      first,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      waits,
+    } = await setupLiveRun({
+      inboxPrimitives: inbox,
+      onDispatchAnswerWait: () => answerAwaited.resolve(undefined),
+      respawnBackoffInitialMs: 0,
+    });
+    await answerParkedQuery(first, firstSender, 1, [
+      { runId: RUN, correlationId: "corr-held", parkKind: "input" },
+    ]);
+    mailBus.deliver(
+      ADDRESS,
+      inboundDelivery(new TextEncoder().encode("held turn")),
+    );
+    await waitForUpstreamPayload(first.supervisorToChild, "signal.deliver");
+    await firstSender.send({ type: "park.notify", data: GATE_PARK });
+    await answerAwaited.promise;
+    first.eventChildToSupervisor.close();
+    first.childToSupervisor.close();
+    first.resolveExit?.(1);
+
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    const secondSender = await driveReady(second, ipcKeypair);
+    await waits.nth(1);
+    await answerParkedQuery(second, secondSender, 1, [
+      { runId: RUN, correlationId: "corr-held", parkKind: "input" },
+    ]);
+    const delivered = await waitForUpstreamPayload(
+      second.supervisorToChild,
+      "signal.deliver",
+    );
+    expect(delivered.data).toMatchObject({
+      runId: RUN,
+      signalName: signalName("corr-held"),
+    });
+    expect(inbox.messageIds(ADDRESS).consumed).toEqual([]);
 
     await supervisor.shutdown();
   });
