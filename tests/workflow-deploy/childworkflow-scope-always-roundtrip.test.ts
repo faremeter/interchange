@@ -55,7 +55,6 @@ import {
 } from "bun:test";
 import { eq } from "drizzle-orm";
 
-import { createGrantStore } from "@intx/db";
 import {
   approval,
   signalCorrelation,
@@ -374,7 +373,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         getSession: createMockGetSession(OPERATOR_USER_ID, "cw_scope_always"),
         authHandler: () => new Response("", { status: 404 }),
         db: h.db,
-        grantStore: createGrantStore(h.db),
         sidecarRouter: env.hub.router,
         sessionService: env.hub.sessionService,
         eventCollectors: createMockEventCollectors(

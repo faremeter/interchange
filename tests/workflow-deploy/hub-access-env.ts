@@ -8,7 +8,7 @@
 import { type } from "arktype";
 
 import { createNoopCredentialCipher } from "@intx/crypto";
-import { createGrantStore, createRunTokenStore } from "@intx/db";
+import { createRunTokenStore } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
@@ -226,7 +226,6 @@ export async function startHubAccessEnv(args: {
     getSession: sessionFor(callerUserId),
     authHandler: () => new Response("", { status: 404 }),
     db: h.db,
-    grantStore: createGrantStore(h.db),
     credentialCipher: cipher,
     sidecarRouter: env.hub.router,
     sessionService: env.hub.sessionService,
