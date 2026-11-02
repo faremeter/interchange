@@ -92,6 +92,7 @@ function stubRepoStore(): RepoStore {
     receivePack: unused,
     createPack: unused,
     commitPackedTip: () => notImpl("commitPackedTip"),
+    forgetPackedTip: () => notImpl("forgetPackedTip"),
     resolveRef: unused,
     listRefs: unused,
     resolveHead: unused,
