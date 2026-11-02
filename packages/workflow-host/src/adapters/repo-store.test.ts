@@ -18,6 +18,7 @@ import type {
   ValidatePushResult,
 } from "@intx/hub-sessions";
 import type { WorkflowEvent } from "@intx/workflow";
+import { isQuiet, whenDelivered } from "@intx/workflow/runtime";
 
 import type { PriorRunEvent } from "./on-disk-event";
 import { createWorkflowRunRepoStore, readRunEventSummary } from "./repo-store";
@@ -427,6 +428,207 @@ describe("workflow-host RepoStore adapter — first-seq contract against runtime
     const events = await adapter.read(runId);
     expect(events.map((e) => e.seq)).toEqual([1]);
     expect(events[0]?.kind).toBe("RunStarted");
+  });
+});
+
+describe("workflow-host RepoStore adapter — subscribe", () => {
+  // The child's proxy store has no replay, so the substrate is only ever asked
+  // for a tail from head.
+  async function subscribeHarness(name: string) {
+    const dataDir = await makeTempDir(`repo-store-adapter-${name}-`);
+    const repoId: RepoId = { kind: "workflow-run", id: `deployment-${name}` };
+    const substrate = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: allowAll,
+    });
+    await substrate.writeTree({ kind: "hub" }, repoId, REF, {
+      files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+      message: "genesis",
+    });
+    const froms: unknown[] = [];
+    type ReadHold = {
+      pinned: "before-commits" | "after-commits";
+      reached: PromiseWithResolvers<undefined>;
+      release: PromiseWithResolvers<undefined>;
+    };
+    let readHold: ReadHold | undefined;
+    const adapter = createWorkflowRunRepoStore({
+      substrate: {
+        ...substrate,
+        subscribe(principal, id, ref, opts) {
+          froms.push(opts.from);
+          return substrate.subscribe(principal, id, ref, opts);
+        },
+        async openCommittedReads(...args) {
+          const hold = readHold;
+          readHold = undefined;
+          if (hold === undefined) return substrate.openCommittedReads(...args);
+          if (hold.pinned === "before-commits") {
+            const reads = await substrate.openCommittedReads(...args);
+            hold.reached.resolve(undefined);
+            await hold.release.promise;
+            return reads;
+          }
+          hold.reached.resolve(undefined);
+          await hold.release.promise;
+          return substrate.openCommittedReads(...args);
+        },
+      },
+      repoId,
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      ref: REF,
+    });
+    // Holds the next committed read, with its commit pinned before or after
+    // whatever the test commits while it is held.
+    const holdNextRead = (pinned: ReadHold["pinned"]) => {
+      const hold: ReadHold = {
+        pinned,
+        reached: Promise.withResolvers(),
+        release: Promise.withResolvers(),
+      };
+      readHold = hold;
+      return {
+        reached: hold.reached.promise,
+        release: () => hold.release.resolve(undefined),
+      };
+    };
+    return { adapter, froms, holdNextRead };
+  }
+
+  test("a seq replays the run's committed events from there, then goes live", async () => {
+    const { adapter, froms } = await subscribeHarness("replay");
+    const runId = "run-replay";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    await adapter.append(runId, freshStepStarted(2));
+    await adapter.append(runId, freshStepStarted(3));
+    await adapter.append("run-other", freshRunStarted("run-other", 1));
+
+    const abort = new AbortController();
+    const iter = adapter.subscribe(runId, {
+      signal: abort.signal,
+      from: { seq: 2 },
+    });
+    expect((await iter.next()).value?.seq).toBe(2);
+    expect((await iter.next()).value?.seq).toBe(3);
+    const live = iter.next();
+    await adapter.append("run-other", freshStepStarted(2));
+    await adapter.append(runId, freshStepStarted(4));
+    expect((await live).value?.seq).toBe(4);
+    expect(froms).toEqual(["head"]);
+    abort.abort();
+  });
+
+  // Two commits land while the replay's read is held, and a third once the
+  // consumer is live: a commit delivered twice would come ahead of the third.
+  async function replayAcrossCommits(
+    pinned: "before-commits" | "after-commits",
+  ) {
+    const { adapter, holdNextRead } = await subscribeHarness(
+      `during-read-${pinned}`,
+    );
+    const runId = "run-during-read";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+
+    const abort = new AbortController();
+    const iter = adapter.subscribe(runId, {
+      signal: abort.signal,
+      from: { seq: 1 },
+    });
+    const held = holdNextRead(pinned);
+    const first = iter.next();
+    await held.reached;
+    await adapter.append(runId, freshStepStarted(2));
+    await adapter.append(runId, freshStepStarted(3));
+    held.release();
+
+    const seqs = [(await first).value?.seq];
+    seqs.push((await iter.next()).value?.seq);
+    seqs.push((await iter.next()).value?.seq);
+    const live = iter.next();
+    await adapter.append(runId, freshStepStarted(4));
+    seqs.push((await live).value?.seq);
+    const next = iter.next();
+    abort.abort();
+    expect((await next).done).toBe(true);
+    return seqs;
+  }
+
+  test("commits the replay's read missed reach the consumer from the tail", async () => {
+    expect(await replayAcrossCommits("before-commits")).toEqual([1, 2, 3, 4]);
+  });
+
+  test("commits both the replay's read and the tail hold reach the consumer once", async () => {
+    expect(await replayAcrossCommits("after-commits")).toEqual([1, 2, 3, 4]);
+  });
+
+  test("head replays nothing", async () => {
+    const { adapter } = await subscribeHarness("head");
+    const runId = "run-head";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+
+    const abort = new AbortController();
+    const iter = adapter.subscribe(runId, {
+      signal: abort.signal,
+      from: "head",
+    });
+    const live = iter.next();
+    await adapter.append(runId, freshStepStarted(2));
+    expect((await live).value?.seq).toBe(2);
+    abort.abort();
+  });
+
+  test("a consumer that returns during the replay closes the iterator", async () => {
+    const { adapter } = await subscribeHarness("return");
+    const runId = "run-return";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    await adapter.append(runId, freshStepStarted(2));
+
+    const iter = adapter.subscribe(runId, {
+      signal: new AbortController().signal,
+      from: { seq: 1 },
+    });
+    expect((await iter.next()).value?.seq).toBe(1);
+    await iter.return?.();
+    expect((await iter.next()).done).toBe(true);
+  });
+
+  test("an abort during the replay ends the iterator without a throw", async () => {
+    const { adapter } = await subscribeHarness("abort");
+    const runId = "run-abort";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    await adapter.append(runId, freshStepStarted(2));
+
+    const abort = new AbortController();
+    const iter = adapter.subscribe(runId, {
+      signal: abort.signal,
+      from: { seq: 1 },
+    });
+    expect((await iter.next()).value?.seq).toBe(1);
+    abort.abort();
+    expect((await iter.next()).done).toBe(true);
+  });
+
+  test("a replayed event counts as a delivery until the consumer comes back", async () => {
+    const { adapter } = await subscribeHarness("delivery");
+    const runId = "run-delivery";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+
+    const abort = new AbortController();
+    const iter = adapter.subscribe(runId, {
+      signal: abort.signal,
+      from: { seq: 1 },
+    });
+    const first = iter.next();
+    expect(isQuiet()).toBe(false);
+    await first;
+    expect(isQuiet()).toBe(false);
+    const live = iter.next();
+    await whenDelivered();
+    expect(isQuiet()).toBe(true);
+    abort.abort();
+    expect((await live).done).toBe(true);
   });
 });
 
