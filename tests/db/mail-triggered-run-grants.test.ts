@@ -320,6 +320,40 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(resources).toContain("secret:vault/use");
     });
 
+    test("a creator requirement row takes the creator grant's expiry", async () => {
+      const until = new Date(Date.now() + 2 * 3_600_000);
+      await h.db
+        .update(grant)
+        .set({ expiresAt: until })
+        .where(eq(grant.id, "grt_creator_vault"));
+      await seedFrozenSnapshot(snapshot("secret:vault"));
+
+      const result = await materializeOnce(RUN_ID);
+      if (result.outcome !== "materialized") {
+        throw new Error(`expected materialized, got ${result.outcome}`);
+      }
+
+      const [runPrincipal] = await h.db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      const vault = (
+        await h.db
+          .select()
+          .from(grant)
+          .where(eq(grant.principalId, runPrincipal?.id ?? ""))
+      ).filter((row) => row.resource === "secret:vault");
+      expect(vault.map((row) => [row.origin, row.expiresAt])).toEqual([
+        ["creator", until],
+      ]);
+      // The grants the run receives carry the same expiry.
+      expect(
+        result.stepGrants
+          .filter((rule) => rule.resource === "secret:vault")
+          .map((rule) => rule.expiresAt),
+      ).toEqual([until]);
+    });
+
     test("commits a credential use grant from the anchor bindings", async () => {
       await seedFrozenSnapshot(snapshot("secret:vault"));
       const consumer = "tool:bundle-id";

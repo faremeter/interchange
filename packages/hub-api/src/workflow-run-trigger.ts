@@ -492,8 +492,8 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       );
       if (grantRows === "not-ready") return grantRows;
       // `now` stamps both the staged rows and the run principal's creation,
-      // so an invoker row expires `INVOKER_GRANT_TTL_MS` after the principal
-      // is created.
+      // so an invoker `allow` row expires `INVOKER_GRANT_TTL_MS` after the
+      // principal is created at the latest.
       return commitRunGrants(
         {
           ...grantArgs,

@@ -1,7 +1,10 @@
 export { authorize, evaluateGrants } from "./evaluate";
 export type { AuthorizeOptions, ConditionMode, EvalOptions } from "./evaluate";
-export { authorizeAction } from "./authorize-action";
-export type { AuthorizeDecision } from "./authorize-action";
+export { authorizeAction, authorizeActionUntil } from "./authorize-action";
+export type {
+  AuthorizeDecision,
+  AuthorizeUntilDecision,
+} from "./authorize-action";
 export { matchPattern } from "./patterns";
 export { patternSpecificity, grantSpecificity } from "./specificity";
 export {
