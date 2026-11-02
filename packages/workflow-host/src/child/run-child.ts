@@ -120,6 +120,11 @@ import type { InferenceSource, MailPartReader } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
+import {
+  createResumeDeliveryHold,
+  parkedSignalNames,
+  type ResumeDeliveryHold,
+} from "./resume-delivery-hold";
 import { createCancellationBarrier } from "./cancellation-barrier";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
 import type {
@@ -929,6 +934,7 @@ export async function runWorkflowChild(
   // TransitionError into its fire-and-forget continuation. Each site
   // removes its entry when the run reaches terminal.
   const runsInFlight = new Map<string, RuntimeWorkflowRun>();
+  const resumeDeliveryHold = createResumeDeliveryHold();
   const cancellationBarrier = createCancellationBarrier(
     runtimeRepoStore,
     upstreamSender,
@@ -963,7 +969,11 @@ export async function runWorkflowChild(
         });
       },
       upstreamSender,
+      onSignalAwaiter: (park) => {
+        resumeDeliveryHold.reparked(park.runId, park.name);
+      },
     });
+    resumeDeliveryHold.hold(run.runId, parkedSignalNames(run.resumedState));
     const handle = runtimeRun(definition, env, {
       runId: run.runId,
       resumeFromEvents: run.seedEvents,
@@ -982,10 +992,12 @@ export async function runWorkflowChild(
           runId: run.runId,
         });
         runsInFlight.delete(run.runId);
+        resumeDeliveryHold.runEnded(run.runId);
         return emitTerminalEvent(upstreamSender, result);
       })
       .catch((cause) => {
         runsInFlight.delete(run.runId);
+        resumeDeliveryHold.runEnded(run.runId);
         logger.error`resumed run ${run.runId} failed: ${String(cause)}`;
       });
     resumedRunIds.push(run.runId);
@@ -1057,6 +1069,7 @@ export async function runWorkflowChild(
           drainController,
           triggeredRunIds,
           runsInFlight,
+          resumeDeliveryHold,
           cancellationBarrier,
           quietCheck,
           warmCache,
@@ -1092,6 +1105,7 @@ export async function runWorkflowChild(
 
   const cleanupControlLoop = async (): Promise<void> => {
     stopHostScheduler(opts.bindings);
+    resumeDeliveryHold.close();
     cancellationBarrier.close("workflow-child control loop exited");
     // Any exit path -- clean (iterator end), dirty (thrown error),
     // shutdown (already cancelled, repeat is a no-op on an empty map)
@@ -1258,6 +1272,7 @@ async function handleControlPayload(
     drainController: DrainController;
     triggeredRunIds: string[];
     runsInFlight: Map<string, RuntimeWorkflowRun>;
+    resumeDeliveryHold: ResumeDeliveryHold;
     cancellationBarrier: ReturnType<typeof createCancellationBarrier>;
     quietCheck: { current: AbortController | null };
     warmCache: WarmAgentCache | undefined;
@@ -1446,65 +1461,87 @@ async function handleControlPayload(
         void acknowledge(false);
         return false;
       }
-      // Land the signal as a `SignalReceived` commit on the run's
-      // event log. The signal-channel substrate's `subscribeKind`
-      // peer (the per-run signal channel installed at run start) is
-      // what resolves any pending `awaitNext` awaiter -- the
-      // control-loop's job is just to commit. Constructing an
-      // ad-hoc signal channel scoped to this runId keeps the
-      // control-loop free of per-run signal-channel bookkeeping
-      // while still routing through the canonical writer path.
-      //
-      // The deliver path writes through the proxy substrate, which the
-      // sidecar's substrate factory wraps with a pack-push
-      // hook. The hook emits a `pack.push.request` on the upstream
-      // control channel and awaits the supervisor's matching
-      // `pack.push.response` on the same downstream stream this
-      // iterator pulls from. Awaiting the deliver inline blocks the
-      // iterator from pulling the response that resolves the deliver
-      // -- a deadlock observed end-to-end with the workflow-run
-      // pack-pushing wrapper. Fire the deliver off the loop so the
-      // iterator continues pumping `pack.push.response` (and any other
-      // downstream payload) while the deliver settles in the
-      // background. A commit failure surfaces via the logger; the
-      // runtime body's `signalChannel.awaitNext` peer either resolves
-      // (deliver landed) or remains pending until a subsequent
-      // delivery.
-      const endDelivery = beginDelivery();
-      const transientSignalChannel = createWorkflowHostSignalChannel({
-        repoStore: ctx.bindings.substrate,
-        runtimeStore: ctx.runtimeRepoStore,
-        principal: ctx.bindings.principal,
-        repoId: ctx.bindings.workflowRunRepoId,
-        ref: ctx.bindings.workflowRunRef,
-        runId: payload.data.runId,
-        readState: () => emptyState(payload.data.runId),
-        newId: () => ctx.newId("sig"),
-        clock: ctx.clock,
-      });
-      void (async () => {
-        let committed = false;
-        try {
-          committed = await transientSignalChannel.land(
-            payload.data.signalName,
-            payload.data.payload,
-            payload.data.signalId,
-            ...(payload.data.correlationId !== undefined
-              ? [payload.data.correlationId]
-              : []),
-          );
-          if (!committed) {
-            logger.warn`signal.deliver for run ${payload.data.runId} whose log already ended; refusing it (signalName=${payload.data.signalName})`;
+      const deliver = (): void => {
+        // Land the signal as a `SignalReceived` commit on the run's
+        // event log. The signal-channel substrate's `subscribeKind`
+        // peer (the per-run signal channel installed at run start) is
+        // what resolves any pending `awaitNext` awaiter -- the
+        // control-loop's job is just to commit. Constructing an
+        // ad-hoc signal channel scoped to this runId keeps the
+        // control-loop free of per-run signal-channel bookkeeping
+        // while still routing through the canonical writer path.
+        //
+        // The deliver path writes through the proxy substrate, which the
+        // sidecar's substrate factory wraps with a pack-push
+        // hook. The hook emits a `pack.push.request` on the upstream
+        // control channel and awaits the supervisor's matching
+        // `pack.push.response` on the same downstream stream this
+        // iterator pulls from. Awaiting the deliver inline blocks the
+        // iterator from pulling the response that resolves the deliver
+        // -- a deadlock observed end-to-end with the workflow-run
+        // pack-pushing wrapper. Fire the deliver off the loop so the
+        // iterator continues pumping `pack.push.response` (and any other
+        // downstream payload) while the deliver settles in the
+        // background. A commit failure surfaces via the logger; the
+        // runtime body's `signalChannel.awaitNext` peer either resolves
+        // (deliver landed) or remains pending until a subsequent
+        // delivery.
+        const endDelivery = beginDelivery();
+        const transientSignalChannel = createWorkflowHostSignalChannel({
+          repoStore: ctx.bindings.substrate,
+          runtimeStore: ctx.runtimeRepoStore,
+          principal: ctx.bindings.principal,
+          repoId: ctx.bindings.workflowRunRepoId,
+          ref: ctx.bindings.workflowRunRef,
+          runId: payload.data.runId,
+          readState: () => emptyState(payload.data.runId),
+          newId: () => ctx.newId("sig"),
+          clock: ctx.clock,
+        });
+        void (async () => {
+          let committed = false;
+          try {
+            committed = await transientSignalChannel.land(
+              payload.data.signalName,
+              payload.data.payload,
+              payload.data.signalId,
+              ...(payload.data.correlationId !== undefined
+                ? [payload.data.correlationId]
+                : []),
+            );
+            if (!committed) {
+              logger.warn`signal.deliver for run ${payload.data.runId} whose log already ended; refusing it (signalName=${payload.data.signalName})`;
+            }
+          } catch (cause) {
+            const reason =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.warn`signal.deliver commit failed runId=${payload.data.runId} signalName=${payload.data.signalName}: ${reason}`;
+          } finally {
+            await transientSignalChannel.stop();
+            await acknowledge(committed);
+            endDelivery();
           }
-        } catch (cause) {
-          const reason = cause instanceof Error ? cause.message : String(cause);
-          logger.warn`signal.deliver commit failed runId=${payload.data.runId} signalName=${payload.data.signalName}: ${reason}`;
-        } finally {
-          await transientSignalChannel.stop();
-          await acknowledge(committed);
-          endDelivery();
+        })();
+      };
+      // A held signal is not counted as a delivery: it would keep the process
+      // from going quiet, which is what ends a hold no re-park ends. The
+      // supervisor still waits for the answer before it stops the child.
+      const held = ctx.resumeDeliveryHold.until(
+        payload.data.runId,
+        payload.data.signalName,
+      );
+      if (held === undefined) {
+        deliver();
+        return false;
+      }
+      void held.then((canLand) => {
+        if (canLand && ctx.runsInFlight.has(payload.data.runId)) {
+          deliver();
+        } else {
+          logger.warn`signal.deliver held for run ${payload.data.runId} signalName=${payload.data.signalName} can no longer land; refusing it`;
+          void acknowledge(false);
         }
-      })();
+      });
       return false;
     }
     case "cancel.prepare": {
@@ -1914,6 +1951,7 @@ function buildRuntimeEnv(args: {
   mailboxCallBridge?: ChildMailboxCallBridge;
   onEvent: (event: EventPayload) => void;
   upstreamSender: ControlChannelSender;
+  onSignalAwaiter?: (park: { runId: string; name: string }) => void;
 }): WorkflowRuntimeEnv {
   const signalChannel = createWorkflowHostSignalChannel({
     repoStore: args.bindings.substrate,
@@ -2020,6 +2058,9 @@ function buildRuntimeEnv(args: {
     onPark: (park) => {
       void emitParkNotify(args.upstreamSender, park);
     },
+    ...(args.onSignalAwaiter !== undefined
+      ? { onSignalAwaiter: args.onSignalAwaiter }
+      : {}),
     // Let the resume classifier recover a step that crashed across the park
     // boundary. Absent (tests, the recursive child-workflow adapter) leaves a
     // crashed invocation a terminal failure.

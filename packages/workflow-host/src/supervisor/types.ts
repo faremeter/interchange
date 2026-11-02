@@ -386,6 +386,11 @@ export interface WorkflowSupervisorBindings {
    */
   onDispatchWait?: (runId: string) => void;
   /**
+   * Test seam, unset in production. Called when the dispatch waits for the
+   * child to say whether it committed a signal it was sent.
+   */
+  onDispatchAnswerWait?: (runId: string) => void;
+  /**
    * Per-run grants source. The dispatch loop consults it before it forwards a
    * `trigger.fire`, and every new child (spawn, crash-respawn, recycle) gets
    * its result in the `authority.set` frame before it resumes any run. It
