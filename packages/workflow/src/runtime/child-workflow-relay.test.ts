@@ -47,6 +47,7 @@ import {
   type SpawnChildWorkflow,
   type SignalChannel,
   type StepInvoker,
+  type SuspendableChildHandle,
   type WorkflowAuthorizeFn,
   type WorkflowDefinition,
   type WorkflowEvent,
@@ -198,6 +199,7 @@ function startRelayed(args: {
   holdUntilChildAwaits?: readonly string[];
   signalChannel?: SignalChannel;
   spawnChild?: SpawnChildWorkflow;
+  wrapChild?: (handle: SuspendableChildHandle) => SuspendableChildHandle;
   repoStore?: RepoStore;
   resumeFromEvents?: readonly WorkflowEvent[];
   hasUpstreamSignalResolver?: boolean;
@@ -230,7 +232,7 @@ function startRelayed(args: {
   const signalChannel =
     args.signalChannel ??
     createInMemorySignalChannel({ newId: () => newId("sig") });
-  const spawnChild =
+  const baseSpawnChild =
     args.spawnChild ??
     (args.holdUntilChildAwaits !== undefined
       ? holdSpawnUntilChildAwaits(
@@ -248,6 +250,11 @@ function startRelayed(args: {
           },
           repoStore,
         ));
+  const { wrapChild } = args;
+  const spawnChild: SpawnChildWorkflow =
+    wrapChild === undefined
+      ? baseSpawnChild
+      : async (input) => wrapChild(await baseSpawnChild(input));
   const env: WorkflowRuntimeEnv = {
     repoStore,
     scheduler: createInMemoryScheduler({ repoStore, clock }),
@@ -1821,6 +1828,91 @@ describe("a parked childWorkflow survives a process restart", () => {
     expect(failed?.kind === "StepFailed" ? failed.error.message : "").toContain(
       "cannot be retired",
     );
+  });
+
+  test("hands a decision to a resuming child only once it parks again", async () => {
+    const parent = defineWorkflow({
+      id: "resume-rearm-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-rearm-child",
+            trigger: { type: "manual" },
+            steps: { hold: step({ agent }) },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-rearm";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        if (req.resume !== undefined) return { output: null };
+        return {
+          suspend: {
+            correlationId: "corr-rearm",
+            kind: "approval",
+            approvalSnapshot: snapshot,
+          },
+        };
+      },
+    });
+    void first.run.complete.catch(() => undefined);
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.parkKind === "approval",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const askedForRearm = Promise.withResolvers<undefined>();
+    const childRearmed = Promise.withResolvers<undefined>();
+    let handedDown = 0;
+    let resumed: unknown;
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        resumed = req.resume?.decision;
+        return { output: null };
+      },
+      wrapChild: (handle) => ({
+        ...handle,
+        resume: (correlationId, decision) => {
+          handedDown += 1;
+          return handle.resume(correlationId, decision);
+        },
+        whenSignalAwaiter: async (name, onWake) => {
+          askedForRearm.resolve(undefined);
+          await childRearmed.promise;
+          await handle.whenSignalAwaiter?.(name, onWake);
+        },
+      }),
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    await run.signal(
+      signalName("corr-rearm"),
+      { outcome: "approved" },
+      "sig-rearm",
+    );
+    await askedForRearm.promise;
+    expect(handedDown).toBe(0);
+
+    childRearmed.resolve(undefined);
+    const result = await run.complete;
+    expect(result.terminalStatus).toBe("completed");
+    expect(handedDown).toBe(1);
+    expect(resumed).toEqual({ outcome: "approved" });
   });
 
   test("reestablishes an input park and delivers the next turn", async () => {

@@ -4176,7 +4176,14 @@ function containerRelays(
         `step ${stepId} awaiting-signal ${awaiting.name} is not a reserved control-plane channel`,
       );
     }
-    return [{ kind: "control-reestablish", parkKind: kind, correlationId }];
+    return [
+      {
+        kind: "control-reestablish",
+        parkKind: kind,
+        correlationId,
+        startsOver: true,
+      },
+    ];
   }
   refuseHandedOnInput(stepId, log, sinceSeq, undefined);
   return [];
@@ -6611,6 +6618,7 @@ async function awaitChildPark(
   abort: AbortSignal,
   sectionSteps: ReadonlySet<string>,
   pull: ChildRelayPull = "next",
+  handDown: "at-once" | "after-rearm" = "at-once",
 ): Promise<ChildDriveResult> {
   const watch = handle.waitForParkRelease;
   if (watch === undefined) {
@@ -6705,6 +6713,24 @@ async function awaitChildPark(
   }
   if (again.kind === "released") {
     throw new ChildRelayRetiredError(stepId, parkKind, name);
+  }
+  // A body still resuming acts on a park it read before this decision lands,
+  // so the decision waits until the body waits on it again.
+  const whenAwaiter = handle.whenSignalAwaiter;
+  if (handDown === "after-rearm" && whenAwaiter !== undefined) {
+    const rearm = await awaitChildRearm(
+      handle,
+      stepId,
+      name,
+      whenAwaiter,
+      abort,
+    );
+    if (rearm.kind === "terminal") {
+      return { kind: "terminal", terminalStatus: rearm.terminalStatus };
+    }
+    if (rearm.kind === "released") {
+      throw new ChildRelayRetiredError(stepId, parkKind, name);
+    }
   }
   await handle.resume(correlationId, outcome.payload);
   return finishRelayPull(handle, pull);
@@ -6808,6 +6834,8 @@ type ChildRelay =
       kind: "control-reestablish";
       parkKind: "approval" | "input";
       correlationId: string;
+      // The body's log is gone, so it starts over: no re-park to wait for.
+      startsOver?: true;
     }
   | {
       kind: "control-deliver";
@@ -7505,6 +7533,7 @@ async function drivePlannedChildRelay(
         abort,
         sectionSteps,
         "hold",
+        relay.startsOver === true ? "at-once" : "after-rearm",
       );
     case "control-deliver": {
       const name = signalName(relay.correlationId);
@@ -7548,6 +7577,7 @@ async function drivePlannedChildRelay(
         abort,
         sectionSteps,
         "hold",
+        "after-rearm",
       );
     }
     case "approval-fresh": {
@@ -7568,6 +7598,7 @@ async function drivePlannedChildRelay(
         abort,
         sectionSteps,
         "hold",
+        "after-rearm",
       );
     }
     default: {
