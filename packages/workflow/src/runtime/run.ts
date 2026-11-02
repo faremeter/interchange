@@ -5633,9 +5633,9 @@ function gateTimerId(
  * name-addressed awaiter of the name, so a second same-name awaiter -- even
  * one that already COMPLETED -- breaks that assumption: the log can no longer
  * say which gate consumed which delivery. The in-flight short-circuit refuses
- * that topology rather than risk binding a payload to the wrong gate; only a
- * run where `selfStepId` is the sole name-addressed awaiter of the name is
- * provably unambiguous. A completed same-name sibling is the case a
+ * a signal in that topology rather than risk binding a payload to the wrong
+ * gate; only a run where `selfStepId` is the sole name-addressed awaiter of the
+ * name is provably unambiguous. A completed same-name sibling is the case a
  * phase-scoped in-flight count would miss, so the predicate keys on the
  * durable `SignalAwaited` marker, which outlives the sibling's completion.
  */
@@ -5652,6 +5652,27 @@ export function hasForeignSameNameAwaiter(
       event.stepId !== selfStepId
     ) {
       return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether the gate's timer took it off `awaiting-signal`, read from the reducer
+ * itself, so same-name gates earlier in the log cannot confuse it. A gate that
+ * drained a queued signal never waited, so no timer moved it.
+ */
+function timerMovedGate(
+  log: readonly WorkflowEvent[],
+  runId: string,
+  stepId: string,
+): boolean {
+  let state = emptyState(runId);
+  for (const event of log) {
+    const waited = state.steps.get(stepId)?.phase === "awaiting-signal";
+    state = applyEvent(state, event);
+    if (waited && state.steps.get(stepId)?.phase === "in-flight") {
+      return event.kind === "TimerFired";
     }
   }
   return false;
@@ -6016,19 +6037,21 @@ async function parkOnSignalResult(
   let fireAtDate: Date | undefined;
   let subscribeFromSeq: number | undefined;
   if (opts.timeout !== undefined) {
-    let beforeTimer = await reloadState(env, runId);
     // On a re-park resume the durable log already carries this step's
     // TimerSet with its original id in `pendingTimers` (unfired -- a fired
     // timeout would have moved the step to `in-flight` and been refused).
     // Re-adopt that timer rather than minting a second one: a duplicate
     // TimerSet would double-count the deadline and leave two scheduler
-    // entries racing to fire.
-    const existing = findUnfiredTimerForStep(beforeTimer, opts.stepId);
+    // entries racing to fire. It comes from the read that found the step
+    // awaiting: a later read can show it fired, which the subscription below
+    // replays.
+    const existing = findUnfiredTimerForStep(state, opts.stepId);
     if (existing !== undefined) {
       timerId = existing.timerId;
       fireAtDate = new Date(existing.fireAt);
-      subscribeFromSeq = beforeTimer.lastSeq + 1;
+      subscribeFromSeq = state.lastSeq + 1;
     } else {
+      let beforeTimer = await reloadState(env, runId);
       timerId = env.newId("timer");
       fireAtDate = new Date(env.clock().getTime() + opts.timeout);
       const timerSet: WorkflowEvent = {
@@ -6055,9 +6078,9 @@ async function parkOnSignalResult(
   // state from, and (c) the control-plane suspension is durable in
   // the log before the host is notified below, so the hub is
   // never told about a correlation the log cannot reconstruct on resume.
-  // `subscribeFromSeq` above was computed from the in-memory tip; the
-  // flush makes the durable tip match, so the timer-watch subscription
-  // starts exactly past the flushed markers.
+  // `subscribeFromSeq` above is past the flushed markers on a fresh park. On a
+  // re-park it comes from the read that found the step awaiting, so the
+  // timer-watch subscription replays whatever landed since.
   await flush(env, runId);
 
   // Notify the host of the fresh control-plane suspension only now that it
@@ -6115,6 +6138,7 @@ async function parkOnSignalResult(
   env.drain.signal.addEventListener("abort", onDrain, { once: true });
   let timerDispose: (() => void) | undefined;
   let timerFired = false;
+  const timerWatchFailure: { cause?: unknown } = {};
   let timerWaitAbort: AbortController | undefined;
   let timerWatch: Promise<void> | undefined;
   if (
@@ -6139,7 +6163,11 @@ async function parkOnSignalResult(
           return;
         }
       }
-    })();
+    })().catch((cause: unknown) => {
+      // A gate that lost its watch would never see its timer fire.
+      timerWatchFailure.cause = cause;
+      combinedAbort.abort();
+    });
   }
   try {
     // `awaitNext` registers its subscriber before this returns. A host
@@ -6190,15 +6218,14 @@ async function parkOnSignalResult(
     if (timerFired) {
       return { timedOut: true };
     }
+    if ("cause" in timerWatchFailure) throw timerWatchFailure.cause;
     throw cause;
   } finally {
     abort.removeEventListener("abort", onOuterAbort);
     env.drain.signal.removeEventListener("abort", onDrain);
     if (timerDispose !== undefined) timerDispose();
     if (timerWaitAbort !== undefined) timerWaitAbort.abort();
-    if (timerWatch !== undefined) {
-      await timerWatch.catch(() => undefined);
-    }
+    if (timerWatch !== undefined) await timerWatch;
   }
 }
 
@@ -6253,6 +6280,17 @@ async function runAwaitSignal(
     // sibling that already completed -- makes the binding ambiguous, so refuse
     // rather than risk recovering a wrong payload.
     if (hasForeignSameNameAwaiter(log, primitive.name, primitive.id)) {
+      // A timeout has no payload to bind.
+      if (timerMovedGate(log, runId, primitive.id)) {
+        return completeAwaitSignalOutcome(
+          definition,
+          env,
+          runId,
+          primitive,
+          { timedOut: true },
+          abort,
+        );
+      }
       throw new RuntimeResumeUnsupportedError(
         primitive.id,
         "in-flight",
