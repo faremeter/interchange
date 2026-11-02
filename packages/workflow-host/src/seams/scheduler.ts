@@ -28,8 +28,8 @@
 // The scheduler reads workflow-event blobs at the canonical layout
 // `runs/<runId>/events/<seq>.json` and writes a fresh blob at the
 // next-seq slot for each `TimerFired` commit. The blob envelope is
-// FLAT -- `{ seq, type, ...eventFields }` -- matching the runtime
-// repo-store's `workflowEventToOnDisk` and the workflow-run kind
+// FLAT -- `{ seq, type, ...eventFields }` -- matching
+// `workflowEventToOnDisk` and the workflow-run kind
 // handler's `EventEnvelope` contract: `seq` is the integer that also
 // appears in the filename, `type` is the `subscribeKind` discriminator
 // the scheduler narrows on, and the timer fields (`timerId`, `fireAt`,
@@ -63,11 +63,8 @@ import {
   withRunCommitBarrier,
   type RepoStore as RuntimeRepoStore,
 } from "@intx/workflow/runtime";
-import {
-  appendRunEvents,
-  readRunEventSummary,
-  runEventPath,
-} from "../adapters/repo-store";
+import { appendRunEvents, runEventPath } from "../adapters/on-disk-event";
+import { readRunEventSummary } from "../adapters/repo-store";
 
 /**
  * Substrate-shape envelope for the workflow-event blob committed to
@@ -81,7 +78,7 @@ import {
 export const TimerEventEnvelope = type({
   seq: "number >= 0",
   type: "'TimerSet' | 'TimerFired'",
-  // FLAT on-disk shape, matching the runtime repo-store's `workflowEventToOnDisk`
+  // FLAT on-disk shape, matching `workflowEventToOnDisk`
   // ({ seq, type, ...eventFields }) and the substrate's enforced `EventEnvelope`
   // contract -- NOT a nested `data` object. The scheduler was the lone component
   // writing/reading a nested `data` envelope; nothing else parsed it, so a

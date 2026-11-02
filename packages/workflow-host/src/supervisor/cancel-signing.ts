@@ -34,7 +34,7 @@ import type {
 import type { CancelOrigin } from "@intx/workflow";
 import { hexEncode } from "@intx/types/hex";
 
-import { appendRunEvents, runEventPath } from "../adapters/repo-store";
+import { appendRunEvents, runEventPath } from "../adapters/on-disk-event";
 import type {
   PrincipalSigner,
   SignedPayload,
