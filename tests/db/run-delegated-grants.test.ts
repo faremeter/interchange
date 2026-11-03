@@ -1002,6 +1002,28 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }
       });
 
+      test("approve-always on an invoker ask row after the 24-hour limit removes the row", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [{ ...ASK_SEARCH, source: "invoker" }],
+          principalCreatedAt: new Date(
+            Date.now() - INVOKER_GRANT_TTL_MS - 60_000,
+          ),
+        });
+        await seedGrant(h.db, {
+          id: "grt_deployer_tools",
+          tenantId: TENANT,
+          principalId: DEPLOYER,
+          resource: "tool:*",
+          action: "invoke",
+        });
+        await seedPendingApproval(run, null, "invoker");
+
+        expect((await resolve("approved", "always")).kind).toBe("resolved");
+
+        expect(await runGrants(run)).toEqual([]);
+      });
+
       test("a once resolution does not wait on the tenant lock", async () => {
         const run = await seedDeployment({
           anchorRunId: "run_a",
@@ -1327,6 +1349,38 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(await rederive([DEPLOYER])).toHaveLength(1);
 
         expect(await runGrants(run)).toEqual([]);
+      });
+
+      test("an invoker ask floor has no expiry, so it outlasts the first-trigger TTL", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [
+            { ...VAULT_CREATOR, source: "invoker", effect: "ask" },
+          ],
+        });
+        await seedGrant(h.db, {
+          id: "grt_deployer_vault",
+          tenantId: TENANT,
+          principalId: DEPLOYER,
+          resource: "secret:vault",
+          action: "use",
+        });
+        await seedGrant(h.db, {
+          id: "grt_run_vault",
+          tenantId: TENANT,
+          principalId: run,
+          resource: "secret:vault",
+          action: "use",
+          origin: "invoker",
+          effect: "ask",
+          expiresAt: inHours(1),
+        });
+
+        await rederive([DEPLOYER]);
+
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["invoker secret:vault/use ask"]);
+        expect(rows[0]?.expiresAt).toBeNull();
       });
 
       test("an operator deny on a lapsed requirement gets the creator floor's null expiry", async () => {
