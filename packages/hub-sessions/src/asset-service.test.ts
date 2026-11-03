@@ -246,23 +246,20 @@ describe("AssetService", () => {
       expect(out.commitSha).toMatch(/^[0-9a-f]{40}$/);
     });
 
-    test.each([["agent-state"], ["workflow-run"]] as const)(
-      "rejects kind %s",
-      async (kind) => {
-        const err = await service
-          .createAsset({
-            tenantId: "tnt_1",
-            kind,
-            name: "x",
-          })
-          .catch((e: unknown) => e);
+    test.each([["workflow-run"]] as const)("rejects kind %s", async (kind) => {
+      const err = await service
+        .createAsset({
+          tenantId: "tnt_1",
+          kind,
+          name: "x",
+        })
+        .catch((e: unknown) => e);
 
-        expect(err).toBeInstanceOf(AssetServiceError);
-        if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
-        expect(err.reason).toBe("unsupported_kind");
-        expect(dbFixture.assets).toHaveLength(0);
-      },
-    );
+      expect(err).toBeInstanceOf(AssetServiceError);
+      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
+      expect(err.reason).toBe("unsupported_kind");
+      expect(dbFixture.assets).toHaveLength(0);
+    });
 
     test("creates a workflow asset and inits its repo", async () => {
       const asset = await service.createAsset({

@@ -293,7 +293,7 @@ describe("workflow-host RepoStore adapter — append-result error translation", 
   test("validate_failed: kind handler rejection surfaces with the handler's reason", async () => {
     const dataDir = await makeTempDir("repo-store-adapter-validate-failed-");
     const repoId: RepoId = {
-      kind: "agent-state",
+      kind: "skill",
       id: "deployment-validate-failed",
     };
     const principal: Principal = { kind: "test" };
@@ -305,7 +305,7 @@ describe("workflow-host RepoStore adapter — append-result error translation", 
     // adapter must translate the substrate's `path_violation:`
     // surface into a thrown Error carrying the handler's reason.
     const failingHandler: KindHandler = {
-      kind: "agent-state",
+      kind: "skill",
       directoryPrefix: "validate-failed",
       async validatePush({ topLevelTreePaths, listDir, readBlob }) {
         if (!topLevelTreePaths.includes("runs")) return { ok: true };
@@ -337,7 +337,7 @@ describe("workflow-host RepoStore adapter — append-result error translation", 
     const substrate = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": failingHandler },
+      handlers: { skill: failingHandler },
       authorize: allowAll,
     });
     const adapter = createWorkflowRunRepoStore({
@@ -432,10 +432,10 @@ describe("workflow-host RepoStore adapter — first-seq contract against runtime
 describe("workflow-host RepoStore adapter — permissive handler smoke", () => {
   test("write+read round-trip via permissive handler preserves event fields", async () => {
     const dataDir = await makeTempDir("repo-store-adapter-smoke-");
-    const repoId: RepoId = { kind: "agent-state", id: "deployment-smoke" };
+    const repoId: RepoId = { kind: "skill", id: "deployment-smoke" };
     const principal: Principal = { kind: "test" };
     const permissive: KindHandler = {
-      kind: "agent-state",
+      kind: "skill",
       directoryPrefix: "smoke",
       validatePush(): ValidatePushResult {
         return { ok: true };
@@ -447,7 +447,7 @@ describe("workflow-host RepoStore adapter — permissive handler smoke", () => {
     const substrate = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": permissive },
+      handlers: { skill: permissive },
       authorize: allowAll,
     });
     const adapter = createWorkflowRunRepoStore({

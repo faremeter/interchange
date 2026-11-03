@@ -39,7 +39,6 @@ import {
   createApprovalSet,
   deriveRunAddress,
   deriveStepAddress,
-  deriveStepAgentId,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
@@ -160,8 +159,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
 
       // ---- deploy the multi-step workflow ----
-      // Two distinct agent system prompts exercise the per-step prompt wiring so
-      // each per-step `agent-state` repo is provisioned end-to-end.
+      // Two distinct agent system prompts exercise the per-step prompt wiring.
       const inferenceSource: InferenceSource = {
         id: "anthropic:mock-model",
         provider: "anthropic",
@@ -230,22 +228,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
         { diagnostics: env.sidecarDiagnostics },
       );
-
-      // Per-step `agent-state` repos materialize on the hub, one per step that
-      // carries an agent (the `awaitSignal` primitive produces none). Their ids
-      // are the per-step `agentId`s, which is the substrate-safe form of the
-      // per-step address the orchestrator staged each step's tree under.
-      for (const stepId of STEP_IDS) {
-        const stepAgentId = deriveStepAgentId({
-          runId: DEPLOYMENT_ID,
-          stepId,
-        });
-        const stepRepoDir = env.hub.agentRepoStore.repoStore.getRepoDir({
-          kind: "agent-state",
-          id: stepAgentId,
-        });
-        expect(typeof stepRepoDir).toBe("string");
-      }
 
       // The deployment address is routable on the hub after the multi-step
       // deploy: `sendAgentDeploy` recorded it on the router's index.

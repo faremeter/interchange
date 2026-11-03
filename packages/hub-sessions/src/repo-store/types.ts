@@ -245,7 +245,7 @@ export interface KindHandler {
   kind: RepoKind;
   /**
    * On-disk directory under `dataDir` for repos of this kind. Allows
-   * each kind to declare its own layout (e.g. "agents") so the
+   * each kind to declare its own layout (e.g. "assets/skill") so the
    * substrate does not hard-code a `<kind>/<id>` path.
    */
   directoryPrefix: string;

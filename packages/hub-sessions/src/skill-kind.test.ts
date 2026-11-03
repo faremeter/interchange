@@ -494,7 +494,7 @@ describe("skillKindHandler metadata", () => {
 
 describe("skillAuthorize", () => {
   const SKILL_REPO: RepoId = { kind: "skill", id: "asset-123" };
-  const AGENT_STATE_REPO: RepoId = { kind: "agent-state", id: "asset-123" };
+  const OTHER_KIND_REPO: RepoId = { kind: "workflow", id: "asset-123" };
   const REF = "refs/heads/main";
 
   function farFuture(): number {
@@ -531,7 +531,7 @@ describe("skillAuthorize", () => {
   test("rejects calls when repoId.kind is not skill", () => {
     const r = skillAuthorize(
       { kind: "hub" } as Principal,
-      AGENT_STATE_REPO,
+      OTHER_KIND_REPO,
       REF,
       "createPack",
     );
@@ -645,7 +645,7 @@ describe("skillAuthorize", () => {
 
   test("user principal: denied when verdict.resource has the wrong kind prefix (sanity drift)", () => {
     const r = skillAuthorize(
-      userPrincipal({ resource: "agent-state:asset-123" }),
+      userPrincipal({ resource: "workflow-run:asset-123" }),
       SKILL_REPO,
       REF,
       "createPack",

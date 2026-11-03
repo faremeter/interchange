@@ -37,7 +37,7 @@ fi
 HUB_DB_USER=$(grep -E '^DB_USER=' "$REPODIR/.env.hub" 2>/dev/null | cut -d= -f2)
 MIGRATE_DB_USER=$(grep -E '^DB_USER=' "$REPODIR/.env.migrate" 2>/dev/null | cut -d= -f2)
 
-# Resolve agent-state directories the same way the runtime does, so --clean
+# Resolve data directories the same way the runtime does, so --clean
 # wipes the dirs the hub and sidecar actually write to. The `|| true` guard
 # keeps a missing match from tripping set -e -o pipefail.
 HUB_DATA_DIR_VAL=$( { grep -E '^HUB_DATA_DIR=' "$REPODIR/.env.hub" 2>/dev/null || true; } | cut -d= -f2)

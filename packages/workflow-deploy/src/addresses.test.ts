@@ -6,7 +6,6 @@ import {
   deriveRunAddress,
   deriveRunAgentId,
   deriveStepAddress,
-  deriveStepAgentId,
   deriveWorkflowRunRepoId,
 } from "./addresses";
 
@@ -19,12 +18,6 @@ describe("per-step address derivation", () => {
         domain: "workflow.interchange",
       }),
     ).toBe("run_abc-step1@workflow.interchange");
-  });
-
-  test("deriveStepAgentId concatenates the run id and step", () => {
-    expect(deriveStepAgentId({ runId: "run_abc", stepId: "x" })).toBe(
-      "run_abc-x",
-    );
   });
 
   test("derivation is deterministic across calls", () => {

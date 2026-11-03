@@ -1,6 +1,6 @@
 // Shared authorization gate for the `user` principal variant, used by
 // every kind handler that accepts user-token-authenticated requests
-// (workflow, skill, agent-state, workflow-run).
+// (workflow, skill, workflow-run).
 //
 // The route layer has already pre-resolved the grant verdict and
 // attached it as `authz`; the kind handlers do NOT re-query the grant
@@ -12,8 +12,7 @@
 // Funnelling every kind through this one gate keeps the security-
 // critical claim/verdict cross-check from drifting between kinds. The
 // only per-kind input is the `resourcePrefix` the verdict's `resource`
-// must carry (`asset:<id>` for the codebase kinds, `agent-state:<id>`,
-// `workflow-run:<id>`).
+// must carry (`asset:<id>` for the codebase kinds, `workflow-run:<id>`).
 
 import { type } from "arktype";
 import { glob, repoActionToGrantVerb } from "@intx/hub-common";

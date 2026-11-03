@@ -144,7 +144,7 @@ The constructor argument shape:
 - `onRunStart` — reads a run's credentials snapshot, which the
   supervisor sends in each `authority.set`.
 - `substrateEnv`, `workflowRunRepoId`, `workflowRunRef`,
-  `anchorRunId`, `deploymentMailAddress`, `readPrincipal`,
+  `anchorRunId`, `deploymentMailAddress`,
   `ipcKeyPairFactory?` — per-deployment configuration the supervisor
   needs in its closure state.
 

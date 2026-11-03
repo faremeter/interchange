@@ -5,9 +5,9 @@ Isomorphic-git backed implementation of `ContextStore` and
 inference state lives on a working branch, and tool-authorization audit
 records live under `state/audit/`.
 
-Consumed by `@intx/agent` for in-process persistence, and by
-`@intx/hub-sessions` and `@intx/hub-agent` for the agent
-repositories that move between the hub and the sidecar as packs.
+Consumed by `@intx/agent` and `@intx/workflow-host` for a step's
+persistence, and by `@intx/hub-sessions` and `@intx/hub-agent` for the pack
+helpers that move repositories between the hub and the sidecar.
 
 ```ts
 import { createIsogitStore } from "@intx/storage-isogit/node";

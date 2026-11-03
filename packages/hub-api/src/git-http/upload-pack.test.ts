@@ -12,7 +12,7 @@ import {
 } from "./upload-pack";
 import type { RefEntry } from "./advertise-refs";
 
-const REPO_ID: RepoId = { kind: "agent-state", id: "test" };
+const REPO_ID: RepoId = { kind: "skill", id: "test" };
 
 const tempDirs: string[] = [];
 

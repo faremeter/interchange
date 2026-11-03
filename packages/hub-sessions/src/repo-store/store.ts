@@ -161,8 +161,7 @@ export type CreateRepoStoreConfig = {
    * shared reclaim policy to repos whose kind is in `kinds`. Omitted
    * entirely, the substrate never reclaims and never warns. The `kinds`
    * allowlist keeps the policy scoped to the kinds the caller intends
-   * (e.g. `agent-state`) rather than every kind the store happens to
-   * service.
+   * rather than every kind the store happens to service.
    */
   gc?: GCPolicy & { kinds: readonly RepoKind[] };
 };

@@ -69,6 +69,5 @@ export {
   deriveRunAddress,
   deriveRunAgentId,
   deriveStepAddress,
-  deriveStepAgentId,
   deriveWorkflowRunRepoId,
 } from "./addresses";

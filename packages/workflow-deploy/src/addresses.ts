@@ -29,17 +29,6 @@ export function deriveStepAddress(args: {
 }
 
 /**
- * Derive the per-step agent id (the `agent-state` repo's id and the
- * `HarnessConfig.agentId`). Pure function of `(runId, stepId)`.
- */
-export function deriveStepAgentId(args: {
-  runId: string;
-  stepId: string;
-}): string {
-  return `${args.runId}-${args.stepId}`;
-}
-
-/**
  * Derive the deployment-level mail address the supervisor registers on
  * the bus. It is the run id `@` the domain; pure function of `(runId, domain)`.
  *

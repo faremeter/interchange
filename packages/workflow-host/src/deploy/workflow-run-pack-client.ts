@@ -634,8 +634,7 @@ export function createMultistepCredentialsRouter(): MultistepCredentialsRouter {
  * every method to the underlying store; intercepts the
  * `writeTreePreservingPrefix` return path so a successful write
  * against a `workflow-run` repo schedules a workflow-run pack push.
- * Writes against any other `repoId.kind` (today, only `agent-state`
- * via the deploy-applier path) flow through unchanged.
+ * Writes against any other `repoId.kind` flow through unchanged.
  *
  * Pack-push coalescing: the facade returns from
  * `writeTreePreservingPrefix` as soon as the LOCAL commit lands and

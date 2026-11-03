@@ -16,7 +16,6 @@ import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   createApprovalSet,
   deriveRunAddress,
-  deriveStepAgentId,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
@@ -140,8 +139,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Two distinct agent system prompts exercise the per-step prompt
       // wiring: each step's agent carries its own prompt in the bundled
-      // source module, so different prompts produce different deploy trees
-      // at each per-step `agent-state` repo.
+      // source module.
       const entryModule = signalGateEntry({
         address: deploymentMailAddress,
         signalName: "go",
@@ -180,32 +178,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
         { diagnostics: env.sidecarDiagnostics },
       );
-
-      // Per-step `agent-state` repos materialize on the hub: one per
-      // step that carries an agent (the `awaitSignal` primitive does
-      // not produce a per-step `agent-state` repo because it has no
-      // `AgentDefinition`). The agent-state repo id is the per-step
-      // `agentId` (not the per-step mail address): the mail address
-      // carries `@` and `.` which the substrate's `SAFE_REPO_ID`
-      // rejects.
-      const step1AgentId = deriveStepAgentId({
-        runId: DEPLOYMENT_ID,
-        stepId: "step1",
-      });
-      const step2AgentId = deriveStepAgentId({
-        runId: DEPLOYMENT_ID,
-        stepId: "step2",
-      });
-      const step1RepoDir = env.hub.agentRepoStore.repoStore.getRepoDir({
-        kind: "agent-state",
-        id: step1AgentId,
-      });
-      const step2RepoDir = env.hub.agentRepoStore.repoStore.getRepoDir({
-        kind: "agent-state",
-        id: step2AgentId,
-      });
-      expect(typeof step1RepoDir).toBe("string");
-      expect(typeof step2RepoDir).toBe("string");
 
       // The deployment's trigger mail address must be routable on the
       // hub. The deploy records the deployment-level address on the hub

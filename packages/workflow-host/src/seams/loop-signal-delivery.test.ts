@@ -85,7 +85,7 @@ const principal: Principal = { kind: "test" };
 
 function permissiveHandler(directoryPrefix: string): KindHandler {
   return {
-    kind: "agent-state",
+    kind: "skill",
     directoryPrefix,
     validatePush(): ValidatePushResult {
       return { ok: true };
@@ -186,10 +186,10 @@ async function runLoopDelivery(args: {
   const substrate = createRepoStore({
     dataDir,
     signingKey,
-    handlers: { "agent-state": permissiveHandler(args.prefix) },
+    handlers: { skill: permissiveHandler(args.prefix) },
     authorize: allowAll,
   });
-  const repoId: RepoId = { kind: "agent-state", id: args.prefix };
+  const repoId: RepoId = { kind: "skill", id: args.prefix };
   const runtimeStore = createWorkflowRunRepoStore({
     substrate,
     repoId,

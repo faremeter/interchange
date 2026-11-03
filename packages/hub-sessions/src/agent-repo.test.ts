@@ -368,7 +368,7 @@ describe("AgentRepoStore", () => {
 
     await expect(
       store.prepareWorkflowRunPack(
-        { kind: "agent-state", id: "agent-x" },
+        { kind: "skill", id: "agent-x" },
         pack,
         "refs/heads/events",
         commit,

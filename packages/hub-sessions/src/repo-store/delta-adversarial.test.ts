@@ -32,15 +32,15 @@ afterAll(async () => {
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 const principal: Principal = { kind: "test" };
 const REF = "refs/heads/events";
-const repoId: RepoId = { kind: "agent-state", id: "subject" };
+const repoId: RepoId = { kind: "skill", id: "subject" };
 
 function makeStore(dataDir: string) {
   return createRepoStore({
     dataDir,
     signingKey,
     handlers: {
-      "agent-state": {
-        kind: "agent-state",
+      skill: {
+        kind: "skill",
         directoryPrefix: "repos-under-test",
         validatePush: () => ({ ok: true }),
         onRefUpdated: () => undefined,

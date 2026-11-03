@@ -136,7 +136,7 @@ Public surface:
   body nor a `{ ref }`; a `{ ref }` body yields nothing, because the
   referenced asset is deployed and walked on its own.
 - `deriveRunAddress` / `deriveStepAddress` /
-  `deriveRunAgentId` / `deriveStepAgentId` / `deriveWorkflowRunRepoId`
+  `deriveRunAgentId` / `deriveWorkflowRunRepoId`
   — the pure address and id derivation helpers.
 - `extractFoldedBody(definition)` — read the launch-relevant fields back
   out of a folded single-step definition.

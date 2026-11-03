@@ -24,7 +24,7 @@ let signingKey: KeyPair;
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 const principal: Principal = { kind: "test" };
 const REF = "refs/heads/events";
-const repoId: RepoId = { kind: "agent-state", id: "subject" };
+const repoId: RepoId = { kind: "skill", id: "subject" };
 
 beforeAll(async () => {
   signingKey = await generateKeyPair();
@@ -42,8 +42,8 @@ function makeStore(dataDir: string) {
     dataDir,
     signingKey,
     handlers: {
-      "agent-state": {
-        kind: "agent-state",
+      skill: {
+        kind: "skill",
         directoryPrefix: "repos-under-test",
         validatePush: () => ({ ok: true }),
         onRefUpdated: () => undefined,

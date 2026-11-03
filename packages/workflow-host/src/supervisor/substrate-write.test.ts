@@ -572,7 +572,7 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
     // The supervisor's handler explicitly rejects any write whose
     // repoId.kind is not `workflow-run` -- the only kind the child's
     // proxy is supposed to forward through this IPC. A child that
-    // smuggled a `kind: "agent-state"` request through would be
+    // smuggled a `kind: "skill"` request through would be
     // attempting to write outside the supervisor's audit boundary;
     // the handler responds with `{ ok: false }` and never reaches the
     // underlying substrate.
@@ -588,7 +588,7 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
       type: "substrate.write.request",
       data: {
         requestId,
-        repoId: { kind: "agent-state", id: "deployment-x" },
+        repoId: { kind: "skill", id: "deployment-x" },
         ref: "refs/heads/main",
         preservePrefix: "state/x/",
         message: "wrong-kind write",
