@@ -340,30 +340,6 @@ describe("SidecarRouter dispatch cancellation", () => {
 });
 
 describe("SidecarRouter allocation deploy transport", () => {
-  test("rejects deploys without a Hub signing key before mutating routing", async () => {
-    const router = createSidecarRouter({
-      withExecutableWorkflowRun: async (_target, send) => send(),
-      ...sidecarAuth(() => [TEST_IDENTITY]),
-      validateSidecarIdentity: async () => true,
-    });
-    router.fenceAllocation(TEST_TARGET.allocationId, TEST_TARGET.generation);
-    await connectAllocated(router);
-
-    const error = await router
-      .sendAgentDeployToAllocation(
-        TEST_TARGET,
-        TEST_IDENTITY.workflowRunAddress,
-        TEST_CONFIG,
-      )
-      .catch((cause: unknown) => cause);
-
-    expect(isDeployFrameFailure(error)).toBe(true);
-    if (!isDeployFrameFailure(error))
-      throw new Error("Expected deploy failure");
-    expect(error.frameSent).toBe(false);
-    expect(router.getRoutableAddresses()).toEqual([]);
-  });
-
   test("times out an unacknowledged deploy and removes its route", async () => {
     const router = createAllocatedRouter({ requestTimeoutMs: 20 });
     await connectAllocated(router);
@@ -579,7 +555,6 @@ describe("SidecarRouter allocation deploy transport", () => {
         sidecarId === secondary.sidecarId ? secondary : TEST_IDENTITY,
       ]),
       validateSidecarIdentity: async () => true,
-      hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
     });
     router.fenceAllocation(TEST_TARGET.allocationId, TEST_TARGET.generation);

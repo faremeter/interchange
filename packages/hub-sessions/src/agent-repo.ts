@@ -56,9 +56,6 @@ export type AgentRepoStore = {
     commitSha: string,
   ): Promise<PreparedReceivePack>;
 
-  /** Raw 32-byte Ed25519 public key used to sign deploy commits. */
-  getSigningPublicKey(): Uint8Array;
-
   /**
    * Underlying kind-keyed substrate. Exposed so callers that need to
    * operate on non-agent-state kinds (e.g. the asset service writing
@@ -169,10 +166,6 @@ export function createAgentRepoStore(config: {
 
   return {
     prepareWorkflowRunPack,
-
-    getSigningPublicKey() {
-      return signingKey.publicKey;
-    },
 
     repoStore: store,
   };

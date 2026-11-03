@@ -94,7 +94,6 @@ function createAllocatedRouter(
     withExecutableWorkflowRun: async (_target, send) => send(),
     ...sidecarAuth(() => [resolved]),
     validateSidecarIdentity: async () => true,
-    hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
     mailAckRetryIntervalMs: 10_000,
   });
@@ -109,7 +108,6 @@ function createSenderKeyRouter(
     withExecutableWorkflowRun: async (_target, send) => send(),
     ...sidecarAuth(() => [identity]),
     validateSidecarIdentity: async () => true,
-    hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
     lookups: { resolveSenderKeyStrict },
   });
@@ -249,7 +247,6 @@ describe("SidecarRouter allocation routing", () => {
       withExecutableWorkflowRun: async (_target, send) => send(),
       ...sidecarAuth(() => [{ ...identity, workflowRunAddress: runAddress }]),
       validateSidecarIdentity: async () => true,
-      hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
       lookups: {
         resyncCredentials: (addr) => resynced.push(addr),
@@ -268,7 +265,6 @@ describe("SidecarRouter allocation routing", () => {
       withExecutableWorkflowRun: async (_target, send) => send(),
       ...sidecarAuth(() => [{ ...identity, workflowRunAddress: runAddress }]),
       validateSidecarIdentity: async () => true,
-      hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
       lookups: {
         resyncCredentials: () => {
@@ -709,7 +705,6 @@ describe("SidecarRouter current grants on signals and triggers", () => {
       withExecutableWorkflowRun: async (_target, send) => send(),
       ...sidecarAuth(() => [runIdentity]),
       validateSidecarIdentity: async () => true,
-      hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
       lookups,
     });
@@ -1137,7 +1132,6 @@ describe("SidecarRouter current grants on signals and triggers", () => {
       withExecutableWorkflowRun: async (_target, send) => send(),
       ...sidecarAuth(() => [routed]),
       validateSidecarIdentity: async () => true,
-      hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
       lookups: {
         loadRunGrants: async () => {
@@ -1217,7 +1211,6 @@ describe("SidecarRouter current grants on signals and triggers", () => {
       },
       ...sidecarAuth(() => [runIdentity]),
       validateSidecarIdentity: async () => true,
-      hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
       lookups: { loadRunGrants: async () => stepGrants },
     });
@@ -1413,7 +1406,6 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
         return binding === undefined ? [] : [binding];
       }),
       validateSidecarIdentity: async () => true,
-      hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
       mailAckRetryIntervalMs: 10_000,
       // A wide TTL: any delivery the test observes came from a settle, not from

@@ -234,9 +234,6 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
     async prepareWorkflowRunPack() {
       throw new Error("mock: prepareWorkflowRunPack not implemented");
     },
-    getSigningPublicKey() {
-      return new Uint8Array(32);
-    },
     repoStore: unusedRepoStore(),
   };
 }

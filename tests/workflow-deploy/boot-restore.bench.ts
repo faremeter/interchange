@@ -302,8 +302,7 @@ function deployHostBindings() {
 /**
  * Build a `SidecarDeployRouter` over `dataDir` with the same stubbed
  * host bindings the wiring test's `buildMultistepFixture` uses: a stub
- * `sessions`/`keyStore` (the single-step head deploy only inits its repo and
- * records the hub key), a disk-backed spawn-test RepoStore, a permissive
+ * `sessions`/`keyStore`, a disk-backed spawn-test RepoStore, a permissive
  * source-admission gate, and the supplied in-memory spawner + transport.
  */
 async function buildRouter(args: {
@@ -317,24 +316,13 @@ async function buildRouter(args: {
   return createSidecarDeployRouter({
     ...DEFAULT_SIDECAR_CAPACITY,
     ...deployHostBindings(),
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path never invokes provisionAgent/persistHubPublicKey; single-step uses the narrow initRepo
-    sessions: {
-      provisionAgent: async () => {
-        throw new Error("workflow branch must not invoke provisionAgent");
-      },
-      persistHubPublicKey: async () => {
-        throw new Error("workflow branch must not invoke persistHubPublicKey");
-      },
-    } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["sessions"],
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- bench stub; the single-step head deploy records the hub key for pack verification
+    sessions: { deleteAgentDir: async () => undefined },
     keyStore: {
-      recordHubKey: () => undefined,
       loadOrGenerateKey: async () => ({
         keyPair: await generateKeyPair(),
         isNew: false,
       }),
-      forgetAgent: () => undefined,
-    } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["keyStore"],
+    },
     transport: args.transport,
     repoStore,
     signingKeySeed: signingKeyPair.privateKey,
@@ -375,7 +363,6 @@ function singleStepFrame(
     agentAddress,
     generation: 1,
     agentId: "boot-restore-agent",
-    hubPublicKey: "hub-pk",
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path reads only config.sessionId/config.grants, which tolerate undefined
     config: {} as AgentDeployFrame["config"],
     workflow: {

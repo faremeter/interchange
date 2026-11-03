@@ -249,7 +249,7 @@ Every harness and every agent has its own asymmetric key pair. These keys serve 
 
 Key pairs are generated at agent launch time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems, except to deployments that share a stock sidecar (see Trust Boundary). Public keys are published to the control plane and included in the agent's discovery metadata so signed content and commits remain attributable to the producing agent. Reconnect routing is authorized separately by the sidecar credential and the allocations it hosts.
 
-**Commit signing** extends per-agent keys to the git layer. Every state commit (context checkpoints, audit records) is signed with the agent's Ed25519 key using SSH signature format. This means standard `git verify-commit` works with no custom tooling. Deploy commits are signed by the hub's own key; sidecars verify deploy signatures before accepting content. See Implementation for the wire protocol details.
+**Commit signing** extends per-agent keys to the git layer. Every state commit (context checkpoints, audit records) is signed with the agent's Ed25519 key using SSH signature format. This means standard `git verify-commit` works with no custom tooling. See Implementation for the signature format.
 
 The control plane maintains a key validity history per agent — a list of `(publicKey, validFrom, validUntil)` tuples — so that historical commits remain verifiable after key rotation. When a key is retired (due to compromise, migration, or routine rotation), the old key is retained for signature verification but no longer accepted for new pushes.
 
@@ -269,7 +269,6 @@ Signatures are attached to:
 - Outbound messages (agent-to-agent, agent-to-human)
 - Tool invocation requests and responses
 - State commits (context checkpoints, audit records) — signed by the agent's key
-- Deploy commits (skill code, prompts, configuration) — signed by the hub's key
 - Registry announcements
 
 The harness verifies inbound signatures automatically. Messages with invalid or missing signatures are flagged and can be rejected according to policy. Cross-tenant messages require valid signatures as a baseline trust requirement.

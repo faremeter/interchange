@@ -87,9 +87,6 @@ const unusedKeyStore: AgentKeyStore = {
   loadOrGenerateKey: () => {
     throw new Error("keyStore not used");
   },
-  recordHubKey: () => {
-    throw new Error("keyStore not used");
-  },
   forgetAgent: () => {
     throw new Error("keyStore not used");
   },

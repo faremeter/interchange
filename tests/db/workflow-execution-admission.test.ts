@@ -119,7 +119,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
     ) {
       const registered = Promise.withResolvers<undefined>();
       const router = createSidecarRouter({
-        hubPublicKey: "a".repeat(64),
         ...sidecarAuth,
         validateSidecarIdentity: async () => true,
         withExecutableWorkflowRun: (identity, send, signal) =>

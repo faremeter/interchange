@@ -156,7 +156,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         historyReceives,
       });
       const router = createSidecarRouter({
-        hubPublicKey: "a".repeat(64),
         authenticateSidecar: async ({ token }) => credentials.resolve(token),
         resolveSidecarBindings: credentials.resolveBindings,
         validateSidecarIdentity: credentials.isCurrent,

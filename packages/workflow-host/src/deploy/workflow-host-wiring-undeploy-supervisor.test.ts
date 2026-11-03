@@ -234,32 +234,13 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       const router = createSidecarDeployRouter({
         ...DEFAULT_SIDECAR_CAPACITY,
         ...deployHostBindings(),
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch invokes only initRepo (head deploy-tree repo); provisionAgent/persistHubPublicKey stay unused (the supervised child mints its own key and persists no hub-agent config)
-        sessions: {
-          provisionAgent: async () => {
-            throw new Error(
-              "single-step branch must not invoke provisionAgent",
-            );
-          },
-          persistHubPublicKey: async () => {
-            throw new Error(
-              "single-step branch must not invoke persistHubPublicKey",
-            );
-          },
-          deleteAgentDir: async () => undefined,
-        } as unknown as Parameters<
-          typeof createSidecarDeployRouter
-        >[0]["sessions"],
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch registers the agent's signing key (loadOrGenerateKey) and records the hub key (recordHubKey) at the head before spawn
+        sessions: { deleteAgentDir: async () => undefined },
         keyStore: {
-          recordHubKey: () => undefined,
           loadOrGenerateKey: async () => ({
             keyPair: await generateKeyPair(),
             isNew: false,
           }),
-        } as unknown as Parameters<
-          typeof createSidecarDeployRouter
-        >[0]["keyStore"],
+        },
         transport,
         repoStore,
         signingKeySeed: keyPair.privateKey,
@@ -310,7 +291,6 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         agentAddress: "run_undeploy-supervisor@example.com",
         generation: 1,
         agentId: "undeploy-supervisor-agent",
-        hubPublicKey: "hub-pk",
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
         config: {} as AgentDeployFrame["config"],
         workflow: {

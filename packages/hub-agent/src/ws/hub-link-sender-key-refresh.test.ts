@@ -57,7 +57,6 @@ function createStubKeyStore(): AgentKeyStore {
     async loadOrGenerateKey(address: string) {
       throw new Error(`No key registered for ${address} in test store`);
     },
-    recordHubKey: () => undefined,
     forgetAgent: () => undefined,
   };
 }

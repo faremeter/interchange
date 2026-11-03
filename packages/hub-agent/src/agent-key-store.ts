@@ -1,17 +1,15 @@
 // Per-agent Ed25519 key custody.
 //
 // Persists key pairs as raw 32-byte binary files on disk and produces
-// them on demand. The cryptographic primitives (keypair generation,
-// deploy-commit verification) are host-supplied so the package does
+// them on demand. Keypair generation is host-supplied so the package does
 // not pin a particular crypto backend.
 //
 // In addition to the on-disk persistence, the store keeps an in-memory
-// cache of the keypair and the paired hub public key for every agent
-// that has been loaded or recorded during the process lifetime.
+// cache of the keypair for every agent that has been loaded during the
+// process lifetime.
 
 import fsp from "node:fs/promises";
 import { hasCode } from "@intx/types/has-code";
-import { hexDecode } from "@intx/types/hex";
 import type { KeyPair } from "@intx/types/runtime";
 
 import { keysDir, privateKeyPath, publicKeyPath } from "./agent-paths";
@@ -31,12 +29,6 @@ export type AgentKeyStore = {
     address: string,
   ): Promise<{ keyPair: KeyPair; isNew: boolean }>;
   /**
-   * Record the hub public key the agent has been paired with. Cached in
-   * memory only; the deploy path re-records it on every deploy, so it
-   * does not need to survive a restart.
-   */
-  recordHubKey(address: string, hexHubPublicKey: string): void;
-  /**
    * Drop the in-memory caches for an agent. Called on undeploy.
    */
   forgetAgent(address: string): void;
@@ -46,7 +38,6 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
   const { dataDir, generateKeyPair } = deps;
 
   const agentKeys = new Map<string, KeyPair>();
-  const hubKeys = new Map<string, Uint8Array>();
 
   async function loadKeyFromDisk(address: string): Promise<KeyPair | null> {
     const privPath = privateKeyPath(dataDir, address);
@@ -96,18 +87,12 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
     return { keyPair, isNew: true };
   }
 
-  function recordHubKey(address: string, hexHubPublicKey: string): void {
-    hubKeys.set(address, hexDecode(hexHubPublicKey));
-  }
-
   function forgetAgent(address: string): void {
     agentKeys.delete(address);
-    hubKeys.delete(address);
   }
 
   return {
     loadOrGenerateKey,
-    recordHubKey,
     forgetAgent,
   };
 }

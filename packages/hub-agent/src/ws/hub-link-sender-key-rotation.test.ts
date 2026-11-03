@@ -46,7 +46,6 @@ function createStubKeyStore(): AgentKeyStore {
     async loadOrGenerateKey(address: string) {
       throw new Error(`No key registered for ${address} in test store`);
     },
-    recordHubKey: () => undefined,
     forgetAgent: () => undefined,
   };
 }
@@ -137,7 +136,6 @@ function startRotationServer(
     authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
     resolveSidecarBindings: async (sidecarId) => [ensureIdentity(sidecarId)],
     validateSidecarIdentity: async () => true,
-    hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 5000,
     lookups: { resolveSenderKeyStrict },
   });
