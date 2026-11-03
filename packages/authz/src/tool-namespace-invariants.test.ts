@@ -9,10 +9,8 @@
 // so the rows it contributes are bare `tool:<name>`.
 //
 // That asymmetry is what makes the namespaced form a step-scoping mechanism:
-// a bare row cannot address a pinned tool's gate, and the authority a pinned
-// tool actually needs is supplied per step by the sidecar's tool-mark floor,
-// derived from the factories that step loaded. These cases pin what a wildcard
-// row does to that scoping.
+// a bare row cannot address a pinned tool's gate. These cases pin what a
+// wildcard row does to that scoping.
 
 import { describe, test, expect } from "bun:test";
 
@@ -79,23 +77,5 @@ describe("a wildcard row reaches a pinned tool's namespaced gate", () => {
       { conditions: "pessimistic" },
     );
     expect(result.effect).toBe("allow");
-  });
-});
-
-describe("the tool-mark floor still outranks a wildcard row", () => {
-  test("an ask floor beats */* allow at higher specificity", async () => {
-    const floor = grant({
-      resource: NAMESPACED_GATE,
-      action: INVOKE,
-      effect: "ask",
-    });
-    const wildcard = grant({ resource: "*", action: "*", effect: "allow" });
-    const result = await evaluateGrants(
-      [wildcard, floor],
-      NAMESPACED_GATE,
-      INVOKE,
-      { conditions: "pessimistic" },
-    );
-    expect(result.effect).toBe("ask");
   });
 });

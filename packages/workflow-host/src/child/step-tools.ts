@@ -1,16 +1,12 @@
 // Per-step tool attachment and agent construction for the workflow child.
 //
-// The process that boots the child materializes pinned tool packages and
-// passes the result in. This module attaches that result to the step env,
-// derives the tool-mark floor from each factory's static declarations, and
-// builds the agent whose `close()` tears the plugin chain and tool bundles
-// down. It does not read a deploy tree or load a tool package.
+// This module attaches a step's tool factories to the step env and builds the
+// agent whose `close()` tears the plugin chain and tool bundles down.
 
 import {
   createAgent,
   defineAgent,
   defineTool,
-  toolApprovalEffect,
   toolFactoryMeta,
   type Agent,
   type AgentDefinition,
@@ -18,9 +14,7 @@ import {
   type AnnotatedToolFactory,
   type BaseEnv,
   type ToolBundle,
-  type ToolDeclaration,
 } from "@intx/agent";
-import type { GrantRule } from "@intx/authz";
 import {
   buildCredentialCapabilities,
   type StepCredentialWiring,
@@ -34,18 +28,6 @@ import {
 } from "@intx/types/runtime-capabilities";
 
 const logger = getLogger(["sidecar", "workflow-child", "step-tools"]);
-
-/**
- * Cache and registry caps the per-step tool loader needs. Resolved at
- * the sidecar boot edge from the existing `SIDECAR_CACHE_*` /
- * `SIDECAR_REGISTRY_*` config keys and threaded into the child through
- * the substrate config, so the child's per-step materialization is
- * bounded by those boot-edge-resolved caps.
- */
-export interface StepToolCacheConfig {
-  readonly cacheMaxBytes: number;
-  readonly registryMaxTarballBytes: number;
-}
 
 /**
  * Materialized tool runtime for one step's agent. Carried from
@@ -83,57 +65,6 @@ export function sourceStepToolFactories(
     })),
     factory,
   }));
-}
-
-/**
- * Derive the per-step tool-mark floor grants from a step's materialized
- * tool factories. Each loaded factory carries its static
- * `definitions` (name + optional `approval` mark) verbatim from the tool
- * package; every declared tool contributes a `tool:<name>` / `invoke`
- * grant whose effect is the tool's floor (`ask` for an approval-gated
- * tool, `allow` otherwise), computed through the same
- * `toolApprovalEffect` mapping the deploy-time capability walk uses so a
- * pinned tool floors identically hub-side and sidecar-side.
- *
- * The hub's capability walk reads only INLINE `agent.toolFactories`, so a
- * tool that ships as a pinned package loads in the child and never
- * produces a `tool:<name>` grant on the run principal. These derived rows
- * supply that missing floor: they join the per-step grants the authz path
- * evaluates as ADDITIONAL rows, so `evaluateGrants` precedence still
- * resolves an explicit `deny` (priority 2) over the derived `ask`/`allow`
- * -- the floor only raises the minimum authority to the tool's mark, it
- * never overrides a declared denial.
- *
- * The grant `id` is deterministic (`floor:tool:<name>`) rather than
- * random: `evaluateGrants` never dedupes or joins on `id` (it ranks by
- * specificity then effect), so a stable id keeps the rows reproducible
- * without a generator, and a floor row that coincides with a
- * hub-supplied `tool:<name>` row resolves by effect precedence regardless
- * of the ids.
- */
-export function deriveToolMarkFloorGrants(
-  factories: readonly {
-    readonly packageName: string;
-    readonly definitions: readonly ToolDeclaration[];
-  }[],
-): GrantRule[] {
-  const rows: GrantRule[] = [];
-  for (const factory of factories) {
-    for (const definition of factory.definitions) {
-      rows.push({
-        id: `floor:tool:${definition.name}`,
-        resource: `tool:${definition.name}`,
-        action: "invoke",
-        effect: toolApprovalEffect(definition),
-        origin: "creator",
-        conditions: null,
-        expiresAt: null,
-        roleId: null,
-        principalId: null,
-      });
-    }
-  }
-  return rows;
 }
 
 /**
@@ -264,7 +195,7 @@ function requireCapabilitiesBag(env: BaseEnv): RuntimeCapabilities {
 /**
  * Attach a step's materialized tool runtime to the per-step env so the
  * tool-bearing `agentFactory` can consume it. Called by `buildEnv`
- * after `materializeStepTools` resolves.
+ * once it has assembled the step's factories.
  *
  * The parameter is `Omit<BaseEnv, "authorize">` because `buildEnv`
  * yields exactly that shape (the step-invoker adapter adds `authorize`

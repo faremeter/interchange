@@ -247,9 +247,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // production route it does not materialize the rows itself -- deriving
       // them from the frozen snapshot here reproduces the delivery, and keeps
       // the grant the body authorizes against sourced from the probe walk
-      // rather than a hand-authored constant. A source-ref deploy has no
-      // tool-mark floor to fall back on (a source tool's runtime name is the
-      // bare `definition.name` the walk already emitted a grant for), so this
+      // rather than a hand-authored constant. A source tool's runtime name is the
+      // bare `definition.name` the walk already emitted a grant for, so this
       // IS the body's only authority.
       const snapshot = handle.approved.grantSnapshot;
       expect(

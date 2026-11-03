@@ -71,9 +71,9 @@ const SENTINEL_CONTENT = "should-not-run-until-approved";
 // projects over. The install/approve freeze and the anchor `workflow_run`
 // insert both write against these, so they must exist in the real DB before
 // the deploy runs.
-const TENANT_ID = "tnt_single_step_pinned_ask_tool";
-const CALLER_PRINCIPAL_ID = "prn_single_step_pinned_ask_tool";
-const DEFINITION_ASSET_ID = "ast_single_step_pinned_ask_tool_wf";
+const TENANT_ID = "tnt_single_step_ask_tool";
+const CALLER_PRINCIPAL_ID = "prn_single_step_ask_tool";
+const DEFINITION_ASSET_ID = "ast_single_step_ask_tool_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;

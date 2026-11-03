@@ -257,8 +257,8 @@ describe("createGrantEvaluator", () => {
     grants,
   });
 
-  test("evaluates the snapshot grants when the step has no floor", async () => {
-    const evaluate = createGrantEvaluator({ floorFor: () => [] });
+  test("evaluates the snapshot grants", async () => {
+    const evaluate = createGrantEvaluator();
     await expect(
       evaluate(input("work", [rule("tool:fetch", "allow")])),
     ).resolves.toEqual({
@@ -271,23 +271,6 @@ describe("createGrantEvaluator", () => {
       matchingGrants: [],
       resolvedBy: null,
     });
-  });
-
-  test("adds the floor of the base step, and a declared deny still wins", async () => {
-    const asked: string[] = [];
-    const evaluate = createGrantEvaluator({
-      floorFor: (stepId) => {
-        asked.push(stepId);
-        return [rule("tool:fetch", "ask")];
-      },
-    });
-    await expect(evaluate(input("fan[2]", []))).resolves.toMatchObject({
-      effect: "ask",
-    });
-    await expect(
-      evaluate(input("fan[0]", [rule("tool:fetch", "deny")])),
-    ).resolves.toMatchObject({ effect: "deny" });
-    expect(asked).toEqual(["fan", "fan"]);
   });
 
   test("evaluates a time window against the clock, so an approved ask allows inside it", async () => {
@@ -303,7 +286,7 @@ describe("createGrantEvaluator", () => {
         timezone: "UTC",
       },
     });
-    const evaluate = createGrantEvaluator({ floorFor: () => [] });
+    const evaluate = createGrantEvaluator();
     const approved = (conditions: GrantRule["conditions"]) =>
       evaluate(input("work", [{ ...rule("tool:fetch", "allow"), conditions }]));
 
@@ -324,7 +307,7 @@ describe("createGrantEvaluator", () => {
   });
 
   test("fails closed on a condition the child cannot evaluate", async () => {
-    const evaluate = createGrantEvaluator({ floorFor: () => [] });
+    const evaluate = createGrantEvaluator();
     await expect(
       evaluate(
         input("work", [
@@ -353,7 +336,7 @@ describe("a run child's authorize closure over grants that crossed JSON", () => 
         },
         "lbl",
       ),
-      createGrantEvaluator({ floorFor: () => [] }),
+      createGrantEvaluator(),
     );
   }
   const ctx = { stepId: "work", attempt: 1, runId: "run-1" };

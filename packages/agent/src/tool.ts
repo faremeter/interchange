@@ -164,12 +164,7 @@ export interface ToolDeclaration {
  * `allow`.
  *
  * This is the single canonical derivation of a tool's authorization floor
- * from its declaration. Both the deploy-time capability walk (hub-side)
- * and the per-step tool authorization (sidecar-side) route through here so
- * a pinned tool loaded in the child derives the SAME floor the walk would
- * have derived from an inline declaration. A divergence between the two
- * sites would let a pinned `ask` tool authorize as `allow` (or vice
- * versa), so the mapping lives in exactly one place.
+ * from its declaration, used by the deploy-time capability walk.
  */
 export function toolApprovalEffect(
   declaration: Pick<ToolDeclaration, "approval">,

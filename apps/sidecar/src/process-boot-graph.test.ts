@@ -9,8 +9,8 @@ import { dirname, join } from "node:path";
 // sidecar orchestrator (`@intx/hub-agent`) into that graph: the child never
 // executes either, the database dependency is a layering violation, and
 // importing the orchestrator that spawns the child is a backwards dependency.
-// The db-free substrate is reachable via `@intx/hub-sessions/substrate` and
-// the path helpers via `@intx/hub-agent/paths`; the package barrels are not.
+// The db-free substrate is reachable via `@intx/hub-sessions/substrate`; the
+// package barrels are not.
 // The sidecar loads its orchestrator but excludes Hub services, agent execution,
 // broad helper barrels, and the eager combined control-payload schema.
 //
@@ -89,7 +89,7 @@ function forbiddenReason(spec: string): string | null {
     return "control-plane barrel; import @intx/hub-sessions/substrate instead";
   }
   if (spec === "@intx/hub-agent") {
-    return "sidecar orchestrator barrel; import @intx/hub-agent/paths instead";
+    return "sidecar orchestrator barrel";
   }
   return null;
 }
@@ -191,8 +191,7 @@ async function expectCleanBootGraph(binary: string): Promise<void> {
       `The workflow-child boot graph reached forbidden modules:\n${detail}\n\n` +
         "The spawned child must not evaluate the control-plane database or the " +
         "sidecar orchestrator at boot. Use @intx/hub-sessions/substrate for the " +
-        "db-free repo/substrate symbols and @intx/hub-agent/paths for the deploy-tree " +
-        "and address helpers.",
+        "db-free repo/substrate symbols.",
     );
   }
 }

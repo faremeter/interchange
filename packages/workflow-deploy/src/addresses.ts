@@ -4,9 +4,7 @@
 // more than one step derives per-step addresses of the form
 // `<runId>-<stepId>@<domain>`. Because the derivation is pure, the
 // supervisor reconstructs the same addresses at spawn time without any
-// per-deploy state, and `resolveStepAddress` is the single owner of the
-// head/step collapse decision for a consumer that must choose an address
-// from the host-sourced step count alone.
+// per-deploy state.
 
 import { formatRunAddress } from "@intx/types/agent-address";
 
@@ -54,37 +52,6 @@ export function deriveRunAddress(args: {
   domain: string;
 }): string {
   return formatRunAddress(args.runId, args.domain);
-}
-
-/**
- * Resolve where a step's deploy tree lives, given the deployment's step
- * count. This is the single owner of the head/step collapse DECISION for
- * a consumer that must choose the address without knowing the deploy
- * shape: a one-step workflow has no distinct steps, so its lone step IS
- * the head (`deriveRunAddress`); a multi-step deployment keeps the
- * head distinct from its per-step addresses (`deriveStepAddress`). The
- * sidecar child reads its deploy tree from the address this returns,
- * keyed only off the deployment mailbox and the host-sourced `stepCount`.
- *
- * The producers do not route through here -- each handles one shape
- * unconditionally: the single-step deploy stages the tree at the head,
- * the multi-step deploy at each per-step address. Because `stepCount` is
- * the deployed definition's `stepOrder.length`, sourced from the host,
- * the consumer's collapse always agrees with whichever producer staged
- * the tree; the two processes never derive divergent addresses.
- */
-export function resolveStepAddress(args: {
-  runId: string;
-  stepId: string;
-  domain: string;
-  stepCount: number;
-}): string {
-  return args.stepCount === 1
-    ? deriveRunAddress({
-        runId: args.runId,
-        domain: args.domain,
-      })
-    : deriveStepAddress(args);
 }
 
 /**

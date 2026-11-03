@@ -215,8 +215,7 @@ const EFFECT_GRANT_PREFIX = "effect:";
  *
  * The `tool:` rules carry the bare tool names the walk reads from inline
  * `agent.toolFactories`. They authorize a source-ref tool, which runs under
- * that name; a pinned tool runs as `<bundleId>:<name>` and takes its
- * authority from the sidecar tool-mark floor instead.
+ * that name.
  */
 export function runtimeGrantRules(
   snapshot: Pick<GrantWalkSnapshot, "perStep">,

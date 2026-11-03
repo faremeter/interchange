@@ -3,13 +3,13 @@
 //
 // The sibling `loop-tool-invoke-roundtrip.test.ts` proves a plain agent step in
 // a loop body can call a tool, and `map-fan-out-real-agent.test.ts` proves a
-// TOP-LEVEL map iteration resolves its base step's staged tool tree. This
+// TOP-LEVEL map iteration gets its agent's tools. This
 // composes the two, which nothing else does: `runMap` scopes its inner step's
-// id to `<mapStepId>[<index>]` and every deploy-asset lookup strips that suffix
+// id to `<mapStepId>[<index>]` and every source and grant lookup strips that suffix
 // with `baseStepId`, while the map itself lives in a loop body whose ids reach
 // the deployment's flat namespace only through the executable-step walk's
 // descent into loop bodies. A per-item tool call has to survive both
-// transformations at once to find its credentials, source, and deploy tree.
+// transformations at once to find its credentials and source.
 //
 // The assertion reads the tool_result's TEXT, not merely its presence. A tool
 // call the authorize seam blocks still appends a tool_result -- an error one,
@@ -142,7 +142,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    // The per-step credentials, source, and deploy-tree tables are keyed by
+    // The per-step credentials and source tables are keyed by
     // base step id in one namespace shared by the top level and the loop body,
     // so a colliding body step id would resolve to a top-level step's entry
     // and make the round-trip below pass against the wrong step.

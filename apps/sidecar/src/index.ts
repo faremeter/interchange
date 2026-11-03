@@ -442,10 +442,9 @@ const multistepSubstrateEnv: Record<string, string> = {
   SIDECAR_SIGNING_PUBLIC_KEY: hexEncode(sidecarSigningKey.publicKey),
   SIDECAR_SIGNING_PRIVATE_KEY: hexEncode(sidecarSigningKey.privateKey),
   PATH: requireEnv("PATH"),
-  // Tool-loader caps the child's per-step tool materialization uses.
-  // Resolved once at the boot edge and threaded into the child through
-  // the substrate config so the child does not re-read env at a
-  // non-boundary site.
+  // Tarball caps a frozen closure is applied under. Resolved once at the
+  // boot edge and threaded through the substrate config so nothing re-reads
+  // env at a non-boundary site.
   SIDECAR_CACHE_MAX_BYTES: String(cacheMaxBytes),
   SIDECAR_REGISTRY_MAX_TARBALL_BYTES: String(registryMaxTarballBytes),
   // Serialize the parent's ALREADY-VALIDATED manifest (the object

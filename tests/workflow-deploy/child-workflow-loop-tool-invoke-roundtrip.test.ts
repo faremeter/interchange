@@ -133,7 +133,7 @@ afterAll(async () => {
 describe.skipIf(!harnessDbEnvAvailable())(
   "a loop body inside a spawned child invokes a real tool",
   () => {
-    // The per-step credentials, source, and deploy-tree tables are keyed by
+    // The per-step credentials and source tables are keyed by
     // base step id, so a body step id colliding with another step's id would
     // resolve to that step's entry and make the round-trip below pass against
     // the wrong step.

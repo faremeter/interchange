@@ -10,7 +10,7 @@
 // `mail_send` tool. When `withTool` is set the item agent lists
 // `mailSendTool("fs")` from the sibling `mail-tool.ts` module, so the mock
 // inference reply lists the tool name -- the proof that a map iteration
-// resolves its base step's staged tool tree.
+// gets its agent's tools.
 
 import path from "node:path";
 

@@ -9,11 +9,6 @@
       "intx-src": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./paths": {
-      "intx-src": "./src/paths.ts",
-      "types": "./dist/paths.d.ts",
-      "default": "./dist/paths.js"
     }
   },
   "dependencies": {

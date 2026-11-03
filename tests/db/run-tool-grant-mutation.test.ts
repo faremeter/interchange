@@ -107,7 +107,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           timezone: "UTC",
         },
       });
-      const evaluate = createGrantEvaluator({ floorFor: () => [] });
+      const evaluate = createGrantEvaluator();
       const approvedEffect = async (conditions: Record<string, unknown>) => {
         await h.db.delete(grantTable);
         await seedGrant(h.db, {

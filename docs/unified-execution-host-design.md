@@ -423,13 +423,8 @@ flagged in §6.
 
 ### 3d. Tool materialization and execution in the child (the other hard one)
 
-A workflow step's tools are materialized in the child.
-`apps/sidecar/src/step-tool-materialization.ts` (`materializeStepTools`)
-reads the step's deploy tree (`readDeployTree` from `@intx/hub-agent/paths`)
-and calls `materializeToolPackages`
-(`packages/tool-packaging/src/tool-materialization.ts`), which runs the
-tool-package loader (`@intx/tool-packaging`: `createToolLoader`,
-`applyAtomic`, `createTarballCache`). `attachStepTools` and
+A workflow step's tools are the step agent's own evaluated tool factories,
+which the child holds from the frozen source closure. `attachStepTools` and
 `createToolBearingAgentFactory`
 (`packages/workflow-host/src/child/step-tools.ts`) compose the plugin chain
 (posix reads `env.plugins`; the LSP plugin factory **spawns a subprocess**),
@@ -446,8 +441,8 @@ from `@intx/workflow-host/child` and imports `createSubstrate` and
 `SIDECAR_SUBSTRATE_CONFIG_KEYS` from
 `apps/sidecar/src/workflow-child-bindings.ts`. That binding closes
 `createSidecarSubstrateFactory`
-(`packages/workflow-host/src/child/substrate-factory.ts`) over
-`materializeStepTools`. There is **no cross-process injection of tool
+(`packages/workflow-host/src/child/substrate-factory.ts`) over the grant
+cap. There is **no cross-process injection of tool
 factories** — there could not be, because tool factories are closures and
 closures do not cross a process boundary. Tool materialization and tool
 _execution_ both happen **inside the child process**: the loader runs there,
@@ -459,12 +454,8 @@ is exactly why the isolation unit and the sandbox boundary (§3f and Decision
 
 **Decision: materialize and run tools in the child, rooted per-step.**
 
-- **What the child runs:** `materializeToolPackages`
-  (`packages/tool-packaging/src/tool-materialization.ts`) and the loader
-  (`createToolLoader`, `createTarballCache`, `applyAtomic`), called by the
-  app materializer (`apps/sidecar/src/step-tool-materialization.ts`), which
-  reads the deploy tree through `readDeployTree` from `@intx/hub-agent/paths`.
-  The plugin-chain instantiation (including LSP subprocess lifecycle, posix
+- **What the child runs:** the step agent's evaluated tool factories. The
+  plugin-chain instantiation (including LSP subprocess lifecycle, posix
   `env.plugins` threading, and disposer capture) is
   `packages/workflow-host/src/child/step-tools.ts`. The real step-invoker
   calls that code when building a step's agent. "In the child" means "in the
@@ -473,26 +464,21 @@ is exactly why the isolation unit and the sandbox boundary (§3f and Decision
   `@intx/agent` `defineAgent` / `createAgent` surface, the
   `@intx/storage-isogit` stores, the inference runtime. None of these are
   re-implemented; the substrate factory the child binary runs calls them.
-- **Rooting.** The tarball cache and tool instance dir root per agent/step
-  under the workflow-run repo's working tree (the child has `getRepoDir`). For
-  a single long-lived agent there is one materialization, reused across
-  triggers (warm-keep, §3b). For multi-step, materialization is per step
-  invocation as today.
+- **Rooting.** A step's tools run rooted per step under the run (see
+  `createSidecarStepBuildEnv`). A single long-lived agent keeps its tools across
+  triggers (warm-keep, §3b). For multi-step, tools are built per step
+  invocation.
 
 **Layering — why `@intx/workflow-host` stays portable (the clarification
 strengthens the call).** `@intx/workflow-host` takes substrate, spawner, mail
-bus, step-invoker, and `materializeStepTools` as injected bindings, and the
-step-invoker accepts `buildEnv` + `agentFactory`
+bus and step-invoker as injected bindings, and the step-invoker accepts `buildEnv` + `agentFactory`
 (`packages/workflow-host/src/adapters/step-invoker.ts`,
 `WorkflowStepInvokerOpts`). The package does not depend on
-`@intx/tool-packaging` or `@intx/hub-agent`. The host-specific deploy-tree
-read is `apps/sidecar/src/step-tool-materialization.ts`. The factory
+`@intx/tool-packaging` or `@intx/hub-agent`. The factory
 (`packages/workflow-host/src/child/substrate-factory.ts`) and the plugin
 attachment (`packages/workflow-host/src/child/step-tools.ts`) are what the
-child binary loads. Because the child _is_ the sidecar binary, the injected
-materializer is present in the child's address space without the package
-importing it. An alternative host that ships a different `bin/workflow-child`
-and a different materializer reuses the orchestration package unchanged. The
+child binary loads. An alternative host that ships a different
+`bin/workflow-child` reuses the orchestration package unchanged. The
 locus (tools run _in_ the child, which is the sidecar binary) is what makes
 this clean: one process, one tool runtime, and a portable orchestration
 package that does not import that runtime.
@@ -1132,15 +1118,9 @@ re-serviced.
 
 ### Reused (one implementation, in the child = the sidecar binary)
 
-- Tool composition: `materializeToolPackages`
-  (`packages/tool-packaging/src/tool-materialization.ts`), called by the
-  app's `materializeStepTools`
-  (`apps/sidecar/src/step-tool-materialization.ts`), plus
-  `@intx/tool-packaging` (loader, tarball cache, `applyAtomic`) and the
-  plugin/LSP chain in `packages/workflow-host/src/child/step-tools.ts`.
-  The factory takes the materializer as an injected binding (§3d), so
-  `@intx/workflow-host` does not depend on `@intx/tool-packaging`. Connected
-  via the step-invoker's `buildEnv`/`agentFactory`.
+- Tool composition: the plugin/LSP chain in
+  `packages/workflow-host/src/child/step-tools.ts`, connected via the
+  step-invoker's `buildEnv`/`agentFactory`.
 - Inference source resolution: the per-step source table the substrate factory
   already parses (`createSidecarStepBuildEnv`, `STEP_INFERENCE_SOURCES`).
 - The agent runtime: `@intx/agent` `defineAgent` / `createAgent`, the reactor,
@@ -1399,19 +1379,14 @@ plaintext `assets/workflow/<childBodyRef>/sources.json` for the missing bodies.
 **source-tools** arm the top-level source step invoker uses. Tools are available
 wherever inference runs; see the invariant in `packages/workflow/README.md`. The
 child holds the live, re-verified `WorkflowDefinition`, so each child step's
-agent carries live `toolFactories`; the invoker builds its env with
-`sourceTools: true` (and the parent's `closurePackageDir` for plugin
-materialization), which feeds those live factories straight into the tool slot. No tool deploy tree is staged and no tool-mark floor
-is recorded: a source tool's runtime name is the bare `definition.name`, for
-which the capability walk already emitted a `tool:<name>` grant into the
-credentials snapshot, so the snapshot authorizes it directly (the floor exists
-only to compensate a _pinned_ tool's namespaced name, which the walk never saw).
-The invoker must not fall through to the pinned-tool arm — with no staged tree it
-resolves the child step's address against the _parent_ deployment's mailbox and
-step count and returns an empty tool set silently, a fail-quiet path a spawned
-child must never take. This also keeps a body step whose id collides with a
-parent step id from reading the parent step's tools: the source arm never
-consults the deploy tree at all.
+agent carries live `toolFactories`; the invoker builds its env with the
+parent's `closurePackageDir` for plugin materialization and feeds those live
+factories straight into the tool slot. A source tool's runtime name is the bare
+`definition.name`, for which the capability walk already emitted a
+`tool:<name>` grant into the credentials snapshot, so the snapshot authorizes it
+directly. This also keeps a body step whose id collides with a parent step id
+from reading the parent step's tools: each agent's tools come from its own
+evaluated definition.
 
 **Grants (least-privilege).** The operator approves the transitive capability
 set: the capability walk folds an inline child's grants into the spawning
@@ -1831,9 +1806,6 @@ are explicitly **not** a go-live gate for INTR-209.
   the agent repo store); `HarnessBuilder`
   (`packages/hub-agent/src/harness-builder.ts`, now a one-method
   `canBuildSource` admission seam).
-- Tool-package materialization: `packages/tool-packaging/src/tool-materialization.ts`
-  (`materializeToolPackages`). The sidecar calls it from
-  `apps/sidecar/src/step-tool-materialization.ts` (`materializeStepTools`).
 - Plugin-chain composition: `packages/workflow-host/src/child/step-tools.ts`
   (`createToolBearingAgentFactory`, `attachStepTools`).
 - Source-admission seam: `apps/sidecar/src/default-harness.ts`

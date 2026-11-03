@@ -1,15 +1,14 @@
 // End-to-end integration of the tool-package pipeline.
 //
-// Exercises the gluing between the hub-side resolver, the deploy-tree
-// round-trip, and the sidecar-side loader+atomic-apply. The test does
+// Exercises the gluing between the hub-side resolver and the sidecar-side
+// loader+atomic-apply. The test does
 // not spin up a subprocess sidecar — the same harness builder code
 // runs in-process here against synthetic fixtures, which is what the
 // production path runs against real ones.
 //
 // What the test demonstrates per scenario:
 //
-//   - happy path: resolver walks pins → manifest written to deploy
-//     tree → readDeployTree round-trips → loader materializes →
+//   - happy path: resolver walks pins → loader materializes →
 //     applyAtomic swaps → loaded factories registered.
 //
 //   - integrity.mismatch: bytes served by the mock registry do not
@@ -43,7 +42,6 @@ import type {
   ToolPackagePin,
 } from "@intx/types/tool-packages";
 import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
-import { readDeployTree } from "@intx/hub-agent";
 
 let scratch: string;
 let fixtureRoot: string;
@@ -585,28 +583,9 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
       `tarballs/${fixture.tarballs[0]?.filename ?? ""}`,
     );
 
-    // Persist the manifest + the asset-mounts file the way the agent
-    // repo's writeDeployTree would, then read it back via the same
-    // readDeployTree the sidecar uses. The round-trip locks in that
-    // the loader's view of `assetMounts` matches the session
-    // service's write shape.
-    const deployRoot = path.join(scratch, "agent-tree");
-    const deployDir = path.join(deployRoot, "deploy");
-    await fs.mkdir(deployDir, { recursive: true });
     const mountPath = `package-registries/${assetSource.name}/`;
-    await fs.writeFile(
-      path.join(deployDir, "tool-packages-manifest.json"),
-      JSON.stringify(manifest),
-    );
-    await fs.writeFile(
-      path.join(deployDir, "asset-mounts.json"),
-      JSON.stringify({ assetMounts: { [assetId]: mountPath } }),
-    );
-    const tree = await readDeployTree(deployRoot);
-    expect(tree.assetMounts.get(assetId)).toBe(mountPath);
 
-    // Materialize the asset tarballs onto disk at the same mount the
-    // deploy tree advertises. The loader's default tarball fetcher
+    // Materialize the asset tarballs onto disk at the mount. The loader's default tarball fetcher
     // resolves `kind: "asset"` entries against `assetRoot + mount + path`.
     await fixture.writeMount(path.join(assetRoot, mountPath));
 
@@ -627,7 +606,7 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
       loader,
       instanceDir,
       assetRoot,
-      assetMounts: tree.assetMounts,
+      assetMounts: new Map([[assetId, mountPath]]),
       gitDirs: new Map(),
       attemptId: "atp_asset",
       previousDeployId: "none",

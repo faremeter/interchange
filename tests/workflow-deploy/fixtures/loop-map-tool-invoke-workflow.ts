@@ -4,8 +4,8 @@
 // top-level steps on the loop's converged and exhausted arms.
 //
 // This is the rung where two id transformations compose. `runMap` runs its
-// inner step under a scoped id `<mapStepId>[<index>]`, and every deploy-asset
-// lookup recovers the base id with `baseStepId`; the map itself sits inside a
+// inner step under a scoped id `<mapStepId>[<index>]`, and every source and
+// grant lookup recovers the base id with `baseStepId`; the map itself sits inside a
 // loop body, whose ids reach the deployment's flat namespace only because the
 // executable-step walk descends into loop bodies. A per-item tool call
 // therefore has to resolve `<mapStepId>[<index>]` back to a body step id that
@@ -28,8 +28,8 @@
 //
 // STEP ID DISTINCTNESS. `LOOP_BODY_MAP_STEP_ID` must differ from every entry in
 // `TOP_LEVEL_STEP_IDS`, and anyone changing these ids must keep them disjoint.
-// The per-step tables a body step resolves against -- the credentials snapshot,
-// the pinned inference-source map, and the deploy-tree address resolver -- are
+// The per-step tables a body step resolves against -- the credentials snapshot
+// and the pinned inference-source map -- are
 // keyed by `baseStepId(stepId)` in ONE flat namespace shared between the top
 // level and the loop body. A body step id equal to a top-level step id
 // therefore resolves to the TOP-LEVEL step's entry, and the round-trip below

@@ -336,13 +336,6 @@ type StepStrategy = {
  * `multistepDeriveStepAddress`) and a derived agent-state repo under the
  * default `<runId>-<stepId>` convention.
  *
- * NOTE: the supervisor's `deriveStepAddress` feeds the credentials
- * snapshot's per-step mail `address` and the grants-repo derivation. It
- * does NOT feed the child's on-disk tool read (`stepDeployTreeDir` in
- * `apps/sidecar/src/step-tool-materialization.ts`), which re-derives the
- * step address from the deployment mailbox address independently. The
- * deploy tree must therefore be staged at the address `stepDeployTreeDir`
- * computes, regardless of this strategy's address choice.
  */
 function createStepStrategy(args: {
   legacyAddress: string;

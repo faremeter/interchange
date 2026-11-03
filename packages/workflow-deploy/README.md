@@ -24,8 +24,7 @@ Address derivation is a pure function of `(runId, stepId, domain)`:
 - **Multi-step workflow**: each step derives a per-step run address of
   the form `<runId>-<stepId>@<domain>` (`deriveStepAddress`).
 
-`resolveStepAddress` owns the head/step collapse decision. Because the
-derivation carries no per-deploy state, the supervisor reconstructs the
+Because the derivation carries no per-deploy state, the supervisor reconstructs the
 same addresses at spawn time from the host-sourced step count alone.
 
 Public surface:
@@ -136,7 +135,7 @@ Public surface:
   that closed set throws, as does a container kind carrying neither an inline
   body nor a `{ ref }`; a `{ ref }` body yields nothing, because the
   referenced asset is deployed and walked on its own.
-- `deriveRunAddress` / `deriveStepAddress` / `resolveStepAddress` /
+- `deriveRunAddress` / `deriveStepAddress` /
   `deriveRunAgentId` / `deriveStepAgentId` / `deriveWorkflowRunRepoId`
   — the pure address and id derivation helpers.
 - `extractFoldedBody(definition)` — read the launch-relevant fields back
