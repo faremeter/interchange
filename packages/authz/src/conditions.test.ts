@@ -3,6 +3,16 @@ import { describe, test, expect } from "bun:test";
 import { evaluateConditions } from "./conditions";
 import type { ConditionContext, ConditionRegistry } from "./types";
 
+const PROTOTYPE_KEYS = ["constructor", "toString", "__proto__"];
+
+// An own enumerable key, as a JSON request body carries it. An object
+// literal cannot make "__proto__" an own key.
+function ownKey(key: string): Record<string, unknown> {
+  const conditions: Record<string, unknown> = {};
+  Object.defineProperty(conditions, key, { value: 1, enumerable: true });
+  return conditions;
+}
+
 function ctx(overrides?: Partial<ConditionContext>): ConditionContext {
   return {
     now: new Date("2025-06-15T14:30:00Z"),
@@ -148,6 +158,14 @@ describe("evaluateConditions", () => {
     await evaluateConditions({ first: null, second: null }, ctx(), registry);
 
     expect(secondCalled).toBe(false);
+  });
+
+  test("a key that names an Object prototype property is unknown", async () => {
+    for (const key of PROTOTYPE_KEYS) {
+      expect(evaluateConditions(ownKey(key), ctx(), {})).rejects.toThrow(
+        `Unknown condition: "${key}"`,
+      );
+    }
   });
 
   test("no registry provided with non-null conditions throws", async () => {

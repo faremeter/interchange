@@ -1,4 +1,18 @@
-import type { ConditionContext, ConditionRegistry } from "./types";
+import type {
+  ConditionContext,
+  ConditionEvaluator,
+  ConditionRegistry,
+} from "./types";
+
+// Own properties only: a registry is a plain object, so a key such as
+// "constructor" or "__proto__" would otherwise resolve to an inherited value
+// that is not an evaluator.
+function lookupEvaluator(
+  registry: ConditionRegistry,
+  key: string,
+): ConditionEvaluator | undefined {
+  return Object.hasOwn(registry, key) ? registry[key] : undefined;
+}
 
 /**
  * Evaluate whether a grant's conditions are satisfied.
@@ -21,7 +35,7 @@ export async function evaluateConditions(
   if (keys.length === 0) return true;
 
   for (const key of keys) {
-    const evaluator = registry[key];
+    const evaluator = lookupEvaluator(registry, key);
     if (!evaluator) {
       throw new Error(
         `Unknown condition: "${key}". Register an evaluator in the condition registry.`,
