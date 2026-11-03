@@ -13,7 +13,6 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import type { HostedIncarnation } from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 
-import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createHubLink, type DeployRouter } from "./hub-link";
@@ -124,17 +123,6 @@ afterAll(async () => {
   await server.stop(true);
 });
 
-function keyStore(): AgentKeyStore {
-  return {
-    async loadOrGenerateKey() {
-      throw new Error("unused");
-    },
-    forgetAgent() {
-      // No key was ever cached for an address.
-    },
-  };
-}
-
 function sessions(): SessionManager {
   return {
     deleteAgentDir: () => Promise.resolve(),
@@ -200,7 +188,6 @@ function connectLink(
     token: "token",
     transport: createInMemoryTransport(),
     sessions: sessions(),
-    keyStore: keyStore(),
     resolveSenderCrypto: () => undefined,
     lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
     cacheSenderKey: async () => undefined,

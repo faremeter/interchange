@@ -377,7 +377,6 @@ export function createSidecarOrchestrator(
     token,
     transport,
     sessions,
-    keyStore,
     resolveSenderCrypto,
     lookupInboundMailPolicy,
     cacheSenderKey,

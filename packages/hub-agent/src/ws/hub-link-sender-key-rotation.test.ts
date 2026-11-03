@@ -33,22 +33,12 @@ import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
 import { createSenderKeyCache } from "../sender-key-cache";
-import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 
 // ---------------------------------------------------------------------------
 // Minimal link dependencies. The rotation loop touches only the sender cache
-// wiring, so the deploy/session/key stubs exist only to satisfy the config.
+// wiring, so the deploy/session stubs exist only to satisfy the config.
 // ---------------------------------------------------------------------------
-
-function createStubKeyStore(): AgentKeyStore {
-  return {
-    async loadOrGenerateKey(address: string) {
-      throw new Error(`No key registered for ${address} in test store`);
-    },
-    forgetAgent: () => undefined,
-  };
-}
 
 function createStubDeployRouter(): DeployRouter {
   return {
@@ -241,7 +231,6 @@ describe("hub-link sender-key rotation on reconnect", () => {
         token: "test-token",
         transport: createInMemoryTransport(),
         sessions: createStubSessionManager(),
-        keyStore: createStubKeyStore(),
         resolveSenderCrypto: () => undefined,
         lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
         cacheSenderKey: (address, publicKey) =>
@@ -274,7 +263,6 @@ describe("hub-link sender-key rotation on reconnect", () => {
         token: "test-token",
         transport: createInMemoryTransport(),
         sessions: createStubSessionManager(),
-        keyStore: createStubKeyStore(),
         resolveSenderCrypto: () => undefined,
         lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
         cacheSenderKey: (address, publicKey) =>
@@ -344,7 +332,6 @@ describe("hub-link sender-key rotation on reconnect", () => {
         token: "test-token",
         transport: createInMemoryTransport(),
         sessions: createStubSessionManager(),
-        keyStore: createStubKeyStore(),
         resolveSenderCrypto: () => undefined,
         lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
         cacheSenderKey: (address, publicKey) =>
@@ -383,7 +370,6 @@ describe("hub-link sender-key rotation on reconnect", () => {
         token: "test-token",
         transport: createInMemoryTransport(),
         sessions: createStubSessionManager(),
-        keyStore: createStubKeyStore(),
         resolveSenderCrypto: () => undefined,
         lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
         cacheSenderKey: (address, publicKey) =>

@@ -1067,46 +1067,11 @@ export async function startHub(
     deployAcks.set(agentAddress, publicKey);
   });
 
-  // The DB stub satisfies the narrow surface the session-service paths the
-  // deploy tests exercise actually consult: a tenant lookup and the
-  // session_asset insert/delete audit writes. Its other members throw on
-  // access so the test fails loudly if production code drifts into a
-  // dependency the stub does not cover. No package-registry asset or
-  // tool-package registry is wired: deploy tests carry their tools inline in
-  // the workflow source closure, so the session-service tool-package resolver
-  // path is never entered.
-  const fakeDb = {
-    query: {
-      tenant: {
-        findFirst: async (_args: unknown) =>
-          ({ parentId: null }) as { parentId: string | null },
-      },
-    },
-    insert(_table: unknown) {
-      return {
-        values(_row: unknown) {
-          return Promise.resolve();
-        },
-      };
-    },
-    delete(_table: unknown) {
-      return {
-        where(_predicate: unknown) {
-          return Promise.resolve();
-        },
-      };
-    },
-  };
-
   const sessionService = createSessionService({
     loadRunCredentials: opts.loadRunCredentials ?? (async () => null),
     sidecarRouter: router,
     sidecarAllocationRouter: router,
     agentRepoStore,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the stub satisfies the narrow surface the session-service paths the deploy tests exercise actually call (query.tenant.findFirst, insert/delete), but cannot structurally satisfy the full drizzle PgDatabase type
-    db: fakeDb as unknown as NonNullable<
-      Parameters<typeof createSessionService>[0]["db"]
-    >,
   });
 
   const app = new Hono();

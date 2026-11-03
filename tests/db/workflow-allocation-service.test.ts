@@ -1088,7 +1088,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         message: "catalog temporarily unavailable",
       });
       failure = new SessionLaunchError(
-        "start",
         new Error("deploy acknowledgement timed out"),
         true,
       );

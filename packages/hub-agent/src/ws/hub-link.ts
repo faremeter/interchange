@@ -2,9 +2,7 @@
 //
 // Connects to the hub, sends the hello frame, forwards outbound
 // mail and inference events, and handles inbound agent lifecycle
-// commands. Per-agent key material lives on AgentKeyStore; the link calls into
-// the store for deploy-commit verification and hub-key bookkeeping. The wire layer itself never
-// touches raw key bytes.
+// commands. The wire layer itself never touches raw key bytes.
 
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
@@ -71,7 +69,6 @@ import type {
   InferenceEvent,
 } from "@intx/types/runtime";
 
-import type { AgentKeyStore } from "../agent-key-store";
 import { isSenderPublicKeyHex } from "../sender-key-cache";
 import type { SessionManager } from "../session-manager";
 
@@ -573,12 +570,6 @@ export type HubLinkConfig = {
   transport: HubTransport;
   sessions: SessionManager;
   /**
-   * Key custody and per-frame crypto. HubLink calls into the store for
-   * deploy-commit verification, hub-key recording, and per-agent forgetting;
-   * it does not maintain its own copy of those tables.
-   */
-  keyStore: AgentKeyStore;
-  /**
    * Resolves a sender address to the crypto whose public key verifies that
    * sender's inbound mail, or `undefined` when no key is known. The inbound
    * signature verify uses it to check each frame's signature against the key a
@@ -844,7 +835,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     token,
     transport,
     sessions,
-    keyStore,
     resolveSenderCrypto,
     lookupInboundMailPolicy,
     cacheSenderKey,
@@ -1181,7 +1171,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }
     }
 
-    keyStore.forgetAgent(frame.agentAddress);
     forgetIncarnation(frame.agentAddress, frame.generation);
 
     if (failures.length > 0) {

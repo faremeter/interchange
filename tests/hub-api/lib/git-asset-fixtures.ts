@@ -195,9 +195,9 @@ export async function createAsset(
   hubUrl: string,
   user: SignedUpUser,
   tenant: CreatedTenant,
-  opts: { kind?: "skill"; name?: string } = {},
+  opts: { name?: string } = {},
 ): Promise<CreatedAsset> {
-  const kind = opts.kind ?? "skill";
+  const kind = "skill";
   const name = opts.name ?? `asset-${randomSuffix()}`;
   const res = await apiCall(
     hubUrl,

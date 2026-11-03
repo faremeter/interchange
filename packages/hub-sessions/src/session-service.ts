@@ -76,17 +76,14 @@ import type { SidecarReconciliationContext } from "./sidecar-allocation/operatio
 const logger = getLogger(["interchange", "hub", "session-service"]);
 
 export class SessionLaunchError extends Error {
-  /** Which phase failed. */
-  readonly phase: string;
   /** True if the sidecar has a provisioned agent that could not be cleaned up. */
   readonly leakedAgent: boolean;
 
-  constructor(phase: string, cause: unknown, leakedAgent: boolean) {
+  constructor(cause: unknown, leakedAgent: boolean) {
     const msg =
       cause instanceof Error ? cause.message : "Session launch failed";
     super(msg, { cause });
     this.name = "SessionLaunchError";
-    this.phase = phase;
     this.leakedAgent = leakedAgent;
   }
 }
@@ -837,7 +834,7 @@ async function emitSourceRefDeployFrame(
         logger.warn`Could not clear unsent initialization for ${initialization.allocationId}: ${error instanceof Error ? error.message : String(error)}`;
       }
     }
-    throw new SessionLaunchError("start", cause, cause.frameSent);
+    throw new SessionLaunchError(cause, cause.frameSent);
   }
 }
 
@@ -901,7 +898,7 @@ export async function deployCodeSourcedWorkflow(
       ...credentialRefsField(sendArgs.credentials, hubConsumers),
     });
   } catch (cause) {
-    throw new SessionLaunchError("start", cause, false);
+    throw new SessionLaunchError(cause, false);
   }
 
   let publicKey: string;
@@ -929,9 +926,9 @@ export async function deployCodeSourcedWorkflow(
         .returning({ id: workflowRunTable.id });
       if (deleted.length === 0) {
         logger.error`anchor-before-frame rollback found no deployed/null-key row for ${args.anchorRunId} after a frameSent:false failure; the never-sent contract was violated and a child may be live`;
-        throw new SessionLaunchError("start", cause, true);
+        throw new SessionLaunchError(cause, true);
       }
-      throw new SessionLaunchError("start", cause, false);
+      throw new SessionLaunchError(cause, false);
     }
     // Preserve a rejected deployment's anchor as a recorded failure. Otherwise
     // a sent-but-unacked frame or unexpected error leaves it possibly live. Fence the
@@ -963,7 +960,7 @@ export async function deployCodeSourcedWorkflow(
     } else {
       logger.warn`anchor-before-frame: fenced anchor ${args.anchorRunId} deployed->failed on an unacked/failed emit; the agent may be leaked but the run is dead`;
     }
-    throw new SessionLaunchError("start", cause, true);
+    throw new SessionLaunchError(cause, true);
   }
 
   // Emit succeeded: stamp the acked key. No status guard -- the key is a fact
@@ -1314,7 +1311,7 @@ export function createSessionService(
         );
       }
     } catch (error) {
-      throw new SessionLaunchError("start", error, true);
+      throw new SessionLaunchError(error, true);
     }
   }
 

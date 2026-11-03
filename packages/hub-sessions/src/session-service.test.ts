@@ -227,10 +227,8 @@ function createMockAllocationRouter(
   };
 }
 
-function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
-  const calls: Call[] = [];
+function createMockRepoStore(): AgentRepoStore {
   return {
-    calls,
     async prepareWorkflowRunPack() {
       throw new Error("mock: prepareWorkflowRunPack not implemented");
     },
@@ -1744,7 +1742,6 @@ describe("deployCodeSourcedWorkflow", () => {
         if (!(error instanceof SessionLaunchError)) {
           throw new Error("expected SessionLaunchError");
         }
-        expect(error.phase).toBe("start");
         expect(error.leakedAgent).toBe(frameSent);
         expect(error.cause).toBe(failure);
       });

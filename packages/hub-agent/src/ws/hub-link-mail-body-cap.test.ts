@@ -32,7 +32,6 @@ import { configureSync, getConfig } from "@intx/log";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
-import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 
 // A transport that captures the two send handlers `createHubLink` registers and
@@ -73,7 +72,7 @@ function createCapturingTransport(): {
   };
 }
 
-// The deploy/session/key deps are required by the config but never reached by
+// The deploy/session deps are required by the config but never reached by
 // the send-cap paths; they throw if misused rather than model behavior.
 const unusedSessions: SessionManager = {
   deleteAgentDir: () => {
@@ -81,15 +80,6 @@ const unusedSessions: SessionManager = {
   },
   // Reached only on the within-cap audit path; returns no session id.
   getSessionId: () => undefined,
-};
-
-const unusedKeyStore: AgentKeyStore = {
-  loadOrGenerateKey: () => {
-    throw new Error("keyStore not used");
-  },
-  forgetAgent: () => {
-    throw new Error("keyStore not used");
-  },
 };
 
 const unusedDeployRouter: DeployRouter = {
@@ -107,7 +97,6 @@ function makeLink(hostedSenders = ["s@example.test"]) {
     token: "test-token",
     transport: capture.transport,
     sessions: unusedSessions,
-    keyStore: unusedKeyStore,
     resolveSenderCrypto: () => undefined,
     lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
     cacheSenderKey: async () => undefined,
