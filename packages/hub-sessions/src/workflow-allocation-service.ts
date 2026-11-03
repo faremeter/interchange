@@ -950,7 +950,6 @@ export function createWorkflowAllocationService({
     if (await allocationRouter.isAllocatedWorkflowActive(allocationTarget)) {
       if (anchor.publicKey !== null) return null;
       throw new SessionLaunchError(
-        "provision",
         new Error(
           `Allocation ${allocation.id} has an active workflow without a completed initialization key`,
         ),

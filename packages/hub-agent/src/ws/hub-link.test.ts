@@ -36,7 +36,6 @@ import {
 } from "@intx/types/sidecar";
 import type { RepoId } from "@intx/types/repo";
 
-import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 import type { ResolvedInboundMailPolicy } from "./inbound-signature";
 
@@ -154,23 +153,17 @@ function createTestDeployRouter(): DeployRouter {
 }
 
 /**
- * Convenience spread for `createHubLink({ ... })` call sites that
- * use a freshly-constructed `createTestKeyStore()` and a sessions
- * mock: returns the `keyStore` and a matching `deployRouter` so the
- * call site does not have to name a temporary binding for the
- * keyStore-router pairing.
+ * Convenience spread for `createHubLink({ ... })` call sites that use a
+ * sessions mock.
  */
 function withTestDeployBindings(): {
-  keyStore: AgentKeyStore & { registerKey(address: string, kp: KeyPair): void };
   deployRouter: DeployRouter;
   resolveSenderCrypto: () => undefined;
   lookupInboundMailPolicy: () => ResolvedInboundMailPolicy;
   cacheSenderKey: () => Promise<void>;
   evictSenderKey: () => Promise<void>;
 } {
-  const keyStore = createTestKeyStore();
   return {
-    keyStore,
     deployRouter: createTestDeployRouter(),
     // These tests do not exercise the inbound signature compare, so the verify
     // resolves no cached key and the refresh/evict sinks are no-ops.
@@ -180,36 +173,7 @@ function withTestDeployBindings(): {
     evictSenderKey: async () => undefined,
   };
 }
-import type { KeyPair } from "@intx/types/runtime";
 import { waitUntil } from "@intx/types/testing";
-
-// In-memory AgentKeyStore for tests. Tests that exercise deploy-commit
-// verification register keys via the public AgentKeyStore methods
-// (loadOrGenerateKey); the stub satisfies the interface
-// and uses real @intx/crypto primitives so signatures round-trip
-// through the production verify path.
-function createTestKeyStore(): AgentKeyStore & {
-  registerKey(address: string, kp: KeyPair): void;
-} {
-  const agentKeys = new Map<string, KeyPair>();
-  return {
-    registerKey(address, kp) {
-      agentKeys.set(address, kp);
-    },
-    async loadOrGenerateKey(address) {
-      const existing = agentKeys.get(address);
-      if (existing !== undefined) return { keyPair: existing, isNew: false };
-      throw new Error(`No key registered for ${address} in test store`);
-    },
-    forgetAgent(address) {
-      agentKeys.delete(address);
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function createMockSessionManager(): SessionManager {
   return {
@@ -433,21 +397,6 @@ const env = startTestServer();
 afterAll(async () => {
   await env.server.stop(true);
 });
-
-/**
- * Wire a workflow deployment for the reconnect path: mint an Ed25519
- * keypair and register it in the sidecar's keyStore so the deploy path
- * picks up the pinned key. After this, the deployment address named in
- * `getIncarnations` routes once the hub's `welcome` routes it on
- * (re)connect.
- */
-async function provisionDeploymentKey(
-  keyStore: ReturnType<typeof createTestKeyStore>,
-  address: string,
-): Promise<void> {
-  const kp = await generateKeyPair();
-  keyStore.registerKey(address, kp);
-}
 
 describe("sidecar↔hub integration", () => {
   test("advertises configured capacity in hello", async () => {
@@ -951,7 +900,6 @@ describe("sidecar↔hub integration", () => {
     const deploymentAddress = "run_disc1@integration.interchange";
 
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -1274,7 +1222,6 @@ describe("sidecar↔hub integration", () => {
     };
 
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -1334,7 +1281,6 @@ describe("sidecar↔hub integration", () => {
     };
 
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -1419,7 +1365,6 @@ describe("sidecar↔hub integration", () => {
     };
 
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -1464,7 +1409,6 @@ describe("sidecar↔hub integration", () => {
     };
 
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -1509,7 +1453,6 @@ describe("sidecar↔hub integration", () => {
     };
 
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -1547,7 +1490,6 @@ describe("sidecar↔hub integration", () => {
     const deploymentAddress = "run_srcnorouter@integration.interchange";
 
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,

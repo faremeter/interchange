@@ -22,11 +22,7 @@ import {
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { base64Encode } from "@intx/types";
-import type {
-  HarnessConfig,
-  InboundMessage,
-  KeyPair,
-} from "@intx/types/runtime";
+import type { HarnessConfig, InboundMessage } from "@intx/types/runtime";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
   assembleSignedContent,
@@ -49,27 +45,7 @@ import {
   createInboundMailPolicyLookup,
 } from "./inbound-mail-policy-registry";
 import { createPublicKeyCrypto } from "../sender-crypto";
-import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
-
-function createTestKeyStore(): AgentKeyStore & {
-  registerKey(address: string, kp: KeyPair): void;
-} {
-  const agentKeys = new Map<string, KeyPair>();
-  return {
-    registerKey(address, kp) {
-      agentKeys.set(address, kp);
-    },
-    async loadOrGenerateKey(address) {
-      const existing = agentKeys.get(address);
-      if (existing !== undefined) return { keyPair: existing, isNew: false };
-      throw new Error(`No key registered for ${address} in test store`);
-    },
-    forgetAgent(address) {
-      agentKeys.delete(address);
-    },
-  };
-}
 
 function createTestDeployRouter(): DeployRouter {
   return {
@@ -80,15 +56,12 @@ function createTestDeployRouter(): DeployRouter {
 }
 
 function withTestDeployBindings(): {
-  keyStore: AgentKeyStore & { registerKey(address: string, kp: KeyPair): void };
   deployRouter: DeployRouter;
   resolveSenderCrypto: () => undefined;
   cacheSenderKey: () => Promise<void>;
   evictSenderKey: () => Promise<void>;
 } {
-  const keyStore = createTestKeyStore();
   return {
-    keyStore,
     deployRouter: createTestDeployRouter(),
     resolveSenderCrypto: () => undefined,
     cacheSenderKey: async () => undefined,
@@ -241,20 +214,6 @@ afterAll(async () => {
   await env.server.stop(true);
 });
 
-/**
- * Wire a workflow deployment for the reconnect path: mint a keypair and
- * register it in the sidecar keyStore so the deploy path picks up the
- * pinned key. The deployment address then routes once the hub's
- * `welcome` routes it on (re)connect.
- */
-async function provisionDeploymentKey(
-  keyStore: ReturnType<typeof createTestKeyStore>,
-  address: string,
-): Promise<void> {
-  const kp = await generateKeyPair();
-  keyStore.registerKey(address, kp);
-}
-
 describe("hub-link mail.inbound throwing router", () => {
   test("a throwing mailInboundRouter does not wedge subsequent frames", async () => {
     const transport = createInMemoryTransport();
@@ -275,7 +234,6 @@ describe("hub-link mail.inbound throwing router", () => {
     };
 
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const policyRegistry = createInboundMailPolicyRegistry();
     policyRegistry.register(deploymentAddress, ADMIT_ALL_INBOUND_MAIL_POLICY);
     const client = createHubLink({
@@ -395,8 +353,6 @@ describe("hub-link mail.inbound acknowledgement across an undeploy", () => {
       },
     };
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, leaving);
-    await provisionDeploymentKey(bindings.keyStore, staying);
     const policyRegistry = createInboundMailPolicyRegistry();
     policyRegistry.register(leaving, ADMIT_ALL_INBOUND_MAIL_POLICY);
     policyRegistry.register(staying, ADMIT_ALL_INBOUND_MAIL_POLICY);
@@ -616,7 +572,6 @@ describe("hub-link mail.inbound signature enforcement", () => {
     }
 
     const bindings = withTestDeployBindings();
-    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,

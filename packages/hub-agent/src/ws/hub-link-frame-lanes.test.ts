@@ -12,7 +12,6 @@ import {
   SidecarFrame,
 } from "@intx/types/sidecar";
 
-import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 import { createHubLink, type HubLinkConfig } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
@@ -183,17 +182,6 @@ function hold() {
   return { released: released.promise, release: () => released.resolve(true) };
 }
 
-function keyStore(): AgentKeyStore {
-  return {
-    async loadOrGenerateKey() {
-      throw new Error("unused");
-    },
-    forgetAgent() {
-      // No key was ever cached for an address.
-    },
-  };
-}
-
 function sessions(): SessionManager {
   return {
     deleteAgentDir: () => Promise.resolve(),
@@ -212,7 +200,6 @@ async function connectLink(
     token: "token",
     transport: createInMemoryTransport(),
     sessions: sessions(),
-    keyStore: keyStore(),
     resolveSenderCrypto: () => undefined,
     lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
     cacheSenderKey: async () => undefined,

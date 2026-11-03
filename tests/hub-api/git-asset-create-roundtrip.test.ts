@@ -53,7 +53,6 @@ describe.skipIf(!harnessHubEnvAvailable())(
       const user = await signUpUser(hub.url);
       const tenant = await createTenant(hub.url, user);
       const asset = await createAsset(hub.url, user, tenant, {
-        kind: "skill",
         name: "freshly-created",
       });
       const token = await mintTenantGitToken(hub.url, user, tenant, {

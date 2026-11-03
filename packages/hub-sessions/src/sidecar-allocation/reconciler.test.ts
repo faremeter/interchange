@@ -4357,11 +4357,7 @@ describe("createSidecarAllocationReconciler", () => {
                 "capacity_full",
                 "No active slot",
               );
-            throw new SessionLaunchError(
-              "provision",
-              new Error("deploy pack failed"),
-              true,
-            );
+            throw new SessionLaunchError(new Error("deploy failed"), true);
           },
         }),
       );
@@ -4377,7 +4373,7 @@ describe("createSidecarAllocationReconciler", () => {
             ? "sidecar_deployment_rejected"
             : "sidecar_initialization_uncertain",
         failureMessage:
-          outcome === "rejected" ? "No active slot" : "deploy pack failed",
+          outcome === "rejected" ? "No active slot" : "deploy failed",
         onlyIfInitializationIncomplete: true,
       });
       expect(fences).toEqual([
@@ -4577,11 +4573,7 @@ describe("createSidecarAllocationReconciler", () => {
         fences,
         ready: true,
         onReady: async () => {
-          throw new SessionLaunchError(
-            "provision",
-            new Error("deploy pack failed"),
-            true,
-          );
+          throw new SessionLaunchError(new Error("deploy failed"), true);
         },
       }),
     );
@@ -5507,7 +5499,7 @@ describe("durable initialization outcomes", () => {
           if (!isDeployFrameFailure(cause)) throw cause;
           expect(cause.frameSent).toBe(true);
           timedOut.resolve(true);
-          throw new SessionLaunchError("start", cause, true);
+          throw new SessionLaunchError(cause, true);
         }
       },
     });
@@ -5639,7 +5631,6 @@ describe("durable initialization outcomes", () => {
         onReady: async () => {
           if (++initialized === 1)
             throw new SessionLaunchError(
-              "start",
               new Error("commit response lost"),
               true,
             );

@@ -44,22 +44,12 @@ import { waitUntil } from "@intx/types/testing";
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
 import { createSenderKeyCache } from "../sender-key-cache";
-import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 
 // ---------------------------------------------------------------------------
 // Minimal link dependencies. The refresh arm touches only `cacheSenderKey`, so
-// the deploy/session/key stubs exist only to satisfy the required config.
+// the deploy/session stubs exist only to satisfy the required config.
 // ---------------------------------------------------------------------------
-
-function createStubKeyStore(): AgentKeyStore {
-  return {
-    async loadOrGenerateKey(address: string) {
-      throw new Error(`No key registered for ${address} in test store`);
-    },
-    forgetAgent: () => undefined,
-  };
-}
 
 function createStubDeployRouter(): DeployRouter {
   return {
@@ -282,7 +272,6 @@ function createTestLink(
     token: "test-token",
     transport: createInMemoryTransport(),
     sessions: createStubSessionManager(),
-    keyStore: createStubKeyStore(),
     resolveSenderCrypto: () => undefined,
     lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
     cacheSenderKey,
