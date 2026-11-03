@@ -79,6 +79,10 @@ evaluation is fail-closed.
   consumer identity.
 - `evaluateConditions` — run a grant's `conditions` object against a
   `ConditionRegistry`.
+- `validateConditions` — check a grant's `conditions` object against a
+  `ConditionRegistry` without evaluating it, returning one problem per
+  unregistered key or rejected body. A boundary that stores conditions
+  calls it to refuse what `evaluateConditions` would later throw on.
 - `createInMemoryGrantStore` — a `GrantStore` backed by an in-memory
   grant list for tests and single-process deployments.
 - `matchPattern`, `patternSpecificity`, `grantSpecificity` — the
