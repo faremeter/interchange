@@ -592,10 +592,9 @@ export interface RepoStore {
    * Gated under the same `resolveRef` action as `openCommittedReads`.
    * `commitSha` is validated at the boundary: a malformed SHA throws
    * `commit_sha_invalid`. Returns `null` when the repo does not yet exist
-   * or when `commitSha` names no commit in the object store (a commit a
-   * concurrent GC pruned between the caller learning of it and reading
-   * it), so a caller diffing a possibly-vanished commit gets an empty
-   * view rather than a mid-walk throw.
+   * or when `commitSha` names no commit in the object store, so a caller
+   * diffing a commit the repo does not hold gets an empty view rather than
+   * a mid-walk throw.
    */
   openCommittedReadsAtCommit(
     principal: Principal,
@@ -608,8 +607,7 @@ export interface RepoStore {
    * zero-indexed at the ref's root commit and counts ancestors
    * walking forward to HEAD, so the same commit always carries the
    * same `seq` across restarts. A history with a missing parent (a
-   * pack that carries only its tip, or history GC removed) replays no
-   * entries. Its live `seq` advances by the readable commits each
+   * pack that carries only its tip) replays no entries. Its live `seq` advances by the readable commits each
    * update adds while the ref has a subscriber, and starts again from
    * 0 at the oldest readable commit after a restart or after an update
    * with no subscriber. The emitted `event` is
