@@ -352,12 +352,7 @@ async function deployAndRun(spec: {
   };
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: spec.anchorRunId,
-    tenantId: "tenant-1",
-    principalId: "prin_integration-1",
     agentAddress: spec.address,
-    systemPrompt: "Fallback prompt (overridden per step by the definition)",
-    tools: [],
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };

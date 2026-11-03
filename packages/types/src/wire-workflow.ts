@@ -53,10 +53,9 @@ export type WorkflowStep = typeof WorkflowStep.infer;
  * against the closed `WorkflowStep` union. The runtime constraint runs
  * through a `.narrow` over a `Record<string, unknown>` rather than a typed
  * `{ "[string]": WorkflowStep }` on purpose: the inferred type stays
- * `Record<string, unknown>` so the existing live-deploy producer
- * (`toWireWorkflowDefinition`, which hands a `Record<string, unknown>`
- * steps map to `sendAgentDeploy`) still typechecks, while the runtime
- * validation is fully closed over the primitive-kind set.
+ * `Record<string, unknown>` so a producer holding a plain steps map still
+ * typechecks, while the runtime validation is fully closed over the
+ * primitive-kind set.
  */
 const WorkflowSteps = type({ "[string]": "unknown" }).narrow((steps, ctx) => {
   for (const [stepId, step] of Object.entries(steps)) {
@@ -72,9 +71,8 @@ const WorkflowSteps = type({ "[string]": "unknown" }).narrow((steps, ctx) => {
 });
 
 /**
- * Workflow projection carried on an `agent.deploy` frame. Its presence
- * at the deploy router routes the frame to the workflow deploy path, which
- * spawns the workflow-process child; a frame without one is rejected.
+ * Workflow projection carried on an `agent.deploy` frame. The deploy router
+ * spawns the workflow-process child from it.
  *
  * `definition` is the wire projection of `WorkflowDefinition` from
  * `@intx/workflow`. The arktype validator enforces the structural

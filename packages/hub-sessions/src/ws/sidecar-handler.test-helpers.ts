@@ -1,5 +1,5 @@
 import type { HarnessConfig } from "@intx/types/runtime";
-import type { HostedIncarnation } from "@intx/types/sidecar";
+import type { AgentDeployFrame, HostedIncarnation } from "@intx/types/sidecar";
 
 import type { SidecarCredentials } from "../sidecar-allocation/contracts";
 
@@ -50,12 +50,7 @@ export const TEST_TARGET: AllocatedSidecarTarget = {
 
 export const TEST_CONFIG: HarnessConfig = {
   sessionId: "ses-router-test",
-  agentId: "workflow",
-  tenantId: TEST_IDENTITY.tenantId,
-  principalId: "principal-1",
   agentAddress: TEST_IDENTITY.workflowRunAddress,
-  systemPrompt: "test",
-  tools: [],
   sources: [
     {
       id: "test-source",
@@ -66,6 +61,14 @@ export const TEST_CONFIG: HarnessConfig = {
     },
   ],
   defaultSource: "test-source",
+};
+
+export const TEST_WORKFLOW: AgentDeployFrame["workflow"] = {
+  sources: {},
+  sourceRef: {
+    source: { kind: "registry", registry: "npmjs" },
+    closure: { schemaVersion: "1", topLevel: [], entries: [] },
+  },
 };
 
 export function createMockWs(): WsHandle & {

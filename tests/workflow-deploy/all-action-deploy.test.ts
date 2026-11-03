@@ -107,12 +107,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // condition under test.
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: DEPLOYMENT_ID,
-        tenantId: "tenant-1",
-        principalId: "prin_all-action-deploy-1",
         agentAddress: deploymentMailAddress,
-        systemPrompt: "unused (no agent step)",
-        tools: [],
         sources: [
           {
             id: "anthropic:mock-model",

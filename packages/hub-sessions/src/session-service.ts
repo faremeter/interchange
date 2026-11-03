@@ -222,7 +222,7 @@ export type SessionServiceDeps = {
 // packs for delivery to a sidecar -- so the hub principal is correct.
 const HUB_PRINCIPAL: Principal = { kind: "hub" };
 
-/** Fields the deploy frame carries onto `sendAgentDeploy`. */
+/** Fields the deploy frame carries onto `sendAgentDeployToAllocation`. */
 type DeployFrameCommonArgs = {
   sidecarAllocationRouter: SidecarAllocationRouter;
   allocationTarget: AllocatedSidecarTarget;
@@ -286,11 +286,9 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
 export type SendMultiStepDeployFrameArgs = SourceRefDeployFrameArgs;
 
 /**
- * Emit the source-ref deploy frame onto `SidecarRouter.sendAgentDeploy`. The
- * router accepts an optional `workflow` projection on the deploy frame; the
- * sidecar's deploy router uses field presence to route the frame to the
- * workflow deploy path, and returns the supervisor public key on the
- * `agent.deploy.ack`.
+ * Emit the source-ref deploy frame through
+ * `SidecarAllocationRouter.sendAgentDeployToAllocation`. The sidecar's deploy
+ * router returns the supervisor public key on the `agent.deploy.ack`.
  *
  * The gate/freeze layer already hashed the inert projection, so the frozen hash
  * and the inert projection ride the frame verbatim -- this never recomputes the
@@ -298,8 +296,8 @@ export type SendMultiStepDeployFrameArgs = SourceRefDeployFrameArgs;
  * inert projection the child re-verifies against.
  *
  * Exported so the co-located caller-site test can assert that the constructed
- * closure reaches the wire surface via `sendAgentDeploy` with a `workflow`
- * field structurally matching the `AgentDeployFrame.workflow` schema.
+ * closure reaches the wire surface with a `workflow` field structurally
+ * matching the `AgentDeployFrame.workflow` schema.
  */
 export async function sendMultiStepDeployFrame(
   args: SendMultiStepDeployFrameArgs,

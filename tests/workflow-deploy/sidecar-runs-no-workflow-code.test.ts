@@ -116,12 +116,7 @@ async function deployMarkingWorkflow(
   });
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: params.runId,
-    tenantId: "tenant-1",
-    principalId: "prin_sidecar-runs-no-code",
     agentAddress: address,
-    systemPrompt: "unused (no agent step)",
-    tools: [],
     sources: [
       {
         id: "anthropic:mock-model",

@@ -7,10 +7,6 @@
 // registration would retain a `(anchorRunId -> agentAddress)` mapping
 // for a deployment that does not exist. The multi-step test drives that
 // failure through a subprocess spawner that throws synchronously.
-//
-// The first test pins the router's frame-shape guard: a frame without a
-// workflow definition is rejected before any deploy work, so a malformed frame
-// cannot leak registry state.
 
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -213,68 +209,6 @@ function makeRouterDeps() {
 }
 
 describe("deploy-failure registry leak", () => {
-  test("a frame without a workflow is rejected before any deploy work", async () => {
-    const { registry, mailRouter, signalRouter, drainRouter, transport } =
-      makeRouterDeps();
-
-    let spawnerInvoked = false;
-    const router = createSidecarDeployRouter({
-      ...DEFAULT_SIDECAR_CAPACITY,
-      ...deployHostBindings(),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- an unsupported frame throws before sessions is touched
-      sessions: {} as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      keyStore: stubKeyStore(),
-      transport,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- an unsupported frame throws before any repoStore usage
-      repoStore: {} as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["repoStore"],
-      signingKeySeed: new Uint8Array(32),
-      credentialCipher: createNoopCredentialCipher(),
-      createAgentCrypto: createEd25519Crypto,
-      assertSourceBuildable: () => undefined,
-      registerDeployment: ({ runId, agentAddress, generation }) => {
-        registry.record(runId, { agentAddress, generation });
-      },
-      removeRunRepository: async () => undefined,
-      unregisterDeployment: ({ runId }) => {
-        registry.unregister(runId);
-      },
-      reportDeploymentRefTips: async () => ({}),
-      multistepMailRouter: mailRouter,
-      multistepSignalRouter: signalRouter,
-      multistepDrainRouter: drainRouter,
-      multistepSubprocessSpawner: () => {
-        spawnerInvoked = true;
-        throw new Error("spawner must not run for an unsupported frame");
-      },
-    });
-
-    // No workflow definition: the router has no path to stage this frame
-    // through the substrate, so it rejects on shape before reaching any deploy
-    // work.
-    const frame: AgentDeployFrame = {
-      type: "agent.deploy",
-      requestId: "deploy-test",
-      agentAddress: "agent-unsupported@x.example",
-      generation: 1,
-      agentId: "agent-unsupported",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- config is irrelevant; the frame is rejected on shape before config is read
-      config: {} as unknown as AgentDeployFrame["config"],
-    };
-
-    await expect(router.deploy(frame)).rejects.toThrow(
-      /unsupported deploy frame/,
-    );
-    // The throw fires before any deploy work: no spawn, and the registry
-    // is never touched.
-    expect(spawnerInvoked).toBe(false);
-    const slug = "agent-unsupported-x-example";
-    expect(registry.resolve(slug)).toBeNull();
-  });
-
   test("multi-step deploy: spawn-time failure leaves registry clean", async () => {
     const { registry, mailRouter, signalRouter, drainRouter, transport } =
       makeRouterDeps();
@@ -350,16 +284,9 @@ describe("deploy-failure registry leak", () => {
       // `run_<id>@<domain>` shape.
       agentAddress: "run_mstep@x.example",
       generation: 1,
-      agentId: "mstep",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not consult config before failing
       config: {
-        agentAddress: "run_mstep@x.example",
-        agentId: "mstep",
         sessionId: "s",
-        sources: [],
-        defaultSource: "primary",
-        grants: [],
-      } as unknown as AgentDeployFrame["config"],
+      },
       workflow: {
         // Production always stamps the hub-approved wire hash; a placeholder
         // satisfies the deploy path's fail-loud guard so this test reaches the
@@ -480,16 +407,9 @@ describe("deploy-failure registry leak", () => {
       requestId: "deploy-test",
       agentAddress: "run_single@x.example",
       generation: 1,
-      agentId: "single",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- single-step branch does not consult config before failing at spawn
       config: {
-        agentAddress: "run_single@x.example",
-        agentId: "single",
         sessionId: "s",
-        sources: [],
-        defaultSource: "primary",
-        grants: [],
-      } as unknown as AgentDeployFrame["config"],
+      },
       workflow: {
         approvedWireHash: SINGLE_STEP_HASH,
         // Source-ref is the only deploy lineage: the frame carries no inline

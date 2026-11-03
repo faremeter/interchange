@@ -134,12 +134,7 @@ async function deployAndAssertBodyCompletes(opts: {
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: opts.deploymentId,
-    tenantId: "tenant-1",
-    principalId: `prin_${opts.deploymentId}`,
     agentAddress: deploymentMailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the definition)",
-    tools: [],
     sources: [
       {
         id: "anthropic:mock-model",

@@ -611,10 +611,9 @@ export type HubLinkConfig = {
    */
   evictSenderKey: (address: string) => Promise<void>;
   /**
-   * Routes every inbound `agent.deploy` frame. Production wiring
+   * Handles every inbound `agent.deploy` frame. Production wiring
    * supplies a router that stages each deploy through the workflow-run
-   * substrate and spawns the supervised workflow-process child. The
-   * router owns the routing decision; the link does not re-decide.
+   * substrate and spawns the supervised workflow-process child.
    */
   deployRouter: DeployRouter;
   /**

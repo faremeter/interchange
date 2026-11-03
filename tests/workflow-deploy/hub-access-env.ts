@@ -329,12 +329,7 @@ export async function startHubAccessEnv(args: {
       });
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: anchorRunId,
-        tenantId: "tenant-1",
-        principalId: `prin_${anchorRunId}`,
         agentAddress: mailAddress,
-        systemPrompt: "Fallback prompt (overridden per step by the definition)",
-        tools: [],
         sources: [source],
         defaultSource: MOCK_SOURCE_ID,
       };

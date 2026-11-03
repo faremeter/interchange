@@ -330,7 +330,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         approvals: buildApprovals(receiverAddress, [
           `mail.accept:principal:${SENDER_RUN_PRINCIPAL_ID}`,
         ]),
-        config: buildConfig(RECEIVER_ID, receiverAddress, "sk-mock-receiver"),
+        config: buildConfig(receiverAddress, "sk-mock-receiver"),
         sources: { [RECEIVER_STEP_ID]: [inferenceSource("sk-mock-receiver")] },
       });
 
@@ -398,7 +398,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: senderAddress,
         approvals: buildApprovals(senderAddress, [`tool:${MAIL_TOOL_NAME}`]),
-        config: buildConfig(SENDER_ID, senderAddress, "sk-mock-sender"),
+        config: buildConfig(senderAddress, "sk-mock-sender"),
         sources: { [SENDER_STEP_ID]: [inferenceSource("sk-mock-sender")] },
       });
 
@@ -485,19 +485,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
     }
 
-    function buildConfig(
-      anchorRunId: string,
-      address: string,
-      credentialId: string,
-    ): HarnessConfig {
+    function buildConfig(address: string, credentialId: string): HarnessConfig {
       return {
         sessionId: SESSION_ID,
-        agentId: `${anchorRunId}`,
-        tenantId: "tenant-1",
-        principalId: "prin_integration-1",
         agentAddress: address,
-        systemPrompt: "Fallback prompt (overridden per step by the definition)",
-        tools: [],
         sources: [inferenceSource(credentialId)],
         defaultSource: "anthropic:mock-model",
       };

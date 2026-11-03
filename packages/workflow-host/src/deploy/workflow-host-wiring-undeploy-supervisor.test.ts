@@ -286,9 +286,9 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         // `run_<id>@<domain>` shape.
         agentAddress: "run_undeploy-supervisor@example.com",
         generation: 1,
-        agentId: "undeploy-supervisor-agent",
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
-        config: {} as AgentDeployFrame["config"],
+        config: {
+          sessionId: "s",
+        },
         workflow: {
           approvedWireHash: APPROVED_WIRE_HASH,
           // Source-ref is the only deploy lineage: the frame carries no inline

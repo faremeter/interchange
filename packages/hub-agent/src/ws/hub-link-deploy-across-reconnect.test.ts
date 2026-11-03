@@ -10,7 +10,7 @@ import {
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { HarnessConfig } from "@intx/types/runtime";
-import type { HostedIncarnation } from "@intx/types/sidecar";
+import type { AgentDeployFrame, HostedIncarnation } from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 
 import type { SessionManager } from "../session-manager";
@@ -43,15 +43,18 @@ function binding(
   };
 }
 
+const TEST_WORKFLOW: AgentDeployFrame["workflow"] = {
+  sources: {},
+  sourceRef: {
+    source: { kind: "registry", registry: "npmjs" },
+    closure: { schemaVersion: "1", topLevel: [], entries: [] },
+  },
+};
+
 function config(agentAddress: string): HarnessConfig {
   return {
     sessionId: "ses-across",
-    agentId: "workflow",
-    tenantId: "tenant-1",
-    principalId: "principal-1",
     agentAddress,
-    systemPrompt: "test",
-    tools: [],
     sources: [
       {
         id: "test-source",
@@ -251,6 +254,7 @@ describe("a deploy still running when the sidecar's link drops", () => {
           { allocationId: "replaced", generation: 1 },
           ADDRESS,
           config(ADDRESS),
+          TEST_WORKFLOW,
         )
         .then(
           () => "deployed",
@@ -278,6 +282,7 @@ describe("a deploy still running when the sidecar's link drops", () => {
         { allocationId: "replaced", generation: 2 },
         ADDRESS,
         config(ADDRESS),
+        TEST_WORKFLOW,
       );
 
       // On the sidecar the undeploy and the newer deploy wait behind the
@@ -323,6 +328,7 @@ describe("a deploy still running when the sidecar's link drops", () => {
           { allocationId: "released", generation: 1 },
           ADDRESS,
           config(ADDRESS),
+          TEST_WORKFLOW,
         )
         .then(
           () => "deployed",

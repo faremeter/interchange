@@ -27,6 +27,7 @@ import {
   helloFrame,
   liveIncarnations,
   sidecarAuth,
+  TEST_WORKFLOW,
 } from "./sidecar-handler.test-helpers";
 
 const identity: Extract<SidecarAuthIdentity, { kind: "allocated" }> = {
@@ -42,13 +43,7 @@ const identity: Extract<SidecarAuthIdentity, { kind: "allocated" }> = {
 const target = { allocationId: identity.allocationId, generation: 1 };
 const config = {
   sessionId: "ses-exclusive",
-  agentId: "workflow",
-  tenantId: identity.tenantId,
-  principalId: "principal-1",
   agentAddress: identity.workflowRunAddress,
-  systemPrompt: "test",
-  tools: [],
-  grants: [],
   sources: [
     {
       id: "anthropic:test",
@@ -493,6 +488,7 @@ describe("SidecarRouter allocation routing", () => {
       target,
       identity.workflowRunAddress,
       config,
+      TEST_WORKFLOW,
     );
     await tick();
     expect(lastFrame(ws).type).toBe("agent.deploy");
@@ -505,6 +501,7 @@ describe("SidecarRouter allocation routing", () => {
         { ...target, generation: 2 },
         identity.workflowRunAddress,
         config,
+        TEST_WORKFLOW,
       ),
     ).rejects.toThrow("is not current");
   });
@@ -586,6 +583,7 @@ describe("SidecarRouter allocation routing", () => {
       target,
       identity.workflowRunAddress,
       config,
+      TEST_WORKFLOW,
     );
     await tick();
     router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));

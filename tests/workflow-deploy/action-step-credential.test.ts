@@ -256,12 +256,7 @@ async function deploy(opts: {
   });
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: anchorRunId,
-    tenantId: "tenant-1",
-    principalId: `prin_${anchorRunId}`,
     agentAddress: mailAddress,
-    systemPrompt: "unused (no agent step)",
-    tools: [],
     sources: [
       {
         id: "anthropic:mock-model",

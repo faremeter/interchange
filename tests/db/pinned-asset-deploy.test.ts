@@ -53,12 +53,7 @@ const ALLOC_GENERATION = 1;
 const PROJECTION = { id: "pinned", triggers: [], stepOrder: [], steps: {} };
 const CONFIG: HarnessConfig = {
   sessionId: "ses-pinned-asset-deploy",
-  agentId: ANCHOR_RUN_ID,
-  tenantId: TENANT_ID,
-  principalId: "prin-pinned-asset-deploy",
   agentAddress: DEPLOY_ADDRESS,
-  systemPrompt: "",
-  tools: [],
   sources: [],
   defaultSource: "",
 };

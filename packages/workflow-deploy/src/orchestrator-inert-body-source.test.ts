@@ -47,12 +47,7 @@ const DEFAULT_SOURCE = {
 
 const CONFIG: HarnessConfig = {
   sessionId: "ses-inert-body",
-  agentId: "ag_inert_body",
-  tenantId: "tenant-1",
-  principalId: "prin-1",
   agentAddress: "run_inertbody@workflow.interchange",
-  systemPrompt: "shared",
-  tools: [],
   sources: [DEFAULT_SOURCE],
   defaultSource: DEFAULT_SOURCE.id,
 };

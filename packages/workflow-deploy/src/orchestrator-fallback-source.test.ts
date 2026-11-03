@@ -31,12 +31,7 @@ function makeConfig(args: {
 }): HarnessConfig {
   return {
     sessionId: "ses-fallback",
-    agentId: "ag_fallback",
-    tenantId: "tenant-1",
-    principalId: "prin-1",
     agentAddress: "run_fallback@workflow.interchange",
-    systemPrompt: "shared-prompt",
-    tools: [],
     sources: args.sources,
     defaultSource: args.defaultSource,
   };

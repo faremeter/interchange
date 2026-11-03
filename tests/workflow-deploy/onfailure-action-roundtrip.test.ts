@@ -143,12 +143,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: DEPLOYMENT_ID,
-        tenantId: "tenant-1",
-        principalId: "prin_onfailure-action-roundtrip-1",
         agentAddress: deploymentMailAddress,
-        systemPrompt: "unused (every step is an action)",
-        tools: [],
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
       };

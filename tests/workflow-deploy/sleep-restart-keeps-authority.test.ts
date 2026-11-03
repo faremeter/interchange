@@ -239,19 +239,10 @@ function mockSource(env: DeployFlowEnv): InferenceSource {
   };
 }
 
-function harnessConfig(
-  env: DeployFlowEnv,
-  anchorRunId: string,
-  mailAddress: string,
-): HarnessConfig {
+function harnessConfig(env: DeployFlowEnv, mailAddress: string): HarnessConfig {
   return {
     sessionId: SESSION_ID,
-    agentId: anchorRunId,
-    tenantId: "tenant-1",
-    principalId: `prin_${anchorRunId}`,
     agentAddress: mailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the definition)",
-    tools: [],
     sources: [mockSource(env)],
     defaultSource: "anthropic:mock-model",
   };
@@ -305,7 +296,7 @@ async function startCredentialRun(
     deploymentDomain: DEPLOYMENT_DOMAIN,
     agentAddress: mailAddress,
     approvals: "approve-probed",
-    config: harnessConfig(env, anchorRunId, mailAddress),
+    config: harnessConfig(env, mailAddress),
     credentialCipher: createNoopCredentialCipher(),
   });
   await waitFor(
@@ -482,7 +473,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `mail.send:${DEPLOYMENT_DOMAIN}`,
           `tool:${MAIL_TOOL_NAME}`,
         ]),
-        config: harnessConfig(env, anchorRunId, mailAddress),
+        config: harnessConfig(env, mailAddress),
         // The deploy frame needs a source chain for every step, the sleep
         // included.
         sources: { [NAP_STEP_ID]: [source], [AGENT_STEP_ID]: [source] },

@@ -16,7 +16,6 @@ import { WireGrantRule } from "./grant-wire";
 import {
   BoundedApprovalSnapshot,
   ConnectorThreadState,
-  HarnessConfig,
   InferenceEvent,
   InferenceSource,
 } from "./runtime";
@@ -815,9 +814,8 @@ export const AgentDeployFrame = type({
   requestId: "string",
   agentAddress: "string",
   generation: Generation,
-  agentId: "string",
-  config: HarnessConfig,
-  "workflow?": AgentDeployWorkflow,
+  config: { sessionId: "string" },
+  workflow: AgentDeployWorkflow,
 });
 export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 

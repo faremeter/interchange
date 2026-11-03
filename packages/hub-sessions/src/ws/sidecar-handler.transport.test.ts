@@ -15,6 +15,7 @@ import {
   parsedFrames,
   sidecarAuth,
   TEST_CONFIG,
+  TEST_WORKFLOW,
   TEST_IDENTITY,
   TEST_TARGET,
   tick,
@@ -64,7 +65,7 @@ describe("SidecarRouter allocation initialization cancellation", () => {
                 TEST_TARGET,
                 TEST_IDENTITY.workflowRunAddress,
                 TEST_CONFIG,
-                undefined,
+                TEST_WORKFLOW,
                 controller.signal,
               )
             : router.sendWorkflowRunPackToAllocation(
@@ -121,6 +122,7 @@ describe("SidecarRouter allocation initialization cancellation", () => {
           TEST_TARGET,
           TEST_IDENTITY.workflowRunAddress,
           TEST_CONFIG,
+          TEST_WORKFLOW,
         )
         .catch((cause: unknown) => cause);
       expect(error).toMatchObject({ frameSent: true, cause: failure });
@@ -148,6 +150,7 @@ describe("SidecarRouter allocation initialization cancellation", () => {
         TEST_TARGET,
         TEST_IDENTITY.workflowRunAddress,
         TEST_CONFIG,
+        TEST_WORKFLOW,
       )
       .catch((cause: unknown) => cause);
     try {
@@ -183,7 +186,7 @@ describe("SidecarRouter allocation initialization cancellation", () => {
           TEST_TARGET,
           TEST_IDENTITY.workflowRunAddress,
           TEST_CONFIG,
-          undefined,
+          TEST_WORKFLOW,
           controller.signal,
           async () => {
             entered.resolve(true);
@@ -225,7 +228,7 @@ describe("SidecarRouter allocation initialization cancellation", () => {
               TEST_TARGET,
               TEST_IDENTITY.workflowRunAddress,
               TEST_CONFIG,
-              undefined,
+              TEST_WORKFLOW,
               controller.signal,
             )
           : router.sendWorkflowRunPackToAllocation(
@@ -349,6 +352,7 @@ describe("SidecarRouter allocation deploy transport", () => {
         TEST_TARGET,
         TEST_IDENTITY.workflowRunAddress,
         TEST_CONFIG,
+        TEST_WORKFLOW,
       )
       .catch((cause: unknown) => cause);
 
@@ -372,6 +376,7 @@ describe("SidecarRouter allocation deploy transport", () => {
         TEST_TARGET,
         TEST_IDENTITY.workflowRunAddress,
         TEST_CONFIG,
+        TEST_WORKFLOW,
       )
       .catch((cause: unknown) => cause);
 
@@ -389,6 +394,7 @@ describe("SidecarRouter allocation deploy transport", () => {
       TEST_TARGET,
       TEST_IDENTITY.workflowRunAddress,
       TEST_CONFIG,
+      TEST_WORKFLOW,
     );
     await tick();
 
@@ -406,6 +412,7 @@ describe("SidecarRouter allocation deploy transport", () => {
         TEST_TARGET,
         TEST_IDENTITY.workflowRunAddress,
         TEST_CONFIG,
+        TEST_WORKFLOW,
       )
       .catch(() => undefined);
     await tick();
@@ -425,6 +432,7 @@ describe("SidecarRouter allocation deploy transport", () => {
         TEST_TARGET,
         TEST_IDENTITY.workflowRunAddress,
         TEST_CONFIG,
+        TEST_WORKFLOW,
       );
       let settled = false;
       const result = deploy.catch((error: unknown) => {
@@ -478,6 +486,7 @@ describe("SidecarRouter allocation deploy transport", () => {
         TEST_TARGET,
         TEST_IDENTITY.workflowRunAddress,
         TEST_CONFIG,
+        TEST_WORKFLOW,
       );
       let settled = false;
       void deploy
@@ -517,6 +526,7 @@ describe("SidecarRouter allocation deploy transport", () => {
       TEST_TARGET,
       TEST_IDENTITY.workflowRunAddress,
       TEST_CONFIG,
+      TEST_WORKFLOW,
     );
     await tick();
 
@@ -533,6 +543,7 @@ describe("SidecarRouter allocation deploy transport", () => {
       TEST_TARGET,
       TEST_IDENTITY.workflowRunAddress,
       TEST_CONFIG,
+      TEST_WORKFLOW,
     );
     await tick();
 
@@ -578,6 +589,7 @@ describe("SidecarRouter allocation deploy transport", () => {
       TEST_TARGET,
       TEST_IDENTITY.workflowRunAddress,
       TEST_CONFIG,
+      TEST_WORKFLOW,
     );
     let settled = false;
     void deploy.finally(() => {

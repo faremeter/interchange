@@ -76,10 +76,10 @@ All communication between hub and sidecar is over a single persistent WebSocket 
 
 **Hub to Sidecar:**
 
-| Frame            | Fields                                                                                             | Description                             |
-| ---------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `agent.deploy`   | `requestId`, `agentAddress`, `generation`, `agentId`, `config` (full `HarnessConfig`), `workflow?` | Deploy an incarnation to this sidecar   |
-| `agent.undeploy` | `requestId`, `agentAddress`, `generation`, `reason`                                                | Remove an incarnation from this sidecar |
+| Frame            | Fields                                                                        | Description                             |
+| ---------------- | ----------------------------------------------------------------------------- | --------------------------------------- |
+| `agent.deploy`   | `requestId`, `agentAddress`, `generation`, `config` (`sessionId`), `workflow` | Deploy an incarnation to this sidecar   |
+| `agent.undeploy` | `requestId`, `agentAddress`, `generation`, `reason`                           | Remove an incarnation from this sidecar |
 
 **Sidecar to Hub:**
 

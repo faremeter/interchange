@@ -132,13 +132,7 @@ describe("PackRejectFrame reason forward-compat", () => {
 describe("AgentDeployFrame", () => {
   const baseConfig = {
     sessionId: "ses_1",
-    agentId: "agt_1",
-    tenantId: "ten_1",
-    principalId: "pri_1",
     agentAddress: "agt_1@example.test",
-    systemPrompt: "system prompt",
-    tools: [],
-    grants: [],
     sources: [
       {
         id: "src_default",
@@ -151,12 +145,11 @@ describe("AgentDeployFrame", () => {
     defaultSource: "src_default",
   };
 
-  const trivialFrame = {
+  const frameWithoutWorkflow = {
     type: "agent.deploy" as const,
     requestId: "req_1",
     agentAddress: "agt_1@example.test",
     generation: 1,
-    agentId: "agt_1",
     config: baseConfig,
   };
 
@@ -176,14 +169,14 @@ describe("AgentDeployFrame", () => {
     closure: { schemaVersion: "1", topLevel: [], entries: [] },
   };
 
-  test("accepts the existing trivial-shape frame (no workflow field)", () => {
-    const result = AgentDeployFrame(trivialFrame);
-    expect(result instanceof type.errors).toBe(false);
+  test("rejects a frame with no workflow", () => {
+    const result = AgentDeployFrame(frameWithoutWorkflow);
+    expect(result instanceof type.errors).toBe(true);
   });
 
   test("accepts a workflow frame with per-step sources and a source-ref pin", () => {
     const result = AgentDeployFrame({
-      ...trivialFrame,
+      ...frameWithoutWorkflow,
       workflow: {
         sources: { plan: [stepSource], act: [stepSource] },
         sourceRef: validSourceRef,
@@ -196,7 +189,7 @@ describe("AgentDeployFrame", () => {
     // Source-ref is the only deploy lineage; without the pin the sidecar has
     // no closure to evaluate the definition from, so the frame is rejected.
     const result = AgentDeployFrame({
-      ...trivialFrame,
+      ...frameWithoutWorkflow,
       workflow: {
         sources: { plan: [stepSource] },
       },
@@ -206,7 +199,7 @@ describe("AgentDeployFrame", () => {
 
   test("rejects a workflow frame with no per-step sources", () => {
     const result = AgentDeployFrame({
-      ...trivialFrame,
+      ...frameWithoutWorkflow,
       workflow: {
         sourceRef: validSourceRef,
       },
@@ -217,7 +210,7 @@ describe("AgentDeployFrame", () => {
   test("rejects a workflow frame whose step source chain is empty", () => {
     // Every step's failover chain must carry at least one source.
     const result = AgentDeployFrame({
-      ...trivialFrame,
+      ...frameWithoutWorkflow,
       workflow: {
         sources: { plan: [] },
         sourceRef: validSourceRef,

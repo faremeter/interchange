@@ -43,12 +43,7 @@ function projectionOf(def: Parameters<typeof projectLiveToInert>[0]) {
 
 const CONFIG: HarnessConfig = {
   sessionId: "ses-loop-src",
-  agentId: "ag_loop_src",
-  tenantId: "tenant-1",
-  principalId: "prin-1",
   agentAddress: "run_loopsrc@workflow.interchange",
-  systemPrompt: "shared",
-  tools: [],
   sources: [
     {
       id: "src-worker",

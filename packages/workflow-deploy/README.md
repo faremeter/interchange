@@ -4,7 +4,7 @@ Use `@intx/workflow-deploy/capabilities` to import `walkCapabilities` and
 its grant projections without loading deployment orchestration or package
 materialization.
 
-Use `@intx/workflow-deploy/addresses` for run and step address derivation,
+Use `@intx/workflow-deploy/addresses` for run address derivation,
 and `@intx/workflow-deploy/child-grants` for collecting a child workflow's
 declared resources and credential consumers and filtering its inherited grants.
 
@@ -17,15 +17,10 @@ takes a `WorkflowDefinition`, computes the per-step grant declarations
 the workflow will require, gates them against an operator-supplied
 `ApprovalSet`, and derives the deployment addresses the run occupies.
 
-Address derivation is a pure function of `(runId, stepId, domain)`:
-
-- **Single-step workflow**: the lone step has no distinct address --
-  it IS the deployment head (`deriveRunAddress`, `<runId>@<domain>`).
-- **Multi-step workflow**: each step derives a per-step run address of
-  the form `<runId>-<stepId>@<domain>` (`deriveStepAddress`).
-
-Because the derivation carries no per-deploy state, the supervisor reconstructs the
-same addresses at spawn time from the host-sourced step count alone.
+Address derivation is a pure function of `(runId, domain)`: every step of a
+deployment runs under the deployment address (`deriveRunAddress`,
+`<runId>@<domain>`). Because the derivation carries no per-deploy state, the
+supervisor reconstructs the same address at spawn time.
 
 Public surface:
 
@@ -135,8 +130,7 @@ Public surface:
   that closed set throws, as does a container kind carrying neither an inline
   body nor a `{ ref }`; a `{ ref }` body yields nothing, because the
   referenced asset is deployed and walked on its own.
-- `deriveRunAddress` / `deriveStepAddress` /
-  `deriveRunAgentId` / `deriveWorkflowRunRepoId`
+- `deriveRunAddress` / `deriveWorkflowRunRepoId`
   — the pure address and id derivation helpers.
 - `extractFoldedBody(definition)` — read the launch-relevant fields back
   out of a folded single-step definition.

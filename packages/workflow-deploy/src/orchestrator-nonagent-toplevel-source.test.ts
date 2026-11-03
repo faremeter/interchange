@@ -51,12 +51,7 @@ const DEFAULT_SOURCE = {
 
 const CONFIG: HarnessConfig = {
   sessionId: "ses-nonagent-top",
-  agentId: "ag_nonagent_top",
-  tenantId: "tenant-1",
-  principalId: "prin-1",
   agentAddress: "run_nonagenttop@workflow.interchange",
-  systemPrompt: "shared",
-  tools: [],
   sources: [DEFAULT_SOURCE],
   defaultSource: DEFAULT_SOURCE.id,
 };

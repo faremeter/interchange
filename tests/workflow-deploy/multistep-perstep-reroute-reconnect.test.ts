@@ -1,18 +1,16 @@
-// Multi-step per-step re-route survival across a hub-link reconnect.
+// Multi-step workflow re-route survival across a hub-link reconnect.
 //
 // Proves that after the sidecar's hub link is dropped and reconnects, a
 // deployed MULTI-STEP workflow's addresses are re-announced and re-routed,
 // and inter-step mail/signal routing still works end to end.
 //
 // Shape: deploy a `step1 -> awaitSignal{name:"go"} -> step2` workflow whose
-// deployment address and every per-step derived address are run addresses
-// (`isRunAddress` true), so they all share the workflow routing family
-// that survives reconnect. Drive one mail trigger through the full inter-step chain
+// deployment address is a run address (`isRunAddress` true), the workflow
+// routing family that survives reconnect. Drive one mail trigger through the full inter-step chain
 // (RunStarted -> step1 -> SignalAwaited -> inject signal -> step2 ->
 // RunCompleted), `settleThenDrop` the hub link, wait for the deployment
-// address to re-route through hello/welcome reconnect, assert every
-// per-step address is once again a workflow-derived address routing under
-// the re-established deployment, then fire a SECOND mail trigger and run the
+// address to re-route through hello/welcome reconnect, then fire a SECOND mail
+// trigger and run the
 // whole inter-step chain again. The second run only exists because the
 // sidecar re-established the link, the hub restored the workflow-derived
 // deployment address, and inter-step mail/signal routing came back with it.
@@ -20,11 +18,8 @@
 // The authenticated sidecar identity is allocation-bound to one workflow run
 // address. Reconnect revalidates that durable identity and the current
 // allocation generation before restoring the address in `workflowAddresses`.
-// The per-step staging addresses are transient bindings (bound only while a
-// step's packs land, never persisted into the reconnect set), so the hub route
-// that survives the reconnect is the deployment address the steps collapse
-// under; inter-step routing itself lives inside the workflow-process child,
-// which the surviving deployment address feeds.
+// Inter-step routing itself lives inside the workflow-process child, which the
+// surviving deployment address feeds.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, a real workflow-process child, and a test inference provider.
@@ -38,7 +33,6 @@ import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   createApprovalSet,
   deriveRunAddress,
-  deriveStepAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
@@ -71,11 +65,10 @@ import {
 import { signalGateEntry } from "./fixtures/signal-gate";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A substrate-safe deployment id whose run address and every per-step derived
-// address are run addresses (`isRunAddress` true), matching the workflow
-// routing family exercised by this test.
+// The deployment id is minted in the run address shape, so the derived mail
+// address is a run address (`isRunAddress` true), matching the workflow routing
+// family exercised by this test.
 const DEPLOYMENT_ID = "run_multistep_reroute_1";
-const STEP_IDS = ["step1", "step2"] as const;
 
 // The definition's own tenant, the caller principal that creates the
 // definition asset, and the `workflow`-kind asset the frozen definition
@@ -128,13 +121,13 @@ afterAll(async () => {
 });
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "multi-step per-step re-route survival across reconnect",
+  "multi-step re-route survival across reconnect",
   () => {
     test("sidecar registers with hub", () => {
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    test("every per-step address re-routes and inter-step routing survives reconnect", async () => {
+    test("the deployment address re-routes and inter-step routing survives reconnect", async () => {
       const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
         domain: DEPLOYMENT_DOMAIN,
@@ -142,21 +135,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The deployment address is a run address in the workflow routing family
       // restored by hello/welcome reconnect.
       expect(isRunAddress(deploymentMailAddress)).toBe(true);
-
-      // Every per-step derived address is a run address too, so each one belongs
-      // to the same workflow routing family that survives reconnect by collapsing
-      // under the restored deployment address rather than being resurrected
-      // as its own hub route.
-      const stepAddresses = STEP_IDS.map((stepId) =>
-        deriveStepAddress({
-          runId: DEPLOYMENT_ID,
-          stepId,
-          domain: DEPLOYMENT_DOMAIN,
-        }),
-      );
-      for (const stepAddress of stepAddresses) {
-        expect(isRunAddress(stepAddress)).toBe(true);
-      }
 
       // ---- deploy the multi-step workflow ----
       // Two distinct agent system prompts exercise the per-step prompt wiring.
@@ -170,12 +148,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: `${DEPLOYMENT_ID}`,
-        tenantId: "tenant-1",
-        principalId: "prin_multistep-reroute-1",
         agentAddress: deploymentMailAddress,
-        systemPrompt: "Fallback prompt (overridden per step by the definition)",
-        tools: [],
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
       };

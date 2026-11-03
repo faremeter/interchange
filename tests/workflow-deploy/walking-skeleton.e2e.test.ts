@@ -529,12 +529,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     };
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: DEPLOYMENT_ID,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
       agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the definition)",
-      tools: [],
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
     };
@@ -722,12 +717,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     };
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: BODY_DEPLOYMENT_ID,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
       agentAddress: bodyDeploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the definition)",
-      tools: [],
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
     };

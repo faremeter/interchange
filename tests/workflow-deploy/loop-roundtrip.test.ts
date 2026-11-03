@@ -103,12 +103,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // the shape, so supply one placeholder source it never resolves.
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: DEPLOYMENT_ID,
-        tenantId: "tenant-1",
-        principalId: "prin_loop-roundtrip-1",
         agentAddress: deploymentMailAddress,
-        systemPrompt: "unused (no agent step)",
-        tools: [],
         sources: [
           {
             id: "anthropic:mock-model",

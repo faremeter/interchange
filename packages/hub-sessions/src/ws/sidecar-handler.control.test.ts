@@ -29,6 +29,7 @@ import {
   deployReply,
   parsedFrames,
   TEST_CONFIG,
+  TEST_WORKFLOW,
   TEST_IDENTITY,
   TEST_REF_TIPS,
   TEST_TARGET,
@@ -292,6 +293,7 @@ describe("SidecarRouter allocation control protocols", () => {
         TEST_TARGET,
         TEST_IDENTITY.workflowRunAddress,
         TEST_CONFIG,
+        TEST_WORKFLOW,
       ),
     ).rejects.toThrow("timed out");
 
@@ -313,6 +315,7 @@ describe("SidecarRouter allocation control protocols", () => {
       TEST_TARGET,
       TEST_IDENTITY.workflowRunAddress,
       TEST_CONFIG,
+      TEST_WORKFLOW,
     );
     await tick();
     router.handleMessage(ws, deployReply(ws, { error: "Deploy failed" }));

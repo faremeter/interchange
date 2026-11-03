@@ -2,49 +2,16 @@ import { describe, test, expect } from "bun:test";
 
 import { deriveWorkflowRunId } from "@intx/types";
 
-import {
-  deriveRunAddress,
-  deriveRunAgentId,
-  deriveStepAddress,
-  deriveWorkflowRunRepoId,
-} from "./addresses";
+import { deriveRunAddress, deriveWorkflowRunRepoId } from "./addresses";
 
-describe("per-step address derivation", () => {
-  test("deriveStepAddress concatenates the run id, step, and deployment domain", () => {
-    expect(
-      deriveStepAddress({
-        runId: "run_abc",
-        stepId: "step1",
-        domain: "workflow.interchange",
-      }),
-    ).toBe("run_abc-step1@workflow.interchange");
-  });
-
-  test("derivation is deterministic across calls", () => {
-    const a = deriveStepAddress({
-      runId: "run_a",
-      stepId: "s",
-      domain: "d",
-    });
-    const b = deriveStepAddress({
-      runId: "run_a",
-      stepId: "s",
-      domain: "d",
-    });
-    expect(a).toBe(b);
-  });
-
-  test("deriveRunAddress drops the per-step suffix", () => {
+describe("run address derivation", () => {
+  test("deriveRunAddress joins the run id and the domain", () => {
     expect(
       deriveRunAddress({
         runId: "run_abc",
         domain: "workflow.interchange",
       }),
     ).toBe("run_abc@workflow.interchange");
-  });
-
-  test("deriveRunAgentId drops the per-step suffix", () => {
-    expect(deriveRunAgentId({ runId: "run_abc" })).toBe("run_abc");
   });
 
   test("deriveWorkflowRunRepoId sanitizes the deployment address into a SAFE_REPO_ID slug", () => {
@@ -73,15 +40,6 @@ describe("deriveRunAddress / deriveWorkflowRunId round-trip", () => {
     expect(
       deriveWorkflowRunId(deriveRunAddress({ runId: "run_abc", domain })),
     ).toBe("run_abc");
-  });
-
-  test("round-trips a per-step address to its step-suffixed run id", () => {
-    const stepAddress = deriveStepAddress({
-      runId: "run_abc",
-      stepId: "plan",
-      domain,
-    });
-    expect(deriveWorkflowRunId(stepAddress)).toBe("run_abc-plan");
   });
 
   test("throws on an address whose local part is not a run id", () => {
