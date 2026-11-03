@@ -248,7 +248,6 @@ export function parseWorkflowRunLaunchSpecRow(
         ? null
         : GrantWalkSnapshot.assert(row.grantSnapshot),
     sourceOfferingIds,
-    deployContent: JSONObject.assert(row.deployContent),
     toolPackagePins:
       row.toolPackagePins !== null
         ? ToolPackagePinArray.assert(row.toolPackagePins)

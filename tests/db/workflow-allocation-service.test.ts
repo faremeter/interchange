@@ -261,7 +261,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sourceAuthorityPrincipalId: PRINCIPAL_ID,
         sourceOfferingIds: [OFFERING_ID],
         defaultSourceOfferingId: OFFERING_ID,
-        deployContent: { systemPrompt: "" },
       } as const;
     }
 

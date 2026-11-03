@@ -117,7 +117,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         sourceOfferingIds: ["offering-primary"],
         defaultSourceOfferingId: "offering-primary",
-        deployContent: { systemPrompt: "" },
       });
     });
 

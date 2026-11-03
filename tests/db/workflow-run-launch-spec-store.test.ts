@@ -92,7 +92,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         frozenApprovalBundle: FROZEN_APPROVAL_BUNDLE,
         sourceOfferingIds: ["offering-primary", "offering-fallback"],
         defaultSourceOfferingId: "offering-primary",
-        deployContent: { systemPrompt: "" },
         toolPackagePins: [{ name: "@intx/search", version: "^1.2.0" }],
       });
 
@@ -126,7 +125,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           frozenApprovalBundle: FROZEN_APPROVAL_BUNDLE,
           sourceOfferingIds: ["offering-primary"],
           defaultSourceOfferingId: "offering-missing",
-          deployContent: { systemPrompt: "" },
         }),
       ).rejects.toThrow(/default source.*is not in/);
       expect(await store.get(ANCHOR_RUN_ID)).toBeNull();

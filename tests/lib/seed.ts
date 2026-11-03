@@ -420,7 +420,6 @@ export async function seedWorkflowRunLaunchSpec(
     grantSnapshot: s.grantSnapshot,
     sourceOfferingIds: [],
     defaultSourceOfferingId: "offering",
-    deployContent: {},
   });
 }
 

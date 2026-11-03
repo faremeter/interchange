@@ -44,7 +44,6 @@ import {
   deriveRunAgentId,
 } from "@intx/workflow-deploy";
 
-import type { DeployContent } from "./agent-repo";
 import type { LocalRepoStore } from "./repo-store";
 import {
   adapterManifestDigest,
@@ -118,7 +117,6 @@ export type PrepareProvisionedWorkflowDeploymentArgs = {
   readonly sourceAuthorityPrincipalId: string;
   readonly sourceOfferingIds: readonly string[];
   readonly defaultSourceOfferingId: string;
-  readonly deployContent: DeployContent;
   readonly toolPackagePins?: readonly ToolPackagePin[];
   /**
    * State to start agent steps from, keyed by step id. Each key must name a
@@ -505,7 +503,6 @@ export function createWorkflowAllocationService({
           definitionArtifactId: approved.artifactId ?? null,
           sourceOfferingIds: [...request.sourceOfferingIds],
           defaultSourceOfferingId: request.defaultSourceOfferingId,
-          deployContent: request.deployContent,
           ...(request.toolPackagePins !== undefined
             ? { toolPackagePins: [...request.toolPackagePins] }
             : {}),
