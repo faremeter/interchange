@@ -24,8 +24,6 @@ const auditRecord: AuditRecord = {
 type WriteResult = {
   sourceCommitSha: string;
   deployCommitSha: string;
-  packCount: number;
-  looseObjectCount: number;
 };
 
 type ReadResult = {
@@ -75,14 +73,11 @@ async function writeAndFlush(databaseName: string): Promise<WriteResult> {
     `${commitSha}\n`,
   );
 
-  const gc = await storage.runGC("/target", { retention: "keep-history" });
   await storage.runtime.flush();
 
   return {
     sourceCommitSha: committed.hash,
     deployCommitSha: commitSha,
-    packCount: gc.after.packCount,
-    looseObjectCount: gc.after.looseObjectCount,
   };
 }
 

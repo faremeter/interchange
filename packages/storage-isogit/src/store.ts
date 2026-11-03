@@ -28,7 +28,6 @@ import {
   restoreIndexAfterFailedCommit,
 } from "./commit-helpers";
 import { withRepoDirLock } from "./repo-lock";
-import { maybeGCUnderLock, type GCPolicy } from "./gc";
 import {
   decodeUTF8,
   flushRuntime,
@@ -92,17 +91,10 @@ function parseMetadata(raw: unknown): MetadataData {
 
 /**
  * Walk the first-parent commit chain from HEAD, newest-first, stopping at
- * `limit` entries or at the first parent that is not present on disk.
- *
- * `git.log` throws `NotFoundError` the moment it reaches a missing commit,
- * which is the steady state under `tip-only` GC: the collector prunes
- * ancestry, leaving the tip's older parents absent. The durable conversation
- * lives in the working-tree files at the tip, not in this history, so the
- * commit log is a best-effort time-travel surface — degrade to the surviving
- * slice rather than throwing into a caller (e.g. the agent's `checkpoints`
- * tool). Any non-absence read error still surfaces.
+ * `limit` entries. A repo with no HEAD yet has no history. Nothing prunes these
+ * repos, so a missing parent is lost data, and the read throws.
  */
-async function tolerantLog(
+async function readCommitChain(
   runtime: StorageRuntime,
   dir: string,
   limit: number,
@@ -115,14 +107,7 @@ async function tolerantLog(
     return out;
   }
   while (oid !== undefined && out.length < limit) {
-    let entry: Awaited<ReturnType<typeof git.readCommit>>;
-    try {
-      entry = await git.readCommit({ fs: runtime.fs.git, dir, oid });
-    } catch (err) {
-      if (err instanceof Error && "code" in err && err.code === "NotFoundError")
-        break;
-      throw err;
-    }
+    const entry = await git.readCommit({ fs: runtime.fs.git, dir, oid });
     out.push(entry);
     oid = entry.commit.parent[0];
   }
@@ -134,7 +119,7 @@ async function readCommitLog(
   dir: string,
   limit: number,
 ): Promise<ContextCommit[]> {
-  const entries = await tolerantLog(runtime, dir, limit);
+  const entries = await readCommitChain(runtime, dir, limit);
   return entries.map((e) => {
     const base = {
       hash: e.oid,
@@ -320,34 +305,20 @@ export class IsogitStore
   private readonly runtime: StorageRuntime;
   private readonly dir: string;
   private readonly signer: CommitSigner | undefined;
-  private readonly gcPolicy: GCPolicy | undefined;
   private pendingConnectorState: ConnectorThreadState | null = null;
   private lastTurns: ConversationTurn[] = [];
   // `retrying` is a checkpoint opened after a failed one: until it completes,
   // the files can still hold the failed checkpoint's partial state.
   private checkpoint: "open" | "retrying" | "complete" | "failed" = "complete";
 
-  constructor(
-    runtime: StorageRuntime,
-    dir: string,
-    signer?: CommitSigner,
-    gcPolicy?: GCPolicy,
-  ) {
+  constructor(runtime: StorageRuntime, dir: string, signer?: CommitSigner) {
     this.runtime = runtime;
     this.dir = dir;
     this.signer = signer;
-    this.gcPolicy = gcPolicy;
   }
 
   private signingArgs() {
     return buildSigningArgs(this.signer);
-  }
-
-  // Reclaim after a write while the per-directory lock is still held, per
-  // the configured policy. A no-op when no policy was supplied.
-  private async maybeGC(): Promise<void> {
-    if (this.gcPolicy === undefined) return;
-    await maybeGCUnderLock(this.runtime, this.dir, this.gcPolicy);
   }
 
   /** Persist append-only record files with retry-safe publication semantics. */
@@ -439,7 +410,6 @@ export class IsogitStore
       }
       throw cause;
     }
-    await this.maybeGC();
     await flushRuntime(this.runtime);
   }
 
@@ -547,7 +517,6 @@ export class IsogitStore
       }
 
       const described = await this.describeHead(oid, options.message);
-      await this.maybeGC();
       return described;
     });
     const commit = await this.checkpointStep(committed);
@@ -769,7 +738,7 @@ export class IsogitStore
     _signal?: AbortSignal,
   ): Promise<TransformRecordType[]> {
     if (limit <= 0) return [];
-    const entries = await tolerantLog(this.runtime, this.dir, limit);
+    const entries = await readCommitChain(this.runtime, this.dir, limit);
     const collected: TransformRecordType[] = [];
     for (const entry of entries) {
       let blob: Uint8Array;

@@ -17,16 +17,8 @@ import { collectReachableObjects } from "./object-walk";
 import { createObjectPresence } from "./object-presence";
 import { writeTreeToDisk } from "./write-tree";
 import { indexPackIntoGitDir } from "./index-pack";
-import {
-  countLooseObjects,
-  countPackFiles,
-  gitBytes,
-  listRepoRefs,
-  repoDiskUsage,
-} from "./repo-disk";
 import { IsogitStore, type DurableMirrorReads } from "./store";
 import type { CommitSigner } from "./signer";
-import { maybeGC, runGC, type GCPolicy } from "./gc";
 import {
   normalizeRuntime,
   type IsogitRuntime,
@@ -39,12 +31,10 @@ export type { IncludeShaPredicate } from "./pack-send";
 export type { ObjectPresence } from "./object-presence";
 export type { DurableMirrorReads };
 export type { InitRepoOpts } from "./init";
-export type { RetentionPolicy, GCResult, GCPolicy } from "./gc";
-export type { RepoDiskUsage } from "./repo-disk";
 export type { IsogitPath, IsogitRuntime } from "./runtime";
 export { writeTreeToDisk } from "./write-tree";
 export { indexPackIntoGitDir } from "./index-pack";
-export { HUB_REF_NAMESPACE } from "./repo-disk";
+export { HUB_REF_NAMESPACE } from "./hub-refs";
 export {
   DEFAULT_PACK_MATERIALIZATION_LIMITS,
   type PackMaterializationLimits,
@@ -66,11 +56,10 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     createIsogitStore: async (
       dir: string,
       signer?: CommitSigner,
-      gcPolicy?: GCPolicy,
     ): Promise<ContextStore & AuditStore & DurableMirrorReads> => {
       const resolvedDir = storageRuntime.path.resolve(dir);
       await initAgentRepo(storageRuntime, resolvedDir);
-      return new IsogitStore(storageRuntime, resolvedDir, signer, gcPolicy);
+      return new IsogitStore(storageRuntime, resolvedDir, signer);
     },
     initRepo: bindRepoDir(storageRuntime, initRepo),
     initAgentRepo: bindRepoDir(storageRuntime, initAgentRepo),
@@ -92,13 +81,6 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
       collectReachableObjects,
     ),
     createObjectPresence: bindRepoDir(storageRuntime, createObjectPresence),
-    repoDiskUsage: bindRepoDir(storageRuntime, repoDiskUsage),
-    countLooseObjects: bindRepoDir(storageRuntime, countLooseObjects),
-    countPackFiles: bindRepoDir(storageRuntime, countPackFiles),
-    gitBytes: bindRepoDir(storageRuntime, gitBytes),
-    listRepoRefs: bindRepoDir(storageRuntime, listRepoRefs),
-    runGC: bindRepoDir(storageRuntime, runGC),
-    maybeGC: bindRepoDir(storageRuntime, maybeGC),
     writeTreeToDisk: bindRepoDir(storageRuntime, writeTreeToDisk),
     indexPackIntoGitDir: bindRepoDir(storageRuntime, indexPackIntoGitDir),
   };

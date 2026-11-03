@@ -1,6 +1,5 @@
 import git from "isomorphic-git";
 import { collectReachableObjects } from "./object-walk";
-import { withRepoDirLock } from "./repo-lock";
 import type { StorageRuntime } from "./runtime";
 
 /**
@@ -13,26 +12,22 @@ export async function createDeployPack(
   dir: string,
   ref: string,
 ): Promise<{ pack: Uint8Array; commitSha: string }> {
-  // Read under the per-directory lock so a concurrent GC pass cannot prune
-  // a loose object out from under the reachability walk or the pack write.
-  return withRepoDirLock(runtime, dir, async () => {
-    const commitSha = await git.resolveRef({ fs: runtime.fs.git, dir, ref });
-    const oids = await collectReachableObjects(runtime, dir, commitSha);
+  const commitSha = await git.resolveRef({ fs: runtime.fs.git, dir, ref });
+  const oids = await collectReachableObjects(runtime, dir, commitSha);
 
-    const result = await git.packObjects({
-      fs: runtime.fs.git,
-      dir,
-      oids,
-      write: false,
-    });
-    if (result.packfile === undefined) {
-      throw new Error(
-        `packObjects returned no packfile for ref "${ref}" (${commitSha})`,
-      );
-    }
-
-    return { pack: result.packfile, commitSha };
+  const result = await git.packObjects({
+    fs: runtime.fs.git,
+    dir,
+    oids,
+    write: false,
   });
+  if (result.packfile === undefined) {
+    throw new Error(
+      `packObjects returned no packfile for ref "${ref}" (${commitSha})`,
+    );
+  }
+
+  return { pack: result.packfile, commitSha };
 }
 
 /**
