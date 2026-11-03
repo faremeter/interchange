@@ -5,7 +5,7 @@ import path from "node:path";
 import git from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
 import { createDeployPack } from "@intx/storage-isogit/node";
-import { createAgentRepoStore, DEFAULT_GC_KINDS } from "./agent-repo";
+import { createAgentRepoStore } from "./agent-repo";
 import { applyWorkflowRunPack } from "./agent-repo.test-helpers";
 import type { WorkflowRunSupervisorPrincipal } from "./workflow-run-kind";
 import type { KeyPair } from "@intx/types/runtime";
@@ -30,19 +30,6 @@ afterAll(async () => {
       /* best effort cleanup */
     });
   }
-});
-
-describe("AgentRepoStore GC scope", () => {
-  test("workflow-run is excluded from GC so expunged mailbox blobs survive in history", () => {
-    // The warm-agent mailbox physically expunges <uid>.eml blobs from the
-    // live tree; the raw bytes then persist only through the parent commit,
-    // and survive ONLY because a workflow-run repo's objects are never
-    // pruned. This tripwire fails if a future change makes workflow-run
-    // GC-eligible, which would silently destroy the mailbox audit trail.
-    const kinds: readonly string[] = DEFAULT_GC_KINDS;
-    expect(kinds).not.toContain("workflow-run");
-    expect(kinds).toEqual(["agent-state"]);
-  });
 });
 
 describe("AgentRepoStore", () => {

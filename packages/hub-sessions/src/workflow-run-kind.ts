@@ -371,11 +371,10 @@ export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
  *     like `runs/<runId>/blobs/`. A prior `<uid>.eml` may be ABSENT from
  *     the prospective tree — that is the warm agent expunging a message.
  *     The raw bytes are not lost: they stay reachable through the parent
- *     commit, and a `workflow-run` repo's objects are never GC'd (its
- *     kind is off the GC allow-list), so an expunged message survives in
- *     history for the life of the run repo. The audit trail rests on
- *     "these objects are never pruned", not on the live tree being
- *     monotonic.
+ *     commit, and a `workflow-run` repo's objects are never GC'd, so an
+ *     expunged message survives in history for the life of the run repo. The
+ *     audit trail rests on "these objects are never pruned", not on the live
+ *     tree being monotonic.
  *
  * The only entries permitted under `mailbox/` are the `INBOX/`
  * directory; the only entries permitted under `mailbox/INBOX/` are
@@ -2895,8 +2894,7 @@ async function enumerateMailboxInbox(
  * by its blob OID. A prior `<uid>.eml` absent from the prospective tree is
  * a legal expunge: the warm agent physically removes a message from the
  * live INBOX. The raw bytes are not lost -- they stay reachable through the parent commit, and
- * a `workflow-run` repo's objects are never GC'd (its kind is excluded
- * from the GC allow-list; see `DEFAULT_GC_KINDS` in `agent-repo`), so the
+ * a `workflow-run` repo's objects are never GC'd, so the
  * expunged message survives in history for the life of the run repo. The
  * audit trail therefore rests on "these objects are never pruned", not on
  * the live tree being monotonic.

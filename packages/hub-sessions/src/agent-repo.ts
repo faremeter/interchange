@@ -1,5 +1,4 @@
 import { createSSHSignature } from "@intx/crypto";
-import type { GCPolicy } from "@intx/storage-isogit/node";
 
 import { createRepoStore } from "./repo-store";
 import type {
@@ -65,32 +64,11 @@ export type AgentRepoStore = {
   readonly repoStore: LocalRepoStore;
 };
 
-/**
- * Repo kinds eligible for write-path object GC. Deliberately EXCLUDES
- * "workflow-run". The warm-agent mailbox physically expunges `<uid>.eml`
- * blobs from the live tree; the raw bytes then persist only through the
- * parent commit in git history, and they survive a push ONLY because a
- * `workflow-run` repo's objects are never GC'd. Adding "workflow-run"
- * here -- above all with a retention other than "keep-history" -- would
- * make an expunged message's bytes prunable and silently destroy the
- * mailbox audit trail. The mailbox subtree contract in `workflow-run-kind`
- * documents this dependency; `agent-repo.test.ts` pins it. Do not add
- * "workflow-run" without replacing physical expunge with a tip-reachable
- * retain-bytes scheme first.
- */
-export const DEFAULT_GC_KINDS = ["agent-state"] as const;
-
 export function createAgentRepoStore(config: {
   dataDir: string;
   signingKey: { privateKey: Uint8Array; publicKey: Uint8Array };
-  /**
-   * Optional write-path GC policy for the agent-state repos this store
-   * owns. Scoped to the `agent-state` kind; the other kinds the
-   * underlying substrate services are left untouched.
-   */
-  gc?: GCPolicy;
 }): AgentRepoStore {
-  const { dataDir, signingKey, gc } = config;
+  const { dataDir, signingKey } = config;
 
   const authorize: AuthorizeFn = (principal, incomingRepoId, ref, action) => {
     switch (incomingRepoId.kind) {
@@ -135,9 +113,6 @@ export function createAgentRepoStore(config: {
     },
     authorize,
     signingCallback: () => signer,
-    ...(gc === undefined
-      ? {}
-      : { gc: { kinds: [...DEFAULT_GC_KINDS], ...gc } }),
   });
 
   async function prepareWorkflowRunPack(
