@@ -11,14 +11,12 @@ import {
   createDeployPack,
   createObjectPresence,
   HUB_REF_NAMESPACE,
-  maybeGC,
   removeOrphanPackIndexes,
   removeStagedPacks,
   stagePack,
   syncDirectoryDurable,
   syncRemovedPathDurable,
   type CommitSigner,
-  type GCPolicy,
   type ObjectPresence,
   type StagedPack,
 } from "@intx/storage-isogit/node";
@@ -155,15 +153,6 @@ export type CreateRepoStoreConfig = {
    * back to the unsigned harness-authored genesis.
    */
   signingCallback?: (repoId: RepoId) => CommitSigner | undefined;
-  /**
-   * Optional write-path garbage-collection policy. When supplied, after
-   * every successful write under the repo lock the substrate applies the
-   * shared reclaim policy to repos whose kind is in `kinds`. Omitted
-   * entirely, the substrate never reclaims and never warns. The `kinds`
-   * allowlist keeps the policy scoped to the kinds the caller intends
-   * rather than every kind the store happens to service.
-   */
-  gc?: GCPolicy & { kinds: readonly RepoKind[] };
 };
 
 /**
@@ -210,11 +199,10 @@ export type LocalRepoStore = RepoStore & {
    * `commit()`, when `removeRepo` removed the repo after the pack was
    * staged.
    *
-   * Only for the workflow-run kind, and only while GC does not reclaim
-   * that kind. The validation runs with no repo lock, so the kind's
-   * validatePush must hold no state for onRefUpdated, and no pack may
-   * be removed during the validation. Throws for any other kind, and
-   * for a kind that GC reclaims.
+   * Only for the workflow-run kind. The validation runs with no repo
+   * lock, so the kind's validatePush must hold no state for
+   * onRefUpdated, and no pack may be removed during the validation.
+   * Throws for any other kind.
    */
   prepareReceivePack(
     principal: Principal,
@@ -226,8 +214,7 @@ export type LocalRepoStore = RepoStore & {
 };
 
 export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
-  const { dataDir, signingKey, handlers, authorize, signingCallback, gc } =
-    config;
+  const { dataDir, signingKey, handlers, authorize, signingCallback } = config;
 
   // Per-repo-directory isomorphic-git memoization cache. The store
   // threads that dir's cache through every index-touching and
@@ -493,7 +480,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // advances from, so that history's seq starts again once the entry
   // goes. An update with no subscriber computes no seq and deletes the
   // entry, and `primeReplay` seeds it again, with no lock, for the next
-  // subscriber, except on a kind that GC reclaims (see `seedFromTip`).
+  // subscriber.
   // A kept entry for an older tip would make that seed skip, and the
   // next update would walk every commit since that tip under the lock.
   // An update that lands after a subscriber registers and before its
@@ -573,10 +560,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // commits (writeTree commits one parent and a receive rejects a
   // commit with more), so this is the position `replayHistory` gives
   // the commit. The walk stops early at `known`, a commit whose seq it
-  // already has. A history with a missing parent, as a deploy pack or
-  // GC leaves it, has no replay entries to match. A walk that meets the
-  // missing parent counts the readable commits it walked: on from
-  // `known` when there is one, so a gap between two received tips
+  // already has. A history with a missing parent, as a pack that carries
+  // only its tip leaves it, has no replay entries to match. A walk that
+  // meets the missing parent counts the readable commits it walked: on
+  // from `known` when there is one, so a gap between two received tips
   // still advances the seq, and from 0 at the oldest readable commit
   // when there is none. Returns null only when `sha` itself is missing.
   async function commitDepth(
@@ -730,27 +717,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return path.join(dataDir, handler.directoryPrefix, repoId.id);
   }
 
-  // GC runs on the write path of a repo whose kind is in `gc.kinds`. It
-  // removes packs and loose objects, and under `tip-only` retention it
-  // drops history, so a read of that repo with no repo lock can find
-  // objects gone partway through.
-  function isReclaimedByGC(repoId: RepoId): boolean {
-    return gc !== undefined && gc.kinds.includes(repoId.kind);
-  }
-
-  // Write-path reclaim. Called at the end of every successful write for an
-  // allowlisted kind, from inside the substrate's `withRepoLock`. The shared
-  // evaluator acquires the storage per-directory lock, applies the policy
-  // (reclaim over threshold, warn over byte budget), and logs rather than
-  // propagates a reclaim failure — the triggering write has already
-  // committed durably, so failing the caller would misreport it.
-  async function maybeRunGC(repoId: RepoId): Promise<void> {
-    // Not `isReclaimedByGC`: the check is inline so `gc` narrows for the
-    // `maybeGC` call below.
-    if (gc === undefined || !gc.kinds.includes(repoId.kind)) return;
-    await maybeGC(repoDir(repoId), gc);
-  }
-
   function gateAccess(
     principal: Principal,
     repoId: RepoId,
@@ -768,8 +734,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         "authorize_denied: only the Hub may write non-ASCII ref names",
       );
     }
-    // GC keeps these refs alive, and a loose ref at a namespace root would
-    // block all retained children. Compare case-insensitively: on a
+    // These refs are the Hub's, and a loose ref at a namespace root would
+    // block all its children. Compare case-insensitively: on a
     // case-insensitive filesystem a differently cased ref is the same file.
     const lowerRef = ref.toLowerCase();
     if (
@@ -1805,8 +1771,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     });
     if (!validation.ok) {
       // Nothing was staged and no ref advanced: the assembly wrote only
-      // unreferenced blob and tree objects, which the next GC reclaims.
-      // There is no half-applied index or working-tree state to roll
+      // unreferenced blob and tree objects. There is no half-applied index or working-tree state to roll
       // back, so the refusal just surfaces.
       throw new Error(`path_violation: ${validation.reason}`);
     }
@@ -1860,8 +1825,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     if (cachedExisting !== undefined) cachedExisting.add(commitSha);
     await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
     await emitRefUpdate(repoId, ref, oldSha, commitSha);
-
-    await maybeRunGC(repoId);
 
     return { commitSha, newlyTerminalRuns: validation.newlyTerminalRuns ?? [] };
   }
@@ -2082,9 +2045,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   // Scan a repo's history before a receive takes the repo lock, when
   // the repo has no existing-commit set yet. Answers null when the set
-  // exists, when GC reclaims the kind (a scan with no lock could lose a
-  // pack and leave commits out of the set), when the repo does not
-  // exist yet, and when the scan fails: the scan races ref writes and
+  // exists, when the repo does not exist yet, and when the scan fails: the scan races ref writes and
   // `removeRepo`, so a failure is not a fault of the receive, and the
   // locked scan in `stageReceive` reports a real one. A receive that
   // starts while a scan of the repo runs waits for that scan.
@@ -2092,7 +2053,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     repoId: RepoId,
   ): Promise<PrebuiltExistingCommits | null> {
     const key = indexCacheKey(repoId);
-    if (existingCommitsCache.has(key) || isReclaimedByGC(repoId)) {
+    if (existingCommitsCache.has(key)) {
       return Promise.resolve(null);
     }
     const running = existingCommitsScans.get(key);
@@ -2525,7 +2486,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       try {
         const runs = await validateStaged(s);
         const result = await commitStaged(s, runs, mode);
-        await maybeRunGC(repoId);
         // A receive that checks `expectedOldSha` always moves the ref.
         return result.kind === "applied" ? result.newlyTerminalRuns : [];
       } finally {
@@ -2547,16 +2507,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // onRefUpdated (the skill kind does) needs one lock span over both,
     // so only the workflow-run kind, the one caller of this path, may
     // use it. The validation also depends on no pack being removed while
-    // it reads. Only GC removes packs, so the kind must not be a GC kind.
-    // For the same reason commit does not run GC.
+    // it reads, and nothing but `removeRepo` removes one.
     if (repoId.kind !== "workflow-run") {
       throw new Error(
         `prepareReceivePack: kind ${repoId.kind} is not workflow-run; a prepared receive validates with no repo lock, so it accepts only the workflow-run kind`,
-      );
-    }
-    if (isReclaimedByGC(repoId)) {
-      throw new Error(
-        `prepareReceivePack: kind ${repoId.kind} is reclaimed by GC, which can remove a pack while a prepared receive reads it`,
       );
     }
     // No `expectedOldSha`: the ref can move while this receive validates,
@@ -2957,12 +2911,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // that lands after the seed walks under the repo lock only to that
     // tip, not the whole history. The seed runs with no repo lock, so an
     // update can cache its own entry first; the seed then leaves that
-    // entry, which a history with a missing parent advances from. A
-    // kind that GC reclaims gets no seed walk: GC can remove an object
-    // during a walk with no lock, and the walk would count a history it
-    // saw cut short. Its first update counts under the lock instead.
+    // entry, which a history with a missing parent advances from.
     async function seedFromTip(dir: string): Promise<void> {
-      if (seqCache.has(key) || isReclaimedByGC(repoId)) return;
+      if (seqCache.has(key)) return;
       const tip = await resolveRefSha(dir, ref);
       if (tip === null) return;
       const depth = await withReceiveCache(dir, (cache) =>

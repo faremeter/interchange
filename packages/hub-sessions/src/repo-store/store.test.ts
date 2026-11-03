@@ -3456,64 +3456,6 @@ describe("RepoStore", () => {
     }
   });
 
-  test("a subscriber on a kind that GC reclaims does not seed its seq with no lock", async () => {
-    const dataDir = await makeTempDir("repo-store-gc-seed-");
-    const gcStore = () =>
-      createRepoStore({
-        dataDir,
-        signingKey,
-        handlers: { skill: createTestHandler() },
-        authorize: allowAll,
-        gc: {
-          kinds: ["skill"],
-          retention: "keep-history",
-          packThreshold: 1000,
-          looseThreshold: 1e6,
-          warnBytes: 1e12,
-        },
-      });
-    const before = gcStore();
-    for (const message of ["v1", "v2", "v3"])
-      await before.writeTree(principal, repoId, REF, {
-        files: { "a.md": message },
-        message,
-      });
-    // A new store over the same data, as after a restart, has no seq
-    // cached, so the subscriber below would seed one.
-    const store = gcStore();
-    const dir = store.getRepoDir(repoId);
-
-    // A seed would first resolve the ref, and that call starts within
-    // the microtasks after the first `next()`.
-    const resolveRef = spyOn(git, "resolveRef");
-    const ac = new AbortController();
-    try {
-      const stream = store.subscribe(principal, repoId, REF, {
-        from: "head",
-        signal: ac.signal,
-      });
-      const next = stream.next();
-      await drainMicrotasks();
-      expect(
-        resolveRef.mock.calls.filter(
-          ([args]) => args.dir === dir && args.ref === REF,
-        ),
-      ).toHaveLength(0);
-
-      await store.writeTree(principal, repoId, REF, {
-        files: { "a.md": "v4" },
-        message: "v4",
-      });
-      const entry = await next;
-      if (entry.done) throw new Error("Missing update");
-      const history = await git.log({ fs, dir, ref: REF });
-      expect(entry.value.seq).toBe(history.length - 1);
-    } finally {
-      ac.abort();
-      resolveRef.mockRestore();
-    }
-  });
-
   test("a subscriber after updates with no subscriber seeds its seq outside the lock", async () => {
     const dataDir = await makeTempDir("repo-store-forget-");
     const store = createRepoStore({
@@ -5435,88 +5377,6 @@ describe("RepoStore pack receive reads", () => {
     expect([...loads.keys()].some((n) => n.endsWith(".idx"))).toBe(true);
   });
 
-  test("reads stay correct across GC repacks between receives", async () => {
-    const RECEIVES = 6;
-    const sourceStore = createRepoStore({
-      dataDir: await makeTempDir("repo-store-reads-gc-source-"),
-      signingKey,
-      handlers: { skill: createTestHandler() },
-      authorize: allowAll,
-    });
-
-    const priors: (string | null)[] = [];
-    const dataDir = await makeTempDir("repo-store-reads-gc-");
-    const store = createRepoStore({
-      dataDir,
-      signingKey,
-      handlers: {
-        skill: {
-          kind: "skill",
-          directoryPrefix: "repos-under-test",
-          async validatePush({
-            readBlob,
-            priorReadBlob,
-          }): Promise<ValidatePushResult> {
-            await readBlob("deploy/payload.txt");
-            const prior = await priorReadBlob("deploy/payload.txt");
-            priors.push(
-              prior === null ? null : new TextDecoder().decode(prior),
-            );
-            return { ok: true };
-          },
-          onRefUpdated() {
-            return;
-          },
-        },
-      },
-      authorize: allowAll,
-      // A low pack threshold makes the receives repack several times,
-      // so later receives read objects from a GC pack.
-      gc: {
-        kinds: ["skill"],
-        packThreshold: 2,
-        looseThreshold: 1e6,
-        warnBytes: 1e12,
-        retention: "keep-history",
-      },
-    });
-    await store.initRepo(repoId);
-
-    let tip: string | null = null;
-    for (let i = 0; i < RECEIVES; i++) {
-      const { commitSha } = await sourceStore.writeTree(
-        principal,
-        repoId,
-        REF,
-        {
-          files: { "deploy/payload.txt": `payload ${String(i)}` },
-          message: `payload ${String(i)}`,
-        },
-      );
-      const { pack } = await sourceStore.createPack(principal, repoId, REF);
-      await store.receivePack(principal, repoId, REF, pack, commitSha, tip);
-      tip = commitSha;
-      expect(await readPayload(store, repoId)).toBe(`payload ${String(i)}`);
-    }
-
-    expect(priors).toEqual([
-      null,
-      ...Array.from({ length: RECEIVES - 1 }, (_, i) => `payload ${String(i)}`),
-    ]);
-    const packNames = await fs.promises.readdir(
-      path.join(
-        dataDir,
-        "repos-under-test",
-        repoId.id,
-        ".git",
-        "objects",
-        "pack",
-      ),
-    );
-    // A GC repack publishes its pack under the transfer id `gc-<uuid>`.
-    expect(packNames.some((n) => n.startsWith("pack-recv-gc-"))).toBe(true);
-  });
-
   test("a multi-commit receive parses each commit and tree a bounded number of times", async () => {
     // Each commit adds one file to `deploy/`, and validation reads every
     // file on both sides. Without a memo, each path read parses the root
@@ -6590,35 +6450,6 @@ describe("RepoStore prepared pack receive", () => {
     }
   });
 
-  test("prepareReceivePack refuses a kind that GC reclaims", async () => {
-    const line = await sourceLine(["v1"]);
-    const [tip] = line.commits;
-    if (tip === undefined) throw new Error("line");
-    const store = createRepoStore({
-      dataDir: await makeTempDir("repo-store-prepared-gc-"),
-      signingKey,
-      handlers: { "workflow-run": runsHandler() },
-      authorize: allowAll,
-      gc: {
-        kinds: ["workflow-run"],
-        retention: "keep-history",
-        packThreshold: 1000,
-        looseThreshold: 1000,
-        warnBytes: Number.MAX_SAFE_INTEGER,
-      },
-    });
-
-    await expect(
-      store.prepareReceivePack(
-        principal,
-        repoId,
-        REF,
-        await line.packAt(tip),
-        tip,
-      ),
-    ).rejects.toThrow(/reclaimed by GC/);
-  });
-
   test("a receive with no subscriber reads no ref history under the lock", async () => {
     const line = await sourceLine(
       Array.from({ length: 12 }, (_, i) => `v${String(i + 1)}`),
@@ -6893,10 +6724,7 @@ describe("RepoStore prepared pack receive", () => {
   // A store over `dataDir` whose workflow-run handler counts the
   // commits it validates, by their `deploy/a.md`, and can hold a ref
   // update in onRefUpdated while it holds the repo lock.
-  function countingStore(
-    dataDir: string,
-    gc?: Parameters<typeof createRepoStore>[0]["gc"],
-  ): {
+  function countingStore(dataDir: string): {
     store: ReturnType<typeof createRepoStore>;
     validated: string[];
     holdNextUpdate: () => ReturnType<typeof gate>;
@@ -6920,7 +6748,6 @@ describe("RepoStore prepared pack receive", () => {
         },
       },
       authorize: allowAll,
-      ...(gc === undefined ? {} : { gc }),
     });
     return {
       store,
@@ -7361,64 +7188,6 @@ describe("RepoStore prepared pack receive", () => {
     } finally {
       readCommit.mockRestore();
       scan.release();
-      held.release();
-      await Promise.allSettled([write, receiving]);
-    }
-  });
-
-  test("a receive into a kind that GC reclaims scans its existing commits only under the lock", async () => {
-    const contents = Array.from({ length: 6 }, (_, i) => `v${String(i + 1)}`);
-    // The test holds the repo lock, so it uses its own repo id.
-    const gcRepoId: RepoId = { kind: "workflow-run", id: "gc-kind" };
-    const { line, dataDir, repoDir } = await restartedTarget(
-      contents,
-      4,
-      gcRepoId,
-    );
-    const received = line.commits[3];
-    const tip = line.commits.at(-1);
-    if (received === undefined || tip === undefined) throw new Error("line");
-    const pack = await line.packAt(tip);
-    const { store, validated, holdNextUpdate } = countingStore(dataDir, {
-      kinds: ["workflow-run"],
-      retention: "keep-history",
-      packThreshold: 1000,
-      looseThreshold: 1000,
-      warnBytes: Number.MAX_SAFE_INTEGER,
-    });
-
-    const held = holdNextUpdate();
-    const write = store.writeTree(principal, gcRepoId, "refs/heads/other", {
-      files: { "deploy/a.md": "w1" },
-      message: "w1",
-    });
-    await held.reached;
-
-    // A scan with no lock first checks that the repository exists, and
-    // that check starts within the microtasks after the receive starts.
-    const gitDir = path.join(repoDir, ".git");
-    const stat = spyOn(fs.promises, "stat");
-    let receiving: Promise<unknown> | null = null;
-    try {
-      receiving = store.receivePack(
-        principal,
-        gcRepoId,
-        REF,
-        pack,
-        tip,
-        received,
-      );
-      await drainMicrotasks();
-      expect(
-        stat.mock.calls.filter(([target]) => target === gitDir),
-      ).toHaveLength(0);
-      held.release();
-      await write;
-      validated.length = 0;
-      await receiving;
-      expect(validated).toEqual(["v5", "v6"]);
-    } finally {
-      stat.mockRestore();
       held.release();
       await Promise.allSettled([write, receiving]);
     }

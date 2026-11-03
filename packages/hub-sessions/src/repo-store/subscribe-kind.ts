@@ -119,8 +119,8 @@ export async function* subscribeKind<V extends Type>(
       repoId,
       envelope.newSha,
     );
-    // A commit a concurrent GC pruned between the ref-update event and
-    // this read yields nothing; the substrate surfaces that as `null`.
+    // A commit the repo no longer holds by the time of this read yields
+    // nothing; the substrate surfaces that as `null`.
     if (newReads === null) continue;
     const oldReads =
       envelope.oldSha === undefined || envelope.oldSha === null
