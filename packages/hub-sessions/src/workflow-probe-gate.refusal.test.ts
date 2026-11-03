@@ -100,6 +100,36 @@ describe("describeProbeGateRefusal", () => {
       },
       'credential_bindings_invalid: two bindings name action push and handle "github"',
     ],
+    [
+      {
+        ok: false,
+        reason: "grant_requirement_conditions_invalid",
+        invalidGrantRequirements: [
+          {
+            requirement: {
+              resource: "wallet:wal_1",
+              action: "spend",
+              source: "creator",
+              conditions: { time_window: {}, tool: "x" },
+            },
+            problems: [
+              "time_window: after must be a string (was missing); before must be a string (was missing)",
+              'Unknown condition: "tool"',
+            ],
+          },
+          {
+            requirement: {
+              resource: "mail:*",
+              action: "send",
+              source: "invoker",
+              conditions: { bogus: 1 },
+            },
+            problems: ['Unknown condition: "bogus"'],
+          },
+        ],
+      },
+      'grant_requirement_conditions_invalid: a requirement may carry only conditions a run can evaluate; declared: spend on wallet:wal_1 (creator) ["time_window: after must be a string (was missing); before must be a string (was missing)","Unknown condition: \\"tool\\""]; send on mail:* (invoker) ["Unknown condition: \\"bogus\\""]',
+    ],
   ];
 
   test.each(cases)("names the refusal and what it refused", (refusal, text) => {

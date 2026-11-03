@@ -144,7 +144,7 @@ Each requirement specifies:
   action: string       -- "invoke", "spend", "read", etc.
   source: "creator" | "invoker"
   effect?: "allow" | "ask" | "deny"    -- default: "allow"
-  conditions?: object  -- optional constraints
+  conditions?: object  -- optional constraints; only conditions a run can evaluate (see Conditions)
 }
 ```
 
@@ -352,9 +352,10 @@ A role grant never reaches a run, because a run loads only the rows on its own p
 
 The hub checks conditions against every registry that will evaluate the row before it stores the row:
 
+- The probe gate (`gateAndFreezeProbeResult`) checks a workflow definition's declared grant requirements, which become rows on the run principal, at install and approve. It refuses the definition with the reason `grant_requirement_conditions_invalid`, before the operator approval checks and before anything is frozen.
 - Grant create (`POST`) and update (`PATCH`) check `conditions` for the grant's target, resource, and action. An unregistered key, such as the planned conditions above, a body that does not match its evaluator's shape, or a key that a run cannot evaluate on a run-principal row, gives a 400 that names each problem, and the grant is not stored. A `PATCH` that omits `conditions` does not check or change the stored value.
 
-The authorization engine evaluates conditions at runtime: a grant whose registered condition is unmet is skipped. A stored grant that carries an unregistered key or a malformed body still throws and fails the authorization, to surface the misconfiguration. Such a row comes from a path that does not check conditions: a grant materialized from a workflow's declared grant requirement (at launch, or when a change to the delegator's grants re-derives the run), a direct database write, or a row stored before the check existed.
+The authorization engine evaluates conditions at runtime: a grant whose registered condition is unmet is skipped. A stored grant that carries an unregistered key or a malformed body still throws and fails the authorization, to surface the misconfiguration. Such a row comes from a path that does not check conditions: a grant materialized (at launch, or when a change to the delegator's grants re-derives the run) from a declared grant requirement that was frozen before the probe gate checked conditions, a direct database write, or a row stored before the check existed.
 
 Every check names how it treats a conditioned grant. A check on a request evaluates each condition with the hub's condition registry. A check with no request to evaluate a condition against is **pessimistic**: a conditioned `deny` or `ask` applies as if its condition held, and a conditioned `allow` does not apply. Delegation is the pessimistic check:
 

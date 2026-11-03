@@ -398,6 +398,7 @@
       "version": "0.5.0",
       "dependencies": {
         "@intx/agent": "workspace:*",
+        "@intx/authz": "workspace:*",
         "@intx/crypto": "workspace:*",
         "@intx/db": "workspace:*",
         "@intx/hub-common": "workspace:*",
