@@ -38,11 +38,11 @@ function ctx(overrides?: Partial<ConditionContext>): ConditionContext {
 
 describe("evaluateConditions", () => {
   test("null conditions are always met", async () => {
-    expect(await evaluateConditions(null, ctx())).toBe(true);
+    expect(await evaluateConditions(null, ctx(), {})).toBe(true);
   });
 
   test("empty object conditions are always met", async () => {
-    expect(await evaluateConditions({}, ctx())).toBe(true);
+    expect(await evaluateConditions({}, ctx(), {})).toBe(true);
   });
 
   test("unknown condition key throws an error", async () => {
@@ -177,13 +177,6 @@ describe("evaluateConditions", () => {
         `Unknown condition: "${key}"`,
       );
     }
-  });
-
-  test("no registry provided with non-null conditions throws", async () => {
-    // No registry argument at all -- defaults to empty registry
-    expect(evaluateConditions({ some_condition: true }, ctx())).rejects.toThrow(
-      'Unknown condition: "some_condition"',
-    );
   });
 });
 
