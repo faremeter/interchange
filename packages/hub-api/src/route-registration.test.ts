@@ -178,18 +178,6 @@ const GRANT_EXEMPTIONS: GrantExemption[] = [
     reason:
       "resolveSmartHttp (assets): git token, asset:<id> verdict after the asset lookup",
   },
-  {
-    method: "GET",
-    path: "/workflows/runs/:runId/state.git/info/refs",
-    reason:
-      "resolveSmartHttp (agent-state-git): git token, agent-state:<id> verdict after the run lookup",
-  },
-  {
-    method: "POST",
-    path: "/workflows/runs/:runId/state.git/git-upload-pack",
-    reason:
-      "resolveSmartHttp (agent-state-git): git token, agent-state:<id> verdict after the run lookup",
-  },
 ];
 
 /**
@@ -339,7 +327,6 @@ describe("tenant route grant checks", () => {
       "POST /workflows/deployments",
       "GET /git-tokens",
       "GET /assets",
-      "GET /workflows/runs/:runId/state.git/info/refs",
     ].map((route) => {
       const [method, path] = route.split(" ");
       return `${method} ${TENANT_PREFIX}${path}`;

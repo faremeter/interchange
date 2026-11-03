@@ -28,7 +28,6 @@ import {
 import { IsogitStore, type DurableMirrorReads } from "./store";
 import type { CommitSigner } from "./signer";
 import { maybeGC, runGC, type GCPolicy } from "./gc";
-import { createMailAuditStore, listMail } from "./mail-store";
 import {
   normalizeRuntime,
   type IsogitRuntime,
@@ -43,13 +42,6 @@ export type { DurableMirrorReads };
 export type { InitRepoOpts } from "./init";
 export type { RetentionPolicy, GCResult, GCPolicy } from "./gc";
 export type { RepoDiskUsage } from "./repo-disk";
-export type {
-  MailAuditStore,
-  MailCommitOptions,
-  MailCommitResult,
-  MailDirection,
-  MailEntry,
-} from "./mail-store";
 export type { IsogitPath, IsogitRuntime } from "./runtime";
 export { writeTreeToDisk } from "./write-tree";
 export { indexPackIntoGitDir } from "./index-pack";
@@ -109,8 +101,6 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     listRepoRefs: bindRepoDir(storageRuntime, listRepoRefs),
     runGC: bindRepoDir(storageRuntime, runGC),
     maybeGC: bindRepoDir(storageRuntime, maybeGC),
-    createMailAuditStore: bindRepoDir(storageRuntime, createMailAuditStore),
-    listMail: bindRepoDir(storageRuntime, listMail),
     writeTreeToDisk: bindRepoDir(storageRuntime, writeTreeToDisk),
     indexPackIntoGitDir: bindRepoDir(storageRuntime, indexPackIntoGitDir),
   };

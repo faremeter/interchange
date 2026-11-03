@@ -44,9 +44,7 @@ export type Asset = {
 
 export type CreateAssetParams = {
   tenantId: string;
-  /** Accepted kinds: "skill", "package-registry", "workflow".
-   * "agent-state" is rejected because those repos are managed by the
-   * agent lifecycle, not the asset service. */
+  /** Accepted kinds: "skill", "package-registry", "workflow". */
   kind: RepoKind;
   name: string;
   displayName?: string;
@@ -195,9 +193,6 @@ function rowToAsset(row: typeof assetTable.$inferSelect): Asset {
   // loudly fails rather than silently mistypes the returned shape.
   let narrowed: RepoKind;
   switch (row.kind) {
-    case "agent-state":
-      narrowed = "agent-state";
-      break;
     case "skill":
       narrowed = "skill";
       break;

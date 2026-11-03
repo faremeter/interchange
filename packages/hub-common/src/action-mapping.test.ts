@@ -59,7 +59,7 @@ describe("httpToRepoAction", () => {
     expect(
       httpToRepoAction({
         method: "POST",
-        path: "/tenants/t1/agents/agt_xyz/state/git-receive-pack",
+        path: "/tenants/t1/assets/skill/example.git/git-receive-pack",
         query: {},
       }),
     ).toBe("receivePack");

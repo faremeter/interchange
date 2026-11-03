@@ -112,21 +112,14 @@ Agent definitions declare grant requirements with source annotations (tenant, cr
 
 A subset of routes serve the git smart-HTTP wire protocol rather than JSON. These are the only routes in the control plane API that are not REST. They accept and emit pkt-line-framed binary bodies (`application/x-git-upload-pack-request`, `application/x-git-receive-pack-result`, `application/x-git-upload-pack-advertisement`, ...), and they authenticate with hub-issued bearer tokens rather than better-auth session cookies.
 
-Three route groups expose the wire:
+One route group exposes the wire, and a second mints the tokens that authenticate it:
 
 - **Asset REST + smart-HTTP** under `/api/tenants/:tenantId/assets/`.
   - `POST /api/tenants/:tenantId/assets` creates an asset row and initializes its backing repository with a hub-signed genesis commit. Session-authenticated; gated by `requireGrant("asset:*", "create")`.
   - `GET /api/tenants/:tenantId/assets/:kind/:name.git/info/refs` (with `?service=git-upload-pack` or `?service=git-receive-pack`) is the smart-HTTP advertise endpoint.
   - `POST /api/tenants/:tenantId/assets/:kind/:name.git/git-upload-pack` serves clone and fetch.
   - `POST /api/tenants/:tenantId/assets/:kind/:name.git/git-receive-pack` serves push.
-  - `:kind` is one of `skill`, `agent-state`, `package-registry`, or `workflow`; `:name` is the kebab-case asset name. The `.git` suffix on the trailing segment is required — it is how the URL grammar disambiguates the asset namespace from arbitrary tenant sub-paths.
-
-- **Agent-state per-run smart-HTTP** under `/api/tenants/:tenantId/workflows/runs/:runId/state.git/...`.
-  - Read-only. `info/refs` and `git-upload-pack` are served; `git-receive-pack` returns a pkt-line-framed protocol-level rejection so `git push -v` surfaces a readable error even when no `Authorization` header is present.
-  - The repo is lazily materialized: a never-pushed run advertises an empty repository (the `capabilities^{}` empty-repo record) so a stock `git clone` succeeds against an empty tree rather than 404'ing.
-
-- **Agent-state per-definition smart-HTTP** under `/api/tenants/:tenantId/agents/definitions/:agentId/state.git/...`.
-  - Read-only, same handler shape as the per-run grammar. The hub wrote the `deploy/` prefix when it staged the agent for a launch; no production route stages an agent now.
+  - `:kind` is one of `skill`, `package-registry`, or `workflow`; `:name` is the kebab-case asset name. The `.git` suffix on the trailing segment is required — it is how the URL grammar disambiguates the asset namespace from arbitrary tenant sub-paths.
 
 - **Git-tokens REST** under two scopes:
   - `/api/tenants/:tenantId/git-tokens` mints, lists, and revokes tenant-bound service tokens (`kind: "svc"`). The token speaks as a specific tenant member; the route group is gated by `requireGrant("git-token:*", ...)`.
@@ -137,7 +130,7 @@ Three route groups expose the wire:
 
 Every smart-HTTP URL the hub exposes terminates the repo segment with `.git`. The suffix is what distinguishes a smart-HTTP request from an arbitrary tenant or instance sub-path:
 
-- `/api/tenants/tnt_abc/workflows/runs/run_xyz/state.git/info/refs` — smart-HTTP.
+- `/api/tenants/tnt_abc/assets/skill/my-skill.git/info/refs` — smart-HTTP.
 - `/api/tenants/tnt_abc/workflows/runs/run_xyz/events` — SSE, not git.
 
 This matches stock git's convention: `git clone` URLs end in `.git`, and the URL is the primary key by which it lives in `.git/config`.

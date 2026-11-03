@@ -1,15 +1,12 @@
 # Git Access
 
-This document is the operator-facing walkthrough for the hub's smart-HTTP git endpoints. It covers minting a token, configuring stock `git` so it presents that token to the hub, and the URL and `refPattern` grammars used by the two repo families the hub exposes: assets and agent state.
+This document is the operator-facing walkthrough for the hub's smart-HTTP git endpoints. It covers minting a token, configuring stock `git` so it presents that token to the hub, and the URL and `refPattern` grammars for the assets the hub exposes.
 
 For the underlying authorization model — the relationship between session-authenticated grants and bearer-token `RepoActions` — see `docs/AUTH.md`. For the route reference, see `docs/ROUTES.md`.
 
 ## What the hub exposes over git
 
-Two repo families speak the smart-HTTP wire:
-
-- **Assets.** Operator-curated, tenant-scoped repositories spanning the `skill`, `agent-state`, `package-registry`, and `workflow` kinds. Both `git clone` (upload-pack) and `git push` (receive-pack) are supported.
-- **Agent state.** Two URL grammars, both read-only over HTTP. The per-run grammar exposes the runtime state of a run that the retired agent-instance launch route created (a run with an address and no deployment); the per-definition grammar exposes the deploy artifacts the hub wrote when it staged an agent for a launch. No production route creates such a run or stages such an agent now, so both grammars serve only state written before that.
+Assets speak the smart-HTTP wire: operator-curated, tenant-scoped repositories spanning the `skill`, `package-registry`, and `workflow` kinds. Both `git clone` (upload-pack) and `git push` (receive-pack) are supported.
 
 Anonymous access is not supported. Every smart-HTTP request must present a hub-issued bearer token. Unauthenticated clones receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="Interchange"` challenge so stock git falls into its credential helper or askpass prompt.
 
@@ -151,7 +148,7 @@ git clone https://hub.example/api/tenants/tnt_abc/assets/skill/greet.git
 ```
 
 - `:tenantId` is the `tnt_*` ID.
-- `:kind` is one of `skill`, `agent-state`, `package-registry`, or `workflow`. (The `agent-state` _kind_ is the asset family used for shared agent-state templates; it is not the same surface as the per-run and per-definition agent-state routes below.)
+- `:kind` is one of `skill`, `package-registry`, or `workflow`.
 - `:name` is the kebab-case asset name as registered via `POST /api/tenants/:tenantId/assets`.
 - The `.git` suffix on the trailing segment is required — it is how the hub disambiguates the asset namespace from arbitrary tenant sub-paths.
 
@@ -164,32 +161,6 @@ git clone https://hub.example/api/tenants/tnt_abc/assets/skill/greet.git
 # Push to it:
 cd greet
 git push origin main
-```
-
-### Agent state — per run
-
-```
-/api/tenants/:tenantId/workflows/runs/:runId/state.git/...
-```
-
-- `:runId` is the run's `run_*` ID.
-- Read-only over HTTP. The run's runtime state is written by the sidecar through a separate path; HTTP is for inspection.
-
-```
-git clone https://hub.example/api/tenants/tnt_abc/workflows/runs/run_xyz/state.git
-```
-
-### Agent state — per definition
-
-```
-/api/tenants/:tenantId/agents/definitions/:agentId/state.git/...
-```
-
-- `:agentId` is the `agt_*` ID.
-- Read-only over HTTP. The hub wrote the `deploy/` prefix when it staged the agent for a launch; no production route stages an agent now.
-
-```
-git clone https://hub.example/api/tenants/tnt_abc/agents/definitions/agt_xyz/state.git
 ```
 
 ## `refPattern` grammar
@@ -263,7 +234,7 @@ A `403` from the substrate authz layer (rather than the bearer middleware) carri
 
 - **Shallow clones are not supported.** `git clone --depth=N` triggers `protocol error: unexpected 'shallow' line` because the hub does not implement the smart-HTTP shallow negotiation. Track the follow-on issue for the implementation; clone full for now.
 - **Anonymous access is not supported.** Every smart-HTTP request must present a bearer token. There is no public-read mode.
-- **Pre-existing instances and definitions have no creator grants.** Instances and definitions created before the creator-grant seeding shipped do not carry an explicit creator grant on the asset or state repo. Operators working with that legacy data fall back to a tenant admin grant on the relevant resource. New instances and definitions seed the creator grant at creation and launch time, and need no special handling.
+- **Pre-existing instances and definitions have no creator grants.** Instances and definitions created before the creator-grant seeding shipped do not carry an explicit creator grant on the asset. Operators working with that legacy data fall back to a tenant admin grant on the relevant resource. New instances and definitions seed the creator grant at creation and launch time, and need no special handling.
 
 ## Operational caveats
 

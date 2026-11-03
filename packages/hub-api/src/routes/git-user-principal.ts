@@ -1,17 +1,10 @@
 /**
- * Shared smart-HTTP glue for the bearer-token git route groups
- * (`assets.ts` and `agent-state-git.ts`).
+ * Smart-HTTP glue for the bearer-token git routes in `assets.ts`.
  *
- * Both route groups resolve a URL to a `RepoId`, pre-resolve the
- * authz verdict against the grant store, and construct a
- * `UserPrincipal` carrying that verdict so the substrate's authorize
- * gate only sanity-checks rather than re-querying. The verdict
- * resolution, principal construction, and the two substrate adapters
- * are identical between the groups — the only per-kind input is the
- * verdict's `resource` string (`asset:<id>` vs
- * `agent-state:<id>`). Keeping them here, rather than copy-pasted
- * into each route file, stops the security-critical claim/verdict
- * cross-check boundary from drifting between kinds.
+ * The routes resolve a URL to a `RepoId`, pre-resolve the authz verdict
+ * against the grant store, and construct a `UserPrincipal` carrying that
+ * verdict so the substrate's authorize gate only sanity-checks rather than
+ * re-querying.
  *
  * Bearer-claim `expiresAt` is a `Date` on the wire; the substrate's
  * `UserPrincipal.tokenClaims.expiresAt` is a `number`. The Date →
@@ -36,7 +29,7 @@ function dateToNumber(d: Date): number {
 /**
  * Pre-resolve the grant verdict for a user-token-authenticated
  * smart-HTTP request. `resource` is the full verdict resource string
- * for this kind (`asset:<id>`, `agent-state:<id>`); the grant verb is
+ * for this kind (`asset:<id>`); the grant verb is
  * derived from `action`. The route layer attaches the returned
  * verdict to the constructed `UserPrincipal`; the substrate does NOT
  * re-query the grant store.

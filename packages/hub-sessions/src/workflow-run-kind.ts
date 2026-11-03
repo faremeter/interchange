@@ -532,9 +532,7 @@ const CONSUMED_FILENAME_RE = /^(.+)\.json$/;
  *     message; sortable FIFO key prefix.
  *   - `address`: decoded canonical address (not URL-encoded).
  *   - `mailAuditRef`: pointer to the raw mail bytes in the mail-audit
- *     store. For the in-process single-agent path a separate
- *     `MailAuditStore` holds the authoritative bytes and this ref joins
- *     onto it.
+ *     store.
  *   - `rawMessage`: base64 of the inbound mail's raw MIME bytes,
  *     inlined so the workflow-process child can read its step input by
  *     messageId at `trigger.fired` time. The supervisor is the sole

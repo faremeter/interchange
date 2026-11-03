@@ -542,7 +542,6 @@
       "version": "0.5.0",
       "dependencies": {
         "@intx/log": "workspace:*",
-        "@intx/mime": "workspace:*",
         "@intx/types": "workspace:*",
         "@isomorphic-git/lightning-fs": "4.7.0",
         "arktype": "catalog:",

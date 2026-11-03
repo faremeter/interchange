@@ -60,8 +60,7 @@ see [`LAYOUT.md`](../LAYOUT.md).
   hand.
 - [`GIT_ACCESS.md`](./GIT_ACCESS.md) — operator-facing walkthrough
   for the hub's smart-HTTP git endpoints. Minting tokens, configuring
-  stock `git`, and the URL and `refPattern` grammars for the assets
-  and agent-state repo families.
+  stock `git`, and the URL and `refPattern` grammars for assets.
 
 ## Implementation notes
 
