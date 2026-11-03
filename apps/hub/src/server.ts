@@ -207,34 +207,7 @@ export async function createHubServer({
   const hubSigningKey = await generateKeyPair();
   log.info("Generated hub signing key");
 
-  // Write-path GC for the hub's agent-state repos. Each accepted state
-  // pack strands the prior tip's objects and adds a pack, and each deploy
-  // commit strands loose objects; left alone the repo grows without bound.
-  // The hub reclaims on the write path once a repo crosses
-  // HUB_AGENT_GC_PACK_THRESHOLD packs or HUB_AGENT_GC_LOOSE_THRESHOLD loose
-  // objects, and warns once it crosses HUB_AGENT_GC_WARN_BYTES. Retention
-  // is fixed to keep-history and not operator-configurable: the hub is the
-  // long-term archive of an agent's state graph, and tip-only would prune
-  // the commit ancestry the hub's subscriber-seq and history replay derive
-  // from git.log.
-  const DEFAULT_HUB_AGENT_GC_PACK_THRESHOLD = 64;
-  const DEFAULT_HUB_AGENT_GC_LOOSE_THRESHOLD = 2048;
-  const DEFAULT_HUB_AGENT_GC_WARN_BYTES = 256 * 1024 * 1024;
-
-  function readPositiveIntEnv(name: string, fallback: number): number {
-    const raw = process.env[name];
-    if (raw === undefined || raw.trim() === "") return fallback;
-    const value = Number(raw);
-    if (!Number.isInteger(value) || value <= 0) {
-      throw new Error(
-        `${name} must be a positive integer; got ${JSON.stringify(raw)}`,
-      );
-    }
-    return value;
-  }
-
-  // Like `readPositiveIntEnv` but with no fallback: returns `undefined` when the
-  // var is unset so the caller can omit the field and let the consumer apply its
+  // Returns `undefined` when the var is unset so the caller can omit the field and let the consumer apply its
   // own default, instead of duplicating that default here.
   function readOptionalPositiveIntEnv(name: string): number | undefined {
     const raw = process.env[name];
@@ -296,21 +269,6 @@ export async function createHubServer({
   const agentRepoStore = createAgentRepoStore({
     dataDir: hubDataDir,
     signingKey: hubSigningKey,
-    gc: {
-      packThreshold: readPositiveIntEnv(
-        "HUB_AGENT_GC_PACK_THRESHOLD",
-        DEFAULT_HUB_AGENT_GC_PACK_THRESHOLD,
-      ),
-      looseThreshold: readPositiveIntEnv(
-        "HUB_AGENT_GC_LOOSE_THRESHOLD",
-        DEFAULT_HUB_AGENT_GC_LOOSE_THRESHOLD,
-      ),
-      warnBytes: readPositiveIntEnv(
-        "HUB_AGENT_GC_WARN_BYTES",
-        DEFAULT_HUB_AGENT_GC_WARN_BYTES,
-      ),
-      retention: "keep-history",
-    },
   });
 
   // The asset service shares the agent-repo store's substrate so skill
