@@ -908,7 +908,6 @@ export async function startHub(
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
     requestTimeoutMs: 10_000,
-    hubPublicKey: hexEncode(hubSigningKey.publicKey),
     // The spawned sidecar presents TOKEN on its handshake; verify it and
     // resolve to the fixed integration sidecar id, exercising the real
     // token-authenticated handshake rather than accepting any token.

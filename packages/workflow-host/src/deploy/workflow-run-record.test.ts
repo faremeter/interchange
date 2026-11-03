@@ -114,7 +114,6 @@ const SINGLE_STEP: WorkflowRunRecord = {
   },
   credentials: deliveryOf({ "cred-x": "sk-x" }),
   sessionId: "ses_1",
-  hubPublicKey: "deadbeef",
   // Source-ref is the only lineage: every record carries the pin + approved
   // hash the restore re-verifies the re-materialized closure against.
   approvedWireHash: "d".repeat(64),
@@ -129,8 +128,7 @@ const SINGLE_STEP: WorkflowRunRecord = {
   },
 };
 
-// A multi-step deployment records no head hub key and may carry no session
-// id -- both optional fields absent.
+// A multi-step deployment may carry no session id.
 const MULTI_STEP: WorkflowRunRecord = {
   version: 2,
   agentAddress: "run_xyz@tenant.example",
@@ -447,7 +445,6 @@ describe("workflow run record store", () => {
     const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
     const restored = scanned[0]?.record;
     expect(restored).toEqual(MULTI_STEP);
-    expect(restored !== undefined && "hubPublicKey" in restored).toBe(false);
     expect(restored !== undefined && "sessionId" in restored).toBe(false);
 
     await fs.rm(dataDir, { recursive: true, force: true });

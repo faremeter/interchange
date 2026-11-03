@@ -158,7 +158,6 @@ describe("AgentDeployFrame", () => {
     generation: 1,
     agentId: "agt_1",
     config: baseConfig,
-    hubPublicKey: "hub_pubkey_hex",
   };
 
   const stepSource = {

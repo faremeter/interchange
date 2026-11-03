@@ -463,7 +463,6 @@ describe("SidecarRouter allocation mail durability", () => {
         withExecutableWorkflowRun: async (_target, send) => send(),
         ...sidecarAuth(() => [current]),
         validateSidecarIdentity: async () => true,
-        hubPublicKey: "a".repeat(64),
         requestTimeoutMs: 500,
         mailAckRetryIntervalMs: 10_000,
         mailHoldTTLMs: 60_000,

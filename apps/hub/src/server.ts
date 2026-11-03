@@ -62,7 +62,6 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
 import { MAX_SIDECAR_FRAME_BYTES } from "@intx/types/sidecar";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@intx/log";
@@ -206,7 +205,7 @@ export async function createHubServer({
   }
 
   const hubSigningKey = await generateKeyPair();
-  log.info("Generated hub deploy signing key");
+  log.info("Generated hub signing key");
 
   // Write-path GC for the hub's agent-state repos. Each accepted state
   // pack strands the prior tip's objects and adds a pack, and each deploy
@@ -396,7 +395,6 @@ export async function createHubServer({
   const probeTimeoutMs = readOptionalPositiveIntEnv("HUB_PROBE_TIMEOUT_MS");
 
   const sidecarRouter = createSidecarRouter({
-    hubPublicKey: hexEncode(hubSigningKey.publicKey),
     authenticateSidecar: async ({ token }) => sidecarCredentials.resolve(token),
     validateSidecarIdentity: sidecarCredentials.isCurrent,
     withExecutableWorkflowRun: (target, send, signal) =>

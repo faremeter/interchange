@@ -75,7 +75,6 @@ function createSharedRouter(
       sidecarId === SIDECAR ? hosted.bindings : [],
     ),
     validateSidecarIdentity: async () => true,
-    hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
     ...config,
     lookups: {

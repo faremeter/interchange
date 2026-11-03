@@ -141,15 +141,13 @@ function sendAgentDeploy(
 }
 
 /**
- * Test-only deploy router: record the hub pairing key and surface a public
- * key on the ack. Production stages the deploy through the workflow-run
+ * Test-only deploy router: surface a public key on the ack. Production stages the deploy through the workflow-run
  * substrate; the tests here exercise the link's surface against the router
  * directly.
  */
-function createTestDeployRouter(keyStore: AgentKeyStore): DeployRouter {
+function createTestDeployRouter(): DeployRouter {
   return {
-    async deploy(frame) {
-      keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
+    async deploy() {
       return { publicKey: "aa".repeat(32) };
     },
   };
@@ -173,7 +171,7 @@ function withTestDeployBindings(): {
   const keyStore = createTestKeyStore();
   return {
     keyStore,
-    deployRouter: createTestDeployRouter(keyStore),
+    deployRouter: createTestDeployRouter(),
     // These tests do not exercise the inbound signature compare, so the verify
     // resolves no cached key and the refresh/evict sinks are no-ops.
     resolveSenderCrypto: () => undefined,
@@ -183,19 +181,17 @@ function withTestDeployBindings(): {
   };
 }
 import type { KeyPair } from "@intx/types/runtime";
-import { hexDecode } from "@intx/types";
 import { waitUntil } from "@intx/types/testing";
 
 // In-memory AgentKeyStore for tests. Tests that exercise deploy-commit
 // verification register keys via the public AgentKeyStore methods
-// (loadOrGenerateKey, recordHubKey); the stub satisfies the interface
+// (loadOrGenerateKey); the stub satisfies the interface
 // and uses real @intx/crypto primitives so signatures round-trip
 // through the production verify path.
 function createTestKeyStore(): AgentKeyStore & {
   registerKey(address: string, kp: KeyPair): void;
 } {
   const agentKeys = new Map<string, KeyPair>();
-  const hubKeys = new Map<string, Uint8Array>();
   return {
     registerKey(address, kp) {
       agentKeys.set(address, kp);
@@ -205,12 +201,8 @@ function createTestKeyStore(): AgentKeyStore & {
       if (existing !== undefined) return { keyPair: existing, isNew: false };
       throw new Error(`No key registered for ${address} in test store`);
     },
-    recordHubKey(address, hexHubPublicKey) {
-      hubKeys.set(address, hexDecode(hexHubPublicKey));
-    },
     forgetAgent(address) {
       agentKeys.delete(address);
-      hubKeys.delete(address);
     },
   };
 }
@@ -292,7 +284,6 @@ function startTestServer(): TestEnv {
     ...acceptAnySidecar,
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
-    hubPublicKey: "a".repeat(64),
     lookups: { readWorkflowRunRefTips: async () => STOPPED_REF_TIPS },
   });
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
@@ -528,7 +519,6 @@ describe("sidecar↔hub integration", () => {
           generation: 1,
           agentId: "run_capacity",
           config: TEST_CONFIG,
-          hubPublicKey: "a".repeat(64),
         });
         expect(await answered.promise).toEqual({
           type: "agent.deploy.error",
@@ -987,81 +977,6 @@ describe("sidecar↔hub integration", () => {
       () => !env.router.getConnectedSidecars().includes("sc-disconnect"),
     );
     expect(env.router.getRoutableAddresses()).not.toContain(deploymentAddress);
-  });
-
-  test("malformed hubPublicKey in deploy frame sends agent.deploy.error", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-
-    // Stand up a hub router with an odd-length hex key to trigger hexDecode.
-    const badRouter = createSidecarRouter({
-      withExecutableWorkflowRun: async (_target, send) => send(),
-      ...acceptAnySidecar,
-      validateSidecarIdentity: async () => true,
-      requestTimeoutMs: 5000,
-      hubPublicKey: "abc", // odd length — hexDecode should throw
-    });
-
-    const badApp = new Hono();
-    badApp.get(
-      "/ws",
-      upgradeWebSocket((_c) => {
-        let handle: WsHandle;
-        return {
-          onOpen(_evt, ws) {
-            handle = {
-              send(data: string) {
-                ws.send(data);
-              },
-              close() {
-                ws.close();
-              },
-            };
-            badRouter.handleOpen(handle);
-          },
-          onMessage(evt, _ws) {
-            if (typeof evt.data === "string") {
-              prepareAllocationFrame(badRouter, evt.data);
-              badRouter.handleMessage(handle, evt.data);
-            }
-          },
-          onClose(_evt, _ws) {
-            badRouter.handleClose(handle);
-          },
-        };
-      }),
-    );
-
-    const badServer = Bun.serve({
-      fetch: badApp.fetch,
-      websocket,
-      port: 0,
-    });
-
-    const client = createHubLink({
-      capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${badServer.port}/ws`,
-      sidecarId: "sc-bad-hex",
-      token: "test-token",
-      transport,
-      sessions,
-      ...withTestDeployBindings(),
-    });
-
-    client.connect();
-    try {
-      await waitUntil(() =>
-        badRouter.getConnectedSidecars().includes("sc-bad-hex"),
-      );
-
-      // Deploy should fail because hexDecode throws on the odd-length key.
-      await expect(
-        sendAgentDeploy(badRouter, "bad-hex@test.interchange", TEST_CONFIG),
-      ).rejects.toThrow("odd-length");
-    } finally {
-      client.close();
-      await badServer.stop(true);
-    }
   });
 
   test("sidecar sends pings and hub responds with pongs", async () => {
@@ -1687,7 +1602,6 @@ describe("sidecar↔hub integration", () => {
       ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
-      hubPublicKey: "a".repeat(64),
       lookups: {
         async receiveWorkflowRunPack(_repoId, _pack, _ref, _commitSha) {
           receiveCount += 1;
@@ -1855,7 +1769,6 @@ describe("sidecar↔hub integration", () => {
         ...acceptAnySidecar,
         validateSidecarIdentity: async () => true,
         requestTimeoutMs: 5000,
-        hubPublicKey: "a".repeat(64),
         lookups: {
           async receiveWorkflowRunPack() {
             return { accepted: false, reason };
@@ -2817,7 +2730,6 @@ describe("initial handshake on connect", () => {
         generation,
         agentId: TEST_CONFIG.agentId,
         config: TEST_CONFIG,
-        hubPublicKey: "a".repeat(64),
       });
     };
     const undeploy = (requestId: string, generation: number) => {
@@ -2907,7 +2819,6 @@ describe("initial handshake on connect", () => {
         generation: 1,
         agentId: TEST_CONFIG.agentId,
         config: TEST_CONFIG,
-        hubPublicKey: "a".repeat(64),
       });
       await deploying.promise;
       // The undeploy waits on the address's lane behind the deploy, and the

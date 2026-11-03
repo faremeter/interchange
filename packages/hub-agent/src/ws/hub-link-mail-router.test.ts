@@ -28,7 +28,6 @@ import type {
   KeyPair,
 } from "@intx/types/runtime";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
-import { hexDecode } from "@intx/types";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -57,7 +56,6 @@ function createTestKeyStore(): AgentKeyStore & {
   registerKey(address: string, kp: KeyPair): void;
 } {
   const agentKeys = new Map<string, KeyPair>();
-  const hubKeys = new Map<string, Uint8Array>();
   return {
     registerKey(address, kp) {
       agentKeys.set(address, kp);
@@ -67,20 +65,15 @@ function createTestKeyStore(): AgentKeyStore & {
       if (existing !== undefined) return { keyPair: existing, isNew: false };
       throw new Error(`No key registered for ${address} in test store`);
     },
-    recordHubKey(address, hexHubPublicKey) {
-      hubKeys.set(address, hexDecode(hexHubPublicKey));
-    },
     forgetAgent(address) {
       agentKeys.delete(address);
-      hubKeys.delete(address);
     },
   };
 }
 
-function createTestDeployRouter(keyStore: AgentKeyStore): DeployRouter {
+function createTestDeployRouter(): DeployRouter {
   return {
-    async deploy(frame) {
-      keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
+    async deploy() {
       return { publicKey: "aa".repeat(32) };
     },
   };
@@ -96,7 +89,7 @@ function withTestDeployBindings(): {
   const keyStore = createTestKeyStore();
   return {
     keyStore,
-    deployRouter: createTestDeployRouter(keyStore),
+    deployRouter: createTestDeployRouter(),
     resolveSenderCrypto: () => undefined,
     cacheSenderKey: async () => undefined,
     evictSenderKey: async () => undefined,
@@ -186,7 +179,6 @@ function startTestServer(): TestEnv {
     resolveSidecarBindings: async (sidecarId) => [ensureIdentity(sidecarId)],
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
-    hubPublicKey: "a".repeat(64),
   });
 
   const app = new Hono();

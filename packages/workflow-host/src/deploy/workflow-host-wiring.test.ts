@@ -635,7 +635,6 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
     agentAddress,
     generation: 1,
     agentId: "multi-agent",
-    hubPublicKey: "hub-pk",
     // The wire-side HarnessConfig has many required fields. On the
     // workflow deploy path the router reads only `config.sessionId`
     // and `config.grants`, both of which tolerate the empty
@@ -921,15 +920,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       >[0]["sessions"],
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the single-step head deploy records the hub key for pack verification
       keyStore: {
-        recordHubKey: () => undefined,
         loadOrGenerateKey: async () => ({
           keyPair: opts.headKeyPair ?? (await generateKeyPair()),
           isNew: false,
         }),
-        // A single-step spawn failure unwinds the recorded hub key via
-        // forgetAgent; the fixture exercises that unwind, so the stub must
-        // honor the call.
-        forgetAgent: () => undefined,
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
@@ -2757,7 +2751,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       generation: 1,
       definitionId: "wf-missing-step",
       sources: { "step-1": [makeInferenceSource("step-1")] },
-      hubPublicKey: "hub-pk",
       approvedWireHash: "a".repeat(64),
       lineage: "source-ref",
       sourceRef: {
@@ -2826,7 +2819,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         agentAddress: head,
         definitionId: "wf-srcref",
         sources: { "step-1": [makeInferenceSource("step-1")] },
-        hubPublicKey: "hub-pk",
         lineage: "source-ref",
       }),
       "utf8",
@@ -3198,7 +3190,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       generation: 1,
       definitionId: "wf-srcref",
       sources: { "step-1": [makeInferenceSource("step-1")] },
-      hubPublicKey: "hub-pk",
       approvedWireHash: registerProjection(
         WorkflowProjectionDefinition.assert(
           projectLiveToInert(closureDefinition),
@@ -5120,7 +5111,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           : {}),
         definitionId: "wf-mismatch",
         sources: { "step-1": [makeInferenceSource("step-1")] },
-        hubPublicKey: "hub-pk",
         approvedWireHash: "a".repeat(64),
         lineage: "source-ref",
         sourceRef: {

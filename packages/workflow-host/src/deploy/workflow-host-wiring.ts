@@ -872,8 +872,6 @@ export function createSidecarDeployRouter<
     loadOrGenerateKey(
       address: string,
     ): Promise<{ keyPair: KeyPair; isNew: boolean }>;
-    recordHubKey(address: string, hexHubPublicKey: string): void;
-    forgetAgent(address: string): void;
   };
   transport: HubTransport;
   repoStore: RepoStore;
@@ -1658,13 +1656,6 @@ export function createSidecarDeployRouter<
     /** Correlates the child's inference events to the deploy's session. */
     sessionId: string | undefined;
     /**
-     * Hub public key recorded at the head for deploy-pack verification and
-     * inbound hub-frame verification. A single-step deployment (whose head
-     * IS the agent identity) requires it; a genuine multi-step deployment
-     * derives per-step addresses and records no head key.
-     */
-    hubPublicKey: string | undefined;
-    /**
      * Sidecar-local directory of the materialized workflow-definition closure,
      * set after the frozen closure is applied. The spawn core threads it into
      * the child's spawn env so the run child evaluates the pinned code to a live
@@ -1758,10 +1749,6 @@ export function createSidecarDeployRouter<
         ? { credentials: spec.credentials }
         : {}),
       ...(spec.sessionId !== undefined ? { sessionId: spec.sessionId } : {}),
-      // Only a single-step deployment records the hub key at its head.
-      ...(spec.hubPublicKey !== undefined && definition.stepOrder.length === 1
-        ? { hubPublicKey: spec.hubPublicKey }
-        : {}),
       lineage: "source-ref",
       // Feeds the restored child's DEFINITION_HASH so it re-verifies the
       // evaluated closure against the hub-approved pin, and the source-ref pin a
@@ -1896,7 +1883,6 @@ export function createSidecarDeployRouter<
     let supervisorRegistered = false;
     let routersRegistered = false;
     let agentTransportRegistered = false;
-    let hubKeyRecorded = false;
     let deploymentRegistered = false;
     // Set by `layoutSteps` while the supervisor starts the child. A holder
     // rather than a `let`, since the assignment happens in that callback.
@@ -2043,21 +2029,6 @@ export function createSidecarDeployRouter<
               buildWorkflowRunRecord(spec, definition),
               deps.credentialCipher,
             );
-          }
-
-          if (definition.stepOrder.length === 1) {
-            // Record the hub's public key at the head so the deploy-pack
-            // apply (and any inbound hub-signed frame) verifies against it.
-            // The verifier resolves the key from the in-memory key store's
-            // `recordHubKey` map, so a single-step deployment cannot stand up
-            // without it.
-            if (spec.hubPublicKey === undefined) {
-              throw new Error(
-                "sidecar deploy router: a single-step workflow deployment requires a hubPublicKey to record at the head; none was supplied",
-              );
-            }
-            deps.keyStore.recordHubKey(spec.agentAddress, spec.hubPublicKey);
-            hubKeyRecorded = true;
           }
 
           established.current = { definition, strategy };
@@ -2423,17 +2394,6 @@ export function createSidecarDeployRouter<
           // not leave the address live with a dangling `CryptoProvider`.
           deps.transport.unregister(spec.agentAddress);
         }
-        if (hubKeyRecorded) {
-          // Reverse the single-step head's `recordHubKey` so a failed deploy
-          // leaves no in-memory hub key behind. `forgetAgent` also drops the
-          // agent keypair cache `loadOrGenerateKey` populated, which is safe:
-          // the transport registration is already unwound above and nothing
-          // reads that cache after unwind. The on-disk deploy-tree repo
-          // `initRepo` created, with the keypair under it in `keys/`, is left
-          // in place: the Hub releases a deployment whose deploy failed, and
-          // the release's undeploy deletes the agent directory.
-          deps.keyStore.forgetAgent(spec.agentAddress);
-        }
         if (deploymentRegistered) {
           // Reverse the pre-spawn `registerDeployment`: drop the address
           // mapping so a failed spawn leaves the boot-edge registry as it
@@ -2559,7 +2519,6 @@ export function createSidecarDeployRouter<
         credentials: projection.credentials,
         approvedWireHash: projection.approvedWireHash,
         sessionId: frame.config.sessionId,
-        hubPublicKey: frame.hubPublicKey,
         // The sidecar-local dir of the just-materialized closure the spawn core
         // threads into the child's env so it evaluates the pinned code.
         closurePackageDir: applied.packageDir,
@@ -3029,7 +2988,6 @@ export function createSidecarDeployRouter<
               // it.
               approvedWireHash: record.approvedWireHash,
               sessionId: record.sessionId,
-              hubPublicKey: record.hubPublicKey,
               // The sidecar-local dir of the just-materialized closure the
               // spawn core threads into the child's env so it re-evaluates the
               // pinned code.

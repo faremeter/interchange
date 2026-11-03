@@ -820,7 +820,6 @@ export const AgentDeployFrame = type({
   generation: Generation,
   agentId: "string",
   config: HarnessConfig,
-  hubPublicKey: "string",
   "workflow?": AgentDeployWorkflow,
 });
 export type AgentDeployFrame = typeof AgentDeployFrame.infer;
@@ -1043,7 +1042,6 @@ export const PackAckFrame = type({
 export type PackAckFrame = typeof PackAckFrame.infer;
 
 export const PackRejectReason = type.enumerated(
-  "signature_invalid",
   "path_violation",
   "conflict",
   "corrupt",

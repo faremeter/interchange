@@ -77,7 +77,6 @@ const router = createSidecarRouter({
   // No generation here finished initializing, so a reconnect takes back no
   // reported route and the Hub undeploys what the sidecar reports.
   validateSidecarIdentity: async (_identity, use) => use !== "reclaim",
-  hubPublicKey: "a".repeat(64),
   requestTimeoutMs: 10_000,
 });
 
@@ -130,9 +129,6 @@ function keyStore(): AgentKeyStore {
   return {
     async loadOrGenerateKey() {
       throw new Error("unused");
-    },
-    recordHubKey() {
-      // These deployments verify no deploy commits.
     },
     forgetAgent() {
       // No key was ever cached for an address.

@@ -140,7 +140,6 @@ function deploy(agentAddress: string) {
     generation: 1,
     agentId: "workflow",
     config: config(agentAddress),
-    hubPublicKey: "a".repeat(64),
   };
 }
 
@@ -189,9 +188,6 @@ function keyStore(): AgentKeyStore {
   return {
     async loadOrGenerateKey() {
       throw new Error("unused");
-    },
-    recordHubKey() {
-      // These deployments verify no deploy commits.
     },
     forgetAgent() {
       // No key was ever cached for an address.

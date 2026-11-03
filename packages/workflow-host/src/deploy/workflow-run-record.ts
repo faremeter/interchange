@@ -10,8 +10,7 @@
 // the sidecar reports to the Hub and stamps on what the deployment sends),
 // `sources` (each step's ordered inference-source failover chain, threaded to
 // the child via the spawn env and durable nowhere else), `sessionId` (inference-event
-// correlation), `hubPublicKey` (the head's deploy-pack / inbound verification
-// key), `approvedWireHash` (the hub-approved wire hash the deploy frame
+// correlation), `approvedWireHash` (the hub-approved wire hash the deploy frame
 // carried, so a restore re-spawn feeds the child the same re-verify anchor
 // without recomputing it), `lineage`, and -- for a source-ref deployment --
 // the `sourceRef` pin (source + frozen closure) a restore needs to
@@ -100,7 +99,6 @@ const workflowRunRecordBase = {
   // no update, carries none. A restore seeds the supervisor with it.
   "credentials?": CredentialDelivery,
   "sessionId?": "string > 0",
-  "hubPublicKey?": "string > 0",
   // A deployment that no longer runs keeps its record until the Hub undeploys
   // it, marked so a restart reports it instead of spawning it: `stopped`, with
   // the error that ended it unless the Hub stopped it, or `tearing-down` when

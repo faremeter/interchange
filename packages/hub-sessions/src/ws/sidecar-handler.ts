@@ -689,9 +689,6 @@ export type SidecarAuthenticator = (claim: {
 
 export type SidecarRouterConfig = {
   requestTimeoutMs?: number;
-  /** Hex-encoded 32-byte Ed25519 public key for signing deploy commits.
-   * Included in agent.deploy frames so sidecars can verify pack signatures. */
-  hubPublicKey?: string;
   /** Resolves each hello handshake to a verified sidecar
    * identity. Required: without it a connection could route on an
    * unverified frame claim. Return null to reject the handshake. */
@@ -801,7 +798,6 @@ export function createSidecarRouter(
   const {
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     probeTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
-    hubPublicKey: hubPublicKeyHex,
     authenticateSidecar,
     validateSidecarIdentity,
     withExecutableWorkflowRun,
@@ -5132,13 +5128,6 @@ export function createSidecarRouter(
     harnessConfig: HarnessConfig,
     workflow?: AgentDeployFrame["workflow"],
   ): Promise<{ publicKey: string }> {
-    if (hubPublicKeyHex === undefined) {
-      throw deployFrameFailure(
-        "Hub signing key is required for agent deployment",
-        false,
-      );
-    }
-
     if (pendingDeploys.has(agentAddress)) {
       throw deployFrameFailure(
         `Deploy already in progress for agent "${agentAddress}"`,
@@ -5185,7 +5174,6 @@ export function createSidecarRouter(
         generation: target.generation,
         agentId: harnessConfig.agentId,
         config: harnessConfig,
-        hubPublicKey: hubPublicKeyHex,
         ...(workflow !== undefined ? { workflow } : {}),
       });
       conn.unansweredDeploys.set(requestId, agentAddress);
@@ -5233,8 +5221,6 @@ export function createSidecarRouter(
           `Deployment ${agentAddress} is already routed to another sidecar`,
         );
       }
-      if (hubPublicKeyHex === undefined)
-        throw new Error("Hub signing key is required for agent deployment");
       if (pendingDeploys.has(agentAddress))
         throw new Error(
           `Deploy already in progress for agent "${agentAddress}"`,

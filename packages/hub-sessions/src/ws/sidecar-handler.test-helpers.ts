@@ -123,7 +123,6 @@ export function createAllocatedRouter(
     authenticateSidecar: async () => TEST_CREDENTIALS,
     validateSidecarIdentity: async () => true,
     resolveSidecarBindings: async () => [TEST_IDENTITY],
-    hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
     ...config,
     lookups: {

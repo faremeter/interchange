@@ -1447,14 +1447,13 @@ Pack transfers share the WebSocket with live session traffic. To prevent interfe
 
 `repo.pack.reject` carries a `reason` field distinguishing failure modes:
 
-| Reason              | Meaning                                                                                        | Sender action                  |
-| ------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------ |
-| `signature_invalid` | Commit signature verification failed                                                           | Do not retry with same content |
-| `path_violation`    | Commit modifies paths outside sender's ownership, or the connection does not host that address | Do not retry                   |
-| `backpressure`      | Receiver is overwhelmed                                                                        | Pause and retry after a delay  |
-| `conflict`          | Ref update conflicts with receiver state                                                       | Reconcile before retrying      |
-| `corrupt`           | Packfile failed index verification                                                             | Resend from scratch            |
-| `missing_objects`   | A commit needs an object that neither the pack nor the receiver holds                          | Resend the full history once   |
+| Reason            | Meaning                                                                                        | Sender action                 |
+| ----------------- | ---------------------------------------------------------------------------------------------- | ----------------------------- |
+| `path_violation`  | Commit modifies paths outside sender's ownership, or the connection does not host that address | Do not retry                  |
+| `backpressure`    | Receiver is overwhelmed                                                                        | Pause and retry after a delay |
+| `conflict`        | Ref update conflicts with receiver state                                                       | Reconcile before retrying     |
+| `corrupt`         | Packfile failed index verification                                                             | Resend from scratch           |
+| `missing_objects` | A commit needs an object that neither the pack nor the receiver holds                          | Resend the full history once  |
 
 The Hub answers every transfer, rejecting one for an address the connection does not host rather than dropping it, and one it failed to parse or receive with `corrupt`: the sender holds a transfer open until it is answered and queues later pushes to the same repository ref behind it.
 
@@ -1495,8 +1494,6 @@ On reconnect a provisioned sidecar restores its workflow deployments from local 
 3. The deployment's in-flight run state is reconstructed sidecar-locally at restore; the Hub sends its copy of the workflow-run refs only to a first deploy, before a supervisor is active.
 4. A `hello` that does not report the current generation of a deployment the sidecar hosts whose first deploy completed means the sidecar no longer holds it, for instance because its data directory was lost. The Hub fails the deployment and releases its capacity rather than deploying it again.
 
-The sidecar verifies every inbound deploy pack's commit signature against the hub key it recorded at deploy time before applying it, so pack content is never applied on an unverified signature.
-
 The sidecar generates the deployment key and returns it in `agent.deploy.ack`, but routing authority comes from the sidecar credential and the allocations it hosts. Registration checks each binding's in-memory generation fence and revalidates its durable identity before mutating routing state, and routes no reported incarnation other than a hosted allocation's anchor deployment at its current generation.
 
 #### Workflow Definition Versioning: Pinned-Forever
@@ -1528,13 +1525,9 @@ State commits carry an author identity of `<agentAddress> <agent-id@interchange.
 
 ### Deploy Content Integrity
 
-The deploy tree can contain executable code (`handler.ts` files in skills). This makes it the primary attack surface in the deployment path. Deploy commit signing is mandatory:
+The frozen source closure contains executable code, which makes it the primary attack surface in the deployment path. The operator approves a definition hash, the deploy frame carries it, and the child refuses to run a definition that does not match it (see AUTH.md, _The re-verify barrier_).
 
-- Deploy commits are signed by the hub's Ed25519 key (or an operator-delegated key)
-- The sidecar verifies the signature before unpacking
-- Unsigned or incorrectly signed deploy content is rejected
-
-The hub's signing public key is provisioned to the sidecar at registration time. A compromised hub can still push malicious code (it holds the signing key) — that threat is bounded by hub security and access controls, not by the wire protocol.
+The frame itself is not signed. It travels on the sidecar's authenticated WebSocket, so a compromised hub can still push malicious code -- that threat is bounded by hub security and access controls, not by the wire protocol.
 
 ### Credential Isolation
 

@@ -103,24 +103,7 @@ function stubKeyStore(): Parameters<
       // exercises.
       return { keyPair: await generateKeyPair(), isNew: false };
     },
-    recordHubKey() {
-      /* no-op */
-    },
-    forgetAgent() {
-      /* no-op */
-    },
   } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["keyStore"];
-}
-
-function stubFailingSessions(): Parameters<
-  typeof createSidecarDeployRouter
->[0]["sessions"] {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub
-  return {
-    async provisionAgent() {
-      throw new Error("provisionAgent forced failure");
-    },
-  } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["sessions"];
 }
 
 // Source-ref is the only deploy lineage: the router derives the runnable
@@ -279,7 +262,6 @@ describe("deploy-failure registry leak", () => {
       agentAddress: "agent-unsupported@x.example",
       generation: 1,
       agentId: "agent-unsupported",
-      hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- config is irrelevant; the frame is rejected on shape before config is read
       config: {} as unknown as AgentDeployFrame["config"],
     };
@@ -297,7 +279,7 @@ describe("deploy-failure registry leak", () => {
   test("multi-step deploy: spawn-time failure leaves registry clean", async () => {
     const { registry, mailRouter, signalRouter, drainRouter, transport } =
       makeRouterDeps();
-    const sessions = stubFailingSessions();
+    const sessions = { deleteAgentDir: async () => undefined };
     const keyStore = stubKeyStore();
 
     const failingSpawner: SubprocessSpawner = () => {
@@ -372,7 +354,6 @@ describe("deploy-failure registry leak", () => {
       agentAddress: "run_mstep@x.example",
       generation: 1,
       agentId: "mstep",
-      hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not consult config before failing
       config: {
         agentAddress: "run_mstep@x.example",
@@ -419,13 +400,11 @@ describe("deploy-failure registry leak", () => {
     expect(registry.resolve(slug)).toBeNull();
   });
 
-  test("single-step spawn failure reverses the recorded hub key but preserves the head repo", async () => {
+  test("single-step spawn failure preserves the head directory", async () => {
     const { registry, mailRouter, signalRouter, drainRouter, transport } =
       makeRouterDeps();
 
     const removedRepos: string[] = [];
-    const recordedHubKeys: string[] = [];
-    const forgottenAgents: string[] = [];
 
     // A sessions stub whose `deleteAgentDir` is spied: the unwind must NOT call
     // it, because the head directory holds the durable identity keypair.
@@ -440,12 +419,6 @@ describe("deploy-failure registry leak", () => {
     const keyStore = {
       async loadOrGenerateKey() {
         return { keyPair: await generateKeyPair(), isNew: false };
-      },
-      recordHubKey(address: string) {
-        recordedHubKeys.push(address);
-      },
-      forgetAgent(address: string) {
-        forgottenAgents.push(address);
       },
     } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["keyStore"];
 
@@ -512,7 +485,6 @@ describe("deploy-failure registry leak", () => {
       agentAddress: "run_single@x.example",
       generation: 1,
       agentId: "single",
-      hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- single-step branch does not consult config before failing at spawn
       config: {
         agentAddress: "run_single@x.example",
@@ -549,13 +521,7 @@ describe("deploy-failure registry leak", () => {
       /control channel ended before child emitted ready/,
     );
 
-    // The single-step head initialized its repo and recorded the hub key
-    // once the child reported its definition, before the spawn failed.
-    expect(recordedHubKeys).toEqual(["run_single@x.example"]);
-    // The unwind reversed the in-memory hub key...
-    expect(forgottenAgents).toEqual(["run_single@x.example"]);
-    // ...but did NOT remove the head repo directory (it holds the durable
-    // identity keypair a rerouted head must keep across a failed redeploy).
+    // A failed spawn keeps the single-step head's directory.
     expect(removedRepos).toEqual([]);
     // Registry untouched.
     expect(registry.resolve("run_single-x-example")).toBeNull();
