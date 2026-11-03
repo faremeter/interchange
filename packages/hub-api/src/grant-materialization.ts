@@ -79,8 +79,9 @@ export type ResolveGrantMaterializationResult =
   | { ok: true; grantRows: MaterializedGrantRow[] }
   | { ok: false; rejection: GrantMaterializationRejection };
 
-// Invoker-delegated grants are short-lived: they expire a day after the run's
-// first trigger at the latest, and nothing renews them.
+// Invoker-delegated `allow` rows are short-lived: they expire a day after the
+// run's first trigger at the latest, and nothing renews them. An invoker
+// `deny` or `ask` row is a floor and does not expire.
 export const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type ResolveRequirementGrantContext = Omit<
@@ -95,24 +96,18 @@ export type ResolveRequirementGrantContext = Omit<
  * The expiry of a requirement's row with `effect`. An `allow` row ends at
  * `allowExpiresAt`, when the delegator's grants stop allowing the
  * requirement; an invoker `allow` row ends no later than `invokerExpiresAt`.
- * A `deny` or `ask` row is a floor: it does not end with the delegator's
- * grants, so it ends at `floorExpiresAt`, which is `invokerExpiresAt` for an
- * invoker row and never for a creator row.
+ * A `deny` or `ask` row is a floor: it restricts the run, so it has no
+ * expiry.
  */
 export function requirementRowExpiresAt(
-  expiry: { allowExpiresAt: Date | null; floorExpiresAt: Date | null },
+  allowExpiresAt: Date | null,
   effect: GrantEffect,
 ): Date | null {
-  return effect === "allow" ? expiry.allowExpiresAt : expiry.floorExpiresAt;
+  return effect === "allow" ? allowExpiresAt : null;
 }
 
 export type ResolveRequirementGrantResult =
-  | {
-      ok: true;
-      row: MaterializedGrantRow;
-      allowExpiresAt: Date | null;
-      floorExpiresAt: Date | null;
-    }
+  | { ok: true; row: MaterializedGrantRow; allowExpiresAt: Date | null }
   | { ok: false; rejection: GrantMaterializationRejection };
 
 function earlier(a: Date | null, b: Date): Date {
@@ -173,7 +168,7 @@ export async function resolveRequirementGrant(
         },
       };
     }
-    const expiry = { allowExpiresAt: decision.expiresAt, floorExpiresAt: null };
+    const allowExpiresAt = decision.expiresAt;
     return {
       ok: true,
       row: makeGrantRow({
@@ -184,10 +179,10 @@ export async function resolveRequirementGrant(
         effect,
         conditions: req.conditions ?? null,
         origin: "creator",
-        expiresAt: requirementRowExpiresAt(expiry, effect),
+        expiresAt: requirementRowExpiresAt(allowExpiresAt, effect),
         now: ctx.now,
       }),
-      ...expiry,
+      allowExpiresAt,
     };
   }
 
@@ -208,10 +203,7 @@ export async function resolveRequirementGrant(
         },
       };
     }
-    const expiry = {
-      allowExpiresAt: earlier(decision.expiresAt, ctx.invokerExpiresAt),
-      floorExpiresAt: ctx.invokerExpiresAt,
-    };
+    const allowExpiresAt = earlier(decision.expiresAt, ctx.invokerExpiresAt);
     return {
       ok: true,
       row: makeGrantRow({
@@ -222,10 +214,10 @@ export async function resolveRequirementGrant(
         effect,
         conditions: req.conditions ?? null,
         origin: "invoker",
-        expiresAt: requirementRowExpiresAt(expiry, effect),
+        expiresAt: requirementRowExpiresAt(allowExpiresAt, effect),
         now: ctx.now,
       }),
-      ...expiry,
+      allowExpiresAt,
     };
   }
 

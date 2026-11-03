@@ -470,13 +470,13 @@ describe("resolveRequirementGrant row expiry", () => {
     expect(res.row.expiresAt).toEqual(invokerExpiresAt);
   });
 
-  test("an invoker ask row is a floor that ends at the TTL", async () => {
+  test("an invoker ask row is a floor with no expiry", async () => {
     const res = await resolveRequirementGrant(spend("invoker", "ask"), {
       ...ctx,
       invokerGrants: [expiring(at(1))],
     });
     if (!res.ok) throw new Error("expected a row");
-    expect(res.row.expiresAt).toEqual(invokerExpiresAt);
+    expect(res.row.expiresAt).toBeNull();
     expect(res.allowExpiresAt).toEqual(at(1));
   });
 });

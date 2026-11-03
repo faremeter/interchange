@@ -150,7 +150,7 @@ export type RederivedRun = { anchorRunId: string; address: string | null };
  *    from the delegator's grants now (see `requirementRowExpiresAt`);
  *  - the delegator does not allow it: the run's `allow` rows for it are
  *    deleted, including an `ask` that a standing approval changed to `allow`.
- *    Its `deny` and `ask` rows stay as floors.
+ *    Its `deny` and `ask` rows stay as floors, with no expiry.
  * A run whose rows change is itself a delegator of the deployments it
  * deployed and of any whose asset it created, so they are re-derived too. A
  * delegator exists before what it delegates to, so the rounds end.
@@ -537,7 +537,10 @@ async function rederiveRun(
       if (existing.length > 0) {
         // The delegator owns each row's expiry.
         for (const row of existing) {
-          const expiresAt = requirementRowExpiresAt(resolved, row.effect);
+          const expiresAt = requirementRowExpiresAt(
+            resolved.allowExpiresAt,
+            row.effect,
+          );
           if (await setRowExpiry(tx, row, expiresAt, now)) rowsChanged = true;
         }
         continue;
@@ -548,7 +551,10 @@ async function rederiveRun(
           ? standingEffects.get(row.resource.slice(TOOL_GRANT_PREFIX.length))
           : undefined;
       const effect = standing ?? row.effect;
-      const expiresAt = requirementRowExpiresAt(resolved, effect);
+      const expiresAt = requirementRowExpiresAt(
+        resolved.allowExpiresAt,
+        effect,
+      );
       if (isExpired(expiresAt, now)) continue;
       await tx.insert(grantTable).values({ ...row, effect, expiresAt });
       rowsChanged = true;
@@ -557,9 +563,7 @@ async function rederiveRun(
 
     for (const row of existing) {
       if (row.effect === "allow") continue;
-      const floorExpiresAt =
-        req.source === "invoker" ? ctx.invokerExpiresAt : null;
-      if (await setRowExpiry(tx, row, floorExpiresAt, now)) rowsChanged = true;
+      if (await setRowExpiry(tx, row, null, now)) rowsChanged = true;
     }
     const lapsed = existing
       .filter((row) => row.effect === "allow")
