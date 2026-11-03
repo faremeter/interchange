@@ -342,9 +342,8 @@ do not use this cache; the HTTP deployment route accepts asset sources.
 Asset packs use the exact recorded commit. A launch specification written
 before that commit was recorded uses the commit its source names, or the
 branch tip for a tarball asset. The Hub retains those commits under
-`refs/interchange/workflow-definitions/<commit>`. Garbage collection treats
-`refs/interchange/` as roots, git clients never see it, and only the Hub may
-write to it. Only the Hub may write ref names with non-ASCII characters either,
+`refs/interchange/workflow-definitions/<commit>`. Git clients never see
+`refs/interchange/`, and only the Hub may write to it. Only the Hub may write ref names with non-ASCII characters either,
 because a case-insensitive filesystem can fold one of them into this namespace.
 Retained commits and completed artifacts are not expired automatically.
 
@@ -1577,7 +1576,7 @@ Agents create and switch branches through harness-provided tools:
 - `branch merge <name>` - Merge another branch into current
 - `branch delete <name>` - Remove a branch
 
-The harness tracks branch metadata (creation time, purpose, parent branch) for garbage collection and auditing.
+The harness tracks branch metadata (creation time, purpose, parent branch) for auditing.
 
 ### Worktree Support
 
@@ -1596,13 +1595,3 @@ Agents query history through structured tools:
 - `history show <ref>` - Show changes in a specific commit
 - `history diff <ref1> <ref2>` - Compare two points in history
 - `history restore <ref> <path>` - Restore a file from a previous state
-
-### Garbage Collection
-
-The harness periodically cleans up:
-
-- Merged branches older than a retention threshold
-- Orphaned worktrees
-- Unreachable commits (standard git gc)
-
-Retention policies are configurable per-tenant or per-agent.

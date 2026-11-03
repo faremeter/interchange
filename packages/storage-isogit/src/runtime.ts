@@ -24,9 +24,7 @@ export interface IsogitRuntime {
 }
 
 export interface FileSystemStat {
-  readonly size: number;
   isDirectory(): boolean;
-  isFile(): boolean;
 }
 
 type WriteFileOptions = {
@@ -139,20 +137,12 @@ function fileStat(value: unknown, method: FsMethod): FileSystemStat {
   if (typeof value !== "object" || value === null) {
     throw new TypeError(`Filesystem ${method} returned an invalid stat`);
   }
-  const size: unknown = Reflect.get(value, "size");
   const isDirectory: unknown = Reflect.get(value, "isDirectory");
-  const isFile: unknown = Reflect.get(value, "isFile");
-  if (
-    typeof size !== "number" ||
-    typeof isDirectory !== "function" ||
-    typeof isFile !== "function"
-  ) {
+  if (typeof isDirectory !== "function") {
     throw new TypeError(`Filesystem ${method} returned an invalid stat`);
   }
   return {
-    size,
     isDirectory: () => Boolean(Reflect.apply(isDirectory, value, [])),
-    isFile: () => Boolean(Reflect.apply(isFile, value, [])),
   };
 }
 

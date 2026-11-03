@@ -2,10 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { hasCode } from "@intx/types/has-code";
-import type { RepoDiskUsage, RepoObjectCounts } from "./repo-disk";
-
-// Synchronous Node counterparts to the runtime-backed helpers in repo-disk.ts.
-// Keep their counting and absence semantics aligned.
 
 function countDirEntries(dir: string): number {
   try {
@@ -34,17 +30,6 @@ export function countLooseObjects(repoDir: string): number {
   return total;
 }
 
-export function countPackFiles(repoDir: string): number {
-  const packDir = path.join(repoDir, ".git", "objects", "pack");
-  try {
-    return fs.readdirSync(packDir).filter((name) => name.endsWith(".pack"))
-      .length;
-  } catch (cause) {
-    if (hasCode(cause) && cause.code === "ENOENT") return 0;
-    throw cause;
-  }
-}
-
 export function gitBytes(repoDir: string): number {
   let total = 0;
   const stack = [path.join(repoDir, ".git")];
@@ -67,18 +52,4 @@ export function gitBytes(repoDir: string): number {
     }
   }
   return total;
-}
-
-export function repoObjectCounts(dir: string): RepoObjectCounts {
-  return {
-    packCount: countPackFiles(dir),
-    looseObjectCount: countLooseObjects(dir),
-  };
-}
-
-export function repoDiskUsage(dir: string): RepoDiskUsage {
-  return {
-    gitBytes: gitBytes(dir),
-    ...repoObjectCounts(dir),
-  };
 }

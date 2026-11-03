@@ -78,7 +78,7 @@ export function createObjectPresence(
     }
   }
 
-  // A pack can go only by a GC or by a loss, and a set that kept its
+  // A pack can go by a loss or a forced repack, and a set that kept its
   // names would answer for objects the repository no longer holds. The
   // rebuilt set replaces the old one only once it is complete, so a
   // query that runs alongside never sees a partial set.

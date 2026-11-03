@@ -22,7 +22,6 @@ import {
   DEFAULT_ASSET_REF,
   type InstallAndApproveResult,
 } from "@intx/hub-sessions";
-import { runGC } from "@intx/storage-isogit/node";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
@@ -233,7 +232,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       generation: 1,
     });
 
-    test("a branch replaced and collected between probe and deploy still ships the probed commit", async () => {
+    test("a branch replaced between probe and deploy still ships the probed commit", async () => {
       await seedAsset(h.db, {
         id: ASSET_ID,
         tenantId: TENANT_ID,
@@ -269,7 +268,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         DEFAULT_ASSET_REF,
         sourceTree("replacement", "replacement"),
       );
-      await runGC(repoStore.getRepoDir(repoId), { retention: "tip-only" });
       await deployPrepared(service, source, approved);
 
       expect(await repoStore.resolveRef(HUB, repoId, DEFAULT_ASSET_REF)).toBe(
@@ -280,7 +278,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toEqual([probed.commitSha]);
     });
 
-    test("a tarball registry branch replaced and collected between probe and deploy still ships the probed commit", async () => {
+    test("a tarball registry branch replaced between probe and deploy still ships the probed commit", async () => {
       await seedAsset(h.db, {
         id: ASSET_ID,
         tenantId: TENANT_ID,
@@ -318,7 +316,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         DEFAULT_ASSET_REF,
         await registryTree('export const v = "replacement";', "replacement"),
       );
-      await runGC(repoStore.getRepoDir(repoId), { retention: "tip-only" });
       await deployPrepared(service, source, approved);
 
       expect(await repoStore.resolveRef(HUB, repoId, DEFAULT_ASSET_REF)).toBe(

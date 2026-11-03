@@ -4,7 +4,6 @@ import {
   createIsogitStorage,
   type CommitSigner,
   type DurableMirrorReads,
-  type GCPolicy,
 } from "./index";
 import { createNodeIsogitRuntime } from "./node-runtime";
 import { IsogitStore as RuntimeIsogitStore } from "./store";
@@ -15,27 +14,18 @@ export {
   syncDirectoryDurable,
   syncRemovedPathDurable,
 } from "./node-durability";
-export {
-  countLooseObjects,
-  countPackFiles,
-  gitBytes,
-  repoDiskUsage,
-} from "./node-metrics";
+export { countLooseObjects, gitBytes } from "./node-metrics";
 
 export {
   createIsogitStorage,
   type CommitSigner,
   type DurableMirrorReads,
-  type GCPolicy,
   type ContextStore,
   type AuditStore,
   type StagedPack,
   type IncludeShaPredicate,
   type ObjectPresence,
   type InitRepoOpts,
-  type RetentionPolicy,
-  type GCResult,
-  type RepoDiskUsage,
   type IsogitPath,
   type IsogitRuntime,
   DEFAULT_PACK_MATERIALIZATION_LIMITS,
@@ -57,12 +47,9 @@ export const {
   initAgentRepo,
   initRepo,
   listBranches,
-  listRepoRefs,
   logHistory,
-  maybeGC,
   removeOrphanPackIndexes,
   removeStagedPacks,
-  runGC,
   stagePack,
   switchBranch,
   writeTreeToDisk,
@@ -87,15 +74,14 @@ export async function indexPackIntoGitDir(
 }
 
 export class IsogitStore extends RuntimeIsogitStore {
-  constructor(dir: string, signer?: CommitSigner, gcPolicy?: GCPolicy) {
-    super(storageRuntime, storageRuntime.path.resolve(dir), signer, gcPolicy);
+  constructor(dir: string, signer?: CommitSigner) {
+    super(storageRuntime, storageRuntime.path.resolve(dir), signer);
   }
 }
 
 export async function createIsogitStore(
   dir: string,
   signer?: CommitSigner,
-  gcPolicy?: GCPolicy,
 ): Promise<ContextStore & AuditStore & DurableMirrorReads> {
-  return storage.createIsogitStore(dir, signer, gcPolicy);
+  return storage.createIsogitStore(dir, signer);
 }

@@ -15,7 +15,7 @@ import {
 import { createNodeIsogitRuntime } from "./node-runtime";
 import { base64Encode } from "@intx/types";
 import { IsogitStore } from "./node";
-import { initAgentRepo } from "./node";
+import { collectReachableObjects, initAgentRepo } from "./node";
 import type {
   AssistantTurn,
   ContextStore,
@@ -2607,5 +2607,50 @@ describe("readManifestHistory", () => {
       thrown = cause instanceof Error ? cause : new Error(String(cause));
     }
     expect(thrown?.message).toMatch(/Invalid manifest record/);
+  });
+});
+
+describe("per-directory commit lock", () => {
+  test("overlapping commits leave a walkable history", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+
+    const commits: Promise<unknown>[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      await fs.promises.writeFile(
+        path.join(dir, "turns.jsonl"),
+        `${JSON.stringify({ role: "user", content: [], timestamp: i })}\n`,
+      );
+      commits.push(store.commit({ message: `cycle ${i.toString()}` }));
+    }
+    await Promise.all(commits);
+
+    const head = await git.resolveRef({ fs, dir, ref: "refs/heads/main" });
+    const reachable = await collectReachableObjects(dir, head);
+    expect(reachable.length).toBeGreaterThan(0);
+    // The init commit plus one per cycle; without the lock, overlapping
+    // commits overwrite each other's ref update and lose history.
+    expect(await store.log(20)).toHaveLength(13);
+  });
+});
+
+describe("log", () => {
+  test("throws when a commit's parent is missing", async () => {
+    const dir = await tempDir();
+    await initAgentRepo(dir);
+    const store = new IsogitStore(dir);
+    await fs.promises.writeFile(path.join(dir, "turns.jsonl"), "{}\n");
+    await store.commit({ message: "first" });
+
+    const head = await git.resolveRef({ fs, dir, ref: "refs/heads/main" });
+    const { commit } = await git.readCommit({ fs, dir, oid: head });
+    const parent = commit.parent[0];
+    if (parent === undefined) throw new Error("expected a parent commit");
+    await fs.promises.rm(
+      path.join(dir, ".git", "objects", parent.slice(0, 2), parent.slice(2)),
+    );
+
+    await expect(store.log(20)).rejects.toThrow();
   });
 });

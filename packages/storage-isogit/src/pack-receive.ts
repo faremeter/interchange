@@ -143,9 +143,8 @@ export type StagedPack = {
  *           in 3a.
  *
  *        c. Remove the now-empty staging directory. `publish` does not
- *           flush: a caller that writes a ref to the pack flushes first,
- *           and one that publishes as part of a larger change (GC)
- *           flushes at its own commit point.
+ *           flush: on a runtime that defines a flush, a caller that writes
+ *           a ref to the pack flushes first.
  *
  *   4. On any throw in steps 1-2, and on `discard`, recursively remove
  *      the staging directory. Forced recursive removal tolerates
@@ -379,9 +378,8 @@ export async function removeStagedPacks(
 
 /**
  * Remove each pack index under `dir` whose pack is gone, and return the
- * paths removed. A publish renames the pack before its index and GC
- * moves the index out first, so no write leaves an index without its
- * pack; a lost rename or a lost file does. A read of an object that
+ * paths removed. A publish renames the pack before its index, so no write
+ * leaves an index without its pack; a lost rename or a lost file does. A read of an object that
  * such an index names fails as an internal error instead of finding no
  * object, so a caller removes the index before it reads the repository.
  * The objects it names went with the pack.

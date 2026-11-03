@@ -246,12 +246,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // The cache keys a pack by its filename, so it depends on pack names
   // that never repeat with different bytes. @intx/storage-isogit names a
   // received pack `pack-recv-<transferId>`, where the receive draws a
-  // random transferId, and a GC repack `pack-recv-gc-<uuid>`. Thus a
+  // random transferId. Thus a
   // pack receive needs no invalidation after it writes objects and moves
   // a ref. A receive validates a pack through a view that shows the
   // staged pack under the name it gets when published, so an entry
   // loaded during the validation is the same entry after the publish.
-  // An entry for a rejected (discarded) or GC-replaced pack stays until
+  // An entry for a rejected (discarded) pack stays until
   // the next budget rebuild, but the directory listing does not name
   // that pack, so no read uses the entry again. These
   // properties also make it safe to drop a dir's cache at any instant:
@@ -2601,8 +2601,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         const dir = repoDir(repoId);
         await git.readCommit({ fs, dir, oid: pinned.commitSha });
         if (pinned.retain) {
-          // This ref keeps approved source bytes reachable after a branch is
-          // replaced. Its name is its value, so retaining it is idempotent.
+          // Nothing prunes a Hub repo today, but this ref is all that keeps
+          // approved source bytes reachable after a branch is replaced, so a
+          // later prune or a manual `git gc` cannot lose them. Its name is its
+          // value, so retaining it is idempotent.
           const retainedRef = `${DEFINITION_REF_NAMESPACE}/${pinned.commitSha}`;
           await git.writeRef({
             fs,

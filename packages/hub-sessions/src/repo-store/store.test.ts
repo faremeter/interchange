@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
-import { collectReachableObjects, runGC } from "@intx/storage-isogit/node";
+import { collectReachableObjects } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
 import { waitUntil } from "@intx/types/testing";
 import { createRepoStore, type LocalRepoStore } from "./store";
@@ -440,12 +440,11 @@ describe("RepoStore", () => {
     expect(
       (await store.listRefs(hub, definitionRepo)).map((entry) => entry.name),
     ).toEqual(["refs/heads/main", REF]);
-    await runGC(store.getRepoDir(definitionRepo), { retention: "tip-only" });
-    const afterGC = await store.createPack(hub, definitionRepo, REF, {
+    const retainedPack = await store.createPack(hub, definitionRepo, REF, {
       commitSha: first.commitSha,
       retain: true,
     });
-    expect(afterGC.commitSha).toBe(first.commitSha);
+    expect(retainedPack.commitSha).toBe(first.commitSha);
     const receiverDir = await makeTempDir("repo-store-pinned-receiver-");
     const receiver = createRepoStore({
       dataDir: receiverDir,
