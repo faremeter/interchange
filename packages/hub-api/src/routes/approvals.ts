@@ -3,7 +3,13 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 
-import type { DB, ApprovalStore, SignalCorrelationStore } from "@intx/db";
+import type {
+  DB,
+  DBExecutor,
+  ApprovalStore,
+  GrantStoreFactory,
+  SignalCorrelationStore,
+} from "@intx/db";
 import { approval, sidecarAllocation } from "@intx/db/schema";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { generateId } from "@intx/hub-common";
@@ -33,6 +39,7 @@ import {
   lockWorkflowRunState,
   setRunToolGrantEffect,
 } from "../run-grant-materialization";
+import { changeDelegatorGrants } from "../run-delegated-grants";
 import {
   cursorCondition,
   pageOrder,
@@ -72,6 +79,7 @@ export type CreateApprovalRoutesDeps = {
   >;
   readRunLifecycles?: ReadRunLifecycles;
   grantStore: GrantStore;
+  grantStoreFor: GrantStoreFactory;
   conditionRegistry: ConditionRegistry;
   approvalStore: ApprovalStore;
   signalCorrelationStore: SignalCorrelationStore;
@@ -137,6 +145,7 @@ export async function resolveApproval(
     workflowDispatchService,
     readRunLifecycles,
     grantStore,
+    grantStoreFor,
     conditionRegistry,
     approvalStore,
     signalCorrelationStore,
@@ -172,7 +181,7 @@ export async function resolveApproval(
 
   const resolvedAt = new Date();
   const signalId = generateId("signal");
-  const claimed = await db.transaction(async (tx) => {
+  const resolveInTransaction = async (tx: DBExecutor) => {
     const failIfStillPending = async (kind: PendingFailureKind) => {
       const currentApproval = await approvalStore.findById(args.approvalId, tx);
       if (
@@ -281,18 +290,19 @@ export async function resolveApproval(
     // A standing resolution durably mutates the run's committed grant for this
     // tool IN this transaction -- `allow` on approve-always, `deny` on
     // reject-always -- so a rolled-back resolve reverts the grant change too.
-    // The run keeps it: enforcement, the authorization view, and the grants
-    // the sidecar router sends ahead of the resume signal all read the
-    // committed grant.
-    if (standingToolName !== null) {
-      await setRunToolGrantEffect(
-        tx,
-        args.tenantId,
-        approval.runId,
-        standingToolName,
-        standingEffect,
-      );
-    }
+    // The re-derivation below can then give the row a new expiry or delete
+    // it. Enforcement, the authorization view, and the grants the sidecar
+    // router sends ahead of the resume signal all read the committed grant.
+    const changedRunPrincipalId =
+      standingToolName === null
+        ? null
+        : await setRunToolGrantEffect(
+            tx,
+            args.tenantId,
+            approval.runId,
+            standingToolName,
+            standingEffect,
+          );
 
     if (provisionedDispatchService !== undefined) {
       await provisionedDispatchService.enqueueSignal(
@@ -316,8 +326,34 @@ export async function resolveApproval(
       claim,
       resolved,
       provisionedDispatchService,
+      changedRunPrincipalId,
     } as const;
-  });
+  };
+  // A standing resolution changes a delegated row's effect, and the row's
+  // expiry follows its effect, so the run is re-derived in the same
+  // transaction: an `allow` gets the expiry the delegator's grants give it,
+  // and an `allow` the delegator no longer holds is removed. The run is also
+  // the delegator of the deployments it deployed, so those are re-derived
+  // too. The tenant lock comes first, before the allocation and anchor locks,
+  // as for every other re-derivation, and is held across the lifecycle read.
+  // A `once` resolution changes no grant and does not take the tenant lock.
+  const claimed =
+    standingToolName === null
+      ? await db.transaction(resolveInTransaction)
+      : await changeDelegatorGrants(
+          { db, grantStoreFor, sidecarRouter },
+          args.tenantId,
+          async (tx) => {
+            const value = await resolveInTransaction(tx);
+            const changed =
+              value.kind === "resolved" ? value.changedRunPrincipalId : null;
+            return {
+              value,
+              principalIds: changed === null ? [] : [changed],
+              anchorRunIds: changed === null ? [] : [approval.anchorRunId],
+            };
+          },
+        );
 
   if (claimed.kind !== "resolved") {
     return claimed;
@@ -473,7 +509,7 @@ export function createApprovalRoutes(
       tags: ["Approvals"],
       summary: "Approve an action",
       description:
-        "Approves the pending action. Scope 'once' authorizes only this suspended call. Scope 'always' additionally records a standing approval, so the same tool is not asked again for the rest of this run.",
+        "Approves the pending action. Scope 'once' authorizes only this suspended call. Scope 'always' additionally records a standing approval, so the same tool is not asked again for the rest of this run. The tool is then allowed only while the run's delegator still allows it; otherwise the run's grant for it is removed and the tool is denied.",
       responses: {
         200: jsonResponse("Action approved", ApprovalResponse),
         404: jsonResponse("Approval not found", ErrorResponse),

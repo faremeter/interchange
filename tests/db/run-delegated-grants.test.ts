@@ -9,8 +9,13 @@ import {
 
 import { asc, eq, sql } from "drizzle-orm";
 
-import { authorize } from "@intx/authz";
-import { createGrantStore } from "@intx/db";
+import { authorize, createInMemoryGrantStore } from "@intx/authz";
+import {
+  createApprovalStore,
+  createGrantStore,
+  createSignalCorrelationStore,
+  createWorkflowRunDispatchStore,
+} from "@intx/db";
 import {
   approval,
   asset,
@@ -18,6 +23,8 @@ import {
   principal,
   principalRole,
   role,
+  sidecar,
+  sidecarAllocation,
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
@@ -27,8 +34,10 @@ import {
   findDelegatedAnchorRunIds,
   lockTenantRunDelegatedGrants,
   rederiveRunDelegatedGrants,
+  resolveApproval,
   sweepLapsedDeployerGrants,
 } from "@intx/hub-api";
+import { createSidecarRouter } from "@intx/hub-sessions";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -667,6 +676,378 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const rows = await runGrants(run);
         expect(summary(rows)).toEqual(["creator tool:search/invoke deny"]);
         expect(rows[0]?.expiresAt).toBeNull();
+      });
+    });
+
+    describe("a standing approval resolution re-derives the run", () => {
+      const ASK_SEARCH: GrantRequirement = {
+        resource: "tool:search",
+        action: "invoke",
+        source: "creator",
+        effect: "ask",
+      };
+      const APPROVER = "prn_approver";
+
+      async function seedPendingApproval(
+        run: string,
+        expiresAt: Date | null = null,
+        origin: "creator" | "invoker" = "creator",
+      ) {
+        await seedGrant(h.db, {
+          id: "grt_run_search",
+          tenantId: TENANT,
+          principalId: run,
+          resource: "tool:search",
+          action: "invoke",
+          origin,
+          effect: "ask",
+          expiresAt,
+        });
+        await createApprovalStore(h.db).create({
+          id: "apr_search",
+          tenantId: TENANT,
+          anchorRunId: "run_a",
+          runId: "run_a",
+          agentAddress: "run_a@tenant.example",
+          correlationId: "cor_search",
+          toolDefinition: {
+            name: "search",
+            description: "search",
+            inputSchema: { type: "object" },
+          },
+          toolArguments: {},
+          timeoutAt: new Date(Date.now() + 3_600_000),
+        });
+        await createSignalCorrelationStore(h.db).register({
+          correlationId: "cor_search",
+          tenantId: TENANT,
+          anchorRunId: "run_a",
+          agentAddress: "run_a@tenant.example",
+          runId: "run_a",
+          signalName: "approval:cor_search",
+          kind: "approval",
+        });
+      }
+
+      // Give run_a's deployment a sidecar allocation, so a resolve takes the
+      // provisioned path: it locks the allocation and the run rows and
+      // enqueues the decision for durable dispatch.
+      async function seedAllocation() {
+        await h.db.insert(sidecar).values({
+          id: "sidecar_a",
+          tokenHashSha256: new Uint8Array(32),
+          provisionerId: "test",
+          provisionerApiVersion: 2,
+          provisionerBindingFingerprint: "test:1",
+          adapterManifestDigest: "1".repeat(64),
+        });
+        await h.db.insert(sidecarAllocation).values({
+          id: "alloc_a",
+          tenantId: TENANT,
+          anchorRunId: "run_a",
+          sidecarId: "sidecar_a",
+          generation: 1,
+          ensureAcceptedGeneration: 1,
+          status: "allocated",
+          provisionerId: "test",
+          provisionerApiVersion: 2,
+          provisionerBindingFingerprint: "test:1",
+          adapterManifestDigest: "1".repeat(64),
+          maxDisconnectedMs: 900_000,
+        });
+      }
+
+      function resolve(
+        status: "approved" | "rejected",
+        scope: "once" | "always",
+        pushed: string[] = [],
+        enqueued: string[] = [],
+      ) {
+        const dispatchStore = createWorkflowRunDispatchStore(h.db);
+        const router = createSidecarRouter({
+          withExecutableWorkflowRun: async (_target, send) => send(),
+          authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
+          resolveSidecarBindings: async () => [],
+          validateSidecarIdentity: async () => true,
+        });
+        return resolveApproval(
+          {
+            db: h.db,
+            sidecarRouter: {
+              ...router,
+              sendSignalDeliver: async () => {
+                /* the run is not connected in this test */
+              },
+              sendRunGrants: async (address) => {
+                pushed.push(address);
+                return true;
+              },
+            },
+            grantStore: createInMemoryGrantStore([
+              {
+                id: "grt_approver",
+                resource: "approval:*",
+                action: "resolve",
+                effect: "allow",
+                origin: "system",
+                conditions: null,
+                expiresAt: null,
+                roleId: null,
+                principalId: APPROVER,
+              },
+            ]),
+            workflowDispatchService: {
+              enqueueSignal: (args, tx) => {
+                enqueued.push(args.id);
+                return dispatchStore.enqueueSignal(args, tx);
+              },
+              wake: () => {
+                /* nothing waits on the dispatch in this test */
+              },
+            },
+            readRunLifecycles: async () => ({
+              topLevel: "live",
+              target: "live",
+            }),
+            grantStoreFor: createGrantStore,
+            conditionRegistry: {},
+            approvalStore: createApprovalStore(h.db),
+            signalCorrelationStore: createSignalCorrelationStore(h.db),
+          },
+          {
+            approvalId: "apr_search",
+            tenantId: TENANT,
+            principalId: APPROVER,
+            consumer: undefined,
+            status,
+            scope,
+            decisionPayload: { outcome: status },
+          },
+        );
+      }
+
+      test("approve-always on a held requirement gives the allow row the creator's expiry", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [ASK_SEARCH],
+        });
+        const until = inHours(2);
+        await seedGrant(h.db, {
+          id: "grt_creator_tools",
+          tenantId: TENANT,
+          principalId: CREATOR,
+          resource: "tool:*",
+          action: "invoke",
+          expiresAt: until,
+        });
+        await seedPendingApproval(run);
+        const pushed: string[] = [];
+
+        const outcome = await resolve("approved", "always", pushed);
+
+        expect(outcome.kind).toBe("resolved");
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["creator tool:search/invoke allow"]);
+        expect(rows[0]?.expiresAt).toEqual(until);
+        expect(pushed).toEqual(["run_a@tenant.example"]);
+      });
+
+      test("approve-always on a lapsed requirement removes the row", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [ASK_SEARCH],
+        });
+        await seedPendingApproval(run);
+
+        expect((await resolve("approved", "always")).kind).toBe("resolved");
+
+        expect(await runGrants(run)).toEqual([]);
+      });
+
+      test("reject-always turns the row into a deny floor with no expiry", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [ASK_SEARCH],
+        });
+        await seedGrant(h.db, {
+          id: "grt_creator_tools",
+          tenantId: TENANT,
+          principalId: CREATOR,
+          resource: "tool:*",
+          action: "invoke",
+          expiresAt: inHours(2),
+        });
+        // An expiry the floor does not have, so the re-derivation must set it.
+        await seedPendingApproval(run, inHours(1));
+
+        expect((await resolve("rejected", "always")).kind).toBe("resolved");
+
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["creator tool:search/invoke deny"]);
+        expect(rows[0]?.expiresAt).toBeNull();
+      });
+
+      test("a standing resolution re-derives the deployments the run deployed", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [ASK_SEARCH],
+        });
+        await seedPendingApproval(run);
+        const deployed = await seedDeployment({
+          anchorRunId: "run_b",
+          requirements: [
+            { resource: "tool:search", action: "invoke", source: "invoker" },
+          ],
+          deployer: run,
+        });
+        await seedGrant(h.db, {
+          id: "grt_b_search",
+          tenantId: TENANT,
+          principalId: deployed,
+          resource: "tool:search",
+          action: "invoke",
+          origin: "invoker",
+          expiresAt: inHours(20),
+        });
+
+        expect((await resolve("rejected", "always")).kind).toBe("resolved");
+
+        expect(summary(await runGrants(run))).toEqual([
+          "creator tool:search/invoke deny",
+        ]);
+        expect(await runGrants(deployed)).toEqual([]);
+      });
+
+      test("approve-always on a provisioned deployment enqueues the decision and gives the allow row the creator's expiry", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [ASK_SEARCH],
+        });
+        await seedAllocation();
+        const until = inHours(2);
+        await seedGrant(h.db, {
+          id: "grt_creator_tools",
+          tenantId: TENANT,
+          principalId: CREATOR,
+          resource: "tool:*",
+          action: "invoke",
+          expiresAt: until,
+        });
+        await seedPendingApproval(run);
+        const enqueued: string[] = [];
+
+        const outcome = await resolve("approved", "always", [], enqueued);
+
+        expect(outcome.kind).toBe("resolved");
+        expect(enqueued).toHaveLength(1);
+        const rows = await runGrants(run);
+        expect(summary(rows)).toEqual(["creator tool:search/invoke allow"]);
+        expect(rows[0]?.expiresAt).toEqual(until);
+      });
+
+      test("a standing provisioned resolution waits on the tenant lock before it locks the allocation", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [ASK_SEARCH],
+        });
+        await seedAllocation();
+        await seedPendingApproval(run);
+        const locked = Promise.withResolvers<number>();
+        const release = Promise.withResolvers<undefined>();
+        const holder = h.db.transaction(async (tx) => {
+          await lockTenantRunDelegatedGrants(tx, TENANT);
+          const [backend] = await tx.execute(
+            sql`select pg_backend_pid() as pid`,
+          );
+          const pid = backend?.["pid"];
+          if (typeof pid !== "number") throw new Error("Missing backend PID");
+          locked.resolve(pid);
+          await release.promise;
+        });
+        void holder.catch(locked.reject);
+        try {
+          const holderPid = await locked.promise;
+          let settled = false;
+          const resolved = resolve("approved", "always").finally(() => {
+            settled = true;
+          });
+          // The resolve either waits on the holder's lock or finishes.
+          // Postgres exposes lock waits through its activity view only.
+          let blocked = false;
+          while (!settled && !blocked) {
+            const waiting = await h.db.execute(
+              sql`select pid from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))`,
+            );
+            blocked = typeof waiting[0]?.["pid"] === "number";
+            if (!blocked) {
+              await new Promise<void>((done) => setImmediate(done));
+            }
+          }
+          expect(blocked).toBe(true);
+          // While the resolve waits on the tenant lock, it holds no lock on
+          // the allocation: another transaction takes it without waiting.
+          const allocation = await h.db.transaction((tx) =>
+            tx
+              .select({ id: sidecarAllocation.id })
+              .from(sidecarAllocation)
+              .where(eq(sidecarAllocation.anchorRunId, "run_a"))
+              .for("update", { noWait: true }),
+          );
+          expect(allocation).toEqual([{ id: "alloc_a" }]);
+          release.resolve(undefined);
+          await holder;
+          expect((await resolved).kind).toBe("resolved");
+        } finally {
+          release.resolve(undefined);
+        }
+      });
+
+      test("a once resolution does not wait on the tenant lock", async () => {
+        const run = await seedDeployment({
+          anchorRunId: "run_a",
+          requirements: [ASK_SEARCH],
+        });
+        await seedPendingApproval(run);
+        const locked = Promise.withResolvers<number>();
+        const release = Promise.withResolvers<undefined>();
+        const holder = h.db.transaction(async (tx) => {
+          await lockTenantRunDelegatedGrants(tx, TENANT);
+          const [backend] = await tx.execute(
+            sql`select pg_backend_pid() as pid`,
+          );
+          const pid = backend?.["pid"];
+          if (typeof pid !== "number") throw new Error("Missing backend PID");
+          locked.resolve(pid);
+          await release.promise;
+        });
+        void holder.catch(locked.reject);
+        try {
+          const holderPid = await locked.promise;
+          let settled = false;
+          const resolved = resolve("approved", "once").finally(() => {
+            settled = true;
+          });
+          // The resolve either finishes or waits on the holder's lock. Postgres
+          // exposes lock waits through its activity view only.
+          let blocked = false;
+          while (!settled && !blocked) {
+            const waiting = await h.db.execute(
+              sql`select pid from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))`,
+            );
+            blocked = typeof waiting[0]?.["pid"] === "number";
+            if (!blocked) {
+              await new Promise<void>((done) => setImmediate(done));
+            }
+          }
+          expect(blocked).toBe(false);
+          expect((await resolved).kind).toBe("resolved");
+        } finally {
+          release.resolve(undefined);
+          await holder;
+        }
+        expect(summary(await runGrants(run))).toEqual([
+          "creator tool:search/invoke ask",
+        ]);
       });
     });
 

@@ -947,12 +947,14 @@ export function approvalToolName(
  * Resolve a run's `ask` checkpoint on one tool into a standing effect -- the
  * durable mutation a `scope: "always"` resolution makes. An operator who
  * approves-always sets `allow` (stop asking, let it through); one who
- * rejects-always sets `deny` (stop asking, block it). The grant stays with the
- * run: every later read (the child's enforcement floor, the authorization view,
- * and the grants the sidecar router sends ahead of each signal and trigger)
- * sees the standing effect, so the tool is not asked again for the life of the
- * run. Two grant sends for one run can arrive out of order, and then the
- * sidecar holds the older grants until the next send.
+ * rejects-always sets `deny` (stop asking, block it). The caller re-derives the
+ * run in the same transaction, which gives the row the expiry of its new
+ * effect, or deletes an `allow` the run's delegator no longer holds. Every
+ * later read (the child's enforcement floor, the authorization view, and the
+ * grants the sidecar router sends ahead of each signal and trigger) sees the
+ * result, so the tool is not asked again for the life of the run. Two grant
+ * sends for one run can arrive out of order, and then the sidecar holds the
+ * older grants until the next send.
  *
  * Guarded to only change a grant currently gated `ask`: the `effect = "ask"`
  * predicate means it only ever resolves the checkpoint, never overrides an
@@ -961,7 +963,8 @@ export function approvalToolName(
  * the deploy already granted-with-a-checkpoint -- in the direction the operator
  * chose. Runs against the passed executor, so the caller mutates inside the
  * resolve transaction and a rolled-back resolve rolls back the grant change with
- * it. A run with no principal (nothing to mutate) is a no-op.
+ * it. A run with no principal (nothing to mutate) is a no-op. Returns the run
+ * principal's id when a row changed, and null otherwise.
  */
 export async function setRunToolGrantEffect(
   executor: DBExecutor,
@@ -969,7 +972,7 @@ export async function setRunToolGrantEffect(
   runId: string,
   toolName: string,
   effect: "allow" | "deny",
-): Promise<void> {
+): Promise<string | null> {
   const [runPrincipal] = await executor
     .select({ id: principalTable.id })
     .from(principalTable)
@@ -981,8 +984,8 @@ export async function setRunToolGrantEffect(
       ),
     )
     .limit(1);
-  if (runPrincipal === undefined) return;
-  await executor
+  if (runPrincipal === undefined) return null;
+  const changed = await executor
     .update(grantTable)
     .set({ effect, updatedAt: new Date() })
     .where(
@@ -991,7 +994,9 @@ export async function setRunToolGrantEffect(
         eq(grantTable.resource, `${TOOL_GRANT_PREFIX}${toolName}`),
         eq(grantTable.effect, "ask"),
       ),
-    );
+    )
+    .returning({ id: grantTable.id });
+  return changed.length > 0 ? runPrincipal.id : null;
 }
 
 /**
