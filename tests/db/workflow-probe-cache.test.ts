@@ -591,7 +591,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         sourceOfferingIds: ["offering"],
         defaultSourceOfferingId: "offering",
-        deployContent: {},
       });
       const changed = {
         perStep: [

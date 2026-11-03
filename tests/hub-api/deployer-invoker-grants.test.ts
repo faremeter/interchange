@@ -86,7 +86,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         frozenApprovalBundle: {},
         sourceOfferingIds: [],
         defaultSourceOfferingId: "ofr_deployer",
-        deployContent: {},
       });
     }
 

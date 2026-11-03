@@ -439,7 +439,6 @@ export function createWorkflowRoutes({
             sourceAuthorityPrincipalId: c.get("principal").id,
             sourceOfferingIds: body.sourceOfferingIds,
             defaultSourceOfferingId: body.defaultSourceOfferingId,
-            deployContent: { systemPrompt: "" },
             ...(body.stepState !== undefined
               ? { stepState: body.stepState }
               : {}),

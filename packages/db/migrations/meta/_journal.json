@@ -820,6 +820,13 @@
       "when": 1793571455962,
       "tag": "0117_grant_invoker_allow_principal_index",
       "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1793729632421,
+      "tag": "0118_drop_launch_spec_deploy_content",
+      "breakpoints": true
     }
   ]
 }
