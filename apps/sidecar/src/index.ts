@@ -6,7 +6,6 @@ import {
   createEd25519Crypto,
   createEnvKeyCredentialCipher,
   generateKeyPair,
-  verifySSHSignature,
 } from "@intx/crypto";
 import {
   createSenderKeyCache,
@@ -126,8 +125,8 @@ const registryMaxTarballBytes = readRegistryMaxTarballBytes();
 // cannot receive this object across the fork, so the validated
 // manifest is serialized into the child's spawn env (see
 // `multistepSubstrateEnv`) and the child rebuilds an equivalent
-// registry from it. Specifiers are operator-config-only — the agent
-// deploy tree never contributes one.
+// registry from it. Specifiers are operator-config-only — a deploy
+// frame never contributes one.
 const adapterManifest = readAdapterManifest();
 const adapters = await loadAdapterRegistry(adapterManifest);
 
@@ -514,7 +513,6 @@ const orchestrator = createSidecarOrchestrator({
   transport,
   cryptoOps: {
     generateKeyPair,
-    verifySSHSig: verifySSHSignature,
   },
   resolveSenderCrypto,
   lookupInboundMailPolicy,

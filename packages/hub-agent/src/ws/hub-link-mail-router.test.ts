@@ -27,11 +27,7 @@ import type {
   InboundMessage,
   KeyPair,
 } from "@intx/types/runtime";
-import {
-  generateKeyPair,
-  verifySSHSignature,
-  createEd25519Crypto,
-} from "@intx/crypto";
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import { hexDecode } from "@intx/types";
 import {
   assembleSignedContent,
@@ -73,15 +69,6 @@ function createTestKeyStore(): AgentKeyStore & {
     },
     recordHubKey(address, hexHubPublicKey) {
       hubKeys.set(address, hexDecode(hexHubPublicKey));
-    },
-    verifyDeployCommit(address, payload, signature) {
-      const hubKey = hubKeys.get(address);
-      if (hubKey === undefined) {
-        throw new Error(
-          `signature_invalid: no hub public key for "${address}"`,
-        );
-      }
-      return verifySSHSignature(payload, signature, hubKey);
     },
     forgetAgent(address) {
       agentKeys.delete(address);
@@ -149,9 +136,6 @@ function createMockSessionManager(): SessionManager & {
     provisionedAddresses: [] as string[],
     shouldThrow: null as string | null,
 
-    initRepo: (_address: string) => Promise.resolve(),
-    applyDeployPack: () => Promise.resolve(),
-    applyAssetPack: () => Promise.resolve(),
     deleteAgentDir: () => Promise.resolve(),
     getSessionId: (_agentAddress: string) => undefined,
   };

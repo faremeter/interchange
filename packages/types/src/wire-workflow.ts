@@ -73,9 +73,8 @@ const WorkflowSteps = type({ "[string]": "unknown" }).narrow((steps, ctx) => {
 
 /**
  * Workflow projection carried on an `agent.deploy` frame. Its presence
- * at the deploy router routes the frame to the workflow deploy path --
- * single- or multi-step, both of which spawn the workflow-process child
- * -- as opposed to a per-step provision frame.
+ * at the deploy router routes the frame to the workflow deploy path, which
+ * spawns the workflow-process child; a frame without one is rejected.
  *
  * `definition` is the wire projection of `WorkflowDefinition` from
  * `@intx/workflow`. The arktype validator enforces the structural

@@ -246,7 +246,6 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
               "single-step branch must not invoke persistHubPublicKey",
             );
           },
-          initRepo: async () => undefined,
           deleteAgentDir: async () => undefined,
         } as unknown as Parameters<
           typeof createSidecarDeployRouter

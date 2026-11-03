@@ -1084,10 +1084,10 @@ export function createWorkflowSupervisor(
   }
   /**
    * Cached per-spawn context the recycle path needs to respawn the
-   * child against the same deploy tree. Populated on `spawn(opts)`;
+   * child against the same definition. Populated on `spawn(opts)`;
    * cleared on `shutdown`. The recycle path never mutates the
    * `definitionHash`: a deployment keeps it for its life, and a
-   * different deploy tree means a new deployment with its own supervisor.
+   * different definition means a new deployment with its own supervisor.
    */
   let spawnContext: SpawnContext | null = null;
   /**

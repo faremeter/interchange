@@ -6,7 +6,7 @@
 // into `createRecyclePolicy` for the policy-origin coverage.
 //
 // Strictly orthogonal to redeploy: every test below operates against
-// the same fake deploy tree across the recycle. None of these tests
+// the same fake definition across the recycle. None of these tests
 // re-seeds the workflow definition or mutates step credentials in a
 // way that would conflate the recycle path with a redeploy.
 

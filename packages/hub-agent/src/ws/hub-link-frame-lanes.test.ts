@@ -193,9 +193,6 @@ function keyStore(): AgentKeyStore {
     recordHubKey() {
       // These deployments verify no deploy commits.
     },
-    async verifyDeployCommit() {
-      return false;
-    },
     forgetAgent() {
       // No key was ever cached for an address.
     },
@@ -204,9 +201,6 @@ function keyStore(): AgentKeyStore {
 
 function sessions(): SessionManager {
   return {
-    initRepo: () => Promise.resolve(),
-    applyDeployPack: () => Promise.resolve(),
-    applyAssetPack: () => Promise.resolve(),
     deleteAgentDir: () => Promise.resolve(),
     getSessionId: () => undefined,
   };

@@ -78,7 +78,7 @@ pull in the shapes they need:
   `package` arms `ToolPackageAssetTarball` and
   `ToolPackageAssetSourceTree`, unioned as `ToolPackageSource`), the
   `getToolPackageSourceContentIdentity` helper that reads an entry's
-  content identity (tarball SRI or source tree oid), and the deploy-pack
+  content identity (tarball SRI or source tree oid), and the tool-package
   manifest (`ToolPackageManifestEntry`, `ToolPackageManifest`).
 - `@intx/types/package-json` — the `PackageJSON` validator for the
   subset of `package.json` fields the asset substrate and tool-package

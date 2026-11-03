@@ -2,8 +2,8 @@
 //
 // The proof that the inbound mail's BODY reaches the warm agent's
 // `agent.send` as the step input -- not an empty or placeholder input.
-// Deploys a one-step workflow through the workflow-deploy orchestrator's
-// multi-step branch (which spawns the workflow-process subprocess)
+// Deploys a one-step workflow through `deployWorkflowSourceForTest` (which
+// spawns the workflow-process subprocess)
 // against the real hub + real sidecar subprocess + an echo inference
 // fixture, fires a mail with a KNOWN body, and asserts the step's
 // committed reply echoes that body.

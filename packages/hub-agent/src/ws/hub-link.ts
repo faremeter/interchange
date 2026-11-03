@@ -169,28 +169,13 @@ const PACK_REJECT_REQUEST_TYPES: ReadonlySet<string> = new Set([
  * and drops, because there is nothing to answer.
  */
 /**
- * Classify an `applyAssetPack` failure message into a `repo.pack.reject` reason.
- * A structural rejection -- a symlink or submodule the checkout cannot reproduce
- * faithfully, or a mountPath that escapes -- is a `path_violation`, distinct from
- * `corrupt` (bad or incomplete bytes), and a workflow-run seed that would move
- * history the sidecar already has is a `conflict`. The match is on the messages
- * `writeTreeToDisk`, the mountPath guard and the seed guard raise; a wording
- * drift only reverts the reason to `corrupt`, never misclassifies bytes as a
- * path issue. The raw message rides on the frame's `detail` regardless, so the
- * operator always sees the specific cause.
+ * Classify a pack apply failure message into a `repo.pack.reject` reason. The
+ * raw message rides on the frame's `detail` regardless, so the operator always
+ * sees the specific cause.
  */
-export function classifyAssetPackRejectReason(msg: string): PackRejectReason {
+export function classifyPackRejectReason(msg: string): PackRejectReason {
   if (msg.startsWith("sha_mismatch")) return "sha_mismatch";
   if (msg.startsWith("workflow_run_restore_conflict")) return "conflict";
-  if (
-    msg.startsWith("signature_invalid") ||
-    msg.startsWith("signature_unsigned")
-  ) {
-    return "signature_invalid";
-  }
-  if (/symlink at |submodule reference at |mountPath|escaping path/.test(msg)) {
-    return "path_violation";
-  }
   return "corrupt";
 }
 
@@ -637,8 +622,7 @@ export type HubLinkConfig = {
   /**
    * Routes every inbound `agent.deploy` frame. Production wiring
    * supplies a router that stages each deploy through the workflow-run
-   * substrate: a provision-step frame primes a per-step repo, and a
-   * workflow frame spawns the supervised workflow-process child. The
+   * substrate and spawns the supervised workflow-process child. The
    * router owns the routing decision; the link does not re-decide.
    */
   deployRouter: DeployRouter;
@@ -1316,9 +1300,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       return;
     }
 
-    // A Hub pack stages a step or seeds a deployment's history before the
-    // deployment is deployed. Applying one over a held incarnation would
-    // rewrite what that deployment is running on.
+    // A Hub pack seeds a deployment's history before the deployment is
+    // deployed. Applying one over a held incarnation would rewrite what that
+    // deployment is running on.
     const held = incarnationOf(frame.agentAddress);
     if (held !== undefined) {
       reply({
@@ -1333,49 +1317,23 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
 
     try {
-      if (frame.repoId.kind === "workflow-run") {
-        if (frame.mountPath !== undefined) {
-          throw new Error(
-            "workflow_run_restore_invalid: workflow-run packs cannot carry mountPath",
-          );
-        }
-        if (applyWorkflowRunPack === undefined) {
-          throw new Error(
-            "workflow_run_restore_unconfigured: no workflow-run pack applier is configured",
-          );
-        }
-        await applyWorkflowRunPack({
-          agentAddress: frame.agentAddress,
-          repoId: frame.repoId,
-          pack: result.pack,
-          ref: result.ref,
-          commitSha: result.commitSha,
-        });
-      } else if (frame.mountPath !== undefined) {
-        // Asset pack: route to the workspace materializer. Use
-        // frame.agentAddress for destination routing — frame.repoId.id
-        // names the source asset at the hub, which is a different
-        // entity than the destination agent.
-        await sessions.applyAssetPack(
-          frame.agentAddress,
-          frame.mountPath,
-          result.pack,
-          result.ref,
-          result.commitSha,
-        );
-      } else {
-        const verifyCommit = (payload: string, signature: string) =>
-          keyStore.verifyDeployCommit(frame.agentAddress, payload, signature);
-
-        await sessions.applyDeployPack(
-          frame.agentAddress,
-          result.pack,
-          result.ref,
-          result.commitSha,
-          frame.transferId,
-          verifyCommit,
+      if (frame.repoId.kind !== "workflow-run") {
+        throw new Error(
+          `workflow_run_restore_invalid: a Hub pack must restore a workflow-run repo, not ${frame.repoId.kind}`,
         );
       }
+      if (applyWorkflowRunPack === undefined) {
+        throw new Error(
+          "workflow_run_restore_unconfigured: no workflow-run pack applier is configured",
+        );
+      }
+      await applyWorkflowRunPack({
+        agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
+        pack: result.pack,
+        ref: result.ref,
+        commitSha: result.commitSha,
+      });
       reply({
         type: "repo.pack.ack",
         agentAddress: frame.agentAddress,
@@ -1384,7 +1342,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const reason = classifyAssetPackRejectReason(msg);
+      const reason = classifyPackRejectReason(msg);
       logger.warn`Pack apply failed for ${frame.agentAddress}: ${msg}`;
       reply({
         type: "repo.pack.reject",

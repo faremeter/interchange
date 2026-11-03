@@ -306,26 +306,6 @@ describe("SidecarRouter allocation control protocols", () => {
     ).rejects.toBeInstanceOf(WorkflowControlTimeoutError);
   });
 
-  test("a step the worker is still provisioning does not defer the deployment's control", async () => {
-    const router = createAllocatedRouter({ requestTimeoutMs: 5 });
-    await connectAllocated(router);
-    const stepAddress = "run_anchor-step-1@tenant.example";
-    await router.bindAllocatedStepRoute(TEST_TARGET, stepAddress);
-    // The Hub stops waiting for the step before the worker answers it, but the
-    // worker handles the step's frames apart from the deployment's.
-    await expect(
-      router.sendProvisionStepToAllocation(
-        TEST_TARGET,
-        stepAddress,
-        TEST_CONFIG,
-      ),
-    ).rejects.toThrow("timed out");
-
-    await expect(
-      router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
-    ).rejects.toBeInstanceOf(WorkflowControlTimeoutError);
-  });
-
   test("a deploy the worker refused no longer defers control", async () => {
     const router = createAllocatedRouter();
     const ws = await connectAllocated(router);
@@ -1328,7 +1308,6 @@ describe("SidecarRouter allocated outbound mail", () => {
 describe("SidecarRouter not-connected allocations", () => {
   const createdAt = new Date("2026-01-01T00:00:00.000Z");
   const later = (ms: number) => new Date(createdAt.getTime() + ms);
-  const stepAddress = "run_anchor-step-1@tenant.example";
 
   function clockedRouter(config: Partial<SidecarRouterConfig> = {}) {
     const clock = { current: createdAt };
@@ -1365,10 +1344,16 @@ describe("SidecarRouter not-connected allocations", () => {
     clock.current = later(20_000);
 
     const raw = await router
-      .bindAllocatedStepRoute(TEST_TARGET, stepAddress)
+      .sendWorkflowRunPackToAllocation(
+        TEST_TARGET,
+        TEST_IDENTITY.workflowRunAddress,
+        new Uint8Array(),
+        "refs/heads/main",
+        "0".repeat(40),
+      )
       .then(
         () => {
-          throw new Error("The step route was bound");
+          throw new Error("The pack was sent");
         },
         (error: unknown) => error,
       );

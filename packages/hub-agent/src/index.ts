@@ -1,8 +1,4 @@
-export {
-  createAgentRepoStore,
-  type AgentRepoStore,
-  type ApplyDeployPackArgs,
-} from "./agent-repo-store";
+export { createAgentRepoStore, type AgentRepoStore } from "./agent-repo-store";
 export {
   createAgentKeyStore,
   type AgentKeyStore,

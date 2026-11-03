@@ -79,26 +79,9 @@ outside any optional subtree abort the walk and surface as a
 
 ## Asset modification race
 
-The hub-side `AssetRegistrySource` reads tarball packuments from a
-`package-registry` asset at resolution time. The sidecar's
-`createPack` then resolves the asset's main ref and serves the tarball
-bytes the resolver pinned. A concurrent PUT or DELETE against the
-asset's `tarballs/` prefix in the window between the resolver's read
-and the sidecar's fetch can cause the apply to fail with
-`tarball.missing` or `integrity.mismatch`.
-
-The substrate's `writeTreePreservingPrefix` primitive makes PUTs and
-DELETEs against the asset atomic with respect to one another, but it
-does not couple them to the sidecar's deploy-apply read. The
-intentional behavior is: the apply fails loudly as a rejected
-deploy-apply. There is no silent corruption —
-the integrity check on the sidecar side guarantees that mismatched
-bytes are rejected — but the operator does see a failed apply if the
-asset is mutated concurrently with a launch.
-
-A follow-up that snapshots the asset's commit SHA at resolution time
-and replays against it at apply time is in scope if this shows up in
-operator practice; it is not implemented today.
+The Hub reads and packs a source asset at one commit, so a concurrent PUT or
+DELETE against the asset's `tarballs/` prefix cannot change the bytes of a
+deploy. The sidecar still verifies each tarball's SRI before it extracts it.
 
 ## Call-time imports and `import.meta.url`
 

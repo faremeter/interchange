@@ -76,15 +76,6 @@ function createCapturingTransport(): {
 // The deploy/session/key deps are required by the config but never reached by
 // the send-cap paths; they throw if misused rather than model behavior.
 const unusedSessions: SessionManager = {
-  initRepo: () => {
-    throw new Error("sessions not used");
-  },
-  applyDeployPack: () => {
-    throw new Error("sessions not used");
-  },
-  applyAssetPack: () => {
-    throw new Error("sessions not used");
-  },
   deleteAgentDir: () => {
     throw new Error("sessions not used");
   },
@@ -97,9 +88,6 @@ const unusedKeyStore: AgentKeyStore = {
     throw new Error("keyStore not used");
   },
   recordHubKey: () => {
-    throw new Error("keyStore not used");
-  },
-  verifyDeployCommit: () => {
     throw new Error("keyStore not used");
   },
   forgetAgent: () => {

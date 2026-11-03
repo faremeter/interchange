@@ -71,16 +71,9 @@ An agent gains at launch:
 
 ### Repository Layout
 
-Each agent on a sidecar has a single git repository that contains both the deployed definition and the runtime state, separated by path:
+Each deployment on a sidecar has one workflow-run git repository that holds the history of its runs: every run's event log, grants, and step state, separated by path. The sidecar commits here during normal operation and pushes those commits to the hub, which keeps its own copy.
 
-- `deploy/` — hub-managed content (skills, prompt, configuration). The hub assembles this tree from the agent's source repository and any referenced skill libraries via subtree merge, producing a single flat tree with no submodule metadata.
-- `state/` — sidecar-managed content (conversation context, audit records). The sidecar commits here during normal operation.
-
-Path disjointness is enforced: the hub only writes commits that modify `deploy/` paths, the sidecar only writes commits that modify `state/` paths, so the two never conflict.
-
-The git DAG encodes provenance. State commits on the sidecar descend from the initial repository commit, and the `refs/heads/deploy` ref tracks the deploy version received from the hub. A deployment keeps that deploy tree for its life; a new deploy version means a new deployment.
-
-Repository organization on the hub is flexible — a single repository may contain definitions for multiple agents within a tenant, or agents may have dedicated repositories depending on operational needs. The assembly step normalizes any source layout into the standard `deploy/` tree structure before pushing to sidecars.
+A deployment keeps the frozen source closure it was deployed with for its life; a new version means a new deployment.
 
 ## Agent Harness
 
@@ -501,7 +494,7 @@ Payments between agents in different tenants work through standard x402 flows. T
 
 ## Change History
 
-Runtime state lives at the repository root alongside the deployed definition under `deploy/`. This unified repository means the full history — what the agent was running and what it did — is available in a single DAG.
+Runtime state lives in the deployment's workflow-run repository, so the full history of what the agent did is available in a single DAG.
 
 The reactor auto-commits at every cycle boundary (after each inference completes, after a batch of tool calls completes, after a compaction runs). The director's `checkpoint` action no longer decides _whether_ a commit happens; it supplies the human-meaningful message for the next auto-commit. Audit records (`state/audit/`) and error records (`state/errors/`) are still committed separately by the audit store on its existing schedule (`afterCheckpoint` and `onShutdown`). The agent has no awareness of or control over when commits occur (see Trust Boundary).
 

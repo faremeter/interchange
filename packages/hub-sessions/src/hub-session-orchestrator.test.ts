@@ -4,7 +4,7 @@ import { getTableName, is, Table, type SQL } from "drizzle-orm";
 import type { DB } from "@intx/db";
 import type { InferenceEvent } from "@intx/types/runtime";
 
-import type { AgentRepoStore, DeployContent } from "./agent-repo";
+import type { AgentRepoStore } from "./agent-repo";
 import type { LocalRepoStore } from "./repo-store";
 import type { EventCollectorRegistry } from "./event-collector-registry";
 import { agentSession, workflowRun } from "@intx/db/schema";
@@ -195,30 +195,9 @@ function createCollectorRegistry(
   };
 }
 
-type RepoCall = { kind: "createDeployPack"; agentId: string };
-
-function createRepoStoreStub(): {
-  store: AgentRepoStore;
-  calls: RepoCall[];
-} {
-  const calls: RepoCall[] = [];
+function createRepoStoreStub(): { store: AgentRepoStore } {
   return {
-    calls,
     store: {
-      async writeDeployTree(_agentId: string, _content: DeployContent) {
-        throw new Error("mock: writeDeployTree not implemented");
-      },
-      async createDeployPack(agentId: string) {
-        calls.push({ kind: "createDeployPack", agentId });
-        return {
-          pack: new Uint8Array([1, 2, 3]),
-          commitSha: "c".repeat(40),
-          ref: "refs/heads/deploy",
-        };
-      },
-      async receiveAgentStatePack() {
-        throw new Error("mock: receiveAgentStatePack not implemented");
-      },
       async prepareWorkflowRunPack() {
         throw new Error("mock: prepareWorkflowRunPack not implemented");
       },

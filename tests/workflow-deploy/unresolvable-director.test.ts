@@ -143,7 +143,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const initialDeploymentCount = env.deployments.size;
       const initialDeployAckCount = env.hub.deployAcks.size;
-      const initialStatePackCount = env.hub.statePacks.length;
 
       let captured: unknown = undefined;
       try {
@@ -178,10 +177,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // No partial state: the probe rejects before the anchor row insert, the
       // deploy frame, or `registerDeployment`, so the rejected deploy must not
-      // have produced a deployment handle, a deploy-ack, or a state-pack write.
+      // have produced a deployment handle or a deploy-ack.
       expect(env.deployments.size).toBe(initialDeploymentCount);
       expect(env.hub.deployAcks.size).toBe(initialDeployAckCount);
-      expect(env.hub.statePacks.length).toBe(initialStatePackCount);
     });
   },
 );

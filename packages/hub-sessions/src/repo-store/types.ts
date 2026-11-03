@@ -158,21 +158,12 @@ export type RefEntry = {
 
 export type TreeContent = {
   /**
-   * Map of repo-relative path to file contents. Each entry is written
-   * to the working tree and staged before commit. A path with a segment
-   * that fails `isPlainPathSegment`, which includes a leading `/`, rejects
-   * the write.
+   * Map of repo-relative path to file contents. The write is purely
+   * additive: every other path in the parent tree carries forward. A path
+   * with a segment that fails `isPlainPathSegment`, which includes a
+   * leading `/`, rejects the write.
    */
   files: Record<string, string | Uint8Array>;
-  /**
-   * Optional directory-subtree prefix to clear before staging. When
-   * set, every tracked path beginning with this prefix is removed
-   * from the git index and the corresponding directory on disk is
-   * deleted before `files` is written. Must end with `/`, and every
-   * segment must pass `isPlainPathSegment`. When unset, writeTree is
-   * purely additive.
-   */
-  clearPrefix?: string;
   /** Commit message for the resulting commit. */
   message: string;
 };
@@ -224,7 +215,7 @@ export type WriteTreePreservingPrefixArgs = {
  *
  * `changedPathPrefixes` is the validation scoping hint for the touched
  * region (e.g. `addresses/<seg>/`), supplied by the caller because a
- * delta has no single clear-prefix to derive it from; `undefined` means
+ * delta has no single prefix to derive it from; `undefined` means
  * validate the whole tree.
  *
  * The `prior` argument exposes cache-backed reads of that pinned parent
@@ -301,16 +292,15 @@ export interface KindHandler {
    *
    * `changedPathPrefixes` is the set of repo-root-relative POSIX path
    * prefixes (each ending in `/`) under which this commit could have
-   * mutated tree entries -- for a `writeTree` carrying a `clearPrefix`,
-   * the cleared prefix plus the directory of each file written outside
-   * it; for a received pack, the entries whose mode or object differs
-   * from the parent commit. Every path the commit can have changed
+   * mutated tree entries -- for a `writeTreePreservingPrefix`, the
+   * replaced prefix; for a `writeTreeDelta`, the scope its caller
+   * declared; for a received pack, the entries whose mode or object
+   * differs from the parent commit. Every path the commit can have changed
    * relative to its parent is under one of these prefixes; any path
    * outside them is carried forward byte-identical by the substrate. It
-   * is `undefined` when the substrate cannot bound the change set (no
-   * parent to diff against and no `clearPrefix`, or a file written
-   * outside the `clearPrefix` whose directory cannot be named), in
-   * which case the handler must validate the whole prospective tree. A
+   * is `undefined` when the substrate cannot bound the change set (a
+   * plain `writeTree`, a delta declaring no scope, or a pack with no
+   * parent to diff against), in which case the handler must validate the whole prospective tree. A
    * handler with per-subtree invariants that cannot be affected by a
    * commit outside that subtree (workflow-run's per-run append-only
    * log) uses this to skip re-validating subtrees the commit provably
@@ -444,8 +434,8 @@ export interface RepoStore {
    * commit's tip — there is no read-outside-the-lock window where one
    * caller could base its write on a stale view of the prefix.
    *
-   * The substrate handles `clearPrefix` and the commit internally;
-   * paths outside the prefix are untouched.
+   * The substrate clears the prefix and commits internally; paths
+   * outside the prefix are untouched.
    */
   writeTreePreservingPrefix(
     principal: Principal,

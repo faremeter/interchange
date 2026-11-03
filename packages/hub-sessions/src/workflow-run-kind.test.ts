@@ -4359,22 +4359,22 @@ describe("workflowRunKindHandler — scoped vs validate-all byte-identity", () =
     const refDir = path.join(reference.dir, repoId.id);
 
     for (const c of commits) {
-      const content = {
-        files: c.files,
-        clearPrefix: `runs/${c.runId}/events/`,
+      const args = {
+        preservePrefix: `runs/${c.runId}/events/`,
+        merge: () => Promise.resolve(c.files),
         message: `bracket ${c.runId}`,
       };
-      const s = await scoped.store.writeTree(
+      const s = await scoped.store.writeTreePreservingPrefix(
         HUB_PRINCIPAL,
         repoId,
         ref,
-        content,
+        args,
       );
-      const r = await reference.store.writeTree(
+      const r = await reference.store.writeTreePreservingPrefix(
         HUB_PRINCIPAL,
         repoId,
         ref,
-        content,
+        args,
       );
       const { commit: sCommit } = await git.readCommit({
         fs,

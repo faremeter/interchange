@@ -58,7 +58,6 @@ function createStubKeyStore(): AgentKeyStore {
       throw new Error(`No key registered for ${address} in test store`);
     },
     recordHubKey: () => undefined,
-    verifyDeployCommit: () => Promise.resolve(true),
     forgetAgent: () => undefined,
   };
 }
@@ -73,9 +72,6 @@ function createStubDeployRouter(): DeployRouter {
 
 function createStubSessionManager(): SessionManager {
   return {
-    initRepo: () => Promise.resolve(),
-    applyDeployPack: () => Promise.resolve(),
-    applyAssetPack: () => Promise.resolve(),
     deleteAgentDir: () => Promise.resolve(),
     getSessionId: () => undefined,
   };

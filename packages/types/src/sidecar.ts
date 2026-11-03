@@ -806,17 +806,8 @@ export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
  * Deploy an agent to this sidecar. The sidecar spawns a supervised
  * workflow-process child to host the deployment.
  *
- * The deploy router discriminates two shapes by field presence without
- * consulting `config`:
- *   - `workflow` set: a workflow deployment (single-step head or multi-step)
- *     that spawns the supervised workflow-process child.
- *   - `provisionStep` true: a no-spawn per-step provision of a multi-step
- *     deploy -- the sidecar initializes the step's agent-state repo and
- *     records the hub key so the follow-up deploy pack applies and verifies,
- *     but spawns nothing. The deployment-level `workflow` frame (sent once
- *     after every step is provisioned) spawns the child.
- * A frame carrying neither is rejected -- there is no in-process
- * fall-through. `workflow` and `provisionStep` are mutually exclusive.
+ * A frame with no `workflow` is rejected -- there is no in-process
+ * fall-through.
  *
  * The sidecar answers with `agent.deploy.ack` or `agent.deploy.error`
  * carrying the same `requestId`. A deploy of an address the sidecar already
@@ -831,7 +822,6 @@ export const AgentDeployFrame = type({
   config: HarnessConfig,
   hubPublicKey: "string",
   "workflow?": AgentDeployWorkflow,
-  "provisionStep?": "boolean",
 });
 export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 
@@ -995,27 +985,17 @@ export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 //
 // Each pack frame carries two complementary addressing fields:
 //
-//   - `agentAddress` identifies the destination agent on the receiving
-//     sidecar. The sidecar manages per-agent state and uses this field to
-//     route the pack to the correct workspace. For agent-state packs the
-//     sidecar applies the pack onto the agent's deploy/state tree.
+//   - `agentAddress` identifies the deployment on the receiving sidecar.
 //
-//   - `repoId` identifies the source repo at the hub. The hub maps `repoId`
-//     to the originating entry in its kind-keyed RepoStore. For
-//     `repoId.kind === "agent-state"`, `repoId.id` is the run address
-//     (the deploy/state repo and the destination agent are the same), so
-//     the two fields carry the same value. Future kinds (e.g. assets) use
-//     `repoId` to name a non-agent source while `agentAddress` continues
-//     to address the destination agent.
+//   - `repoId` identifies the workflow-run repo the pack belongs to.
 //
 // `repo.pack.push` and `repo.pack.done` also carry the generation of the
 // incarnation the transfer belongs to. The ack and reject answer one transfer
 // on the connection that carried it, and transfer ids are never reused, so
 // they need no generation.
 //
-// Flow control: deferred. Agent deploy trees are small enough that the sender
-// can push all chunks without windowing. If this becomes a problem, a credit-
-// based mechanism can be added later.
+// Flow control: deferred. A sender pushes all chunks without windowing. If this
+// becomes a problem, a credit-based mechanism can be added later.
 
 /**
  * A chunk of git pack data. The sender splits the packfile into chunks of at
@@ -1039,11 +1019,6 @@ export type PackPushFrame = typeof PackPushFrame.infer;
  * Signals the end of a pack transfer. The receiver applies the pack and
  * updates `ref` to point at `commitSha`. If the post-apply HEAD does not
  * match `commitSha`, the receiver must reject with reason "sha_mismatch".
- *
- * When `mountPath` is set, the receiver materializes the pack at
- * `workspace/<mountPath>/` instead of the hardcoded agent deploy tree.
- * Absent for agent-state deploy/state flows and workflow-run restoration.
- * The receiver distinguishes those paths by `repoId.kind`.
  */
 export const PackDoneFrame = type({
   type: "'repo.pack.done'",
@@ -1053,7 +1028,6 @@ export const PackDoneFrame = type({
   transferId: "string",
   ref: "string",
   commitSha: "string",
-  "mountPath?": "string",
 });
 export type PackDoneFrame = typeof PackDoneFrame.infer;
 
@@ -1074,7 +1048,6 @@ export const PackRejectReason = type.enumerated(
   "conflict",
   "corrupt",
   "sha_mismatch",
-  "timeout",
   "missing_objects",
 );
 export type PackRejectReason = typeof PackRejectReason.infer;
@@ -1111,9 +1084,8 @@ export type PackRejectFrame = typeof PackRejectFrame.infer;
  *   tarball.missing          — a manifest entry's asset-sourced tarball
  *                              is not present at the recorded path.
  *   asset.mount.missing      — a `kind: "asset"` manifest entry names
- *                              an `assetId` that the deploy pack's
- *                              `deploy/asset-mounts.json` does not
- *                              cover. Indicates a mismatch between the
+ *                              an `assetId` that the asset mount map
+ *                              does not cover. Indicates a mismatch between the
  *                              resolver's view of attached assets and
  *                              the materialization fan-out, not a
  *                              missing file on disk.

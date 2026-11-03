@@ -5,7 +5,7 @@
 // onTrigger body"): the walk proves the operator APPROVES the nested child's
 // grants; this proves the nested child EXECUTES for real. It covers the exact
 // cross-type shape -- a childWorkflow spawn buried inside an onTrigger section
-// body -- whose per-step assets the deploy layer must stage transitively.
+// body -- whose grants and sources must resolve transitively.
 //
 // A workflow whose single top-level step is an `onTrigger` section is deployed
 // BY SOURCE-REF (bundle a source entry module into a hub asset, probe it,

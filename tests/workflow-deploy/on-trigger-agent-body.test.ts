@@ -23,8 +23,7 @@
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
 // workflow-process child driving `runOnTrigger` with the production
 // suspendable-child seam, and a real agent inside the body via the body-only
-// invoker. Body agents are tool-less by the deploy guard, so no tool trees are
-// staged; this exercises exactly the reachable body-agent path.
+// invoker. This exercises exactly the reachable body-agent path.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

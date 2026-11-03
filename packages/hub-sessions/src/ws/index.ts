@@ -18,7 +18,6 @@ export {
   type SidecarAuthenticator,
   type AllocatedSidecarTarget,
   type SidecarAllocationRouter,
-  type SendPackOptions,
   type WsHandle,
 } from "./sidecar-handler";
 export {

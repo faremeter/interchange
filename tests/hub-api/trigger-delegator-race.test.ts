@@ -65,7 +65,6 @@ function notImpl(name: string): never {
 
 function mockSessionService(): SessionService {
   return {
-    stageWorkflowStep: () => notImpl("stageWorkflowStep"),
     endSession: () => notImpl("endSession"),
   };
 }

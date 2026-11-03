@@ -155,23 +155,14 @@ The sidecar's deploy router is the single ingress for inbound
 `agent.deploy` frames; its production wiring lives at
 `src/deploy/workflow-host-wiring.ts` in
 `createSidecarDeployRouter`. Every deploy stages through the
-workflow-run substrate, and the router decides between two frame
-shapes:
+workflow-run substrate. The router constructs a fresh per-deployment
+supervisor and drives its `spawn(opts)` lifecycle: per-step
+`agent-state` repo provisioning, key minting, child spawn via
+`subprocessSpawner`, mail-bus registration, IPC handshake, and
+`credentialsSnapshot` assembly.
 
-- **Provision-step frame (`provisionStep: true`).** The router
-  primes the frame's per-step `agent-state` repo and records the
-  hub key, without constructing a supervisor or spawning a child.
-  The follow-up full-closure deploy pack then applies into the
-  primed repo and verifies against the recorded key.
-- **Workflow frame (carries a `WorkflowDefinition`).** The router
-  constructs a fresh per-deployment supervisor and drives its
-  `spawn(opts)` lifecycle: per-step `agent-state` repo
-  provisioning, key minting, child spawn via `subprocessSpawner`,
-  mail-bus registration, IPC handshake, and `credentialsSnapshot`
-  assembly.
-
-A frame carrying neither shape is rejected -- there is no
-in-process deploy path.
+A frame without a workflow is rejected -- there is no in-process
+deploy path.
 
 ### Lifecycle
 
@@ -214,9 +205,9 @@ runs to drain per each step's `drainBehavior`; on the drain-timeout it
 escalates to a signed `CancelRequested{origin: "supervisor-drain"}`.
 
 `recycle(opts)` tears the current child down and stands a fresh one up
-against the SAME deploy tree (same materialized source closure, same
-per-step credential repos). A deployment keeps its deploy tree for its
-life; a different tree means a new deployment. Operator,
+against the SAME definition (same materialized source closure). A
+deployment keeps its definition for its life; a different definition
+means a new deployment. Operator,
 supervisor-policy (max-uptime / max-rss / grants-staleness), and
 workflow-process-self-initiated origins all funnel through the same path.
 
@@ -239,7 +230,7 @@ On an unexpected exit the supervisor, with no external intervention:
    keys. Those keys sort ahead of any mail that arrived during the
    kill/respawn gap, so the stranded entry is re-dispatched first and
    FIFO ordering holds across the respawn boundary.
-2. Spawns a fresh workflow-process child against the same deploy tree
+2. Spawns a fresh workflow-process child against the same definition
    (reusing the recycle path's respawn machinery) and resumes dispatch.
 
 The respawn is bounded so a persistently-broken child cannot saturate

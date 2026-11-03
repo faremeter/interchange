@@ -1,6 +1,5 @@
 import { createSSHSignature } from "@intx/crypto";
 import type { GCPolicy } from "@intx/storage-isogit/node";
-import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { createRepoStore } from "./repo-store";
 import type {
@@ -9,13 +8,7 @@ import type {
   PreparedReceivePack,
   RepoId,
 } from "./repo-store";
-import {
-  agentStateKindHandler,
-  agentStateAuthorize,
-  AGENT_STATE_DEPLOY_REF,
-  type AgentStateHubPrincipal,
-  type AgentStateSidecarPrincipal,
-} from "./agent-state-kind";
+import { agentStateKindHandler, agentStateAuthorize } from "./agent-state-kind";
 import { skillKindHandler, skillAuthorize } from "./skill-kind";
 import {
   packageRegistryKindHandler,
@@ -28,62 +21,7 @@ import {
   type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
 
-export type DeployContent = {
-  systemPrompt: string;
-  /**
-   * Optional. When present, written to
-   * `deploy/tool-packages-manifest.json` so the sidecar's loader can
-   * materialize the pinned tool-package closure on apply.
-   */
-  toolPackageManifest?: ToolPackageManifest;
-  /**
-   * Optional. `assetId` → workspace-relative mount path for every
-   * asset id referenced by a `kind: "asset"` entry in
-   * `toolPackageManifest`. When present, written to
-   * `deploy/asset-mounts.json`; the sidecar's loader reads it back via
-   * `readDeployTree` and resolves asset-sourced tarballs against it.
-   * Empty maps and absent values produce no file on disk — both shapes
-   * read back as an empty mount table.
-   */
-  assetMounts?: ReadonlyMap<string, string>;
-};
-
 export type AgentRepoStore = {
-  /**
-   * Write deploy content into the agent's hub-side repo and commit on
-   * refs/heads/deploy. Creates the repo if it doesn't exist.
-   *
-   * The caller is responsible for serializing calls per agent.
-   */
-  writeDeployTree(
-    agentId: string,
-    content: DeployContent,
-  ): Promise<{ commitSha: string }>;
-
-  /**
-   * Produce a packfile from the agent's current deploy ref.
-   */
-  createDeployPack(
-    agentId: string,
-  ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
-
-  /**
-   * Receive and store an agent-state pack from a sidecar. Indexes the
-   * pack objects and updates the ref without materializing a working
-   * tree.
-   *
-   * `repoId.kind` must be `"agent-state"`. The `repoId.id` is used as
-   * the run address internally. Stamps an
-   * `AgentStateSidecarPrincipal` so the agent-state kind handler
-   * authorizes the receivePack as a per-agent sidecar write.
-   */
-  receiveAgentStatePack(
-    repoId: RepoId,
-    pack: Uint8Array,
-    ref: string,
-    commitSha: string,
-  ): Promise<void>;
-
   /**
    * Stage and validate a workflow-run pack from a sidecar, and return the
    * prepared receive. The validation holds no repo lock, so a caller can
@@ -205,8 +143,6 @@ export function createAgentRepoStore(config: {
       : { gc: { kinds: [...DEFAULT_GC_KINDS], ...gc } }),
   });
 
-  const hub: AgentStateHubPrincipal = { kind: "hub" };
-
   async function prepareWorkflowRunPack(
     incomingRepoId: RepoId,
     pack: Uint8Array,
@@ -231,64 +167,7 @@ export function createAgentRepoStore(config: {
     );
   }
 
-  function repoId(agentId: string): RepoId {
-    return { kind: "agent-state", id: agentId };
-  }
-
   return {
-    async writeDeployTree(agentId, content) {
-      const id = repoId(agentId);
-      const files: Record<string, string> = {
-        "deploy/prompt.md": content.systemPrompt,
-      };
-      if (content.toolPackageManifest !== undefined) {
-        files["deploy/tool-packages-manifest.json"] = JSON.stringify(
-          content.toolPackageManifest,
-          null,
-          2,
-        );
-      }
-      if (content.assetMounts !== undefined && content.assetMounts.size > 0) {
-        files["deploy/asset-mounts.json"] = JSON.stringify(
-          { assetMounts: Object.fromEntries(content.assetMounts) },
-          null,
-          2,
-        );
-      }
-      return store.writeTree(hub, id, AGENT_STATE_DEPLOY_REF, {
-        files,
-        clearPrefix: "deploy/",
-        message: "Update deploy tree",
-      });
-    },
-
-    async createDeployPack(agentId) {
-      return store.createPack(hub, repoId(agentId), AGENT_STATE_DEPLOY_REF);
-    },
-
-    async receiveAgentStatePack(incomingRepoId, pack, ref, commitSha) {
-      if (incomingRepoId.kind !== "agent-state") {
-        throw new Error(
-          `AgentRepoStore.receiveAgentStatePack requires repoId.kind === "agent-state", got ${JSON.stringify(incomingRepoId.kind)}`,
-        );
-      }
-      const agentId = incomingRepoId.id;
-      const id = repoId(agentId);
-      const principal: AgentStateSidecarPrincipal = {
-        kind: "sidecar",
-        agentId,
-      };
-      const expectedOldSha = await store.resolveRef(principal, id, ref);
-      await store.receivePack(
-        principal,
-        id,
-        ref,
-        pack,
-        commitSha,
-        expectedOldSha,
-      );
-    },
-
     prepareWorkflowRunPack,
 
     getSigningPublicKey() {

@@ -62,10 +62,9 @@
 //
 // Substrate-merge constraint (load-bearing, design §4 "Substrate-merge
 // note"). `writeTreePreservingPrefix`'s `merge` callback receives only
-// the DIRECT CHILDREN of `preservePrefix`, and the substrate's
-// `clearPrefix` step recursively removes the whole `preservePrefix`
-// subtree before writing the merge's returned set (paths outside the
-// prefix pass through untouched). A WAL blob is two levels below the
+// the DIRECT CHILDREN of `preservePrefix`, and the substrate recursively
+// removes the whole `preservePrefix` subtree before writing the merge's
+// returned set (paths outside the prefix pass through untouched). A WAL blob is two levels below the
 // state directory, so:
 //
 //   - WAL append uses `preservePrefix = <state dir>/wal/<bucket>/`.
@@ -76,7 +75,7 @@
 //   - Checkpoint write + WAL truncate uses `preservePrefix = <state dir>/`.
 //     The top-level checkpoint files are direct children; the merge
 //     returns ONLY those files and NO `wal/...` paths, so the recursive
-//     `clearPrefix` at the state directory drops the entire WAL subtree in
+//     clear at the state directory drops the entire WAL subtree in
 //     the same atomic commit. The truncate needs no nested read: omitting
 //     the WAL paths from the returned set IS the truncate.
 //
@@ -340,9 +339,8 @@ export async function createDurableConversationStore(
   // `onStateChanged` synchronously, which enqueues a mirror. A single
   // per-instance tail runs every such op one-at-a-time regardless of entry
   // point, so two overlapping runs cannot read the same boundary seq and
-  // emit two WAL entries at it. Modeled on `runRepoOp` in the hub-agent
-  // session manager: the stored tail swallows rejections so one failed op
-  // does not poison the chain, while each caller still observes its own op's
+  // emit two WAL entries at it. The stored tail swallows rejections so one
+  // failed op does not poison the chain, while each caller still observes its own op's
   // result (or rejection) through the returned promise.
   //
   // This serializes mirror-vs-mirror and mirror-vs-restore only. It does NOT
@@ -561,7 +559,7 @@ export async function createDurableConversationStore(
    * Fold the full conversation into a fresh checkpoint and truncate the
    * WAL in one atomic commit with the state directory as `preservePrefix`.
    * The merge returns ONLY the two checkpoint files and NO `wal/...` paths;
-   * because the substrate's `clearPrefix` recursively removes the whole
+   * because the substrate recursively removes the whole
    * state directory before writing the returned set, omitting the WAL
    * paths IS the truncate.
    */

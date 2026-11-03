@@ -1,8 +1,8 @@
 // OID-equivalence guard for the delta write path (writeTreeDelta) added
 // alongside the claim-check narrowing. A delta ({puts, deletes} carried
 // against the parent tree, reusing untouched entries by oid) MUST commit
-// the byte-identical tree that a full-replace writeTree of the same
-// logical final state produces. SHA-1 tree hashing is deterministic
+// the byte-identical tree that a full-replace writeTreePreservingPrefix of
+// the same logical final state produces. SHA-1 tree hashing is deterministic
 // given identical content and structure, so equal commit-tree oids prove
 // the delta path never diverges from canonical git across the move
 // shapes: enqueue-add, dequeue-move (delete+put), markConsumed-move,
@@ -135,9 +135,9 @@ async function assertDeltaMatchesFullReplace(
       message: "seed",
     });
   }
-  await fullStore.writeTree(principal, repoId, REF, {
-    files: finalScopeFiles,
-    clearPrefix: SCOPE,
+  await fullStore.writeTreePreservingPrefix(principal, repoId, REF, {
+    preservePrefix: SCOPE,
+    merge: () => Promise.resolve(finalScopeFiles),
     message: "full-replace",
   });
   const fullTree = await commitTreeOid(fullStore);
@@ -211,7 +211,7 @@ test("delta exact-file-delete matches full-replace", async () => {
 test("delta cascade-delete (empties dir and parent) matches full-replace", async () => {
   // The only entry under SCOPE is one inbox blob; deleting it empties
   // inbox/, then addresses/a/, then addresses/, so all three subtrees
-  // must vanish exactly as a full clearPrefix of an emptied scope does.
+  // must vanish exactly as a full replace of an emptied scope does.
   await assertDeltaMatchesFullReplace(
     "cascade",
     { [`${SCOPE}inbox/10-m1.json`]: `{"messageId":"m1"}` },

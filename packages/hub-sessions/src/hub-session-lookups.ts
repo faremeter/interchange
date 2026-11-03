@@ -25,7 +25,6 @@ import {
 import { getLogger } from "@intx/log";
 import type { PackRejectReason } from "@intx/types/sidecar";
 import { signalName } from "@intx/types/signals";
-import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
@@ -84,7 +83,7 @@ function packFailureReason(
     logger.error`Workflow-run pack rejected for ${workflowRunRepoId}: ${msg}`;
     return "missing_objects";
   }
-  // Mirror the agent-state branch's catch-all: any other failure
+  // Any other failure
   // (transaction failures, filesystem races, a staged pack whose bytes do
   // not match its tip, kind-handler diagnostics surfaced as Error messages,
   // etc.) becomes a structured `corrupt` rejection so the sender can
@@ -127,13 +126,6 @@ export function createHubSessionLookups(
   });
 
   return {
-    async lookupDeployRef() {
-      // A workflow run is a supervised workflow-process pinned forever like a
-      // native deployment: it keeps its deploy-time definition and never
-      // reconciles, so no address enrolls in the reconnect deploy-ref catch-up.
-      return null;
-    },
-
     readWorkflowRunRefTips(agentAddress) {
       return readWorkflowRunRefTips(agentRepoStore.repoStore, agentAddress);
     },
@@ -393,44 +385,6 @@ export function createHubSessionLookups(
           tx,
         );
       });
-    },
-
-    async receiveAgentStatePack(repoId, pack, ref, commitSha) {
-      if (repoId.kind !== "agent-state") {
-        throw new Error(
-          `hub-session lookups receiveAgentStatePack received unsupported repo kind ${JSON.stringify(repoId.kind)}`,
-        );
-      }
-      const agentAddress = repoId.id;
-      const agentId = deriveWorkflowRunId(agentAddress);
-      try {
-        await agentRepoStore.receiveAgentStatePack(
-          { kind: "agent-state", id: agentId },
-          pack,
-          ref,
-          commitSha,
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.startsWith("path_violation")) {
-          logger.warn`State pack rejected for ${agentAddress}: ${msg}`;
-          return { accepted: false, reason: "path_violation" as const };
-        }
-        // Any other failure from the repo subsystem reaches the
-        // WebSocket handler as an unhandled rejection unless we catch
-        // it here. Transient failures during receivePack (the agent
-        // directory being torn down concurrently with an in-flight
-        // pack write, filesystem errors mid-rename, etc.) are
-        // recoverable from the sender's perspective — the sender can
-        // re-push. Surface every such failure as a structured pack
-        // rejection (`corrupt` is the closest existing reason — from
-        // the sender's perspective the pack failed to index) and log
-        // the underlying error so the cause stays traceable on the
-        // hub side.
-        logger.error`State pack receive failed for ${agentAddress}: ${msg}`;
-        return { accepted: false, reason: "corrupt" as const };
-      }
-      return { accepted: true };
     },
 
     async receiveWorkflowRunPack(repoId, pack, ref, commitSha, source) {

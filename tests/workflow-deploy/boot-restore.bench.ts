@@ -12,8 +12,7 @@
 // bench:
 //
 //   1. SETUP (not timed): stands up N single-step deployments through a first
-//      router over a scratch data dir, so N `deployment.json` records plus
-//      their `assets/workflow/<id>/workflow.json` and per-step grants land on
+//      router over a scratch data dir, so N `deployment.json` records land on
 //      disk exactly as a live deploy would leave them.
 //   2. RESTORE (timed): builds a SECOND router with a FRESH transport (an
 //      empty registration table -- the sidecar-restart model) over the SAME
@@ -326,7 +325,6 @@ async function buildRouter(args: {
       persistHubPublicKey: async () => {
         throw new Error("workflow branch must not invoke persistHubPublicKey");
       },
-      initRepo: async () => undefined,
     } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["sessions"],
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- bench stub; the single-step head deploy records the hub key for pack verification
     keyStore: {

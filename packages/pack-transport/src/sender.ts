@@ -28,7 +28,7 @@ export type PackSendOpts = {
    */
   transferId: string;
   pack: Uint8Array;
-  /** Workflow-run ref or deploy ref the receiver should advance. */
+  /** Workflow-run ref the receiver should advance. */
   ref: string;
   /** Commit SHA the receiver should pin the ref to after apply. */
   commitSha: string;

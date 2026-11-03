@@ -125,8 +125,8 @@ export function parseReconnectDelayMs(
 // Operator-configured custom inference adapter manifest. The value is
 // TRUSTED operator input read only from this process's environment;
 // `import(specifier)` is arbitrary code execution, so a specifier must
-// never originate from deploy or tenant data — the agent deploy tree
-// carries only a `provider` key, never a specifier. The shape is
+// never originate from deploy or tenant data — a deploy frame carries
+// only a `provider` key, never a specifier. The shape is
 // validated by the shared reader (and re-validated at the workflow-child
 // spawn boundary as defense in depth), but the value itself is trusted.
 //

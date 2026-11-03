@@ -218,10 +218,10 @@ export type SidecarConnection = {
    * keeps its own generation fence.
    */
   bindings: Map<string, SidecarAuthIdentity>;
-  // Allocated deployment routes (including first deploy and reconnect) and
-  // transient step routes, each mapped to the allocation that owns it, so one
-  // allocation's routes can leave a connection that stays open for the
-  // others. `handleClose` cleans them out of `addressIndex`.
+  // Allocated deployment routes (including first deploy and reconnect), each
+  // mapped to the allocation that owns it, so one allocation's routes can
+  // leave a connection that stays open for the others. `handleClose` cleans
+  // them out of `addressIndex`.
   workflowAddresses: Map<string, string>;
   // Deploy frames the worker has not answered, by request id to their
   // address, kept past the Hub's own deploy timeout. The worker handles an
@@ -310,25 +310,6 @@ function allocationBindings(
     binding.kind === "allocated" ? [binding] : [],
   );
 }
-
-export type SendPackOptions = {
-  /**
-   * Repo-relative mount path under the sidecar's per-agent workspace.
-   * When set, the receiving sidecar materializes the pack as plain
-   * files at `<workspaceRoot>/<mountPath>/` and does NOT apply it to
-   * the agent's deploy git tree. Absent for agent-state deploy/state
-   * packs, which continue to apply to the deploy tree.
-   */
-  mountPath?: string;
-  /**
-   * Override the `repoId` emitted on the wire. The agent-state flow
-   * defaults to `{ kind: "agent-state", id: agentAddress }`; asset
-   * packs must pass the SOURCE asset's id so audit can correlate the
-   * pack back to its hub-side origin. Workflow-run restoration uses a
-   * dedicated allocation-bound sender that supplies its derived repo id.
-   */
-  repoId?: RepoId;
-};
 
 /**
  * Everything a `sendProbe` caller supplies to populate the outbound
@@ -646,14 +627,6 @@ export type SidecarAllocationRouter = {
     signal?: AbortSignal,
     beforeSend?: () => Promise<void>,
   ): Promise<{ publicKey: string }>;
-  sendPackToAllocation(
-    target: AllocatedSidecarTarget,
-    agentAddress: string,
-    pack: Uint8Array,
-    ref: string,
-    commitSha: string,
-    options?: SendPackOptions,
-  ): Promise<void>;
   /**
    * Restore one Hub-authoritative workflow-run ref onto the exact allocation
    * generation before its deployment address is routed or supervisor spawned.
@@ -665,19 +638,6 @@ export type SidecarAllocationRouter = {
     ref: string,
     commitSha: string,
     signal?: AbortSignal,
-  ): Promise<void>;
-  bindAllocatedStepRoute(
-    target: AllocatedSidecarTarget,
-    stepAddress: string,
-  ): Promise<void>;
-  unbindAllocatedStepRoute(
-    target: AllocatedSidecarTarget,
-    stepAddress: string,
-  ): void;
-  sendProvisionStepToAllocation(
-    target: AllocatedSidecarTarget,
-    agentAddress: string,
-    config: HarnessConfig,
   ): Promise<void>;
   /**
    * Deliver one durable workflow trigger to the exact allocation generation.
@@ -1184,14 +1144,7 @@ export function createSidecarRouter(
     string
   >();
 
-  // Receives agent-state packs pushed from sidecars. The wire frames
-  // (`repo.pack.push` / `repo.pack.done`) are shared with the
-  // workflow-run flow; dispatch on `repoId.kind` picks which receiver
-  // observes the chunks. The two receivers maintain independent
-  // in-flight pack state and independent cancel-by-agent semantics so a
-  // pending workflow-run transfer cannot disturb a concurrent agent-
-  // state transfer for the same agent and vice versa.
-  const agentStatePackReceiver = createPackReceiver();
+  // Receives workflow-run packs pushed from sidecars.
   const workflowRunPackReceiver = createPackReceiver();
 
   let requestCounter = 0;
@@ -2328,7 +2281,6 @@ export function createSidecarRouter(
         connectorStates.delete(address);
         retainPendingMailForAddress(address);
       }
-      agentStatePackReceiver.cancelByAgent(address);
       workflowRunPackReceiver.cancelByAgent(address);
     }
     const deploymentAddress =
@@ -3937,14 +3889,9 @@ export function createSidecarRouter(
       `Sidecar ${conn.sidecarId} disconnected`,
     );
 
-    // Cancel any in-flight inbound pack transfers from this sidecar
-    // across both receivers. The two receivers track their own in-
-    // flight transferIds, so a pending workflow-run transfer for an
-    // agent that just disconnected won't outlive the connection just
-    // because the agent-state receiver has nothing to cancel.
+    // Cancel any in-flight inbound pack transfers from this sidecar.
     const owned = new Set(conn.workflowAddresses.keys());
     for (const addr of owned) {
-      agentStatePackReceiver.cancelByAgent(addr);
       workflowRunPackReceiver.cancelByAgent(addr);
     }
     // An own-repository transfer needs no route, so the owned addresses above
@@ -4126,41 +4073,6 @@ export function createSidecarRouter(
     pendingProbes.reject(requestId, error);
   }
 
-  // Routing rule: pick the receiver dedicated to the repoId.kind the
-  // frame carries. The receivers' in-flight state is independent, so a
-  // workflow-run transferId can never collide with or evict an
-  // agent-state transferId for the same agentAddress.
-  function pickPackReceiver(
-    repoId: RepoId,
-  ): { receiver: ReturnType<typeof createPackReceiver> } | null {
-    switch (repoId.kind) {
-      case "agent-state":
-        return { receiver: agentStatePackReceiver };
-      case "workflow-run":
-        return { receiver: workflowRunPackReceiver };
-      // The remaining kinds in `RepoKind` (`skill`, `package-registry`,
-      // `workflow`) have no sidecar->hub pack flow today. A frame
-      // arriving with those kinds is malformed at this layer.
-      default:
-        return null;
-    }
-  }
-
-  function pickReceivePackLookup(
-    repoId: RepoId,
-  ): SidecarLookups["receiveWorkflowRunPack"] | undefined {
-    switch (repoId.kind) {
-      case "agent-state":
-        // The agent-state lookup ignores the `source` argument the workflow-run
-        // lookup takes; the two are otherwise the same contract.
-        return lookups.receiveAgentStatePack;
-      case "workflow-run":
-        return lookups.receiveWorkflowRunPack;
-      default:
-        return undefined;
-    }
-  }
-
   // The generation whose workflow stop the Hub confirmed, when the pack is
   // for its workflow-run repository. That history is final.
   function stoppedPackSender(
@@ -4183,7 +4095,9 @@ export function createSidecarRouter(
   ): void {
     const conn = connections.get(ws);
     if (conn === undefined) return;
-    pickPackReceiver(done.repoId)?.receiver.cancel(done.transferId);
+    if (done.repoId.kind === "workflow-run") {
+      workflowRunPackReceiver.cancel(done.transferId);
+    }
     conn.send({
       type: "repo.pack.reject",
       agentAddress: done.agentAddress,
@@ -4204,20 +4118,7 @@ export function createSidecarRouter(
     )
       return;
 
-    const picked = pickPackReceiver(frame.repoId);
-    if (picked === null) {
-      logger.warn`Received repo.pack.push with unsupported repoId.kind ${frame.repoId.kind}`;
-      conn.send({
-        type: "repo.pack.reject",
-        agentAddress: frame.agentAddress,
-        repoId: frame.repoId,
-        transferId: frame.transferId,
-        reason: "corrupt",
-      });
-      return;
-    }
-
-    const reason = picked.receiver.handlePush(frame);
+    const reason = workflowRunPackReceiver.handlePush(frame);
     if (reason !== null) {
       conn.send({
         type: "repo.pack.reject",
@@ -4262,20 +4163,7 @@ export function createSidecarRouter(
       return;
     }
 
-    const picked = pickPackReceiver(frame.repoId);
-    if (picked === null) {
-      logger.warn`Received repo.pack.done with unsupported repoId.kind ${frame.repoId.kind}`;
-      conn.send({
-        type: "repo.pack.reject",
-        agentAddress: frame.agentAddress,
-        repoId: frame.repoId,
-        transferId: frame.transferId,
-        reason: "corrupt",
-      });
-      return;
-    }
-
-    const result = picked.receiver.handleDone(frame);
+    const result = workflowRunPackReceiver.handleDone(frame);
     if (result === null) {
       conn.send({
         type: "repo.pack.reject",
@@ -4287,7 +4175,7 @@ export function createSidecarRouter(
       return;
     }
 
-    const receivePackLookup = pickReceivePackLookup(frame.repoId);
+    const receivePackLookup = lookups.receiveWorkflowRunPack;
     if (receivePackLookup === undefined) {
       conn.send({
         type: "repo.pack.ack",
@@ -4343,19 +4231,6 @@ export function createSidecarRouter(
     }
   }
 
-  /**
-   * Bind a per-step workflow-substrate address to a sidecar for the staging
-   * window of a multi-step deploy, so `sendPack` can route the step's deploy
-   * and asset packs before the deployment-level frame spawns the child.
-   *
-   * The address is Hub-minted and workflow-derived, so it enters the
-   * `workflowAddresses` set and is
-   * torn down by `unbindStepRoute` once the
-   * step's packs land. `handleClose` reclaims it if the sidecar drops
-   * mid-stage. Per-step addresses are not runtime-routed (mail, signals, and
-   * drains use the deployment address), so the binding is transient: no
-   * `hello` reports it and no reconnect restores it.
-   */
   function fenceAllocation(
     allocationId: string,
     generation: number,
@@ -4858,46 +4733,6 @@ export function createSidecarRouter(
     });
   }
 
-  async function bindAllocatedStepRoute(
-    target: AllocatedSidecarTarget,
-    stepAddress: string,
-  ): Promise<void> {
-    const { ws, conn } = await getAllocatedConnection(target, "routing");
-    const existing = addressIndex.get(stepAddress);
-    if (existing !== undefined && existing !== ws) {
-      throw new Error(
-        `Workflow step ${stepAddress} is already routed to another sidecar`,
-      );
-    }
-    const owner = conn.workflowAddresses.get(stepAddress);
-    if (owner !== undefined && owner !== target.allocationId) {
-      throw new Error(
-        `Workflow step ${stepAddress} is already routed to allocation ${owner}`,
-      );
-    }
-    conn.workflowAddresses.set(stepAddress, target.allocationId);
-    addressIndex.set(stepAddress, ws);
-  }
-
-  function unbindAllocatedStepRoute(
-    target: AllocatedSidecarTarget,
-    stepAddress: string,
-  ): void {
-    const current = allocatedConnections.get(target.allocationId);
-    if (
-      current === undefined ||
-      current.identity.generation !== target.generation
-    ) {
-      return;
-    }
-    if (addressIndex.get(stepAddress) !== current.ws) return;
-    const conn = connections.get(current.ws);
-    if (conn?.workflowAddresses.get(stepAddress) !== target.allocationId)
-      return;
-    conn.workflowAddresses.delete(stepAddress);
-    addressIndex.delete(stepAddress);
-  }
-
   // Pack transfers may take longer than session requests due to data volume.
   const PACK_TIMEOUT_MS = requestTimeoutMs * 4;
 
@@ -4909,18 +4744,9 @@ export function createSidecarRouter(
     pack: Uint8Array,
     ref: string,
     commitSha: string,
-    options?: SendPackOptions,
+    repoId: RepoId,
   ): Promise<void> {
     const transferId = `pack-${crypto.randomUUID()}`;
-    // For the agent-state flow the destination agent and the source repo
-    // are the same entity, so `repoId.id === agentAddress`. Asset packs
-    // override this with the SOURCE asset's id so audit can correlate
-    // the pack back to its hub-side origin.
-    const repoId: RepoId = options?.repoId ?? {
-      kind: "agent-state",
-      id: agentAddress,
-    };
-    const mountPath = options?.mountPath;
 
     // Register pending entry before sending frames so that a synchronous
     // repo.pack.ack (e.g. in tests or loopback transports) resolves correctly.
@@ -4961,46 +4787,8 @@ export function createSidecarRouter(
         transferId,
         ref,
         commitSha,
-        ...(mountPath !== undefined ? { mountPath } : {}),
       });
     });
-  }
-
-  async function sendPackToAllocation(
-    target: AllocatedSidecarTarget,
-    agentAddress: string,
-    pack: Uint8Array,
-    ref: string,
-    commitSha: string,
-    options?: SendPackOptions,
-  ): Promise<void> {
-    const { ws, conn } = await getAllocatedConnection(target, "routing");
-    if (
-      addressIndex.get(agentAddress) !== ws ||
-      conn.workflowAddresses.get(agentAddress) !== target.allocationId
-    ) {
-      throw new Error(
-        `Address ${agentAddress} is not routed on allocation ${target.allocationId}`,
-      );
-    }
-    let transfer: Promise<void> | undefined;
-    await withWorkflowWorkAdmission(ws, conn, agentAddress, () => {
-      transfer = sendPackOnConnection(
-        ws,
-        conn,
-        agentAddress,
-        target.generation,
-        pack,
-        ref,
-        commitSha,
-        options,
-      );
-      // The acknowledgement can reject before admission's transaction ends.
-      void transfer.catch(() => undefined);
-      return true;
-    });
-    if (transfer === undefined) throw new Error("Workflow pack was not sent");
-    return transfer;
   }
 
   async function sendWorkflowRunPackToAllocation(
@@ -5040,7 +4828,7 @@ export function createSidecarRouter(
           pack,
           ref,
           commitSha,
-          { repoId: workflowRunRepoIdForAddress(agentAddress) },
+          workflowRunRepoIdForAddress(agentAddress),
         );
         // The acknowledgement can reject before admission's transaction ends.
         void transfer.catch(() => undefined);
@@ -5487,103 +5275,6 @@ export function createSidecarRouter(
     }
     // Never hold the lifecycle locks while waiting for the worker's reply.
     return response;
-  }
-
-  /**
-   * Provision one step of a multi-step deploy on the sidecar WITHOUT
-   * spawning: the sidecar initializes the step's agent-state repo and
-   * records the hub key, so the follow-up deploy pack applies into a repo
-   * and verifies against the recorded key -- but no supervisor or child is
-   * constructed. The deployment-level workflow frame, sent once after every
-   * step is provisioned, spawns the child.
-   *
-   * The step address must already be bound via `bindStepRoute`, which
-   * resolves and records the sidecar; this reuses that route. Waits for the
-   * sidecar's `agent.deploy.ack`
-   * so the caller can safely deliver the deploy pack afterward. On failure
-   * the caller owns tearing the route down via `unbindStepRoute`.
-   */
-  function sendProvisionStepOnConnection(
-    ws: WsHandle,
-    conn: SidecarConnection,
-    generation: number,
-    agentAddress: string,
-    harnessConfig: HarnessConfig,
-  ): Promise<void> {
-    if (hubPublicKeyHex === undefined) {
-      throw new Error("Hub signing key is required for step provisioning");
-    }
-    if (pendingDeploys.has(agentAddress)) {
-      throw new Error(`Deploy already in progress for agent "${agentAddress}"`);
-    }
-
-    const hubKey = hubPublicKeyHex;
-    const requestId = nextRequestId();
-    return new Promise<void>((resolve, reject) => {
-      // The sidecar's `agent.deploy.ack` resolves this through
-      // `pendingDeploys.resolve`. The per-step address is workflow-derived
-      // and records no hub-side key, so the ack's public key is not needed
-      // and this resolves void.
-      pendingDeploys.register(
-        agentAddress,
-        ws,
-        {
-          timeoutMs: requestTimeoutMs,
-          timeoutMessage: `Step provision of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
-          resolve(_publicKey) {
-            resolve();
-          },
-          reject(error) {
-            reject(typeof error === "string" ? new Error(error) : error);
-          },
-        },
-        { requestId, generation },
-      );
-
-      conn.send({
-        type: "agent.deploy",
-        requestId,
-        agentAddress,
-        generation,
-        agentId: harnessConfig.agentId,
-        config: harnessConfig,
-        hubPublicKey: hubKey,
-        provisionStep: true,
-      });
-      conn.unansweredDeploys.set(requestId, agentAddress);
-    });
-  }
-
-  async function sendProvisionStepToAllocation(
-    target: AllocatedSidecarTarget,
-    agentAddress: string,
-    harnessConfig: HarnessConfig,
-  ): Promise<void> {
-    const { ws, conn } = await getAllocatedConnection(target, "routing");
-    if (
-      addressIndex.get(agentAddress) !== ws ||
-      conn.workflowAddresses.get(agentAddress) !== target.allocationId
-    ) {
-      throw new Error(
-        `Step route ${agentAddress} is not bound to allocation ${target.allocationId}`,
-      );
-    }
-    let provisioned: Promise<void> | undefined;
-    await withWorkflowWorkAdmission(ws, conn, agentAddress, () => {
-      provisioned = sendProvisionStepOnConnection(
-        ws,
-        conn,
-        target.generation,
-        agentAddress,
-        harnessConfig,
-      );
-      // The acknowledgement can reject before admission's transaction ends.
-      void provisioned.catch(() => undefined);
-      return true;
-    });
-    if (provisioned === undefined)
-      throw new Error("Workflow step was not provisioned");
-    return provisioned;
   }
 
   function sendProbeOnConnection(
@@ -6386,7 +6077,6 @@ export function createSidecarRouter(
     waitForSidecarInventory,
     sendCredentialsUpdate,
     sendRunGrants,
-    sendPackToAllocation,
     sendWorkflowRunPackToAllocation,
     fenceAllocation,
     retireAllocation,
@@ -6397,9 +6087,6 @@ export function createSidecarRouter(
     reportedDeploymentFailure,
     stoppedDeploymentHistory,
     sendAgentDeployToAllocation,
-    bindAllocatedStepRoute,
-    unbindAllocatedStepRoute,
-    sendProvisionStepToAllocation,
     sendWorkflowRunDispatchToAllocation,
     sendSignalDeliver,
     sendSignalDeliverToAllocation,

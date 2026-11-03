@@ -206,7 +206,7 @@ export type ToolPackageAssetSourceTree =
 /**
  * A pinned entry's bytes come from a hub `asset` -- a checked-out git
  * repo attached to the agent at session time. `assetId` is the hub-side
- * asset row id; the sidecar resolves it against the deploy pack's mount
+ * asset row id; the loader resolves it against its mount
  * map to reach the asset's checkout. The package lives at a location
  * within the checkout, either a prepackaged `tarball` or a `source`
  * subtree, discriminated by `package.format`.
@@ -273,8 +273,7 @@ export const ToolPackageManifestEntry = type({
 export type ToolPackageManifestEntry = typeof ToolPackageManifestEntry.infer;
 
 /**
- * The manifest written into the deploy pack at
- * `deploy/tool-packages-manifest.json`.
+ * The manifest of a resolved tool-package closure.
  *
  * `schemaVersion` is a literal "1" for now. Future schema changes bump
  * this and the loader refuses unknown versions with `manifest.invalid`.

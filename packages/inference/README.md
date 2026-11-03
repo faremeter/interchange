@@ -46,5 +46,5 @@ The package is the lower half of the agent stack: it knows how to
 talk to model providers, how to drive a multi-turn exchange to
 completion, and how to compose extensions (gates, audit,
 correlation, authz) into the reactor pipeline. The higher-level
-agent surface — config validation, tool runners, deploy trees,
+agent surface — config validation, tool runners,
 runtime capabilities — lives in `@intx/harness`.

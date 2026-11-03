@@ -39,9 +39,6 @@ const sidecarRouter = createSidecarRouter({
   validateSidecarIdentity: async () => true,
 });
 const sessionService: SessionService = {
-  stageWorkflowStep(_params) {
-    throw new Error("mock: sessionService.stageWorkflowStep not implemented");
-  },
   endSession(_addr, _reason) {
     throw new Error("mock: sessionService.endSession not implemented");
   },

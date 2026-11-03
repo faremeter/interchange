@@ -328,14 +328,6 @@ export async function createHubServer({
   const assetService = createAssetService({
     db,
     repoStore: agentRepoStore.repoStore,
-    // Reserve every configured HTTP registry name so a `package-registry`
-    // asset cannot silently shadow it at session launch. The session
-    // service's per-launch registry assembly applies asset-wins-on-name-
-    // collision (see `session-service.ts` `assetIndex` build), which
-    // turns a same-named asset into an opaque reroute of the public
-    // npm registry; rejecting at creation surfaces the collision at
-    // intent time instead of debugging an unexpected reroute later.
-    reservedPackageRegistryNames: new Set(httpRegistries.keys()),
   });
 
   // Shared by pack ingestion and lifecycle recovery so recovery never claims a
@@ -458,7 +450,6 @@ export async function createHubServer({
     sidecarRouter,
     sidecarAllocationRouter: sidecarRouter,
     agentRepoStore,
-    assetService,
     db,
     toolPackageRegistries: {
       httpRegistries,

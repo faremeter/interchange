@@ -327,7 +327,6 @@ function createMockGetSession(userId: string): GetSession {
 
 function createMockSessionService(): SessionService {
   return {
-    stageWorkflowStep: () => notImpl("stageWorkflowStep"),
     endSession: () => notImpl("endSession"),
   };
 }

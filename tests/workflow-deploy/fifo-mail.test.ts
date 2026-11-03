@@ -1,7 +1,6 @@
 // FIFO mail-trigger serialization round-trip integration test.
 //
-// Deploys a multi-step workflow against the workflow-deploy
-// orchestrator's multi-step branch, fires three distinct mails at the
+// Deploys a multi-step workflow through `deployWorkflowSourceForTest`, fires three distinct mails at the
 // deployment's trigger address in quick succession, and verifies that the
 // first fires the deployment's one stable run while the queued post-terminal
 // mails are rejected in FIFO order.

@@ -64,7 +64,6 @@ export {
   buildInertBodyStepSources,
   buildSingleStepAgentDefinition,
   WorkflowDefinitionInvalidError,
-  type DeployContent,
 } from "./orchestrator";
 export {
   deriveRunAddress,

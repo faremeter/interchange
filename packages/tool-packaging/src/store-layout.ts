@@ -83,7 +83,7 @@ export async function materializeClosure(
       if (gitDir === undefined) {
         throw new ToolLoaderError({
           category: "git.materialization.failed",
-          message: `manifest entry references git assetId "${source.assetId}" which is not in the deploy pack's git-dirs map`,
+          message: `manifest entry references git assetId "${source.assetId}" which is not in the git-dirs map`,
           package: { name: entry.name, version: entry.version },
         });
       }
@@ -98,7 +98,7 @@ export async function materializeClosure(
       if (!args.assetMounts.has(source.assetId)) {
         throw new ToolLoaderError({
           category: "asset.mount.missing",
-          message: `manifest entry references assetId "${source.assetId}" which is not in the deploy pack's asset-mounts map`,
+          message: `manifest entry references assetId "${source.assetId}" which is not in the asset-mounts map`,
           package: { name: entry.name, version: entry.version },
         });
       }

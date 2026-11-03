@@ -6,7 +6,7 @@ reassembles the chunks on the receiver while validating sequence
 continuity and rejecting concurrent transfers for the same agent.
 
 Consumed by `@intx/hub-sessions` and `@intx/hub-agent` to ship
-agent repository state across the WebSocket link.
+workflow-run repository history across the WebSocket link.
 
 ```ts
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";

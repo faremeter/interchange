@@ -973,7 +973,7 @@ describe("RepoStore", () => {
     ).toBeNull();
   });
 
-  test("writeTree with clearPrefix clears stale tracked files under that prefix", async () => {
+  test("writeTreePreservingPrefix clears stale tracked files under that prefix", async () => {
     const dataDir = await makeTempDir("repo-store-clear-");
     const handler = createTestHandler();
     const store = createRepoStore({
@@ -983,16 +983,21 @@ describe("RepoStore", () => {
       authorize: allowAll,
     });
 
-    await store.writeTree(principal, repoId, REF, {
-      files: { "deploy/a.md": "A", "deploy/b.md": "B" },
-      clearPrefix: "deploy/",
+    await store.writeTreePreservingPrefix(principal, repoId, REF, {
+      preservePrefix: "deploy/",
+      merge: () => Promise.resolve({ "deploy/a.md": "A", "deploy/b.md": "B" }),
       message: "first",
     });
-    const second = await store.writeTree(principal, repoId, REF, {
-      files: { "deploy/a.md": "A2" },
-      clearPrefix: "deploy/",
-      message: "second",
-    });
+    const second = await store.writeTreePreservingPrefix(
+      principal,
+      repoId,
+      REF,
+      {
+        preservePrefix: "deploy/",
+        merge: () => Promise.resolve({ "deploy/a.md": "A2" }),
+        message: "second",
+      },
+    );
 
     const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
     const { commit } = await git.readCommit({
@@ -1015,11 +1020,7 @@ describe("RepoStore", () => {
     expect(deployPaths).not.toContain("b.md");
   });
 
-  test("writeTree with clearPrefix on a first write clears nothing and does not error", async () => {
-    // clearIndexPrefix narrows git.statusMatrix to the cleared prefix.
-    // A first write to a fresh repo has no tracked entries under the
-    // prefix, so the narrowed statusMatrix must return an empty matrix
-    // (clear nothing) rather than erroring on a non-existent subtree.
+  test("writeTreePreservingPrefix on a first write clears nothing and does not error", async () => {
     const dataDir = await makeTempDir("repo-store-clear-first-");
     const handler = createTestHandler();
     const store = createRepoStore({
@@ -1029,11 +1030,16 @@ describe("RepoStore", () => {
       authorize: allowAll,
     });
 
-    const first = await store.writeTree(principal, repoId, REF, {
-      files: { "deploy/a.md": "A" },
-      clearPrefix: "deploy/",
-      message: "first write with clearPrefix",
-    });
+    const first = await store.writeTreePreservingPrefix(
+      principal,
+      repoId,
+      REF,
+      {
+        preservePrefix: "deploy/",
+        merge: () => Promise.resolve({ "deploy/a.md": "A" }),
+        message: "first write",
+      },
+    );
     expect(first.commitSha).toMatch(/^[0-9a-f]{40}$/);
 
     const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
@@ -1053,10 +1059,7 @@ describe("RepoStore", () => {
     expect(deployPaths).toEqual(["a.md"]);
   });
 
-  test("writeTree clearPrefix targeting a never-written prefix is a no-op clear", async () => {
-    // The narrowed statusMatrix is asked for a prefix that exists in
-    // neither the index nor the tree (a sibling subtree was written, but
-    // not this one). It must return empty and leave the sibling intact.
+  test("writeTreePreservingPrefix on a never-written prefix leaves its sibling intact", async () => {
     const dataDir = await makeTempDir("repo-store-clear-absent-");
     const handler = createTestHandler();
     const store = createRepoStore({
@@ -1070,11 +1073,16 @@ describe("RepoStore", () => {
       files: { "keep/a.md": "A" },
       message: "seed sibling subtree",
     });
-    const second = await store.writeTree(principal, repoId, REF, {
-      files: { "fresh/b.md": "B" },
-      clearPrefix: "fresh/",
-      message: "clear a never-written prefix",
-    });
+    const second = await store.writeTreePreservingPrefix(
+      principal,
+      repoId,
+      REF,
+      {
+        preservePrefix: "fresh/",
+        merge: () => Promise.resolve({ "fresh/b.md": "B" }),
+        message: "clear a never-written prefix",
+      },
+    );
 
     const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
     const { commit } = await git.readCommit({
@@ -1115,17 +1123,14 @@ describe("RepoStore", () => {
       "deploy\\x.json",
       "deploy/x\0.json",
     ]) {
-      for (const clear of [{}, { clearPrefix: "deploy/" }]) {
-        await expect(
-          store.writeTree(principal, repoId, REF, {
-            files: { "deploy/b.md": "b", [bad]: "{}" },
-            ...clear,
-            message: "bad path",
-          }),
-        ).rejects.toThrow(`tree_path_invalid: ${JSON.stringify(bad)}`);
-      }
+      await expect(
+        store.writeTree(principal, repoId, REF, {
+          files: { "deploy/b.md": "b", [bad]: "{}" },
+          message: "bad path",
+        }),
+      ).rejects.toThrow(`tree_path_invalid: ${JSON.stringify(bad)}`);
     }
-    for (const clearPrefix of [
+    for (const preservePrefix of [
       "deploy/../",
       "deploy/./",
       "deploy//",
@@ -1136,12 +1141,12 @@ describe("RepoStore", () => {
       "deploy\0/",
     ]) {
       await expect(
-        store.writeTree(principal, repoId, REF, {
-          files: { "deploy/b.md": "b" },
-          clearPrefix,
+        store.writeTreePreservingPrefix(principal, repoId, REF, {
+          preservePrefix,
+          merge: () => Promise.resolve({ "deploy/b.md": "b" }),
           message: "bad prefix",
         }),
-      ).rejects.toThrow(`clear_prefix_invalid: ${clearPrefix}`);
+      ).rejects.toThrow(`preserve_prefix_invalid: ${preservePrefix}`);
     }
     for (const bad of ["deploy/./b.md", "deploy//b.md"]) {
       await expect(
@@ -1160,7 +1165,7 @@ describe("RepoStore", () => {
     expect(fs.existsSync(path.join(dir, "deploy", "b.md"))).toBe(false);
   });
 
-  test("writeTree without clearPrefix is purely additive", async () => {
+  test("writeTree is purely additive", async () => {
     const dataDir = await makeTempDir("repo-store-additive-");
     const handler = createTestHandler();
     const store = createRepoStore({
@@ -1242,7 +1247,7 @@ describe("RepoStore", () => {
     );
   });
 
-  test("a clearPrefix write scopes files outside its prefix to their own directories", async () => {
+  test("a prefix write scopes the handler to its prefix and a plain write to the whole tree", async () => {
     const seen: (string[] | undefined)[] = [];
     const store = createRepoStore({
       dataDir: await makeTempDir("repo-store-prefix-scope-"),
@@ -1264,31 +1269,17 @@ describe("RepoStore", () => {
     });
     const prefix = "runs/r1/steps/s1/state/";
 
-    await store.writeTree(principal, repoId, REF, {
-      files: { [`${prefix}checkpoint.json`]: "{}" },
-      clearPrefix: prefix,
-      message: "in prefix",
+    await store.writeTreePreservingPrefix(principal, repoId, REF, {
+      preservePrefix: prefix,
+      merge: () => Promise.resolve({ [`${prefix}checkpoint.json`]: "{}" }),
+      message: "prefix write",
     });
     await store.writeTree(principal, repoId, REF, {
-      files: {
-        [`${prefix}checkpoint.json`]: "{}",
-        "runs/r1/events/1.json": "{}",
-        "runs/r1/steps/s2/seed.json": "{}",
-      },
-      clearPrefix: prefix,
-      message: "outside prefix",
-    });
-    await store.writeTree(principal, repoId, REF, {
-      files: { [`${prefix}checkpoint.json`]: "{}", "top.json": "{}" },
-      clearPrefix: prefix,
-      message: "outside any directory",
+      files: { "top.json": "{}" },
+      message: "plain write",
     });
 
-    expect(seen).toEqual([
-      [prefix],
-      ["runs/r1/events/", "runs/r1/steps/s1/state/", "runs/r1/steps/s2/"],
-      undefined,
-    ]);
+    expect(seen).toEqual([[prefix], undefined]);
   });
 
   test("interleaved writes to two refs of one repo never contaminate either ref's tree", async () => {
@@ -1312,11 +1303,12 @@ describe("RepoStore", () => {
     // below stage identical bytes through this, so equal content must
     // yield equal tree oids unless a ref switch contaminates the tree.
     const roundWrite = (topPrefix: string, round: number) => ({
-      files: {
-        [`${topPrefix}/state/${round}.json`]: `${topPrefix}-${round}`,
-        [`${topPrefix}/head`]: String(round),
-      },
-      clearPrefix: `${topPrefix}/`,
+      preservePrefix: `${topPrefix}/`,
+      merge: () =>
+        Promise.resolve({
+          [`${topPrefix}/state/${round}.json`]: `${topPrefix}-${round}`,
+          [`${topPrefix}/head`]: String(round),
+        }),
       message: `${topPrefix} ${round}`,
     });
 
@@ -1326,13 +1318,13 @@ describe("RepoStore", () => {
     const aTrees: string[] = [];
     const bTrees: string[] = [];
     for (let round = 0; round < ROUNDS; round++) {
-      const a = await store.writeTree(
+      const a = await store.writeTreePreservingPrefix(
         principal,
         repoId,
         REF_A,
         roundWrite("alpha", round),
       );
-      const b = await store.writeTree(
+      const b = await store.writeTreePreservingPrefix(
         principal,
         repoId,
         REF_B,
@@ -1374,7 +1366,7 @@ describe("RepoStore", () => {
       const ref = `refs/heads/${topPrefix}`;
       const trees: string[] = [];
       for (let round = 0; round < ROUNDS; round++) {
-        const r = await baseStore.writeTree(
+        const r = await baseStore.writeTreePreservingPrefix(
           principal,
           repoId,
           ref,
@@ -4563,20 +4555,17 @@ describe("RepoStore", () => {
         },
         message: "v2",
       });
-      const { commitSha: thirdSha } = await sourceStore.writeTree(
-        principal,
-        wfRepoId,
-        REF,
-        {
-          clearPrefix: "swap/",
-          files: {
-            "swap/a/z": "shared",
-            "swap/a/w": "only in x",
-            "swap/x/z": "shared",
-          },
+      const { commitSha: thirdSha } =
+        await sourceStore.writeTreePreservingPrefix(principal, wfRepoId, REF, {
+          preservePrefix: "swap/",
+          merge: () =>
+            Promise.resolve({
+              "swap/a/z": "shared",
+              "swap/a/w": "only in x",
+              "swap/x/z": "shared",
+            }),
           message: "v3",
-        },
-      );
+        });
 
       const { pack } = await sourceStore.createPack(principal, wfRepoId, REF);
 

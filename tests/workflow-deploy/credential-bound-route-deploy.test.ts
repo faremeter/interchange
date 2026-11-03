@@ -345,10 +345,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sidecarRouter: env.hub.router,
         sidecarAllocationRouter: env.hub.router,
         agentRepoStore: env.hub.agentRepoStore,
-        assetService: createAssetService({
-          db: h.db,
-          repoStore: env.hub.agentRepoStore.repoStore,
-        }),
         db: h.db,
         toolPackageRegistries: {
           httpRegistries: new Map([

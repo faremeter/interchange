@@ -10,7 +10,7 @@
 import { chmod, lstat, readdir, rm, stat } from "node:fs/promises";
 import { join as pathJoin } from "node:path";
 
-import { derivePublicKeyBytes, signEd25519 } from "@intx/crypto";
+import { signEd25519 } from "@intx/crypto";
 import { getLogger } from "@intx/log";
 import { syncRemovedPathDurable } from "@intx/storage-isogit/node";
 import type { HubTransport } from "@intx/mail-memory";
@@ -796,18 +796,6 @@ export function validateWorkflowProjection(projection: {
   }
 }
 
-/**
- * Derive the supervisor's principal public key from the sidecar's
- * Ed25519 signing seed. The supervisor signs every workflow-run event
- * with this key; the multi-step branch surfaces it to the link so the
- * hub records the verifying key for the deployment's signed events.
- */
-async function derivePrincipalPublicKeyHex(
-  signingKeySeed: Uint8Array,
-): Promise<string> {
-  return hexEncode(await derivePublicKeyBytes(signingKeySeed));
-}
-
 /** Values the link folds into the outbound deploy ack. */
 type DeployRouterResult = {
   publicKey: string;
@@ -877,7 +865,6 @@ export function createSidecarDeployRouter<
   TCache extends object,
 >(deps: {
   sessions: {
-    initRepo(address: string): Promise<void>;
     /** Remove the directory durably before resolving; reject sync failures. */
     deleteAgentDir(address: string): Promise<void>;
   };
@@ -1268,9 +1255,8 @@ export function createSidecarDeployRouter<
   ) => void;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
-  // sidecar boot rather than the first multi-step deploy, where the
-  // public key is derived from it (`derivePrincipalPublicKeyHex`). The
-  // seed also signs every workflow-run event via the supervisor.
+  // sidecar boot rather than the first deploy. The seed signs every
+  // workflow-run event via the supervisor.
   if (deps.signingKeySeed.length !== 32) {
     throw new Error(
       `sidecar deploy router: Ed25519 signing seed must be 32 bytes, got ${deps.signingKeySeed.length}`,
@@ -2060,14 +2046,6 @@ export function createSidecarDeployRouter<
           }
 
           if (definition.stepOrder.length === 1) {
-            // A single-step workflow stages its deploy tree at the head (the
-            // lone step IS the head). Initialize the head's on-disk
-            // deploy-tree repo (idempotent) so the hub's deploy-pack push has
-            // a repo to apply into. The narrow `initRepo` (not
-            // `provisionAgent`) is deliberate: the supervised child mints its
-            // own keypair and persists no hub-agent config.
-            await deps.sessions.initRepo(spec.agentAddress);
-
             // Record the hub's public key at the head so the deploy-pack
             // apply (and any inbound hub-signed frame) verifies against it.
             // The verifier resolves the key from the in-memory key store's
@@ -2472,38 +2450,6 @@ export function createSidecarDeployRouter<
     }
   }
 
-  /**
-   * Provision one step of a multi-step deploy WITHOUT spawning. The hub
-   * stages each step's deploy tree before firing the deployment-level
-   * workflow frame; a full-closure deploy pack still needs an initialized
-   * agent-state repo to apply into and the hub key recorded to verify the
-   * pack commit signature. This does exactly those two things -- the same
-   * harness-free `initRepo` + `recordHubKey` seam the single-step head uses
-   * -- and constructs no supervisor or child. The deployment-level workflow
-   * frame (fired once after every step is provisioned) spawns the child,
-   * which reads each step's staged deploy tree from disk.
-   *
-   * Returns the sidecar's principal public key so the link's
-   * `agent.deploy.ack` carries a key, matching the multi-step ack. A
-   * per-step address is workflow-derived and records no `agent_instance`
-   * key, so the hub discards this value.
-   */
-  async function provisionStep(
-    frame: AgentDeployFrame,
-  ): Promise<DeployRouterResult> {
-    const held = deployments.get(frame.agentAddress);
-    if (held !== undefined) {
-      throw new Error(
-        `sidecar deploy router: ${frame.agentAddress} generation ${String(held.generation)} is ${held.state} here; a step cannot be provisioned over it`,
-      );
-    }
-    await deps.sessions.initRepo(frame.agentAddress);
-    deps.keyStore.recordHubKey(frame.agentAddress, frame.hubPublicKey);
-    return {
-      publicKey: await derivePrincipalPublicKeyHex(deps.signingKeySeed),
-    };
-  }
-
   async function deployMultiStep(
     frame: AgentDeployFrame,
     projection: NonNullable<AgentDeployFrame["workflow"]>,
@@ -2787,18 +2733,13 @@ export function createSidecarDeployRouter<
       if (workflowStopTasks.has(frame.agentAddress)) {
         throw new Error("Workflow deployment is still stopping");
       }
-      if (frame.provisionStep === true) {
-        return await provisionStep(frame);
-      }
       if (frame.workflow !== undefined) {
         return await deployMultiStep(frame, frame.workflow);
       }
-      // Every deploy stages through the workflow-run substrate: a
-      // provision-step frame primes the per-step repo, and a workflow
-      // frame spawns the supervised child. A frame carrying neither is
+      // A workflow frame spawns the supervised child. A frame without one is
       // an unsupported shape -- there is no in-process fall-through.
       throw new Error(
-        `sidecar deploy router: unsupported deploy frame for ${frame.agentAddress}; a deploy must carry provisionStep or a workflow definition`,
+        `sidecar deploy router: unsupported deploy frame for ${frame.agentAddress}; a deploy must carry a workflow definition`,
       );
     },
     control,

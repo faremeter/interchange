@@ -242,7 +242,7 @@ The IMAP inbox is the source of truth for conversation history. Session channels
 2. Hub redelivers mail the sidecar had not acknowledged when the connection dropped, if it is back within the mail hold
 3. Sidecar loads agent context from isogit and resumes operation
 
-A supervised deployment carries its grants in the deploy pack and refreshes them over the supervisor's IPC credentials snapshot at spawn and recycle. When a sidecar reconnects, the Hub also sends the run's committed grants in a `run.grants` frame to each deployment that it routes again, so a grant change made while the sidecar was disconnected reaches the running child.
+A supervised deployment receives its runs' grants in `run.grants` frames and passes them to its child over the supervisor's IPC credentials snapshot. When a sidecar reconnects, the Hub also sends the run's committed grants in a `run.grants` frame to each deployment that it routes again, so a grant change made while the sidecar was disconnected reaches the running child.
 
 In the prototype, the Hub keeps no queue of mail sent while a sidecar is disconnected. Triggers and signals wait in `workflow_run_dispatch` rows until a sidecar takes them, and mail the sidecar had not acknowledged is held in memory for the mail hold (five minutes by default). The sidecar's isogit repository is the source of truth for agent inference context. The hub maintains a sidecar-to-agent mapping so it knows which sidecar to route messages to for a given run address. See HARNESS_DESIGN.md for the reconnection wire protocol.
 
@@ -261,7 +261,7 @@ The sidecar WebSocket protocol includes frames for agent deployment and reconnec
 | Sidecar → Hub | `agent.undeploy.ack`   | Confirm teardown                                  |
 | Sidecar → Hub | `agent.undeploy.error` | Report that teardown failed                       |
 
-Agent deployment stages through the workflow-run substrate rather than a separate provision-then-start handshake. The hub sends `agent.deploy`; the sidecar's deploy router primes the per-step repo (for a provision-step frame) or spawns the supervised workflow-process child (for a workflow frame), then acks with `agent.deploy.ack` carrying the public key. The deploy tree (prompt, skills) rides in on the follow-up deploy pack, which the child reads from the substrate. The workflow-process child starts inference itself once spawned -- there is no separate `session.start` step.
+Agent deployment stages through the workflow-run substrate rather than a separate provision-then-start handshake. The hub sends `agent.deploy`; the sidecar's deploy router spawns the supervised workflow-process child, then acks with `agent.deploy.ack` carrying the public key. The workflow-process child starts inference itself once spawned -- there is no separate `session.start` step.
 
 A deployment on a sidecar is an incarnation: its address plus the allocation generation it was deployed for. `agent.deploy` and `agent.undeploy` carry a `requestId` and the `generation` they act on, and every reply echoes both, so a reply settles only the request it answers and a late reply to a request the Hub already gave up on matches nothing. The sidecar handles the frames for one address one at a time, in the order it received them. Two kinds of frame do not hold the address's turn: the Hub's answers to its own pack transfers and correlation registrations, which only settle the request they answer, and a `workflow.control`, which starts in order but frees the turn while a cooperative cancellation waits for the child. Frames for different addresses, probe requests, and heartbeat pongs do not wait on each other, so one deployment's slow deploy or undeploy delays neither another deployment nor the link's liveness. It answers each request only on the connection that carried it; a request whose connection closed before its turn is dropped, and the Hub has already failed it. An undeploy is the exception: it still runs and only its answer is dropped, because the Hub sends it for a generation it will not route again and may close the socket right behind it.
 
@@ -279,7 +279,7 @@ Undeploy is an acknowledged operation. The sidecar shuts the named generation's 
 
 **Grant management:**
 
-The live `grants.update` wire path has been retired. A supervised deployment receives its grants in the deploy pack and refreshes them over the supervisor's IPC credentials snapshot at spawn and recycle. The hub also sends the run's committed grants in a `run.grants` frame ahead of each signal delivery and each trigger, and to each deployment that it routes again when a sidecar reconnects, so a standing approval decision reaches a running deployment. When a change to a delegator's grants re-derives a run's rows, the hub sends the run its grants on their own after the change commits (see AUTH.md, _Grant Revocation_).
+The live `grants.update` wire path has been retired. The hub sends the run's committed grants in a `run.grants` frame ahead of each signal delivery and each trigger, and to each deployment that it routes again when a sidecar reconnects, so a standing approval decision reaches a running deployment. The sidecar keeps them in the run's grants file, and the supervisor passes them to the child over its IPC credentials snapshot at spawn and recycle. When a change to a delegator's grants re-derives a run's rows, the hub sends the run its grants on their own after the change commits (see AUTH.md, _Grant Revocation_).
 
 Every connection opens with a `hello` that reports each incarnation the sidecar holds and whether it is `deploying`, `live`, `stopped`, or `tearing-down`. A `stopped` incarnation no longer runs and keeps its local state for inspection until the Hub undeploys it. One the Hub did not stop carries the error that ended it: its workflow child ended itself, or the sidecar could not restore it. The Hub then fails the deployment's live runs with that error and keeps its capacity for the retention its policy sets for failed runs, so the stopped copy can be inspected. The sidecar also marks either state in the run record, so a restart reports the incarnation instead of spawning it, and reports such a stop in a `deployment.stopped` frame once that write settles, and again after each `welcome` until retention is durably decided, with the tips of the deployment's history branches. It does not wait for its pushes of that history: a push that fails is retried on every reconnect, so that wait would have no bound. The Hub fails the deployment once it holds those tips, or a minute after it first heard of the stop, and the failure then names the history it never received. A reconnect does not restart that minute, and a sidecar that disconnects instead and stays away past its disconnect limit fails the deployment with the reason it reported. The Hub holds a reported stop only in memory until it fails the deployment: a Hub restart starts that minute again from the sidecar's next report, and if the sidecar does not come back, the deployment fails without that reason. The Hub accepts the frame when the bearer token resolves to a sidecar that is not retired or still hosts a probe, allocation generation, or cleanup binding. It restores a reported incarnation's route when the incarnation is live, its generation is the current, initialized generation of a routable allocation the sidecar hosts, and its run has not ended, keeps a stopped one of the current generation of an allocation the sidecar hosts unrouted, initialized or not, and an initialized live one whose run is terminal until lifecycle retention stops it, leaves incarnations covered by cleanup bindings to the reconciler, and sends `agent.undeploy` naming the generation of every other reported incarnation rather than rejecting the connection, so one stale deployment cannot disconnect the others. It then answers `welcome` listing the incarnations it routes, as soon as routing is settled. A hello is never left unanswered: the Hub closes the socket when the hello is invalid or its registration fails before the welcome, and the sidecar reconnects when no `welcome` arrives within 30 seconds (`welcomeTimeoutMs`). A failure after the welcome is logged, since registering again would meet it again. A sidecar whose token is valid but that hosts neither current work nor cleanup obligations is welcomed with nothing routed, after the Hub sends `agent.undeploy` for everything it reports, and stays connected, idle, for its provisioner to reuse. Until `welcome` the sidecar sends nothing the Hub must receive: it queues outbound mail and signal correlation registrations, drops best-effort events, and holds back the workflow-run pack pushes of every incarnation it holds; a push no connection could carry stays due instead of failing the deployment's next write. The queue holds 1024 frames for all the sidecar's deployments together: an outage that outlasts it drops queued correlation registrations first, which the next `welcome` re-sends, then the audit copies the Hub records sent mail from, and then fails a deployment's send rather than drop mail it has not yet routed. On `welcome` it sends the queue, re-drives its routed incarnations' pending packs and parked correlations, and reports stopped deployments whose retention is undecided.
 
@@ -945,7 +945,7 @@ child stays unaddressable; the parent is the resume root.
 
 #### Recycle
 
-Recycle is the supervisor's "same deploy tree, fresh process" path,
+Recycle is the supervisor's "same definition, fresh process" path,
 implemented as library code in
 `packages/workflow-host/src/supervisor/recycle.ts` and consumed by
 the supervisor object's `recycle()` method.
@@ -1064,30 +1064,20 @@ in `packages/workflow-host/src/deploy/workflow-host-wiring.ts`. Routing lives on
 router side of the seam; the hub-link hands the frame off and folds the
 returned public key into the outbound `agent.deploy.ack`.
 
-Every deploy stages through the workflow-run substrate. The router
-branches on the frame shape:
-
-1. **Provision-step frame (`provisionStep: true`).** The router primes
-   the frame's per-step `agent-state` repo and records the hub key,
-   without constructing a supervisor or spawning a child. The follow-up
-   full-closure deploy pack then applies into the primed repo and
-   verifies against the recorded key.
-2. **Workflow frame (carries a source-ref pin).** The router checks
-   that it can build every inference source the frame pins, lays out
-   the frozen closure without evaluating it, constructs a fresh
-   per-deployment workflow-host supervisor and drives its `spawn(opts)`
-   lifecycle: key minting, workflow-process child spawn via
-   `subprocessSpawner`, the child's definition report, per-step
-   `agent-state` repo provisioning, `credentialsSnapshot` assembly,
-   mail-bus registration and the IPC ready handshake. The long-lived
-   sidecar process keeps every module it imports, so it never evaluates
-   the workflow's code: everything it does with the definition --
-   the structural check against the frame's sources, the step layout,
-   the deploy-time grants write, the single-step head repo and hub
-   key, the inbound mail policy -- works from the projection the child
-   verified, after the supervisor checks it against the approved hash.
-   A closure that fails, throws or hangs while loading fails only its
-   own deploy or restore.
+Every deploy stages through the workflow-run substrate. The frame carries a
+source-ref pin. The router checks that it can build every inference source
+the frame pins, lays out the frozen closure without evaluating it, constructs
+a fresh per-deployment workflow-host supervisor and drives its `spawn(opts)`
+lifecycle: key minting, workflow-process child spawn via `subprocessSpawner`,
+the child's definition report, per-step `agent-state` repo provisioning,
+`credentialsSnapshot` assembly, mail-bus registration and the IPC ready
+handshake. The long-lived sidecar process keeps every module it imports, so it
+never evaluates the workflow's code: everything it does with the definition --
+the structural check against the frame's sources, the step layout, the
+deploy-time grants write, the inbound mail policy -- works from the projection
+the child verified, after the supervisor checks it against the approved hash.
+A closure that fails, throws or hangs while loading fails only its own deploy
+or restore.
 
 A frame carrying neither shape is rejected -- there is no in-process
 deploy path. A single agent deploys as a single-step workflow whose
@@ -1388,19 +1378,11 @@ Telemetry is tagged with tenant identifiers. Backends can enforce tenant-level a
 
 ## Lifecycle: Versioning and Health
 
-Agent lifecycle operations are managed through versioned packages and health protocols.
+Agent lifecycle operations are managed through pinned deployments and health protocols.
 
-### Agent Packages
+### Deployed Content
 
-An agent package is a git tree assembled from the agent's definition repository with resolved skill dependencies (see Agent Versioning above). It contains:
-
-- Skills and their dependencies
-- System prompt
-- Context builder configuration
-- Initial state
-- Capability grants
-
-Each deploy commit represents an immutable version. The control plane tracks which deploy refs are active on which sidecars, and retains historical deploy tags for rollback.
+A deployment runs what its `agent.deploy` frame pins: the workflow's frozen source closure, the definition hash the operator approved, and the assets the source mounts (see Deploy Flow below). A deployment keeps that content for its life; different content means a new deployment.
 
 ### Health Protocol
 
@@ -1413,13 +1395,11 @@ The response's `lastCheckedAt` is currently always `null`: this is a derived rea
 
 ### Deployment Procedure
 
-1. **Stage** - Hub sends `agent.deploy`; the sidecar's deploy router stages the deploy through the workflow-run substrate (priming the per-step repo or spawning the supervised workflow-process child) and returns the public key
-2. **Assembly** - Hub resolves skill dependencies and assembles the deploy tree
-3. **Pack transfer** - Hub streams the packfile to the sidecar; the workflow-process child reads the deploy tree from the substrate and begins inference (see Agent Deployment)
-4. **Health gate** - New version must pass health checks before receiving traffic (see the Health Protocol above: this gate is intended flow, not yet an automated control loop)
-5. **Traffic shift** - Registry updates discovery to point to new version
-6. **Drain** - Old version stops accepting new work, completes in-flight operations
-7. **Retirement** - Old version shuts down; deploy tag remains for rollback
+1. **Stage** - Hub sends `agent.deploy`; the sidecar's deploy router lays out the frozen source closure, spawns the supervised workflow-process child, which begins inference, and returns the public key (see Deploy Flow)
+2. **Health gate** - New version must pass health checks before receiving traffic (see the Health Protocol above: this gate is intended flow, not yet an automated control loop)
+3. **Traffic shift** - Registry updates discovery to point to new version
+4. **Drain** - Old version stops accepting new work, completes in-flight operations
+5. **Retirement** - Old version shuts down
 
 ### Rollback
 
@@ -1429,65 +1409,15 @@ If a new version fails health checks or exhibits problems in production (health-
 2. Traffic shifts back to previous version
 3. Failed version is marked unhealthy and stopped
 
-Rollback is fast because the previous version's package is still available and can be restarted immediately.
+A rollback is a new deployment of the previous version's source.
 
-## Agent Versioning: Git-Backed Definitions
+## Workflow Source
 
-Agent definitions are stored in git repositories on the hub, providing version control for the resources that constitute an agent.
-
-### Repository Contents
-
-The repository contains agent-specific resources:
-
-- Skills and skill configuration
-- System prompt (`prompt.md`)
-- Context builder configuration
-- Initial state
-- Capability grants
-- Dependency references (resolved at deployment)
-
-External skill libraries are not stored directly. Configuration files reference them, and the hub resolves these references when assembling the deploy tree.
-
-### Source Composition
-
-At deploy time, the hub assembles a flat tree from multiple sources via subtree merge:
-
-- The agent's own repository provides the prompt, configuration, and agent-specific skills
-- Referenced skill library repositories are merged under `deploy/skills/<name>/` prefixes
-
-The result is a single commit containing everything the harness needs. The sidecar receives this flat tree with no submodule metadata or external references to resolve. Provenance (which source repos and refs contributed) is recorded in the assembly commit on the hub side.
-
-How the hub discovers and resolves skill dependencies (registry format, version resolution, authentication to source repos) is not yet specified.
-
-### Skill Structure
-
-A skill is a directory within the deploy tree:
-
-```
-deploy/skills/<name>/
-  tool.json               (required: ToolDefinition schema)
-  handler.ts              (optional: executable implementation)
-  ...                     (additional assets as needed)
-```
-
-`tool.json` declares the tool's name, description, and input schema. The harness reads all `deploy/skills/*/tool.json` files at startup to build the tool list for inference calls.
-
-A skill with `tool.json` but no `handler.ts` is backed by the harness's built-in tool runner (e.g., `read_file`, `write_file`, `run_shell`). The tool name in `tool.json` maps to the internal implementation.
-
-Skills with `handler.ts` contain executable code loaded by the harness. The degree of sandboxing depends on the execution environment (see Architecture, Environment Integration). At minimum, skill handlers run in a separate isolate/process from the harness itself.
-
-### Repository Organization
-
-Repository structure is flexible:
-
-- **Tenant repository** - A single repository contains definitions for all agents within a tenant, organized by directory
-- **Agent repository** - Each agent has a dedicated repository
-
-Both approaches support standard git workflows for managing agent versions.
+A workflow's source is a package on a registry, a tarball, or a codebase in a subtree of a hub git asset at a pinned commit. At deploy time the hub resolves that source to a frozen dependency closure, and the operator approves the hash of the definition it produces. The `agent.deploy` frame carries the resulting pin, `sourceRef` (see Deploy Flow). See [Workflow Authoring](./WORKFLOW_AUTHORING.md) for how a workflow is packaged.
 
 ## Agent Deployment: Git Pack Transport
 
-Deploy content travels from the hub to sidecars as git packfiles streamed over the existing WebSocket connection. State travels back from sidecars to the hub using the same mechanism. This avoids requiring sidecars to have network access to external git hosts and reuses the authenticated WebSocket connection already in place. The protocol does not encrypt that connection; transport confidentiality depends on running it over TLS (`wss://`).
+Workflow-run history travels between the hub and sidecars as git packfiles streamed over the existing WebSocket connection: a sidecar pushes each run's commits to the hub, and the hub seeds a first deploy with its copy. This avoids requiring sidecars to have network access to external git hosts and reuses the authenticated WebSocket connection already in place. The protocol does not encrypt that connection; transport confidentiality depends on running it over TLS (`wss://`).
 
 ### Wire Frames
 
@@ -1530,31 +1460,17 @@ The Hub answers every transfer, rejecting one for an address the connection does
 
 ### Deploy Flow
 
-Deployment is a two-phase operation: stage and pack delivery. There is no separate session-start phase -- the workflow-process child begins inference once it is spawned and its deploy tree has landed.
+There is no separate session-start phase -- the workflow-process child begins inference once it is spawned.
 
-**Phase 1: Stage**
-
-1. Hub sends `agent.deploy` with the deploy config (credentials, materialized grants, providers, session ID) and, for a multi-step deploy, a workflow definition
-2. The sidecar's deploy router stages the deploy through the workflow-run substrate: a provision-step frame primes the per-step `agent-state` repo and records the hub key; a workflow frame spawns the supervised workflow-process child
-3. Sidecar responds with `agent.deploy.ack` containing the public key (hex-encoded)
-4. Hub stores the public key for future deploy-commit verification
-
-**Phase 2: Pack delivery**
-
-5. Hub assembles the deploy tree and produces a packfile
-6. Hub sends `repo.pack.push` frames (chunked, interleaved with other traffic)
-7. Hub sends `repo.pack.done` with target ref (`refs/heads/deploy`) and commit SHA
-8. Sidecar validates the packfile integrity
-9. Sidecar verifies the deploy commit signature against the recorded hub public key
-10. Sidecar unpacks objects into the git object store
-11. Sidecar updates `refs/heads/deploy` to the new commit
-12. Sidecar merges `deploy` into its agent branch (fast-forward)
-13. Sidecar checks out only `deploy/` paths via partial checkout (`filepaths: ["deploy/"], noUpdateHead: true`) — `state/` working-tree files are untouched because `filepaths` restricts the scope, `noUpdateHead` prevents moving the branch pointer
-14. Sidecar responds with `repo.pack.ack`; the workflow-process child reads the deploy tree from the substrate and runs
+1. Hub seeds a first deploy with its copy of the deployment's workflow-run history, as a `repo.pack` transfer, before the address is routed
+2. Hub sends `agent.deploy` with the deploy config (credentials, providers, session ID) and the workflow: its `sourceRef` pin, the approved definition hash, and the packs of any assets the source mounts
+3. The sidecar's deploy router lays out the frozen closure and spawns the supervised workflow-process child
+4. Sidecar responds with `agent.deploy.ack` containing the public key (hex-encoded)
+5. Hub stores the public key
 
 The agent is now running and can receive messages.
 
-Each provisioned deployment receives the full pack for its frozen deploy tree. Reconnect restores the existing local tree; it does not negotiate deploy refs or reconcile a newer definition.
+Reconnect restores the deployment's local copy; it does not negotiate refs or reconcile a newer definition.
 
 ### Undeploy Flow
 
@@ -1587,7 +1503,7 @@ The sidecar generates the deployment key and returns it in `agent.deploy.ack`, b
 
 A workflow deployment is pinned to its deploy-time definition. It keeps that definition — the frozen source closure the child re-evaluates, the workflow-asset repo, the per-step `agent-state` repos — until it is undeployed. A definition change made on the hub does **not** reconcile onto a live deployment; it affects only deployments created after the change.
 
-This holds across a sidecar↔Hub disconnect. Reconnect restores routing and resumes the locally persisted frozen definition; it does not negotiate deploy refs or pull newer definition bytes. Picking up a definition change requires a new deployment. This is orthogonal to recycle, which also keeps the same deploy tree while starting a fresh process.
+This holds across a sidecar↔Hub disconnect. Reconnect restores routing and resumes the locally persisted frozen definition; it does not negotiate refs or pull newer definition bytes. Picking up a definition change requires a new deployment. This is orthogonal to recycle, which also keeps the same definition while starting a fresh process.
 
 ### SSH Commit Signatures
 
@@ -1622,11 +1538,11 @@ The hub's signing public key is provisioned to the sidecar at registration time.
 
 ### Credential Isolation
 
-The deploy tree never contains credentials. API keys, OAuth tokens, and other secrets travel in the `sources` field of the wire-format `HarnessConfig` from `@intx/types/runtime` on the `agent.deploy` frame, which is ephemeral (not persisted to git). The `keys/` directory is excluded from git via `.gitignore`.
+A source closure never contains credentials. API keys, OAuth tokens, and other secrets travel in the `agent.deploy` frame's `workflow.credentials` and in `credentials.update` frames, which are ephemeral (not persisted to git). The `keys/` directory sits outside every git repository.
 
 ## Change History: Git-Backed Storage
 
-Agent-local data is stored in the same git repository as the deployed definition, providing revision control as a native capability. State lives under `state/` paths on a per-agent branch, while the deployed definition lives under `deploy/` (see Agent Deployment below).
+A deployment's data is stored in its workflow-run git repository, providing revision control as a native capability. Each step's state lives beside its run's event log (see Step state above).
 
 ### Storage Backends
 
@@ -1640,44 +1556,27 @@ The harness abstracts these differences - agents interact with the same history 
 
 ### Repository Structure
 
-Each agent has a single git repository:
+Each deployment has one workflow-run git repository. Its runs are sibling subtrees: an anchor run and any child runs it spawned.
 
 ```
-<agent-dir>/
-  .git/
-  deploy/               # Hub-managed (read-only on sidecar)
-    prompt.md
-    config.json
-    skills/
-      <name>/
-        tool.json
-        handler.ts
-  state/                # Sidecar-managed (per-agent journal)
-    context.json
-    audit/
-      <session-id>/
-        <call-id>.json
-  keys/                 # Not tracked in git (.gitignore)
-    id_ed25519
-    id_ed25519.pub
+runs/<runId>/
+  events/<seq>.json             # the run's event log
+  blobs/                        # content-addressed payloads
+  parts/                        # mail parts
+  grants.json                   # the run's committed grants
+  steps/<urlEncoded(stepId)>/
+    state/                      # checkpoint and write-ahead log
 ```
 
-The `deploy/` subtree is checked out from the deploy ref. The `state/` subtree is the agent's working data. The `keys/` directory holds the agent's Ed25519 keypair and is excluded from git via `.gitignore`.
+See HARNESS_DESIGN.md for the layout under `SIDECAR_DATA_DIR`, including the deployment's `keys/` directory.
 
 ### Ref Structure
 
 ```
-refs/
-  heads/
-    deploy                  (latest deploy commit, hub-managed)
-  tags/
-    deploy/v1               (historical deploy versions)
-    deploy/v2
-  agents/
-    <agent-id>              (per-agent state branch)
+refs/heads/
+  main                          (each run's events, grants, and step state)
+  events                        (the inbox claim-check)
 ```
-
-The agent branch forks from the deploy ref at launch time and keeps that deploy commit for the deployment's life; a new deploy commit means a new deployment.
 
 ### Commit Policy
 

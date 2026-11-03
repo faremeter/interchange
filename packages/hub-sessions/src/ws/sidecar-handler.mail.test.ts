@@ -2105,18 +2105,10 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     ]);
   });
 
-  // A non-run address bound on the allocation is routed. One after the
-  // workflow address must still be routed on the attempt that parks, and an
-  // address with no route is reported then, not when the hold later settles.
-  const peer = "peer@example.test";
-  const otherStep = "step@example.test";
+  // An address with no route is reported on the attempt that parks the workflow
+  // address, not when the hold later settles.
   const later = "later@example.test";
-  const mixedRecipients = [
-    peer,
-    TEST_IDENTITY.workflowRunAddress,
-    otherStep,
-    later,
-  ];
+  const mixedRecipients = [TEST_IDENTITY.workflowRunAddress, later];
 
   function inboundAddresses(ws: { sent: string[] }, address: string): number {
     return framesOfType(ws, "mail.inbound").filter(
@@ -2140,8 +2132,6 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     const ws = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    await router.bindAllocatedStepRoute(TEST_TARGET, peer);
-    await router.bindAllocatedStepRoute(TEST_TARGET, otherStep);
     router.handleMessage(
       ws,
       JSON.stringify({
@@ -2156,14 +2146,12 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     return { router, ws, undelivered };
   }
 
-  test("a not-ready workflow recipient leaves its co-recipients on this attempt", async () => {
+  test("a not-ready workflow recipient reports an unrouted co-recipient on this attempt", async () => {
     let ready = false;
     const { router, ws, undelivered } = await sendMixedResolutionMail(
       () => ready,
     );
 
-    expect(inboundAddresses(ws, peer)).toBe(1);
-    expect(inboundAddresses(ws, otherStep)).toBe(1);
     expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(0);
     expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
 
@@ -2173,8 +2161,6 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     });
     await tick();
 
-    expect(inboundAddresses(ws, peer)).toBe(1);
-    expect(inboundAddresses(ws, otherStep)).toBe(1);
     expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(1);
     expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
     expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
@@ -2188,8 +2174,6 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       () => ready,
     );
 
-    expect(inboundAddresses(ws, peer)).toBe(1);
-    expect(inboundAddresses(ws, otherStep)).toBe(1);
     expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(0);
     expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
 
@@ -2199,8 +2183,6 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     await tick();
 
     expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(0);
-    expect(inboundAddresses(ws, peer)).toBe(1);
-    expect(inboundAddresses(ws, otherStep)).toBe(1);
     expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
 
     ready = true;
@@ -2210,8 +2192,6 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     await tick();
 
     expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(1);
-    expect(inboundAddresses(ws, peer)).toBe(1);
-    expect(inboundAddresses(ws, otherStep)).toBe(1);
     expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
     expect(JSON.stringify(framesOfType(ws, "run.grants"))).not.toContain(
       "recipient-key",

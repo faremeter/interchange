@@ -102,10 +102,14 @@ describe("subscribeKind replay over a sealed run", () => {
       new TextEncoder().encode(blob1),
       new TextEncoder().encode(blob2),
     ]);
-    await store.writeTree(principal, repoId, REF, {
-      files: { "runs/r1/events.jsonl": combined },
-      clearPrefix: "runs/r1/events/",
+    await store.writeTreeDelta(principal, repoId, REF, {
+      changedPathPrefixes: new Set(["runs/r1/"]),
       message: "compact r1",
+      computeDelta: () =>
+        Promise.resolve({
+          puts: { "runs/r1/events.jsonl": combined },
+          deletes: ["runs/r1/events/"],
+        }),
     });
 
     // Confirm the tip really is sealed (events/ gone, events.jsonl present).

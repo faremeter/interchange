@@ -265,16 +265,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       );
 
-      const assetService = createAssetService({
-        db: h.db,
-        repoStore: env.hub.agentRepoStore.repoStore,
-      });
       sessionService = createSessionService({
         loadRunCredentials: async () => null,
         sidecarRouter: env.hub.router,
         sidecarAllocationRouter: env.hub.router,
         agentRepoStore: env.hub.agentRepoStore,
-        assetService,
         db: h.db,
         toolPackageRegistries: {
           httpRegistries: new Map([

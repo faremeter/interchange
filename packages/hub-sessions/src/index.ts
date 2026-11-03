@@ -11,16 +11,11 @@ export {
   createWorkflowDispatchProjection,
   DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
 } from "./workflow-dispatch-projection";
-export {
-  createAgentRepoStore,
-  type AgentRepoStore,
-  type DeployContent,
-} from "./agent-repo";
+export { createAgentRepoStore, type AgentRepoStore } from "./agent-repo";
 export {
   createSessionService,
   recoverSenderDeploy,
   SessionLaunchError,
-  bridgeOrchestratorDeployContent,
   deployCodeSourcedWorkflow,
   type SessionService,
   type DeployWorkflowDefinitionResult,

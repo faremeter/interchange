@@ -1,18 +1,13 @@
 // Materialize an asset pack as plain files under a workspace mount path.
 //
-// Asset packs are git packfiles produced by the hub for assets attached
-// to an agent (today only `skill`). The sidecar receives the pack at
-// session start and writes its tree contents under
-// `<workspaceRoot>/<mountPath>/`. The workspace is plain files, not a
-// git working tree — asset packs must not share the agent's deploy
-// `.git/` (separate ref namespaces, separate object lifecycles), so we
-// index the pack against a scratch git directory and copy the tree out.
+// Asset packs are git packfiles produced by the hub for the assets a
+// workflow source mounts. The sidecar receives them on the deploy frame and
+// writes their tree contents under `<workspaceRoot>/<mountPath>/`. The
+// workspace is plain files, not a git working tree, so we index the pack
+// against a scratch git directory and copy the tree out.
 //
-// Asset packs in v1 are unsigned: they originate from the hub itself
-// (synthetic content authored via the asset service) and are validated
-// by the kind handler's `validatePush` on the hub-side write path.
-// The cryptographic signature scheme that `applyDeployPack` enforces
-// does not apply.
+// Asset packs are unsigned: they originate from the hub itself and are
+// validated by the kind handler's `validatePush` on the hub-side write path.
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
