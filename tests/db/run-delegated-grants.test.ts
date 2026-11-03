@@ -488,6 +488,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     describe("floors and standing decisions", () => {
+      // Re-derivation keys a row by its conditions without evaluating them,
+      // so any conditions body serves here, even this `tool` one that the
+      // probe gate would refuse on a declared requirement.
       const ASK_TOOL: GrantRequirement = {
         resource: "tool:search",
         action: "invoke",

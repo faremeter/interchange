@@ -18,14 +18,17 @@
 //   5. Reject a grant requirement inside the `mail.accept` namespace, and a
 //      `mail.accept` walk marker the projection's `mailAccept` does not
 //      produce, so the accept surface comes only from the hashed `mailAccept`.
-//   6. Reject a projection carrying a step the grant walk left no record for,
+//   6. Reject a declared grant requirement whose conditions a run cannot
+//      evaluate, so the frozen requirements only mint grant rows that
+//      authorization can evaluate.
+//   7. Reject a projection carrying a step the grant walk left no record for,
 //      so no deployment can schedule a step whose grants nobody approved.
-//   7. Gate the advisory grant set AND the definition's declared grant
+//   8. Gate the advisory grant set AND the definition's declared grant
 //      requirements against the approval policy: an operator `ApprovalSet`
 //      requires every grant the probe surfaced and every requirement it
 //      declared to be approved or the gate fails, while `approve-probed`
 //      approves exactly what the probe surfaced.
-//   8. Freeze the approved wire hash onto the definition version row, keyed by
+//   9. Freeze the approved wire hash onto the definition version row, keyed by
 //      the definition's selector, and return the frozen approved grant set.
 //
 // The frozen approved set is the single source of truth for the definition's
@@ -37,6 +40,7 @@
 import { type } from "arktype";
 import { and, eq } from "drizzle-orm";
 
+import { HUB_CONDITION_REGISTRY, validateGrantConditions } from "@intx/authz";
 import type { DBExecutor } from "@intx/db";
 import { workflowDefinitionVersion } from "@intx/db/schema";
 import {
@@ -135,8 +139,9 @@ export type PersistFrozenApprovalFn = (
  * grant requirements the operator did not approve, a trigger type the runtime
  * does not implement, a grant requirement inside the `mail.accept` namespace, a
  * `mail.accept` walk marker the projection's `mailAccept` does not produce,
- * credential bindings that cannot be delivered, and an executable step the
- * grant walk left no record for.
+ * credential bindings that cannot be delivered, a declared grant requirement
+ * whose conditions a run cannot evaluate, and an executable step the grant
+ * walk left no record for.
  */
 export type ProbeGateResult =
   | {
@@ -215,6 +220,12 @@ export type ProbeGateResult =
     }
   | {
       readonly ok: false;
+      readonly reason: "grant_requirement_conditions_invalid";
+      /** Declared requirements whose conditions fail the check, in declared order. */
+      readonly invalidGrantRequirements: readonly InvalidGrantRequirement[];
+    }
+  | {
+      readonly ok: false;
       readonly reason: "steps_without_grant_record";
       /** Every executable step the grant-walk snapshot accounts for nothing at. */
       readonly stepsWithoutGrantRecord: readonly StepWithoutGrantRecord[];
@@ -226,6 +237,15 @@ export type ProbeGateResult =
        */
       readonly message: string;
     };
+
+/**
+ * A declared grant requirement whose conditions a run cannot evaluate, with
+ * one problem per bad condition entry.
+ */
+export type InvalidGrantRequirement = {
+  readonly requirement: GrantRequirement;
+  readonly problems: readonly string[];
+};
 
 /**
  * One step the deployment can execute that the probe's grant-walk snapshot
@@ -256,6 +276,9 @@ export type ProbeGateRefusal = Extract<ProbeGateResult, { ok: false }>;
 // A requirement is named by what it asks for and whose authority it draws on.
 // Its conditions are left out: they are free-form and can be large, and the
 // action, resource, and source are what tell the author which one to change.
+// A refusal about the conditions themselves adds the validator's problem
+// text instead. That text can quote author values, so it is JSON-encoded to
+// keep each problem's bounds unambiguous.
 function describeGrantRequirement(requirement: GrantRequirement): string {
   return `${requirement.action} on ${requirement.resource} (${requirement.source})`;
 }
@@ -282,6 +305,8 @@ export function describeProbeGateRefusal(refusal: ProbeGateRefusal): string {
       return `mail_accept_markers_undeclared: the projection's mailAccept does not produce ${refusal.undeclaredMailAcceptMarkers.join(", ")}`;
     case "credential_bindings_invalid":
       return `credential_bindings_invalid: ${refusal.message}`;
+    case "grant_requirement_conditions_invalid":
+      return `grant_requirement_conditions_invalid: a requirement may carry only conditions a run can evaluate; declared: ${refusal.invalidGrantRequirements.map(({ requirement, problems }) => `${describeGrantRequirement(requirement)} ${JSON.stringify(problems)}`).join("; ")}`;
     case "self_run_resource_misplaced":
       return `self_run_resource_misplaced: a requirement names its own run only as "${SELF_RUN_RESOURCE}"; declared: ${refusal.grantRequirements.map(describeGrantRequirement).join("; ")}`;
     case "steps_without_grant_record":
@@ -537,7 +562,8 @@ export type GateAndFreezeArgs = {
  * a projection whose triggers include a reserved-but-unimplemented type -- not
  * a security check, but the layer a pinned closure cannot carry a stale copy
  * of, so it is where a workflow that could only sit inert is caught -- one
- * whose credential bindings cannot be delivered to a consumer it runs, and one
+ * whose credential bindings cannot be delivered to a consumer it runs, one
+ * declaring a grant requirement whose conditions a run cannot evaluate, and one
  * whose executable closure reaches a step the grant walk left no record for --
  * the layer holding both halves of the probe answer at once, and a presence
  * check on those records rather than a check that any record's contents are
@@ -668,6 +694,36 @@ export async function gateAndFreezeProbeResult(
       ok: false,
       reason: "self_run_resource_misplaced",
       grantRequirements: misplacedSelf,
+    };
+  }
+
+  // A requirement's conditions are copied into the grant rows a run mints on
+  // its own principal, which the hub, the run child, and the credential gate
+  // each evaluate with their own registry. A condition one of them cannot
+  // evaluate would throw at every authorization the row reaches there, so it
+  // is an author error, refused before the operator checks: an approval match
+  // compares conditions, so a malformed one would otherwise read as
+  // unapproved.
+  const invalidGrantRequirements: InvalidGrantRequirement[] = [];
+  for (const requirement of probeResult.grantWalkSnapshot.grantRequirements) {
+    const problems = validateGrantConditions(
+      {
+        resource: requirement.resource,
+        action: requirement.action,
+        conditions: requirement.conditions ?? null,
+        onRunPrincipal: true,
+      },
+      HUB_CONDITION_REGISTRY,
+    );
+    if (problems.length > 0) {
+      invalidGrantRequirements.push({ requirement, problems });
+    }
+  }
+  if (invalidGrantRequirements.length > 0) {
+    return {
+      ok: false,
+      reason: "grant_requirement_conditions_invalid",
+      invalidGrantRequirements,
     };
   }
 

@@ -420,3 +420,139 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe("gateAndFreezeProbeResult declared requirement conditions", () => {
+  const WINDOW = { after: "09:00", before: "17:00", timezone: "UTC" };
+
+  function conditioned(conditions: Record<string, unknown>): GrantRequirement {
+    return { ...FORGED_NAMED, conditions };
+  }
+
+  async function gate(
+    grantRequirements: GrantRequirement[],
+    approvals: ApprovalSet | { kind: "approve-probed" },
+  ) {
+    const probeResult = await makeProbeResult({
+      grants: [],
+      grantRequirements,
+    });
+    const { persist, calls } = recordingPersist("def-conditions");
+    const result = await gateAndFreezeProbeResult({
+      assetId: "asset-1",
+      source: DEFINITION_SOURCE,
+      probeResult,
+      approvals,
+      persist,
+    });
+    return { result, calls };
+  }
+
+  test("refuses a time_window missing its timezone and freezes nothing", async () => {
+    const bad = conditioned({
+      time_window: { after: "09:00", before: "17:00" },
+    });
+    const { result, calls } = await gate([bad], { kind: "approve-probed" });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "grant_requirement_conditions_invalid",
+      invalidGrantRequirements: [
+        {
+          requirement: bad,
+          problems: ["time_window: timezone must be a string (was missing)"],
+        },
+      ],
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("refuses an unregistered condition", async () => {
+    const bad = conditioned({ max_spend_per_day: 100 });
+    const { result, calls } = await gate([bad], { kind: "approve-probed" });
+
+    if (result.ok || result.reason !== "grant_requirement_conditions_invalid") {
+      throw new Error(`unexpected gate result: ${JSON.stringify(result)}`);
+    }
+    expect(result.invalidGrantRequirements[0]?.problems).toEqual([
+      'Unknown condition: "max_spend_per_day"',
+    ]);
+    expect(calls).toEqual([]);
+  });
+
+  test("refuses a tool condition, which the run child cannot evaluate", async () => {
+    const bad = conditioned({ tool: "tool:pkg" });
+    const { result } = await gate([bad], { kind: "approve-probed" });
+
+    if (result.ok || result.reason !== "grant_requirement_conditions_invalid") {
+      throw new Error(`unexpected gate result: ${JSON.stringify(result)}`);
+    }
+    expect(result.invalidGrantRequirements[0]?.problems).toEqual([
+      'a workflow run cannot evaluate this grant: Unknown condition: "tool"',
+    ]);
+  });
+
+  test("refuses a time window on credential use, which the credential gate cannot evaluate", async () => {
+    const bad: GrantRequirement = {
+      resource: "credential:crd_1",
+      action: "use",
+      source: "creator",
+      conditions: { time_window: WINDOW },
+    };
+    const { result } = await gate([bad], { kind: "approve-probed" });
+
+    if (result.ok || result.reason !== "grant_requirement_conditions_invalid") {
+      throw new Error(`unexpected gate result: ${JSON.stringify(result)}`);
+    }
+    expect(result.invalidGrantRequirements[0]?.problems).toEqual([
+      'credential use cannot evaluate this grant: Unknown condition: "time_window"',
+    ]);
+  });
+
+  test("refuses any condition on a wildcard requirement", async () => {
+    const bad: GrantRequirement = {
+      resource: "*",
+      action: "*",
+      source: "creator",
+      conditions: { time_window: WINDOW },
+    };
+    const { result } = await gate([bad], { kind: "approve-probed" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("grant_requirement_conditions_invalid");
+    }
+  });
+
+  test("names only the requirements whose conditions fail", async () => {
+    const good = conditioned({ time_window: WINDOW });
+    const bad = { ...conditioned({ bogus: 1 }), resource: "wallet:wal_other" };
+    const { result } = await gate([good, bad], { kind: "approve-probed" });
+
+    if (result.ok || result.reason !== "grant_requirement_conditions_invalid") {
+      throw new Error(`unexpected gate result: ${JSON.stringify(result)}`);
+    }
+    expect(result.invalidGrantRequirements.map((r) => r.requirement)).toEqual([
+      bad,
+    ]);
+  });
+
+  test("refuses malformed conditions before the approval check", async () => {
+    // With no approval covering it, the requirement would otherwise be
+    // reported as unapproved, which an operator would act on instead.
+    const bad = conditioned({ bogus: 1 });
+    const { result } = await gate([bad], createApprovalSet([], []));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("grant_requirement_conditions_invalid");
+    }
+  });
+
+  test("freezes a requirement with a valid time_window", async () => {
+    const good = conditioned({ time_window: WINDOW });
+    const { result, calls } = await gate([good], { kind: "approve-probed" });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+});
