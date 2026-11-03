@@ -362,7 +362,7 @@ describe("createWorkflowRunPackClient", () => {
       client.push({
         agentAddress: "a@example.com",
         generation: 1,
-        repoId: { kind: "agent-state", id: "a@example.com" },
+        repoId: { kind: "skill", id: "a@example.com" },
         ref: "refs/heads/deploy",
       }),
     ).rejects.toThrow(/workflow-run/);
@@ -720,7 +720,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
 
     await facade.writeTreePreservingPrefix(
       { kind: "hub" },
-      { kind: "agent-state", id: "a-1" },
+      { kind: "skill", id: "a-1" },
       "refs/heads/deploy",
       {
         preservePrefix: "deploy/",

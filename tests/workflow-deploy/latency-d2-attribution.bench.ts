@@ -22,7 +22,7 @@
 //                 SUMS them per message and reports the COUNT.
 //   markconsumed  consumed/ dedup WRITE, AFTER reply-produced (paid
 //                 OUTSIDE the window).
-//   wal           D1 conversation WAL append (agent-state/...), the
+//   wal           D1 conversation WAL append (step state), the
 //                 control leg; should be small + flat post-D1.
 //
 // The TRUE per-message substrate tax is the SUM of all five, including

@@ -6,7 +6,6 @@ import { type } from "arktype";
  * the substrate package re-exports it for handler authors.
  */
 export const RepoKind = type.enumerated(
-  "agent-state",
   "skill",
   "package-registry",
   "workflow",

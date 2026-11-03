@@ -33,7 +33,7 @@ written), interrupt the process.
   `trend.unified.slopeMsPerMessage` (ms added per sustained message).
 - **`latency-d2-attribution.bench.ts`** -- splits the unified path's
   per-message substrate cost across the individual git-commit legs
-  (dequeue, run-event, agent-state WAL, ...); writes `d2-results.json`.
+  (dequeue, run-event, step-state WAL, ...); writes `d2-results.json`.
   Read `total.slopeMsPerMessage` and `perLeg[<leg>].slopeMsPerMessage`.
 
 A healthy substrate holds the slopes flat (near zero) as `--messages`

@@ -43,11 +43,10 @@ afterAll(async () => {
 
 function permissiveHandler(directoryPrefix: string): KindHandler {
   return {
-    // The scheduler test uses an `agent-state`-shaped repo because
-    // the workflow-run kind handler is not yet registered. The
-    // scheduler does not care about the kind discriminator -- only
+    // The scheduler test uses a `skill`-shaped repo with a permissive handler
+    // to skip event schema checks. The scheduler does not care about the kind discriminator -- only
     // that the substrate accepts writes under `runs/<runId>/events/`.
-    kind: "agent-state",
+    kind: "skill",
     directoryPrefix,
     validatePush(): ValidatePushResult {
       return { ok: true };
@@ -227,11 +226,11 @@ describe("workflow-host scheduler", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-oneshot"),
+          skill: permissiveHandler("workflow-runs-oneshot"),
         },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-a" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-a" };
       const runId = "r1";
 
       const fireAtMs = Date.now() + 40;
@@ -288,11 +287,11 @@ describe("workflow-host scheduler", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-recovery"),
+          skill: permissiveHandler("workflow-runs-recovery"),
         },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-b" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-b" };
       const runId = "r1";
 
       const farFuture = Date.now() + 60_000;
@@ -346,11 +345,11 @@ describe("workflow-host scheduler", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-committed"),
+          skill: permissiveHandler("workflow-runs-committed"),
         },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-d" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-d" };
       const runId = "r1";
 
       const farFuture = Date.now() + 60_000;
@@ -408,11 +407,11 @@ describe("workflow-host scheduler", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-compacted"),
+          skill: permissiveHandler("workflow-runs-compacted"),
         },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-e" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-e" };
 
       const farFuture = Date.now() + 60_000;
       await seedTimerSet(store, repoId, "r1", 0, "t-live", farFuture);
@@ -458,11 +457,11 @@ describe("workflow-host scheduler", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-badjson"),
+          skill: permissiveHandler("workflow-runs-badjson"),
         },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-f" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-f" };
 
       await store.writeTree(principal, repoId, REF, {
         files: { "runs/r1/events/0.json": "{ not json" },
@@ -494,11 +493,11 @@ describe("workflow-host scheduler", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-badname"),
+          skill: permissiveHandler("workflow-runs-badname"),
         },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-g" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-g" };
 
       // A foreign name under events/ is corruption; recovery surfaces it
       // rather than silently dropping the blob.
@@ -540,11 +539,11 @@ describe("workflow-host scheduler", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-cron"),
+          skill: permissiveHandler("workflow-runs-cron"),
         },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-c" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-c" };
       const runId = "r1";
 
       const inThePast = Date.now() - 60_000;
@@ -592,11 +591,11 @@ describe("workflow-host scheduler", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-stop"),
+          skill: permissiveHandler("workflow-runs-stop"),
         },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-d" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-d" };
       const runId = "r1";
 
       const fireAtMs = Date.now() + 1_000;
@@ -645,11 +644,11 @@ describe("workflow-host scheduler", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-live"),
+          skill: permissiveHandler("workflow-runs-live"),
         },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-live" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-live" };
       const runId = "r-live";
 
       // Seed the run's events tree so it exists at start-time. The
@@ -827,11 +826,11 @@ describe("workflow-host scheduler", () => {
       dataDir,
       signingKey,
       handlers: {
-        "agent-state": permissiveHandler("workflow-runs-buffered"),
+        skill: permissiveHandler("workflow-runs-buffered"),
       },
       authorize: allowAll,
     });
-    const repoId: RepoId = { kind: "agent-state", id: "deployment-buffered" };
+    const repoId: RepoId = { kind: "skill", id: "deployment-buffered" };
     const runId = "r-timer-buffered";
     const runtimeStore = runtimeStoreFor(store, repoId);
     const at = "2026-01-01T00:00:00.000Z";
@@ -891,11 +890,11 @@ describe("workflow-host scheduler", () => {
       dataDir,
       signingKey,
       handlers: {
-        "agent-state": permissiveHandler("workflow-runs-empty"),
+        skill: permissiveHandler("workflow-runs-empty"),
       },
       authorize: allowAll,
     });
-    const repoId: RepoId = { kind: "agent-state", id: "deployment-empty" };
+    const repoId: RepoId = { kind: "skill", id: "deployment-empty" };
     const runId = "r-timer-empty";
     const runtimeStore = runtimeStoreFor(store, repoId);
     const at = "2026-01-01T00:00:00.000Z";
@@ -945,11 +944,11 @@ describe("workflow-host scheduler", () => {
       dataDir,
       signingKey,
       handlers: {
-        "agent-state": permissiveHandler("workflow-runs-fired"),
+        skill: permissiveHandler("workflow-runs-fired"),
       },
       authorize: allowAll,
     });
-    const repoId: RepoId = { kind: "agent-state", id: "deployment-fired" };
+    const repoId: RepoId = { kind: "skill", id: "deployment-fired" };
     const runId = "r-timer-fired";
     const runtimeStore = runtimeStoreFor(store, repoId);
     const at = "2026-01-01T00:00:00.000Z";
@@ -999,11 +998,11 @@ describe("workflow-host scheduler", () => {
       dataDir,
       signingKey,
       handlers: {
-        "agent-state": permissiveHandler("workflow-runs-terminal"),
+        skill: permissiveHandler("workflow-runs-terminal"),
       },
       authorize: allowAll,
     });
-    const repoId: RepoId = { kind: "agent-state", id: "deployment-terminal" };
+    const repoId: RepoId = { kind: "skill", id: "deployment-terminal" };
     const runId = "r-timer-terminal";
     const runtimeStore = runtimeStoreFor(store, repoId);
     const at = "2026-01-01T00:00:00.000Z";

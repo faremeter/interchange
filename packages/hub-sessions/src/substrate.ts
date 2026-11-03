@@ -10,7 +10,7 @@
 //
 // This entry exposes only the substrate layer, so any consumer that needs
 // repo/substrate access without the control-plane services -- for example a
-// process that reads and writes the agent-state and workflow-run repos but
+// process that reads and writes the workflow-run repos but
 // runs nowhere near a database -- can import it without dragging `@intx/db`
 // into its boot graph. Every symbol re-exported here is defined in a db-free
 // module. The barrel still re-exports all of these for hub-side consumers.

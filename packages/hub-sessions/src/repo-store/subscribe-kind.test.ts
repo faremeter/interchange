@@ -39,7 +39,7 @@ afterAll(async () => {
 
 function createPermissiveHandler(): KindHandler {
   return {
-    kind: "agent-state",
+    kind: "skill",
     directoryPrefix: "repos-subscribe-kind",
     validatePush(): ValidatePushResult {
       return { ok: true };
@@ -52,7 +52,7 @@ function createPermissiveHandler(): KindHandler {
 
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 const principal: Principal = { kind: "test" };
-const repoId: RepoId = { kind: "agent-state", id: "subject" };
+const repoId: RepoId = { kind: "skill", id: "subject" };
 const REF = "refs/heads/test";
 
 const TimerFired = type({
@@ -76,7 +76,7 @@ describe("subscribeKind", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createPermissiveHandler() },
+      handlers: { skill: createPermissiveHandler() },
       authorize: allowAll,
     });
 
@@ -117,7 +117,7 @@ describe("subscribeKind", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createPermissiveHandler() },
+      handlers: { skill: createPermissiveHandler() },
       authorize: allowAll,
     });
 
@@ -150,7 +150,7 @@ describe("subscribeKind", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createPermissiveHandler() },
+      handlers: { skill: createPermissiveHandler() },
       authorize: allowAll,
     });
 
@@ -215,7 +215,7 @@ describe("subscribeKind added-blob handling", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createPermissiveHandler() },
+      handlers: { skill: createPermissiveHandler() },
       authorize: allowAll,
     });
     // A single commit adds events across two runs out of natural order.
@@ -257,7 +257,7 @@ describe("subscribeKind added-blob handling", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createPermissiveHandler() },
+      handlers: { skill: createPermissiveHandler() },
       authorize: allowAll,
     });
     await store.writeTree(principal, repoId, REF, {
@@ -284,7 +284,7 @@ describe("subscribeKind added-blob handling", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createPermissiveHandler() },
+      handlers: { skill: createPermissiveHandler() },
       authorize: allowAll,
     });
     await store.writeTree(principal, repoId, REF, {
@@ -306,7 +306,7 @@ describe("subscribeKind added-blob handling", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createPermissiveHandler() },
+      handlers: { skill: createPermissiveHandler() },
       authorize: allowAll,
     });
     await store.writeTree(principal, repoId, REF, {

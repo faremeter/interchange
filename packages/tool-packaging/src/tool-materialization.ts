@@ -477,8 +477,8 @@ export async function persistActiveDeployIdWithFallback(
  * The files live in the agent's storeDir so a future
  * git-commit-of-audit-entries pass can pick them up without rerouting
  * the data. v1 writes them directly to disk; the formal git-commit
- * step (turning these into a signed audit-trail commit on the
- * agent-state repo) is a separate plumbing piece.
+ * step (turning these into a signed audit-trail commit) is a separate
+ * plumbing piece.
  */
 async function writeRejectedApplyAudit(args: {
   storeDir: string;

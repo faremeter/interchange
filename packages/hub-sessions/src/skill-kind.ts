@@ -179,8 +179,8 @@ async function buildSkillIndex(
   const candidates = [...topLevelTreePaths].sort();
   for (const candidate of candidates) {
     // Skill subdirectories are arbitrarily named (`<skill-name>/`), so
-    // there is no enumerable allowlist of names the way the workflow,
-    // package-registry, and agent-state handlers use. The structural
+    // there is no enumerable allowlist of names the way the workflow and
+    // package-registry handlers use. The structural
     // distinction is tree-vs-blob: a top-level tree entry is a skill
     // subdir, a top-level blob (e.g. `.gitignore` seeded by the
     // genesis init) is not.

@@ -44,12 +44,11 @@ afterAll(async () => {
 
 function permissiveHandler(directoryPrefix: string): KindHandler {
   return {
-    // The signal-channel test uses an `agent-state`-shaped repo for
-    // the same reason the scheduler test does: the workflow-run kind
-    // handler is not yet registered. The signal channel does not care
+    // The signal-channel test uses a `skill`-shaped repo with a permissive
+    // handler to skip event schema checks. The signal channel does not care
     // about the kind discriminator -- only that the substrate accepts
     // writes under `runs/<runId>/events/`.
-    kind: "agent-state",
+    kind: "skill",
     directoryPrefix,
     validatePush(): ValidatePushResult {
       return { ok: true };
@@ -98,10 +97,10 @@ describe("workflow-host signal channel", () => {
       const store = createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": permissiveHandler("workflow-runs-live") },
+        handlers: { skill: permissiveHandler("workflow-runs-live") },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-live" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-live" };
       const runId = "r-live";
       const box = makeStateBox(runId);
 
@@ -142,10 +141,10 @@ describe("workflow-host signal channel", () => {
       const store = createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": permissiveHandler("workflow-runs-resume") },
+        handlers: { skill: permissiveHandler("workflow-runs-resume") },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-resume" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-resume" };
       const runId = "r-resume";
       const box = makeStateBox(runId);
       // Seed unconsumedSignals as if a log replay observed a
@@ -187,10 +186,10 @@ describe("workflow-host signal channel", () => {
       const store = createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": permissiveHandler("workflow-runs-abort") },
+        handlers: { skill: permissiveHandler("workflow-runs-abort") },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-abort" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-abort" };
       const runId = "r-abort";
       const box = makeStateBox(runId);
 
@@ -239,12 +238,12 @@ describe("workflow-host signal channel", () => {
         dataDir,
         signingKey,
         handlers: {
-          "agent-state": permissiveHandler("workflow-runs-isolated"),
+          skill: permissiveHandler("workflow-runs-isolated"),
         },
         authorize: allowAll,
       });
       const repoId: RepoId = {
-        kind: "agent-state",
+        kind: "skill",
         id: "deployment-isolated",
       };
       const runId = "r-isolated";
@@ -290,10 +289,10 @@ describe("workflow-host signal channel", () => {
       const store = createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": permissiveHandler("workflow-runs-relive") },
+        handlers: { skill: permissiveHandler("workflow-runs-relive") },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-relive" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-relive" };
       const runId = "r-relive";
       const box = makeStateBox(runId);
 
@@ -366,10 +365,10 @@ describe("workflow-host signal channel", () => {
       const store = createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": permissiveHandler("workflow-runs-fifo") },
+        handlers: { skill: permissiveHandler("workflow-runs-fifo") },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-fifo" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-fifo" };
       const runId = "r-fifo";
       const box = makeStateBox(runId);
 
@@ -432,10 +431,10 @@ describe("workflow-host signal channel", () => {
       const store = createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": permissiveHandler("workflow-runs-dedup") },
+        handlers: { skill: permissiveHandler("workflow-runs-dedup") },
         authorize: allowAll,
       });
-      const repoId: RepoId = { kind: "agent-state", id: "deployment-dedup" };
+      const repoId: RepoId = { kind: "skill", id: "deployment-dedup" };
       const runId = "r-dedup";
       const box = makeStateBox(runId);
 
@@ -474,10 +473,10 @@ describe("workflow-host signal channel", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": permissiveHandler("workflow-runs-buffered") },
+      handlers: { skill: permissiveHandler("workflow-runs-buffered") },
       authorize: allowAll,
     });
-    const repoId: RepoId = { kind: "agent-state", id: "deployment-buffered" };
+    const repoId: RepoId = { kind: "skill", id: "deployment-buffered" };
     const runId = "r-buffered";
     const box = makeStateBox(runId);
     const runtimeStore = runtimeStoreFor(store, repoId);
@@ -525,12 +524,12 @@ describe("workflow-host signal channel", () => {
       dataDir,
       signingKey,
       handlers: {
-        "agent-state": permissiveHandler("workflow-runs-empty-buffer"),
+        skill: permissiveHandler("workflow-runs-empty-buffer"),
       },
       authorize: allowAll,
     });
     const repoId: RepoId = {
-      kind: "agent-state",
+      kind: "skill",
       id: "deployment-empty-buffer",
     };
     const runId = "r-empty-buffer";
@@ -569,10 +568,10 @@ describe("workflow-host signal channel", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": permissiveHandler("workflow-runs-terminal") },
+      handlers: { skill: permissiveHandler("workflow-runs-terminal") },
       authorize: allowAll,
     });
-    const repoId: RepoId = { kind: "agent-state", id: "deployment-terminal" };
+    const repoId: RepoId = { kind: "skill", id: "deployment-terminal" };
     const runId = "r-terminal";
     const box = makeStateBox(runId);
     const runtimeStore = runtimeStoreFor(store, repoId);
@@ -611,10 +610,10 @@ describe("workflow-host signal channel", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": permissiveHandler("workflow-runs-peek") },
+      handlers: { skill: permissiveHandler("workflow-runs-peek") },
       authorize: allowAll,
     });
-    const repoId: RepoId = { kind: "agent-state", id: "deployment-peek" };
+    const repoId: RepoId = { kind: "skill", id: "deployment-peek" };
     const runId = "r-peek";
     const state: RunState = {
       ...emptyState(runId),
@@ -716,10 +715,10 @@ describe("workflow-host signal channel", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": permissiveHandler("workflow-runs-slots") },
+      handlers: { skill: permissiveHandler("workflow-runs-slots") },
       authorize: allowAll,
     });
-    const repoId: RepoId = { kind: "agent-state", id: "deployment-slots" };
+    const repoId: RepoId = { kind: "skill", id: "deployment-slots" };
     const runId = "r-slots";
     const channel = createWorkflowHostSignalChannel({
       repoStore: store,
@@ -762,12 +761,12 @@ describe("workflow-host signal channel", () => {
       dataDir,
       signingKey,
       handlers: {
-        "agent-state": permissiveHandler("workflow-runs-name-skip"),
+        skill: permissiveHandler("workflow-runs-name-skip"),
       },
       authorize: allowAll,
     });
     const repoId: RepoId = {
-      kind: "agent-state",
+      kind: "skill",
       id: "deployment-name-skip",
     };
     const runId = "r-name-skip";

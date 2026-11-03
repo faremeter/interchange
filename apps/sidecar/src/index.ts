@@ -405,8 +405,7 @@ const restoreWorkflowRunPack = createWorkflowRunPackRestorer({
 
 // Wrap the substrate's RepoStore with the boot-edge facade so a
 // successful supervisor write against a workflow-run repo fires the
-// pack push hook before its Promise resolves. Non-workflow-run writes
-// (today, the agent-state deploy-applier path) flow through
+// pack push hook before its Promise resolves. Other writes flow through
 // unchanged.
 const wrappedRepoStore = createWorkflowRunPackPushingRepoStore({
   isConnectionLost,

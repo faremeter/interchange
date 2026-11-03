@@ -45,11 +45,11 @@ const allowAll: AuthorizeFn = () => ({ allowed: true });
 // the workflow-run kind handler's strict `runs/<runId>/` schema
 // rejects (only `events/` is permitted alongside event blobs). The
 // adapter tests target the adapter's behavior, not the kind handler's
-// schema, so a permissive `agent-state`-shaped handler stands in for
+// schema, so a permissive `skill`-shaped handler stands in for
 // the production wiring -- the same pattern the sibling repo-store
 // adapter test uses for its permissive smoke case.
 const permissiveHandler: KindHandler = {
-  kind: "agent-state",
+  kind: "skill",
   directoryPrefix: "blob-substrate-test",
   validatePush(): ValidatePushResult {
     return { ok: true };
@@ -67,11 +67,11 @@ async function makeAdapter(
   inlineMaxBytes?: number,
 ) {
   const dataDir = await makeTempDir("blob-substrate-adapter-");
-  const repoId: RepoId = { kind: "agent-state", id: anchorRunId };
+  const repoId: RepoId = { kind: "skill", id: anchorRunId };
   const substrate = createRepoStore({
     dataDir,
     signingKey,
-    handlers: { "agent-state": permissiveHandler },
+    handlers: { skill: permissiveHandler },
     authorize: allowAll,
   });
   const adapter = createWorkflowRunBlobSubstrate({

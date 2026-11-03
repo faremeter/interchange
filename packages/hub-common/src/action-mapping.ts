@@ -22,7 +22,7 @@ const RECEIVE_PACK_SERVICE = "git-receive-pack";
 /**
  * Resolve a smart-HTTP request to the `RepoAction` it requires. The
  * match is on the trailing smart-HTTP suffix so the same logic works
- * for every mount prefix (asset routes, agent-state routes, etc.).
+ * for every mount prefix.
  *
  * Throws when the request shape is not a recognised smart-HTTP
  * endpoint; callers are expected to gate this behind their route

@@ -437,7 +437,7 @@ interface SidecarSubstrateFactoryDeps {
  * `CommitSigner` the per-step isogit stores use to sign every commit.
  * The factory's Ed25519 signing keypair (the same key the child's bare
  * `RepoStore` carries) is bound into an `sshsig`-shaped signer so the
- * per-step agent-state commits are attributable to the sidecar's
+ * per-step step-state commits are attributable to the sidecar's
  * substrate identity, matching the signing surface the production
  * `RepoStore` uses for workflow-run writes.
  */
@@ -452,7 +452,7 @@ function createStepStorageSigner(signingKey: {
 }
 
 /**
- * Root directory for a single step invocation's agent-state storage and
+ * Root directory for a single step invocation's storage and
  * workspace, derived from the sidecar data dir and the run/step/attempt
  * coordinates the workflow runtime owns.
  *

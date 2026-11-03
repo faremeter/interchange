@@ -7,7 +7,6 @@ import type {
   PreparedReceivePack,
   RepoId,
 } from "./repo-store";
-import { agentStateKindHandler, agentStateAuthorize } from "./agent-state-kind";
 import { skillKindHandler, skillAuthorize } from "./skill-kind";
 import {
   packageRegistryKindHandler,
@@ -56,9 +55,8 @@ export type AgentRepoStore = {
   ): Promise<PreparedReceivePack>;
 
   /**
-   * Underlying kind-keyed substrate. Exposed so callers that need to
-   * operate on non-agent-state kinds (e.g. the asset service writing
-   * skill repos) can share the same on-disk root and signing key
+   * Underlying kind-keyed substrate. Exposed so callers (e.g. the asset
+   * service writing skill repos) can share the same on-disk root and signing key
    * without spinning up a parallel RepoStore.
    */
   readonly repoStore: LocalRepoStore;
@@ -72,8 +70,6 @@ export function createAgentRepoStore(config: {
 
   const authorize: AuthorizeFn = (principal, incomingRepoId, ref, action) => {
     switch (incomingRepoId.kind) {
-      case "agent-state":
-        return agentStateAuthorize(principal, incomingRepoId, ref, action);
       case "skill":
         return skillAuthorize(principal, incomingRepoId, ref, action);
       case "package-registry":
@@ -94,8 +90,8 @@ export function createAgentRepoStore(config: {
 
   // The substrate's signingCallback bridges the agent-repo store's
   // raw Ed25519 keypair to the storage layer's per-payload SSHSIG
-  // signer. Skill asset genesis commits and agent-state deploy
-  // commits both flow through this signer so that signed commits
+  // signer. Skill asset genesis commits flow through this signer so that
+  // signed commits
   // round-trip through the smart-HTTP layer and verify under
   // `git log --show-signature` and `git verify-commit`.
   const signer = async (payload: string) =>
@@ -105,7 +101,6 @@ export function createAgentRepoStore(config: {
     dataDir,
     signingKey,
     handlers: {
-      "agent-state": agentStateKindHandler,
       skill: skillKindHandler,
       "package-registry": packageRegistryKindHandler,
       workflow: workflowKindHandler,

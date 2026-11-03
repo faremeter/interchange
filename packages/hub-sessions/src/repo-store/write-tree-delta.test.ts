@@ -48,8 +48,8 @@ function makeStore(dataDir: string) {
     dataDir,
     signingKey,
     handlers: {
-      "agent-state": {
-        kind: "agent-state",
+      skill: {
+        kind: "skill",
         directoryPrefix: "repos-under-test",
         validatePush: () => ({ ok: true }),
         onRefUpdated: () => undefined,
@@ -65,7 +65,7 @@ async function freshStore(label: string) {
   return makeStore(dataDir);
 }
 
-const repoId: RepoId = { kind: "agent-state", id: "subject" };
+const repoId: RepoId = { kind: "skill", id: "subject" };
 
 async function commitTreeOid(
   store: ReturnType<typeof makeStore>,

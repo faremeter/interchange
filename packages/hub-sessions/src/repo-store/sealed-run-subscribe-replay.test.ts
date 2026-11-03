@@ -37,7 +37,7 @@ afterAll(async () => {
 
 function permissive(): KindHandler {
   return {
-    kind: "agent-state",
+    kind: "skill",
     directoryPrefix: "repos-sealed-replay",
     validatePush(): ValidatePushResult {
       return { ok: true };
@@ -50,7 +50,7 @@ function permissive(): KindHandler {
 
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 const principal: Principal = { kind: "test" };
-const repoId: RepoId = { kind: "agent-state", id: "subject" };
+const repoId: RepoId = { kind: "skill", id: "subject" };
 const REF = "refs/heads/test";
 
 const TimerFired = type({
@@ -67,7 +67,7 @@ describe("subscribeKind replay over a sealed run", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": permissive() },
+      handlers: { skill: permissive() },
       authorize: allowAll,
     });
 

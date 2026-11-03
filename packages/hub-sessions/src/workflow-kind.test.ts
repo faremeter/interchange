@@ -95,7 +95,7 @@ describe("workflowKindHandler metadata", () => {
 
 describe("workflowAuthorize", () => {
   const WORKFLOW_REPO: RepoId = { kind: "workflow", id: "wf-123" };
-  const AGENT_STATE_REPO: RepoId = { kind: "agent-state", id: "wf-123" };
+  const OTHER_KIND_REPO: RepoId = { kind: "skill", id: "wf-123" };
 
   function farFuture(): number {
     return Date.now() + 60_000;
@@ -131,7 +131,7 @@ describe("workflowAuthorize", () => {
   test("rejects calls when repoId.kind is not workflow", () => {
     const r = workflowAuthorize(
       { kind: "hub" } as Principal,
-      AGENT_STATE_REPO,
+      OTHER_KIND_REPO,
       REF,
       "createPack",
     );

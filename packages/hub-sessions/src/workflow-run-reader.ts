@@ -30,8 +30,7 @@ export type WorkflowRunEvent = {
  * Reader for a workflow-run repo's committed event log. Projects the
  * `runs/<runId>/events/<seq>.json` substrate the workflow-process child
  * writes (validated at push time by the workflow-run kind handler) into
- * seq-ordered in-memory events, mirroring the read-model approach the
- * per-session timeline reconstruction uses against an agent-state repo.
+ * seq-ordered in-memory events.
  *
  * The reader is read-only: it composes `RepoStore.getRepoDir` (a pure
  * path computation) with direct `isomorphic-git` tree/blob reads. It

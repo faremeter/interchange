@@ -60,7 +60,7 @@ function createTestHandler(opts?: {
   const onRefUpdatedCalls: RefUpdateRecord[] = [];
   const allowFn = opts?.allowTopLevelPaths;
   return {
-    kind: "agent-state",
+    kind: "skill",
     directoryPrefix: "repos-under-test",
     validatePush({ topLevelTreePaths }): ValidatePushResult {
       // Ignore the readBlob argument: this fixture only ever needs path-level
@@ -85,7 +85,7 @@ const allowAll: AuthorizeFn = () => ({ allowed: true });
 
 const principal: Principal = { kind: "test" };
 
-const repoId: RepoId = { kind: "agent-state", id: "subject" };
+const repoId: RepoId = { kind: "skill", id: "subject" };
 
 const REF = "refs/heads/test";
 
@@ -313,7 +313,7 @@ describe("RepoStore", () => {
         signingKey,
         handlers: {
           workflow: { ...createTestHandler(), kind: "workflow" },
-          "agent-state": createTestHandler(),
+          skill: createTestHandler(),
         },
         authorize: allowAll,
       });
@@ -476,7 +476,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -499,7 +499,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -536,7 +536,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     const first = await store.writeTree(principal, repoId, REF, {
@@ -567,7 +567,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.writeTree(principal, repoId, REF, {
@@ -610,7 +610,7 @@ describe("RepoStore", () => {
       const store = createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": handler },
+        handlers: { skill: handler },
         authorize: allowAll,
       });
       await store.writeTree(principal, repoId, REF, {
@@ -661,7 +661,7 @@ describe("RepoStore", () => {
       const store = createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": handler },
+        handlers: { skill: handler },
         authorize: allowAll,
       });
       for (const message of ["first", "second"])
@@ -723,11 +723,11 @@ describe("RepoStore", () => {
     // The lock map is shared by every store in the process, so this
     // test's own repo id keeps a gate it leaves held from blocking
     // other tests.
-    const raceRepoId: RepoId = { kind: "agent-state", id: "seed-window" };
+    const raceRepoId: RepoId = { kind: "skill", id: "seed-window" };
     const before = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     for (const message of ["v1", "v2"])
@@ -743,7 +743,7 @@ describe("RepoStore", () => {
       dataDir,
       signingKey,
       handlers: {
-        "agent-state": {
+        skill: {
           ...createTestHandler(),
           async onRefUpdated() {
             if (holding) await hold.arrive();
@@ -811,11 +811,11 @@ describe("RepoStore", () => {
     // The lock map is shared by every store in the process, so this
     // test's own repo id keeps a gate it leaves held from blocking
     // other tests.
-    const raceRepoId: RepoId = { kind: "agent-state", id: "seed-race" };
+    const raceRepoId: RepoId = { kind: "skill", id: "seed-race" };
     const before = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     for (const message of ["v1", "v2"])
@@ -828,7 +828,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     const dir = store.getRepoDir(raceRepoId);
@@ -883,7 +883,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -919,7 +919,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.initRepo(repoId);
@@ -947,7 +947,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.initRepo(repoId);
@@ -979,7 +979,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -1026,7 +1026,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -1065,7 +1065,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -1101,7 +1101,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.initRepo(repoId);
@@ -1171,7 +1171,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -1206,7 +1206,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir: await makeTempDir("repo-store-preserve-scope-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     const prefix = "runs/r1/steps/s1/state/";
@@ -1253,7 +1253,7 @@ describe("RepoStore", () => {
       dataDir: await makeTempDir("repo-store-prefix-scope-"),
       signingKey,
       handlers: {
-        "agent-state": {
+        skill: {
           ...createTestHandler(),
           validatePush({ changedPathPrefixes }) {
             seen.push(
@@ -1288,7 +1288,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
@@ -1355,7 +1355,7 @@ describe("RepoStore", () => {
       const baseStore = createRepoStore({
         dataDir: baseDataDir,
         signingKey,
-        handlers: { "agent-state": baseHandler },
+        handlers: { skill: baseHandler },
         authorize: allowAll,
       });
       const baseDir = path.join(
@@ -1390,7 +1390,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDataDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     await sourceStore.writeTree(principal, repoId, REF, {
@@ -1410,7 +1410,7 @@ describe("RepoStore", () => {
     const acceptStore = createRepoStore({
       dataDir: acceptDir,
       signingKey,
-      handlers: { "agent-state": acceptHandler },
+      handlers: { skill: acceptHandler },
       authorize: allowAll,
     });
     await acceptStore.receivePack(
@@ -1433,7 +1433,7 @@ describe("RepoStore", () => {
     const rejectStore = createRepoStore({
       dataDir: rejectDir,
       signingKey,
-      handlers: { "agent-state": rejectHandler },
+      handlers: { skill: rejectHandler },
       authorize: allowAll,
     });
     await expect(
@@ -1446,7 +1446,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: await makeTempDir("repo-store-steps-source-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     const seen: {
@@ -1469,7 +1469,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: await makeTempDir("repo-store-steps-target-"),
       signingKey,
-      handlers: { "agent-state": recordingHandler },
+      handlers: { skill: recordingHandler },
       authorize: allowAll,
     });
     const push = async (
@@ -1529,7 +1529,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const seen: (string[] | undefined)[] = [];
@@ -1547,7 +1547,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: await makeTempDir("repo-store-mode-target-"),
       signingKey,
-      handlers: { "agent-state": recordingHandler },
+      handlers: { skill: recordingHandler },
       authorize: allowAll,
     });
     const dir = path.join(sourceDir, sourceHandler.directoryPrefix, repoId.id);
@@ -1717,7 +1717,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir: storeDir,
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     return {
@@ -1810,7 +1810,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir: storeDir,
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     // The recursion must build the full "deep/link" path, not just "link".
@@ -1884,7 +1884,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir: storeDir,
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     await expect(
@@ -1961,7 +1961,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir: storeDir,
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     // A regular file, an executable (100755), and a subtree must all pass.
@@ -1975,7 +1975,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
@@ -1991,7 +1991,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": targetHandler },
+      handlers: { skill: targetHandler },
       authorize: allowAll,
     });
 
@@ -2013,7 +2013,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.initRepo(repoId);
@@ -2031,7 +2031,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha: existingSha, ...rest } = await sourceStore.writeTree(
@@ -2060,7 +2060,7 @@ describe("RepoStore", () => {
     const denyStore = createRepoStore({
       dataDir: denyDir,
       signingKey,
-      handlers: { "agent-state": denyHandler },
+      handlers: { skill: denyHandler },
       authorize: denyAuthorize,
     });
 
@@ -2108,7 +2108,7 @@ describe("RepoStore", () => {
     const partialStore = createRepoStore({
       dataDir: partialDir,
       signingKey,
-      handlers: { "agent-state": partialHandler },
+      handlers: { skill: partialHandler },
       authorize: allowOnlyResolve,
     });
 
@@ -2150,7 +2150,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
@@ -2166,7 +2166,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": targetHandler },
+      handlers: { skill: targetHandler },
       authorize: allowAll,
     });
 
@@ -2187,7 +2187,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -2207,7 +2207,7 @@ describe("RepoStore", () => {
     const dataDir = await makeTempDir("repo-store-writetree-rollback-");
     let allowNext = false;
     const handler: TestHandler = {
-      kind: "agent-state",
+      kind: "skill",
       directoryPrefix: "repos-under-test",
       validatePush(): ValidatePushResult {
         if (allowNext) return { ok: true };
@@ -2221,7 +2221,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -2282,7 +2282,7 @@ describe("RepoStore", () => {
     const dataDir = await makeTempDir("repo-store-writetree-restore-ref-");
     let allowNext = true;
     const handler: TestHandler = {
-      kind: "agent-state",
+      kind: "skill",
       directoryPrefix: "repos-under-test",
       validatePush(): ValidatePushResult {
         if (allowNext) return { ok: true };
@@ -2296,7 +2296,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -2359,7 +2359,7 @@ describe("RepoStore", () => {
       blob: null,
     };
     const handler: TestHandler = {
-      kind: "agent-state",
+      kind: "skill",
       directoryPrefix: "repos-under-test",
       async validatePush({ topLevelTreePaths, readBlob }) {
         captured.paths = topLevelTreePaths;
@@ -2374,7 +2374,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -2396,7 +2396,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
@@ -2412,7 +2412,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": targetHandler },
+      handlers: { skill: targetHandler },
       authorize: allowAll,
     });
 
@@ -2427,7 +2427,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
@@ -2443,7 +2443,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": targetHandler },
+      handlers: { skill: targetHandler },
       authorize: allowAll,
     });
 
@@ -2472,7 +2472,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha: firstSha } = await sourceStore.writeTree(
@@ -2505,7 +2505,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": targetHandler },
+      handlers: { skill: targetHandler },
       authorize: allowAll,
     });
     await targetStore.receivePack(
@@ -2538,7 +2538,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha: firstSha } = await sourceStore.writeTree(
@@ -2571,7 +2571,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": targetHandler },
+      handlers: { skill: targetHandler },
       authorize: allowAll,
     });
     await targetStore.receivePack(
@@ -2604,7 +2604,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha: firstSha } = await sourceStore.writeTree(
@@ -2637,7 +2637,7 @@ describe("RepoStore", () => {
     // a fixed delay the second push has to arrive inside of.
     const parked: (() => void)[] = [];
     const slowHandler: TestHandler = {
-      kind: "agent-state",
+      kind: "skill",
       directoryPrefix: "repos-under-test",
       async validatePush() {
         events.push("validate");
@@ -2654,7 +2654,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": slowHandler },
+      handlers: { skill: slowHandler },
       authorize: allowAll,
     });
 
@@ -2702,11 +2702,11 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
-    const repoA: RepoId = { kind: "agent-state", id: "alpha" };
-    const repoB: RepoId = { kind: "agent-state", id: "beta" };
+    const repoA: RepoId = { kind: "skill", id: "alpha" };
+    const repoB: RepoId = { kind: "skill", id: "beta" };
     const { commitSha: shaA } = await sourceStore.writeTree(
       principal,
       repoA,
@@ -2730,7 +2730,7 @@ describe("RepoStore", () => {
       reportBothInFlight = resolve;
     });
     const trackingHandler: TestHandler = {
-      kind: "agent-state",
+      kind: "skill",
       directoryPrefix: "repos-under-test",
       async validatePush() {
         activeConcurrent += 1;
@@ -2756,7 +2756,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": trackingHandler },
+      handlers: { skill: trackingHandler },
       authorize: allowAll,
     });
 
@@ -2781,7 +2781,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -2795,13 +2795,13 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
-    expect(() =>
-      store.getRepoDir({ kind: "agent-state", id: "../escape" }),
-    ).toThrow(/^repo_id_invalid/);
+    expect(() => store.getRepoDir({ kind: "skill", id: "../escape" })).toThrow(
+      /^repo_id_invalid/,
+    );
   });
 
   test("listRefs returns the genesis branch on a freshly-initialised repo", async () => {
@@ -2810,7 +2810,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -2837,7 +2837,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -2879,7 +2879,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -2898,7 +2898,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: denyAuthorize,
     });
 
@@ -2914,7 +2914,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -2935,7 +2935,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
@@ -2947,7 +2947,7 @@ describe("RepoStore", () => {
     const targetDir = await makeTempDir("repo-store-release-target-");
     let rejectOnce = true;
     const flakyHandler: TestHandler = {
-      kind: "agent-state",
+      kind: "skill",
       directoryPrefix: "repos-under-test",
       validatePush() {
         if (rejectOnce) {
@@ -2964,7 +2964,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": flakyHandler },
+      handlers: { skill: flakyHandler },
       authorize: allowAll,
     });
 
@@ -2992,7 +2992,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -3039,7 +3039,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -3085,7 +3085,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -3120,7 +3120,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.initRepo(repoId);
@@ -3150,7 +3150,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.initRepo(repoId);
@@ -3209,7 +3209,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.initRepo(repoId);
@@ -3259,7 +3259,7 @@ describe("RepoStore", () => {
     const source = createRepoStore({
       dataDir: await makeTempDir("repo-store-dangling-src-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     await source.writeTree(principal, repoId, REF, {
@@ -3276,7 +3276,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir: await makeTempDir("repo-store-dangling-tgt-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     await store.receivePack(principal, repoId, REF, pack, commitSha, null);
@@ -3316,7 +3316,7 @@ describe("RepoStore", () => {
     const source = createRepoStore({
       dataDir: await makeTempDir("repo-store-gap-src-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     const write = (message: string) =>
@@ -3329,7 +3329,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir: await makeTempDir("repo-store-gap-tgt-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     // Each pack carries its tip only, and the source writes two commits
@@ -3379,7 +3379,7 @@ describe("RepoStore", () => {
     const source = createRepoStore({
       dataDir: await makeTempDir("repo-store-dangling-replay-src-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     const { commitSha: missing } = await source.writeTree(
@@ -3398,7 +3398,7 @@ describe("RepoStore", () => {
       createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": createTestHandler() },
+        handlers: { skill: createTestHandler() },
         authorize: allowAll,
       });
     await target().receivePack(principal, repoId, REF, pack, commitSha, null);
@@ -3462,10 +3462,10 @@ describe("RepoStore", () => {
       createRepoStore({
         dataDir,
         signingKey,
-        handlers: { "agent-state": createTestHandler() },
+        handlers: { skill: createTestHandler() },
         authorize: allowAll,
         gc: {
-          kinds: ["agent-state"],
+          kinds: ["skill"],
           retention: "keep-history",
           packThreshold: 1000,
           looseThreshold: 1e6,
@@ -3519,7 +3519,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     const write = (message: string) =>
@@ -3598,7 +3598,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: () => ({ allowed: false, reason: "denied" }),
     });
 
@@ -3628,7 +3628,7 @@ describe("RepoStore", () => {
     const sourceStore = createRepoStore({
       dataDir: sourceDir,
       signingKey,
-      handlers: { "agent-state": sourceHandler },
+      handlers: { skill: sourceHandler },
       authorize: allowAll,
     });
     const { commitSha: parentA } = await sourceStore.writeTree(
@@ -3694,7 +3694,7 @@ describe("RepoStore", () => {
     const targetStore = createRepoStore({
       dataDir: targetDir,
       signingKey,
-      handlers: { "agent-state": targetHandler },
+      handlers: { skill: targetHandler },
       authorize: allowAll,
     });
     await targetStore.initRepo(repoId);
@@ -3740,11 +3740,9 @@ describe("RepoStore", () => {
   // lost a commit it acked.
   //
   // The substrate keeps the silent-degrade behavior for other kinds
-  // (e.g. agent-state) whose deploy-shape packs intentionally omit
-  // the parent chain and whose handlers do not read prior bytes;
-  // gating the rejection on `repoId.kind === "workflow-run"` is what
-  // keeps the agent-state state-push flow working through the same
-  // substrate primitive.
+  // whose deploy-shape packs intentionally omit the parent chain and whose
+  // handlers do not read prior bytes, so the rejection gates on
+  // `repoId.kind === "workflow-run"`.
   test("receivePack rejects a workflow-run pack with a dangling parent", async () => {
     const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
     // Permissive test handler stamped as the workflow-run kind so
@@ -4743,7 +4741,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -4778,7 +4776,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -4812,7 +4810,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -4833,7 +4831,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.writeTree(principal, repoId, REF, {
@@ -4879,7 +4877,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     await store.writeTree(principal, repoId, REF, {
@@ -4917,7 +4915,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
     const { commitSha } = await store.writeTree(principal, repoId, REF, {
@@ -4954,7 +4952,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -4974,7 +4972,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -4999,7 +4997,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: denyResolveRef,
     });
 
@@ -5019,7 +5017,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -5050,7 +5048,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -5075,7 +5073,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: allowAll,
     });
 
@@ -5094,7 +5092,7 @@ describe("RepoStore", () => {
     const store = createRepoStore({
       dataDir,
       signingKey,
-      handlers: { "agent-state": handler },
+      handlers: { skill: handler },
       authorize: denyResolveRef,
     });
 
@@ -5364,7 +5362,7 @@ describe("RepoStore pack receive reads", () => {
     const sourceStore = createRepoStore({
       dataDir: await makeTempDir("repo-store-reads-rejected-source-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     const first = await sourceStore.writeTree(principal, repoId, REF, {
@@ -5385,8 +5383,8 @@ describe("RepoStore pack receive reads", () => {
       dataDir,
       signingKey,
       handlers: {
-        "agent-state": {
-          kind: "agent-state",
+        skill: {
+          kind: "skill",
           directoryPrefix: "repos-under-test",
           async validatePush({ readBlob }): Promise<ValidatePushResult> {
             for (let i = 0; i < reads; i++) {
@@ -5442,7 +5440,7 @@ describe("RepoStore pack receive reads", () => {
     const sourceStore = createRepoStore({
       dataDir: await makeTempDir("repo-store-reads-gc-source-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
 
@@ -5452,8 +5450,8 @@ describe("RepoStore pack receive reads", () => {
       dataDir,
       signingKey,
       handlers: {
-        "agent-state": {
-          kind: "agent-state",
+        skill: {
+          kind: "skill",
           directoryPrefix: "repos-under-test",
           async validatePush({
             readBlob,
@@ -5475,7 +5473,7 @@ describe("RepoStore pack receive reads", () => {
       // A low pack threshold makes the receives repack several times,
       // so later receives read objects from a GC pack.
       gc: {
-        kinds: ["agent-state"],
+        kinds: ["skill"],
         packThreshold: 2,
         looseThreshold: 1e6,
         warnBytes: 1e12,
@@ -5565,8 +5563,8 @@ describe("RepoStore pack receive reads", () => {
       dataDir: await makeTempDir("repo-store-reads-memo-tgt-"),
       signingKey,
       handlers: {
-        "agent-state": {
-          kind: "agent-state",
+        skill: {
+          kind: "skill",
           directoryPrefix: "repos-under-test",
           async validatePush({
             listDir,
@@ -5616,7 +5614,7 @@ describe("RepoStore pack receive reads", () => {
     const sourceStore = createRepoStore({
       dataDir: await makeTempDir("repo-store-reads-wide-source-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
@@ -5630,8 +5628,8 @@ describe("RepoStore pack receive reads", () => {
       dataDir: await makeTempDir("repo-store-reads-wide-target-"),
       signingKey,
       handlers: {
-        "agent-state": {
-          kind: "agent-state",
+        skill: {
+          kind: "skill",
           directoryPrefix: "repos-under-test",
           async validatePush({
             listDir,
@@ -5682,7 +5680,7 @@ describe("RepoStore pack receive reads", () => {
 
     function listingHandler(out: Map<string, Listing>): KindHandler {
       return {
-        kind: "agent-state",
+        kind: "skill",
         directoryPrefix: "repos-under-test",
         async validatePush({ listDirOids }): Promise<ValidatePushResult> {
           for (const p of listedPaths) out.set(p, await listDirOids(p));
@@ -5698,7 +5696,7 @@ describe("RepoStore pack receive reads", () => {
     const sourceStore = createRepoStore({
       dataDir: await makeTempDir("repo-store-listing-source-"),
       signingKey,
-      handlers: { "agent-state": listingHandler(written) },
+      handlers: { skill: listingHandler(written) },
       authorize: allowAll,
     });
     const { commitSha } = await sourceStore.writeTree(principal, repoId, REF, {
@@ -5715,7 +5713,7 @@ describe("RepoStore pack receive reads", () => {
     const targetStore = createRepoStore({
       dataDir: await makeTempDir("repo-store-listing-target-"),
       signingKey,
-      handlers: { "agent-state": listingHandler(received) },
+      handlers: { skill: listingHandler(received) },
       authorize: allowAll,
     });
     await targetStore.receivePack(
@@ -6801,11 +6799,11 @@ describe("RepoStore prepared pack receive", () => {
     if (tipA === undefined || tipB === undefined) throw new Error("line");
     // A workflow-run history only grows, so the line is replaced on a
     // kind that allows it.
-    const stateId: RepoId = { kind: "agent-state", id: "subject" };
+    const stateId: RepoId = { kind: "skill", id: "subject" };
     const store = createRepoStore({
       dataDir: await makeTempDir("repo-store-replaced-line-"),
       signingKey,
-      handlers: { "agent-state": createTestHandler() },
+      handlers: { skill: createTestHandler() },
       authorize: allowAll,
     });
     await store.receivePack(

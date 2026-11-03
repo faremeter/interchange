@@ -286,8 +286,7 @@ function namesRoutedIncarnation(
 /**
  * Bind pack writes to the repository implied by the authenticated
  * incarnation: an allocation may only write its own deployment's workflow-run
- * repository, never a standalone agent-state repository, and only as the
- * generation this connection hosts. It authorizes the write even when the
+ * repository, and only as the generation this connection hosts. It authorizes the write even when the
  * address is not routed: a stopped worker is not routed, but its stop is
  * confirmed only once its remaining history reaches the Hub.
  */

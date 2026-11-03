@@ -11,7 +11,7 @@ import {
   type RefSource,
 } from "./advertise-refs";
 
-const REPO_ID: RepoId = { kind: "agent-state", id: "test" };
+const REPO_ID: RepoId = { kind: "skill", id: "test" };
 
 function principalWith(refPattern: string): AdvertisePrincipal {
   return {

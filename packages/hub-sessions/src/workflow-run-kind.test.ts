@@ -2331,7 +2331,7 @@ describe("workflowRunAuthorize — repoId guard", () => {
   test("rejects calls when repoId.kind is not workflow-run", () => {
     const r = workflowRunAuthorize(
       { kind: "hub" } as Principal,
-      { kind: "agent-state", id: "dep-1" } as RepoId,
+      { kind: "skill", id: "dep-1" } as RepoId,
       REF,
       "createPack",
     );
