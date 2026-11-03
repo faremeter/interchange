@@ -88,11 +88,15 @@ evaluation is fail-closed.
   `ConditionRegistry` without evaluating it, returning one problem per
   unregistered key or rejected body. A boundary that stores conditions
   calls it to refuse what `evaluateConditions` would later throw on.
+- `validateGrantConditions` — check a grant's conditions against every
+  registry that will evaluate it: the hub registry, and for a row on a
+  workflow run's principal also the run child registry and the
+  credential-use registry, where the row's patterns reach them.
 - `createInMemoryGrantStore` — a `GrantStore` backed by an in-memory
   grant list for tests and single-process deployments.
 - `matchPattern`, `patternSpecificity`, `grantSpecificity` — the
   colon-segmented wildcard matcher and the specificity scoring used to
   pick the winning grant.
 - Types: `AuthzResult`, `ConditionContext`, `ConditionEvaluator`,
-  `ConditionMode`, `ConditionRegistry`, `Effect`, `GrantRule`, `GrantStore`,
-  `MatchedGrant`.
+  `ConditionMode`, `ConditionRegistry`, `Effect`, `GrantConditionTarget`,
+  `GrantRule`, `GrantStore`, `MatchedGrant`.
