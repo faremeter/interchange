@@ -282,12 +282,7 @@ async function deployProbeSource(opts: {
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: anchorRunId,
-    tenantId: "tenant-1",
-    principalId: "prin_integration-1",
     agentAddress: mailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the definition)",
-    tools: [],
     sources: [source],
     defaultSource: "anthropic:mock-model",
   };

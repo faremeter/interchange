@@ -80,8 +80,8 @@ function snapshotForProjection(projection: WorkflowProjectionDefinition) {
 type TestSidecarRouter = SidecarRouter & {
   sendAgentDeploy(
     agentAddress: string,
-    config: HarnessConfig,
-    workflow?: AgentDeployFrame["workflow"],
+    config: AgentDeployFrame["config"],
+    workflow: AgentDeployFrame["workflow"],
   ): Promise<{ publicKey: string }>;
 };
 
@@ -131,7 +131,7 @@ function createMockRouter(): TestSidecarRouter & {
     sendAgentDeploy: ((
       agentAddress: string,
       config: HarnessConfig,
-      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
+      workflow: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       calls.push({
         method: "sendAgentDeploy",
@@ -306,8 +306,8 @@ describe("sendMultiStepDeployFrame", () => {
       [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
-      _config: HarnessConfig,
-      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
+      _config: AgentDeployFrame["config"],
+      workflow: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
@@ -341,12 +341,7 @@ describe("sendMultiStepDeployFrame", () => {
     };
     const config: HarnessConfig = {
       sessionId: "ses-sourced",
-      agentId: "ins_dep_src",
-      tenantId: "tenant-1",
-      principalId: "prin-src",
       agentAddress: "ins_dep_src@workflow.interchange",
-      systemPrompt: "deployment-level",
-      tools: [],
       sources: Object.values(sources).flat(),
       defaultSource: "src-only",
     };
@@ -470,12 +465,7 @@ describe("deployCodeSourcedWorkflow", () => {
   });
   const CONFIG: HarnessConfig = {
     sessionId: "ses-composed",
-    agentId: "ins_dep_composed",
-    tenantId: "tenant-1",
-    principalId: "prin-composed",
     agentAddress: DEPLOY_ADDRESS,
-    systemPrompt: "deployment-level",
-    tools: [],
     sources: Object.values(SOURCES).flat(),
     defaultSource: "src-only",
   };
@@ -1815,8 +1805,8 @@ describe("deployCodeSourcedWorkflow", () => {
       [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
-      _config: HarnessConfig,
-      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
+      _config: AgentDeployFrame["config"],
+      workflow: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
@@ -2016,8 +2006,8 @@ describe("deployCodeSourcedWorkflow", () => {
       [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
-      _config: HarnessConfig,
-      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
+      _config: AgentDeployFrame["config"],
+      workflow: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
@@ -2194,8 +2184,8 @@ describe("deployCodeSourcedWorkflow", () => {
       [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
-      _config: HarnessConfig,
-      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
+      _config: AgentDeployFrame["config"],
+      workflow: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
@@ -2522,8 +2512,8 @@ describe("deployCodeSourcedWorkflow", () => {
       [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
-      _config: HarnessConfig,
-      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
+      _config: AgentDeployFrame["config"],
+      workflow: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
@@ -2624,8 +2614,8 @@ describe("deployCodeSourcedWorkflow", () => {
       [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
-      _config: HarnessConfig,
-      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
+      _config: AgentDeployFrame["config"],
+      workflow: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });

@@ -122,12 +122,7 @@ export async function startBodyActionRestartEnv(opts: {
     });
     const config: HarnessConfig = {
       sessionId: SESSION_ID,
-      agentId: deploymentId,
-      tenantId: "tenant-1",
-      principalId: `prin_${deploymentId}`,
       agentAddress: mailAddress,
-      systemPrompt: "unused (no agent step)",
-      tools: [],
       sources: [
         {
           id: "anthropic:mock-model",

@@ -41,7 +41,6 @@ import {
   approvalSetFromItems,
   buildInertProjectionStepSources,
   deriveRunAddress,
-  deriveRunAgentId,
 } from "@intx/workflow-deploy";
 
 import type { LocalRepoStore } from "./repo-store";
@@ -232,11 +231,9 @@ function parseDestroyResult(value: unknown): DestroySidecarResult {
 }
 
 function createProvisionedHarnessConfig(args: {
-  readonly tenantId: string;
   readonly anchorRunId: string;
   readonly deploymentDomain: string;
   readonly sessionId: string;
-  readonly sourceAuthorityPrincipalId: string;
   readonly sources: HarnessConfig["sources"];
   readonly defaultSource: string;
 }): HarnessConfig {
@@ -246,12 +243,7 @@ function createProvisionedHarnessConfig(args: {
   });
   return {
     sessionId: args.sessionId,
-    agentId: deriveRunAgentId({ runId: args.anchorRunId }),
-    tenantId: args.tenantId,
-    principalId: args.sourceAuthorityPrincipalId,
     agentAddress: deploymentAddress,
-    systemPrompt: "",
-    tools: [],
     sources: args.sources,
     defaultSource: args.defaultSource,
   };
@@ -817,11 +809,9 @@ export function createWorkflowAllocationService({
         approval: approved.approval,
       };
       const config = createProvisionedHarnessConfig({
-        tenantId: args.tenantId,
         anchorRunId: args.anchorRunId,
         deploymentDomain: args.deploymentDomain,
         sessionId: args.sessionId,
-        sourceAuthorityPrincipalId: args.sourceAuthorityPrincipalId,
         sources: sourceCheck.sources,
         defaultSource: defaultSource.id,
       });
@@ -1041,11 +1031,9 @@ export function createWorkflowAllocationService({
         );
       }
       const config = createProvisionedHarnessConfig({
-        tenantId: allocation.tenantId,
         anchorRunId: allocation.anchorRunId,
         deploymentDomain: spec.deploymentDomain,
         sessionId: spec.sessionId,
-        sourceAuthorityPrincipalId: spec.sourceAuthorityPrincipalId,
         sources: resolved.sources,
         defaultSource: defaultSource.id,
       });

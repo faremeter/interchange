@@ -24,6 +24,7 @@ import {
   createAllocatedRouter,
   deployReply,
   TEST_CONFIG,
+  TEST_WORKFLOW,
   TEST_IDENTITY,
   TEST_TARGET,
   tick,
@@ -5489,7 +5490,7 @@ describe("durable initialization outcomes", () => {
             TEST_TARGET,
             TEST_IDENTITY.workflowRunAddress,
             TEST_CONFIG,
-            undefined,
+            TEST_WORKFLOW,
             signal,
             async () => {
               current = { ...current, initializationLeaseId: leaseId };

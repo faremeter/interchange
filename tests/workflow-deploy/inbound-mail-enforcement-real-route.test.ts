@@ -192,12 +192,7 @@ async function deployEnforcementWorkflow(opts: {
   const inferenceSource = inferenceSourceForEnv(env);
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: opts.anchorRunId,
-    tenantId: "tenant-1",
-    principalId: "prin_integration-1",
     agentAddress: opts.mailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the definition)",
-    tools: [],
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };

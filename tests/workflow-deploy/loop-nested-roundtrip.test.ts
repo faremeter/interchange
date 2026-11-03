@@ -122,12 +122,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: DEPLOYMENT_ID,
-        tenantId: "tenant-1",
-        principalId: "prin_loop-nested-roundtrip-1",
         agentAddress: deploymentMailAddress,
-        systemPrompt: "unused (agents run per loop-body step)",
-        tools: [],
         sources: [
           {
             id: "anthropic:mock-model",

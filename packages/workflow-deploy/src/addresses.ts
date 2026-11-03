@@ -1,54 +1,21 @@
-// The deployment address model is a pure function of `(runId, stepId,
-// domain)`: a one-step workflow has no distinct step address -- the lone
-// step IS the deployment head (`deriveRunAddress`) -- while a workflow with
-// more than one step derives per-step addresses of the form
-// `<runId>-<stepId>@<domain>`. Because the derivation is pure, the
-// supervisor reconstructs the same addresses at spawn time without any
-// per-deploy state.
+// The deployment address model is a pure function of `(runId, domain)`, so the
+// supervisor reconstructs the same address at spawn time without any per-deploy
+// state.
 
 import { formatRunAddress } from "@intx/types/agent-address";
-
-/**
- * Pure function: derive a step's run address from
- * `(runId, stepId, domain)`. Exported so the supervisor can reconstruct
- * the same addresses at spawn time without sharing storage with the
- * deploy flow.
- *
- * The local part IS the run id with the step suffix appended; the runId is
- * already a minted `run_<hex>` carrying the `run_` marker `parseRunAddress`
- * requires at the substrate boundary. The per-step local-part is concat-only
- * because `stepId` is already constrained to `[a-zA-Z0-9_-]+` by the workflow
- * definition validator.
- */
-export function deriveStepAddress(args: {
-  runId: string;
-  stepId: string;
-  domain: string;
-}): string {
-  return formatRunAddress(`${args.runId}-${args.stepId}`, args.domain);
-}
 
 /**
  * Derive the deployment-level mail address the supervisor registers on
  * the bus. It is the run id `@` the domain; pure function of `(runId, domain)`.
  *
  * The supervisor uses this address as the inbound mail address for the
- * deployment as a whole; per-step bindings carry their own
- * derived-step addresses.
+ * deployment as a whole.
  */
 export function deriveRunAddress(args: {
   runId: string;
   domain: string;
 }): string {
   return formatRunAddress(args.runId, args.domain);
-}
-
-/**
- * Derive the deployment-level agent id used on the `agent.deploy`
- * frame's `agentId` field. Pure function of `(runId)`.
- */
-export function deriveRunAgentId(args: { runId: string }): string {
-  return args.runId;
 }
 
 /**

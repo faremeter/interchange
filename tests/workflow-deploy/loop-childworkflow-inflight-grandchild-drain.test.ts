@@ -142,12 +142,7 @@ async function runGrandchildDrainTest(opts: {
   };
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${anchorRunId}`,
-    tenantId: "tenant-1",
-    principalId: `prin_${anchorRunId}`,
     agentAddress: deploymentMailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the definition)",
-    tools: [],
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };

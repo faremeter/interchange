@@ -135,21 +135,17 @@ export function defineWorkflow<EnvReq extends BaseEnv>(
 
 /**
  * `stepId` must be a non-empty sequence of ASCII letters, digits,
- * underscores, and hyphens. The constraint exists so the workflow-deploy
- * orchestrator can derive per-step mail addresses by string concat
- * without escaping. Exported for downstream consumers (notably the
- * orchestrator's per-step address derivation) that need to assert the
- * same shape.
+ * underscores, and hyphens, so it is safe as a path segment in a step's
+ * durable storage. Exported for downstream consumers that need to assert
+ * the same shape.
  */
 export const STEP_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 /**
  * A run id must be a non-empty sequence of ASCII letters, digits, underscores,
  * and hyphens -- the same shape as a step id. A run id is used verbatim as a
- * durable-store path segment (`runs/<runId>/...`) and as the local part of a
- * derived per-step mail address (`<runId>-<stepId>@<domain>`), so an
- * unconstrained caller-supplied id is a path-escape and an unroutable-address
- * hazard. `newId("run")` and the internally-derived child run ids (loop body,
+ * durable-store path segment (`runs/<runId>/...`), so an unconstrained
+ * caller-supplied id is a path-escape hazard. `newId("run")` and the internally-derived child run ids (loop body,
  * onTrigger section) already satisfy this shape; the pattern is enforced at
  * the `runtimeRun` boundary where a run id enters the system.
  */
@@ -470,13 +466,9 @@ function validateStepIds(steps: Record<string, Primitive>): void {
     if (stepId === "") {
       throw new Error("step ids cannot be empty");
     }
-    // The workflow-deploy orchestrator derives per-step mail addresses
-    // of the form `<runId>-<stepId>@<deploymentDomain>` for
-    // multi-step deployments. Constraining `stepId` to
-    // `[a-zA-Z0-9_-]+` at definition time means the derived local-part
-    // never needs escaping and the address parser at the substrate
-    // boundary never sees a step-id-shaped local-part it cannot
-    // round-trip.
+    // A step id becomes a path segment in the step's durable storage.
+    // Constraining it to `[a-zA-Z0-9_-]+` at definition time keeps it from
+    // escaping that path.
     if (!STEP_ID_PATTERN.test(stepId)) {
       throw new Error(
         `step id ${JSON.stringify(stepId)} must match ${STEP_ID_PATTERN.source}`,

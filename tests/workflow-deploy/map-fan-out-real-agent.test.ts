@@ -17,8 +17,7 @@
 // output is the agent's deterministic reply.
 //
 // The workflow is deliberately multi-step (a leading `seed` step plus the
-// `fanout` map) so its steps have per-step addresses. A
-// regressed lookup throws (or materializes nothing) on the scoped id, so the
+// `fanout` map). A regressed lookup throws (or materializes nothing) on the scoped id, so the
 // run would terminate `RunFailed` or the reply would omit the expected
 // content; the assertions below are the regression tripwires.
 //
@@ -232,12 +231,7 @@ async function deployAndRunMap(opts: {
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: `${opts.anchorRunId}`,
-    tenantId: "tenant-1",
-    principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the definition)",
-    tools: [],
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };

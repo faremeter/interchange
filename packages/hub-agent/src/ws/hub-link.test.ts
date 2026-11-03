@@ -129,7 +129,7 @@ function sendAgentDeploy(
   router: ReturnType<typeof createSidecarRouter>,
   agentAddress: string,
   config: HarnessConfig,
-  workflow?: AgentDeployFrame["workflow"],
+  workflow: AgentDeployFrame["workflow"] = TEST_WORKFLOW,
 ) {
   return router.sendAgentDeployToAllocation(
     allocationTargetFor(router, agentAddress),
@@ -184,12 +184,7 @@ function createMockSessionManager(): SessionManager {
 
 const TEST_CONFIG: HarnessConfig = {
   sessionId: "ses_test-session-1",
-  agentId: "agent-1",
-  tenantId: "tenant-1",
-  principalId: "prin_test-principal-1",
   agentAddress: "agent-1@test.interchange",
-  systemPrompt: "You are a test agent",
-  tools: [],
   sources: [
     {
       id: "anthropic:claude-sonnet-5",
@@ -200,6 +195,14 @@ const TEST_CONFIG: HarnessConfig = {
     },
   ],
   defaultSource: "anthropic:claude-sonnet-5",
+};
+
+const TEST_WORKFLOW: AgentDeployFrame["workflow"] = {
+  sources: {},
+  sourceRef: {
+    source: { kind: "registry", registry: "npmjs" },
+    closure: { schemaVersion: "1", topLevel: [], entries: [] },
+  },
 };
 
 const VALID_MESSAGE = new TextEncoder().encode(
@@ -465,8 +468,8 @@ describe("sidecar↔hub integration", () => {
           requestId: "deploy-capacity",
           agentAddress: "run_capacity@example.test",
           generation: 1,
-          agentId: "run_capacity",
           config: TEST_CONFIG,
+          workflow: TEST_WORKFLOW,
         });
         expect(await answered.promise).toEqual({
           type: "agent.deploy.error",
@@ -2669,8 +2672,8 @@ describe("initial handshake on connect", () => {
         requestId,
         agentAddress: address,
         generation,
-        agentId: TEST_CONFIG.agentId,
         config: TEST_CONFIG,
+        workflow: TEST_WORKFLOW,
       });
     };
     const undeploy = (requestId: string, generation: number) => {
@@ -2758,8 +2761,8 @@ describe("initial handshake on connect", () => {
         requestId: "deploy-1",
         agentAddress: address,
         generation: 1,
-        agentId: TEST_CONFIG.agentId,
         config: TEST_CONFIG,
+        workflow: TEST_WORKFLOW,
       });
       await deploying.promise;
       // The undeploy waits on the address's lane behind the deploy, and the
@@ -3372,7 +3375,6 @@ describe("answerMalformedRequestFrame", () => {
         requestId: "req-deploy",
         agentAddress: "run_deploy@example.com",
         generation: 3,
-        agentId: "x",
       },
       "config must be an object",
       (frame) => sent.push(frame),

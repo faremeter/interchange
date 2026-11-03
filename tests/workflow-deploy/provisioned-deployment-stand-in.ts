@@ -65,12 +65,7 @@ export function createProvisionedDeploymentStandIn(opts: {
       }
       const config: HarnessConfig = {
         sessionId: args.sessionId,
-        agentId: args.anchorRunId,
-        tenantId: args.tenantId,
-        principalId: args.sourceAuthorityPrincipalId,
         agentAddress,
-        systemPrompt: "",
-        tools: [],
         sources: [opts.inferenceSource],
         defaultSource: opts.inferenceSource.id,
       };

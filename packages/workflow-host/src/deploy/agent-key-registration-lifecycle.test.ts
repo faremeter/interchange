@@ -266,9 +266,9 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       requestId: "deploy-test",
       agentAddress: AGENT_ADDRESS,
       generation: 1,
-      agentId: "keylifecycle-agent",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not read config
-      config: {} as AgentDeployFrame["config"],
+      config: {
+        sessionId: "s",
+      },
       workflow: {
         approvedWireHash,
         // Source-ref is the only deploy lineage: the frame carries no inline

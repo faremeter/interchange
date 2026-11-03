@@ -560,9 +560,7 @@ const WORKFLOW_BODY_SOURCES_MAX_BYTES = 96 * 1024;
  * references no bodies, so the record omits the field.
  */
 function buildBodySourcesMap(
-  referenced: NonNullable<
-    AgentDeployFrame["workflow"]
-  >["referencedDefinitions"],
+  referenced: AgentDeployFrame["workflow"]["referencedDefinitions"],
 ): WorkflowRunRecord["bodySources"] {
   if (referenced === undefined || referenced.length === 0) {
     return undefined;
@@ -589,9 +587,8 @@ function buildBodySourcesMap(
  *     other invariants this function owns.
  *   - `definition.stepOrder` is non-empty. The wire shape admits
  *     `[]`; a zero-step workflow has no semantics here.
- *   - Every `stepOrder` entry matches `STEP_ID_PATTERN` so per-step
- *     mail-address derivation never needs escaping at the substrate
- *     boundary.
+ *   - Every `stepOrder` entry matches `STEP_ID_PATTERN`, so it is safe as
+ *     a path segment in the step's durable storage.
  *   - Every `stepOrder` entry has a corresponding `steps[id]` entry.
  *     The wire shape lets `steps[id]` be `unknown` and lets the
  *     entry be absent; presence is required so the workflow-process
@@ -848,10 +845,9 @@ export function createSidecarDeployRouter<
    * each event to the hub timeline keyed to the right session. The
    * `InferenceEvent` itself
    * is sessionless; the session id rides alongside it, sourced from the
-   * deploy frame's `HarnessConfig.sessionId` per deployment. It is
-   * optional because a deploy frame need not carry a session id (a
-   * headless deployment with no hub-side session); the sink decides what
-   * an absent session id means. Defaults to a no-op; production wiring
+   * deploy frame's `config.sessionId` per deployment. It is
+   * optional because a run record need not carry a session id; the sink
+   * decides what an absent session id means. Defaults to a no-op; production wiring
    * supplies the event publisher.
    */
   publishWorkflowInferenceEvent?: (
@@ -1481,7 +1477,7 @@ export function createSidecarDeployRouter<
     agentAddress: string;
     /** The allocation generation of the incarnation being stood up. */
     generation: number;
-    sources: NonNullable<AgentDeployFrame["workflow"]>["sources"];
+    sources: AgentDeployFrame["workflow"]["sources"];
     /**
      * Per spawned-body inference-source pins, keyed by the body's definition id
      * (the flat set of onTrigger sections and childWorkflow children). Persisted
@@ -1526,15 +1522,15 @@ export function createSidecarDeployRouter<
      * registry token is resolved from env at apply time); its `closure` is
      * frozen versions + SRIs.
      */
-    sourceRef: NonNullable<AgentDeployFrame["workflow"]>["sourceRef"];
+    sourceRef: AgentDeployFrame["workflow"]["sourceRef"];
     /**
      * The sidecar data dir the run record roots under. Only a deploy sets it:
      * the spawn core writes the record once the child has reported its
      * definition and before the supervisor reads the grants for the child's
-     * first `authority.set`: the run record. A restore carries none; it re-drives the record its deploy
-     * wrote. Plain data, not a callback over the deploy frame: the supervisor
-     * keeps this spec for the deployment's life, and the frame's source asset
-     * packs must not live that long.
+     * first `authority.set`. A restore re-drives the record its deploy wrote.
+     * Plain data, not a callback over the deploy frame: the supervisor keeps
+     * this spec for the deployment's life, and the frame's source asset packs
+     * must not live that long.
      */
     recordDataDir?: string;
   }
@@ -1548,7 +1544,7 @@ export function createSidecarDeployRouter<
    * included.
    */
   function assertSourcesBuildable(
-    sources: NonNullable<AgentDeployFrame["workflow"]>["sources"],
+    sources: AgentDeployFrame["workflow"]["sources"],
     bodySources: WorkflowRunRecord["bodySources"],
   ): void {
     for (const table of [sources, ...Object.values(bodySources ?? {})]) {
@@ -2207,8 +2203,8 @@ export function createSidecarDeployRouter<
 
   async function deployMultiStep(
     frame: AgentDeployFrame,
-    projection: NonNullable<AgentDeployFrame["workflow"]>,
   ): Promise<DeployRouterResult> {
+    const projection = frame.workflow;
     // Refuse a deploy of an address already held BEFORE touching any durable
     // state. The durable writes below (the run record, the materialized
     // closure) are destructive overwrites of state owned by
@@ -2487,14 +2483,7 @@ export function createSidecarDeployRouter<
       if (workflowStopTasks.has(frame.agentAddress)) {
         throw new Error("Workflow deployment is still stopping");
       }
-      if (frame.workflow !== undefined) {
-        return await deployMultiStep(frame, frame.workflow);
-      }
-      // A workflow frame spawns the supervised child. A frame without one is
-      // an unsupported shape -- there is no in-process fall-through.
-      throw new Error(
-        `sidecar deploy router: unsupported deploy frame for ${frame.agentAddress}; a deploy must carry a workflow definition`,
-      );
+      return await deployMultiStep(frame);
     },
     control,
     async undeploy(frame): Promise<void> {

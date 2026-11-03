@@ -109,12 +109,7 @@ afterAll(async () => {
 function config(agentAddress: string): HarnessConfig {
   return {
     sessionId: "ses-lanes",
-    agentId: "workflow",
-    tenantId: "tenant-1",
-    principalId: "principal-1",
     agentAddress,
-    systemPrompt: "test",
-    tools: [],
     sources: [
       {
         id: "test-source",
@@ -136,8 +131,14 @@ function deploy(agentAddress: string) {
     requestId: `deploy-${String(deploys)}`,
     agentAddress,
     generation: 1,
-    agentId: "workflow",
     config: config(agentAddress),
+    workflow: {
+      sources: {},
+      sourceRef: {
+        source: { kind: "registry", registry: "npmjs" },
+        closure: { schemaVersion: "1", topLevel: [], entries: [] },
+      },
+    },
   };
 }
 

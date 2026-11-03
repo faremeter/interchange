@@ -191,12 +191,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
-        agentId: `${PARENT_DEPLOYMENT_ID}`,
-        tenantId: "tenant-1",
-        principalId: "prin_integration-1",
         agentAddress: parentMailAddress,
-        systemPrompt: "Fallback prompt (overridden per step).",
-        tools: [],
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
       };

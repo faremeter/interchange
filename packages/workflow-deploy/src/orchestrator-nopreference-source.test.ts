@@ -30,12 +30,7 @@ function makeConfig(args: {
 }): HarnessConfig {
   return {
     sessionId: "ses-nonagent",
-    agentId: "ag_nonagent",
-    tenantId: "tenant-1",
-    principalId: "prin-1",
     agentAddress: "run_nonagent@workflow.interchange",
-    systemPrompt: "shared-prompt",
-    tools: [],
     sources: args.sources,
     defaultSource: args.defaultSource,
   };

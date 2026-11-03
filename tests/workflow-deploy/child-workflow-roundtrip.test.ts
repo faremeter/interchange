@@ -281,15 +281,10 @@ afterAll(async () => {
   if (h !== undefined) await h.close();
 });
 
-function makeConfig(anchorRunId: string, address: string): HarnessConfig {
+function makeConfig(address: string): HarnessConfig {
   return {
     sessionId: SESSION_ID,
-    agentId: `${anchorRunId}`,
-    tenantId: "tenant-1",
-    principalId: "prin_integration-1",
     agentAddress: address,
-    systemPrompt: "Fallback prompt (overridden per step).",
-    tools: [],
     sources: [
       {
         id: "anthropic:mock-model",
@@ -341,7 +336,7 @@ async function deployParent(opts: {
     deploymentDomain: DEPLOYMENT_DOMAIN,
     agentAddress: address,
     approvals: opts.approvals,
-    config: makeConfig(opts.anchorRunId, address),
+    config: makeConfig(address),
     sources,
   });
   expect(handle.publicKey).toBeTruthy();
@@ -843,7 +838,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: parentMailAddress,
         approvals: operatorApprovals,
-        config: makeConfig(MAP_NESTED_PARENT_DEPLOYMENT_ID, parentMailAddress),
+        config: makeConfig(parentMailAddress),
         sources: { spawn: [inferenceSource] },
       });
       expect(handle.publicKey).toBeTruthy();

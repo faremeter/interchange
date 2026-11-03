@@ -451,7 +451,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
   });
 }
 
-type WorkflowProjection = NonNullable<AgentDeployFrame["workflow"]>;
+type WorkflowProjection = AgentDeployFrame["workflow"];
 // A single source: each step's `sources` value is an ordered failover chain,
 // so the fixture element type is the chain's member.
 type InferenceSourceFixture = WorkflowProjection["sources"][string][number];
@@ -595,14 +595,7 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
     requestId: "deploy-test",
     agentAddress,
     generation: 1,
-    agentId: "multi-agent",
-    // The wire-side HarnessConfig has many required fields. On the
-    // workflow deploy path the router reads only `config.sessionId`
-    // and `config.grants`, both of which tolerate the empty
-    // placeholder (they resolve to `undefined`), so an opaque `{}`
-    // satisfies the surface contract for these tests.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path reads only config.sessionId/config.grants, which tolerate undefined
-    config: {} as AgentDeployFrame["config"],
+    config: { sessionId: "s" },
     workflow: {
       sources: args.sources,
       // Placeholder source-ref pin. The deploy/restore path re-materializes the

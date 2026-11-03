@@ -361,9 +361,7 @@ function singleStepFrame(
     requestId: `deploy-${agentAddress}`,
     agentAddress,
     generation: 1,
-    agentId: "boot-restore-agent",
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path reads only config.sessionId/config.grants, which tolerate undefined
-    config: {} as AgentDeployFrame["config"],
+    config: { sessionId: "s" },
     workflow: {
       // Source-ref is the only deploy lineage: the frame carries no inline
       // definition, only the pin the router re-materializes for the child,

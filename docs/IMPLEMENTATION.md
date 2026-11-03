@@ -1073,7 +1073,7 @@ the child verified, after the supervisor checks it against the approved hash.
 A closure that fails, throws or hangs while loading fails only its own deploy
 or restore.
 
-A frame carrying neither shape is rejected -- there is no in-process
+A frame without a `workflow` fails frame validation -- there is no in-process
 deploy path. A single agent deploys as a single-step workflow whose
 lone step IS the deployment head (`deriveRunAddress` in
 `packages/workflow-deploy/src/addresses.ts`), so single- and

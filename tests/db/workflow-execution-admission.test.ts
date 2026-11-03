@@ -32,7 +32,11 @@ import {
   type SidecarRouterConfig,
 } from "@intx/hub-sessions";
 import type { HarnessConfig } from "@intx/types/runtime";
-import { DEFAULT_SIDECAR_CAPACITY, HubFrame } from "@intx/types/sidecar";
+import {
+  type AgentDeployFrame,
+  DEFAULT_SIDECAR_CAPACITY,
+  HubFrame,
+} from "@intx/types/sidecar";
 import { createMockWs } from "./sidecar-test-helpers";
 
 const MANIFEST_DIGEST = "1".repeat(64);
@@ -51,14 +55,17 @@ const sidecarAuth = {
   resolveSidecarBindings: async () => [binding],
 };
 
+const TEST_WORKFLOW: AgentDeployFrame["workflow"] = {
+  sources: {},
+  sourceRef: {
+    source: { kind: "registry", registry: "npmjs" },
+    closure: { schemaVersion: "1", topLevel: [], entries: [] },
+  },
+};
+
 const deployConfig: HarnessConfig = {
   sessionId: "session_admission",
-  agentId: "workflow",
-  tenantId: target.tenantId,
-  principalId: "principal_admission",
   agentAddress: target.workflowRunAddress,
-  systemPrompt: "test",
-  tools: [],
   sources: [],
   defaultSource: "test",
 };
@@ -169,7 +176,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             target,
             target.workflowRunAddress,
             deployConfig,
-            undefined,
+            TEST_WORKFLOW,
             initialization.signal,
             async () => {
               const reserved =
@@ -298,6 +305,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         target,
         target.workflowRunAddress,
         deployConfig,
+        TEST_WORKFLOW,
       );
       const result = deployment.catch((cause: unknown) => cause);
       try {

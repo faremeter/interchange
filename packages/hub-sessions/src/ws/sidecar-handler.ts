@@ -52,7 +52,7 @@ import {
 } from "@intx/types/sidecar";
 import { RepoId } from "@intx/types/repo";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
-import type { ConnectorThreadState, HarnessConfig } from "@intx/types/runtime";
+import type { ConnectorThreadState } from "@intx/types/runtime";
 import type {
   SidecarCredentialIdentity,
   SidecarCredentials,
@@ -621,8 +621,8 @@ export type SidecarAllocationRouter = {
   sendAgentDeployToAllocation(
     target: AllocatedSidecarTarget,
     agentAddress: string,
-    config: HarnessConfig,
-    workflow?: AgentDeployFrame["workflow"],
+    config: AgentDeployFrame["config"],
+    workflow: AgentDeployFrame["workflow"],
     signal?: AbortSignal,
     beforeSend?: () => Promise<void>,
   ): Promise<{ publicKey: string }>;
@@ -5124,8 +5124,8 @@ export function createSidecarRouter(
     conn: SidecarConnection,
     target: AllocatedSidecarTarget,
     agentAddress: string,
-    harnessConfig: HarnessConfig,
-    workflow?: AgentDeployFrame["workflow"],
+    config: AgentDeployFrame["config"],
+    workflow: AgentDeployFrame["workflow"],
   ): Promise<{ publicKey: string }> {
     if (pendingDeploys.has(agentAddress)) {
       throw deployFrameFailure(
@@ -5171,9 +5171,8 @@ export function createSidecarRouter(
         requestId,
         agentAddress,
         generation: target.generation,
-        agentId: harnessConfig.agentId,
-        config: harnessConfig,
-        ...(workflow !== undefined ? { workflow } : {}),
+        config: { sessionId: config.sessionId },
+        workflow,
       });
       conn.unansweredDeploys.set(requestId, agentAddress);
     } catch (cause) {
@@ -5196,8 +5195,8 @@ export function createSidecarRouter(
   async function sendAgentDeployToAllocation(
     target: AllocatedSidecarTarget,
     agentAddress: string,
-    harnessConfig: HarnessConfig,
-    workflow?: AgentDeployFrame["workflow"],
+    config: AgentDeployFrame["config"],
+    workflow: AgentDeployFrame["workflow"],
     signal?: AbortSignal,
     beforeSend?: () => Promise<void>,
   ): Promise<{ publicKey: string }> {
@@ -5239,7 +5238,7 @@ export function createSidecarRouter(
             conn,
             target,
             agentAddress,
-            harnessConfig,
+            config,
             workflow,
           );
           // Own an early ack rejection while the admission transaction ends.

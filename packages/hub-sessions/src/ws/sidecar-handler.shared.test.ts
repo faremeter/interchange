@@ -16,6 +16,7 @@ import {
   parsedFrames,
   sidecarAuth,
   TEST_CONFIG,
+  TEST_WORKFLOW,
   tick,
   undeployAck,
 } from "./sidecar-handler.test-helpers";
@@ -1532,6 +1533,7 @@ describe("SidecarRouter allocation cleanup", () => {
         target(cleanup),
         first.workflowRunAddress,
         configFor(first),
+        TEST_WORKFLOW,
       ),
     ).rejects.toThrow("does not permit");
 
@@ -1943,6 +1945,7 @@ describe("SidecarRouter shared sidecars", () => {
       target(adopted),
       adopted.workflowRunAddress,
       configFor(adopted),
+      TEST_WORKFLOW,
     );
     await ws.awaitSent((sent) =>
       sent.some((raw) => raw.includes('"agent.deploy"')),
@@ -2197,12 +2200,14 @@ describe("SidecarRouter shared sidecars", () => {
         target(first),
         first.workflowRunAddress,
         configFor(first),
+        TEST_WORKFLOW,
       )
       .catch((error: unknown) => error);
     const secondDeploy = router.sendAgentDeployToAllocation(
       target(second),
       second.workflowRunAddress,
       configFor(second),
+      TEST_WORKFLOW,
     );
     await ws.awaitSent(
       (sent) =>
@@ -2306,6 +2311,7 @@ describe("SidecarRouter shared sidecars", () => {
         target(first),
         first.workflowRunAddress,
         configFor(first),
+        TEST_WORKFLOW,
       )
       .catch((error: unknown) => error);
     expect(await deployed).toBeInstanceOf(Error);
@@ -2736,6 +2742,7 @@ describe("SidecarRouter deploy replies on a shared sidecar", () => {
           target(first),
           first.workflowRunAddress,
           configFor(first),
+          TEST_WORKFLOW,
         )
         .catch((error: unknown) => error);
       await ws.awaitSent(() => deployFrames(ws) === 1);
@@ -2761,6 +2768,7 @@ describe("SidecarRouter deploy replies on a shared sidecar", () => {
           target(next),
           next.workflowRunAddress,
           configFor(next),
+          TEST_WORKFLOW,
         )
         .finally(() => {
           settled = true;
@@ -2791,6 +2799,7 @@ describe("SidecarRouter deploy replies on a shared sidecar", () => {
         target(first),
         first.workflowRunAddress,
         configFor(first),
+        TEST_WORKFLOW,
       )
       .catch((error: unknown) => error);
     expect(unsent).toMatchObject({ frameSent: false });
@@ -2800,6 +2809,7 @@ describe("SidecarRouter deploy replies on a shared sidecar", () => {
       target(first),
       first.workflowRunAddress,
       configFor(first),
+      TEST_WORKFLOW,
     );
     await ws.awaitSent(() => deployFrames(ws) === 1);
     router.handleMessage(
@@ -2884,6 +2894,7 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
       target(first),
       first.workflowRunAddress,
       configFor(first),
+      TEST_WORKFLOW,
     );
     await tick();
     expect(framesOfType(ws, "agent.deploy")).toEqual([]);
@@ -2917,6 +2928,7 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
         target(first),
         first.workflowRunAddress,
         configFor(first),
+        TEST_WORKFLOW,
       )
       .catch((error: unknown) => error);
 
@@ -2944,6 +2956,7 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
           target(first),
           first.workflowRunAddress,
           configFor(first),
+          TEST_WORKFLOW,
         )
         .catch((error: unknown) => error);
       await ws.awaitSent((sent) =>
@@ -2968,6 +2981,7 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
           target(next),
           next.workflowRunAddress,
           configFor(next),
+          TEST_WORKFLOW,
         )
         .finally(() => {
           settled = true;
@@ -3015,6 +3029,7 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
       target(next),
       next.workflowRunAddress,
       configFor(next),
+      TEST_WORKFLOW,
     );
     router.handleMessage(ws, undeployAck(ws, first.workflowRunAddress));
     await ws.awaitSent((sent) =>

@@ -102,12 +102,7 @@ const SOURCES = { only: [INFERENCE_SOURCE] };
 const MANIFEST_DIGEST = "1".repeat(64);
 const CONFIG: HarnessConfig = {
   sessionId: "ses-anchor-before-frame",
-  agentId: ANCHOR_RUN_ID,
-  tenantId: TENANT_ID,
-  principalId: "prin-anchor-before-frame",
   agentAddress: DEPLOY_ADDRESS,
-  systemPrompt: "deployment-level",
-  tools: [],
   sources: Object.values(SOURCES).flat(),
   defaultSource: "src-only",
 };

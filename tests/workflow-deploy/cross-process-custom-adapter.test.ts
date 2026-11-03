@@ -169,12 +169,7 @@ async function deployCustomProviderWorkflow(opts: {
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
-    agentId: opts.anchorRunId,
-    tenantId: "tenant-1",
-    principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the definition)",
-    tools: [],
     sources: [inferenceSource],
     defaultSource: sourceId,
   };

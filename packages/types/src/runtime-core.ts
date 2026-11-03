@@ -2393,25 +2393,13 @@ export const ToolDefinition = type({
 export type ToolDefinition = typeof ToolDefinition.infer;
 
 /**
- * Agent harness configuration. Assembled from the agent definition package
- * and capability grants during harness initialization.
- *
- * `principalId` is the agent's principal in the hub's authorization model.
- * The sidecar needs it to reconstruct the in-memory grant store on restart
- * (the store's `collectGrants` filters by principal).
- *
- * (ARCHITECTURE.md § Agent Harness)
+ * What the Hub assembles for a deploy. Of this, only the session id reaches
+ * the sidecar, on the `agent.deploy` frame.
  */
 export const HarnessConfig = type({
   sessionId: "string",
-  agentId: "string",
-  tenantId: "string",
-  principalId: "string",
   agentAddress: "string",
-  systemPrompt: "string",
-  tools: ToolDefinition.array(),
   sources: InferenceSource.array(),
   defaultSource: "string",
-  "sessionChannelEnabled?": "boolean",
 });
 export type HarnessConfig = typeof HarnessConfig.infer;
