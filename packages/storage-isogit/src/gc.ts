@@ -63,8 +63,8 @@ export type GCPolicy = {
  * Collect every object reachable through a commit's ancestry, tolerating
  * commits whose parents are not present on disk.
  *
- * The deploy ref is applied tip-only, so its commit carries parent pointers
- * to objects that were never transferred. Reading an absent parent throws
+ * A ref received tip-only has a commit that carries parent pointers to
+ * objects that were never transferred. Reading an absent parent throws
  * `NotFoundError`; we stop descending that branch rather than aborting the
  * whole GC, because a missing parent is the expected steady state for these
  * repos. Only that specific absence is tolerated — any other read failure

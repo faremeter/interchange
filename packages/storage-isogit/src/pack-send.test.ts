@@ -5,7 +5,7 @@ import path from "node:path";
 import git from "isomorphic-git";
 import { createDeployPack, createNegotiatedPack } from "./node";
 import { collectReachableObjects } from "./node";
-import { applyPack } from "./node";
+import { stagePack } from "./node";
 import { initAgentRepo } from "./node";
 
 const tempDirs: string[] = [];
@@ -25,25 +25,25 @@ afterEach(async () => {
   );
 });
 
-async function makeDeployRepo(): Promise<string> {
+async function makeSourceRepo(): Promise<string> {
   const dir = await tempDir();
   await git.init({ fs, dir, defaultBranch: "main" });
 
-  await fs.promises.mkdir(path.join(dir, "deploy"), { recursive: true });
+  await fs.promises.mkdir(path.join(dir, "src"), { recursive: true });
   await fs.promises.writeFile(
-    path.join(dir, "deploy", "prompt.txt"),
+    path.join(dir, "src", "prompt.txt"),
     "You are a helpful agent.",
   );
   await fs.promises.writeFile(
-    path.join(dir, "deploy", "metadata.json"),
+    path.join(dir, "src", "metadata.json"),
     JSON.stringify({ version: "1" }),
   );
-  await git.add({ fs, dir, filepath: "deploy/prompt.txt" });
-  await git.add({ fs, dir, filepath: "deploy/metadata.json" });
+  await git.add({ fs, dir, filepath: "src/prompt.txt" });
+  await git.add({ fs, dir, filepath: "src/metadata.json" });
   await git.commit({
     fs,
     dir,
-    message: "Initial deploy tree",
+    message: "Initial tree",
     author: { name: "Hub", email: "hub@interchange.dev" },
   });
 
@@ -51,8 +51,8 @@ async function makeDeployRepo(): Promise<string> {
 }
 
 describe("createDeployPack", () => {
-  test("produces a packfile from a repo with a deploy tree", async () => {
-    const sourceDir = await makeDeployRepo();
+  test("produces a packfile from a repo", async () => {
+    const sourceDir = await makeSourceRepo();
     const { pack, commitSha } = await createDeployPack(
       sourceDir,
       "refs/heads/main",
@@ -62,8 +62,8 @@ describe("createDeployPack", () => {
     expect(commitSha.length).toBe(40);
   });
 
-  test("produced pack can be applied to a fresh agent repo", async () => {
-    const sourceDir = await makeDeployRepo();
+  test("produced pack can be staged into a fresh agent repo", async () => {
+    const sourceDir = await makeSourceRepo();
     const { pack, commitSha } = await createDeployPack(
       sourceDir,
       "refs/heads/main",
@@ -72,18 +72,19 @@ describe("createDeployPack", () => {
     const targetDir = await tempDir();
     await initAgentRepo(targetDir);
 
-    await applyPack(targetDir, pack, "refs/heads/deploy", commitSha, "t1");
+    const staged = await stagePack(targetDir, pack, "t1");
+    await staged.publish();
 
-    const resolved = await git.resolveRef({
+    const { oid } = await git.readCommit({
       fs,
       dir: targetDir,
-      ref: "refs/heads/deploy",
+      oid: commitSha,
     });
-    expect(resolved).toBe(commitSha);
+    expect(oid).toBe(commitSha);
   });
 
   test("throws for a nonexistent ref", async () => {
-    const dir = await makeDeployRepo();
+    const dir = await makeSourceRepo();
     await expect(
       createDeployPack(dir, "refs/heads/nonexistent"),
     ).rejects.toThrow();

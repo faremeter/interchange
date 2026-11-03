@@ -81,11 +81,10 @@ guarantee. Use absolute repository paths; relative browser paths resolve from
 runtime through the package root and own that runtime's recovery guarantees.
 
 The pack-send and pack-receive helpers (`createDeployPack`,
-`createNegotiatedPack`, `applyPack`, `stagePack`) produce
+`createNegotiatedPack`, `stagePack`) produce
 and consume the wire bytes that `@intx/pack-transport` chunks
-across the WebSocket. A `CommitSigner` is optional but required
-when the consumer needs every commit to carry a verifiable
-signature.
+across the WebSocket. A `CommitSigner` is optional; when a consumer passes
+one, every commit is signed. Nothing verifies those signatures at runtime.
 
 `stagePack` writes and indexes a received pack outside `objects/pack/` and
 returns a handle. The handle's `fs` reads the staged objects, so a receiver
@@ -94,9 +93,3 @@ never enters `objects/pack/`. A crash can leave a staged pack behind, which
 no reader scans; it stays until a caller runs `removeStagedPacks`. The hub's
 repo store does this before the first receive for a repository in each
 process.
-
-Pack receivers flush an accepted pack before ref promotion. If a
-later ref or persistence operation fails, the call rejects but retains the
-pack because the ref update may already be observable. Callers must treat that
-error as an uncertain promotion outcome rather than assuming the ref is
-unchanged; whichever ref value is visible remains backed by durable objects.

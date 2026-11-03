@@ -63,12 +63,16 @@ async function writeAndFlush(databaseName: string): Promise<WriteResult> {
     "refs/heads/main",
   );
   await storage.initAgentRepo("/target");
-  await storage.applyPack(
+  const staged = await storage.stagePack(
     "/target",
     pack,
-    "refs/heads/deploy",
-    commitSha,
     "browser-smoke-transfer",
+  );
+  await staged.publish();
+  // This package does not depend on isomorphic-git, so it writes the loose ref.
+  await storage.storageRuntime.fs.writeFile(
+    "/target/.git/refs/heads/deploy",
+    `${commitSha}\n`,
   );
 
   const gc = await storage.runGC("/target", { retention: "keep-history" });
