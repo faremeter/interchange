@@ -6,7 +6,7 @@ operators run.
 
 `src/index.ts` opens the Postgres connection (`@intx/db`),
 constructs the better-auth wrapper and grant store, generates the
-hub's deploy signing key, and builds the agent-repo, asset, and
+hub's commit signing key, and builds the agent-repo, asset, and
 session services from `@intx/hub-sessions`. It then assembles the
 Hono app with `createApp` from `@intx/hub-api`, mounts the sidecar
 WebSocket upgrade handler, and exports a Bun server object

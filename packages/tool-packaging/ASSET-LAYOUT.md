@@ -123,9 +123,9 @@ ladder owned by the sidecar's materialization layer. See
 - Bytes are exactly what an npm registry would serve: the package tree
   rooted under `package/`, gzipped tar.
 - Integrity is verified by the sidecar loader against the entry's
-  `source.package.integrity` field before extraction. The asset substrate's git-commit
-  signature provides the trust root; the SRI hash provides byte-level
-  integrity at materialization time.
+  `source.package.integrity` field before extraction. That SRI hash, in the
+  closure the hub froze, is what the sidecar trusts; the asset repo's commit
+  signatures are not verified at runtime.
 - The workspace's bundled tarballs (`bin/build-builtins.ts`) emit a
   packed `package.json` with `dependencies`, `devDependencies`,
   `optionalDependencies`, and `exports` deleted: every workspace and
@@ -155,7 +155,7 @@ surface.
 | Concern         | Asset-sourced                                                  | Registry-sourced                                                      |
 | --------------- | -------------------------------------------------------------- | --------------------------------------------------------------------- |
 | Distribution    | Operator commits the tarball to the asset repo.                | Sidecar fetches at apply time from a configured registry.             |
-| Trust           | Git-commit signature on the asset.                             | Registry trust + manifest integrity pin.                              |
+| Trust           | Manifest integrity pin; commit signatures are not verified.    | Registry trust + manifest integrity pin.                              |
 | Reproducibility | Strong — the bytes are vendored.                               | Strong as long as the registry honors immutability of `name@version`. |
 | Use case        | Operator-curated tools, anything the operator wants to vendor. | Public packages, third-party tools, anything not vendored.            |
 

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { initAgentRepo } from "./node";
-import { applyPack, type CommitVerifier } from "./node";
+import { stagePack } from "./node";
 import { collectReachableObjects } from "./node";
 import {
   createIsogitStorage,
@@ -80,6 +80,18 @@ async function commitOnMain(dir: string, name: string): Promise<string> {
   return git.commit({ fs, dir, message: `add ${name}`, author });
 }
 
+async function receivePack(
+  dir: string,
+  pack: Uint8Array,
+  ref: string,
+  commitSha: string,
+  transferId: string,
+): Promise<void> {
+  const staged = await stagePack(dir, pack, transferId);
+  await staged.publish();
+  await git.writeRef({ fs, dir, ref, value: commitSha, force: true });
+}
+
 async function deployOnto(
   dir: string,
   files: Record<string, string>,
@@ -87,7 +99,7 @@ async function deployOnto(
 ): Promise<string> {
   const source = await sourceRepo(files);
   const pack = await packFor(source.dir, source.tipOids);
-  await applyPack(dir, pack, "refs/heads/deploy", source.tip, transferId);
+  await receivePack(dir, pack, "refs/heads/deploy", source.tip, transferId);
   return source.tip;
 }
 
@@ -131,17 +143,8 @@ describe("runGC", () => {
       unsignedSource.dir,
       unsignedSource.tipOids,
     );
-    const verifier: CommitVerifier = async () => true;
-    await expect(
-      applyPack(
-        dir,
-        unsignedPack,
-        "refs/heads/deploy",
-        unsignedSource.tip,
-        "reject-2",
-        verifier,
-      ),
-    ).rejects.toThrow(/^signature_unsigned/);
+    const rejected = await stagePack(dir, unsignedPack, "reject-2");
+    await rejected.discard();
 
     const before = repoDiskUsage(dir);
     expect(before.packCount).toBeGreaterThan(1);
@@ -238,7 +241,7 @@ describe("runGC", () => {
     });
     const tipOnly = await collectReachableObjects(source, deployTip);
     const pack = await packFor(source, tipOnly);
-    await applyPack(dir, pack, "refs/heads/deploy", deployTip, "deploy-1");
+    await receivePack(dir, pack, "refs/heads/deploy", deployTip, "deploy-1");
 
     // The tip's parent is unresolvable; keep-history must not abort on it.
     const result = await runGC(dir, { retention: "keep-history" });

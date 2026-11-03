@@ -29,7 +29,6 @@ export {
   type GCPolicy,
   type ContextStore,
   type AuditStore,
-  type CommitVerifier,
   type StagedPack,
   type IncludeShaPredicate,
   type ObjectPresence,
@@ -49,7 +48,6 @@ const storage = createIsogitStorage(runtime);
 const { storageRuntime } = storage;
 
 export const {
-  applyPack,
   collectReachableObjects,
   createAndSwitchBranch,
   createDeployPack,

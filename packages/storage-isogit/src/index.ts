@@ -8,7 +8,6 @@ import {
 } from "./history";
 import { initAgentRepo, initRepo } from "./init";
 import {
-  applyPack,
   removeOrphanPackIndexes,
   removeStagedPacks,
   stagePack,
@@ -35,7 +34,7 @@ import {
 } from "./runtime";
 
 export type { ContextStore, AuditStore, CommitSigner };
-export type { CommitVerifier, StagedPack } from "./pack-receive";
+export type { StagedPack } from "./pack-receive";
 export type { IncludeShaPredicate } from "./pack-send";
 export type { ObjectPresence } from "./object-presence";
 export type { DurableMirrorReads };
@@ -80,7 +79,6 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     currentBranch: bindRepoDir(storageRuntime, currentBranch),
     listBranches: bindRepoDir(storageRuntime, listBranches),
     logHistory: bindRepoDir(storageRuntime, logHistory),
-    applyPack: bindRepoDir(storageRuntime, applyPack),
     stagePack: bindRepoDir(storageRuntime, stagePack),
     removeStagedPacks: bindRepoDir(storageRuntime, removeStagedPacks),
     removeOrphanPackIndexes: bindRepoDir(
