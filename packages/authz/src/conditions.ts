@@ -31,7 +31,7 @@ function lookupEvaluator(
 export async function evaluateConditions(
   conditions: Record<string, unknown> | null,
   ctx: ConditionContext,
-  registry: ConditionRegistry = {},
+  registry: ConditionRegistry,
 ): Promise<boolean> {
   if (!conditions) return true;
 
