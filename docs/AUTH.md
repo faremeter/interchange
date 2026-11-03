@@ -331,16 +331,30 @@ A standing decision changes the effect of an existing grant whose resource is th
 
 ### Conditions
 
-The `conditions` JSONB field constrains when a grant applies. A condition key is evaluated only if an evaluator is registered for it; today the sole registered evaluator is `time_window`:
+The `conditions` JSONB field constrains when a grant applies. Each key names a condition evaluator in the hub's condition registry. Two evaluators are registered:
 
-- `{ "time_window": { "after": "09:00", "before": "17:00", "timezone": "America/Los_Angeles" } }` -- time-based access (implemented). `timezone` is required; `after` and `before` are `HH:MM` in 24-hour format.
+- `{ "time_window": { "after": "09:00", "before": "17:00", "timezone": "America/Los_Angeles" } }` -- time-based access. `timezone` is required and is an IANA zone name or a UTC offset. `after` and `before` are `HH:MM` in 24-hour format and must differ; `after` later than `before` gives a window that crosses midnight. No other key is allowed.
+- `{ "tool": "tool:<package>" }` -- a consumer-scoped grant, which applies only when the named credential consumer makes the request. The value is a non-empty consumer identity.
 
 Spending limits and threshold-based escalation are planned conditions with no evaluator yet:
 
 - `{ "max_spend_per_day": 100, "currency": "USD" }` -- spending limits (not yet available).
 - `{ "require_approval_above": 50 }` -- threshold-based escalation (not yet available).
 
-Conditions are evaluated at runtime by the authorization engine: a grant whose registered condition is unmet is skipped, but a grant carrying a condition key with no registered evaluator throws and fails the authorization to surface the misconfiguration. Do not author grants with the planned conditions above until their evaluators ship — a grant referencing an unregistered condition will fail authorization with an error rather than silently passing.
+Every grant is evaluated on the hub with this registry. A grant that sits directly on a workflow run's principal is also evaluated where the run is, with narrower registries:
+
+| Where               | Evaluates                                                                                       | Registry           |
+| ------------------- | ----------------------------------------------------------------------------------------------- | ------------------ |
+| The run child       | a row whose resource pattern can match a resource outside `credential:`                         | `time_window` only |
+| The credential gate | a row whose resource pattern can match `credential:<id>` and whose action pattern matches `use` | `tool` only        |
+
+A role grant never reaches a run, because a run loads only the rows on its own principal. So a run-principal row may carry `time_window` on a non-credential resource and `tool` on credential use. A row whose patterns can reach both, such as resource `*` with an action pattern that matches `use`, may carry no condition, because neither key is evaluable in both places.
+
+The hub checks conditions against every registry that will evaluate the row before it stores the row:
+
+- Grant create (`POST`) and update (`PATCH`) check `conditions` for the grant's target, resource, and action. An unregistered key, such as the planned conditions above, a body that does not match its evaluator's shape, or a key that a run cannot evaluate on a run-principal row, gives a 400 that names each problem, and the grant is not stored. A `PATCH` that omits `conditions` does not check or change the stored value.
+
+The authorization engine evaluates conditions at runtime: a grant whose registered condition is unmet is skipped. A stored grant that carries an unregistered key or a malformed body still throws and fails the authorization, to surface the misconfiguration. Such a row comes from a path that does not check conditions: a grant materialized from a workflow's declared grant requirement (at launch, or when a change to the delegator's grants re-derives the run), a direct database write, or a row stored before the check existed.
 
 Every check names how it treats a conditioned grant. A check on a request evaluates each condition with the hub's condition registry. A check with no request to evaluate a condition against is **pessimistic**: a conditioned `deny` or `ask` applies as if its condition held, and a conditioned `allow` does not apply. Delegation is the pessimistic check:
 

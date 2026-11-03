@@ -352,7 +352,13 @@ export function mountHubRoutes(
   );
   app.route(
     "/api/tenants/:tenantId/grants",
-    createGrantRoutes({ db, requireGrant, grantStoreFor, sidecarRouter }),
+    createGrantRoutes({
+      db,
+      requireGrant,
+      grantStoreFor,
+      sidecarRouter,
+      conditionRegistry,
+    }),
   );
   app.route(
     "/api/tenants/:tenantId/principals/:principalId/evaluate",

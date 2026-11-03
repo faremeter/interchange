@@ -2,8 +2,8 @@ import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 
-import { authorize } from "@intx/authz";
-import { grant, principal } from "@intx/db/schema";
+import { authorize, validateGrantConditions } from "@intx/authz";
+import { grant, principal, workflowRun } from "@intx/db/schema";
 import { parseGrantRow } from "@intx/db";
 import type { DB, DBExecutor, GrantStoreFactory } from "@intx/db";
 import type { SidecarRouter } from "@intx/hub-sessions";
@@ -132,11 +132,41 @@ async function resolveGrantNames(
   return { roleNames, principalNames };
 }
 
+// One evaluator's problem can itself join several field errors, and problem
+// text can quote author values, so the list is JSON-encoded to keep each
+// problem's bounds unambiguous.
+function conditionsMessage(problems: readonly string[]): string {
+  return `invalid conditions: ${JSON.stringify(problems)}`;
+}
+
+const CONDITIONS_400_DESCRIPTION =
+  "Validation error. A body that fails its schema gets the body validator's error envelope. A body whose `conditions` names an unregistered condition, holds a malformed condition body, or, on a workflow run's principal, holds a condition the run cannot evaluate gets an `ErrorResponse` whose message lists each problem as a JSON array.";
+
+// A grant on a workflow run's principal ships to the run, which evaluates it
+// with narrower registries than the hub's.
+async function isRunPrincipal(
+  db: DB["db"],
+  tenantId: string,
+  principalId: string,
+): Promise<boolean> {
+  const run = await db.query.workflowRun.findFirst({
+    columns: { id: true },
+    where: and(
+      eq(workflowRun.tenantId, tenantId),
+      eq(workflowRun.principalId, principalId),
+    ),
+  });
+  return run !== undefined;
+}
+
 export type CreateGrantRoutesDeps = {
   db: DB["db"];
   requireGrant: RequireGrant;
   grantStoreFor: GrantStoreFactory;
   sidecarRouter: Pick<SidecarRouter, "sendRunGrants">;
+  // The registry a stored grant's conditions are evaluated against. Create
+  // and update refuse conditions it cannot evaluate.
+  conditionRegistry: ConditionRegistry;
 };
 
 // The principals whose effective grants a grant row is part of: its own
@@ -157,6 +187,7 @@ export function createGrantRoutes({
   requireGrant,
   grantStoreFor,
   sidecarRouter,
+  conditionRegistry,
 }: CreateGrantRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
   const delegatorDeps = { db, grantStoreFor, sidecarRouter };
@@ -234,7 +265,7 @@ export function createGrantRoutes({
         "Creates a grant targeting either a role or a principal directly. Exactly one of roleId or principalId must be provided.",
       responses: {
         201: jsonResponse("Grant created", GrantResponse),
-        400: jsonResponse("Validation error", ErrorResponse),
+        400: jsonResponse(CONDITIONS_400_DESCRIPTION, ErrorResponse),
       },
     }),
     validator("json", CreateGrant),
@@ -244,6 +275,21 @@ export function createGrantRoutes({
       // -- roleId or principalId, not both and not neither -- so a malformed
       // request is a 400 before this handler runs.
       const body = c.req.valid("json");
+
+      const problems = validateGrantConditions(
+        {
+          resource: body.resource,
+          action: body.action,
+          conditions: body.conditions ?? null,
+          onRunPrincipal:
+            body.principalId != null &&
+            (await isRunPrincipal(db, tenantCtx.id, body.principalId)),
+        },
+        conditionRegistry,
+      );
+      if (problems.length > 0) {
+        return errorResponse(c, "bad_request", conditionsMessage(problems));
+      }
 
       const now = new Date();
       const row = await changeDelegatorGrants(
@@ -316,6 +362,7 @@ export function createGrantRoutes({
       description: "Update effect, conditions, or expiry on an existing grant.",
       responses: {
         200: jsonResponse("Grant updated", GrantResponse),
+        400: jsonResponse(CONDITIONS_400_DESCRIPTION, ErrorResponse),
         404: jsonResponse("Grant not found", ErrorResponse),
       },
     }),
@@ -324,6 +371,33 @@ export function createGrantRoutes({
       const tenantCtx = c.get("tenant");
       const grantId = c.req.param("grantId");
       const body = c.req.valid("json");
+
+      // An omitted `conditions` leaves the stored value unchecked and
+      // unchanged; only a body that sets it is checked.
+      if (body.conditions !== undefined) {
+        // The update cannot change a grant's resource, action, or target, so
+        // the stored row supplies them.
+        const existing = await db.query.grant.findFirst({
+          where: and(eq(grant.id, grantId), eq(grant.tenantId, tenantCtx.id)),
+        });
+        if (!existing) {
+          return errorResponse(c, "not_found", "Grant not found");
+        }
+        const problems = validateGrantConditions(
+          {
+            resource: existing.resource,
+            action: existing.action,
+            conditions: body.conditions,
+            onRunPrincipal:
+              existing.principalId !== null &&
+              (await isRunPrincipal(db, tenantCtx.id, existing.principalId)),
+          },
+          conditionRegistry,
+        );
+        if (problems.length > 0) {
+          return errorResponse(c, "bad_request", conditionsMessage(problems));
+        }
+      }
 
       const updates: Record<string, unknown> = { updatedAt: new Date() };
       if (body.effect !== undefined) updates["effect"] = body.effect;
