@@ -59,7 +59,6 @@ const deployConfig: HarnessConfig = {
   agentAddress: target.workflowRunAddress,
   systemPrompt: "test",
   tools: [],
-  grants: [],
   sources: [],
   defaultSource: "test",
 };

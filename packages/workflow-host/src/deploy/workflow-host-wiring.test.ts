@@ -177,12 +177,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRef: "refs/heads/main",
       runId: "wire-test",
       deploymentMailAddress: "wire-test@example.com",
-      layoutSteps: () =>
-        Promise.resolve({
-          stepIds: ["step1"],
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
-        }),
+      layoutSteps: () => Promise.resolve(["step1"]),
       substrateEnv: { DATA_DIR: "/tmp/wire" },
       dynamicSpawnEnv: () => ({}),
       binaryPath: "/fake/bin/workflow-child",
@@ -190,7 +185,6 @@ describe("createSidecarWorkflowSupervisor", () => {
     });
 
     expect(typeof wired.supervisor.spawn).toBe("function");
-    expect(wired.getCredentialsSnapshot()).toBeNull();
 
     const result = await wired.supervisor.requestCancel({
       runId: "r-wire-1",
@@ -217,12 +211,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRef: "refs/heads/main",
       runId: "inbound",
       deploymentMailAddress: "inbound@example.com",
-      layoutSteps: () =>
-        Promise.resolve({
-          stepIds: ["step1"],
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
-        }),
+      layoutSteps: () => Promise.resolve(["step1"]),
       substrateEnv: {},
       dynamicSpawnEnv: () => ({}),
       binaryPath: "/fake/bin/workflow-child",
@@ -241,7 +230,7 @@ describe("createSidecarWorkflowSupervisor", () => {
 
   test("onRunStart fails a poisoned run and passes an unpoisoned one", async () => {
     // A poisoned run (its `run.grants` write failed) must be rejected at the
-    // barrier rather than started under the deploy-time grant set. An
+    // barrier rather than started without its grants. An
     // unpoisoned run with a per-run grants file on disk resolves normally.
     const tempBase = await createTempBaseDir("sidecar-poison-barrier-");
     const anchorRunId = "dep-poison";
@@ -286,12 +275,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       workflowRunRef: "refs/heads/main",
       runId: anchorRunId,
       deploymentMailAddress: `${anchorRunId}@example.com`,
-      layoutSteps: () =>
-        Promise.resolve({
-          stepIds: ["step-1"],
-          deriveStepAddress: ({ runId: dep, stepId }) =>
-            `${dep}-${stepId}@example.com`,
-        }),
+      layoutSteps: () => Promise.resolve(["step-1"]),
       substrateEnv: {},
       dynamicSpawnEnv: () => ({}),
       binaryPath: "/fake/bin/workflow-child",
@@ -301,24 +285,15 @@ describe("createSidecarWorkflowSupervisor", () => {
       isRunPoisoned: (runId) => runId === "run-poisoned",
     });
 
-    const layout = {
-      stepIds: ["step-1"],
-      deriveStepAddress: ({
-        runId: dep,
-        stepId,
-      }: {
-        runId: string;
-        stepId: string;
-      }) => `${dep}-${stepId}@example.com`,
-    };
+    const stepIds = ["step-1"];
     await expect(
-      wired.onRunStart({ runId: "run-poisoned", anchorRunId, layout }),
+      wired.onRunStart({ runId: "run-poisoned", anchorRunId, stepIds }),
     ).rejects.toThrow(/grants write failed/);
 
     const snapshot = await wired.onRunStart({
       runId: cleanRunId,
       anchorRunId,
-      layout,
+      stepIds,
     });
     expect(snapshot?.steps).toHaveLength(1);
     expect(snapshot?.steps[0]?.grants).toEqual(runGrants);
@@ -439,15 +414,9 @@ function downstreamPayloadType(line: string): string | undefined {
 
 /**
  * Build a stub RepoStore whose `getRepoDir` resolves under the supplied
- * tempBase. The multi-step branch's `assembleCredentialsSnapshot`
- * reads `state/grants.json` from disk -- missing files are treated as
- * empty grants, so a freshly-created tempBase produces an empty
- * credentials snapshot which is what the wiring test wants.
+ * tempBase.
  */
-function createSpawnTestRepoStore(
-  tempBase: string,
-  beforeWriteTree?: (repoId: RepoId) => Promise<void>,
-): RepoStore {
+function createSpawnTestRepoStore(tempBase: string): RepoStore {
   const stub: Partial<RepoStore> = {
     getRepoDir(repoId: RepoId): string {
       return path.join(tempBase, repoId.kind, repoId.id);
@@ -456,13 +425,9 @@ function createSpawnTestRepoStore(
       await args.merge(new Map());
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
-    // The deploy router's grants bridge writes `state/grants.json` to
-    // each step's agent-state repo once the child reports its definition.
-    // Mirror the `getRepoDir` layout so the write lands where the
-    // subsequent `assembleCredentialsSnapshot` working-tree read looks for
-    // it.
+    // Mirror the `getRepoDir` layout so a write lands where a working-tree
+    // read looks for it.
     async writeTree(_p, repoId, _ref, content) {
-      await beforeWriteTree?.(repoId);
       const dir = path.join(tempBase, repoId.kind, repoId.id);
       for (const [relPath, contents] of Object.entries(content.files)) {
         const full = path.join(dir, relPath);
@@ -500,13 +465,9 @@ type MultistepDeployArgs = {
     steps: Record<string, unknown>;
   };
   /**
-   * Override the deploy frame's `agentAddress`. Single-step projections
-   * are the agent-launch identity path: the deploy router derives the
-   * sole step's agent-state repo from `deriveWorkflowRunId(agentAddress)`, which
-   * requires the canonical `run_<id>@<domain>` shape. Tests that drive a
-   * single-step projection supply a valid instance address here; the
-   * default keeps the historical multi-step address for the multi-step
-   * tests (whose derived per-step repos do not parse the frame address).
+   * Override the deploy frame's `agentAddress`. Tests that drive a single-step
+   * projection supply a canonical `run_<id>@<domain>` address here; the default
+   * keeps the historical multi-step address for the multi-step tests.
    */
   agentAddress?: string;
   /**
@@ -860,12 +821,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       typeof createSidecarDeployRouter
     >[0]["applyFrozenWorkflowClosure"];
     /** Runs before the repo store writes a tree, such as a step's grants. */
-    beforeWriteTree?: (repoId: RepoId) => Promise<void>;
   }) {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
     const tempBase = await createTempBaseDir("sidecar-multistep-");
-    const repoStore = createSpawnTestRepoStore(tempBase, opts.beforeWriteTree);
+    const repoStore = createSpawnTestRepoStore(tempBase);
     // The deploy router's source-ref branch materializes the pinned closure
     // under `${SIDECAR_DATA_DIR}/workflow-definition-closures/<id>/` before
     // invoking the spawner. The test fixture defaults the data dir to a
@@ -904,29 +864,15 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const router = createSidecarDeployRouter({
       ...DEFAULT_SIDECAR_CAPACITY,
       ...deployHostBindings(),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path never invokes provisionAgent/persistHubPublicKey (single-step uses the narrow initRepo; the child mints its own key); the stubs throw if it does. initRepo is a no-op for the single-step head repo.
       sessions: {
-        provisionAgent: async () => {
-          throw new Error("workflow branch must not invoke provisionAgent");
-        },
-        persistHubPublicKey: async () => {
-          throw new Error(
-            "workflow branch must not invoke persistHubPublicKey",
-          );
-        },
         deleteAgentDir: opts.deleteAgentDir ?? (async () => undefined),
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the single-step head deploy records the hub key for pack verification
+      },
       keyStore: {
         loadOrGenerateKey: async () => ({
           keyPair: opts.headKeyPair ?? (await generateKeyPair()),
           isNew: false,
         }),
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["keyStore"],
+      },
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
@@ -937,11 +883,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       removeRunRepository:
         opts.removeRunRepository ??
         removeRunDirectory(mergedSubstrateEnv["SIDECAR_DATA_DIR"] ?? tempBase),
-      removeAgentStateRepository: (id) =>
-        fs.rm(repoStore.getRepoDir({ kind: "agent-state", id }), {
-          recursive: true,
-          force: true,
-        }),
       unregisterDeployment:
         opts.unregisterDeployment ??
         (() => {
@@ -3122,39 +3063,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     }
   });
 
-  test("an undeploy removes a single-step deployment's grants repository", async () => {
-    const head = "run_undeploy_grants@example.com";
-    const spawner = makeReadyDrivingSpawner(9680);
-    const { router, tempBase } = await buildMultistepFixture({
-      spawner: spawner.spawner,
-    });
-    const deployPromise = router.deploy(singleStepFrame(head, "wf-grants"));
-    await spawner.driveReadyFor(0);
-    await deployPromise;
-    const grants = path.join(tempBase, "agent-state", "run_undeploy_grants");
-    const exists = () =>
-      fs.access(grants).then(
-        () => true,
-        () => false,
-      );
-    expect(await exists()).toBe(true);
-    const undeploy = router.undeploy;
-    if (undeploy === undefined) {
-      throw new Error("router.undeploy is undefined");
-    }
-
-    await undeploy({
-      type: "agent.undeploy",
-      requestId: "undeploy-grants",
-      agentAddress: head,
-      generation: 1,
-      reason: "test",
-    });
-
-    expect(await exists()).toBe(false);
-    expect(heldAddresses(router)).toEqual([]);
-  });
-
   test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-srcref-ok-");
     const head = "run_srcref_ok@example.com";
@@ -3861,7 +3769,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       const agentDir = path.join(dataDir, "agent-directory");
       const spawner = makeReadyDrivingSpawner(15410);
       let stopped = false;
-      const { router, tempBase, transport } = await buildMultistepFixture({
+      const { router, transport } = await buildMultistepFixture({
         spawner: (args) => {
           const child = spawner.spawner(args);
           return {
@@ -3889,7 +3797,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         path.join(dataDir, "workflow-definition-sources", runId),
         path.join(dataDir, "workflow-definition-source-gits", runId),
         conversationStateRoot(dataDir, runId),
-        path.join(tempBase, "agent-state", deriveWorkflowRunId(head)),
         recordDir,
       ];
       for (const dir of stateDirs) {
@@ -4275,49 +4182,29 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     },
   );
 
-  test("a deploy writes its run record only once its child reported and its grants are on disk", async () => {
-    const dataDir = await createTempBaseDir("sidecar-record-after-grants-");
-    const head = "run_record_after_grants@example.com";
+  test("a deploy writes its run record only once its child reported", async () => {
+    const dataDir = await createTempBaseDir("sidecar-record-after-report-");
+    const head = "run_record_after_report@example.com";
     const spawner = makeReadyDrivingSpawner(15800);
-    const recordAtGrantsWrite: boolean[] = [];
-    const { router, tempBase } = await buildMultistepFixture({
+    const { router } = await buildMultistepFixture({
       spawner: spawner.spawner,
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
-      beforeWriteTree: async () => {
-        recordAtGrantsWrite.push(
-          await recordExists(dataDir, deriveWorkflowRunRepoId(head)),
-        );
-      },
     });
-
     const deploying = router.deploy(
-      singleStepFrame(head, "wf-record-after-grants"),
+      singleStepFrame(head, "wf-record-after-report"),
     );
     await spawner.awaitSpawnCount(1);
     // Until the child reports its definition, a restart finds nothing to
-    // re-drive: the record would otherwise come back without its grants.
+    // re-drive.
     expect(await recordExists(dataDir, deriveWorkflowRunRepoId(head))).toBe(
       false,
     );
 
     await spawner.driveReadyFor(0);
     await deploying;
-    // The grants went to disk before the record existed.
-    expect(recordAtGrantsWrite).toEqual([false]);
     expect(await recordExists(dataDir, deriveWorkflowRunRepoId(head))).toBe(
       true,
     );
-    const grants = await fs.readFile(
-      path.join(
-        tempBase,
-        "agent-state",
-        deriveWorkflowRunId(head),
-        "state",
-        "grants.json",
-      ),
-      "utf8",
-    );
-    expect(JSON.parse(grants)).toEqual({ grants: [] });
   });
 
   test("restore holds a deployment its record marks stopped or tearing down without spawning it", async () => {
@@ -6397,8 +6284,7 @@ describe("assembleRunCredentialsSnapshot", () => {
   // getRepoDir mirrors the production `<base>/<kind>/<id>` layout that
   // `createSpawnTestRepoStore` uses, so a file written at
   // `<base>/workflow-run/<anchorRunId>/runs/<runId>/grants.json` lands where
-  // the sink's working-tree read looks, and a step's deploy-time grants land
-  // at `<base>/agent-state/<repoId>/state/grants.json`.
+  // the sink's working-tree read looks.
   function createReadStubRepoStore(tempBase: string): RepoStore {
     const stub: Partial<RepoStore> = {
       getRepoDir(repoId: RepoId): string {
@@ -6422,13 +6308,6 @@ describe("assembleRunCredentialsSnapshot", () => {
   const anchorRunId = "dep-run-grants";
   const runId = "run-xyz";
   const stepOrder = ["step-1", "step-2"];
-  const deriveStepAddress = ({
-    runId: dep,
-    stepId,
-  }: {
-    runId: string;
-    stepId: string;
-  }) => `${dep}-${stepId}@example.com`;
 
   async function writeRunGrantsFile(
     tempBase: string,
@@ -6439,22 +6318,7 @@ describe("assembleRunCredentialsSnapshot", () => {
     await fs.writeFile(path.join(dir, "grants.json"), contents);
   }
 
-  async function writeDeployTimeStepGrants(
-    tempBase: string,
-    stepId: string,
-    contents: string,
-  ): Promise<void> {
-    const dir = path.join(
-      tempBase,
-      "agent-state",
-      `${anchorRunId}-${stepId}`,
-      "state",
-    );
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, "grants.json"), contents);
-  }
-
-  test("a run with a per-run grants file reads those grants over deploy-time", async () => {
+  test("a run with a per-run grants file reads those grants", async () => {
     const tempBase = await createTempBaseDir("sidecar-run-grants-");
     const repoStore = createReadStubRepoStore(tempBase);
 
@@ -6462,29 +6326,20 @@ describe("assembleRunCredentialsSnapshot", () => {
       { id: "run-grant", resource: "tool:send-mail", effect: "allow" },
     ];
     await writeRunGrantsFile(tempBase, JSON.stringify({ grants: runGrants }));
-    // Deploy-time grants differ; the per-run read must win, so these are
-    // never surfaced.
-    await writeDeployTimeStepGrants(
-      tempBase,
-      "step-1",
-      JSON.stringify({ grants: [{ id: "deploy-grant" }] }),
-    );
 
     const snapshot = await assembleRunCredentialsSnapshot({
       repoStore,
       anchorRunId,
       runId,
       stepOrder,
-      deriveStepAddress,
     });
     if (snapshot === null) throw new Error("expected a snapshot");
 
-    // Every step carries the single flat per-run grant set, keyed on the
-    // deploy-time per-step address, with a shared content hash.
+    // Every step carries the single flat per-run grant set, with a shared
+    // content hash.
     expect(snapshot.steps).toHaveLength(2);
     for (const step of snapshot.steps) {
       expect(step.grants).toEqual(runGrants);
-      expect(step.address).toBe(`${anchorRunId}-${step.stepId}@example.com`);
     }
     expect(snapshot.steps[0]?.stepId).toBe("step-1");
     expect(snapshot.steps[1]?.stepId).toBe("step-2");
@@ -6497,14 +6352,8 @@ describe("assembleRunCredentialsSnapshot", () => {
     const tempBase = await createTempBaseDir("sidecar-run-grants-");
     const repoStore = createReadStubRepoStore(tempBase);
 
-    // No per-run file. A deploy-time file is present so a silent fallback
-    // would surface deploy-time grants; the run must have none, so the
-    // barrier fails it closed and a new child starts with no snapshot.
-    await writeDeployTimeStepGrants(
-      tempBase,
-      "step-1",
-      JSON.stringify({ grants: [{ id: "deploy-grant-1" }] }),
-    );
+    // No per-run file: the run has no grants, so the barrier fails it closed
+    // and a new child starts with no snapshot.
 
     expect(
       await assembleRunCredentialsSnapshot({
@@ -6512,7 +6361,6 @@ describe("assembleRunCredentialsSnapshot", () => {
         anchorRunId,
         runId,
         stepOrder,
-        deriveStepAddress,
       }),
     ).toBeNull();
   });
@@ -6521,14 +6369,8 @@ describe("assembleRunCredentialsSnapshot", () => {
     const tempBase = await createTempBaseDir("sidecar-run-grants-");
     const repoStore = createReadStubRepoStore(tempBase);
 
-    // The file exists but is not valid JSON. A deploy-time file is present so
-    // a swallowed error would silently fall back rather than surface.
+    // The file exists but is not valid JSON.
     await writeRunGrantsFile(tempBase, "{ not valid json");
-    await writeDeployTimeStepGrants(
-      tempBase,
-      "step-1",
-      JSON.stringify({ grants: [{ id: "deploy-grant" }] }),
-    );
 
     await expect(
       assembleRunCredentialsSnapshot({
@@ -6536,7 +6378,6 @@ describe("assembleRunCredentialsSnapshot", () => {
         anchorRunId,
         runId,
         stepOrder,
-        deriveStepAddress,
       }),
     ).rejects.toThrow(/is not valid JSON/);
 
@@ -6550,20 +6391,17 @@ describe("assembleRunCredentialsSnapshot", () => {
         anchorRunId,
         runId,
         stepOrder,
-        deriveStepAddress,
       }),
     ).rejects.toThrow(/failed validation/);
   });
 
-  test("a re-dispatched run re-reads the durable per-run grants, not the deploy-time fallback", async () => {
+  test("a re-dispatched run re-reads the durable per-run grants", async () => {
     // On a child respawn the supervisor's `replayProcessingToInbox` moves an
     // already-consumed run's orphaned `processing/` entry back to `inbox/`,
     // so the fresh dispatch loop re-dequeues it and the `onRunStart` grants
     // barrier fires AGAIN for the same runId. The per-run grants file is a
     // durable commit -- `readRunGrants` never deletes it -- so this second
-    // resolution must still read `runs/<runId>/grants.json` and win over the
-    // deploy-time fallback, rather than inheriting the deployment's grants as
-    // if the run had never carried its own.
+    // resolution must still read `runs/<runId>/grants.json`.
     const tempBase = await createTempBaseDir("sidecar-run-grants-");
     const repoStore = createReadStubRepoStore(tempBase);
 
@@ -6571,21 +6409,12 @@ describe("assembleRunCredentialsSnapshot", () => {
       { id: "run-grant", resource: "tool:send-mail", effect: "allow" },
     ];
     await writeRunGrantsFile(tempBase, JSON.stringify({ grants: runGrants }));
-    // A deploy-time file is present so a spurious fallback (a deleted or
-    // missed per-run file on the second read) would surface as the wrong
-    // grants rather than an empty set.
-    await writeDeployTimeStepGrants(
-      tempBase,
-      "step-1",
-      JSON.stringify({ grants: [{ id: "deploy-grant" }] }),
-    );
 
     const first = await assembleRunCredentialsSnapshot({
       repoStore,
       anchorRunId,
       runId,
       stepOrder,
-      deriveStepAddress,
     });
 
     // The re-dispatch: resolve the same run a second time with no rewrite of
@@ -6595,7 +6424,6 @@ describe("assembleRunCredentialsSnapshot", () => {
       anchorRunId,
       runId,
       stepOrder,
-      deriveStepAddress,
     });
     if (first === null || second === null) {
       throw new Error("expected both snapshots");

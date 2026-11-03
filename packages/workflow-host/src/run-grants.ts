@@ -33,10 +33,8 @@ export function runGrantsPath(runId: string): string {
 
 /**
  * Envelope the per-run grants file carries: the canonical `{ grants: [] }`
- * shape the deploy-time snapshot writes and validates. The inner entries
- * stay `unknown` -- the child's authorize layer narrows each against its
- * own grant-rule validator, exactly as the deploy-time snapshot's grants
- * are surfaced untyped.
+ * shape. The inner entries stay `unknown` -- the child's authorize layer
+ * narrows each against its own grant-rule validator.
  */
 export const RunGrantsFile = type({
   grants: "unknown[]",
@@ -45,8 +43,7 @@ export const RunGrantsFile = type({
 /**
  * Read a single run's grants from `runs/<runId>/grants.json` inside the
  * deployment's `workflow-run` repo. The read is a working-tree read via
- * `getRepoDir` (the same substrate access pattern the deploy-time
- * per-step read uses), so it observes the tip the grants handler wrote.
+ * `getRepoDir`, so it observes the tip the grants handler wrote.
  *
  * Returns the run's grants when the file exists. Returns `undefined`
  * -- distinct from an empty grants array -- when the file is ABSENT

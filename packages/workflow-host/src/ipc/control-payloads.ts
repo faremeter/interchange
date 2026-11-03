@@ -21,7 +21,6 @@ import { CredentialDelivery } from "@intx/types/credential-delivery";
  */
 export const CredentialsSnapshotStepPayload = type({
   stepId: "string",
-  address: "string",
   grants: "unknown[]",
   contentHash: "string",
 });

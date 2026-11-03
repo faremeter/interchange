@@ -51,7 +51,6 @@ describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
         steps: [
           {
             stepId: "summarize",
-            address: "run_dep-summarize@example.com",
             grants: [summarizeGrant],
             contentHash: "hash",
           },
@@ -135,7 +134,7 @@ describe("createCredentialsBackedAuthorize base-step grant resolution", () => {
 
 describe("createSnapshotGrantsResolver", () => {
   function entry(stepId: string, grants: unknown[]) {
-    return { stepId, address: stepId, grants, contentHash: "h" };
+    return { stepId, grants, contentHash: "h" };
   }
   const oldGrant = rule("tool:old", "allow");
   const newGrant = rule("tool:new", "allow");
@@ -208,7 +207,7 @@ describe("createSnapshotGrantsResolver", () => {
 
 describe("createSnapshotGrantsReader", () => {
   function entry(stepId: string, grants: unknown[]) {
-    return { stepId, address: stepId, grants, contentHash: "h" };
+    return { stepId, grants, contentHash: "h" };
   }
 
   test("returns one entry per grant id and keeps a row without an id once", () => {
@@ -327,7 +326,6 @@ describe("a run child's authorize closure over grants that crossed JSON", () => 
             steps: [
               {
                 stepId: "work",
-                address: "work",
                 grants: overJSON(grants),
                 contentHash: "h",
               },

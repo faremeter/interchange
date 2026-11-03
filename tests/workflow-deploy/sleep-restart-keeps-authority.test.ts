@@ -252,7 +252,6 @@ function harnessConfig(
     agentAddress: mailAddress,
     systemPrompt: "Fallback prompt (overridden per step by the definition)",
     tools: [],
-    grants: [],
     sources: [mockSource(env)],
     defaultSource: "anthropic:mock-model",
   };

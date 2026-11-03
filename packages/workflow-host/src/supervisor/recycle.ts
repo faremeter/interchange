@@ -36,8 +36,7 @@
 //      here; the recycle path does not reach into Node primitives.
 //   3. `respawn` -- mint a new 16-byte hex channelId (the same shape
 //      the initial spawn uses, per `generateChannelId`), generate a
-//      fresh 32-byte HMAC key, re-read per-step credentials via the
-//      injected `RepoStore`, and spawn a new Bun child via the same
+//      fresh 32-byte HMAC key, and spawn a new Bun child via the same
 //      subprocess-spawner binding. The new IPC anchors flow through
 //      spawn-time env exactly as the initial spawn's anchors did.
 //   4. `self-discover` -- the new child runs its existing self-
@@ -97,12 +96,6 @@ import { receiveControlChannel } from "../ipc/control-receiver";
 import { receiveEventChannel, type EventPayload } from "../ipc/event-channel";
 import type { AuthoritySetData, ControlPayload } from "../ipc/control-payloads";
 
-import {
-  assembleCredentialsSnapshot,
-  type CredentialsSnapshot,
-  stepLayoutSnapshotOpts,
-  type StepLayout,
-} from "./credentials";
 import { waitForDefinition, waitForReady } from "./child-handshake";
 import type { SubprocessHandle, WorkflowSupervisorBindings } from "./types";
 import { buildChildSpawnEnv } from "./spawn-env";
@@ -175,13 +168,8 @@ export interface ChildWiring {
  * not re-register).
  */
 export interface RecycleContext {
-  /** The supervisor's full bindings, reused on respawn for credentials and spawn. */
+  /** The supervisor's full bindings, reused on respawn. */
   readonly bindings: WorkflowSupervisorBindings;
-  /**
-   * The deployment's step layout, fixed when its first child reported its
-   * definition; the credentials snapshot is re-assembled from it.
-   */
-  readonly layout: StepLayout;
   /**
    * Hub-approved definition hash, carried on the respawn env and checked
    * against the new child's reported definition (unchanged across recycle).
@@ -212,23 +200,21 @@ export interface RecycleContext {
    */
   readonly abortPriorCohort: () => void;
   /**
-   * The new child's `authority.set` frame data: the run's grants snapshot
-   * (`fallback` when the supervisor has no per-run grants source) and the
-   * supervisor's credential mirror, with the authority revision it was read
+   * The new child's `authority.set` frame data: the run's grants snapshot and
+   * the supervisor's credential mirror, with the authority revision it was read
    * at. Read from the supervisor at the call, never copied when the context is
    * built, so the frame carries the state at respawn time.
    */
-  readonly buildAuthority: (
-    fallback: CredentialsSnapshot,
-  ) => Promise<{ data: AuthoritySetData; revision: number }>;
+  readonly buildAuthority: () => Promise<{
+    data: AuthoritySetData;
+    revision: number;
+  }>;
   /**
    * Onward sink the supervisor uses to install the new child wiring
-   * once the freshly-spawned child has emitted `ready` and the
-   * credentialsSnapshot has been re-assembled.
+   * once the freshly-spawned child has emitted `ready`.
    */
   readonly installNewChild: (next: {
     wiring: ChildWiring;
-    credentialsSnapshot: CredentialsSnapshot;
     /**
      * The authority revision of the `authority.set` frame the new child got.
      * The supervisor sends the frame again when its revision moved on while
@@ -345,8 +331,8 @@ export async function triggerRecycle(
   // Step 3: respawn. Fresh channelId, fresh HMAC key, fresh Ed25519
   // IPC keypair. The new child gets the run's current grants and
   // credential material in its first frame, before it resumes any run.
-  // The deploy tree (the materialized source closure, the
-  // workflow-asset repo, the agent-state repos) is UNCHANGED.
+  // The materialized source closure and the workflow-asset repo are
+  // UNCHANGED.
   const channelId = generateChannelId();
   const hmacKey = generateHmacKey();
   const ipcKeypair = await (
@@ -391,7 +377,7 @@ export async function triggerRecycle(
   );
   // Attach a benign handler at creation, before the fold below consumes
   // the rejection: `definitionPromise` is created here but not raced until
-  // after `assembleCredentialsSnapshot` awaits. A child that exits during
+  // after the authority read awaits. A child that exits during
   // that window rejects `definitionPromise` with no handler yet attached --
   // an unhandled rejection across the await boundary. Mirrors the spawn
   // path's identical guard. Attaching `.catch` here and `.then` at the
@@ -407,41 +393,13 @@ export async function triggerRecycle(
   const eventPump = pumpEvents(eventIter, ctx.onInferenceEvent);
 
   // The child handshake below is deadline-bounded and needs these timer
-  // bindings; the pre-handshake credentials-read reap needs them too, so
-  // derive them before that read.
+  // bindings.
   const setTimer = ctx.setTimer ?? defaultSetTimer;
   const clearTimer = ctx.clearTimer ?? defaultClearTimer;
 
-  // Re-read the spawn-time per-step credentials from the `agent-state`
-  // repos, and read the run's authority for the new child's first frame.
-  //
-  // The credentials read can reject; the authority read cannot, because a
-  // failed grants read gives the child a null snapshot. The new child is
-  // already spawned and wired but not yet installed on `state`, so the
-  // supervisor's recycle-failure teardown (which reaps the PRIOR cohort)
-  // cannot see it; reap it here on failure or it leaks. The spawn path
-  // kills its child on the same failure. The try wraps only the awaited
-  // reads: the handle and pumps it reaps are all constructed above, so
-  // the reap always has live handles.
-  let credentialsSnapshot: CredentialsSnapshot;
-  let authority: { data: AuthoritySetData; revision: number };
-  try {
-    credentialsSnapshot = await assembleCredentialsSnapshot({
-      repoStore: ctx.bindings.repoStore,
-      principal: ctx.bindings.readPrincipal,
-      anchorRunId: ctx.bindings.anchorRunId,
-      ...stepLayoutSnapshotOpts(ctx.layout),
-    });
-    authority = await ctx.buildAuthority(credentialsSnapshot);
-  } catch (cause) {
-    await reapUnreadyChild(handle, eventPump, controlIncoming, {
-      killTimeoutMs,
-      setTimer,
-      clearTimer,
-      phase: "credentials read failure",
-    });
-    throw cause;
-  }
+  // Read the run's authority for the new child's first frame. The read cannot
+  // reject: a failed grants read gives the child a null snapshot.
+  const authority = await ctx.buildAuthority();
 
   // Steps 4 + 5: self-discover + resume. These run inside the child
   // before it emits `ready`; the supervisor waits, but bounded -- a child
@@ -452,8 +410,8 @@ export async function triggerRecycle(
   // its first spawn did: fold the outcome into a value, race a
   // resolve-only deadline, clear the timer on every path.
   //
-  // NOTE: the credentials and authority reads above are substrate reads
-  // that sit OUTSIDE these deadlines; a wedged substrate is a
+  // NOTE: the authority read above is a substrate read that sits OUTSIDE
+  // these deadlines; a wedged substrate is a
   // supervisor-side fault bounded at its own layer, not by overloading the
   // handshake timer. The respawn is deadline-bounded on the child
   // handshake, not on that read.
@@ -521,7 +479,6 @@ export async function triggerRecycle(
   };
   ctx.installNewChild({
     wiring: newWiring,
-    credentialsSnapshot,
     controlIncoming,
     authorityRevision: authority.revision,
   });

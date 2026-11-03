@@ -226,7 +226,6 @@ const TEST_CONFIG: HarnessConfig = {
   agentAddress: "agent-1@test.interchange",
   systemPrompt: "You are a test agent",
   tools: [],
-  grants: [],
   sources: [
     {
       id: "anthropic:claude-sonnet-5",

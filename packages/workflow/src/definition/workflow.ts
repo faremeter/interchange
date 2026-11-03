@@ -455,8 +455,7 @@ function validateSteps(
 function validateStepIds(steps: Record<string, Primitive>): void {
   for (const [stepId, primitive] of Object.entries(steps)) {
     // The record key is the id every id-derived table is built on -- the
-    // credentials snapshot, the deploy-time grants write, and the staged body
-    // ref -- while the runtime authorizes under the primitive's own `id`. At
+    // credentials snapshot and a body's pinned sources -- while the runtime authorizes under the primitive's own `id`. At
     // the root those cannot disagree, because `normalize` assigns the key over
     // the embedded id before this pass runs. A nested body never passes
     // through that assignment, so a hand-assembled one can key a step under

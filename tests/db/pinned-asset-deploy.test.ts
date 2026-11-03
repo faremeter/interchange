@@ -60,7 +60,6 @@ const CONFIG: HarnessConfig = {
   agentAddress: DEPLOY_ADDRESS,
   systemPrompt: "",
   tools: [],
-  grants: [],
   sources: [],
   defaultSource: "",
 };

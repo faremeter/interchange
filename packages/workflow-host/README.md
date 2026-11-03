@@ -72,8 +72,6 @@ Public surface (the package barrel re-exports these):
   adapter.
 - `createWorkflowSupervisor` — the per-deployment supervisor
   factory. See "Supervisor" below for the bindings shape.
-- `assembleCredentialsSnapshot` — per-step grant assembly the
-  supervisor uses at spawn time and on every recycle.
 - `commitCancelRequested` — low-level Q3 `CancelRequested` commit
   primitive the supervisor invokes for every cancellation origin.
 
@@ -139,10 +137,12 @@ The constructor argument shape:
   spawner invokes (resolved by the host via
   `require.resolve` / `import.meta.resolve` against the host's own
   package, `@intx/<host>`).
-- `layoutSteps` — derives the deployment's step ids, step addresses,
-  and step repo ids from the definition the first child reported,
+- `layoutSteps` — derives the deployment's step ids
+  from the definition the first child reported,
   once the supervisor has checked it against the approved hash. The
-  supervisor keeps that layout for every later respawn.
+  supervisor keeps those ids for every later respawn.
+- `onRunStart` — reads a run's credentials snapshot, which the
+  supervisor sends in each `authority.set`.
 - `substrateEnv`, `workflowRunRepoId`, `workflowRunRef`,
   `anchorRunId`, `deploymentMailAddress`, `readPrincipal`,
   `ipcKeyPairFactory?` — per-deployment configuration the supervisor
@@ -155,10 +155,8 @@ The sidecar's deploy router is the single ingress for inbound
 `src/deploy/workflow-host-wiring.ts` in
 `createSidecarDeployRouter`. Every deploy stages through the
 workflow-run substrate. The router constructs a fresh per-deployment
-supervisor and drives its `spawn(opts)` lifecycle: per-step
-`agent-state` repo provisioning, key minting, child spawn via
-`subprocessSpawner`, mail-bus registration, IPC handshake, and
-`credentialsSnapshot` assembly.
+supervisor and drives its `spawn(opts)` lifecycle: key minting, child spawn via
+`subprocessSpawner`, mail-bus registration, and IPC handshake.
 
 A frame without a workflow is rejected -- there is no in-process
 deploy path.
@@ -168,10 +166,9 @@ deploy path.
 `spawn(opts)` performs the IPC handshake (mint channelId, mint HMAC
 key, mint IPC Ed25519 keypair, build spawn-time env, invoke the
 spawner, wait for the child's `definition` frame and check its
-projection against the approved hash), derives the step layout from
-that projection through the host's `layoutSteps`, assembles the
-`credentialsSnapshot` from each step's `agent-state` repo, sends
-`authority.set`, registers the deployment's mail address, waits for
+projection against the approved hash), derives the step ids from
+that projection through the host's `layoutSteps`, sends
+`authority.set` with the snapshot `onRunStart` returns, registers the deployment's mail address, waits for
 the child's `ready` frame, and begins forwarding inbound mail as
 `trigger.fire` control frames. The IPC private key
 never leaves the supervisor's closure — only the public key (as

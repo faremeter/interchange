@@ -122,7 +122,6 @@ async function deployMarkingWorkflow(
     agentAddress: address,
     systemPrompt: "unused (no agent step)",
     tools: [],
-    grants: [],
     sources: [
       {
         id: "anthropic:mock-model",

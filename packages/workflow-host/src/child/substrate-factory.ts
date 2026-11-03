@@ -1941,10 +1941,8 @@ async function buildChildRunEnv(args: {
   });
   // The child's credentials snapshot applies the capped grant set
   // uniformly across every step the child definition declares, keyed on
-  // each step's id (the same shape the deploy-time and per-run snapshot
-  // assemblies produce). The in-process child has no per-step mail
-  // address, so the snapshot's `address` mirrors the step id --
-  // `createCredentialsBackedAuthorize` reads only `grants`.
+  // each step's id (the same shape the per-run snapshot assembly
+  // produces).
   //
   // "Every step the child definition declares" reaches past `stepOrder` into
   // this body's `loop` bodies: a loop iteration runs under the inherited env,
@@ -1967,7 +1965,6 @@ async function buildChildRunEnv(args: {
   const credentialsSnapshot: CredentialsSnapshot = {
     steps: [...credentialStepIds].map((stepId) => ({
       stepId,
-      address: stepId,
       grants: childGrants,
       contentHash,
     })),
@@ -2594,8 +2591,8 @@ export function createSidecarSubstrateFactory(
     // `resource = tool:<name>`, `action = "invoke"` (the inference
     // layer's authz before-tool extension); using the credentials-backed
     // authorize here means each tool call resolves against the per-step
-    // grant snapshot the supervisor assembled from the agent's
-    // `state/grants.json` and pushed over the control IPC. A tool the
+    // grant snapshot of the run's grants the supervisor pushed over the
+    // control IPC. A tool the
     // agent's grants do not allow is blocked; a granted tool runs. The
     // operator gate at deploy time (the capability walk's `tool:<name>`
     // approval) and this runtime grant check are complementary: the walk

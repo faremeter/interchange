@@ -108,10 +108,7 @@ import type {
 } from "../ipc/control-payloads";
 
 import {
-  assembleCredentialsSnapshot,
   type CredentialsSnapshot,
-  stepLayoutSnapshotOpts,
-  type StepLayout,
   toCredentialsSnapshotPayload,
 } from "./credentials";
 import {
@@ -257,7 +254,7 @@ export const TERMINAL_OR_PARK_BACKSTOP_MS = 300_000;
 export interface WorkflowSupervisor {
   /**
    * Spawn the workflow-process child, complete the IPC handshake,
-   * assemble the credentialsSnapshot, register the deployment's mail
+   * read the run's authority, register the deployment's mail
    * address, and begin forwarding inbound mail. Resolves once the
    * child's `ready` frame has been received and credentials have
    * been pushed.
@@ -357,12 +354,6 @@ export interface WorkflowSupervisor {
    */
   reEmitParkedCorrelations(): Promise<void>;
   /**
-   * Current snapshot of the credentials pushed to the child. Surfaced
-   * so the host can audit the per-step contentHash without
-   * round-tripping the substrate. Returns `null` before spawn.
-   */
-  getCredentialsSnapshot(): CredentialsSnapshot | null;
-  /**
    * The supervisor's merged mirror of every credential delivery: the deploy
    * delivery plus each `deliverCredentials` update, revokes applied. It is
    * what the next child's `authority.set` carries, so the host seals it into
@@ -391,8 +382,6 @@ export type SpawnResult = {
   pid: number;
   /** IPC channelId minted for this spawn. */
   channelId: string;
-  /** Initial credentials snapshot pushed to the child. */
-  credentialsSnapshot: CredentialsSnapshot;
 };
 
 export type CancelRequestOpts = {
@@ -1091,19 +1080,19 @@ export function createWorkflowSupervisor(
    */
   let spawnContext: SpawnContext | null = null;
   /**
-   * The step layout the host derived from the first child's verified
+   * The step ids the host derived from the first child's verified
    * definition. Set once, while `spawn` is still starting that child, and
    * kept for the deployment's life: every later child reports a definition
    * with the same approved hash.
    */
-  let stepLayout: StepLayout | null = null;
-  function requireStepLayout(): StepLayout {
-    if (stepLayout === null) {
+  let stepIds: readonly string[] | null = null;
+  function requireStepIds(): readonly string[] {
+    if (stepIds === null) {
       throw new Error(
-        "workflow-host supervisor: no step layout before the first child reported its definition",
+        "workflow-host supervisor: no step ids before the first child reported its definition",
       );
     }
-    return stepLayout;
+    return stepIds;
   }
   let recyclePolicy: RecyclePolicy | null = null;
   // Mutual-exclusion latch shared by every respawn path (operator/policy/
@@ -3008,7 +2997,6 @@ export function createWorkflowSupervisor(
         logger,
       });
     let childPid: number;
-    let credentialsSnapshot: CredentialsSnapshot;
     let authority: ReadAuthority;
     try {
       try {
@@ -3040,16 +3028,8 @@ export function createWorkflowSupervisor(
         }
         if (definitionRace.kind === "failed") throw definitionRace.err;
         childPid = definitionRace.report.childPid;
-        stepLayout = await bindings.layoutSteps(
-          definitionRace.report.projection,
-        );
-        credentialsSnapshot = await assembleCredentialsSnapshot({
-          repoStore: bindings.repoStore,
-          principal: bindings.readPrincipal,
-          anchorRunId: bindings.anchorRunId,
-          ...stepLayoutSnapshotOpts(stepLayout),
-        });
-        authority = await readAuthority(credentialsSnapshot);
+        stepIds = await bindings.layoutSteps(definitionRace.report.projection);
+        authority = await readAuthority();
       } catch (cause) {
         await killUnpublishedChild();
         throw cause;
@@ -3081,7 +3061,6 @@ export function createWorkflowSupervisor(
       eventPump: wired.wiring.eventPump,
       onInferenceEvent: opts.onInferenceEvent,
       mailUnsubscribe: null,
-      credentialsSnapshot,
       terminalCohortAbort: new AbortController(),
       terminalBroadcaster: createTerminalBroadcaster(),
       dispatchLoop: null,
@@ -3293,7 +3272,6 @@ export function createWorkflowSupervisor(
         eventPump: wired.wiring.eventPump,
         onInferenceEvent: opts.onInferenceEvent,
         mailUnsubscribe,
-        credentialsSnapshot,
         terminalCohortAbort: startingPhaseCohortAbort,
         terminalBroadcaster: startingPhaseBroadcaster,
         dispatchLoop,
@@ -3379,7 +3357,6 @@ export function createWorkflowSupervisor(
       return {
         pid: childPid,
         channelId,
-        credentialsSnapshot,
       };
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -3582,8 +3559,7 @@ export function createWorkflowSupervisor(
    * Push the run's grants snapshot to the child ahead of its
    * `trigger.fire`. Returns `true` if the barrier FAILED (the caller must
    * skip the fire; the run has already been settled as `RunFailed`) and
-   * `false` if the barrier passed or is not armed (`onRunStart` unwired,
-   * where `spawn` supplied the snapshot instead).
+   * `false` if the barrier passed.
    *
    * The sink is a request/response contract: the supervisor awaits the
    * returned snapshot and awaits the `grants-updated` send so both land on
@@ -3598,12 +3574,11 @@ export function createWorkflowSupervisor(
     runId: string,
     broadcaster: TerminalBroadcaster,
   ): Promise<boolean> {
-    if (bindings.onRunStart === undefined) return false;
     try {
       const snapshot = await bindings.onRunStart({
         runId,
         anchorRunId: bindings.anchorRunId,
-        layout: requireStepLayout(),
+        stepIds: requireStepIds(),
       });
       if (snapshot === null) {
         throw new Error(
@@ -3733,7 +3708,7 @@ export function createWorkflowSupervisor(
       // Subscribe to the terminal broadcaster BEFORE the grants barrier so
       // a synthetic `RunFailed` from a barrier failure can be captured.
       const preIter = broadcaster.source(runId)[Symbol.asyncIterator]();
-      // Per-run grants barrier. When `onRunStart` is wired, push this run's
+      // Per-run grants barrier. Push this run's
       // grants snapshot BEFORE the trigger/signal so the child's authorize
       // closure binds to it rather than throwing on a null snapshot. The push
       // and the fire share the child's control channel, so a `grants-updated`
@@ -4721,7 +4696,6 @@ export function createWorkflowSupervisor(
       eventPump: prior.eventPump,
       onInferenceEvent: prior.onInferenceEvent,
       mailUnsubscribe: prior.mailUnsubscribe,
-      credentialsSnapshot: prior.credentialsSnapshot,
       terminalCohortAbort: prior.terminalCohortAbort,
       terminalBroadcaster: prior.terminalBroadcaster,
       dispatchLoop: null,
@@ -4748,7 +4722,6 @@ export function createWorkflowSupervisor(
               return handle;
             },
           },
-          layout: requireStepLayout(),
           definitionHash: priorContext.definitionHash,
           onInferenceEvent: priorContext.onInferenceEvent,
           current: {
@@ -4780,8 +4753,8 @@ export function createWorkflowSupervisor(
           // A standalone helper would take all of it as parameters for zero
           // reuse -- the crash-respawn path reaches this callback transitively
           // through `runRespawn`, so it needs no separate extraction.
-          buildAuthority: async (fallback) => {
-            const read = await readAuthority(fallback);
+          buildAuthority: async () => {
+            const read = await readAuthority();
             return {
               data: authorityData(read.snapshot),
               revision: read.revision,
@@ -4789,7 +4762,6 @@ export function createWorkflowSupervisor(
           },
           installNewChild: ({
             wiring,
-            credentialsSnapshot,
             controlIncoming,
             authorityRevision: sentRevision,
           }) => {
@@ -4862,7 +4834,6 @@ export function createWorkflowSupervisor(
               eventPump: wiring.eventPump,
               onInferenceEvent: priorContext.onInferenceEvent,
               mailUnsubscribe: prior.mailUnsubscribe,
-              credentialsSnapshot,
               terminalCohortAbort: newCohortAbort,
               terminalBroadcaster: newBroadcaster,
               dispatchLoop: newDispatchLoop,
@@ -5111,24 +5082,17 @@ export function createWorkflowSupervisor(
     }
   }
 
-  // The grants snapshot for a child's `authority.set`. With `onRunStart` wired
-  // it is the run's own grants file: none before the run's first trigger, and
-  // none when the read fails, so a new child's step that needs grants fails
-  // closed. Without it (the supervisor's own tests) it is the spawn-time
-  // snapshot. The revision is read before the grants, so an update during the
-  // read counts as newer.
-  async function readAuthority(
-    fallback: CredentialsSnapshot | null,
-  ): Promise<ReadAuthority> {
+  // The grants snapshot for a child's `authority.set`: the run's own grants
+  // file, which is none before the run's first trigger, and none when the read
+  // fails, so a new child's step that needs grants fails closed. The revision
+  // is read before the grants, so an update during the read counts as newer.
+  async function readAuthority(): Promise<ReadAuthority> {
     const revision = authorityRevision;
-    if (bindings.onRunStart === undefined) {
-      return { snapshot: fallback, revision, failed: false };
-    }
     try {
       const snapshot = await bindings.onRunStart({
         runId: deriveWorkflowRunId(bindings.deploymentMailAddress),
         anchorRunId: bindings.anchorRunId,
-        layout: requireStepLayout(),
+        stepIds: requireStepIds(),
       });
       return { snapshot, revision, failed: false };
     } catch (cause) {
@@ -5168,9 +5132,7 @@ export function createWorkflowSupervisor(
   async function resendAuthority(): Promise<void> {
     for (;;) {
       if (state.phase !== "starting" && state.phase !== "running") return;
-      const { snapshot, revision, failed } = await readAuthority(
-        state.credentialsSnapshot,
-      );
+      const { snapshot, revision, failed } = await readAuthority();
       if (revision !== authorityRevision) continue;
       if (state.phase !== "starting" && state.phase !== "running") return;
       await sendAuthority(state.controlSender, failed ? "keep" : snapshot);
@@ -5198,7 +5160,6 @@ export function createWorkflowSupervisor(
    *   floor, never inject one a deploy did not approve.
    */
   async function deliverGrants(runId: string): Promise<"pushed" | "skipped"> {
-    if (bindings.onRunStart === undefined) return "skipped";
     authorityRevision += 1;
     if (state.phase !== "running" && state.phase !== "starting") {
       return "skipped";
@@ -5207,7 +5168,7 @@ export function createWorkflowSupervisor(
       const snapshot = await bindings.onRunStart({
         runId,
         anchorRunId: bindings.anchorRunId,
-        layout: requireStepLayout(),
+        stepIds: requireStepIds(),
       });
       if (snapshot === null) {
         logger.warn`deliverGrants: run ${runId} has no grants file; nothing to refresh`;
@@ -5225,13 +5186,6 @@ export function createWorkflowSupervisor(
     }
   }
 
-  function getCredentialsSnapshot(): CredentialsSnapshot | null {
-    if (state.phase === "starting" || state.phase === "running") {
-      return state.credentialsSnapshot;
-    }
-    return null;
-  }
-
   return {
     spawn,
     requestCancel,
@@ -5243,7 +5197,6 @@ export function createWorkflowSupervisor(
     deliverCredentials,
     deliverGrants,
     reEmitParkedCorrelations,
-    getCredentialsSnapshot,
     credentialDelivery: () => currentCredentialDelivery,
   };
 }
@@ -5269,7 +5222,6 @@ type ActiveState = {
   eventPump: Promise<void>;
   onInferenceEvent: (event: EventPayload) => void;
   mailUnsubscribe: (() => void) | null;
-  credentialsSnapshot: CredentialsSnapshot | null;
   /**
    * Per-spawn cohort abort controller for terminal-event watchers
    * and the dispatch loop. Each watcher the supervisor mints inside

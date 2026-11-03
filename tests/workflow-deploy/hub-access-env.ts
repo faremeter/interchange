@@ -335,7 +335,6 @@ export async function startHubAccessEnv(args: {
         agentAddress: mailAddress,
         systemPrompt: "Fallback prompt (overridden per step by the definition)",
         tools: [],
-        grants: [],
         sources: [source],
         defaultSource: MOCK_SOURCE_ID,
       };

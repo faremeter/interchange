@@ -288,7 +288,6 @@ async function deployProbeSource(opts: {
     agentAddress: mailAddress,
     systemPrompt: "Fallback prompt (overridden per step by the definition)",
     tools: [],
-    grants: [],
     sources: [source],
     defaultSource: "anthropic:mock-model",
   };

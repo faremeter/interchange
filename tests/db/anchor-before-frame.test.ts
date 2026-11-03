@@ -108,7 +108,6 @@ const CONFIG: HarnessConfig = {
   agentAddress: DEPLOY_ADDRESS,
   systemPrompt: "deployment-level",
   tools: [],
-  grants: [],
   sources: Object.values(SOURCES).flat(),
   defaultSource: "src-only",
 };

@@ -141,7 +141,6 @@ describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
       agentAddress: deploymentMailAddress,
       systemPrompt: "Fallback prompt (overridden per step by the definition)",
       tools: [],
-      grants: [],
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
     };

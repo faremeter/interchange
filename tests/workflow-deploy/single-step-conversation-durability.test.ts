@@ -602,7 +602,6 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
           steps: [
             {
               stepId: STEP_ID,
-              address: MAILBOX,
               grants: [],
               contentHash: "deadbeef",
             },

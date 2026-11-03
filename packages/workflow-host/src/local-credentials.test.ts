@@ -126,7 +126,6 @@ describe("createLocalCredentialsSnapshot", () => {
     ]);
     for (const entry of snapshot.steps) {
       expect(entry.grants).toBe(first.grants);
-      expect(entry.address).toBe(entry.stepId);
     }
   });
 

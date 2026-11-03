@@ -421,9 +421,7 @@ function isAssetDeployArgs(
  * tenant-ownership-scoped), never a shared authz check.
  * Credential GRANT enforcement is a SEPARATE layer: the `credential:{id}` /
  * `use` grant the runtime gate checks is minted per-run by run-grant
- * materialization into `runs/<runId>/grants.json`, not carried on this frame --
- * the deploy-time `config.grants` spawn-time snapshot is suppressed once the
- * sidecar wires per-run grant pushes, so it is not the enforcement transport.
+ * materialization into `runs/<runId>/grants.json`, not carried on this frame.
  *
  * A gate outcome that did not approve cannot deploy: an unapproved `approval`
  * fails closed here rather than shipping an unfrozen definition.

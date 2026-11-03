@@ -57,12 +57,6 @@ import {
   type SignedPayload,
   type WorkflowSupervisorBindings,
 } from "./index";
-import {
-  assembleCredentialsSnapshot,
-  defaultStepRepoId,
-  hashGrants,
-  STEP_GRANTS_PATH,
-} from "./credentials";
 import { commitCancelRequested } from "./cancel-signing";
 import {
   createControlChannelSender,
@@ -73,6 +67,11 @@ import {
   generateHmacKey,
   generateChannelId,
 } from "../ipc/index";
+import {
+  seedStepGrants,
+  seededOnRunStart,
+  seededSnapshot,
+} from "./step-grants.test-helpers";
 
 /**
  * The frame `type`s the supervisor writes to the child control stream, in
@@ -999,28 +998,10 @@ async function buildBindings(opts: {
     workflowRunRef: "refs/heads/main",
     anchorRunId: "run_deployment-x",
     deploymentMailAddress: "run_deployment-x@example.com",
-    readPrincipal: { kind: "supervisor" },
-    layoutSteps: () =>
-      Promise.resolve({
-        stepIds: ["step-1"],
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
-      }),
+    onRunStart: seededOnRunStart(opts.baseDir),
+    layoutSteps: () => Promise.resolve(["step-1"]),
     inboxPrimitives: opts.inboxPrimitives ?? createMemoryInboxPrimitives(),
   };
-}
-
-async function seedStepGrants(
-  baseDir: string,
-  repoId: RepoId,
-  grants: unknown[],
-): Promise<void> {
-  const dir = path.join(baseDir, repoId.kind, repoId.id);
-  await fs.mkdir(path.join(dir, "state"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, STEP_GRANTS_PATH),
-    JSON.stringify({ grants }),
-  );
 }
 
 const supervisors = createSupervisorReaper();
@@ -1047,16 +1028,13 @@ describe("createWorkflowSupervisor", () => {
     expect(typeof supervisor.shutdown).toBe("function");
     expect(typeof supervisor.drain).toBe("function");
     expect(typeof supervisor.recycle).toBe("function");
-    expect(supervisor.getCredentialsSnapshot()).toBeNull();
   });
 
-  test("spawn completes the IPC handshake, registers mail, and pushes credentials", async () => {
+  test("spawn completes the IPC handshake and registers mail", async () => {
     const baseDir = await makeTempDir("supervisor-spawn-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     // Deterministic IPC keypairs so the test's "child" side can sign
     // a `ready` frame the supervisor accepts. Two keypairs ride per
@@ -1180,12 +1158,7 @@ describe("createWorkflowSupervisor", () => {
     expect(observedEnv).not.toHaveProperty("HOST_PRIVATE_KEY");
     expect(result.pid).toBe(4321);
     expect(result.channelId).toBe(channelId);
-    expect(result.credentialsSnapshot.steps).toHaveLength(1);
-    expect(result.credentialsSnapshot.steps[0]?.address).toBe(
-      "run_deployment-x-step-1@example.com",
-    );
     expect(mailBus.registered()).toContain("run_deployment-x@example.com");
-    expect(supervisor.getCredentialsSnapshot()).not.toBeNull();
 
     // The first buffered mail fires the stable top-level run. The FIFO
     // claim-check pipeline holds the second until that run terminates, then
@@ -2408,11 +2381,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("dispatch pushes a per-run grants-updated before the run's trigger.fire", async () => {
     const baseDir = await makeTempDir("supervisor-barrier-ok-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     // The per-run sink reads the step's grants exactly as `spawn` does, but
     // per run rather than once per spawn. A new child gets its grants in the
@@ -2426,13 +2397,8 @@ describe("createWorkflowSupervisor", () => {
       args,
     ) => {
       runStartCalls.push(args);
-      return assembleCredentialsSnapshot({
-        repoStore: createStubRepoStore({ baseDir }),
-        principal: { kind: "supervisor" },
+      return seededSnapshot(baseDir, {
         stepOrder: ["step-1"],
-        anchorRunId: "run_deployment-x",
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
       });
     };
 
@@ -2474,7 +2440,7 @@ describe("createWorkflowSupervisor", () => {
     const call = {
       runId: firedRunId,
       anchorRunId: "run_deployment-x",
-      layout: expect.objectContaining({ stepIds: ["step-1"] }),
+      stepIds: ["step-1"],
     };
     expect(runStartCalls).toEqual([call, call]);
 
@@ -2491,7 +2457,6 @@ describe("createWorkflowSupervisor", () => {
       steps: [
         {
           stepId: "step-1",
-          address: "run_deployment-x-step-1@example.com",
           grants: [{ id: "run-grant" }],
           contentHash: "run-hash",
         },
@@ -2536,7 +2501,7 @@ describe("createWorkflowSupervisor", () => {
       {
         runId: "run_deployment-x",
         anchorRunId: "run_deployment-x",
-        layout: expect.objectContaining({ stepIds: ["step-1"] }),
+        stepIds: ["step-1"],
       },
     ]);
     // A new child gets no separate grants or credentials push.
@@ -2574,19 +2539,12 @@ describe("createWorkflowSupervisor", () => {
 
   test("deliverSignal refreshes grants immediately before the signal frame", async () => {
     const baseDir = await makeTempDir("supervisor-signal-grants-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
-      assembleCredentialsSnapshot({
-        repoStore: createStubRepoStore({ baseDir }),
-        principal: { kind: "supervisor" },
+      seededSnapshot(baseDir, {
         stepOrder: ["step-1"],
-        anchorRunId: "run_deployment-x",
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
       });
     const wired = await spawnWithRunStart({ baseDir, onRunStart });
 
@@ -2613,19 +2571,12 @@ describe("createWorkflowSupervisor", () => {
 
   test("deliverGrants skips without throwing when the child is not live", async () => {
     const baseDir = await makeTempDir("supervisor-deliver-grants-skip-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
-      assembleCredentialsSnapshot({
-        repoStore: createStubRepoStore({ baseDir }),
-        principal: { kind: "supervisor" },
+      seededSnapshot(baseDir, {
         stepOrder: ["step-1"],
-        anchorRunId: "run_deployment-x",
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
       });
     const wired = await spawnWithRunStart({ baseDir, onRunStart });
     await wired.supervisor.shutdown();
@@ -2639,19 +2590,12 @@ describe("createWorkflowSupervisor", () => {
 
   test("the barrier pushes credentials-updated before trigger.fire when the deployment has credentials", async () => {
     const baseDir = await makeTempDir("supervisor-barrier-creds-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
-      assembleCredentialsSnapshot({
-        repoStore: createStubRepoStore({ baseDir }),
-        principal: { kind: "supervisor" },
+      seededSnapshot(baseDir, {
         stepOrder: ["step-1"],
-        anchorRunId: "run_deployment-x",
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
       });
     const delivery = {
       bindings: [
@@ -2707,19 +2651,12 @@ describe("createWorkflowSupervisor", () => {
     // supervisor mirrors the live delivery, so the barrier re-asserts the
     // post-revoke set, not the deploy-time one.
     const baseDir = await makeTempDir("supervisor-revoke-durable-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
-      assembleCredentialsSnapshot({
-        repoStore: createStubRepoStore({ baseDir }),
-        principal: { kind: "supervisor" },
+      seededSnapshot(baseDir, {
         stepOrder: ["step-1"],
-        anchorRunId: "run_deployment-x",
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
       });
     // The deploy delivery carries two credentials; cred_a also has a binding.
     const delivery = {
@@ -2816,11 +2753,9 @@ describe("createWorkflowSupervisor", () => {
   // every enqueue disposition onto that boundary.
   test("durable receipt resolves for a fresh enqueue and for an already-present message", async () => {
     const baseDir = await makeTempDir("supervisor-ack-present-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     let mode: "enqueued" | "already-present" = "enqueued";
     const inboxPrimitives = inboxPrimitivesWithEnqueue(
       async (_store, _principal, _repoId, args) =>
@@ -2853,11 +2788,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("durable receipt rejects for a transient failure and a stale refusal, and self-heals on redelivery", async () => {
     const baseDir = await makeTempDir("supervisor-withhold-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     let onEnqueue: (args: {
       address: string;
       messageId: string;
@@ -2908,11 +2841,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("durable receipt rejects when the supervisor is not accepting mail (phase-drop)", async () => {
     const baseDir = await makeTempDir("supervisor-phase-drop-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     // enqueue would resolve if it were reached; the phase gate must reject
     // first, without touching the inbox.
     const inboxPrimitives = inboxPrimitivesWithEnqueue(
@@ -3141,15 +3072,12 @@ describe("createWorkflowSupervisor", () => {
   async function makePreRegistrationFailureHarness(opts: {
     failSubscribe?: boolean;
     failLayoutSteps?: boolean;
-    failDeriveStepAddress?: boolean;
     definition?: DefinitionResult;
   }) {
     const baseDir = await makeTempDir("supervisor-spawn-leak-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const supervisorIpcKeyPair = await generateKeyPair();
     const supervisorToChild = createMemoryNdjsonStream();
     const childToSupervisor = createMemoryNdjsonStream();
@@ -3208,17 +3136,6 @@ describe("createWorkflowSupervisor", () => {
               Promise.reject(new Error("injected layoutSteps failure")),
           }
         : {}),
-      ...(opts.failDeriveStepAddress === true
-        ? {
-            layoutSteps: () =>
-              Promise.resolve({
-                stepIds: ["step-1"],
-                deriveStepAddress: () => {
-                  throw new Error("injected deriveStepAddress failure");
-                },
-              }),
-          }
-        : {}),
     };
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     return {
@@ -3267,17 +3184,6 @@ describe("createWorkflowSupervisor", () => {
     expect(h.killSignals.length).toBeGreaterThan(0);
   });
 
-  test("a spawn whose credentials assembly throws kills the child", async () => {
-    const h = await makePreRegistrationFailureHarness({
-      failDeriveStepAddress: true,
-    });
-    await expect(h.spawn()).rejects.toThrow(
-      "injected deriveStepAddress failure",
-    );
-    expect(h.registered()).toHaveLength(0);
-    expect(h.killSignals.length).toBeGreaterThan(0);
-  });
-
   // The child runs author code, so the supervisor checks its report itself:
   // a bad report fails the spawn before the host lays out any step or the
   // child receives its authority.
@@ -3314,11 +3220,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("drain() forwards the `drain` control frame and arms a drainTimeout accumulator per in-flight run", async () => {
     const baseDir = await makeTempDir("supervisor-drain-arm-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
 
@@ -3543,11 +3447,9 @@ describe("createWorkflowSupervisor", () => {
     // the supervisor-equivalent of the in-process round-trip the
     // 13c integration test exercises.
     const baseDir = await makeTempDir("supervisor-drain-escalate-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
     const supervisorToChild = createMemoryNdjsonStream();
@@ -3838,11 +3740,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("drain() threads the per-cohort terminal broadcaster into each accumulator's opts", async () => {
     const baseDir = await makeTempDir("supervisor-drain-terminal-source-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
     const supervisorToChild = createMemoryNdjsonStream();
@@ -3987,11 +3887,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("drain() arms the broadcaster-backed accumulator source on the active cohort", async () => {
     const baseDir = await makeTempDir("supervisor-drain-no-term-source-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
     const supervisorToChild = createMemoryNdjsonStream();
@@ -4252,11 +4150,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("deliverSources() sends a sources-updated frame when running", async () => {
     const baseDir = await makeTempDir("supervisor-deliver-sources-running-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -4354,11 +4250,9 @@ describe("createWorkflowSupervisor", () => {
     // the credential stays evicted when the child (re)spawns -- otherwise the
     // frozen deploy delivery would resurrect it.
     const baseDir = await makeTempDir("supervisor-deliver-credentials-idle-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -4473,11 +4367,9 @@ describe("createWorkflowSupervisor", () => {
     const baseDir = await makeTempDir(
       "supervisor-deliver-credentials-running-",
     );
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -4581,23 +4473,16 @@ describe("createWorkflowSupervisor", () => {
 
   test("long-lived: first message fires trigger.fire with stable runId", async () => {
     const baseDir = await makeTempDir("supervisor-long-lived-first-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const wired = await spawnWithRunStart({
       baseDir,
 
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -4636,23 +4521,16 @@ describe("createWorkflowSupervisor", () => {
 
   test("long-lived: a trigger.fire run parking on approval releases the dispatch wait", async () => {
     const baseDir = await makeTempDir("supervisor-long-lived-approval-park-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const wired = await spawnWithRunStart({
       baseDir,
 
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -4696,23 +4574,16 @@ describe("createWorkflowSupervisor", () => {
 
   test("long-lived: subsequent messages fire signal.deliver after park.notify", async () => {
     const baseDir = await makeTempDir("supervisor-long-lived-signal-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const wired = await spawnWithRunStart({
       baseDir,
 
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -4794,23 +4665,16 @@ describe("createWorkflowSupervisor", () => {
 
   test("long-lived: messages before park.notify are queued and flushed", async () => {
     const baseDir = await makeTempDir("supervisor-long-lived-queue-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const wired = await spawnWithRunStart({
       baseDir,
 
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -4903,11 +4767,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("long-lived: drain() does not arm accumulators", async () => {
     const baseDir = await makeTempDir("supervisor-long-lived-drain-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const armedStubs: { runId: string }[] = [];
     const factory: DrainTimeoutAccumulatorFactory = (opts) => {
@@ -4919,13 +4781,8 @@ describe("createWorkflowSupervisor", () => {
       baseDir,
 
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
       drainTimeoutAccumulatorFactory: factory,
@@ -5045,23 +4902,16 @@ describe("createWorkflowSupervisor", () => {
 
   test("long-lived: mail after terminal is rejected without another trigger.fire", async () => {
     const baseDir = await makeTempDir("supervisor-long-lived-terminal-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const wired = await spawnWithRunStart({
       baseDir,
 
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5121,21 +4971,14 @@ describe("createWorkflowSupervisor", () => {
 
   test("a recovery-window mail is rejected when the live run terminates before parking", async () => {
     const baseDir = await makeTempDir("supervisor-recovery-terminal-race-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () =>
-        assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         }),
     });
     const address = "run_deployment-x@example.com";
@@ -5185,22 +5028,15 @@ describe("createWorkflowSupervisor", () => {
 
   test("a clean deployment with grants but no events fires its top-level run", async () => {
     const baseDir = await makeTempDir("supervisor-clean-run-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5222,11 +5058,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("a terminal durable log is never cleared or fired after supervisor restart", async () => {
     const baseDir = await makeTempDir("supervisor-terminal-restart-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const runEventsDir = path.join(
       baseDir,
@@ -5249,13 +5083,8 @@ describe("createWorkflowSupervisor", () => {
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5280,22 +5109,15 @@ describe("createWorkflowSupervisor", () => {
 
   test("an instant park during the pre-wait window still advances the dispatch loop", async () => {
     const baseDir = await makeTempDir("supervisor-instant-park-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5328,22 +5150,15 @@ describe("createWorkflowSupervisor", () => {
 
   test("two mails to a parked run each deliver on the run's fresh correlation", async () => {
     const baseDir = await makeTempDir("supervisor-fresh-corr-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5422,22 +5237,15 @@ describe("createWorkflowSupervisor", () => {
 
   test("a park-registered run keeps its channel: a mail routes as signal, not a fresh trigger", async () => {
     const baseDir = await makeTempDir("supervisor-resumed-order-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5483,21 +5291,14 @@ describe("createWorkflowSupervisor", () => {
 
   test("a mail resumes a parked run with the decoded Mail, not raw MIME", async () => {
     const baseDir = await makeTempDir("supervisor-signal-text-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5545,21 +5346,14 @@ describe("createWorkflowSupervisor", () => {
 
   test("deliverSignal ships its structured payload through unchanged", async () => {
     const baseDir = await makeTempDir("supervisor-deliversignal-passthrough-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5584,21 +5378,14 @@ describe("createWorkflowSupervisor", () => {
 
   test("a malformed turn-2 mail is dropped and consumed, not poison-looped", async () => {
     const baseDir = await makeTempDir("supervisor-poison-mail-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5659,11 +5446,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("a transient commit failure leaves the mail reclaimable and the loop alive", async () => {
     const baseDir = await makeTempDir("supervisor-transient-commit-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     // The injected fault is the event this test waits on: the dispatch
     // iteration it fails is the one the assertions describe.
     const partsFaults = createChangeNotifier();
@@ -5680,13 +5465,8 @@ describe("createWorkflowSupervisor", () => {
         }
       },
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5729,11 +5509,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("a markConsumed failure leaves the mail reclaimable and the loop alive", async () => {
     const baseDir = await makeTempDir("supervisor-markconsumed-fatal-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const memoryInbox = createMemoryInboxPrimitives();
     let failMarkConsumed = true;
     // The injected failure is the event this test waits on: the refusal is
@@ -5755,13 +5533,8 @@ describe("createWorkflowSupervisor", () => {
       baseDir,
       inboxPrimitives: failingInbox,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5808,11 +5581,9 @@ describe("createWorkflowSupervisor", () => {
 
   test("a mail enqueued during a dispatch iteration is picked up, not stranded", async () => {
     const baseDir = await makeTempDir("supervisor-lost-wake-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const address = "run_deployment-x@example.com";
     // The settleable bus hands back the arrival handler's own promise, which
     // is what makes the deliver below land INSIDE this dispatch iteration:
@@ -5843,13 +5614,8 @@ describe("createWorkflowSupervisor", () => {
       mailBus,
       inboxPrimitives: racingInbox,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5877,21 +5643,14 @@ describe("createWorkflowSupervisor", () => {
 
   test("a terminal that lands during the trigger's forward window releases the wait", async () => {
     const baseDir = await makeTempDir("supervisor-subscribe-before-fire-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const wired = await spawnWithRunStart({
       baseDir,
       onRunStart: async () => {
-        return assembleCredentialsSnapshot({
-          repoStore: createStubRepoStore({ baseDir }),
-          principal: { kind: "supervisor" },
+        return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
-          anchorRunId: "run_deployment-x",
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
         });
       },
     });
@@ -5919,81 +5678,6 @@ describe("createWorkflowSupervisor", () => {
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.shutdown();
-  });
-});
-
-describe("assembleCredentialsSnapshot", () => {
-  test("enumerates each step's agent-state repo and pins per-step grants by hash", async () => {
-    const baseDir = await makeTempDir("supervisor-creds-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "d1", stepId: "alpha" }),
-      [{ resource: "alpha-thing", action: "read" }],
-    );
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "d1", stepId: "beta" }),
-      [
-        { resource: "beta-thing", action: "read" },
-        { resource: "beta-thing", action: "write" },
-      ],
-    );
-    const repoStore = createStubRepoStore({ baseDir });
-    const snapshot = await assembleCredentialsSnapshot({
-      repoStore,
-      principal: { kind: "supervisor" },
-      stepOrder: ["alpha", "beta"],
-      anchorRunId: "d1",
-      deriveStepAddress: ({ runId, stepId }) =>
-        `${runId}-${stepId}@example.com`,
-    });
-    expect(snapshot.steps).toHaveLength(2);
-    expect(snapshot.steps[0]?.stepId).toBe("alpha");
-    expect(snapshot.steps[0]?.address).toBe("d1-alpha@example.com");
-    expect(snapshot.steps[0]?.grants).toEqual([
-      { resource: "alpha-thing", action: "read" },
-    ]);
-    expect(snapshot.steps[0]?.contentHash).toBe(
-      await hashGrants([{ resource: "alpha-thing", action: "read" }]),
-    );
-    expect(snapshot.steps[1]?.stepId).toBe("beta");
-    expect(snapshot.steps[1]?.grants).toHaveLength(2);
-    expect(snapshot.steps[0]?.contentHash).not.toBe(
-      snapshot.steps[1]?.contentHash,
-    );
-  });
-
-  test("treats a missing per-step grants file as an empty grant array", async () => {
-    const baseDir = await makeTempDir("supervisor-creds-empty-");
-    const repoStore = createStubRepoStore({ baseDir });
-    const snapshot = await assembleCredentialsSnapshot({
-      repoStore,
-      principal: { kind: "supervisor" },
-      stepOrder: ["solo"],
-      anchorRunId: "d2",
-      deriveStepAddress: ({ runId }) => `${runId}@example.com`,
-    });
-    expect(snapshot.steps).toHaveLength(1);
-    expect(snapshot.steps[0]?.grants).toEqual([]);
-    expect(snapshot.steps[0]?.contentHash).toBe(await hashGrants([]));
-  });
-
-  test("a malformed grants file fails loudly rather than silently treating it as empty", async () => {
-    const baseDir = await makeTempDir("supervisor-creds-bad-");
-    const repoId = defaultStepRepoId({ runId: "d3", stepId: "s" });
-    const dir = path.join(baseDir, repoId.kind, repoId.id);
-    await fs.mkdir(path.join(dir, "state"), { recursive: true });
-    await fs.writeFile(path.join(dir, STEP_GRANTS_PATH), "not json");
-    const repoStore = createStubRepoStore({ baseDir });
-    await expect(
-      assembleCredentialsSnapshot({
-        repoStore,
-        principal: { kind: "supervisor" },
-        stepOrder: ["s"],
-        anchorRunId: "d3",
-        deriveStepAddress: () => "d3-s@example.com",
-      }),
-    ).rejects.toThrow(/is not valid JSON/);
   });
 });
 
@@ -6134,11 +5818,9 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     ) => { store: string; path: string };
   }) {
     const baseDir = await makeTempDir(opts.label);
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
     const supervisorToChild = createMemoryNdjsonStream();

@@ -162,8 +162,7 @@ describe("step-id grammar in a nested body", () => {
   });
   test("rejects a body step whose embedded id names a different step", () => {
     // The record key is what every id-derived table is built on -- the
-    // credentials snapshot, the deploy-time grants write, the staged body ref
-    // -- while the runtime authorizes under the primitive's own `id`. The root
+    // credentials snapshot and a body's pinned sources -- while the runtime authorizes under the primitive's own `id`. The root
     // cannot diverge, because normalize assigns the key over the embedded id.
     // A hand-assembled body never passes through that assignment, so it can
     // key a step under one name and carry another, aiming the two halves at

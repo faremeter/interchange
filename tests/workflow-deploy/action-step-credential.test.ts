@@ -262,7 +262,6 @@ async function deploy(opts: {
     agentAddress: mailAddress,
     systemPrompt: "unused (no agent step)",
     tools: [],
-    grants: [],
     sources: [
       {
         id: "anthropic:mock-model",

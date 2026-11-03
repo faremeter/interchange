@@ -149,7 +149,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: deploymentMailAddress,
         systemPrompt: "unused (every step is an action)",
         tools: [],
-        grants: [],
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
       };

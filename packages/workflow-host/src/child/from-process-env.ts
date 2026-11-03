@@ -243,7 +243,7 @@ export async function runWorkflowChildFromProcessEnv(
   );
   // The one evaluation of the workflow code in this process. The factory
   // and the runtime body both run this verified definition. The supervisor
-  // derives the deployment's step layout from the reported projection, and
+  // derives the deployment's step ids from the reported projection, and
   // learns from the report why a closure that does not load failed.
   const reportDefinition = (result: DefinitionResult) =>
     upstreamSender.sendNow({

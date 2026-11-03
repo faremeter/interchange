@@ -252,7 +252,6 @@ function createProvisionedHarnessConfig(args: {
     agentAddress: deploymentAddress,
     systemPrompt: "",
     tools: [],
-    grants: [],
     sources: args.sources,
     defaultSource: args.defaultSource,
   };

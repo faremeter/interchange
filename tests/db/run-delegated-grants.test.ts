@@ -1162,7 +1162,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
                   steps: [
                     {
                       stepId: "work",
-                      address: "work",
                       grants,
                       contentHash: "",
                     },

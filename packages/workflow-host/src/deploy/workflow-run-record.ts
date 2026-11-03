@@ -17,8 +17,7 @@
 // re-materialize and re-evaluate the pinned code. It also carries the run's
 // credential cell: the latest delivery the deployment received, sealed. The
 // definition itself is re-materialized from that `sourceRef` closure on
-// restore, and each step's grants live in its agent-state repo, so neither is
-// duplicated here.
+// restore, so it is not duplicated here.
 
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { dirname, join as pathJoin, resolve } from "node:path";
@@ -216,10 +215,8 @@ async function transformDeliveryMaterials(
 }
 
 /**
- * Persist the initial run record once the deploy's step grants are on disk
- * and before the child starts or resumes any run, so a record the boot scan
- * re-drives after a crash always has its grants. Idempotent: it overwrites
- * any existing record for the same run.
+ * Persist the initial run record before the child starts or resumes any run.
+ * Idempotent: it overwrites any existing record for the same run.
  *
  * Every credential secret in the run's `credentials` cell -- inference and
  * binding alike -- is sealed under the sidecar `cipher` before it touches disk,

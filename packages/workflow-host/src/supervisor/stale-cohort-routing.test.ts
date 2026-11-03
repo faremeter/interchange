@@ -54,8 +54,8 @@ import {
   type SubprocessSpawner,
   type WorkflowSupervisorBindings,
 } from "./index";
-import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
 import { createControlChannelSender } from "../ipc/index";
+import { seedStepGrants, seededOnRunStart } from "./step-grants.test-helpers";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -80,19 +80,6 @@ function createStubRepoStore(baseDir: string): RepoStore {
       };
     },
   });
-}
-
-async function seedStepGrants(
-  baseDir: string,
-  repoId: RepoId,
-  grants: unknown[],
-): Promise<void> {
-  const dir = path.join(baseDir, repoId.kind, repoId.id);
-  await fs.mkdir(path.join(dir, "state"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, STEP_GRANTS_PATH),
-    JSON.stringify({ grants }),
-  );
 }
 
 function createMemoryInbox(): InboxPrimitives & {
@@ -316,11 +303,9 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     const tracker = createSpawnTracker();
     const inbox = createMemoryInbox();
 
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
 
     const consumedRecord: string[] = [];
     // The markConsumed callback is the event; the poll it replaces re-read
@@ -350,13 +335,8 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       workflowRunRef: "refs/heads/main",
       anchorRunId: "run_deployment-x",
       deploymentMailAddress: "run_deployment-x@example.com",
-      readPrincipal: { kind: "supervisor" },
-      layoutSteps: () =>
-        Promise.resolve({
-          stepIds: ["step-1"],
-          deriveStepAddress: ({ runId, stepId }) =>
-            `${runId}-${stepId}@example.com`,
-        }),
+      onRunStart: seededOnRunStart(baseDir),
+      layoutSteps: () => Promise.resolve(["step-1"]),
       ipcKeyPairFactory: () => Promise.resolve(ipcKp),
       inboxPrimitives: wrappedInbox,
     };

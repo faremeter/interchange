@@ -349,7 +349,6 @@ describe("sendMultiStepDeployFrame", () => {
       agentAddress: "ins_dep_src@workflow.interchange",
       systemPrompt: "deployment-level",
       tools: [],
-      grants: [],
       sources: Object.values(sources).flat(),
       defaultSource: "src-only",
     };
@@ -479,7 +478,6 @@ describe("deployCodeSourcedWorkflow", () => {
     agentAddress: DEPLOY_ADDRESS,
     systemPrompt: "deployment-level",
     tools: [],
-    grants: [],
     sources: Object.values(SOURCES).flat(),
     defaultSource: "src-only",
   };

@@ -49,7 +49,6 @@ const CONFIG: HarnessConfig = {
   agentAddress: "run_loopsrc@workflow.interchange",
   systemPrompt: "shared",
   tools: [],
-  grants: [],
   sources: [
     {
       id: "src-worker",

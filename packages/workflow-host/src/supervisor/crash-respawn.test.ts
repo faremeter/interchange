@@ -49,8 +49,8 @@ import {
   type SubprocessSpawner,
   type WorkflowSupervisorBindings,
 } from "./index";
-import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
 import { createControlChannelSender } from "../ipc/index";
+import { seedStepGrants, seededOnRunStart } from "./step-grants.test-helpers";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -112,19 +112,6 @@ function createStubRepoStore(
       };
     },
   });
-}
-
-async function seedStepGrants(
-  baseDir: string,
-  repoId: RepoId,
-  grants: unknown[],
-): Promise<void> {
-  const dir = path.join(baseDir, repoId.kind, repoId.id);
-  await fs.mkdir(path.join(dir, "state"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, STEP_GRANTS_PATH),
-    JSON.stringify({ grants }),
-  );
 }
 
 type FakeChild = {
@@ -401,13 +388,8 @@ async function buildBindings(opts: {
     workflowRunRef: "refs/heads/main",
     anchorRunId: "run_deployment-x",
     deploymentMailAddress: "run_deployment-x@example.com",
-    readPrincipal: { kind: "supervisor" },
-    layoutSteps: () =>
-      Promise.resolve({
-        stepIds: ["step-1"],
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
-      }),
+    onRunStart: seededOnRunStart(opts.baseDir),
+    layoutSteps: () => Promise.resolve(["step-1"]),
     ipcKeyPairFactory: () => Promise.resolve(opts.ipcKeypair),
     inboxPrimitives: opts.inboxPrimitives,
     ...(opts.crashLoopMaxCount !== undefined
@@ -448,11 +430,9 @@ async function spawnSupervisor(opts: {
     reason: string;
   }) => void;
 }) {
-  await seedStepGrants(
-    opts.baseDir,
-    defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-    [{ resource: "thing", action: "read" }],
-  );
+  await seedStepGrants(opts.baseDir, "step-1", [
+    { resource: "thing", action: "read" },
+  ]);
   const bindings = await buildBindings({
     baseDir: opts.baseDir,
     spawner: opts.tracker.spawner,

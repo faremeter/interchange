@@ -142,9 +142,7 @@ describe("createSidecarActionCredentialsFactory", () => {
       resolveStepGrants: createSnapshotGrantsResolver(
         {
           current: {
-            steps: [
-              { stepId: "push", address: "push", grants, contentHash: "h" },
-            ],
+            steps: [{ stepId: "push", grants, contentHash: "h" }],
           },
         },
         "lbl",

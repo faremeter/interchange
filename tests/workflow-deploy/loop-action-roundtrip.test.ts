@@ -107,7 +107,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: deploymentMailAddress,
         systemPrompt: "unused (loop body is an action)",
         tools: [],
-        grants: [],
         sources: [
           {
             id: "anthropic:mock-model",

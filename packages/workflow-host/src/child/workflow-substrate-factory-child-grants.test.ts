@@ -477,7 +477,7 @@ describe("createSidecarRunChild root grants", () => {
 
   function rootSnapshot(grants: readonly GrantRule[]) {
     return {
-      steps: [{ stepId: "top", address: "top", grants, contentHash: "h" }],
+      steps: [{ stepId: "top", grants, contentHash: "h" }],
     };
   }
 

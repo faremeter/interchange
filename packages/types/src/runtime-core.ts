@@ -8,7 +8,6 @@
 
 import { type } from "arktype";
 import type { AuditRecord, ErrorRecord } from "./audit";
-import { WireGrantRule } from "./grant-wire";
 import type { SignalKind } from "./signals";
 
 // ---------------------------------------------------------------------------
@@ -2401,10 +2400,6 @@ export type ToolDefinition = typeof ToolDefinition.infer;
  * The sidecar needs it to reconstruct the in-memory grant store on restart
  * (the store's `collectGrants` filters by principal).
  *
- * `grants` uses `WireGrantRule` because this type arrives over JSON where
- * `GrantRule.expiresAt` is serialized as a string. The wire validator
- * coerces strings back to Date instances.
- *
  * (ARCHITECTURE.md § Agent Harness)
  */
 export const HarnessConfig = type({
@@ -2415,7 +2410,6 @@ export const HarnessConfig = type({
   agentAddress: "string",
   systemPrompt: "string",
   tools: ToolDefinition.array(),
-  grants: WireGrantRule.array(),
   sources: InferenceSource.array(),
   defaultSource: "string",
   "sessionChannelEnabled?": "boolean",

@@ -37,7 +37,6 @@ function makeConfig(args: {
     agentAddress: "run_fallback@workflow.interchange",
     systemPrompt: "shared-prompt",
     tools: [],
-    grants: [],
     sources: args.sources,
     defaultSource: args.defaultSource,
   };

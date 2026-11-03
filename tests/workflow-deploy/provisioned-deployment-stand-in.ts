@@ -71,7 +71,6 @@ export function createProvisionedDeploymentStandIn(opts: {
         agentAddress,
         systemPrompt: "",
         tools: [],
-        grants: [],
         sources: [opts.inferenceSource],
         defaultSource: opts.inferenceSource.id,
       };

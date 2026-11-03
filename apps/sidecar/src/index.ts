@@ -642,8 +642,6 @@ const orchestrator = createSidecarOrchestrator({
           { kind: "workflow-run", id: runId },
           { last: WORKFLOW_RUN_RECORD_FILENAME },
         ),
-      removeAgentStateRepository: (id) =>
-        agentRepoStore.repoStore.removeRepo({ kind: "agent-state", id }),
       multistepMailRouter,
       inboundMailPolicyRegistry,
       multistepSignalRouter,
