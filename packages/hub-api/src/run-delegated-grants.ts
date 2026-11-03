@@ -182,9 +182,6 @@ export async function rederiveRunDelegatedGrants(
     // `no key update` serializes with the first trigger's `for update`, and
     // with an approval resolve on a provisioned deployment, without blocking
     // the key-share lock a child run row's foreign key takes on its anchor.
-    // An approval resolve on a deployment with no allocation does not lock
-    // the anchor: a standing decision that commits while this inserts a
-    // regained `ask` row leaves that row `ask`, so the run asks again.
     await tx
       .select({ id: workflowRun.id })
       .from(workflowRun)

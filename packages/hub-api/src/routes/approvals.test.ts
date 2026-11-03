@@ -122,6 +122,11 @@ function createMockDB(
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
       let workflowRunLockIndex = 0;
       return fn({
+        // A standing resolution takes the tenant re-derivation lock first.
+        execute: async () => {
+          operationOrder.push("tenant-lock");
+          return [];
+        },
         select: () => ({
           from: (table: unknown) => {
             if (table === principal) {
@@ -562,6 +567,40 @@ describe("POST /approvals/:approvalId/approve", () => {
     // The delivered signalId is the same value persisted on the claim.
     expect(call.signalId).toBe(claimCalls[0]?.signalId ?? "");
     expect(call.payload).toEqual({ outcome: "approved" });
+  });
+
+  test("a standing provisioned resolution takes the tenant lock before the allocation lock", async () => {
+    const operationOrder: string[] = [];
+    const app = createTestApp({
+      hasSidecarAllocation: true,
+      signalCalls: [],
+      claimCalls: [],
+      workflowSignalEnqueues: [],
+      transactionalEnqueues: [],
+      dispatchWakeCalls: [],
+      allocationLocks: [],
+      operationOrder,
+      lifecycleReadCalls: [],
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${APPROVAL_ID}/approve`, { scope: "always" }),
+    );
+
+    expect(res.status).toBe(200);
+    // The re-derivation takes the tenant lock again, which Postgres grants at
+    // once to the transaction that holds it.
+    expect(operationOrder).toEqual([
+      "tenant-lock",
+      "allocation-lock",
+      "git-lifecycle",
+      "anchor-lock",
+      "target-lock",
+      "claim",
+      "resolve",
+      "enqueue",
+      "tenant-lock",
+    ]);
   });
 
   test("atomically enqueues a provisioned approval decision for replay", async () => {

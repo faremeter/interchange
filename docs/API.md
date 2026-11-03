@@ -499,7 +499,7 @@ Durably requests cancellation of a live top-level run. Its saved cancellation re
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/authorization
 Get run authorization
 
-Returns the run's effective authorization floor: its committed grants and their resolved effects. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets allow, reject-always sets deny), so a standing-resolved tool reads that effect directly here. This is the floor the runtime enforces, so the view mirrors what the run can do. A grant whose expiry has passed is left out. Complete for the source-ref deploy lineage (the shipping pipeline); a pinned-tool deploy's sidecar-injected ask floor is not reflected here.
+Returns the run's effective authorization floor: its committed grants and their resolved effects. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets allow, reject-always sets deny), so a standing-resolved tool reads that effect directly here. An approve-always on a tool the run's delegator no longer allows removes the grant instead, so the tool is not listed. This is the floor the runtime enforces, so the view mirrors what the run can do. A grant whose expiry has passed is left out. Complete for the source-ref deploy lineage (the shipping pipeline); a pinned-tool deploy's sidecar-injected ask floor is not reflected here.
 
 200: RunAuthorizationResponse -- Run authorization
 404: ErrorResponse -- Run not found
@@ -739,7 +739,7 @@ Returns the approver-facing tool snapshot, status, and originating deployment fo
 ### POST /api/tenants/:tenantId/approvals/:approvalId/approve
 Approve an action
 
-Approves the pending action. Scope 'once' authorizes only this suspended call. Scope 'always' additionally records a standing approval, so the same tool is not asked again for the rest of this run.
+Approves the pending action. Scope 'once' authorizes only this suspended call. Scope 'always' additionally records a standing approval, so the same tool is not asked again for the rest of this run. The tool is then allowed only while the run's delegator still allows it; otherwise the run's grant for it is removed and the tool is denied.
 
 Body: ApproveAction
 
@@ -1591,7 +1591,7 @@ Source: packages/types/src/instances.ts
 `{ grants: { action: string, effect: "allow" | "ask" | "deny", resource: string }[], runId: string }`
 Source: packages/types/src/instances.ts
 
-**grants**: The run's effective authorization floor: each capability the run's principal holds with its resolved effect. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets 'allow', reject-always sets 'deny'), so a standing-resolved tool reads that effect directly. Read straight from the run's committed grants; complete for the source-ref deploy lineage (the shipping pipeline), whose committed grants carry every tool's effect. A pinned-tool deploy's ask floor is injected sidecar-side and is not reflected here.
+**grants**: The run's effective authorization floor: each capability the run's principal holds with its resolved effect. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets 'allow', reject-always sets 'deny'), so a standing-resolved tool reads that effect directly. An approve-always on a tool the run's delegator no longer allows removes the grant instead, so the tool is not listed. Read straight from the run's committed grants; complete for the source-ref deploy lineage (the shipping pipeline), whose committed grants carry every tool's effect. A pinned-tool deploy's ask floor is injected sidecar-side and is not reflected here.
 
 ### SendMessage
 `{ content: string, attachments?: { data: string, mimeType: string, name?: string, + (undeclared): reject }[] }`

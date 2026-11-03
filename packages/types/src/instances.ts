@@ -53,7 +53,7 @@ export const RunAuthorizationGrant = type({
 export const RunAuthorizationResponse = type({
   runId: "string",
   grants: RunAuthorizationGrant.array().describe(
-    "The run's effective authorization floor: each capability the run's principal holds with its resolved effect. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets 'allow', reject-always sets 'deny'), so a standing-resolved tool reads that effect directly. Read straight from the run's committed grants; complete for the source-ref deploy lineage (the shipping pipeline), whose committed grants carry every tool's effect. A pinned-tool deploy's ask floor is injected sidecar-side and is not reflected here.",
+    "The run's effective authorization floor: each capability the run's principal holds with its resolved effect. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets 'allow', reject-always sets 'deny'), so a standing-resolved tool reads that effect directly. An approve-always on a tool the run's delegator no longer allows removes the grant instead, so the tool is not listed. Read straight from the run's committed grants; complete for the source-ref deploy lineage (the shipping pipeline), whose committed grants carry every tool's effect. A pinned-tool deploy's ask floor is injected sidecar-side and is not reflected here.",
   ),
 });
 

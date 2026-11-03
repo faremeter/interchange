@@ -458,6 +458,7 @@ export function mountHubRoutes(
             }
           : {}),
       grantStore,
+      grantStoreFor,
       conditionRegistry,
       approvalStore,
       signalCorrelationStore,
