@@ -8,8 +8,7 @@
 
 import {
   evaluateGrants,
-  timeWindowEvaluator,
-  type ConditionRegistry,
+  RUN_CHILD_CONDITION_REGISTRY,
   type GrantRule,
 } from "@intx/authz";
 import type { AuthzCallResult } from "@intx/inference";
@@ -215,11 +214,6 @@ export function createCredentialsBackedAuthorize(
   };
 }
 
-// The conditions the child can evaluate without a request: only the clock.
-const CHILD_CONDITIONS: ConditionRegistry = {
-  time_window: timeWindowEvaluator,
-};
-
 /**
  * The grant evaluator a run child's authorize closure delegates to. It ranks
  * the step's snapshot grants together with the step's pinned-tool floor
@@ -252,7 +246,7 @@ export function createGrantEvaluator(opts: {
       [...grants, ...floor],
       resource,
       action,
-      { conditions: CHILD_CONDITIONS },
+      { conditions: RUN_CHILD_CONDITION_REGISTRY },
     );
     return {
       effect: result.effect,

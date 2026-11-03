@@ -79,6 +79,9 @@ evaluation is fail-closed.
   consumer identity.
 - `HUB_CONDITION_REGISTRY` — the hub's standard `ConditionRegistry`,
   registering `time_window` and `tool`.
+- `RUN_CHILD_CONDITION_REGISTRY` — the `ConditionRegistry` a workflow
+  run's child process evaluates step grants with: `time_window` only,
+  a subset of the hub registry.
 - `evaluateConditions` — run a grant's `conditions` object against a
   `ConditionRegistry`.
 - `validateConditions` — check a grant's `conditions` object against a
