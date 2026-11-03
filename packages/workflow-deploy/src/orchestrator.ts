@@ -27,20 +27,6 @@ import {
 } from "./inert-ontrigger-bodies";
 
 /**
- * Minimal structural `DeployContent` shape. Carried as a structural type so
- * this package does not need a runtime dependency on `@intx/hub-sessions` to
- * name the type. Mirrors the public fields of
- * `packages/hub-sessions/src/agent-repo.ts`'s `DeployContent`; the hub's
- * `bridgeOrchestratorDeployContent` narrows this widened shape back to the
- * canonical one at the deploy boundary.
- */
-export interface DeployContent {
-  readonly systemPrompt: string;
-  readonly toolPackageManifest?: unknown;
-  readonly assetMounts?: ReadonlyMap<string, string>;
-}
-
-/**
  * Error thrown when a workflow definition fails deploy-time validation --
  * an inverted or unapproved inference chain, or a step whose source the
  * operator never approved. Carries the offending workflow id so the caller's

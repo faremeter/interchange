@@ -65,8 +65,8 @@ for the authoritative type shapes.
 
 ### Agent repository store
 
-- `createAgentRepoStore` / `AgentRepoStore`, `DeployContent` — the
-  agent-specific repository store.
+- `createAgentRepoStore` / `AgentRepoStore` — the agent-specific
+  repository store.
 - `createRepoStore`, `UserPrincipal`, and the supporting types
   `AuthorizeFn`, `CreateRepoStoreConfig`, `InitRepoOpts`,
   `KindHandler`, `Principal`, `RefEntry`, `RepoAction`, `RepoId`,

@@ -4,7 +4,7 @@ import { withRepoDirLock } from "./repo-lock";
 import type { StorageRuntime } from "./runtime";
 
 /**
- * Create a git packfile containing all objects reachable from a ref.
+ * Create a git packfile containing a ref's tip commit and its tree.
  *
  * Used by the hub to produce deploy packs for transfer to sidecars. The
  * caller sends the resulting bytes as chunked repo.pack.push frames.

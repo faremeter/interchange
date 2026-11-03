@@ -1,30 +1,14 @@
 // Multi-step workflow round-trip with signal-await integration test.
 //
 // Deploys a `step1 -> awaitSignal{name: "go"} -> step2` workflow through
-// the workflow-deploy orchestrator's multi-step branch, fires the
+// `deployWorkflowSourceForTest`, fires the
 // deployment's mail trigger, observes the runtime pause at
 // `SignalAwaited`, injects a signal via the host-side signal channel,
 // and asserts the runtime resumes through `step2` to `RunCompleted`.
 //
-// The orchestrator's multi-step branch is composed in-test: the per-step
-// launch callback drives `env.hub.sessionService.stageWorkflowStep` (the
-// stage-only path, no warm harness) and the `sendMultiStepDeploy` hand-off
-// is supplied against `env.hub.router.sendAgentDeploy` so the sidecar's
-// deploy router takes the workflow-process spawn path. The deployment
-// handle is registered
-// on the env via `registerDeployment` so the fixture's `injectSignal`,
-// `readWorkflowRunEvents`, and `waitForWorkflowRunComplete` helpers can
-// resolve it by id.
-//
-// The pre-landed `deploy-flow-env` fixture supplies every other helper;
-// this file does not modify the fixture.
-//
-// Architectural-gap discipline: this test was previously authored
-// against an un-wired multi-step transport surface. The plumbing that
-// makes the deployment-level address routable, threads the workflow
-// definition to the sidecar, spawns the workflow-process subprocess,
-// and routes per-step pack pushes back to the hub now lands in the
-// upstream commits this file's verification depends on.
+// The deployment handle is registered on the env so the fixture's
+// `injectSignal`, `readWorkflowRunEvents`, and `waitForWorkflowRunComplete`
+// helpers can resolve it by id.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -204,8 +188,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // `AgentDefinition`). The agent-state repo id is the per-step
       // `agentId` (not the per-step mail address): the mail address
       // carries `@` and `.` which the substrate's `SAFE_REPO_ID`
-      // rejects, and the orchestrator's per-step `launchSession`
-      // already provisions the repo under the safe `agentId`.
+      // rejects.
       const step1AgentId = deriveStepAgentId({
         runId: DEPLOYMENT_ID,
         stepId: "step1",
@@ -226,9 +209,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(typeof step2RepoDir).toBe("string");
 
       // The deployment's trigger mail address must be routable on the
-      // hub. The sidecar's deploy router takes the multi-step branch
-      // and `sendAgentDeploy` records the deployment-level address on
-      // the hub router's index, which is what `routeMail` consults.
+      // hub. The deploy records the deployment-level address on the hub
+      // router's index, which is what `routeMail` consults.
       expect(env.hub.router.getRoutableAddresses()).toContain(
         deploymentMailAddress,
       );

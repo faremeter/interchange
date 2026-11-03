@@ -10,17 +10,13 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import {
-  createEd25519Crypto,
-  generateKeyPair,
-  verifySSHSignature,
-} from "@intx/crypto";
-import { base64Encode, hexEncode } from "@intx/types";
+import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
+import { base64Encode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 
 import {
   answerMalformedRequestFrame,
-  classifyAssetPackRejectReason,
+  classifyPackRejectReason,
   cleartextTransportWarning,
   createHubLink,
   type DeployRouter,
@@ -40,7 +36,6 @@ import {
 } from "@intx/types/sidecar";
 import type { RepoId } from "@intx/types/repo";
 
-type TestSendPackOptions = { mountPath?: string; repoId?: RepoId };
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 import type { ResolvedInboundMailPolicy } from "./inbound-signature";
@@ -145,30 +140,11 @@ function sendAgentDeploy(
   );
 }
 
-function sendPack(
-  router: ReturnType<typeof createSidecarRouter>,
-  agentAddress: string,
-  pack: Uint8Array,
-  ref: string,
-  commitSha: string,
-  options?: TestSendPackOptions,
-) {
-  return router.sendPackToAllocation(
-    allocationTargetFor(router, agentAddress),
-    agentAddress,
-    pack,
-    ref,
-    commitSha,
-    options,
-  );
-}
-
 /**
- * Test-only deploy router modelling the current deploy path: record the
- * hub pairing key so `verifyDeployCommit` can accept the deployment's
- * packs, and surface a public key on the ack. Production stages the
- * deploy through the workflow-run substrate; the tests here exercise the
- * link's surface against the router directly.
+ * Test-only deploy router: record the hub pairing key and surface a public
+ * key on the ack. Production stages the deploy through the workflow-run
+ * substrate; the tests here exercise the link's surface against the router
+ * directly.
  */
 function createTestDeployRouter(keyStore: AgentKeyStore): DeployRouter {
   return {
@@ -232,15 +208,6 @@ function createTestKeyStore(): AgentKeyStore & {
     recordHubKey(address, hexHubPublicKey) {
       hubKeys.set(address, hexDecode(hexHubPublicKey));
     },
-    verifyDeployCommit(address, payload, signature) {
-      const hubKey = hubKeys.get(address);
-      if (hubKey === undefined) {
-        throw new Error(
-          `signature_invalid: no hub public key for "${address}"`,
-        );
-      }
-      return verifySSHSignature(payload, signature, hubKey);
-    },
     forgetAgent(address) {
       agentKeys.delete(address);
       hubKeys.delete(address);
@@ -254,9 +221,6 @@ function createTestKeyStore(): AgentKeyStore & {
 
 function createMockSessionManager(): SessionManager {
   return {
-    initRepo: (_address: string) => Promise.resolve(),
-    applyDeployPack: () => Promise.resolve(),
-    applyAssetPack: () => Promise.resolve(),
     deleteAgentDir: () => Promise.resolve(),
     getSessionId: (_agentAddress: string) => undefined,
   };
@@ -1025,98 +989,6 @@ describe("sidecar↔hub integration", () => {
     expect(env.router.getRoutableAddresses()).not.toContain(deploymentAddress);
   });
 
-  test("repo.pack.reject sent when applyDeployPack throws signature_invalid", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    const client = createHubLink({
-      capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-pack-reject",
-      token: "test-token",
-      transport,
-      sessions,
-      ...withTestDeployBindings(),
-    });
-
-    client.connect();
-    try {
-      await waitUntil(() =>
-        env.router.getConnectedSidecars().includes("sc-pack-reject"),
-      );
-
-      await sendAgentDeploy(
-        env.router,
-        "pack-agent@test.interchange",
-        TEST_CONFIG,
-      );
-
-      sessions.applyDeployPack = () => {
-        throw new Error("signature_invalid: bad signature");
-      };
-
-      await expect(
-        sendPack(
-          env.router,
-          "pack-agent@test.interchange",
-          new Uint8Array([1, 2, 3]),
-          "refs/heads/deploy",
-          "a".repeat(40),
-        ),
-      ).rejects.toThrow("Pack rejected: signature_invalid");
-    } finally {
-      client.close();
-      await waitUntil(
-        () => !env.router.getConnectedSidecars().includes("sc-pack-reject"),
-      );
-    }
-  });
-
-  test("signature_unsigned errors also map to repo.pack.reject signature_invalid", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    const client = createHubLink({
-      capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-pack-unsigned",
-      token: "test-token",
-      transport,
-      sessions,
-      ...withTestDeployBindings(),
-    });
-
-    client.connect();
-    try {
-      await waitUntil(() =>
-        env.router.getConnectedSidecars().includes("sc-pack-unsigned"),
-      );
-
-      await sendAgentDeploy(
-        env.router,
-        "unsigned-agent@test.interchange",
-        TEST_CONFIG,
-      );
-
-      sessions.applyDeployPack = () => {
-        throw new Error("signature_unsigned: no signature found");
-      };
-
-      await expect(
-        sendPack(
-          env.router,
-          "unsigned-agent@test.interchange",
-          new Uint8Array([1, 2, 3]),
-          "refs/heads/deploy",
-          "a".repeat(40),
-        ),
-      ).rejects.toThrow("Pack rejected: signature_invalid");
-    } finally {
-      client.close();
-      await waitUntil(
-        () => !env.router.getConnectedSidecars().includes("sc-pack-unsigned"),
-      );
-    }
-  });
-
   test("malformed hubPublicKey in deploy frame sends agent.deploy.error", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
@@ -1192,143 +1064,6 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
-  test("a deploy records the hub key so verifyCommit is bound to it", async () => {
-    const { generateKeyPair, createSSHSignature } = await import(
-      "@intx/crypto"
-    );
-
-    // Hub keypair — the key whose public half the sidecar stores to verify
-    // deploy-commit signatures.
-    const hubKp = await generateKeyPair();
-    const deployedAddress = "deployed@test.interchange";
-    const hubPublicKeyHex = hexEncode(hubKp.publicKey);
-
-    const deployHubRouter = createSidecarRouter({
-      withExecutableWorkflowRun: async (_target, send) => send(),
-      ...acceptAnySidecar,
-      validateSidecarIdentity: async () => true,
-      requestTimeoutMs: 5000,
-      hubPublicKey: hubPublicKeyHex,
-    });
-
-    const deployApp = new Hono();
-    deployApp.get(
-      "/ws",
-      upgradeWebSocket((_c) => {
-        let handle: WsHandle;
-        return {
-          onOpen(_evt, ws) {
-            handle = {
-              send(data: string) {
-                ws.send(data);
-              },
-              close() {
-                ws.close();
-              },
-            };
-            deployHubRouter.handleOpen(handle);
-          },
-          onMessage(evt, _ws) {
-            if (typeof evt.data === "string") {
-              prepareAllocationFrame(deployHubRouter, evt.data);
-              deployHubRouter.handleMessage(handle, evt.data);
-            }
-          },
-          onClose(_evt, _ws) {
-            deployHubRouter.handleClose(handle);
-          },
-        };
-      }),
-    );
-
-    const deployServer = Bun.serve({
-      fetch: deployApp.fetch,
-      websocket,
-      port: 0,
-    });
-
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    const keyStore = createTestKeyStore();
-
-    const client = createHubLink({
-      capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${deployServer.port}/ws`,
-      sidecarId: "sc-deploy-key",
-      token: "test-token",
-      transport,
-      sessions,
-      keyStore,
-      resolveSenderCrypto: () => undefined,
-      lookupInboundMailPolicy: () => admitAllInboundMailPolicy,
-      cacheSenderKey: async () => undefined,
-      evictSenderKey: async () => undefined,
-      deployRouter: createTestDeployRouter(keyStore),
-    });
-
-    client.connect();
-    try {
-      await waitUntil(() =>
-        deployHubRouter.getConnectedSidecars().includes("sc-deploy-key"),
-      );
-
-      // The hub's deploy frame carries hubPublicKeyHex; the deploy router
-      // records it via keyStore.recordHubKey, so a later pack's verifyCommit
-      // is bound to the hub key.
-      await sendAgentDeploy(deployHubRouter, deployedAddress, {
-        ...TEST_CONFIG,
-        agentAddress: deployedAddress,
-      });
-
-      let capturedVerifyCommit:
-        | ((p: string, s: string) => Promise<boolean>)
-        | undefined;
-      sessions.applyDeployPack = async (
-        _addr: string,
-        _pack: Uint8Array,
-        _ref: string,
-        _sha: string,
-        _tid: string,
-        verifyCommit?: (payload: string, signature: string) => Promise<boolean>,
-      ) => {
-        capturedVerifyCommit = verifyCommit;
-      };
-
-      await sendPack(
-        deployHubRouter,
-        deployedAddress,
-        new Uint8Array([1, 2, 3]),
-        "refs/heads/deploy",
-        "b".repeat(40),
-      );
-
-      expect(capturedVerifyCommit).toBeFunction();
-
-      // A signature from the hub's key round-trips through the recorded
-      // verifyCommit callback.
-      const payload = "tree abc\nauthor t <t@t> 0 +0000\n\ntest\n";
-      const sig = await createSSHSignature(
-        payload,
-        hubKp.privateKey,
-        hubKp.publicKey,
-      );
-      expect(await capturedVerifyCommit!(payload, sig)).toBe(true);
-
-      // A signature from a different key fails, proving the callback is bound
-      // to the specific hub key the deploy recorded.
-      const wrongKp = await generateKeyPair();
-      const wrongSig = await createSSHSignature(
-        payload,
-        wrongKp.privateKey,
-        wrongKp.publicKey,
-      );
-      expect(await capturedVerifyCommit!(payload, wrongSig)).toBe(false);
-    } finally {
-      client.close();
-      await deployServer.stop(true);
-    }
-  });
-
   test("sidecar sends pings and hub responds with pongs", async () => {
     const pingEnv = startTestServer();
 
@@ -1371,81 +1106,67 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
-  test("repo.pack.done with mountPath routes through applyAssetPack", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    const deployCalls: string[] = [];
-    const assetCalls: { address: string; mountPath: string }[] = [];
-    sessions.applyDeployPack = (addr: string) => {
-      deployCalls.push(addr);
-      return Promise.resolve();
-    };
-    sessions.applyAssetPack = (addr: string, mountPath: string) => {
-      assetCalls.push({ address: addr, mountPath });
-      return Promise.resolve();
-    };
-
+  test("a Hub pack for any other repo kind is rejected and not applied", async () => {
+    const restored: unknown[] = [];
+    const hub = startWelcomingHub();
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-asset-route",
+      hubURL: `ws://localhost:${hub.server.port}/ws`,
+      sidecarId: "sc-other-kind-pack",
       token: "test-token",
-      transport,
-      sessions,
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
       ...withTestDeployBindings(),
+      applyWorkflowRunPack: async (args) => {
+        restored.push(args);
+      },
     });
+    const rejects = () =>
+      hub.frames
+        .map((s): { type: string; reason?: string; detail?: string } =>
+          JSON.parse(s),
+        )
+        .filter((frame) => frame.type === "repo.pack.reject");
 
     client.connect();
     try {
       await waitUntil(() =>
-        env.router.getConnectedSidecars().includes("sc-asset-route"),
+        hub.frames.some((s) => JSON.parse(s).type === "hello"),
       );
+      const transfer = {
+        agentAddress: "run_other_kind@workflow.test",
+        generation: 1,
+        repoId: { kind: "skill", id: "asset-1" },
+        transferId: "transfer-other-kind",
+      };
+      hub.send({
+        type: "repo.pack.push",
+        ...transfer,
+        seq: 0,
+        data: base64Encode(new Uint8Array([7, 8, 9])),
+      });
+      hub.send({
+        type: "repo.pack.done",
+        ...transfer,
+        ref: "refs/heads/main",
+        commitSha: "c".repeat(40),
+      });
 
-      await sendAgentDeploy(
-        env.router,
-        "route-agent@test.interchange",
-        TEST_CONFIG,
-      );
-
-      // Deploy pack (no mountPath) → applyDeployPack.
-      await sendPack(
-        env.router,
-        "route-agent@test.interchange",
-        new Uint8Array([1, 2, 3]),
-        "refs/heads/deploy",
-        "a".repeat(40),
-      );
-      expect(deployCalls).toEqual(["route-agent@test.interchange"]);
-      expect(assetCalls).toEqual([]);
-
-      // Asset pack (mountPath set) → applyAssetPack.
-      await sendPack(
-        env.router,
-        "route-agent@test.interchange",
-        new Uint8Array([4, 5, 6]),
-        "refs/heads/main",
-        "b".repeat(40),
-        { mountPath: "skills/example/" },
-      );
-      expect(deployCalls).toEqual(["route-agent@test.interchange"]);
-      expect(assetCalls).toEqual([
-        {
-          address: "route-agent@test.interchange",
-          mountPath: "skills/example/",
-        },
-      ]);
+      await waitUntil(() => rejects().length > 0);
+      expect(rejects()[0]).toMatchObject({
+        reason: "corrupt",
+        detail: expect.stringContaining("not skill"),
+      });
+      expect(restored).toEqual([]);
     } finally {
       client.close();
-      await waitUntil(
-        () => !env.router.getConnectedSidecars().includes("sc-asset-route"),
-      );
+      await hub.server.stop(true);
     }
   });
 
-  test("workflow-run packs route through the restore boundary instead of the deploy tree", async () => {
+  test("workflow-run packs route through the restore boundary", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deployCalls: string[] = [];
     const restoreCalls: {
       agentAddress: string;
       repoId: RepoId;
@@ -1453,10 +1174,6 @@ describe("sidecar↔hub integration", () => {
       commitSha: string;
       pack: Uint8Array;
     }[] = [];
-    sessions.applyDeployPack = (address) => {
-      deployCalls.push(address);
-      return Promise.resolve();
-    };
     const address = "run_restore@workflow.test";
     const repoId: RepoId = {
       kind: "workflow-run",
@@ -1481,19 +1198,16 @@ describe("sidecar↔hub integration", () => {
       await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-workflow-restore-route"),
       );
-      await sendAgentDeploy(env.router, address, TEST_CONFIG);
 
       const pack = new Uint8Array([7, 8, 9]);
-      await sendPack(
-        env.router,
+      await env.router.sendWorkflowRunPackToAllocation(
+        allocationTargetFor(env.router, address),
         address,
         pack,
         "refs/heads/events",
         "c".repeat(40),
-        { repoId },
       );
 
-      expect(deployCalls).toEqual([]);
       expect(restoreCalls).toEqual([
         {
           agentAddress: address,
@@ -1510,52 +1224,6 @@ describe("sidecar↔hub integration", () => {
           !env.router
             .getConnectedSidecars()
             .includes("sc-workflow-restore-route"),
-      );
-    }
-  });
-
-  test("asset_materialization_failed reports as pack.reject corrupt", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    sessions.applyAssetPack = () => {
-      throw new Error("asset_materialization_failed: pack index error");
-    };
-
-    const client = createHubLink({
-      capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-asset-fail",
-      token: "test-token",
-      transport,
-      sessions,
-      ...withTestDeployBindings(),
-    });
-
-    client.connect();
-    try {
-      await waitUntil(() =>
-        env.router.getConnectedSidecars().includes("sc-asset-fail"),
-      );
-      await sendAgentDeploy(
-        env.router,
-        "fail-asset@test.interchange",
-        TEST_CONFIG,
-      );
-
-      await expect(
-        sendPack(
-          env.router,
-          "fail-asset@test.interchange",
-          new Uint8Array([1, 2, 3]),
-          "refs/heads/main",
-          "a".repeat(40),
-          { mountPath: "skills/example/" },
-        ),
-      ).rejects.toThrow("Pack rejected: corrupt");
-    } finally {
-      client.close();
-      await waitUntil(
-        () => !env.router.getConnectedSidecars().includes("sc-asset-fail"),
       );
     }
   });
@@ -3150,7 +2818,6 @@ describe("initial handshake on connect", () => {
         agentId: TEST_CONFIG.agentId,
         config: TEST_CONFIG,
         hubPublicKey: "a".repeat(64),
-        provisionStep: true,
       });
     };
     const undeploy = (requestId: string, generation: number) => {
@@ -3241,7 +2908,6 @@ describe("initial handshake on connect", () => {
         agentId: TEST_CONFIG.agentId,
         config: TEST_CONFIG,
         hubPublicKey: "a".repeat(64),
-        provisionStep: true,
       });
       await deploying.promise;
       // The undeploy waits on the address's lane behind the deploy, and the
@@ -4061,54 +3727,25 @@ describe("answerMalformedRequestFrame", () => {
   });
 });
 
-describe("classifyAssetPackRejectReason", () => {
-  test("classifies a symlink rejection as path_violation, not corrupt", () => {
-    expect(
-      classifyAssetPackRejectReason(
-        "asset_materialization_failed: writeTreeToDisk: symlink at link is not supported",
-      ),
-    ).toBe("path_violation");
-  });
-
-  test("classifies a submodule rejection as path_violation", () => {
-    expect(
-      classifyAssetPackRejectReason(
-        "asset_materialization_failed: writeTreeToDisk: submodule reference at sub is not supported",
-      ),
-    ).toBe("path_violation");
-  });
-
-  test("classifies an escaping mountPath as path_violation", () => {
-    expect(
-      classifyAssetPackRejectReason(
-        'asset_materialization_failed: mountPath "x/../y" normalizes to a workspace-root or escaping path',
-      ),
-    ).toBe("path_violation");
-  });
-
-  test("classifies a missing-commit (bad bytes) rejection as corrupt", () => {
-    expect(
-      classifyAssetPackRejectReason(
-        "asset_materialization_failed: indexPackIntoGitDir: expected commit abc not found in the pack",
-      ),
-    ).toBe("corrupt");
-  });
-
-  test("keeps sha_mismatch and signature reasons", () => {
-    expect(classifyAssetPackRejectReason("sha_mismatch: ...")).toBe(
-      "sha_mismatch",
-    );
-    expect(classifyAssetPackRejectReason("signature_unsigned: ...")).toBe(
-      "signature_invalid",
-    );
+describe("classifyPackRejectReason", () => {
+  test("keeps sha_mismatch", () => {
+    expect(classifyPackRejectReason("sha_mismatch: ...")).toBe("sha_mismatch");
   });
 
   test("classifies a seed that would move existing history as conflict", () => {
     expect(
-      classifyAssetPackRejectReason(
+      classifyPackRejectReason(
         "workflow_run_restore_conflict: refs/heads/main of run@example.com is already at abc here",
       ),
     ).toBe("conflict");
+  });
+
+  test("classifies anything else as corrupt", () => {
+    expect(
+      classifyPackRejectReason(
+        "workflow_run_restore_invalid: a Hub pack must restore a workflow-run repo, not skill",
+      ),
+    ).toBe("corrupt");
   });
 });
 

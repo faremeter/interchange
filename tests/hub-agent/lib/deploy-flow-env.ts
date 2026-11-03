@@ -19,7 +19,7 @@
 //
 // The fixture exposes the hub handle, the inference request capture, the
 // sidecar process handle, and a `sidecarDiagnostics()` callback that
-// surfaces sidecar stderr and hub state-pack receive failures. A wait helper
+// surfaces sidecar stderr and hub pack receive failures. A wait helper
 // given a `timeoutMs` renders it when that bound lapses; `teardown()` renders
 // it when a wait is still in flight, which is what a wedged test leaves
 // behind, and then stops that wait so it does not poll on into the env
@@ -536,7 +536,7 @@ function countToolResults(req: InferenceRequest): number {
 //
 // Returns a canned Anthropic-style SSE assistant response that includes the
 // tool names it was given in the request. This lets tests assert that the
-// harness passed the deploy-tree tools through to inference.
+// harness passed the step's tools through to inference.
 //
 // With `opts.toolCall`, the first request that exposes the named tool
 // instead returns a `tool_use` turn so the agent executes the tool and
@@ -770,8 +770,7 @@ export type HubEnv = {
   agentRepoStore: AgentRepoStore;
   agentEvents: { addr: string; sid: string; event: unknown }[];
   deployAcks: Map<string, string>;
-  statePacks: { agentAddress: string; ref: string; commitSha: string }[];
-  statePackReceiveFailures: { agentAddress: string; error: string }[];
+  workflowRunPackReceiveFailures: { agentAddress: string; error: string }[];
   /**
    * Every delivered `mail.outbound` frame the sidecar forwarded to the hub
    * for persistence, keyed by the signing sender. A frame reaches here only
@@ -845,8 +844,8 @@ export async function startHub(
 ): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
   const deployAcks = new Map<string, string>();
-  const statePacks: HubEnv["statePacks"] = [];
-  const statePackReceiveFailures: HubEnv["statePackReceiveFailures"] = [];
+  const workflowRunPackReceiveFailures: HubEnv["workflowRunPackReceiveFailures"] =
+    [];
   const outboundMail: HubEnv["outboundMail"] = [];
   // Every live server-side WsHandle, so the reconnect helpers can force-close
   // the sidecar's hub link. Populated by the upgrade callback's onOpen/onClose.
@@ -925,43 +924,6 @@ export async function startHub(
     },
     validateSidecarIdentity: async () => true,
     lookups: {
-      async receiveAgentStatePack(repoId, pack, ref, commitSha) {
-        if (repoId.kind !== "agent-state") {
-          throw new Error(
-            `deploy-flow test mock received unsupported repo kind ${JSON.stringify(repoId.kind)}`,
-          );
-        }
-        const agentAddress = repoId.id;
-        const agentId = deriveWorkflowRunId(agentAddress);
-        // Mirror createHubSessionLookups' fallback branch only: catch
-        // every receive failure and surface it as a structured "corrupt"
-        // rejection, so a transient (e.g. the agent directory being torn
-        // down concurrently with an in-flight pack write) does not
-        // propagate as an unhandled rejection through the WebSocket
-        // message handler. The production lookups distinguish a
-        // path_violation prefix and report that as a separate reason;
-        // this mock does not, because this fixture never exercises
-        // tree-validator rejection.
-        try {
-          await agentRepoStore.receiveAgentStatePack(
-            { kind: "agent-state", id: agentId },
-            pack,
-            ref,
-            commitSha,
-          );
-        } catch (err) {
-          // Capture the underlying error into the hub's diagnostic
-          // buffer so a regression does not hide behind the catch.
-          // sidecarDiagnostics surfaces this on waitFor timeouts, and
-          // tests that care can inspect hub.statePackReceiveFailures
-          // directly.
-          const message = err instanceof Error ? err.message : String(err);
-          statePackReceiveFailures.push({ agentAddress, error: message });
-          return { accepted: false, reason: "corrupt" as const };
-        }
-        statePacks.push({ agentAddress, ref, commitSha });
-        return { accepted: true };
-      },
       async receiveWorkflowRunPack(repoId, pack, ref, commitSha) {
         if (repoId.kind !== "workflow-run") {
           throw new Error(
@@ -1000,7 +962,7 @@ export async function startHub(
           );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          statePackReceiveFailures.push({
+          workflowRunPackReceiveFailures.push({
             agentAddress: repoId.id,
             error: `workflow-run pack: ${message}`,
           });
@@ -1236,8 +1198,7 @@ export async function startHub(
     agentRepoStore,
     agentEvents,
     deployAcks,
-    statePacks,
-    statePackReceiveFailures,
+    workflowRunPackReceiveFailures,
     outboundMail,
     hubDataDir,
     liveHandles,
@@ -1529,7 +1490,7 @@ export type DeployFlowEnv = {
   inference: MockInference;
   sidecar: SidecarHandle;
   /**
-   * Sidecar stderr plus hub state-pack receive failures, rendered for a
+   * Sidecar stderr plus hub pack receive failures, rendered for a
    * failing wait. Reports every sidecar registered on the env, so a restart
    * test's replacement process is covered by every wait that already passes
    * this function -- including `waitForReconnect`, which wires it itself.
@@ -1757,10 +1718,10 @@ export async function startDeployFlowEnv(
       const label = index === 0 ? "sidecar" : `sidecar #${String(index)}`;
       parts.push(`${label} stderr:\n${handle.stderr.slice(-300).join("")}`);
     }
-    const failures = hub.statePackReceiveFailures;
+    const failures = hub.workflowRunPackReceiveFailures;
     if (failures.length > 0) {
       parts.push(
-        `state-pack receive failures (last ${String(Math.min(failures.length, 10))}):\n` +
+        `pack receive failures (last ${String(Math.min(failures.length, 10))}):\n` +
           failures
             .slice(-10)
             .map((f) => `  ${f.agentAddress}: ${f.error}`)
@@ -2322,8 +2283,7 @@ function reapTerminalDeployments(env: DeployFlowEnv): void {
  * Read every event under `runs/<runId>/events/` from the deployment's
  * workflow-run repo and return them in ascending `seq` order. Returns
  * an empty array when the run has not yet committed any events or the
- * repo has not yet been created (e.g. the deployment hasn't taken the
- * multi-step branch yet). Delegates to the shared hub-side
+ * repo has not yet been created. Delegates to the shared hub-side
  * `WorkflowRunReader` so the fixture and the REST route project the
  * substrate through one reader.
  */

@@ -35,12 +35,10 @@ collide remain distinguishable on disk.
 
 ## Where the manifest lives
 
-The pinned closure is the hub's responsibility: the closure resolver
-walks every agent-pinned tool package, resolves transitive dependencies,
-and writes a `ToolPackageManifest` (validated by
-`@intx/types/tool-packages`) into the deploy pack at
-`deploy/tool-packages-manifest.json`. The sidecar reads it from there
-at apply time.
+The closure resolver walks a list of pinned packages, resolves
+transitive dependencies, and produces a `ToolPackageManifest` (validated
+by `@intx/types/tool-packages`). A deploy from source resolves its
+workflow's closure this way and hands the manifest to the loader.
 
 Manifest entries whose `source.kind` is `"asset"` carry the asset's id
 plus a `package` envelope. The envelope's `format` discriminates where
@@ -69,11 +67,9 @@ tarball entry looks like:
 The loader joins `source.package.path` against the materialized asset
 root on the sidecar to locate the bytes.
 
-## Mount table in the deploy pack
+## Mount table
 
-The hub-side session service writes a sidecar-readable mapping from
-asset id to mount path into the deploy pack at
-`deploy/asset-mounts.json`:
+The loader takes a mapping from asset id to mount path:
 
 ```json
 {

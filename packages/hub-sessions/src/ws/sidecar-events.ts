@@ -264,12 +264,6 @@ export function createSidecarEmitter(): SidecarEventEmitter {
 }
 
 export type SidecarLookups = {
-  /** Returns the hub's current deploy ref for the address, or `null` if
-   * no deploy state is tracked. The wire layer compares this against
-   * the sidecar's reported ref during reconnect and emits
-   * `deploy.ref.stale` only on mismatch. */
-  lookupDeployRef?: (agentAddress: string) => Promise<string | null>;
-
   /** Re-resolves a reconnecting deployment's current credential delivery and
    * reconciles the child, so a credential revoked, deleted, or rotated while
    * the sidecar was disconnected is applied on reconnect (closing the offline
@@ -425,21 +419,6 @@ export type SidecarLookups = {
     senderAddress: string;
     recipientAddresses: string[];
   }) => Promise<void>;
-
-  /** Ingests a received agent-state pack and returns whether the wire
-   * layer should ack or reject the pack to the sidecar. `repoId.kind`
-   * is `"agent-state"` and `repoId.id` is the run address. The wire
-   * layer dispatches on `repoId.kind` against the receive lookups
-   * before calling either; this lookup must reject any pack whose
-   * `repoId.kind` is not `"agent-state"`. */
-  receiveAgentStatePack?: (
-    repoId: RepoId,
-    pack: Uint8Array,
-    ref: string,
-    commitSha: string,
-  ) => Promise<
-    { accepted: true } | { accepted: false; reason: PackRejectReason }
-  >;
 
   /** Ingests a received workflow-run pack and returns whether the wire
    * layer should ack or reject the pack to the sidecar. `source` is derived

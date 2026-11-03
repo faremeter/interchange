@@ -788,11 +788,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     }
   }
 
-  function validateClearPrefix(clearPrefix: string): void {
+  function validatePreservePrefix(preservePrefix: string): void {
     const malformed =
-      !clearPrefix.endsWith("/") || !isPlainRelativePath(clearPrefix, true);
+      !preservePrefix.endsWith("/") ||
+      !isPlainRelativePath(preservePrefix, true);
     if (malformed) {
-      throw new Error(`clear_prefix_invalid: ${clearPrefix}`);
+      throw new Error(`preserve_prefix_invalid: ${preservePrefix}`);
     }
   }
 
@@ -1374,9 +1375,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // "new" when it is readable from the object store, was not present
   // before the pack arrived (not in `existingCommits`), and does not
   // match `priorTip`, the ref's tip under the lock. When the parent's
-  // commit object is not in the store at all — the common case for the
-  // deploy-pack shape `createDeployPack` produces, which packs only the
-  // tip's tree and not its ancestor commits — that absence is the
+  // commit object is not in the store at all — a pack that carries only its
+  // tip, with no ancestor commits — that absence is the
   // boundary: history older than the readable commit is opaque from
   // this pack's perspective, so the walker stops without pushing the
   // unreadable parent.
@@ -1462,7 +1462,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // and clears the blob there; deleting a path that is a directory in
   // the base is rejected with `delete_type_mismatch` (there is no
   // git-rm-style recursive drop). A trailing-slash entry names a
-  // subtree prefix and clears it (the clear-prefix shape); a
+  // subtree prefix and clears it; a
   // trailing-slash delete whose leading segment is a base blob is
   // rejected with `delete_type_mismatch`, unless a `put` drives the
   // same descent -- that is a legitimate file-to-directory replacement
@@ -1867,59 +1867,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return { commitSha, newlyTerminalRuns: validation.newlyTerminalRuns ?? [] };
   }
 
-  // A clearPrefix write clears and rewrites its prefix, but its files may
-  // land outside it. Each such file widens the change scope to its own
-  // directory, or to the whole tree for a top-level file, so no change
-  // escapes the handler's validation.
-  function prefixWriteScope(
-    prefix: string,
-    files: Record<string, string | Uint8Array>,
-  ): ReadonlySet<string> | undefined {
-    const scope = new Set([prefix]);
-    for (const filepath of Object.keys(files)) {
-      if (filepath.startsWith(prefix)) continue;
-      const slash = filepath.lastIndexOf("/");
-      if (slash < 0) return undefined;
-      scope.add(filepath.slice(0, slash + 1));
-    }
-    return scope;
-  }
-
-  // Normalize a `TreeContent` (files + optional clearPrefix) into the
-  // puts/deletes/scope shape writeTreeUnderLock consumes. A clearPrefix
-  // becomes a single subtree-delete and anchors the handler's change
-  // scope; its absence is a purely-additive write validated in full.
-  function normalizeTreeContent(content: TreeContent): {
-    files: Record<string, string | Uint8Array>;
-    deletes: ReadonlySet<string>;
-    changedPathPrefixes: ReadonlySet<string> | undefined;
-    message: string;
-  } {
-    for (const filepath of Object.keys(content.files)) {
-      if (!isPlainRelativePath(filepath, false)) {
-        throw new Error(`tree_path_invalid: ${JSON.stringify(filepath)}`);
-      }
-    }
-    if (content.clearPrefix !== undefined) {
-      validateClearPrefix(content.clearPrefix);
-      return {
-        files: content.files,
-        deletes: new Set([content.clearPrefix]),
-        changedPathPrefixes: prefixWriteScope(
-          content.clearPrefix,
-          content.files,
-        ),
-        message: content.message,
-      };
-    }
-    return {
-      files: content.files,
-      deletes: new Set<string>(),
-      changedPathPrefixes: undefined,
-      message: content.message,
-    };
-  }
-
   async function writeTree(
     principal: Principal,
     repoId: RepoId,
@@ -1927,13 +1874,23 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     content: TreeContent,
   ): Promise<WriteResult> {
     gateAccess(principal, repoId, ref, "writeTree");
+    for (const filepath of Object.keys(content.files)) {
+      if (!isPlainRelativePath(filepath, false)) {
+        throw new Error(`tree_path_invalid: ${JSON.stringify(filepath)}`);
+      }
+    }
 
     // The lock spans the entire substrate body of writeTree: tree
     // assembly, validatePush, commit, and the onRefUpdated hook. Holding
     // the lock through onRefUpdated keeps post-update consumers
     // serialized against the same ref's next writer.
     return withRepoLock(repoId, () =>
-      writeTreeUnderLock(principal, repoId, ref, normalizeTreeContent(content)),
+      writeTreeUnderLock(principal, repoId, ref, {
+        files: content.files,
+        deletes: new Set<string>(),
+        changedPathPrefixes: undefined,
+        message: content.message,
+      }),
     );
   }
 
@@ -1977,7 +1934,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     args: WriteTreePreservingPrefixArgs,
   ): Promise<WriteResult> {
     gateAccess(principal, repoId, ref, "writeTree");
-    validateClearPrefix(args.preservePrefix);
+    validatePreservePrefix(args.preservePrefix);
     return withRepoLock(repoId, async () => {
       // Reading and merging both happen inside the lock so two
       // concurrent callers targeting the same prefix observe each
@@ -2014,7 +1971,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // move that adds one entry and deletes another) does not re-hash or
   // re-materialize the untouched siblings. `changedPathPrefixes` is the
   // handler's scoping hint for the touched region; the caller supplies it
-  // because the delta has no single clear-prefix to derive it from.
+  // because the delta has no single prefix to derive it from.
   async function writeTreeDelta(
     principal: Principal,
     repoId: RepoId,
@@ -2756,7 +2713,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // cursor stays put, so the next `createPack` re-includes the un-acked
   // commits and the receiver gets a self-consistent chain. Only the
   // `workflow-run` kind ships incremental packs; for every other kind
-  // `createPack` produces a self-contained deploy pack and the cursor
+  // `createPack` produces a self-contained pack and the cursor
   // is unused, so this is a no-op there.
   function commitPackedTip(repoId: RepoId, ref: string, commitSha: string) {
     if (repoId.kind !== "workflow-run") return;

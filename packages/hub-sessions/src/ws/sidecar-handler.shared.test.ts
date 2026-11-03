@@ -1723,25 +1723,11 @@ describe("SidecarRouter shared sidecars", () => {
           "user@tenant.example",
           "message-1",
         ),
-      () =>
-        router.sendPackToAllocation(
-          target(first),
-          address,
-          new Uint8Array(),
-          "refs/heads/main",
-          "0".repeat(40),
-        ),
-      () =>
-        router.sendProvisionStepToAllocation(
-          target(first),
-          address,
-          TEST_CONFIG,
-        ),
     ];
 
     for (const attempt of attempts) {
       await expect(attempt()).rejects.toThrow(
-        new RegExp(`${address} is not (routed on|bound to) allocation alloc-a`),
+        new RegExp(`${address} is not routed on allocation alloc-a`),
       );
     }
     expect(ws.sent.length).toBe(sentBefore);

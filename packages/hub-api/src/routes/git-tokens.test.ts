@@ -229,9 +229,6 @@ function createMockSidecarRouter(): SidecarRouter {
 
 function createMockSessionService(): SessionService {
   return {
-    stageWorkflowStep: () => {
-      throw new Error("mock: sessionService.stageWorkflowStep not implemented");
-    },
     endSession: () => {
       throw new Error("mock: sessionService.endSession not implemented");
     },

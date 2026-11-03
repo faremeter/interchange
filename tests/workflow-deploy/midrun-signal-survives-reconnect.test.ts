@@ -5,8 +5,8 @@
 // with effects applied exactly once.
 //
 // Shape: deploy a `step1 -> awaitSignal{name: "go"} -> step2` workflow
-// through the workflow-deploy orchestrator's multi-step branch (the same
-// wiring `multistep-signal.test.ts` uses), fire the deployment's mail
+// through `deployWorkflowSourceForTest` (the same wiring
+// `multistep-signal.test.ts` uses), fire the deployment's mail
 // trigger, and drive the run to the mid-run `SignalAwaited` pause. With
 // the run parked at the signal gate, settle the workflow-run pack-push
 // pipeline and drop the hub link (`settleThenDrop`), wait for the sidecar

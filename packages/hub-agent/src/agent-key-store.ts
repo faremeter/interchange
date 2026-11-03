@@ -7,9 +7,7 @@
 //
 // In addition to the on-disk persistence, the store keeps an in-memory
 // cache of the keypair and the paired hub public key for every agent
-// that has been loaded or recorded during the process lifetime. The
-// cache backs the per-frame crypto operations the wire layer needs:
-// verifyDeployCommit for incoming deploy packs.
+// that has been loaded or recorded during the process lifetime.
 
 import fsp from "node:fs/promises";
 import { hasCode } from "@intx/types/has-code";
@@ -21,15 +19,6 @@ import { keysDir, privateKeyPath, publicKeyPath } from "./agent-paths";
 export type AgentKeyStoreDeps = {
   dataDir: string;
   generateKeyPair: () => Promise<KeyPair>;
-  /**
-   * Verify an SSH signature block against the supplied public key.
-   * Used by verifyDeployCommit.
-   */
-  verifySSHSig: (
-    payload: string,
-    signature: string,
-    publicKey: Uint8Array,
-  ) => Promise<boolean>;
 };
 
 export type AgentKeyStore = {
@@ -48,23 +37,13 @@ export type AgentKeyStore = {
    */
   recordHubKey(address: string, hexHubPublicKey: string): void;
   /**
-   * Verify an SSH signature against the cached hub public key for the
-   * given address. Throws when no hub key is cached — a deploy pack
-   * cannot be verified without one.
-   */
-  verifyDeployCommit(
-    address: string,
-    payload: string,
-    signature: string,
-  ): Promise<boolean>;
-  /**
    * Drop the in-memory caches for an agent. Called on undeploy.
    */
   forgetAgent(address: string): void;
 };
 
 export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
-  const { dataDir, generateKeyPair, verifySSHSig } = deps;
+  const { dataDir, generateKeyPair } = deps;
 
   const agentKeys = new Map<string, KeyPair>();
   const hubKeys = new Map<string, Uint8Array>();
@@ -121,20 +100,6 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
     hubKeys.set(address, hexDecode(hexHubPublicKey));
   }
 
-  async function verifyDeployCommit(
-    address: string,
-    payload: string,
-    signature: string,
-  ): Promise<boolean> {
-    const hubKey = hubKeys.get(address);
-    if (hubKey === undefined) {
-      throw new Error(
-        `signature_invalid: no hub public key recorded for "${address}"`,
-      );
-    }
-    return verifySSHSig(payload, signature, hubKey);
-  }
-
   function forgetAgent(address: string): void {
     agentKeys.delete(address);
     hubKeys.delete(address);
@@ -143,7 +108,6 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
   return {
     loadOrGenerateKey,
     recordHubKey,
-    verifyDeployCommit,
     forgetAgent,
   };
 }

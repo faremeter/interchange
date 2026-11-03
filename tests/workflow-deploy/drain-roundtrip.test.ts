@@ -1,8 +1,8 @@
 // Drain round-trip integration test.
 //
 // Deploys a `step1 -> awaitSignal{name: "never-arrives",
-// drainBehavior: "cancel"}` workflow through the workflow-deploy
-// orchestrator's multi-step branch, fires the deployment's mail
+// drainBehavior: "cancel"}` workflow through
+// `deployWorkflowSourceForTest`, fires the deployment's mail
 // trigger, observes the runtime pause at `SignalAwaited`, then
 // initiates drain through the production hub -> sidecar -> supervisor
 // -> workflow-process child pipeline.
@@ -30,13 +30,6 @@
 // as `StepFailed`; the run terminates as `RunFailed`. The cascade is
 // asserted end-to-end so a regression in any of the seven hops surfaces
 // at this test.
-//
-// The orchestrator's multi-step branch is composed in-test (matching
-// the multi-step signal round-trip): the per-step launch callback drives
-// `env.hub.sessionService.stageWorkflowStep` (the stage-only path, no warm
-// harness) and the `sendMultiStepDeploy` hand-off is supplied against
-// `env.hub.router.sendAgentDeploy` so the sidecar's deploy router
-// takes the workflow-process spawn path.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";

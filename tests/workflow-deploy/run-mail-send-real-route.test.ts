@@ -124,7 +124,6 @@ function notImpl(name: string): never {
 
 function createMockSessionService(): SessionService {
   return {
-    stageWorkflowStep: () => notImpl("stageWorkflowStep"),
     endSession: () => notImpl("endSession"),
   };
 }

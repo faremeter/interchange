@@ -7,8 +7,8 @@
 // RunCompleted with effects applied exactly once.
 //
 // Shape: deploy a `step1 -> awaitSignal{name:"go"} -> step2` workflow
-// through the workflow-deploy orchestrator's multi-step branch (the same
-// wiring `multistep-signal.test.ts` uses), fire the mail trigger, and
+// through `deployWorkflowSourceForTest` (the same wiring
+// `multistep-signal.test.ts` uses), fire the mail trigger, and
 // drive the run to the mid-run `SignalAwaited` pause. Quiesce the
 // workflow-run pack pipeline, then KILL the sidecar subprocess (process
 // death, not a hub-link drop). Start a fresh sidecar against the crashed

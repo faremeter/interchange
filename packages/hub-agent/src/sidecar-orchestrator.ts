@@ -49,11 +49,6 @@ const log = getLogger(["interchange", "hub-agent", "orchestrator"]);
 
 export type SidecarCryptoOps = {
   generateKeyPair(): Promise<KeyPair>;
-  verifySSHSig(
-    payload: string,
-    signature: string,
-    publicKey: Uint8Array,
-  ): Promise<boolean>;
 };
 
 /**
@@ -299,7 +294,6 @@ export function createSidecarOrchestrator(
   const keyStore = createAgentKeyStore({
     dataDir,
     generateKeyPair: cryptoOps.generateKeyPair,
-    verifySSHSig: cryptoOps.verifySSHSig,
   });
 
   // Sink the multi-step deploy path routes a spawned child's verified

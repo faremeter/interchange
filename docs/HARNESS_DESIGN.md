@@ -77,10 +77,10 @@ All communication between hub and sidecar is over a single persistent WebSocket 
 
 **Hub to Sidecar:**
 
-| Frame            | Fields                                                                                                                               | Description                             |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
-| `agent.deploy`   | `requestId`, `agentAddress`, `generation`, `agentId`, `config` (full `HarnessConfig`), `hubPublicKey`, `workflow?`, `provisionStep?` | Deploy an incarnation to this sidecar   |
-| `agent.undeploy` | `requestId`, `agentAddress`, `generation`, `reason`                                                                                  | Remove an incarnation from this sidecar |
+| Frame            | Fields                                                                                                             | Description                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| `agent.deploy`   | `requestId`, `agentAddress`, `generation`, `agentId`, `config` (full `HarnessConfig`), `hubPublicKey`, `workflow?` | Deploy an incarnation to this sidecar   |
+| `agent.undeploy` | `requestId`, `agentAddress`, `generation`, `reason`                                                                | Remove an incarnation from this sidecar |
 
 **Sidecar to Hub:**
 
@@ -106,7 +106,7 @@ Credentials travel in the `agent.deploy` frame's inference **sources** — `conf
 
 ## Per-Agent Key Pairs
 
-Each agent has its own Ed25519 key pair, generated when the agent is first deployed to the sidecar and stored alongside the agent's isogit repository. The key pair persists across sidecar restarts. The public key is transmitted to the Hub in the initial `agent.deploy.ack` frame for the deployment's published identity and signed-content provenance. Sidecar credentials, not agent keys, authorize reconnect routing.
+Each agent has its own Ed25519 key pair, generated when the agent is first deployed to the sidecar and stored in the agent's data directory. The key pair persists across sidecar restarts. The public key is transmitted to the Hub in the initial `agent.deploy.ack` frame for the deployment's published identity and signed-content provenance. Sidecar credentials, not agent keys, authorize reconnect routing.
 
 Keys are stored as raw 32-byte binary files under a `keys/` directory within the agent's data directory.
 

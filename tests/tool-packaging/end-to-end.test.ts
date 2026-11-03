@@ -147,7 +147,7 @@ function fakeFactory(id: string) {
 }
 
 describe("hub→sidecar pipeline (happy path)", () => {
-  test("resolved manifest round-trips through the deploy tree and loads cleanly", async () => {
+  test("resolved manifest round-trips through disk and loads cleanly", async () => {
     const fixture = await buildFixture({
       name: "tools-fixture",
       version: "1.0.0",
@@ -188,7 +188,7 @@ describe("hub→sidecar pipeline (happy path)", () => {
       fixture.integrity,
     );
 
-    // Persist the manifest as the deploy tree would; round-trip it.
+    // Persist the manifest; round-trip it.
     const deployDir = path.join(instanceDir, "deploy");
     await fs.mkdir(deployDir, { recursive: true });
     await fs.writeFile(
@@ -470,9 +470,9 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
    *
    * The fixture returns the bound `readBlob`/`listBlobs` pair the
    * resolver consumes, plus a writeMount helper that lays the same
-   * tarball bytes onto disk at the mount path the deploy pack will
+   * tarball bytes onto disk at the mount path the mount map will
    * point the loader at. End-to-end: the resolver picks an entry,
-   * the deploy tree records `(assetId, mount)`, the loader joins
+   * the mount map records `(assetId, mount)`, the loader joins
    * `assetRoot + mount + path` and reads the same bytes back.
    */
   async function buildAssetRegistryFixture(
@@ -637,54 +637,5 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
     if (result.status !== "ok") return;
     expect(result.loaded).toHaveLength(1);
     expect(result.loaded[0]?.factories[0]?.id).toBe("@asset-vendor/tool/main");
-  });
-
-  test("asset registry shadows an HTTP registry of the same name", async () => {
-    // Build two distinct package contents under the same registry
-    // name `shared`: one in an asset, one served by HTTP. The asset
-    // source occupies the slot the HTTP source would otherwise hold;
-    // the resolver picks the asset's bytes, and the manifest entry
-    // tags `kind: "asset"`. The session service uses the same
-    // tie-break (asset wins) when building the per-agent registry
-    // map from the visible-assets set; this test confirms the rule at
-    // the resolver layer.
-    const fixture = await buildAssetRegistryFixture([
-      { name: "shared-pkg", version: "1.0.0", exportName: "main" },
-    ]);
-    const assetSource = new AssetRegistrySource({
-      name: "shared",
-      assetId: "asset_inner",
-      readBlob: fixture.readBlob,
-      listBlobs: fixture.listBlobs,
-    });
-    // Build a registry map that mirrors the session service's
-    // collision behavior: insert the asset first, then skip the http
-    // source because the slot is taken.
-    const registries = new Map<string, RegistrySource>();
-    registries.set(assetSource.name, assetSource);
-    const httpName = "shared";
-    if (!registries.has(httpName)) {
-      registries.set(
-        httpName,
-        new HttpRegistrySource({
-          name: httpName,
-          config: { url: "https://r.test" },
-          fetchPackument: async () => {
-            throw new Error(
-              "HTTP source must not be consulted when an asset shadows it",
-            );
-          },
-        }),
-      );
-    }
-    const resolver = createClosureResolver({
-      registries,
-      defaultRegistry: assetSource.name,
-    });
-    const manifest = await resolver.resolveClosure([
-      { name: "shared-pkg", version: "1.0.0" },
-    ]);
-    expect(manifest.entries).toHaveLength(1);
-    expect(manifest.entries[0]?.source.kind).toBe("asset");
   });
 });

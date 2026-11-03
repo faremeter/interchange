@@ -119,23 +119,16 @@ export type AssetServiceErrorReason =
   | "duplicate_attachment"
   | "invalid_name"
   | "invalid_reference"
-  | "name_reserved"
   | "not_found"
   | "path_violation";
 
-// An asset name becomes a workspace mountpath segment for the asset
-// kinds a session actually mounts: a tool-package registry mounts at
-// `package-registries/<asset.name>/`. A skill is an asset kind too,
-// and its `SKILL.md` frontmatter is validated on push and indexed
-// under the pushed ref, but nothing consumes that index and no
+// A skill is an asset kind, and its `SKILL.md` frontmatter is validated on push
+// and indexed under the pushed ref, but nothing consumes that index and no
 // session path mounts a skill asset into an agent workspace. A skill
 // asset is therefore recorded and validated, not materialized and not
-// executed. The mountpath segment validator in applyAssetPack
-// rejects anything outside a safe character set; validate at the
-// createAsset boundary so a bad name fails at creation time rather
-// than at materialization time. Names must be lowercase-kebab:
-// lowercase letters, digits, hyphens, with no leading or trailing
-// hyphen. The sole enforcement site is the createAsset check below,
+// executed. An asset name is a segment of the asset's Git URL, so names must be
+// lowercase-kebab: lowercase letters, digits, hyphens, with no leading or
+// trailing hyphen. The sole enforcement site is the createAsset check below,
 // which rejects a bad name as `invalid_name`.
 export const ASSET_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -159,7 +152,7 @@ export class AssetServiceError extends Error {
  * "list the root" form; anything else must be a relative path with
  * no leading slash, no trailing slash, no `..` segment, and no empty
  * segments (no `//`). This mirrors the same rules that
- * `validateClearPrefix` in the repo-store enforces on `clearPrefix`
+ * `validatePreservePrefix` in the repo-store enforces on `preservePrefix`
  * arguments, surfaced here as a path-violation error so the caller
  * sees a structured rejection instead of a confusing "no directory
  * at /tarballs/" miss when an absolute or `..`-bearing input slips
@@ -236,24 +229,8 @@ export function createAssetService(deps: {
   // with createHubSessionLookups and its sibling services.
   db: DB["db"];
   repoStore: RepoStore;
-  /**
-   * Names that the session service treats as configured HTTP registries
-   * when assembling the per-launch package-registry map. A
-   * `package-registry` asset whose name collides with one of these
-   * shadows the corresponding HTTP registry at session-launch time
-   * (asset wins on name collision). Creating such an asset is almost
-   * always an operator footgun — silently rerouting the public npm
-   * registry traffic to a tenant-owned asset — so reject the creation
-   * up front rather than letting the misroute surface later. The host
-   * threads in its `httpRegistries` keys; the asset service holds them
-   * statically because the registry config is loaded at hub boot and
-   * does not change at runtime.
-   */
-  reservedPackageRegistryNames?: ReadonlySet<string>;
 }): AssetService {
   const { db, repoStore } = deps;
-  const reservedPackageRegistryNames =
-    deps.reservedPackageRegistryNames ?? new Set<string>();
 
   async function createAsset(params: CreateAssetParams): Promise<Asset> {
     if (
@@ -273,27 +250,6 @@ export function createAssetService(deps: {
         `createAsset rejects name ${JSON.stringify(
           params.name,
         )}: must be lowercase-kebab (letters, digits, hyphens; no leading or trailing hyphen)`,
-      );
-    }
-
-    if (
-      params.kind === "package-registry" &&
-      reservedPackageRegistryNames.has(params.name)
-    ) {
-      // Session-launch builds the per-launch registry map by iterating
-      // package-registry assets first and HTTP registries second, with
-      // an asset-wins-on-collision rule. A `package-registry` asset
-      // named after a configured HTTP registry would silently shadow
-      // that registry for every session that resolves through this
-      // tenant — almost certainly an operator misconfig, not an
-      // intended override. Reject the creation so the operator sees
-      // the collision at intent time instead of debugging an
-      // unexpected reroute later.
-      throw new AssetServiceError(
-        "name_reserved",
-        `createAsset rejects name ${JSON.stringify(
-          params.name,
-        )}: it collides with a configured HTTP registry of the same name and would silently shadow it at session launch`,
       );
     }
 

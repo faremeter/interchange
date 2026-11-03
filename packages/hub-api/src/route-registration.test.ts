@@ -21,9 +21,6 @@ import { RUN_TOKEN_ROUTES } from "./middleware/run-token-auth";
 const mockDb = {} as unknown as DB["db"];
 
 const sessionService: SessionService = {
-  stageWorkflowStep(_params) {
-    throw new Error("mock: sessionService.stageWorkflowStep not implemented");
-  },
   endSession(_addr, _reason) {
     throw new Error("mock: sessionService.endSession not implemented");
   },

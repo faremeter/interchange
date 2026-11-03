@@ -327,56 +327,6 @@ describe("AssetService", () => {
       expect(dbFixture.assets).toHaveLength(0);
     });
 
-    test("rejects a package-registry asset whose name shadows a configured HTTP registry", async () => {
-      // The session service builds the per-launch tool-package
-      // registry map by iterating package-registry assets first and
-      // HTTP registries second, with an asset-wins-on-name-collision
-      // rule. Without the reserved-name gate, a `package-registry`
-      // asset named `npmjs` on any tenant would silently shadow the
-      // public npm registry for every session resolving through that
-      // tenant — an opaque reroute the operator did not request. Pin
-      // the rejection at the asset-creation boundary so the collision
-      // surfaces at intent time, not as a debugging exercise later.
-      const reservedService = createAssetService({
-        db: dbFixture.db,
-        repoStore,
-        reservedPackageRegistryNames: new Set(["npmjs"]),
-      });
-      const err = await reservedService
-        .createAsset({
-          tenantId: "tnt_1",
-          kind: "package-registry",
-          name: "npmjs",
-        })
-        .catch((e: unknown) => e);
-
-      expect(err).toBeInstanceOf(AssetServiceError);
-      if (!(err instanceof AssetServiceError)) throw new Error("unreachable");
-      expect(err.reason).toBe("name_reserved");
-      expect(err.message).toContain("npmjs");
-      expect(dbFixture.assets).toHaveLength(0);
-    });
-
-    test("a reserved name only shadows the matching kind", async () => {
-      // The reserved-name gate scopes to `package-registry` — a skill
-      // asset named `npmjs` poses no shadowing risk against the
-      // registry map. Surface that asymmetry in the test so a future
-      // refactor that broadens the gate has to update this assertion
-      // along with the code.
-      const reservedService = createAssetService({
-        db: dbFixture.db,
-        repoStore,
-        reservedPackageRegistryNames: new Set(["npmjs"]),
-      });
-      const asset = await reservedService.createAsset({
-        tenantId: "tnt_1",
-        kind: "skill",
-        name: "npmjs",
-      });
-      expect(asset.kind).toBe("skill");
-      expect(asset.name).toBe("npmjs");
-    });
-
     test("surfaces duplicate (tenantId, kind, name) as duplicate_asset", async () => {
       await service.createAsset({
         tenantId: "tnt_1",

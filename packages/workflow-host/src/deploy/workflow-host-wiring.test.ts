@@ -325,88 +325,6 @@ describe("createSidecarWorkflowSupervisor", () => {
   });
 });
 
-describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
-  test("a provisionStep frame inits the repo and records the hub key without spawning", async () => {
-    const transport = createInMemoryTransport();
-    const keyPair = await generateKeyPair();
-
-    const initRepoCalls: string[] = [];
-    const recordHubKeyCalls: { address: string; hubKey: string }[] = [];
-
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep touches no RepoStore method; the Proxy throws if it ever does
-    const repoStore = new Proxy({} as RepoStore, {
-      get(_target, prop) {
-        return () => {
-          throw new Error(`stub RepoStore: ${String(prop)} not implemented`);
-        };
-      },
-    });
-
-    const router = createSidecarDeployRouter({
-      ...DEFAULT_SIDECAR_CAPACITY,
-      ...deployHostBindings(),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep exercises only initRepo
-      sessions: {
-        initRepo: async (a: string) => {
-          initRepoCalls.push(a);
-        },
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep exercises only recordHubKey
-      keyStore: {
-        recordHubKey: (a: string, h: string) => {
-          recordHubKeyCalls.push({ address: a, hubKey: h });
-        },
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["keyStore"],
-      transport,
-      repoStore,
-      signingKeySeed: keyPair.privateKey,
-      credentialCipher: createNoopCredentialCipher(),
-      createAgentCrypto: createEd25519Crypto,
-      assertSourceBuildable: () => undefined,
-      registerDeployment: () => undefined,
-      removeRunRepository: async () => undefined,
-      removeAgentStateRepository: async () => undefined,
-      unregisterDeployment: () => undefined,
-      reportDeploymentRefTips: async () => ({}),
-    });
-
-    const STEP_ADDR = "run_abc-step1@example.com";
-    const HUB_KEY = "aa".repeat(32);
-    const result = await router.deploy({
-      type: "agent.deploy",
-      requestId: "deploy-test",
-      agentAddress: STEP_ADDR,
-      generation: 1,
-      agentId: "run_abc-step1",
-      hubPublicKey: HUB_KEY,
-      provisionStep: true,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep never inspects config
-      config: {} as unknown as Parameters<
-        ReturnType<typeof createSidecarDeployRouter>["deploy"]
-      >[0]["config"],
-    });
-
-    // The step's agent-state repo is initialized and the hub key recorded,
-    // so the follow-up full-closure deploy pack applies into a repo and
-    // verifies against the recorded key.
-    expect(initRepoCalls).toEqual([STEP_ADDR]);
-    expect(recordHubKeyCalls).toEqual([
-      { address: STEP_ADDR, hubKey: HUB_KEY },
-    ]);
-
-    // The ack carries the sidecar principal key (the hub discards it for a
-    // workflow-derived per-step address).
-    expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
-
-    // Nothing spawned: no supervisor, so no active address.
-    expect(heldAddresses(router)).toEqual([]);
-  });
-});
-
 // --------------------------------------------------------------------
 // Multi-step branch tests
 // --------------------------------------------------------------------
@@ -997,7 +915,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
             "workflow branch must not invoke persistHubPublicKey",
           );
         },
-        initRepo: async () => undefined,
         deleteAgentDir: opts.deleteAgentDir ?? (async () => undefined),
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
@@ -3165,27 +3082,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     expect(await recordExists(dataDir, runId)).toBe(false);
     expect(heldAddresses(router)).toEqual([]);
-  });
-
-  test("refuses to provision a step over an address it holds", async () => {
-    const dataDir = await createTempBaseDir("sidecar-provision-held-");
-    const head = "run_provision_held@example.com";
-    const spawner = makeReadyDrivingSpawner(9670);
-    const { router } = await buildMultistepFixture({
-      spawner: spawner.spawner,
-      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
-    });
-    const deployed = router.deploy(singleStepFrame(head, "wf-provision-held"));
-    await spawner.driveReadyFor(0);
-    await deployed;
-
-    await expect(
-      router.deploy({
-        ...singleStepFrame(head, "wf-provision-held"),
-        provisionStep: true,
-      }),
-    ).rejects.toThrow(/a step cannot be provisioned over it/);
-    expect(heldAddresses(router)).toEqual([head]);
   });
 
   test("an undeploy reclaims a step scratch a tool left without write permission", async () => {

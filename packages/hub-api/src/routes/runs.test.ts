@@ -335,9 +335,6 @@ function createMockSessionService(): SessionService {
     throw new Error(`mock: sessionService.${name} not implemented`);
   }
   return {
-    stageWorkflowStep(_params) {
-      return notImpl("stageWorkflowStep");
-    },
     endSession(_addr, _reason) {
       return notImpl("endSession");
     },

@@ -92,16 +92,15 @@ export function createHubSessionOrchestrator(
   unsubscribers.push(
     events.on("agent.deploy.ack", async (event) => {
       const { agentAddress, publicKey, allocated } = event;
-      // Provisioned initialization publishes its key only after every deploy
-      // and asset pack succeeds under the allocation generation fence.
+      // Provisioned initialization publishes its key only after its deploy
+      // succeeds under the allocation generation fence.
       if (allocated !== undefined) return;
 
       // Every deploy address names a workflow run whose public key lives on its
       // single self-anchored workflow_run row, keyed by address. Persist it
       // there as the deployment's published identity. Reconnect routing is
       // allocation-authenticated, so this projection is not connection
-      // authority. Only the deployment-level address owns a row, so a stray
-      // per-step ack updates nothing.
+      // authority.
       await db
         .update(workflowRun)
         .set({ publicKey })

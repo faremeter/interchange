@@ -2,15 +2,15 @@
 // RECYCLE -- workflow-process supervisor library code
 // =============================================================
 //
-// Recycle is the supervisor's "same deploy tree, fresh process" path.
+// Recycle is the supervisor's "same definition, fresh process" path.
 // It tears the existing workflow-process child down and stands a new
-// one up against the SAME deploy tree (same materialized source
-// closure, same per-step credential repos). A deployment keeps its
-// deploy tree for its life; a different tree means a new deployment.
+// one up against the SAME definition (same materialized source
+// closure). A deployment keeps its definition for its life; a different
+// definition means a new deployment.
 //
-// Recycle does not refetch the deploy tree, does not consult an
+// Recycle does not refetch the source closure, does not consult an
 // updated workflow definition, does not re-resolve agents. The recycle
-// module must never grow a "maybe also refetch the deploy tree" mode --
+// module must never grow a "maybe also refetch the definition" mode --
 // that would let a recycle silently change what a deployment runs.
 //
 // Six-step sequence (locked):

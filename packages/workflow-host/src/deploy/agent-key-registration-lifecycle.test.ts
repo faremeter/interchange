@@ -227,7 +227,6 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
         persistHubPublicKey: async () => {
           throw new Error("must not invoke persistHubPublicKey");
         },
-        initRepo: async () => undefined,
         deleteAgentDir: async () => undefined,
       } as unknown as Parameters<
         typeof createSidecarDeployRouter

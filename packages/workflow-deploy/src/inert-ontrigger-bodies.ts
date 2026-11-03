@@ -4,23 +4,23 @@
 // On the source-ref (code-sourced) deploy the hub never holds a live
 // `WorkflowDefinition` -- it has only the inert `WorkflowProjectionDefinition`
 // the gate froze and hashed. This module walks that frozen projection and lifts
-// each inline body so the hub can stage it and pin its per-step inference
+// each inline body so the hub can pin its per-step inference
 // sources. Enumeration itself is purely structural: the deploy pin reads each
 // body step's declared `(provider, model)` preference through
 // `readInertStepInference` when it resolves sources.
 //
 // The walk mirrors the runtime's per-rung rewrite exactly, so the ref each body
-// is staged under equals the ref the runtime reads it back by:
+// is pinned under equals the ref the runtime reads it back by:
 //   - childWorkflow bodies are lifted at EVERY rung (the runtime re-runs
 //     `rewriteInlineChildWorkflowBodies` per child run), so the enumeration
 //     recurses into every lifted body;
 //   - onTrigger bodies are lifted only at the TOP level (the runtime lifts them
 //     once at child boot, never inside a spawned body), so an onTrigger section
 //     nested inside a spawned body would reach the runtime inline and hard-fail
-//     -- this module rejects it at deploy rather than staging an asset the
+//     -- this module rejects it at deploy rather than pinning sources the
 //     runtime will never read;
-//   - a loop body is NOT lifted as an asset -- it runs in-process sharing the
-//     parent env, so it needs no sources.json of its own -- but the enumeration
+//   - a loop body is NOT lifted -- it runs in-process sharing the
+//     parent env, so it needs no sources of its own -- but the enumeration
 //     recurses INTO it to lift any childWorkflow grandchild, keyed under
 //     `inlineBodyRef(loopBodyRef, childStepId)` to match the runtime's rewrite
 //     of the loop body copy.
@@ -589,8 +589,8 @@ function enumerateInertBodiesAtDepth(
     }
     // A loop body may carry a `childWorkflow` grandchild. Unlike the two arms
     // above, the loop body itself is NOT pushed to `bodies`: it runs in-process
-    // sharing the parent env, so it is never a staged asset and needs no
-    // sources.json of its own (its agent steps pin into the flat top-level map).
+    // sharing the parent env, so it needs no sources of its own (its agent
+    // steps pin into the flat top-level map).
     // Recurse into it (no longer top level) ONLY to lift its childWorkflow
     // grandchildren, keying each under its ref so the deploy stages the same ref
     // the runtime re-derives -- `inlineBodyRef(loopBodyRef, childStepId)`.

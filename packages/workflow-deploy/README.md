@@ -108,7 +108,7 @@ Public surface:
   the pinned map.
 - `enumerateInertBodies(...)` — lift each inline trigger body (onTrigger
   section or childWorkflow child), transitively, out of a frozen inert
-  projection so the hub can stage it and pin its per-step sources. The
+  projection so the hub can pin its per-step sources. The
   enumeration is purely structural; each body step's `(provider, model)`
   preference is read at pin time by `buildInertBodyStepSources`.
 - `checkCredentialBindings(projection)` /

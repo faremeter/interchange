@@ -9,7 +9,7 @@ describe("AgentRepoStore.remove", () => {
   test("removes an agent directory and treats a missing one as removed", async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-repo-"));
     const store = createAgentRepoStore({ dataDir });
-    await store.initRepo("agent@local.test");
+    await fs.mkdir(store.getAgentDir("agent@local.test"), { recursive: true });
 
     await store.remove("agent@local.test");
     await store.remove("agent@local.test");
@@ -25,7 +25,7 @@ describe("AgentRepoStore.remove", () => {
     );
     const store = createAgentRepoStore({ dataDir });
     const address = "agent@local.test";
-    await store.initRepo(address);
+    await fs.mkdir(store.getAgentDir(address), { recursive: true });
     const parent = path.dirname(store.getAgentDir(address));
     const open = fs.open;
     let syncAttempts = 0;

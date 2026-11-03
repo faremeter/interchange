@@ -8,9 +8,9 @@
 // for a deployment that does not exist. The multi-step test drives that
 // failure through a subprocess spawner that throws synchronously.
 //
-// The first test pins the router's frame-shape guard: a frame carrying
-// neither `provisionStep` nor a workflow definition is rejected before
-// any deploy work, so a malformed frame cannot leak registry state.
+// The first test pins the router's frame-shape guard: a frame without a
+// workflow definition is rejected before any deploy work, so a malformed frame
+// cannot leak registry state.
 
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -105,9 +105,6 @@ function stubKeyStore(): Parameters<
     },
     recordHubKey() {
       /* no-op */
-    },
-    verifyDeployCommit() {
-      return true;
     },
     forgetAgent() {
       /* no-op */
@@ -233,7 +230,7 @@ function makeRouterDeps() {
 }
 
 describe("deploy-failure registry leak", () => {
-  test("a frame carrying neither provisionStep nor a workflow is rejected before any deploy work", async () => {
+  test("a frame without a workflow is rejected before any deploy work", async () => {
     const { registry, mailRouter, signalRouter, drainRouter, transport } =
       makeRouterDeps();
 
@@ -273,9 +270,9 @@ describe("deploy-failure registry leak", () => {
       },
     });
 
-    // Neither `provisionStep` nor a workflow definition: the router has
-    // no path to stage this frame through the substrate, so it rejects on
-    // shape before reaching any deploy work.
+    // No workflow definition: the router has no path to stage this frame
+    // through the substrate, so it rejects on shape before reaching any deploy
+    // work.
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
       requestId: "deploy-test",
@@ -426,21 +423,14 @@ describe("deploy-failure registry leak", () => {
     const { registry, mailRouter, signalRouter, drainRouter, transport } =
       makeRouterDeps();
 
-    const initedRepos: string[] = [];
     const removedRepos: string[] = [];
     const recordedHubKeys: string[] = [];
     const forgottenAgents: string[] = [];
 
-    // A sessions stub whose `initRepo` succeeds (so the single-step head
-    // proceeds to record the hub key once the child reports its definition,
-    // and then fail when the child exits before it readies) and whose
-    // `deleteAgentDir` is spied: the unwind must NOT call it, because the
-    // head repo directory also holds the durable identity keypair.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only initRepo runs on the happy path; deleteAgentDir is spied to prove it is NOT called
+    // A sessions stub whose `deleteAgentDir` is spied: the unwind must NOT call
+    // it, because the head directory holds the durable identity keypair.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: deleteAgentDir is spied to prove it is NOT called
     const sessions = {
-      initRepo: async (address: string) => {
-        initedRepos.push(address);
-      },
       deleteAgentDir: async (address: string) => {
         removedRepos.push(address);
       },
@@ -453,9 +443,6 @@ describe("deploy-failure registry leak", () => {
       },
       recordHubKey(address: string) {
         recordedHubKeys.push(address);
-      },
-      verifyDeployCommit() {
-        return true;
       },
       forgetAgent(address: string) {
         forgottenAgents.push(address);
@@ -564,7 +551,6 @@ describe("deploy-failure registry leak", () => {
 
     // The single-step head initialized its repo and recorded the hub key
     // once the child reported its definition, before the spawn failed.
-    expect(initedRepos).toEqual(["run_single@x.example"]);
     expect(recordedHubKeys).toEqual(["run_single@x.example"]);
     // The unwind reversed the in-memory hub key...
     expect(forgottenAgents).toEqual(["run_single@x.example"]);

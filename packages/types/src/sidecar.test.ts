@@ -112,7 +112,7 @@ describe("PackRejectFrame reason forward-compat", () => {
       type: "repo.pack.reject",
       agentAddress: "agt_1@example.test",
       repoId: { kind: "workflow-run", id: "dep-1" },
-      reason: "timeout",
+      reason: "corrupt",
     });
     expect(result instanceof type.errors).toBe(true);
   });

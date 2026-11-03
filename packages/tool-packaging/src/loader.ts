@@ -222,16 +222,14 @@ export interface LoadManifestArgs {
   readonly instanceScratchDir: string;
   /**
    * Filesystem root that `assetMounts` paths are joined against. Mount
-   * paths from the deploy pack are workspace-relative; the loader
+   * paths are workspace-relative; the loader
    * resolves them against `assetRoot` to get the absolute tarball
    * location for `kind: "asset"` entries.
    */
   readonly assetRoot: string;
   /**
    * Maps a `source.assetId` from a manifest entry to a
-   * workspace-relative mount path. The session service emits this map
-   * into the deploy pack as `deploy/asset-mounts.json`; the sidecar
-   * threads it through to here. Empty map is valid when no entry
+   * workspace-relative mount path. Empty map is valid when no entry
    * sources from an asset.
    */
   readonly assetMounts: ReadonlyMap<string, string>;

@@ -1,18 +1,14 @@
-// Direct substrate microbench re-measuring the per-commit cost of the two
-// O(N) walks B3a scopes: clearIndexPrefix's git.statusMatrix and the
-// workflow-run kind handler's validatePush per-run walk. It drives the
-// production write path -- createRepoStore + workflowRunKindHandler +
-// writeTree with a `runs/<runId>/events/` clearPrefix -- exactly as the
-// supervisor's run-event bracket commit does, growing the repo's tracked
-// file count by adding fresh runs, and measures each stage's per-commit
-// time as a function of total file count.
+// Direct substrate microbench re-measuring the per-commit cost of the O(N)
+// walk B3a scopes: the workflow-run kind handler's validatePush per-run walk.
+// It drives the write path --
+// createRepoStore + workflowRunKindHandler + writeTreePreservingPrefix on
+// `runs/<runId>/events/` -- growing the repo's tracked file count by adding
+// fresh runs, and measures each stage's per-commit time as a function of
+// total file count.
 //
-// For each stage it reports BOTH the scoped (live, B3a) slope and an
-// un-scoped reference slope, so the A/B is in one run:
-//   - statusMatrix: timed narrowed (filepaths:[prefix], live) vs
-//     un-narrowed (whole repo) against the same on-disk repo.
-//   - validatePush: timed against the live scoped handler vs a wrapper
-//     that forces changedPathPrefixes:undefined (validate-all).
+// It reports BOTH the scoped (live, B3a) slope and an un-scoped reference slope,
+// so the A/B is in one run: validatePush timed against the live scoped handler
+// vs a wrapper that forces changedPathPrefixes:undefined (validate-all).
 //
 // Run with:  bun test tests/workflow-deploy/substrate-walk-microbench.bench.ts
 // It is named `.bench.ts` so the default `make test` enumeration skips it.
@@ -191,20 +187,6 @@ async function timeValidatePush(
   return elapsed;
 }
 
-async function timeStatusMatrix(
-  dir: string,
-  prefix: string,
-  narrowed: boolean,
-): Promise<number> {
-  const t0 = performance.now();
-  if (narrowed) {
-    await git.statusMatrix({ fs, dir, filepaths: [prefix] });
-  } else {
-    await git.statusMatrix({ fs, dir });
-  }
-  return performance.now() - t0;
-}
-
 function slope(points: { x: number; y: number }[]): number {
   const n = points.length;
   const sx = points.reduce((a, p) => a + p.x, 0);
@@ -215,7 +197,7 @@ function slope(points: { x: number; y: number }[]): number {
 }
 
 describe("B3a substrate-walk microbench", () => {
-  test("statusMatrix + validatePush stage slopes drop to ~0 under scoping", async () => {
+  test("the validatePush stage slope drops to ~0 under scoping", async () => {
     const dataDir = await makeTempDir("b3a-bench-");
     const store = createRepoStore({
       dataDir,
@@ -235,8 +217,6 @@ describe("B3a substrate-walk microbench", () => {
     const SAMPLE_EVERY = 20;
     const samples: {
       files: number;
-      smNarrow: number;
-      smWide: number;
       vpScoped: number;
       vpAll: number;
     }[] = [];
@@ -250,12 +230,13 @@ describe("B3a substrate-walk microbench", () => {
     for (let i = 0; i < TOTAL_RUNS; i++) {
       const runId = `run-${String(i).padStart(4, "0")}`;
       const prefix = `runs/${runId}/events/`;
-      await store.writeTree(HUB, repoId, REF, {
-        files: {
-          [`runs/${runId}/events/0.json`]: eventBody(0, "RunStarted"),
-          [`runs/${runId}/events/1.json`]: eventBody(1, "RunCompleted"),
-        },
-        clearPrefix: prefix,
+      await store.writeTreePreservingPrefix(HUB, repoId, REF, {
+        preservePrefix: prefix,
+        merge: () =>
+          Promise.resolve({
+            [`runs/${runId}/events/0.json`]: eventBody(0, "RunStarted"),
+            [`runs/${runId}/events/1.json`]: eventBody(1, "RunCompleted"),
+          }),
         message: `run ${runId}`,
       });
 
@@ -263,16 +244,6 @@ describe("B3a substrate-walk microbench", () => {
         const files = await git.listFiles({ fs, dir, ref: REF });
         const fileCount = files.length;
         // Median of a few reads to damp scheduler noise.
-        const smNarrow = Math.min(
-          await timeStatusMatrix(dir, prefix, true),
-          await timeStatusMatrix(dir, prefix, true),
-          await timeStatusMatrix(dir, prefix, true),
-        );
-        const smWide = Math.min(
-          await timeStatusMatrix(dir, prefix, false),
-          await timeStatusMatrix(dir, prefix, false),
-          await timeStatusMatrix(dir, prefix, false),
-        );
         const vpScoped = Math.min(
           await timeValidatePush(workflowRunKindHandler, dir, runId, false),
           await timeValidatePush(workflowRunKindHandler, dir, runId, false),
@@ -283,16 +254,10 @@ describe("B3a substrate-walk microbench", () => {
           await timeValidatePush(workflowRunKindHandler, dir, runId, true),
           await timeValidatePush(workflowRunKindHandler, dir, runId, true),
         );
-        samples.push({ files: fileCount, smNarrow, smWide, vpScoped, vpAll });
+        samples.push({ files: fileCount, vpScoped, vpAll });
       }
     }
 
-    const smNarrowSlope = slope(
-      samples.map((s) => ({ x: s.files, y: s.smNarrow })),
-    );
-    const smWideSlope = slope(
-      samples.map((s) => ({ x: s.files, y: s.smWide })),
-    );
     const vpScopedSlope = slope(
       samples.map((s) => ({ x: s.files, y: s.vpScoped })),
     );
@@ -301,10 +266,6 @@ describe("B3a substrate-walk microbench", () => {
     const report = {
       sampleCount: samples.length,
       maxFiles: samples[samples.length - 1]?.files ?? 0,
-      statusMatrix: {
-        narrowed_slope_ms_per_file: smNarrowSlope,
-        unnarrowed_slope_ms_per_file: smWideSlope,
-      },
       validatePush: {
         scoped_slope_ms_per_file: vpScopedSlope,
         validateAll_slope_ms_per_file: vpAllSlope,
@@ -314,10 +275,9 @@ describe("B3a substrate-walk microbench", () => {
     // eslint-disable-next-line no-console -- microbench result is the artifact
     console.log(`B3A_MICROBENCH ${JSON.stringify(report)}`);
 
-    // The scoped slopes must be a small fraction of the un-scoped slopes:
-    // the proof the prod scopings flatten the per-commit cost in file
+    // The scoped slope must be a small fraction of the un-scoped slope:
+    // the proof the prod scoping flattens the per-commit cost in file
     // count the way the throwaway's did.
-    expect(smNarrowSlope).toBeLessThan(smWideSlope * 0.5 + 0.01);
     expect(vpScopedSlope).toBeLessThan(vpAllSlope * 0.5 + 0.01);
   }, 120000);
 });
