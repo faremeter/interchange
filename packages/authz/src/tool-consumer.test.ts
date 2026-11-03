@@ -42,21 +42,47 @@ function ctx(consumer: string): ConditionContext {
 
 describe("toolConsumerEvaluator", () => {
   test("matches a consumer identity that equals the value", () => {
-    expect(toolConsumerEvaluator(REACTOR, ctx(REACTOR))).toBe(true);
+    expect(toolConsumerEvaluator.evaluate(REACTOR, ctx(REACTOR))).toBe(true);
   });
 
   test("withholds from a mismatched consumer", () => {
-    expect(toolConsumerEvaluator(REACTOR, ctx("tool:other"))).toBe(false);
+    expect(toolConsumerEvaluator.evaluate(REACTOR, ctx("tool:other"))).toBe(
+      false,
+    );
   });
 
   test("withholds from an empty consumer before comparing", () => {
-    // Even when the grant value is also empty, an empty consumer never matches.
-    expect(toolConsumerEvaluator("", ctx(""))).toBe(false);
-    expect(toolConsumerEvaluator(REACTOR, ctx(""))).toBe(false);
+    expect(toolConsumerEvaluator.evaluate(REACTOR, ctx(""))).toBe(false);
+  });
+
+  test("validate accepts a consumer identity", () => {
+    expect(toolConsumerEvaluator.validate(REACTOR)).toBeNull();
+  });
+
+  test("validate rejects a non-string condition value", () => {
+    expect(toolConsumerEvaluator.validate(123)).toBe(
+      "tool: must be a non-empty consumer identity (was a number)",
+    );
+  });
+
+  test("validate rejects an empty condition value", () => {
+    expect(toolConsumerEvaluator.validate("")).toBe(
+      "tool: must be a non-empty consumer identity",
+    );
   });
 
   test("throws on a non-string condition value", () => {
-    expect(() => toolConsumerEvaluator(123, ctx(REACTOR))).toThrow();
+    expect(() => toolConsumerEvaluator.evaluate(123, ctx(REACTOR))).toThrow(
+      "tool: must be a non-empty consumer identity",
+    );
+  });
+
+  test("throws on an empty condition value", () => {
+    // An empty grant value never reaches the equality check, so it cannot
+    // match an empty consumer.
+    expect(() => toolConsumerEvaluator.evaluate("", ctx(""))).toThrow(
+      "tool: must be a non-empty consumer identity",
+    );
   });
 });
 
@@ -81,7 +107,7 @@ describe("consumer identities", () => {
 
   test("an action consumer's grant does not authorize the same-named tool", () => {
     expect(
-      toolConsumerEvaluator(
+      toolConsumerEvaluator.evaluate(
         actionConsumer("deploy"),
         ctx(toolConsumer("deploy")),
       ),

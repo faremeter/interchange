@@ -1,7 +1,17 @@
 import { describe, test, expect } from "bun:test";
 
 import { evaluateConditions } from "./conditions";
-import type { ConditionContext, ConditionRegistry } from "./types";
+import type {
+  ConditionContext,
+  ConditionEvaluator,
+  ConditionRegistry,
+} from "./types";
+
+function evaluator(
+  evaluate: ConditionEvaluator["evaluate"],
+): ConditionEvaluator {
+  return { validate: () => null, evaluate };
+}
 
 const PROTOTYPE_KEYS = ["constructor", "toString", "__proto__"];
 
@@ -42,7 +52,7 @@ describe("evaluateConditions", () => {
 
   test("single condition evaluated against registry", async () => {
     const registry: ConditionRegistry = {
-      is_tuesday: () => true,
+      is_tuesday: evaluator(() => true),
     };
 
     expect(
@@ -52,7 +62,7 @@ describe("evaluateConditions", () => {
 
   test("condition returning false rejects the grant", async () => {
     const registry: ConditionRegistry = {
-      always_fail: () => false,
+      always_fail: evaluator(() => false),
     };
 
     expect(
@@ -62,9 +72,9 @@ describe("evaluateConditions", () => {
 
   test("all conditions must pass (AND semantics)", async () => {
     const registry: ConditionRegistry = {
-      cond_a: () => true,
-      cond_b: () => true,
-      cond_c: () => false,
+      cond_a: evaluator(() => true),
+      cond_b: evaluator(() => true),
+      cond_c: evaluator(() => false),
     };
 
     expect(
@@ -78,8 +88,8 @@ describe("evaluateConditions", () => {
 
   test("all conditions passing returns true", async () => {
     const registry: ConditionRegistry = {
-      cond_a: () => true,
-      cond_b: () => true,
+      cond_a: evaluator(() => true),
+      cond_b: evaluator(() => true),
     };
 
     expect(
@@ -90,10 +100,10 @@ describe("evaluateConditions", () => {
   test("evaluator receives the condition value", async () => {
     let receivedValue: unknown;
     const registry: ConditionRegistry = {
-      threshold: (value) => {
+      threshold: evaluator((value) => {
         receivedValue = value;
         return true;
-      },
+      }),
     };
 
     await evaluateConditions({ threshold: 42 }, ctx(), registry);
@@ -104,10 +114,10 @@ describe("evaluateConditions", () => {
   test("evaluator receives the full context", async () => {
     let receivedCtx: ConditionContext | undefined;
     const registry: ConditionRegistry = {
-      spy: (_value, c) => {
+      spy: evaluator((_value, c) => {
         receivedCtx = c;
         return true;
-      },
+      }),
     };
 
     const c = ctx({ principalId: "prn_spy", tenantId: "tnt_spy" });
@@ -121,10 +131,10 @@ describe("evaluateConditions", () => {
 
   test("async evaluators are supported", async () => {
     const registry: ConditionRegistry = {
-      async_check: async () => {
+      async_check: evaluator(async () => {
         await new Promise((r) => setTimeout(r, 1));
         return true;
-      },
+      }),
     };
 
     expect(
@@ -134,10 +144,10 @@ describe("evaluateConditions", () => {
 
   test("async evaluator returning false rejects", async () => {
     const registry: ConditionRegistry = {
-      async_fail: async () => {
+      async_fail: evaluator(async () => {
         await new Promise((r) => setTimeout(r, 1));
         return false;
-      },
+      }),
     };
 
     expect(
@@ -148,11 +158,11 @@ describe("evaluateConditions", () => {
   test("short-circuits on first failing condition", async () => {
     let secondCalled = false;
     const registry: ConditionRegistry = {
-      first: () => false,
-      second: () => {
+      first: evaluator(() => false),
+      second: evaluator(() => {
         secondCalled = true;
         return true;
-      },
+      }),
     };
 
     await evaluateConditions({ first: null, second: null }, ctx(), registry);

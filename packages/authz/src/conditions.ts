@@ -42,7 +42,7 @@ export async function evaluateConditions(
       );
     }
 
-    const result = await evaluator(conditions[key], ctx);
+    const result = await evaluator.evaluate(conditions[key], ctx);
     if (!result) return false;
   }
 
