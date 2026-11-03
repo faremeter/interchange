@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
-import { evaluateConditions } from "./conditions";
+import { evaluateConditions, validateConditions } from "./conditions";
+import { timeWindowEvaluator } from "./time-window";
 import type {
   ConditionContext,
   ConditionEvaluator,
@@ -183,5 +184,93 @@ describe("evaluateConditions", () => {
     expect(evaluateConditions({ some_condition: true }, ctx())).rejects.toThrow(
       'Unknown condition: "some_condition"',
     );
+  });
+});
+
+describe("validateConditions", () => {
+  function rejecting(problem: string): ConditionEvaluator {
+    return { validate: () => problem, evaluate: () => true };
+  }
+
+  test("null and empty conditions have no problems", () => {
+    expect(validateConditions(null, {})).toEqual([]);
+    expect(validateConditions({}, {})).toEqual([]);
+  });
+
+  test("entries every evaluator accepts have no problems", () => {
+    const registry: ConditionRegistry = {
+      cond_a: evaluator(() => true),
+      cond_b: evaluator(() => false),
+    };
+    expect(validateConditions({ cond_a: 1, cond_b: 2 }, registry)).toEqual([]);
+  });
+
+  test("an unregistered key is named", () => {
+    expect(validateConditions({ bogus: true }, {})).toEqual([
+      'Unknown condition: "bogus"',
+    ]);
+  });
+
+  test("a key that names an Object prototype property is unknown", () => {
+    for (const key of PROTOTYPE_KEYS) {
+      expect(validateConditions(ownKey(key), {})).toEqual([
+        `Unknown condition: "${key}"`,
+      ]);
+    }
+  });
+
+  test("an evaluator's problem passes through unchanged", () => {
+    const registry: ConditionRegistry = {
+      limit: rejecting("limit: max must be a number"),
+    };
+    expect(validateConditions({ limit: {} }, registry)).toEqual([
+      "limit: max must be a number",
+    ]);
+  });
+
+  test("the evaluator receives the condition value", () => {
+    let received: unknown;
+    const registry: ConditionRegistry = {
+      limit: {
+        validate: (value) => {
+          received = value;
+          return null;
+        },
+        evaluate: () => true,
+      },
+    };
+    validateConditions({ limit: 42 }, registry);
+    expect(received).toBe(42);
+  });
+
+  test("every bad entry is reported in key order", () => {
+    const registry: ConditionRegistry = {
+      ok: evaluator(() => true),
+      bad: rejecting("bad: rejected"),
+    };
+    expect(validateConditions({ unknown: 1, ok: 2, bad: 3 }, registry)).toEqual(
+      ['Unknown condition: "unknown"', "bad: rejected"],
+    );
+  });
+
+  test("validation does not evaluate", () => {
+    let evaluated = false;
+    const registry: ConditionRegistry = {
+      spy: evaluator(() => {
+        evaluated = true;
+        return true;
+      }),
+    };
+    validateConditions({ spy: null }, registry);
+    expect(evaluated).toBe(false);
+  });
+
+  test("reports a time_window body that is missing its timezone", () => {
+    expect(
+      validateConditions(
+        { time_window: { after: "09:00", before: "17:00" } },
+        { time_window: timeWindowEvaluator },
+      ),
+    ).toEqual(["time_window: timezone must be a string (was missing)"]);
   });
 });

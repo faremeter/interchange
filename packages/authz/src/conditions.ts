@@ -4,6 +4,10 @@ import type {
   ConditionRegistry,
 } from "./types";
 
+function unknownConditionMessage(key: string): string {
+  return `Unknown condition: "${key}"`;
+}
+
 // Own properties only: a registry is a plain object, so a key such as
 // "constructor" or "__proto__" would otherwise resolve to an inherited value
 // that is not an evaluator.
@@ -38,7 +42,7 @@ export async function evaluateConditions(
     const evaluator = lookupEvaluator(registry, key);
     if (!evaluator) {
       throw new Error(
-        `Unknown condition: "${key}". Register an evaluator in the condition registry.`,
+        `${unknownConditionMessage(key)}. Register an evaluator in the condition registry.`,
       );
     }
 
@@ -47,4 +51,32 @@ export async function evaluateConditions(
   }
 
   return true;
+}
+
+/**
+ * Check a grant's conditions object against a registry without evaluating
+ * it. Returns one problem per bad entry, in key order: an unregistered key,
+ * or a body the key's evaluator rejects. An empty result means
+ * `evaluateConditions` can evaluate every entry against the same registry.
+ *
+ * Each evaluator's message already names its condition, so it passes
+ * through unchanged.
+ */
+export function validateConditions(
+  conditions: Record<string, unknown> | null,
+  registry: ConditionRegistry,
+): string[] {
+  if (!conditions) return [];
+
+  const problems: string[] = [];
+  for (const [key, value] of Object.entries(conditions)) {
+    const evaluator = lookupEvaluator(registry, key);
+    if (!evaluator) {
+      problems.push(unknownConditionMessage(key));
+      continue;
+    }
+    const problem = evaluator.validate(value);
+    if (problem !== null) problems.push(problem);
+  }
+  return problems;
 }

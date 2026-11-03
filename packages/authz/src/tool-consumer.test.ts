@@ -115,6 +115,16 @@ describe("consumer identities", () => {
   });
 });
 
+describe("CREDENTIAL_USE_CONDITIONS", () => {
+  // validateConditions passes an evaluator's message through without adding
+  // the key, so each evaluator must name itself by its registry key.
+  test("each evaluator names itself by its registry key", () => {
+    for (const [key, evaluator] of Object.entries(CREDENTIAL_USE_CONDITIONS)) {
+      expect(evaluator.validate(undefined)).toStartWith(`${key}: `);
+    }
+  });
+});
+
 describe("CREDENTIAL_USE_CONDITIONS through evaluateGrants", () => {
   const opts = (consumer?: string) => ({
     conditions: CREDENTIAL_USE_CONDITIONS,
