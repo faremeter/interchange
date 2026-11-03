@@ -2,6 +2,7 @@ import type { Handler, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { openAPIRouteHandler } from "hono-openapi";
 
+import { HUB_CONDITION_REGISTRY } from "@intx/authz";
 import { honoLogger, type HonoContext } from "@intx/log/hono";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import { getLogger } from "@intx/log";
@@ -21,7 +22,6 @@ import {
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
 import type { AppEnv } from "./context";
-import { HUB_CONDITION_REGISTRY } from "./condition-registry";
 import { createSessionMiddleware } from "./middleware/session";
 import {
   createAuthorizeGrant,

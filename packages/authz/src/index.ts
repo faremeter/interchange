@@ -22,6 +22,7 @@ export { evaluateMailAdmission } from "./mail-admission";
 export type { MailAdmissionResult } from "./mail-admission";
 export { createConditionEvaluator } from "./condition-evaluator";
 export { evaluateConditions, validateConditions } from "./conditions";
+export { HUB_CONDITION_REGISTRY } from "./hub-condition-registry";
 export { timeWindowEvaluator } from "./time-window";
 export {
   actionConsumer,

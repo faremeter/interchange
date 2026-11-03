@@ -77,6 +77,8 @@ evaluation is fail-closed.
 - `toolConsumerEvaluator` — a `ConditionEvaluator` for credential
   consumers. Register it under the `tool` key to narrow a grant to one
   consumer identity.
+- `HUB_CONDITION_REGISTRY` — the hub's standard `ConditionRegistry`,
+  registering `time_window` and `tool`.
 - `evaluateConditions` — run a grant's `conditions` object against a
   `ConditionRegistry`.
 - `validateConditions` — check a grant's `conditions` object against a

@@ -1,3 +1,4 @@
+import { HUB_CONDITION_REGISTRY } from "@intx/authz";
 import {
   createDB,
   createGrantStore,
@@ -22,7 +23,6 @@ import {
   type SidecarCapabilityRule,
 } from "@intx/types";
 import {
-  HUB_CONDITION_REGISTRY,
   createApp,
   createAuth,
   createCorrespondentGrantMinter,

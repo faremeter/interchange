@@ -1,5 +1,6 @@
-import { timeWindowEvaluator, toolConsumerEvaluator } from "@intx/authz";
-import type { ConditionRegistry } from "@intx/types/authz";
+import { timeWindowEvaluator } from "./time-window";
+import { toolConsumerEvaluator } from "./tool-consumer";
+import type { ConditionRegistry } from "./types";
 
 /**
  * The hub's standard condition registry: every condition evaluator a hub grant
