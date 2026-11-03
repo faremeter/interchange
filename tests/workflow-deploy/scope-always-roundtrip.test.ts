@@ -43,12 +43,9 @@
 // two calls carry DISTINCT `tool_use` ids so the re-dispatched first call is not
 // confused with the second.
 //
-// Why the second call is not defeated by the tool-mark floor: the deployment is
-// SOURCE-REF (`deployWorkflowSourceForTest`), and the child skips the tool-mark
-// floor on the source-ref lineage -- the frozen snapshot's `tool:<name>` grant
-// authorizes the inline tool directly with its own effect. So the mutated
-// `allow` in the run grants is the sole matching grant for the tool; there is no
-// competing `ask` floor grant to outrank it at equal specificity.
+// Why the second call goes through: the frozen snapshot's `tool:<name>` grant
+// authorizes the inline tool directly with its own effect, so the mutated `allow`
+// in the run grants is the sole matching grant for the tool.
 //
 // Harness composition: SPAWN-REAL. A real hub server, a real sidecar subprocess,
 // a real workflow-process child, and a real migrated Postgres schema. The run is

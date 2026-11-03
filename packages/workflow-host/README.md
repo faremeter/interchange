@@ -88,8 +88,7 @@ Plus the relevant options and callback types (`StepEnvBase`,
 with `runLocal` and the real step invoker, with no hub and no sidecar:
 
 - `createWorkflowStepInvoker`, `createToolBearingAgentFactory`,
-  `attachStepTools`, `attachStepCredentialWiring` and
-  `deriveToolMarkFloorGrants` — the step invoker and the step tool builders
+  `attachStepTools` and `attachStepCredentialWiring` — the step invoker and the step tool builders
   the deployed host uses.
 - `createCredentialsBackedAuthorize`, `createGrantEvaluator` and
   `createSnapshotGrantsResolver` (with its `StepGrantsResolver` type) — the

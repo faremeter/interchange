@@ -41,7 +41,7 @@ attachment (`child/step-tools.ts`). The in-process agent runtime
 `@intx/agent` and runs inside that child. The sidecar draws runtime
 capabilities from `@intx/harness`. The app supplies the concrete
 crypto / tool / storage / authz plugins, the Bun spawners, and the
-tool-materialization binding.
+closure-materialization binding.
 
 "Thin" describes the app's layering, not its file count: the app owns every
 binding that names a concrete dependency, so the wiring surface is wide even
@@ -58,8 +58,7 @@ apps/sidecar/
 │   ├── default-harness.ts                 # HarnessBuilder source-admission seam (canBuildSource) the deploy router consults before spawning
 │   ├── sidecar-materialization-config.ts  # Shared registry-map and host-platform resolution for tool materialization
 │   ├── signing-keypair.ts                 # Loads or mints the sidecar's on-disk Ed25519 signing keypair
-│   ├── step-tool-materialization.ts       # Pinned-closure tool materialization the child factory takes as an argument
-│   ├── workflow-child-bindings.ts         # Closes the child factory over tool materialization and the grant cap
+│   ├── workflow-child-bindings.ts         # Closes the child factory over the grant cap
 │   ├── workflow-child-spawner.ts          # Bun spawner and resolved path for bin/workflow-child
 │   └── workflow-probe-spawner.ts          # Bun spawner and resolved path for bin/workflow-probe-child
 ├── package.json
@@ -114,8 +113,7 @@ Directory layout under `SIDECAR_DATA_DIR`:
 
 ```
 SIDECAR_DATA_DIR/
-  <sanitized-agent-address>/     # per-agent key custody + head deploy-tree repo
-    .git/                        # isogit repository (deploy tree, context, audit records)
+  <sanitized-agent-address>/     # per-agent key custody
     keys/
       id_ed25519                 # agent private key (raw 32 bytes, mode 0600)
       id_ed25519.pub             # agent public key (raw 32 bytes)

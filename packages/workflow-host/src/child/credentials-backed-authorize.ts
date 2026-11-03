@@ -2,9 +2,9 @@
 // grant evaluator it delegates to.
 //
 // The closure resolves a step's grants through a grants resolver, and the
-// evaluator ranks those grants (plus any pinned-tool floor) with
-// `evaluateGrants`. Nothing here imports a Node API, so a host
-// that cannot load the run child can still build the same pair.
+// evaluator ranks those grants with `evaluateGrants`. Nothing here imports a
+// Node API, so a host that cannot load the run child can still build the same
+// pair.
 
 import {
   evaluateGrants,
@@ -216,16 +216,7 @@ export function createCredentialsBackedAuthorize(
 
 /**
  * The grant evaluator a run child's authorize closure delegates to. It ranks
- * the step's snapshot grants together with the step's pinned-tool floor
- * (`floorFor`, keyed by base step id) through `evaluateGrants`.
- *
- * The floor supplies the `tool:<name>` authority a pinned tool never got from
- * the hub's capability walk. It is ADDITIVE: `evaluateGrants` ranks by
- * specificity then effect, so a declared `deny` (priority 2) still beats the
- * derived `ask`/`allow` and an explicit denial is honored -- the floor only
- * raises the minimum authority to the tool's static mark. A step with no floor
- * contributes no rows, which can only fail more closed. A source-ref step has
- * no floor: its `tool:<name>` grant is already in the snapshot.
+ * the step's snapshot grants through `evaluateGrants`.
  *
  * A snapshot grant's conditions come from the run's declared grant
  * requirements, or are the `{ tool }` condition of a credential use row. Only
@@ -237,17 +228,11 @@ export function createCredentialsBackedAuthorize(
  * other condition key needs request context the child does not have, so it
  * throws and the authorization fails closed.
  */
-export function createGrantEvaluator(opts: {
-  readonly floorFor: (baseStepId: string) => readonly GrantRule[];
-}): GrantEvaluator {
-  return async ({ resource, action, stepId, grants }) => {
-    const floor = opts.floorFor(baseStepId(stepId));
-    const result = await evaluateGrants(
-      [...grants, ...floor],
-      resource,
-      action,
-      { conditions: RUN_CHILD_CONDITION_REGISTRY },
-    );
+export function createGrantEvaluator(): GrantEvaluator {
+  return async ({ resource, action, grants }) => {
+    const result = await evaluateGrants([...grants], resource, action, {
+      conditions: RUN_CHILD_CONDITION_REGISTRY,
+    });
     return {
       effect: result.effect,
       matchingGrants: [],

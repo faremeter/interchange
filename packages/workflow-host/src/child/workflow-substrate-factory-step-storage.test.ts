@@ -150,14 +150,8 @@ function buildDeps(opts: {
     principal: PRINCIPAL,
     signer,
     mailboxAddress: "run_deployment-keying@example.com",
-    stepCount: 1,
     outboundMailBridge: stubOutboundMailBridge(),
-    cache: { cacheMaxBytes: 1_000_000, registryMaxTarballBytes: 1_000_000 },
     adapters: createBuiltinRegistry(),
-    recordToolMarkFloor: () => undefined,
-    sourceTools: false,
-    materializeStepTools: () =>
-      Promise.resolve({ factories: [], pluginFactories: [] }),
     directors: createDefaultDirectorRegistry(),
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }
@@ -174,7 +168,7 @@ function sourcesRefFor(
 function requestForRun(runId: string, attempt = 1): StepInvokeRequest {
   return {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv reads only authzContext; the agent definition is never consulted here
-    agent: {} as StepInvokeRequest["agent"],
+    agent: { toolFactories: [] } as unknown as StepInvokeRequest["agent"],
     input: null,
     authzContext: { stepId: STEP_ID, runId, attempt },
     signal: new AbortController().signal,
@@ -345,7 +339,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
 
     const scopedRequest: StepInvokeRequest = {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv reads only authzContext; the agent definition is never consulted here
-      agent: {} as StepInvokeRequest["agent"],
+      agent: { toolFactories: [] } as unknown as StepInvokeRequest["agent"],
       input: null,
       authzContext: { stepId: scopedId, runId: "run-1", attempt: 1 },
       signal: new AbortController().signal,
@@ -422,7 +416,7 @@ function approvalResumeRequest(
 ): StepInvokeRequest {
   return {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv reads only authzContext and resume; the agent definition is never consulted here
-    agent: {} as StepInvokeRequest["agent"],
+    agent: { toolFactories: [] } as unknown as StepInvokeRequest["agent"],
     input: null,
     authzContext: { stepId: STEP_ID, runId, attempt: 1 },
     resume: {

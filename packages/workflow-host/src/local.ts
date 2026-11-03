@@ -26,7 +26,6 @@ export {
   attachStepCredentialWiring,
   attachStepTools,
   createToolBearingAgentFactory,
-  deriveToolMarkFloorGrants,
   type StepToolMaterialization,
 } from "./child/step-tools";
 export {

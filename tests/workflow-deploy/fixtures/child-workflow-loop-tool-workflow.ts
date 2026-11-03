@@ -20,10 +20,9 @@
 // STEP ID DISTINCTNESS. Every step id in this fixture -- the parent's, the
 // child's, and the loop body's -- is distinct, and anyone changing them must
 // keep them so. The per-step tables a step resolves against are keyed by
-// `baseStepId(stepId)`, and the deploy-tree address resolver keys off the
-// PARENT deployment's mailbox and step count, so a body step id equal to
-// another step's id resolves to that other step's entry and an assertion about
-// the body step would pass against the wrong step.
+// `baseStepId(stepId)`, so a body step id equal to another step's id resolves to
+// that other step's entry and an assertion about the body step would pass
+// against the wrong step.
 
 import path from "node:path";
 

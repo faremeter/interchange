@@ -8,12 +8,11 @@
 // the mock inference server to call the inline tool.
 //
 // The evaluated closure carries the step agent's live `AnnotatedToolFactory`s
-// on `req.agent.toolFactories`; the source-ref arm of the sidecar step
-// build-env feeds them straight into the step agent (no pinned manifest is
-// staged on this lineage). The tool's runtime name is the bare
+// on `req.agent.toolFactories`; the sidecar step build-env feeds them straight
+// into the step agent. The tool's runtime name is the bare
 // `definition.name`, which the probe's capability walk already emitted a
 // `tool:<name>` grant for into the frozen credentials snapshot, so the run
-// authorizes the call through the snapshot directly -- no tool-mark floor.
+// authorizes the call through the snapshot directly.
 //
 // Three assertions carry the proof that the tool RAN in-child, not tool-less:
 //   1. the first inference request's tool list contains the inline tool's name

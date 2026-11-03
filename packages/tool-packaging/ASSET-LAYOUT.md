@@ -28,14 +28,14 @@ collide remain distinguishable on disk.
   handler validates at push time. Each tarball's `package.json` is
   parsed and validated by the kind handler against the workspace's
   `PackageJSON` schema before the push is accepted.
-- **Mount path on the sidecar**: `package-registries/<asset.name>/`,
-  resolved by the `package-registry` kind handler. Asset packs land at
-  `<workspaceRoot>/<mountPath>/`, so the sidecar's loader finds the
-  tarballs at `<workspaceRoot>/package-registries/<asset.name>/tarballs/`.
+- **Mount path on the sidecar**: `source-assets/<assetId>/`
+  (`workflowSourceAssetMountPath` in `@intx/types/workflow-sources`). Asset
+  packs land at `<assetRoot>/<mountPath>/`, so the sidecar's loader finds the
+  tarballs at `<assetRoot>/source-assets/<assetId>/tarballs/`.
 
 ## Where the manifest lives
 
-The closure resolver walks a list of pinned packages, resolves
+The closure resolver walks a list of top-level packages, resolves
 transitive dependencies, and produces a `ToolPackageManifest` (validated
 by `@intx/types/tool-packages`). A deploy from source resolves its
 workflow's closure this way and hands the manifest to the loader.
@@ -69,18 +69,8 @@ root on the sidecar to locate the bytes.
 
 ## Mount table
 
-The loader takes a mapping from asset id to mount path:
-
-```json
-{
-  "assetMounts": {
-    "ast_workspace_builtins": "package-registries/workspace-builtins/"
-  }
-}
-```
-
-The sidecar's `readDeployTree` parses this file into a
-`Map<assetId, mountPath>` and hands it to the loader. The loader uses
+The loader takes a `Map<assetId, mountPath>`, for example
+`ast_workspace_builtins` to `source-assets/ast_workspace_builtins/`. It uses
 the map to resolve every `kind: "asset"` entry — looking up the mount
 path by `source.assetId`, then joining it with `source.package.path`
 against the workspace's asset root.

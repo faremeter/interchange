@@ -3,7 +3,7 @@
 // The proof that the warm single-step agent's inbound mail surface is LIVE:
 // an arrived mail is visible to the agent's `mail_search` read tool WITHIN the
 // same turn, and the agent's reply drains back out as a signed outbound send.
-// Deploys a warm single-step agent (source-ref lineage) that PINS the real
+// Deploys a warm single-step agent (source-ref lineage) that carries the real
 // `@intx/tools-mail` bundle -- so it carries `mail_search` / `mail_read` /
 // `mail_wait` -- against the real hub + real sidecar subprocess + a mock
 // inference fixture, fires a mail, and asserts the loop.
@@ -190,7 +190,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // approve-probed: approve exactly the surface the probe discovered (the
       // inference source, the director, the deployment mail address + send, and
-      // every `tool:mail_*` the pinned bundle declares), so the gate freezes the
+      // every `tool:mail_*` the bundle declares), so the gate freezes the
       // full mail toolset without enumerating each grant here.
       const handle = await deployWorkflowSourceForTest(env, {
         entryModule,

@@ -33,14 +33,11 @@ import {
   defineTool,
   type BaseEnv,
   type ToolBundle,
-  type ToolDeclaration,
 } from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
-import { evaluateGrants } from "@intx/authz";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import { noopAuditStore } from "@intx/agent/testing";
 import type { HostCredentialCapability } from "@intx/types";
-import type { GrantRule } from "@intx/types/authz";
 import type { InferenceSource } from "@intx/types/runtime";
 import {
   createRuntimeCapabilities,
@@ -51,7 +48,6 @@ import { waitUntil } from "@intx/types/testing";
 import {
   attachStepTools,
   createToolBearingAgentFactory,
-  deriveToolMarkFloorGrants,
   rewrapStepToolFactory,
   sourceStepToolFactories,
   type StepToolMaterialization,
@@ -557,134 +553,6 @@ describe("rewrapStepToolFactory", () => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the slot is the RuntimeCapabilities resolver this test set
     const bag = Reflect.get(seenEnv, "capabilities") as RuntimeCapabilities;
     expect(() => bag.resolve("credentials")).toThrow();
-  });
-});
-
-describe("deriveToolMarkFloorGrants", () => {
-  // A loaded tool factory carrying only the static metadata the floor
-  // deriver reads (`definitions`), shaped like the pinned factories the
-  // child's loader hands back. Never invoked here.
-  function loadedFactory(
-    packageName: string,
-    definitions: readonly ToolDeclaration[],
-  ): { packageName: string; definitions: readonly ToolDeclaration[] } {
-    return { packageName, definitions };
-  }
-
-  // Mirror the factory's grant evaluator merge: the credentials snapshot's
-  // grants plus the derived floor, resolved via `evaluateGrants`.
-  async function resolveWithFloor(
-    toolName: string,
-    factories: readonly {
-      packageName: string;
-      definitions: readonly ToolDeclaration[];
-    }[],
-    snapshotGrants: readonly GrantRule[],
-  ): Promise<"allow" | "deny" | "ask" | null> {
-    const floor = deriveToolMarkFloorGrants(factories);
-    const result = await evaluateGrants(
-      [...snapshotGrants, ...floor],
-      `tool:${toolName}`,
-      "invoke",
-      { conditions: "pessimistic" },
-    );
-    return result.effect;
-  }
-
-  test("a pinned ask-marked tool resolves to ask on its floor alone", async () => {
-    const factories = [
-      loadedFactory("@intx/tools-posix/sidecar-bundle", [
-        { name: "run_shell", approval: "ask" },
-      ]),
-    ];
-    expect(await resolveWithFloor("run_shell", factories, [])).toBe("ask");
-  });
-
-  test("a pinned unmarked tool resolves to allow on its floor alone", async () => {
-    const factories = [
-      loadedFactory("@intx/tools-mail/sidecar-bundle", [{ name: "mail_send" }]),
-    ];
-    expect(await resolveWithFloor("mail_send", factories, [])).toBe("allow");
-  });
-
-  test("a declared deny still beats the derived floor", async () => {
-    const factories = [
-      loadedFactory("@intx/tools-posix/sidecar-bundle", [
-        { name: "run_shell", approval: "ask" },
-      ]),
-    ];
-    // A credentials-snapshot grant explicitly denying the tool at equal
-    // specificity. `deny` (priority 2) outranks the derived `ask`, so the
-    // floor never overrides an explicit denial.
-    const declaredDeny: GrantRule = {
-      id: "declared-deny",
-      resource: "tool:run_shell",
-      action: "invoke",
-      effect: "deny",
-      origin: "creator",
-      conditions: null,
-      expiresAt: null,
-      roleId: null,
-      principalId: null,
-    };
-    expect(await resolveWithFloor("run_shell", factories, [declaredDeny])).toBe(
-      "deny",
-    );
-  });
-
-  test("an allow grant at equal specificity does not drop the ask floor", async () => {
-    const factories = [
-      loadedFactory("@intx/tools-posix/sidecar-bundle", [
-        { name: "run_shell", approval: "ask" },
-      ]),
-    ];
-    // A run grant explicitly ALLOWING the tool at the SAME specificity as the
-    // derived floor (both `tool:run_shell`/`invoke`, exact match). `ask`
-    // (priority 1) outranks `allow` (priority 0) at equal specificity, so the
-    // floor holds -- a workflow cannot declare its way below a tool's
-    // approval gate. This is the `ask > allow` half of the effect ordering in
-    // packages/authz/src/evaluate.ts.
-    const declaredAllow: GrantRule = {
-      id: "declared-allow",
-      resource: "tool:run_shell",
-      action: "invoke",
-      effect: "allow",
-      origin: "creator",
-      conditions: null,
-      expiresAt: null,
-      roleId: null,
-      principalId: null,
-    };
-    expect(
-      await resolveWithFloor("run_shell", factories, [declaredAllow]),
-    ).toBe("ask");
-  });
-
-  test("a broader allow glob loses to the exact ask floor on specificity", async () => {
-    const factories = [
-      loadedFactory("@intx/tools-posix/sidecar-bundle", [
-        { name: "run_shell", approval: "ask" },
-      ]),
-    ];
-    // A run grant allowing EVERY tool via a `tool:*` glob. The glob is far
-    // less specific than the exact `tool:run_shell` floor, so specificity --
-    // ranked before effect -- resolves to the exact floor regardless of
-    // effect. The exact `ask` wins; the broad `allow` never enters the effect
-    // tie-break.
-    const broadAllow: GrantRule = {
-      id: "broad-allow",
-      resource: "tool:*",
-      action: "invoke",
-      effect: "allow",
-      origin: "creator",
-      conditions: null,
-      expiresAt: null,
-      roleId: null,
-      principalId: null,
-    };
-    expect(await resolveWithFloor("run_shell", factories, [broadAllow])).toBe(
-      "ask",
-    );
   });
 });
 

@@ -28,8 +28,7 @@
 // STEP ID DISTINCTNESS. Every id below is distinct from every other id in the
 // fixture, across all three nesting levels, and anyone changing them must keep
 // them so. The per-step tables a body step resolves against -- the credentials
-// snapshot, the pinned inference-source map, and the deploy-tree address
-// resolver -- are keyed by `baseStepId(stepId)` in ONE flat namespace shared by
+// snapshot and the pinned inference-source map -- are keyed by `baseStepId(stepId)` in ONE flat namespace shared by
 // the top level and both loop bodies. A colliding id resolves to the OTHER
 // step's entry, so the round-trip below would load the wrong step's tools and
 // pass against a broken system. The ids are deliberately unlike one another for

@@ -20,8 +20,8 @@
 //
 // STEP ID DISTINCTNESS. `LOOP_BODY_STEP_ID` must differ from every entry in
 // `TOP_LEVEL_STEP_IDS`, and anyone changing these ids must keep them disjoint.
-// The per-step tables a body step resolves against -- the credentials snapshot,
-// the pinned inference-source map, and the deploy-tree address resolver -- are
+// The per-step tables a body step resolves against -- the credentials snapshot
+// and the pinned inference-source map -- are
 // keyed by `baseStepId(stepId)` in ONE flat namespace shared between the top
 // level and the loop body. A body step id equal to a top-level step id
 // therefore resolves to the TOP-LEVEL step's entry, and a test asserting that

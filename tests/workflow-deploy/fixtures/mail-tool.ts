@@ -31,10 +31,8 @@ import { defineTool, type BaseEnv } from "@intx/agent";
 export type MailToolVariant = "fs" | "transport" | "ask";
 
 /**
- * The bundle id. The model-facing tool name mirrors the name the synthetic
- * tool-package loader synthesized (`<bundleId>:mail_send`) so a migrated test
- * keeps the same `tool:@intx/tools-mail/sidecar-bundle:mail_send` grant and
- * tool-name strings it asserted against the pinned bundle.
+ * The bundle id. The model-facing tool name carries it (`<bundleId>:mail_send`),
+ * so the tool's grant is `tool:@intx/tools-mail/sidecar-bundle:mail_send`.
  */
 export const MAIL_TOOL_BUNDLE_ID = "@intx/tools-mail/sidecar-bundle";
 

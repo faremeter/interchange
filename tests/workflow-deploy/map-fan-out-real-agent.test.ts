@@ -2,10 +2,10 @@
 //
 // The proof that a top-level `map` fan-out runs a REAL per-item agent
 // through the spawned workflow-process child, not the placeholder shape.
-// A map iteration runs under a scoped step id `<mapId>[<index>]`, but
-// deploy stages the map step's inference source, tool tree, and grants
-// once, under the base map id; three deploy-asset lookups resolve the
-// scoped id back to the base so every iteration shares those assets.
+// A map iteration runs under a scoped step id `<mapId>[<index>]`, but the
+// deployment holds the map step's inference source and grants once, under the
+// base map id; the lookups resolve the scoped id back to the base so every
+// iteration shares them.
 //
 // The only other map test (`per-level-pipeline-real-agents.test.ts`) runs
 // the runtime in-memory with a test `buildEnv`, so it never drives the
@@ -17,7 +17,7 @@
 // output is the agent's deterministic reply.
 //
 // The workflow is deliberately multi-step (a leading `seed` step plus the
-// `fanout` map) so the deploy stages per-step assets at a per-step address. A
+// `fanout` map) so its steps have per-step addresses. A
 // regressed lookup throws (or materializes nothing) on the scoped id, so the
 // run would terminate `RunFailed` or the reply would omit the expected
 // content; the assertions below are the regression tripwires.
@@ -26,9 +26,9 @@
 //   - No tool: each iteration's reply is the empty-tool-set prefix, guarding
 //     the inference-source resolver (a regressed lookup throws -> RunFailed).
 //   - An inline tool: the per-item agent carries the inline `mail_send` tool,
-//     so each iteration's reply lists the tool, guarding the tool-deploy-tree
-//     base resolution (a regressed lookup reads the unstaged scoped address ->
-//     empty tools -> the tool is absent from the reply).
+//     so each iteration's reply lists the tool, guarding the agent's tool
+//     delivery (a regression leaves empty tools -> the tool is absent from the
+//     reply).
 // The grant scoped-id lookup keeps its unit coverage
 // (`credentials-backed-authorize.test.ts`).
 
@@ -299,7 +299,7 @@ async function deployAndRunMap(opts: {
 
   // Primary regression tripwire: a regressed scoped-id lookup throws, so the
   // run would terminate RunFailed. Reaching RunCompleted means every map
-  // iteration resolved its base step's staged assets and ran.
+  // iteration resolved its base step's source and grants and ran.
   const terminal = await waitForWorkflowRunComplete(
     env,
     opts.anchorRunId,
@@ -370,14 +370,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(inferenceRequestCount).toBe(1 + ITEM_COUNT);
     });
 
-    test("each map iteration materializes an inline tool via base-step resolution", async () => {
-      // The per-item agent carries the inline `mail_send` tool, staged in the
-      // map step's deploy tree keyed by the BASE step id. Each iteration
-      // resolves its scoped id `fanout[i]` back to the base to find that tree,
-      // materializes the tool, and exposes it to inference -- the mock echoes
-      // the exposed tool names into the reply. Without the tool-deploy-tree
-      // base resolution the iteration reads the unstaged scoped address,
-      // materializes no tools, and the reply omits the tool name.
+    test("each map iteration exposes its agent's inline tool", async () => {
+      // The per-item agent carries the inline `mail_send` tool. Each iteration
+      // builds its agent from the evaluated factories and exposes the tool to
+      // inference -- the mock echoes the exposed tool names into the reply. A
+      // regression that drops the factories leaves the reply without the name.
       const { events, inferenceRequestCount } = await deployAndRunMap({
         anchorRunId: TOOL_DEPLOYMENT_ID,
         definitionAssetId: TOOL_DEFINITION_ASSET_ID,

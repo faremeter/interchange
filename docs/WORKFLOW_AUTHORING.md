@@ -217,7 +217,7 @@ const snapshotRef = {
 const resolveGrants = createSnapshotGrantsResolver(snapshotRef, "local run");
 const authorize = createCredentialsBackedAuthorize(
   resolveGrants,
-  createGrantEvaluator({ floorFor: () => [] }),
+  createGrantEvaluator(),
 );
 const invokeStep = createWorkflowStepInvoker({
   workflowAuthorize: authorize,

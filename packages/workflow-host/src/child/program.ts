@@ -8,9 +8,6 @@ export {
   SIDECAR_SUBSTRATE_CONFIG_KEYS,
   createSidecarSubstrateFactory,
 } from "./substrate-factory";
-export type {
-  StepToolCacheConfig,
-  StepToolMaterialization,
-} from "./step-tools";
+export type { StepToolMaterialization } from "./step-tools";
 
 export { runWorkflowChildFromProcessEnv } from "./from-process-env";

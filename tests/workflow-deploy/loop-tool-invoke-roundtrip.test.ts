@@ -144,7 +144,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    // The per-step credentials, source, and deploy-tree tables are keyed by
+    // The per-step credentials and source tables are keyed by
     // base step id in one namespace shared by the top level and the loop body,
     // so a colliding body step id would resolve to the top-level step's entry
     // and make the round-trip below pass against the wrong step.
@@ -225,9 +225,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // production route it does not materialize the rows itself -- deriving
       // them from the frozen snapshot here reproduces the delivery, and keeps
       // the grant the body authorizes against sourced from the probe walk
-      // rather than a hand-authored constant. A source-ref deploy has no
-      // tool-mark floor to fall back on (a source tool's runtime name is the
-      // bare `definition.name` the walk already emitted a grant for), so this
+      // rather than a hand-authored constant. A source tool's runtime name is the
+      // bare `definition.name` the walk already emitted a grant for, so this
       // IS the body's only authority.
       const snapshot = handle.approved.grantSnapshot;
       expect(

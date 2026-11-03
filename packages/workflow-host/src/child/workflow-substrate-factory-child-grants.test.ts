@@ -162,9 +162,8 @@ function childDefinition(id: string): WorkflowDefinition {
 }
 
 // Grant evaluator that delegates the decision to `@intx/authz` against the
-// credentials snapshot's grants alone. Unlike the production adapter it does
-// NOT merge any per-step tool-mark floor grants, so a decision here reflects
-// only the capped grant set the child inherited.
+// credentials snapshot's grants alone, so a decision here reflects only the
+// capped grant set the child inherited.
 const evaluateGrantsAdapter: SidecarRunChildDepsEvaluator = async ({
   resource,
   action,

@@ -10,7 +10,7 @@
 //   - approval gate: consumes the walk's output plus an operator-
 //     supplied `ApprovalSet` and yields a per-step pending delta.
 //   - deploy derivation + source pinning: pure address derivation
-//     (`deriveRunAddress`, `deriveStepAddress`, `resolveStepAddress`, ...)
+//     (`deriveRunAddress`, `deriveStepAddress`, ...)
 //     and per-step inference-source resolution against the operator-
 //     approved grant set (`pickStepInferenceSource`, `pinInertStepSources`,
 //     `buildInertProjectionStepSources`, `buildInertBodyStepSources`), plus
@@ -69,7 +69,6 @@ export {
   deriveRunAddress,
   deriveRunAgentId,
   deriveStepAddress,
-  resolveStepAddress,
   deriveStepAgentId,
   deriveWorkflowRunRepoId,
 } from "./addresses";

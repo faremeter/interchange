@@ -59,5 +59,4 @@ export {
   sourceAssetGitDir,
   MAX_INLINE_ASSET_PAYLOAD_BYTES,
 } from "./source-asset-delivery";
-export { readDeployTree, type DeployTree } from "./deploy-tree";
 export { agentDir, sanitizeAddress } from "./agent-paths";

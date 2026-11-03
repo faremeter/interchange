@@ -53,9 +53,8 @@ interface MaterializedToolPackages {
 }
 
 // Exported for direct unit testing of the manifest-invalid gate
-// (JSON.parse failure + arktype schema failure). The workflow-process
-// child reaches it through the substrate factory's per-step agent
-// builder.
+// (JSON.parse failure + arktype schema failure). Nothing in production
+// calls it.
 export async function materializeToolPackages(args: {
   rawManifestBytes: string | undefined;
   /**

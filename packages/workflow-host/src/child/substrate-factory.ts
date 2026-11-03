@@ -44,7 +44,6 @@ import {
   type AdapterManifest,
   parseAdapterManifestEnv,
 } from "@intx/types/adapter-manifest";
-import type { GrantRule } from "@intx/authz";
 import { createDependencies, type AdapterRegistry } from "@intx/inference";
 import { loadAdapterRegistry } from "@intx/inference/providers";
 import type {
@@ -168,9 +167,7 @@ import {
   attachStepCredentialWiring,
   attachStepTools,
   createToolBearingAgentFactory,
-  deriveToolMarkFloorGrants,
   sourceStepToolFactories,
-  type StepToolCacheConfig,
   type StepToolMaterialization,
 } from "./step-tools";
 import {
@@ -201,8 +198,6 @@ export const SIDECAR_SUBSTRATE_CONFIG_KEYS = [
   "SIDECAR_SIGNING_PRIVATE_KEY",
   "STEP_INFERENCE_SOURCES",
   "WORKFLOW_BODY_SOURCES",
-  "SIDECAR_CACHE_MAX_BYTES",
-  "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
   "SIDECAR_ADAPTER_MANIFEST",
 ] as const;
 
@@ -219,40 +214,14 @@ const SubstrateConfig = type({
   // deployment spawns no bodies), so a missing key child-side is a serialization
   // bug and must fail loud here.
   WORKFLOW_BODY_SOURCES: "string > 0",
-  // Per-step tool-loader caps. The supervisor threads the boot edge's
-  // resolved `SIDECAR_CACHE_MAX_BYTES` / `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`
-  // through `substrateEnv` so the child's per-step tool materialization is
-  // bounded by the sidecar's boot-edge-resolved caps. Validated as
-  // positive-finite-number strings at this boundary.
-  SIDECAR_CACHE_MAX_BYTES: "string > 0",
-  SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "string > 0",
   // JSON-encoded custom inference adapter manifest. Required: the boot
   // edge always serializes it into `substrateEnv` (defaulting to "[]"
   // when no custom adapters are configured), so a missing key child-side
-  // is a serialization bug and must fail loud here, exactly like the
-  // byte-cap fields. Validated as a non-empty string at this boundary;
+  // is a serialization bug and must fail loud here. Validated as a non-empty string at this boundary;
   // its JSON shape is re-validated against `AdapterManifest` in
   // `parseAdapterManifest` before any module is imported.
   SIDECAR_ADAPTER_MANIFEST: "string > 0",
 }).onUndeclaredKey("ignore");
-
-/**
- * Parse a substrate-config cap entry (`SIDECAR_CACHE_MAX_BYTES` /
- * `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`) into a positive finite number.
- * The boot edge already validated these via the `config.ts` readers
- * before serializing them into `substrateEnv`; this re-parse at the
- * child boundary keeps the typed-config contract honest rather than
- * trusting the wire blindly.
- */
-function parseByteCap(raw: string, name: string): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(
-      `sidecar workflow-child substrate config: ${name} must be a positive finite number; got ${JSON.stringify(raw)}`,
-    );
-  }
-  return n;
-}
 
 /**
  * Per-step inference-source table parsed from the spawn-time
@@ -426,26 +395,12 @@ function hexDecode(hex: string, name: string): Uint8Array {
 }
 
 /**
- * Pinned tool-package materialization. The sidecar process owns the
- * deploy-tree read; the factory calls this only on the pinned arm.
- */
-type MaterializeStepTools = (args: {
-  dataDir: string;
-  mailboxAddress: string;
-  stepId: string;
-  stepCount: number;
-  storeDir: string;
-  cache: StepToolCacheConfig;
-}) => Promise<StepToolMaterialization>;
-
-/**
- * Dependencies `createSidecarSubstrateFactory` closes over. Tool
- * materialization and the child-grant cap are required: this package does
- * not import the modules that implement them. `createBareRepoStore` stays
+ * Dependencies `createSidecarSubstrateFactory` closes over. The child-grant
+ * cap is required: this package does not import the modules that implement
+ * it. `createBareRepoStore` stays
  * optional so tests can inject an in-memory store.
  */
 interface SidecarSubstrateFactoryDeps {
-  materializeStepTools: MaterializeStepTools;
   collectDeclaredResources: (
     definition: WorkflowDefinition,
     directors: DirectorRegistry,
@@ -570,7 +525,7 @@ function runStepStorageRoot(args: {
 
 /**
  * Stable per-agent scratch root for the WARM single-step agent's
- * workspace + tool materialization (tarball-cache + apply-state). Keyed
+ * workspace. Keyed
  * by the step identity exactly like the durable conversation store's
  * `agent-conversation-state/<repoId>/<agentKey>/` (conversation-state.ts),
  * NOT by the arbitrary first-message runId. Keying it stably is what
@@ -834,24 +789,14 @@ export interface SidecarStepBuildEnvDeps {
   signer: (payload: string) => Promise<string>;
   /**
    * Deployment mailbox address the supervisor threaded into the child
-   * (`MAILBOX_ADDRESS`). Used to locate each step's on-disk deploy tree
-   * for tool materialization (see `stepDeployTreeDir`) AND as the step
-   * agent's outbound mail `address`: the supervisor signs the agent's
+   * (`MAILBOX_ADDRESS`). Used as the step agent's outbound mail `address`:
+   * the supervisor signs the agent's
    * outbound mail as this address through the host transport (OUTBOUND
    * half of mailbox ownership, §3a). For the single-agent deploy this is
    * the run address the host registered the agent's `CryptoProvider`
    * against.
    */
   mailboxAddress: string;
-  /**
-   * Step count of the deployed `WorkflowDefinition` (`stepOrder.length`),
-   * threaded from the host through the spawn-time env. Selects the
-   * head/step collapse when locating a step's deploy tree
-   * (`stepDeployTreeDir` -> `resolveStepAddress`): a single-step
-   * deployment reads at the head, a multi-step deployment at the per-step
-   * address, matching the host's producer push.
-   */
-  stepCount: number;
   /**
    * Child-side outbound-mail bridge over the upstream control channel
    * (OUTBOUND half of mailbox ownership, §3a). The per-step env builder
@@ -873,8 +818,6 @@ export interface SidecarStepBuildEnvDeps {
    * transport inbound stays inert.
    */
   inbound?: SupervisorBackedTransportInbound;
-  /** Per-step tool-loader caps (cache + registry tarball size). */
-  cache: StepToolCacheConfig;
   /**
    * Adapter registry the step agent resolves inference adapters through.
    * The child builds this eagerly at boot from the validated
@@ -899,42 +842,6 @@ export interface SidecarStepBuildEnvDeps {
    */
   durableConversation?: DurableConversationRegistry;
   /**
-   * Record the tool-mark floor grants derived from the step's
-   * materialized tool factories, keyed by the step's base id. The env
-   * builder is the only place the child holds the loaded factories'
-   * static `definitions` (name + approval mark), so it derives the floor
-   * here; the grant evaluator (a sibling closure in the substrate
-   * factory) reads the recorded floor by base step id and merges it under
-   * the credentials snapshot's grants at authorization time. Keyed by
-   * base id (matching the credentials snapshot and inference-source
-   * table) so a `map` iteration's scoped id shares its base step's floor.
-   * The recording persists across a warm agent's messages: the env
-   * builder runs once (first build) but the floor it records must be
-   * available for every later tool call the warm agent makes.
-   */
-  recordToolMarkFloor: (baseStepId: string, grants: GrantRule[]) => void;
-  /**
-   * Feed the step agent's OWN evaluated tool factories into the
-   * materialization slot, instead of reading a pinned tool-package manifest
-   * off the deploy tree. Set for the source-ref lineage, whose child holds
-   * the live `WorkflowDefinition` (re-verified against the approved wire hash
-   * at run start) and threads each step's live `agent.toolFactories` in as
-   * `req.agent.toolFactories`. Those are the same `AnnotatedToolFactory`
-   * callables `materializeStepTools` would produce, bare-named (no
-   * namespacing loader runs), so the existing tool-bearing agent factory
-   * consumes them unchanged.
-   *
-   * The source-ref lineage stages no `tool-packages-manifest.json`, so
-   * `materializeStepTools` would find nothing and return empty tools; this
-   * arm is what actually runs a source workflow's tools. No tool-mark floor
-   * is recorded on this lineage: a source tool's runtime name is the bare
-   * `definition.name` the probe's capability walk already emitted a
-   * `tool:<name>` grant for into the frozen credentials snapshot, so the
-   * snapshot authorizes it directly (unlike a pinned tool, whose namespaced
-   * name the walk never saw and which the floor exists to compensate for).
-   */
-  sourceTools: boolean;
-  /**
    * Sidecar-local directory of the materialized workflow-definition closure
    * (`env.spawn.closurePackageDir`), present only on the source-ref lineage.
    * The source arm materializes each step agent's declared plugin packages
@@ -943,12 +850,9 @@ export interface SidecarStepBuildEnvDeps {
    * feeds the resulting plugin factories into the per-step plugin chain. A
    * plugin package contributes no agent-visible tool factory, so this closure
    * load is the only channel that reaches an `env.plugins` a source workflow's
-   * posix bundle consumes. Undefined on a build that materializes pinned tool
-   * packages instead, which reads no closure.
+   * posix bundle consumes.
    */
   closurePackageDir?: string;
-  /** Pinned tool-package materialization. Unused when `sourceTools` is set. */
-  materializeStepTools: MaterializeStepTools;
   /**
    * Director registry each step env carries. Required: the source-ref lineage
    * supplies the closure-composed registry so a step agent's `director` ref
@@ -1056,8 +960,8 @@ export function createSidecarStepBuildEnv(
       );
     }
 
-    // Root the per-step scratch (workspace + tool tarball-cache +
-    // apply-state). The cold (multi-step) path keys it per
+    // Root the per-step scratch (the workspace). The cold (multi-step) path
+    // keys it per
     // run/step/attempt: each run rebuilds the agent and its scratch, and
     // the run's whole `runs/<runId>/` subtree is reclaimed on run
     // completion. The warm single-step path (`durableConversation`
@@ -1158,76 +1062,21 @@ export function createSidecarStepBuildEnv(
     const workdir = path.join(storeDir, "workspace");
     await fs.promises.mkdir(workdir, { recursive: true });
 
-    // Assemble the step's tool runtime. Two arms:
-    //
-    //   - Source-ref lineage (`sourceTools`): run the step agent's OWN
-    //     evaluated tool factories. The child holds the live re-verified
-    //     `WorkflowDefinition`, and the runtime threads each step's live agent
-    //     in as `req.agent`, so `req.agent.toolFactories` are the real callable
-    //     `AnnotatedToolFactory`s -- the same shape `materializeStepTools`
-    //     produces (`LoadedToolFactory === AnnotatedToolFactory<BaseEnv>`),
-    //     bare-named because no namespacing loader runs. The source deploy
-    //     stages no `tool-packages-manifest.json`, so `materializeStepTools`
-    //     would find nothing here; feeding the evaluated factories straight
-    //     into the slot is what runs a source workflow's tools. `packageName`
-    //     is the factory's bundle `id` (the credential Gate-2 key), and its
-    //     `defineTool` declaration feeds the declared-versus-bound check; a
-    //     mail/plain tool declares no credentials, so it stays inert. Plugin factories --
-    //     which have no agent slot, so Option A cannot carry them -- are
-    //     materialized separately from the frozen closure the child already
-    //     holds (`materializeSourcePluginFactories`) and fed into the SAME
-    //     `pluginFactories` slot `materializeStepTools` fills for pinned
-    //     packages, so the existing per-step plugin chain wires them onto
-    //     `env.plugins`.
-    //
-    //   - Pinned tool packages (`materializeStepTools`): materialize the pinned
-    //     tool-package closure (posix, LSP, mail, ...) from its on-disk deploy
-    //     tree, rooted per step under `storeDir` so concurrent steps in one
-    //     child never collide on the tarball cache or the apply-state tree. A
-    //     step with no manifest yields empty tools (the legitimate
-    //     `rawManifestBytes === undefined` case); a present-but-broken manifest
-    //     surfaces loudly through `materializeStepTools` rather than degrading to
-    //     empty tools.
-    const materialization: StepToolMaterialization =
-      deps.sourceTools === true
-        ? {
-            factories: sourceStepToolFactories(req.agent.toolFactories),
-            pluginFactories: await materializeSourcePluginFactories(deps, req),
-          }
-        : await deps.materializeStepTools({
-            dataDir: deps.dataDir,
-            mailboxAddress: deps.mailboxAddress,
-            stepId,
-            stepCount: deps.stepCount,
-            storeDir,
-            cache: deps.cache,
-          });
-
-    // Derive and record the step's tool-mark floor from the just-loaded
-    // factories' static definitions. A pinned tool loads here in the
-    // child and never reached the hub's capability walk, so its
-    // `tool:<name>` grant is absent from the credentials snapshot; the
-    // recorded floor is what lets the grant evaluator authorize a pinned
-    // tool against its own static mark. Keyed by base step id so the
-    // evaluator's `baseStepId(stepId)` lookup resolves for both a plain
-    // step and a `map` iteration's scoped id.
-    //
-    // Skipped on the source-ref lineage: a source tool's runtime name is the
-    // bare `definition.name` the capability walk already emitted a `tool:<name>`
-    // grant for, so the credentials snapshot authorizes it directly with the
-    // correct effect -- no floor is needed, and recording one would blur that
-    // invariant.
-    if (deps.sourceTools !== true) {
-      deps.recordToolMarkFloor(
-        baseStepId(stepId),
-        deriveToolMarkFloorGrants(
-          materialization.factories.map((f) => ({
-            packageName: f.packageName,
-            definitions: f.factory.definitions,
-          })),
-        ),
-      );
-    }
+    // Assemble the step's tool runtime from the step agent's OWN evaluated tool
+    // factories. The child holds the live re-verified `WorkflowDefinition`, and
+    // the runtime threads each step's live agent in as `req.agent`, so
+    // `req.agent.toolFactories` are the real callable `AnnotatedToolFactory`s,
+    // bare-named because no namespacing loader runs. `packageName` is the
+    // factory's bundle `id` (the credential Gate-2 key), and its `defineTool`
+    // declaration feeds the declared-versus-bound check; a mail/plain tool
+    // declares no credentials, so it stays inert. Plugin factories -- which have
+    // no agent slot -- are materialized separately from the frozen closure the
+    // child already holds (`materializeSourcePluginFactories`), and the per-step
+    // plugin chain wires them onto `env.plugins`.
+    const materialization: StepToolMaterialization = {
+      factories: sourceStepToolFactories(req.agent.toolFactories),
+      pluginFactories: await materializeSourcePluginFactories(deps, req),
+    };
 
     // Supervisor-backed transport for the step agent's mail tools (both
     // halves of mailbox ownership, §3a OUTBOUND and §3b INBOUND). Outbound
@@ -2445,7 +2294,7 @@ function defaultNewId(prefix: string): string {
 
 /**
  * Build a `SubstrateFactory` closed over the supplied dependencies.
- * The sidecar binding passes tool materialization and the grant cap.
+ * The sidecar binding passes the grant cap.
  *
  * Construction order:
  *   1. Narrow the `substrateConfig` record against the typed schema.
@@ -2574,27 +2423,13 @@ export function createSidecarSubstrateFactory(
     // step-invoker instantiates the step's agent via `createAgent`,
     // delivers the resolved input as a synthesized inbound message, and
     // captures the agent's reply as the step output.
-    const stepToolCache: StepToolCacheConfig = {
-      cacheMaxBytes: parseByteCap(
-        validated.SIDECAR_CACHE_MAX_BYTES,
-        "SIDECAR_CACHE_MAX_BYTES",
-      ),
-      registryMaxTarballBytes: parseByteCap(
-        validated.SIDECAR_REGISTRY_MAX_TARBALL_BYTES,
-        "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
-      ),
-    };
-
     // The single-step / top-level path runs a real agent with REAL
-    // tools materialized in-child. The per-step env builder stands up
+    // tools built in-child. The per-step env builder stands up
     // real per-step storage/workdir/audit/directors rooted under the
-    // run (see `createSidecarStepBuildEnv`), resolves the per-step
-    // `InferenceSource`, and materializes the step's pinned
-    // tool-package closure (posix, LSP, mail, ...) from its on-disk
-    // deploy tree -- rooted per step so concurrent steps in one child
-    // never collide on the tarball cache or apply-state. The
-    // tool-bearing `agentFactory` below attaches those factories to the
-    // step's `AgentDefinition` and builds the plugin chain.
+    // run (see `createSidecarStepBuildEnv`) and resolves the per-step
+    // `InferenceSource`. The tool-bearing `agentFactory` below attaches
+    // the agent's evaluated factories to the step's `AgentDefinition`
+    // and builds the plugin chain.
     // Durable-conversation registry for the warm single-step agent
     // (design §3c). Built only when the deployment is warm-kept: the
     // sole long-lived agent's conversation must survive child respawn,
@@ -2625,16 +2460,6 @@ export function createSidecarSubstrateFactory(
           })
         : undefined;
 
-    // Per-step tool-mark floor grants, keyed by base step id. The step
-    // env builder derives and records each step's floor from its
-    // materialized (pinned) tool factories; the grant evaluator reads it
-    // by base step id and merges it under the credentials snapshot's
-    // grants so a pinned tool authorizes against its own static mark. The
-    // map lives for the factory's (child's) lifetime, so a warm agent's
-    // floor -- recorded on its single first build -- remains available
-    // for every later tool call it makes.
-    const toolMarkFloorByStep = new Map<string, GrantRule[]>();
-
     // The step env's director registry is the closure-composed one, built
     // from the SAME frozen closure the run-child runs, so a step agent's
     // `director` ref resolves to a custom director shipped by the workflow
@@ -2653,19 +2478,8 @@ export function createSidecarSubstrateFactory(
       principal,
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
-      stepCount: env.definition.stepOrder.length,
       outboundMailBridge: env.outboundMailBridge,
-      cache: stepToolCache,
       adapters: childAdapterRegistry,
-      recordToolMarkFloor: (stepId, grants) => {
-        toolMarkFloorByStep.set(stepId, grants);
-      },
-      materializeStepTools: deps.materializeStepTools,
-      // Source-ref is the only deploy lineage: the child runs each step agent's
-      // own evaluated tool factories (fed from `req.agent.toolFactories`) from
-      // the materialized closure, never a pinned tool-package manifest off a
-      // deploy tree.
-      sourceTools: true,
       // The materialized closure dir the source arm materializes each step
       // agent's declared plugin packages from. Always present (source-ref only).
       closurePackageDir: env.spawn.closurePackageDir,
@@ -2719,16 +2533,11 @@ export function createSidecarSubstrateFactory(
     // Built COLD per invocation -- no `durableConversation`/warm hooks (a
     // fan-out branch and a section body are each a fresh run per spawn) and no
     // `inbound` (a spawned child owns no warm inbound mailbox; inbound-reading
-    // tools stay inert). The source arm records no tool-mark floor (a source
-    // tool's bare `tool:<name>` grant is already in the credentials snapshot),
-    // so the floor recorder throw-asserts that invariant.
+    // tools stay inert). A source tool's bare `tool:<name>` grant is already
+    // in the credentials snapshot.
     //
-    // The source arm also keeps the body's tools scoped correctly by
-    // construction: a body child runs under the PARENT deployment's
-    // `mailboxAddress`/`stepCount`, so a body step whose id collides with a
-    // parent step id would read the PARENT step's tools if tools were resolved
-    // off the deploy tree. Feeding each agent its own evaluated
-    // `req.agent.toolFactories` never consults that tree.
+    // Each agent gets its own evaluated `req.agent.toolFactories`, so a body
+    // step whose id collides with a parent step id still gets its own tools.
     const coldChildBuildStepEnv = createSidecarStepBuildEnv({
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
@@ -2737,17 +2546,8 @@ export function createSidecarSubstrateFactory(
       principal,
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
-      stepCount: env.definition.stepOrder.length,
       outboundMailBridge: env.outboundMailBridge,
-      cache: stepToolCache,
       adapters: childAdapterRegistry,
-      recordToolMarkFloor: () => {
-        throw new Error(
-          "source-tools child build-env must not record a tool-mark floor",
-        );
-      },
-      materializeStepTools: deps.materializeStepTools,
-      sourceTools: true,
       closurePackageDir: env.spawn.closurePackageDir,
       directors: stepDirectors,
     });
@@ -2914,9 +2714,7 @@ export function createSidecarSubstrateFactory(
           : {}),
       })(req);
 
-    const evaluateGrantsAdapter: GrantEvaluator = createGrantEvaluator({
-      floorFor: (stepId) => toolMarkFloorByStep.get(stepId) ?? [],
-    });
+    const evaluateGrantsAdapter: GrantEvaluator = createGrantEvaluator();
 
     const childRunDeps: SidecarRunChildDeps = {
       substrate,

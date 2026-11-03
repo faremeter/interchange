@@ -4,8 +4,7 @@
 // The workflow runs `before`, an agent step with the `hubProbe` tool, then
 // parks on the `resume` signal, then runs `after`, a second agent step with the
 // same tool. On the source-ref deploy the run principal's `tool:probe/invoke`
-// row is the tool's only authority in the child: the child adds no tool-mark
-// floor on that lineage. The mock model calls the probe once in each step.
+// row is the tool's only authority in the child. The mock model calls the probe once in each step.
 //
 // While the run is parked, the test moves that row's expiry into the past. The
 // grants the hub sends ahead of the resume signal still carry the row, now with

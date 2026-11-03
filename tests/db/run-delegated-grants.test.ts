@@ -1171,7 +1171,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               },
               "test child",
             ),
-            createGrantEvaluator({ floorFor: () => [] }),
+            createGrantEvaluator(),
           );
           const result = await childAuthorize("secret:vault", "use", {
             stepId: "work",
