@@ -2,10 +2,8 @@
 
 Isomorphic-git backed implementation of `ContextStore` and
 `AuditStore`. Each agent gets its own git repository in the host filesystem;
-inference state lives on a working branch, the tool-authorization
-audit log lives on its own branch, and mail history lives in a
-dedicated audit store that commits each inbound and outbound
-message.
+inference state lives on a working branch, and tool-authorization audit
+records live under `state/audit/`.
 
 Consumed by `@intx/agent` for in-process persistence, and by
 `@intx/hub-sessions` and `@intx/hub-agent` for the agent
@@ -48,9 +46,7 @@ completed mutations durable before the API call resolves.
 
 Audit and error record paths are append-only. Repeating a byte-identical
 record is an idempotent retry, including after an uncertain persistence
-failure; reusing the same path for different content is rejected. Mail commits
-reconcile an uncertain ref publication before the same store accepts another
-message, so a committed message cannot have its ordinal reused.
+failure; reusing the same path for different content is rejected.
 
 Conversation checkpoints stage the context files and tool-output directory
 in one Git index update. Tool-output files are processed sequentially; every

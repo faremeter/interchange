@@ -314,7 +314,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ["HEAD", RUNS],
         ["GET", `/api/tenants/${TENANT_ID}`],
         ["PATCH", `/api/tenants/${TENANT_ID}`],
-        ["GET", `${RUNS}/run_x/state.git/info/refs`],
       ];
       for (const [method, path] of refused) {
         const res = await asRun(app, path, { method });

@@ -110,12 +110,7 @@ export const SANE_GITIGNORE = [
 
 // REST contract -----------------------------------------------------
 
-const KIND_VALUES = [
-  "agent-state",
-  "skill",
-  "package-registry",
-  "workflow",
-] as const;
+const KIND_VALUES = ["skill", "package-registry", "workflow"] as const;
 
 const CreateAsset = type({
   kind: type.enumerated(...KIND_VALUES),
@@ -143,12 +138,7 @@ const AssetResponseSchema = type({
 const ASSET_NAME_URL_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function parseKind(raw: string): RepoKind | null {
-  if (
-    raw === "agent-state" ||
-    raw === "skill" ||
-    raw === "package-registry" ||
-    raw === "workflow"
-  ) {
+  if (raw === "skill" || raw === "package-registry" || raw === "workflow") {
     return raw;
   }
   return null;
@@ -159,8 +149,7 @@ function stripGitSuffix(raw: string): string | null {
   return raw.slice(0, -".git".length);
 }
 
-// User-principal construction helpers shared with the agent-state
-// smart-HTTP group live in ./git-user-principal.
+// User-principal construction helpers live in ./git-user-principal.
 
 type AssetLookup = {
   id: string;
@@ -863,8 +852,7 @@ export function createAssetRoutes({
       };
     }
     let narrowedKind: RepoKind;
-    if (row.kind === "agent-state") narrowedKind = "agent-state";
-    else if (row.kind === "skill") narrowedKind = "skill";
+    if (row.kind === "skill") narrowedKind = "skill";
     else if (row.kind === "package-registry") narrowedKind = "package-registry";
     else if (row.kind === "workflow") narrowedKind = "workflow";
     else {

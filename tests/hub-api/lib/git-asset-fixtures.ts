@@ -13,12 +13,9 @@
 // test failure is actionable.
 
 import { type } from "arktype";
-import postgres from "postgres";
 
 import { hexEncode } from "@intx/types";
 import type { RepoAction } from "@intx/types/repo";
-import { generateId } from "@intx/hub-common";
-import { loadHarnessDbConfig } from "@intx/test-harness/db-harness";
 
 import { tokenAskpassEnv } from "./git-harness";
 
@@ -37,7 +34,7 @@ export type CreatedTenant = {
 export type CreatedAsset = {
   assetId: string;
   tenantId: string;
-  kind: "skill" | "agent-state";
+  kind: "skill";
   name: string;
 };
 
@@ -194,54 +191,11 @@ export async function createTenant(
   return { tenantId, slug };
 }
 
-// Insert a `workflow_definition` directly, bypassing any HTTP surface. The
-// agent-state git route resolves the repo through the run that keys on this
-// definition, so a real definition must exist for the smart-HTTP request to
-// pass tenant binding rather than 404. Returns the definition id any
-// session/run row keys on. Runs against the hub's per-test schema via
-// search_path.
-export async function seedInstanceDefinition(
-  schema: string,
-  user: SignedUpUser,
-  tenant: CreatedTenant,
-  name: string,
-): Promise<{ definitionId: string }> {
-  const dbConfig = loadHarnessDbConfig();
-  const sql = postgres({
-    host: dbConfig.host,
-    port: dbConfig.port,
-    user: dbConfig.user,
-    password: dbConfig.password,
-    database: dbConfig.database,
-    max: 1,
-    connection: { search_path: `"${schema.replace(/"/g, '""')}"` },
-  });
-  try {
-    const principalRows = await sql<
-      { id: string }[]
-    >`select id from principal where tenant_id = ${tenant.tenantId} and kind = 'user' and ref_id = ${user.userId}`;
-    const creatorPrincipal = principalRows[0];
-    if (creatorPrincipal === undefined) {
-      throw new Error(
-        `seedInstanceDefinition: no principal for user ${user.userId} in tenant ${tenant.tenantId}`,
-      );
-    }
-    const definitionId = generateId("workflowDefinition");
-    await sql`insert into workflow_definition
-                (id, tenant_id, creator_principal_id, name)
-              values (${definitionId}, ${tenant.tenantId},
-                ${creatorPrincipal.id}, ${name})`;
-    return { definitionId };
-  } finally {
-    await sql.end();
-  }
-}
-
 export async function createAsset(
   hubUrl: string,
   user: SignedUpUser,
   tenant: CreatedTenant,
-  opts: { kind?: "skill" | "agent-state"; name?: string } = {},
+  opts: { kind?: "skill"; name?: string } = {},
 ): Promise<CreatedAsset> {
   const kind = opts.kind ?? "skill";
   const name = opts.name ?? `asset-${randomSuffix()}`;

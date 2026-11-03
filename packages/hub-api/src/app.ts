@@ -76,11 +76,6 @@ import {
   ASSET_OPENAPI_EXCLUDE_GLOBS,
   createAssetRoutes,
 } from "./routes/assets";
-import {
-  AGENT_STATE_OPENAPI_EXCLUDE_GLOBS,
-  createAgentStateRunGitRoutes,
-  createAgentStateReceivePackDeny,
-} from "./routes/agent-state-git";
 import { createGitTokenAuth } from "./middleware/git-token-auth";
 import { createRunTokenAuth } from "./middleware/run-token-auth";
 
@@ -283,22 +278,6 @@ export function mountHubRoutes(
     // the `/api/tenants/:tenantId/assets/...` prefix.
     app.use(
       "/api/tenants/:tenantId/assets/:kind/:nameDotGit{[^/]+\\.git}/*",
-      createGitTokenAuth({ db }),
-    );
-  }
-
-  // Agent-state smart-HTTP read routes also use bearer auth. The
-  // receive-pack denial middleware mounts BEFORE bearer auth so an
-  // unauthenticated `git push -v` parses the pkt-line ERR record
-  // rather than a generic 401. The bearer middleware then gates the
-  // upload-pack half (advertise + POST) on a valid token.
-  if (repoStore !== null) {
-    app.use(
-      "/api/tenants/:tenantId/workflows/runs/:runId/state.git/*",
-      createAgentStateReceivePackDeny(),
-    );
-    app.use(
-      "/api/tenants/:tenantId/workflows/runs/:runId/state.git/*",
       createGitTokenAuth({ db }),
     );
   }
@@ -558,22 +537,6 @@ export function mountHubRoutes(
     );
   }
 
-  if (repoStore !== null) {
-    // The folded run's agent-state clone surface. Mounts at `/workflows/runs`
-    // alongside the run-management routes; the git sub-paths (`:runId/state.git`)
-    // are disjoint from the run routes, and the literal `runs` segment
-    // out-ranks the `/workflows/:runId` deploy router.
-    app.route(
-      "/api/tenants/:tenantId/workflows/runs",
-      createAgentStateRunGitRoutes({
-        db,
-        repoStore,
-        grantStore,
-        conditionRegistry,
-      }),
-    );
-  }
-
   if (sidecarWsHandler) {
     app.get("/api/sidecars/ws", sidecarWsHandler);
   }
@@ -695,7 +658,6 @@ export function createApp({
         "/status",
         "/api/auth/**",
         ...ASSET_OPENAPI_EXCLUDE_GLOBS,
-        ...AGENT_STATE_OPENAPI_EXCLUDE_GLOBS,
       ],
     }),
   );

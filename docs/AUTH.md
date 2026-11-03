@@ -413,7 +413,7 @@ This parallels the credential revocation model described in CREDENTIALS.md — b
 
 ## Smart-HTTP Git Tokens
 
-The hub exposes asset and agent-state repositories over the smart-HTTP wire (`info/refs`, `git-upload-pack`, `git-receive-pack`). Stock `git` clients authenticate to those endpoints with an opaque bearer token rather than a better-auth session cookie. See `docs/GIT_ACCESS.md` for the operator walkthrough — credential-helper setup, URL grammar, `refPattern` grammar, and worked clone/push examples.
+The hub exposes asset repositories over the smart-HTTP wire (`info/refs`, `git-upload-pack`, `git-receive-pack`). Stock `git` clients authenticate to those endpoints with an opaque bearer token rather than a better-auth session cookie. See `docs/GIT_ACCESS.md` for the operator walkthrough — credential-helper setup, URL grammar, `refPattern` grammar, and worked clone/push examples.
 
 ### Token model
 
@@ -430,7 +430,7 @@ git_token
   name                  text NOT NULL
   kind                  text NOT NULL   -- 'pat' | 'svc'
   token_hash_sha256     bytea NOT NULL UNIQUE
-  resource              text NOT NULL   -- 'asset:*', 'asset:ast_xxx', 'agent-state:run_xxx', ...
+  resource              text NOT NULL   -- 'asset:*', 'asset:ast_xxx', ...
   ref_pattern           text NOT NULL   -- simple-glob
   actions               text[] NOT NULL -- RepoActions
   expires_at            timestamptz NOT NULL
@@ -445,7 +445,7 @@ The partial unique on `(user_id, name)` filtered by `revoked_at IS NULL` lets a 
 
 Three columns bound a token's authority:
 
-- `resource` — a single substrate authz resource string, e.g. `asset:*`, `asset:ast_xxx`, `agent-state:run_xxx`. Glob patterns are honored by the substrate; a token with `resource: "asset:*"` reaches every asset row in the tenant the token is bound to.
+- `resource` — a single substrate authz resource string, e.g. `asset:*`, `asset:ast_xxx`. Glob patterns are honored by the substrate; a token with `resource: "asset:*"` reaches every asset row in the tenant the token is bound to.
 - `ref_pattern` — a glob restricting which refs within the resource the token may read or write. Grammar: `*` matches within a `/`-segment, `**` crosses segments. Worked examples appear in `docs/GIT_ACCESS.md`.
 - `actions` — the `RepoAction` vocabulary the token is allowed to invoke (`receivePack`, `createPack`, `resolveRef`, ...). The mint API accepts the user-facing aliases `can_read` (expands to `["createPack", "resolveRef"]`) and `can_push` (expands to `["receivePack"]`), and stores the canonical names so the lookup path never re-runs the alias table.
 - `expires_at` — required, server-enforced floor of one minute. The bearer middleware checks `expires_at > now()` on every request.

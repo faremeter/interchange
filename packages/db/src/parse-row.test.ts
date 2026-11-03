@@ -34,7 +34,7 @@ function makeRow(overrides: Partial<GitTokenRow> = {}): GitTokenRow {
     name: "laptop",
     kind: "pat",
     tokenHashSha256: new Uint8Array(32),
-    resource: "agent-state:run_test",
+    resource: "asset:ast_test",
     refPattern: "refs/heads/*",
     actions: ["receivePack", "createPack", "resolveRef"],
     expiresAt: new Date("2027-01-01T00:00:00Z"),
@@ -57,7 +57,7 @@ describe("parseGitTokenRow", () => {
     expect(parsed.kind).toBe("pat");
     expect(parsed.tokenHashSha256).toBe(row.tokenHashSha256);
     expect(parsed.actions).toEqual(["receivePack", "createPack", "resolveRef"]);
-    expect(parsed.resource).toBe("agent-state:run_test");
+    expect(parsed.resource).toBe("asset:ast_test");
     expect(parsed.refPattern).toBe("refs/heads/*");
     expect(parsed.expiresAt).toBe(row.expiresAt);
     expect(parsed.revokedAt).toBeNull();

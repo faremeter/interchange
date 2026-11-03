@@ -105,7 +105,7 @@ afterAll(async () => {
 type AssetRow = {
   id: string;
   tenantId: string;
-  kind: "agent-state" | "skill" | "package-registry" | "workflow";
+  kind: "skill" | "package-registry" | "workflow";
   name: string;
   displayName: string | null;
   creatorPrincipalId: string | null;
