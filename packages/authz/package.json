@@ -12,7 +12,8 @@
     }
   },
   "dependencies": {
-    "@intx/types": "workspace:*"
+    "@intx/types": "workspace:*",
+    "arktype": "catalog:"
   },
   "files": [
     "dist",

@@ -3,7 +3,13 @@ import { describe, test, expect } from "bun:test";
 import { evaluateMailAdmission } from "./mail-admission";
 import { mailAcceptResource, MAIL_ACCEPT_ACTION } from "./coord";
 import type { MailAcceptCoordinate } from "./coord";
-import type { ConditionRegistry, GrantRule } from "./types";
+import type { ConditionEvaluator, ConditionRegistry, GrantRule } from "./types";
+
+function evaluator(
+  evaluate: ConditionEvaluator["evaluate"],
+): ConditionEvaluator {
+  return { validate: () => null, evaluate };
+}
 
 function grant(
   overrides: Partial<GrantRule> &
@@ -80,7 +86,7 @@ describe("evaluateMailAdmission", () => {
   });
 
   test("a conditioned grant with a registry supplied does not throw", async () => {
-    const registry: ConditionRegistry = { time_window: () => true };
+    const registry: ConditionRegistry = { time_window: evaluator(() => true) };
     const result = await evaluateMailAdmission({
       senderCoordinates: [PRINCIPAL],
       recipientGrants: [
@@ -431,7 +437,7 @@ describe("evaluateMailAdmission", () => {
 
   test("a conditioned deny with a registry that applies it blocks admission", async () => {
     const registry: ConditionRegistry = {
-      always: () => true,
+      always: evaluator(() => true),
     };
     const result = await evaluateMailAdmission({
       senderCoordinates: [PRINCIPAL, TENANT],
@@ -448,7 +454,7 @@ describe("evaluateMailAdmission", () => {
 
   test("a conditioned deny whose condition does not hold does not block admission", async () => {
     const registry: ConditionRegistry = {
-      never: () => false,
+      never: evaluator(() => false),
     };
     const result = await evaluateMailAdmission({
       senderCoordinates: [PRINCIPAL, TENANT],

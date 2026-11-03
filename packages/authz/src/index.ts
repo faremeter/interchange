@@ -20,6 +20,7 @@ export {
 } from "./mail-accept-relation";
 export { evaluateMailAdmission } from "./mail-admission";
 export type { MailAdmissionResult } from "./mail-admission";
+export { createConditionEvaluator } from "./condition-evaluator";
 export { evaluateConditions } from "./conditions";
 export { timeWindowEvaluator } from "./time-window";
 export {

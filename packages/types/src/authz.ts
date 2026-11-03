@@ -41,9 +41,16 @@ export type ConditionContext = {
   consumer: string;
 };
 
-export type ConditionEvaluator = (
-  value: unknown,
-  ctx: ConditionContext,
-) => boolean | Promise<boolean>;
+/**
+ * A condition's shape check and its evaluation. Both read the same rules, so
+ * a boundary that accepts a condition body through `validate` stores only
+ * bodies that `evaluate` can parse.
+ */
+export type ConditionEvaluator = {
+  /** Returns null for a valid condition body, otherwise the problem. */
+  validate(value: unknown): string | null;
+  /** Throws when `validate` would reject the value. */
+  evaluate(value: unknown, ctx: ConditionContext): boolean | Promise<boolean>;
+};
 
 export type ConditionRegistry = Record<string, ConditionEvaluator>;

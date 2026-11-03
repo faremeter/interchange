@@ -13,14 +13,17 @@
 // The evaluator returns true only when ctx.consumer is a non-empty identity
 // that exactly matches the configured value. An absent (empty) consumer fails
 // closed: a consumer-scoped grant never authorizes a caller that supplied no
-// consumer identity, and it must be rejected before the equality check so a
-// grant value of "" cannot match an empty consumer. A non-string condition
-// value is a misconfiguration and throws, mirroring the fail-loud shape of the
-// other evaluators rather than silently withholding.
+// consumer identity. A condition value that is not a non-empty string is a
+// misconfiguration and throws, mirroring the fail-loud shape of the other
+// evaluators rather than silently withholding; because "" never reaches the
+// comparison, an empty grant value cannot match an empty consumer.
+
+import { type } from "arktype";
 
 import type { CredentialBinding } from "@intx/types";
 
-import type { ConditionEvaluator, ConditionRegistry } from "./types";
+import { createConditionEvaluator } from "./condition-evaluator";
+import type { ConditionRegistry } from "./types";
 
 /**
  * Build the consumer identity for a tool package. This is the value stamped
@@ -61,18 +64,14 @@ export function credentialBindingConsumer(binding: CredentialBinding): string {
  * Register as `tool` in the condition registry:
  *   `{ tool: toolConsumerEvaluator }`
  */
-export const toolConsumerEvaluator: ConditionEvaluator = (
-  value: unknown,
-  ctx,
-): boolean => {
-  if (typeof value !== "string") {
-    throw new Error(
-      `tool: condition value must be a string consumer identity, got ${typeof value}`,
-    );
-  }
-  if (ctx.consumer === "") return false;
-  return ctx.consumer === value;
-};
+export const toolConsumerEvaluator = createConditionEvaluator(
+  "tool",
+  type("string > 0").describe("a non-empty consumer identity"),
+  (consumer, ctx) => {
+    if (ctx.consumer === "") return false;
+    return ctx.consumer === consumer;
+  },
+);
 
 /**
  * The condition registry for credential-use authorization. It carries only the

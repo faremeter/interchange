@@ -64,10 +64,19 @@ evaluation is fail-closed.
   `ConditionRegistry` evaluates each condition, and `"pessimistic"`
   applies a conditioned `deny` or `ask` as if it held and skips a
   conditioned `allow`, for a check that has no request.
+- `createConditionEvaluator` — build a `ConditionEvaluator` from a
+  condition name, an arktype schema for the condition body, and an
+  evaluation callback. The evaluator's `validate` reports what the
+  schema rejects, and its `evaluate` parses with the same schema and
+  throws on the same input, so a boundary check and evaluation share
+  one set of shape rules.
 - `timeWindowEvaluator` — a `ConditionEvaluator` for time-of-day
   windows. Register it under the `time_window` key in a
   `ConditionRegistry` to gate grants on `{ after, before, timezone }`;
   cross-midnight windows are supported.
+- `toolConsumerEvaluator` — a `ConditionEvaluator` for credential
+  consumers. Register it under the `tool` key to narrow a grant to one
+  consumer identity.
 - `evaluateConditions` — run a grant's `conditions` object against a
   `ConditionRegistry`.
 - `createInMemoryGrantStore` — a `GrantStore` backed by an in-memory

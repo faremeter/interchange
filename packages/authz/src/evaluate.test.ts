@@ -1,7 +1,18 @@
 import { describe, test, expect } from "bun:test";
 
 import { authorize, evaluateGrants } from "./evaluate";
-import type { ConditionRegistry, GrantRule, GrantStore } from "./types";
+import type {
+  ConditionEvaluator,
+  ConditionRegistry,
+  GrantRule,
+  GrantStore,
+} from "./types";
+
+function evaluator(
+  evaluate: ConditionEvaluator["evaluate"],
+): ConditionEvaluator {
+  return { validate: () => null, evaluate };
+}
 
 // The mode for a check with no request. On grants with no conditions it
 // gives the same result as a registry.
@@ -473,7 +484,7 @@ describe("evaluateGrants conditions", () => {
 
   test("grant with conditions evaluated to true is included", async () => {
     const registry: ConditionRegistry = {
-      max_spend_per_day: () => true,
+      max_spend_per_day: evaluator(() => true),
     };
     const grants = [
       grant({
@@ -493,7 +504,7 @@ describe("evaluateGrants conditions", () => {
 
   test("grant with conditions evaluated to false is excluded", async () => {
     const registry: ConditionRegistry = {
-      max_spend_per_day: () => false,
+      max_spend_per_day: evaluator(() => false),
     };
     const grants = [
       grant({
@@ -527,7 +538,7 @@ describe("evaluateGrants conditions", () => {
 
   test("conditional and unconditional grants coexist", async () => {
     const registry: ConditionRegistry = {
-      time_window: () => false,
+      time_window: evaluator(() => false),
     };
     const grants = [
       grant({
@@ -557,7 +568,7 @@ describe("evaluateGrants conditions", () => {
 
   test("more specific conditional grant beats less specific unconditional", async () => {
     const registry: ConditionRegistry = {
-      time_window: () => true,
+      time_window: evaluator(() => true),
     };
     const grants = [
       grant({
@@ -587,11 +598,11 @@ describe("evaluateGrants conditions", () => {
     let capturedPrincipal = "";
     let capturedTenant = "";
     const registry: ConditionRegistry = {
-      spy: (_value, ctx) => {
+      spy: evaluator((_value, ctx) => {
         capturedPrincipal = ctx.principalId;
         capturedTenant = ctx.tenantId;
         return true;
-      },
+      }),
     };
     const grants = [
       grant({
@@ -704,7 +715,9 @@ describe("evaluateGrants action verbs from spec", () => {
 
   test("spend action with conditions via registry", async () => {
     const registry: ConditionRegistry = {
-      max_spend_per_day: (value) => typeof value === "number" && value > 50,
+      max_spend_per_day: evaluator(
+        (value) => typeof value === "number" && value > 50,
+      ),
     };
     const grants = [
       grant({
@@ -1023,7 +1036,7 @@ describe("authorize with in-memory store", () => {
 
   test("passes registry through to condition evaluation", async () => {
     const registry: ConditionRegistry = {
-      time_window: () => true,
+      time_window: evaluator(() => true),
     };
     const store = memoryStore([
       grant({
@@ -1072,11 +1085,11 @@ describe("authorize with in-memory store", () => {
     let capturedPrincipal = "";
     let capturedTenant = "";
     const registry: ConditionRegistry = {
-      spy: (_v, ctx) => {
+      spy: evaluator((_v, ctx) => {
         capturedPrincipal = ctx.principalId;
         capturedTenant = ctx.tenantId;
         return true;
-      },
+      }),
     };
     const store = memoryStore([
       grant({
