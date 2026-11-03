@@ -267,7 +267,7 @@ A deployment on a sidecar is an incarnation: its address plus the allocation gen
 
 A sidecar holds at most one incarnation of an address, and an address is deployed once: a deploy of an address the sidecar holds is refused with `agent.deploy.error`, and a Hub pack for it with `conflict`.
 
-Undeploy is an acknowledged operation. The sidecar shuts the named generation's supervisor down, waits for the deployment's in-flight outbound mail to reach the link, deletes the agent directory, and responds with `agent.undeploy.ack`, or with `agent.undeploy.error` naming each step that failed. An undeploy of a generation older than the one the sidecar holds is acknowledged without touching anything. An undeploy of an address the sidecar does not hold still runs the teardown, so local state an interrupted deploy left behind is reclaimed. The teardown first marks the run record `tearing-down`, and removes the deployment's workflow-run repository and, last, the record only once every other step succeeded: after a crash mid-undeploy the next boot reports the incarnation as tearing down, a step that fails keeps it listed so. Each removed tree's parent is synced before cleanup is acknowledged. The Hub retries removal while its cleanup policy permits it; a cleanup binding leaves this to the reconciler rather than sending an untracked undeploy on hello. A multi-step deployment's per-step grants repositories and deploy trees are left on disk, since a sidecar no longer holding the deployment cannot identify them. Reports the undeployed incarnation still owed the Hub but had not sent, such as queued outbound mail and correlation-register retries, are dropped with it, so none reaches the Hub after the teardown. When the Hub releases a deployment, it drops the deployment's routes before it sends the undeploy. A deploy of an address waits until the sidecar has answered every undeploy of it sent on the same connection, bounded by the request timeout. The Hub handles that answer behind the frames the sidecar sent before it, so nothing the removed copy sends is credited to a later deploy of the address.
+Undeploy is an acknowledged operation. The sidecar shuts the named generation's supervisor down, waits for the deployment's in-flight outbound mail to reach the link, deletes the agent directory, and responds with `agent.undeploy.ack`, or with `agent.undeploy.error` naming each step that failed. An undeploy of a generation older than the one the sidecar holds is acknowledged without touching anything. An undeploy of an address the sidecar does not hold still runs the teardown, so local state an interrupted deploy left behind is reclaimed. The teardown first marks the run record `tearing-down`, and removes the deployment's workflow-run repository and, last, the record only once every other step succeeded: after a crash mid-undeploy the next boot reports the incarnation as tearing down, a step that fails keeps it listed so. Each removed tree's parent is synced before cleanup is acknowledged. The Hub retries removal while its cleanup policy permits it; a cleanup binding leaves this to the reconciler rather than sending an untracked undeploy on hello. Reports the undeployed incarnation still owed the Hub but had not sent, such as queued outbound mail and correlation-register retries, are dropped with it, so none reaches the Hub after the teardown. When the Hub releases a deployment, it drops the deployment's routes before it sends the undeploy. A deploy of an address waits until the sidecar has answered every undeploy of it sent on the same connection, bounded by the request timeout. The Hub handles that answer behind the frames the sidecar sent before it, so nothing the removed copy sends is credited to a later deploy of the address.
 
 **Reconnection:**
 
@@ -477,7 +477,7 @@ The settlement projection currently scans the retained consumed-mail index and w
 
 ## Workflow Process: Supervisor/Child IPC
 
-A deployed workflow runs in two processes per active deployment. The supervisor lives in the sidecar — it holds the mail-bus identity for the deployment's addresses, owns the per-deployment Ed25519 signing key the hub trusts, and reads the per-step credential snapshots out of each step's `agent-state` repo. The workflow-process is a Bun child the supervisor spawns; it loads operator-supplied workflow code (tools, directors, agent prompts) and executes runs against the runtime adapters. The supervisor is the authoritative side; the workflow-process is the untrusted side.
+A deployed workflow runs in two processes per active deployment. The supervisor lives in the sidecar — it holds the mail-bus identity for the deployment's addresses, owns the per-deployment Ed25519 signing key the hub trusts, and passes each run's grants to the child as a per-step credential snapshot. The workflow-process is a Bun child the supervisor spawns; it loads operator-supplied workflow code (tools, directors, agent prompts) and executes runs against the runtime adapters. The supervisor is the authoritative side; the workflow-process is the untrusted side.
 
 The IPC between them is the airlock between those two halves. Per-frame crypto is what makes the airlock seal: nothing the child receives is acted on until its signature verifies under the supervisor's public key, and nothing the supervisor accepts from the child is acted on until its HMAC verifies under the shared key. The implementation lives at `packages/workflow-host/src/ipc/` with the threat model at the top of `packages/workflow-host/src/ipc/index.ts`.
 
@@ -538,10 +538,9 @@ object whose shape is:
   Production wires it against `Bun.spawn`; tests inject a mock.
 - Per-deployment configuration: `binaryPath`, `substrateEnv`,
   `workflowRunRepoId`, `workflowRunRef`, `anchorRunId`,
-  `deploymentMailAddress`, `readPrincipal`.
-- `layoutSteps(definition)` — derives the deployment's step layout
-  (its step ids and how each maps to a mail address and an
-  `agent-state` repo) from the definition the first child verified.
+  `deploymentMailAddress`.
+- `layoutSteps(definition)` — derives the deployment's step ids from the
+  definition the first child verified.
 
 The supervisor's `spawn(opts)` method:
 
@@ -562,8 +561,8 @@ The supervisor's `spawn(opts)` method:
    check does not vouch for what it reports. On the first spawn the
    supervisor passes the projection to `layoutSteps` and keeps the
    layout; every later child reports the same hash.
-5. Assembles the per-deployment `credentialsSnapshot` from each
-   step's `agent-state` repo (see next subsection), sends the child
+5. Reads the run's `credentialsSnapshot` through the `onRunStart`
+   binding (see next subsection), sends the child
    its `authority.set`, and registers the deployment's mail address
    on the bus.
 6. Awaits the child's `ready` frame on the control channel.
@@ -950,16 +949,14 @@ implemented as library code in
 `packages/workflow-host/src/supervisor/recycle.ts` and consumed by
 the supervisor object's `recycle()` method.
 
-**Same deploy tree only.** Recycle uses the SAME deploy
-tree -- the same materialized source closure, the same workflow-asset
-repo, the same per-step `agent-state` repos. A deployment keeps that
-tree for its life: a new deploy tree, a new workflow definition, or
-different agents need a new deployment. The recycle module never
-refetches the deploy tree, never consults an updated workflow
-definition, never re-resolves agents. The module header documents the
-invariant loudly. The recycle module must not grow a "maybe also
-refetch the deploy tree" mode -- that would let a recycle silently
-change what a deployment runs.
+**Same definition only.** Recycle uses the SAME definition -- the same
+materialized source closure and the same workflow-asset repo. A deployment
+keeps that definition for its life: a new workflow definition or different
+agents need a new deployment. The recycle module never refetches the source
+closure, never consults an updated workflow definition, never re-resolves
+agents. The module header documents the invariant loudly. The recycle module
+must not grow a "maybe also refetch the definition" mode -- that would let a
+recycle silently change what a deployment runs.
 
 **Six-step sequence (locked):**
 
@@ -981,8 +978,7 @@ change what a deployment runs.
 3. **`respawn`** -- the supervisor mints a fresh 16-byte hex
    channelId via the same `generateChannelId` helper the initial
    spawn uses, generates a new 32-byte HMAC key, mints a fresh
-   Ed25519 IPC keypair, re-reads per-step credentials via the
-   injected `RepoStore`, and spawns a new Bun child via the same
+   Ed25519 IPC keypair, and spawns a new Bun child via the same
    subprocess-spawner binding. The new IPC anchors flow through
    spawn-time env exactly as the initial spawn's anchors did.
 4. **`self-discover`** -- the new child runs its existing
@@ -1069,12 +1065,11 @@ source-ref pin. The router checks that it can build every inference source
 the frame pins, lays out the frozen closure without evaluating it, constructs
 a fresh per-deployment workflow-host supervisor and drives its `spawn(opts)`
 lifecycle: key minting, workflow-process child spawn via `subprocessSpawner`,
-the child's definition report, per-step `agent-state` repo provisioning,
-`credentialsSnapshot` assembly, mail-bus registration and the IPC ready
+the child's definition report, its first `authority.set`, mail-bus registration and the IPC ready
 handshake. The long-lived sidecar process keeps every module it imports, so it
 never evaluates the workflow's code: everything it does with the definition --
-the structural check against the frame's sources, the step layout, the
-deploy-time grants write, the inbound mail policy -- works from the projection
+the structural check against the frame's sources, the step ids, the
+inbound mail policy -- works from the projection
 the child verified, after the supervisor checks it against the approved hash.
 A closure that fails, throws or hangs while loading fails only its own deploy
 or restore.
@@ -1112,11 +1107,11 @@ implementation can reuse it without forking the wiring.
 
 ### CredentialsSnapshot Assembly
 
-Per the Q6.4 discovery decision, each workflow step gets its own
-`agent-state` repo, and the supervisor assembles a per-step grant
-snapshot at spawn time over the step ids the host hands it. The
-implementation lives in
-`packages/workflow-host/src/supervisor/credentials.ts`:
+The sidecar's `onRunStart` binding assembles a per-step grant snapshot for a
+run over the step ids the host hands it, and the supervisor sends the result in
+each `authority.set`. The assembly is `assembleRunCredentialsSnapshot` in
+`packages/workflow-host/src/deploy/workflow-host-wiring.ts`; the snapshot type
+and its hash live in `packages/workflow-host/src/supervisor/credentials.ts`.
 
 The domain is the deployment's FLAT STEP-ID NAMESPACE, which is wider
 than the definition's own `stepOrder`: a `loop` body runs in-process as
@@ -1125,29 +1120,21 @@ against this same snapshot under its own plain step id. The host owns
 that widening because it is the layer that holds the definition --
 `inertFlatNamespaceStepIds` in `@intx/workflow-deploy` computes it from
 the inert projection the child reported, and the sidecar's deploy router
-feeds the result to both the snapshot assembly and the deploy-time
-per-step grants write. A step id absent from the snapshot is unrecoverable at the child's
+feeds the result to the snapshot assembly. A step id absent from the snapshot is unrecoverable at the child's
 authorize (it throws rather than denying), so the producer, not the
 consumer, owns totality. An `onTrigger` section or `childWorkflow` body
 is NOT part of this namespace: it is lifted to its own definition and the
 sidecar mints it a fresh snapshot of its own when it builds the spawned
 child's run env.
 
-- `defaultStepRepoId({ runId, stepId })` returns the
-  `agent-state` repo identity for the step. The default convention
-  is `<runId>-<stepId>`.
-- The grants file for a step rides at `state/grants.json` under the
-  step's repo working tree (the substrate's `getRepoDir` is a pure
-  path computation, mirroring the sibling production adapters'
-  working-tree-read pattern).
-- `assembleCredentialsSnapshot` reads each step's grants, hashes
-  them with sha256 over the canonical JSON serialization, and
-  returns a `CredentialsSnapshot` with per-step `address`, `grants`,
-  and `contentHash`. The hash is stable across processes so the
-  child can detect a stale snapshot pushed after a fresher one.
-- A missing grants file is treated as an empty grant array (so a
-  single-step deploy with no operator-supplied grants does not crash); a
-  malformed file fails loudly at the boundary.
+- Every step holds its run's one grant set. The Hub delivers it in `run.grants`
+  frames, and the sidecar keeps it in the run's grants file,
+  `runs/<runId>/grants.json`. A run with no file yet gets no snapshot, so a step
+  that needs grants fails closed.
+- `assembleRunCredentialsSnapshot` hashes the grants with sha256 over the
+  canonical JSON serialization, and returns a `CredentialsSnapshot` with
+  per-step `grants` and `contentHash`. The hash is stable across
+  processes so the child can detect a stale snapshot pushed after a fresher one.
 
 ### Signed CancelRequested Authority
 
@@ -1498,7 +1485,7 @@ The sidecar generates the deployment key and returns it in `agent.deploy.ack`, b
 
 #### Workflow Definition Versioning: Pinned-Forever
 
-A workflow deployment is pinned to its deploy-time definition. It keeps that definition — the frozen source closure the child re-evaluates, the workflow-asset repo, the per-step `agent-state` repos — until it is undeployed. A definition change made on the hub does **not** reconcile onto a live deployment; it affects only deployments created after the change.
+A workflow deployment is pinned to its deploy-time definition. It keeps that definition — the frozen source closure the child re-evaluates and the workflow-asset repo — until it is undeployed. A definition change made on the hub does **not** reconcile onto a live deployment; it affects only deployments created after the change.
 
 This holds across a sidecar↔Hub disconnect. Reconnect restores routing and resumes the locally persisted frozen definition; it does not negotiate refs or pull newer definition bytes. Picking up a definition change requires a new deployment. This is orthogonal to recycle, which also keeps the same definition while starting a fresh process.
 

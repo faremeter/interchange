@@ -386,7 +386,6 @@ const AUTHORITY_SNAPSHOT = {
   steps: [
     {
       stepId: "step-1",
-      address: "deployment-x-step-1@example.com",
       grants: [],
       contentHash: "deadbeef",
     },
@@ -1414,7 +1413,6 @@ describe("runWorkflowChild", () => {
       steps: [
         {
           stepId: "step-1",
-          address: "deployment-x-step-1@example.com",
           grants: [{ resource: "thing", action: "read" }],
           contentHash: "freshhash",
         },
@@ -1577,7 +1575,6 @@ describe("runWorkflowChild", () => {
         steps: [
           {
             stepId: "step-1",
-            address: "deployment-x-step-1@example.com",
             grants: [{ resource: "thing", action: "read" }],
             contentHash: "replaced",
           },
@@ -2219,7 +2216,6 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         steps: [
           {
             stepId,
-            address: "deployment-x@example.com",
             grants: [],
             contentHash: "deadbeef",
           },
@@ -2411,7 +2407,6 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         steps: [
           {
             stepId,
-            address: "deployment-x@example.com",
             grants: [],
             contentHash: "deadbeef",
           },

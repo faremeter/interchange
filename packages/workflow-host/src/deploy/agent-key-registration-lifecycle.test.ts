@@ -239,7 +239,6 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
           recursive: true,
           force: true,
         }),
-      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: () => undefined,
       reportDeploymentRefTips: async () => ({}),
       multistepSubprocessSpawner: spawner,

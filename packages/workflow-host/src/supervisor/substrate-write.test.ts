@@ -69,8 +69,8 @@ import {
   type SubprocessSpawner,
   type WorkflowSupervisorBindings,
 } from "./index";
-import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
 import { createControlChannelSender } from "../ipc/index";
+import { seedStepGrants, seededOnRunStart } from "./step-grants.test-helpers";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -319,19 +319,6 @@ function createMemoryInboxPrimitives(opts: {
   };
 }
 
-async function seedStepGrants(
-  baseDir: string,
-  repoId: RepoId,
-  grants: unknown[],
-): Promise<void> {
-  const dir = path.join(baseDir, repoId.kind, repoId.id);
-  await fs.mkdir(path.join(dir, "state"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, STEP_GRANTS_PATH),
-    JSON.stringify({ grants }),
-  );
-}
-
 type SupervisorHarness = {
   supervisor: ReturnType<typeof createWorkflowSupervisor>;
   channelId: string;
@@ -378,11 +365,9 @@ async function bootSupervisorToReady(
   opts: BootSupervisorOpts,
 ): Promise<SupervisorSeam> {
   const baseDir = await makeTempDir(opts.prefix);
-  await seedStepGrants(
-    baseDir,
-    defaultStepRepoId({ runId: "deployment-x", stepId: "step-1" }),
-    [{ resource: "thing", action: "read" }],
-  );
+  await seedStepGrants(baseDir, "step-1", [
+    { resource: "thing", action: "read" },
+  ]);
   const supervisorIpcKeyPair = await generateKeyPair();
   const childIpcKeyPair = await generateKeyPair();
 
@@ -443,13 +428,8 @@ async function bootSupervisorToReady(
     workflowRunRef: "refs/heads/main",
     anchorRunId: "deployment-x",
     deploymentMailAddress: "deployment-x@example.com",
-    readPrincipal: { kind: "supervisor" },
-    layoutSteps: () =>
-      Promise.resolve({
-        stepIds: ["step-1"],
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
-      }),
+    onRunStart: seededOnRunStart(baseDir),
+    layoutSteps: () => Promise.resolve(["step-1"]),
     ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     inboxPrimitives,
     ...(opts.onSelfTerminate !== undefined

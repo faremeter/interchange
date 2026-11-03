@@ -46,6 +46,7 @@ import {
   createControlChannelSender,
   type ControlChannelSender,
 } from "../ipc/index";
+import { noGrantsOnRunStart } from "./step-grants.test-helpers";
 
 const AGENT_ADDRESS = "run_outbound-agent@integration.example";
 const RECIPIENT_ADDRESS = "recipient@integration.example";
@@ -149,17 +150,9 @@ async function startOutboundHarness(): Promise<OutboundHarness> {
     workflowRunRef: "refs/heads/main",
     anchorRunId: "outbound-dep",
     deploymentMailAddress: AGENT_ADDRESS,
-    readPrincipal: { kind: "supervisor" },
-    // Single-step launched agent: its grants live in the legacy
-    // agent-state repo keyed by the agent id. The stub repo's
-    // getRepoDir resolves the dir; no grants file is needed because the
-    // outbound path never reads grants.
-    layoutSteps: () =>
-      Promise.resolve({
-        stepIds: ["step-1"],
-        deriveStepAddress: () => AGENT_ADDRESS,
-        deriveStepRepoId: () => ({ kind: "agent-state", id: "outbound-dep" }),
-      }),
+    // Single-step launched agent. The outbound path never reads grants.
+    onRunStart: noGrantsOnRunStart,
+    layoutSteps: () => Promise.resolve(["step-1"]),
     inboxPrimitives: createNoopInboxPrimitives(),
     ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
   });

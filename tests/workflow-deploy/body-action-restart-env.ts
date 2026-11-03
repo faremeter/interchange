@@ -128,7 +128,6 @@ export async function startBodyActionRestartEnv(opts: {
       agentAddress: mailAddress,
       systemPrompt: "unused (no agent step)",
       tools: [],
-      grants: [],
       sources: [
         {
           id: "anthropic:mock-model",

@@ -124,10 +124,8 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       await args.merge(new Map());
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
-    // The deploy router's grants bridge writes `state/grants.json` to
-    // each step's agent-state repo before `spawn()`. Mirror the
-    // `getRepoDir` layout so the write lands where the subsequent
-    // `assembleCredentialsSnapshot` working-tree read looks for it.
+    // Mirror the `getRepoDir` layout so a write lands where a working-tree
+    // read looks for it.
     async writeTree(_p, repoId, _ref, content) {
       const dir = path.join(tempBase, repoId.kind, repoId.id);
       for (const [relPath, contents] of Object.entries(content.files)) {
@@ -251,7 +249,6 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
           /* no-op */
         },
         removeRunRepository: async () => undefined,
-        removeAgentStateRepository: async () => undefined,
         unregisterDeployment: () => {
           /* no-op */
         },
@@ -285,9 +282,8 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       const frame: AgentDeployFrame = {
         type: "agent.deploy",
         requestId: "deploy-test",
-        // Single-step projection: the deploy router derives the sole
-        // step's agent-state repo from `deriveWorkflowRunId(agentAddress)`, which
-        // requires the canonical `run_<id>@<domain>` instance shape.
+        // Single-step projection: the address carries the canonical
+        // `run_<id>@<domain>` shape.
         agentAddress: "run_undeploy-supervisor@example.com",
         generation: 1,
         agentId: "undeploy-supervisor-agent",

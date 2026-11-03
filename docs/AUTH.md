@@ -221,7 +221,7 @@ None of the four escalate privilege beyond that delegation, because forging the 
 
 ### The child-side grant gate is defense-in-depth
 
-At tool-invoke time the child evaluates the step's grants (`grants.json`, the operator-approved `frame.config.grants`) through a _gated capability_ before yielding credential material. That is the honest enforcement path for a **healthy** sidecar — but the sidecar is itself the process that _writes_ `grants.json` and assembles the snapshot the child reads. So the child-side gate is **defense-in-depth, not a boundary against a compromised sidecar**: a compromised sidecar could forge `grants.json`, but it gains nothing — the real boundaries are the hub's credential cipher and the closure pin, not the grant evaluation the sidecar feeds the child.
+At tool-invoke time the child evaluates the step's grants (`grants.json`, the run's committed grants from its `run.grants` frames) through a _gated capability_ before yielding credential material. That is the honest enforcement path for a **healthy** sidecar — but the sidecar is itself the process that _writes_ `grants.json` and assembles the snapshot the child reads. So the child-side gate is **defense-in-depth, not a boundary against a compromised sidecar**: a compromised sidecar could forge `grants.json`, but it gains nothing — the real boundaries are the hub's credential cipher and the closure pin, not the grant evaluation the sidecar feeds the child.
 
 ### Restoring a run's authority in a new process
 

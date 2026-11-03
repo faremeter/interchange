@@ -290,7 +290,6 @@ function makeConfig(anchorRunId: string, address: string): HarnessConfig {
     agentAddress: address,
     systemPrompt: "Fallback prompt (overridden per step).",
     tools: [],
-    grants: [],
     sources: [
       {
         id: "anthropic:mock-model",

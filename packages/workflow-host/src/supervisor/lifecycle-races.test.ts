@@ -20,7 +20,6 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
-import type { RepoId } from "@intx/hub-sessions";
 import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
@@ -40,25 +39,12 @@ import {
   type SubprocessSpawner,
   type WorkflowSupervisorBindings,
 } from "./index";
-import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
 import { createControlChannelSender } from "../ipc/index";
 import { waitUntil } from "@intx/types/testing";
+import { seedStepGrants, seededOnRunStart } from "./step-grants.test-helpers";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
-}
-
-async function seedStepGrants(
-  baseDir: string,
-  repoId: RepoId,
-  grants: unknown[],
-): Promise<void> {
-  const dir = path.join(baseDir, repoId.kind, repoId.id);
-  await fs.mkdir(path.join(dir, "state"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, STEP_GRANTS_PATH),
-    JSON.stringify({ grants }),
-  );
 }
 
 function createMemoryInboxPrimitives(): InboxPrimitives {
@@ -197,13 +183,8 @@ async function buildBindings(opts: {
     workflowRunRef: "refs/heads/main",
     anchorRunId: "deployment-x",
     deploymentMailAddress: "deployment-x@example.com",
-    readPrincipal: { kind: "supervisor" },
-    layoutSteps: () =>
-      Promise.resolve({
-        stepIds: ["step-1"],
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
-      }),
+    onRunStart: seededOnRunStart(opts.baseDir),
+    layoutSteps: () => Promise.resolve(["step-1"]),
     ipcKeyPairFactory: () => Promise.resolve(opts.ipcKeypair),
     inboxPrimitives: createMemoryInboxPrimitives(),
   };
@@ -223,11 +204,9 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     // its recycle path, which spawns a fresh workflow-process child
     // under a new channelId.
     const baseDir = await makeTempDir("lifecycle-races-gap-a-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const ipcKeypair = await generateKeyPair();
     const childIpcKeypair = await generateKeyPair();
     const mailBus = createMockMailBus();
@@ -366,11 +345,6 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
 describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
   test("kills the child before waiting for a blocked dispatch loop", async () => {
     const baseDir = await makeTempDir("shutdown-blocked-dispatch-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "deployment-x", stepId: "step-1" }),
-      [],
-    );
     const ipcKeypair = await generateKeyPair();
     const childKeypair = await generateKeyPair();
     const controlIn = createMemoryNdjsonStream();
@@ -445,11 +419,6 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
 
   test("escalates to SIGKILL when the child ignores SIGTERM", async () => {
     const baseDir = await makeTempDir("shutdown-sigterm-trap-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "deployment-x", stepId: "step-1" }),
-      [],
-    );
     const ipcKeypair = await generateKeyPair();
     const childKeypair = await generateKeyPair();
     const controlIn = createMemoryNdjsonStream();
@@ -527,11 +496,9 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     // error MUST surface as a `spawn()` rejection -- not be swallowed
     // by the shutdown teardown's catches.
     const baseDir = await makeTempDir("lifecycle-races-gap-b-");
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const ipcKeypair = await generateKeyPair();
     const mailBus = createMockMailBus();
 

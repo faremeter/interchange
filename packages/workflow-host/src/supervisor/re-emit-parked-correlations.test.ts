@@ -41,6 +41,7 @@ import {
   type ControlPayload,
 } from "../ipc/index";
 import { waitUntil } from "@intx/types/testing";
+import { noGrantsOnRunStart } from "./step-grants.test-helpers";
 
 const AGENT_ADDRESS = "run_reemit-agent@integration.example";
 const DEPLOYMENT_ID = "reemit-dep";
@@ -258,13 +259,8 @@ async function setup(opts: {
     workflowRunRef: "refs/heads/main",
     anchorRunId: DEPLOYMENT_ID,
     deploymentMailAddress: AGENT_ADDRESS,
-    readPrincipal: { kind: "supervisor" },
-    layoutSteps: () =>
-      Promise.resolve({
-        stepIds: ["step-1"],
-        deriveStepAddress: () => AGENT_ADDRESS,
-        deriveStepRepoId: () => ({ kind: "agent-state", id: DEPLOYMENT_ID }),
-      }),
+    onRunStart: noGrantsOnRunStart,
+    layoutSteps: () => Promise.resolve(["step-1"]),
     inboxPrimitives: createNoopInboxPrimitives(),
     ipcKeyPairFactory: () => Promise.resolve(ipcKp),
     drainTimeoutMs: 200,
@@ -529,13 +525,8 @@ describe("supervisor reEmitParkedCorrelations", () => {
       workflowRunRef: "refs/heads/main",
       anchorRunId: DEPLOYMENT_ID,
       deploymentMailAddress: AGENT_ADDRESS,
-      readPrincipal: { kind: "supervisor" },
-      layoutSteps: () =>
-        Promise.resolve({
-          stepIds: ["step-1"],
-          deriveStepAddress: () => AGENT_ADDRESS,
-          deriveStepRepoId: () => ({ kind: "agent-state", id: DEPLOYMENT_ID }),
-        }),
+      onRunStart: noGrantsOnRunStart,
+      layoutSteps: () => Promise.resolve(["step-1"]),
       inboxPrimitives: createNoopInboxPrimitives(),
     });
 

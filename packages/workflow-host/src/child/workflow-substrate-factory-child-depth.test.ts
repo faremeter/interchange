@@ -325,7 +325,7 @@ describe("createSidecarRunChild root grants at depth", () => {
 
   function rootSnapshot(grants: readonly GrantRule[]) {
     return {
-      steps: [{ stepId: "top", address: "top", grants, contentHash: "h" }],
+      steps: [{ stepId: "top", grants, contentHash: "h" }],
     };
   }
 
@@ -499,9 +499,7 @@ describe("createSidecarRunChild per-rung cap", () => {
     });
     const rootGrants = {
       current: {
-        steps: [
-          { stepId: "top", address: "top", grants: [allow], contentHash: "h" },
-        ],
+        steps: [{ stepId: "top", grants: [allow], contentHash: "h" }],
       },
     };
     const handle = await runChild(

@@ -53,7 +53,6 @@ function config(agentAddress: string): HarnessConfig {
     agentAddress,
     systemPrompt: "test",
     tools: [],
-    grants: [],
     sources: [
       {
         id: "test-source",

@@ -168,7 +168,6 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
       agentAddress: deploymentMailAddress,
       systemPrompt: "Fallback prompt (overridden per step by the definition)",
       tools: [],
-      grants: [],
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
     };
@@ -347,7 +346,6 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
       agentAddress: deploymentMailAddress,
       systemPrompt: "Fallback prompt (overridden per step by the definition)",
       tools: [],
-      grants: [],
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
     };
@@ -515,7 +513,6 @@ async function deployParkedOnSignal(args: {
       agentAddress: address,
       systemPrompt: "Wait for the signal.",
       tools: [],
-      grants: [],
       sources: [source],
       defaultSource: source.id,
     },

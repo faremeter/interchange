@@ -80,7 +80,6 @@ export function createLocalCredentialsSnapshot(
   return {
     steps: executableStepIds(opts.definition).map((stepId) => ({
       stepId,
-      address: stepId,
       grants,
       // A local snapshot is never pushed over a control channel, so it carries
       // no content hash to cross-check.

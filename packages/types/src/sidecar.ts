@@ -562,10 +562,7 @@ export type SenderIdentity = typeof SenderIdentity.infer;
  * inside the deployment's `workflow-run` repo -- sibling to the run's
  * `runs/<runId>/events/` subtree.
  *
- * `stepGrants` carries the same `WireGrantRule` shape the `agent.deploy`
- * frame's `config.grants` ships, so the run's grants ride the same
- * validated grant encoding as the deploy-time step grants rather than a
- * new one.
+ * `stepGrants` carries the run's grants as validated `WireGrantRule`s.
  *
  * `senderIdentities` carries the resolved public keys of the run's
  * authorized senders, co-delivered on the same `run.grants` barrier as the

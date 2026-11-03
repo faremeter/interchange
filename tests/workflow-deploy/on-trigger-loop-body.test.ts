@@ -140,7 +140,6 @@ async function deployAndAssertBodyCompletes(opts: {
     agentAddress: deploymentMailAddress,
     systemPrompt: "Fallback prompt (overridden per step by the definition)",
     tools: [],
-    grants: [],
     sources: [
       {
         id: "anthropic:mock-model",

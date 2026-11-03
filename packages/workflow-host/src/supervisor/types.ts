@@ -295,7 +295,7 @@ export interface SuspensionRegistration {
  * holds a private key in plaintext.
  */
 export interface WorkflowSupervisorBindings {
-  /** Substrate handle the supervisor reads grants from and commits events to. */
+  /** Substrate handle the supervisor commits the run's mail and events through. */
   repoStore: SubstrateRepoStore;
   /** Per-principal signing callback. See `PrincipalSigner`. */
   signAsPrincipal: PrincipalSigner;
@@ -358,15 +358,11 @@ export interface WorkflowSupervisorBindings {
    * synthesized `RunFailed`) rather than firing the trigger against absent
    * grants. For a new child, a null or a throw gives the child no grants
    * snapshot, so a step that needs grants fails closed.
-   *
-   * A caller that injects no per-run source -- today, the supervisor's own
-   * tests -- gives a new child the spawn-time snapshot instead. Production
-   * (the sidecar) wires it to the run's grants file.
    */
-  onRunStart?: (args: {
+  onRunStart: (args: {
     runId: string;
     anchorRunId: string;
-    layout: import("./credentials").StepLayout;
+    stepIds: readonly string[];
   }) => Promise<import("./credentials").CredentialsSnapshot | null>;
   /**
    * Decrypted credential material for the deployment's binding consumers and
@@ -420,23 +416,18 @@ export interface WorkflowSupervisorBindings {
    */
   deploymentMailAddress: string;
   /**
-   * The supervisor's substrate principal for read-only operations
-   * the supervisor performs in its own right (e.g. enumerating
-   * step grants). Cancel-signing constructs its own principal at
-   * commit time; this binding is for non-write operations.
-   */
-  readPrincipal: Principal;
-  /**
-   * Derive the deployment's step layout from the definition its first child
-   * verified. The supervisor calls it once, after checking the child's
+   * Derive the deployment's step ids from the definition its first child
+   * verified: every step id the credentials snapshot carries an entry for, the
+   * definition's own `stepOrder` plus the step ids of every `loop` body. The
+   * supervisor calls it once, after checking the child's
    * reported projection against the approved hash and before it reads the
-   * run's authority for that child, and keeps the layout for every later
+   * run's authority for that child, and keeps the ids for every later
    * respawn: the same hash check pins each later child to the same
    * definition. A throw fails the spawn and kills the child.
    */
   layoutSteps: (
     definition: import("@intx/types/sidecar").WorkflowProjectionDefinition,
-  ) => Promise<import("./credentials").StepLayout>;
+  ) => Promise<readonly string[]>;
   /**
    * Optional override for the per-spawn IPC keypair factory. Each
    * spawn mints a fresh control-channel Ed25519 keypair; this hook

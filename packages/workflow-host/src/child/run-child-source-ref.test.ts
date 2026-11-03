@@ -421,7 +421,6 @@ function credentialedActionAuthority(consumer: string) {
       steps: [
         {
           stepId: "fetch",
-          address: "deployment-x-fetch@example.com",
           grants: [
             {
               id: "grant-use",
@@ -491,7 +490,6 @@ const AUTHORITY_SNAPSHOT = {
   steps: [
     {
       stepId: "main",
-      address: "deployment-x-main@example.com",
       grants: [],
       contentHash: "deadbeef",
     },

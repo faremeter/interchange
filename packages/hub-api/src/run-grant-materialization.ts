@@ -415,9 +415,8 @@ function snapshotHasMailTrigger(snapshot: GrantWalkSnapshot): boolean {
 }
 
 /**
- * Project a materialized run grant row into the `run.grants` wire shape --
- * the same `WireGrantRule` encoding the `agent.deploy` frame's
- * `config.grants` ships. A run grant is always principal-scoped and never
+ * Project a materialized run grant row into the `run.grants` wire shape. A
+ * run grant is always principal-scoped and never
  * role-scoped, so `roleId` is null and `principalId` is the run principal.
  */
 export function runGrantToWire(

@@ -239,7 +239,6 @@ describe("deploy-failure registry leak", () => {
         registry.record(runId, { agentAddress, generation });
       },
       removeRunRepository: async () => undefined,
-      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
@@ -324,7 +323,6 @@ describe("deploy-failure registry leak", () => {
         registry.record(runId, { agentAddress, generation });
       },
       removeRunRepository: async () => undefined,
-      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
@@ -348,9 +346,8 @@ describe("deploy-failure registry leak", () => {
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
       requestId: "deploy-test",
-      // Single-step projection: the deploy router parses the frame
-      // address into the legacy agent-state repo id, so it must carry the
-      // canonical `run_<id>@<domain>` shape.
+      // Single-step projection: the address carries the canonical
+      // `run_<id>@<domain>` shape.
       agentAddress: "run_mstep@x.example",
       generation: 1,
       agentId: "mstep",
@@ -458,7 +455,6 @@ describe("deploy-failure registry leak", () => {
         registry.record(runId, { agentAddress, generation });
       },
       removeRunRepository: async () => undefined,
-      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
@@ -559,7 +555,6 @@ describe("deploy-failure registry leak", () => {
         registry.record(runId, { agentAddress, generation });
       },
       removeRunRepository: async () => undefined,
-      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },

@@ -255,7 +255,6 @@ async function deployAndPark(opts: {
     agentAddress: deploymentMailAddress,
     systemPrompt: "Fallback prompt (overridden per step by the definition)",
     tools: [],
-    grants: [],
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };

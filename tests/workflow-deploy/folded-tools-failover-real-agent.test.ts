@@ -193,7 +193,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: deploymentMailAddress,
         systemPrompt: "Fallback prompt (overridden per step by the definition)",
         tools: [],
-        grants: [],
         sources: [deadSource, healthySource],
         defaultSource: "anthropic:dead-head",
       };
@@ -331,7 +330,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: deploymentMailAddress,
         systemPrompt: "Fallback prompt (overridden per step by the definition)",
         tools: [],
-        grants: [],
         sources: [deadSource],
         defaultSource: "anthropic:dead-head",
       };

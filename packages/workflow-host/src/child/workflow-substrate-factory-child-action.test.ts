@@ -552,7 +552,7 @@ function credentialUseGrant(consumer: string): GrantRule {
 // The grants of the top-level run, which a spawned body caps on each read.
 function rootSnapshot(grants: readonly GrantRule[]) {
   return {
-    steps: [{ stepId: "root", address: "root", grants, contentHash: "h" }],
+    steps: [{ stepId: "root", grants, contentHash: "h" }],
   };
 }
 

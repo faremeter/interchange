@@ -36,7 +36,6 @@ function makeConfig(args: {
     agentAddress: "run_nonagent@workflow.interchange",
     systemPrompt: "shared-prompt",
     tools: [],
-    grants: [],
     sources: args.sources,
     defaultSource: args.defaultSource,
   };

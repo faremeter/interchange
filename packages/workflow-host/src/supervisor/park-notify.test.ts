@@ -36,6 +36,7 @@ import {
   createControlChannelSender,
   type ControlChannelSender,
 } from "../ipc/index";
+import { noGrantsOnRunStart } from "./step-grants.test-helpers";
 
 const AGENT_ADDRESS = "run_park-agent@integration.example";
 const DEPLOYMENT_ID = "park-dep";
@@ -122,13 +123,8 @@ describe("supervisor park.notify arm", () => {
       workflowRunRef: "refs/heads/main",
       anchorRunId: DEPLOYMENT_ID,
       deploymentMailAddress: AGENT_ADDRESS,
-      readPrincipal: { kind: "supervisor" },
-      layoutSteps: () =>
-        Promise.resolve({
-          stepIds: ["step-1"],
-          deriveStepAddress: () => AGENT_ADDRESS,
-          deriveStepRepoId: () => ({ kind: "agent-state", id: DEPLOYMENT_ID }),
-        }),
+      onRunStart: noGrantsOnRunStart,
+      layoutSteps: () => Promise.resolve(["step-1"]),
       inboxPrimitives: createNoopInboxPrimitives(),
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     });

@@ -56,7 +56,6 @@ export const TEST_CONFIG: HarnessConfig = {
   agentAddress: TEST_IDENTITY.workflowRunAddress,
   systemPrompt: "test",
   tools: [],
-  grants: [],
   sources: [
     {
       id: "test-source",

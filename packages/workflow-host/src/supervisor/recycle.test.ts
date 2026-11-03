@@ -21,7 +21,6 @@ import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
-import type { RepoId } from "@intx/hub-sessions";
 import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
@@ -50,12 +49,12 @@ import { createRecyclePolicy, type RecyclePolicyBounds } from "./recycle";
 import { waitUntil } from "@intx/types/testing";
 import { mergeCredentialDelivery } from "../child/credential-cell";
 import { parseSpawnTimeEnv } from "../child/env-bootstrap";
-import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
 import {
   createControlChannelSender,
   ControlPayload,
   SignedEnvelope,
 } from "../ipc/index";
+import { seedStepGrants, seededOnRunStart } from "./step-grants.test-helpers";
 
 function parseSignalDeliverRunIds(lines: readonly string[]): string[] {
   const ids: string[] = [];
@@ -92,27 +91,6 @@ function authoritySetFrames(lines: readonly string[]) {
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
-}
-
-async function seedStepGrants(
-  baseDir: string,
-  repoId: RepoId,
-  grants: unknown[],
-): Promise<void> {
-  const dir = path.join(baseDir, repoId.kind, repoId.id);
-  await fs.mkdir(path.join(dir, "state"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, STEP_GRANTS_PATH),
-    JSON.stringify({ grants }),
-  );
-}
-
-async function corruptStepGrants(
-  baseDir: string,
-  repoId: RepoId,
-): Promise<void> {
-  const dir = path.join(baseDir, repoId.kind, repoId.id);
-  await fs.writeFile(path.join(dir, STEP_GRANTS_PATH), "{ this is not json");
 }
 
 type FakeChild = {
@@ -408,13 +386,8 @@ async function buildBindings(opts: {
     workflowRunRef: "refs/heads/main",
     anchorRunId: "run_deployment-x",
     deploymentMailAddress: "run_deployment-x@example.com",
-    readPrincipal: { kind: "supervisor" },
-    layoutSteps: () =>
-      Promise.resolve({
-        stepIds: ["step-1"],
-        deriveStepAddress: ({ runId, stepId }) =>
-          `${runId}-${stepId}@example.com`,
-      }),
+    onRunStart: seededOnRunStart(opts.baseDir),
+    layoutSteps: () => Promise.resolve(["step-1"]),
     ipcKeyPairFactory: () => Promise.resolve(opts.ipcKeypair),
     inboxPrimitives: opts.inboxPrimitives ?? createMemoryInboxPrimitives(),
     ...(opts.recyclePolicy !== undefined
@@ -436,11 +409,9 @@ async function spawnSupervisor(opts: {
   onRunStart?: WorkflowSupervisorBindings["onRunStart"];
   credentialDelivery?: WorkflowSupervisorBindings["credentialDelivery"];
 }) {
-  await seedStepGrants(
-    opts.baseDir,
-    defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-    [{ resource: "thing", action: "read" }],
-  );
+  await seedStepGrants(opts.baseDir, "step-1", [
+    { resource: "thing", action: "read" },
+  ]);
   const bindings = await buildBindings({
     baseDir: opts.baseDir,
     spawner: opts.tracker.spawner,
@@ -518,11 +489,9 @@ describe("supervisor spawn: failure cleanup", () => {
     const mailBus = createMockMailBus();
     // sigtermExits so the timeout path's kill settles the fake child.
     const tracker = createSpawnTracker({ sigtermExits: true });
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const bindings = await buildBindings({
       baseDir,
       spawner: tracker.spawner,
@@ -585,11 +554,9 @@ describe("supervisor spawn: failure cleanup", () => {
     };
     // sigtermExits so the ready-timeout reap settles the fake child.
     const tracker = createSpawnTracker({ sigtermExits: true });
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const bindings = await buildBindings({
       baseDir,
       spawner: tracker.spawner,
@@ -633,11 +600,9 @@ describe("supervisor spawn: dynamic env", () => {
     const ipcKeypair = await generateKeyPair();
     const mailBus = createMockMailBus();
     const tracker = createSpawnTracker({});
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     let hostRevised = "before-rotation";
     const bindings = await buildBindings({
       baseDir,
@@ -850,11 +815,9 @@ describe("supervisor recycle: respawn handshake bound", () => {
       // respawn is exactly the child that ignores SIGTERM, and the reap must
       // still guarantee it dies.
       const tracker = createSpawnTracker({ sigtermExits: false });
-      await seedStepGrants(
-        baseDir,
-        defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-        [{ resource: "thing", action: "read" }],
-      );
+      await seedStepGrants(baseDir, "step-1", [
+        { resource: "thing", action: "read" },
+      ]);
       const bindings = await buildBindings({
         baseDir,
         spawner: tracker.spawner,
@@ -923,11 +886,9 @@ describe("supervisor recycle: respawn handshake bound", () => {
     // path proves the child is killed even though the control channel end
     // does not itself terminate the process.
     const tracker = createSpawnTracker({ sigtermExits: true });
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const bindings = await buildBindings({
       baseDir,
       spawner: tracker.spawner,
@@ -976,11 +937,9 @@ describe("supervisor recycle: respawn handshake bound", () => {
     const baseDir = await makeTempDir("recycle-definition-mismatch-");
     const ipcKeypair = await generateKeyPair();
     const tracker = createSpawnTracker({ sigtermExits: true });
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const bindings = await buildBindings({
       baseDir,
       spawner: tracker.spawner,
@@ -1186,11 +1145,9 @@ describe("supervisor recycle: policy-initiated (max-uptime trip)", () => {
     const ipcKeypair = await generateKeyPair();
     const mailBus = createMockMailBus();
     const tracker = createSpawnTracker({});
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     let nowMs = 1_700_000_000_000;
 
     let trigger: ((reason: string) => Promise<void>) | null = null;
@@ -1324,11 +1281,9 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
     const mailBus = createMockMailBus();
     const tracker = createSpawnTracker({});
 
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const baseBindings = await buildBindings({
       baseDir,
       spawner: tracker.spawner,
@@ -1417,11 +1372,9 @@ describe("supervisor recycle: drain-side processing replay", () => {
         return { commitSha: "memory", replayedKeys: [] };
       },
     };
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const bindings = await buildBindings({
       baseDir,
       spawner: tracker.spawner,
@@ -1627,11 +1580,9 @@ describe("supervisor recycle: shutdown owns the retiring dispatch loop", () => {
     const consuming = Promise.withResolvers<undefined>();
     const releaseConsumption = Promise.withResolvers<undefined>();
     let consumed = false;
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const bindings = await buildBindings({
       baseDir,
       spawner: tracker.spawner,
@@ -1782,53 +1733,6 @@ describe("supervisor recycle: external drain phase guard", () => {
   });
 });
 
-describe("supervisor recycle: respawn credentials-read failure", () => {
-  test("a respawn whose credentials re-read throws reaps the freshly-spawned child", async () => {
-    const baseDir = await makeTempDir("recycle-credleak-");
-    const ipcKeypair = await generateKeyPair();
-    const mailBus = createMockMailBus();
-    // sigtermExits so the reap's SIGTERM settles the fake child.
-    const tracker = createSpawnTracker({ sigtermExits: true });
-    const { supervisor } = await spawnSupervisor({
-      baseDir,
-      tracker,
-      mailBus,
-      ipcKeypair,
-    });
-    expect(tracker.totalSpawns).toBe(1);
-
-    // Corrupt the step grants so the recycle's pre-handshake
-    // assembleCredentialsSnapshot re-read throws -- the recycle doubles
-    // as the grant-refresh path, so a malformed grants file is exactly
-    // the read that fails here.
-    await corruptStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-    );
-
-    let caught: unknown;
-    try {
-      await supervisor.recycle({ reason: "credentials-leak-regression" });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    expect(caught instanceof Error && caught.message).toMatch(/not valid JSON/);
-
-    // The respawn spawned the new child before the credentials read
-    // threw. Its catch must reap that child rather than leak it: the
-    // supervisor's recycle-failure teardown reaps only the PRIOR cohort
-    // (state.handle during `recycling`), so a child that failed before
-    // installation is invisible to it.
-    expect(tracker.totalSpawns).toBe(2);
-    const newChild = tracker.children[1];
-    if (newChild === undefined) {
-      throw new Error("tracker.children[1] missing");
-    }
-    expect(newChild.killSignals.length).toBeGreaterThan(0);
-  });
-});
-
 describe("supervisor shutdown: teardown robustness", () => {
   test("shutdown still kills the child and reaches stopped when mail unsubscribe throws", async () => {
     const baseDir = await makeTempDir("shutdown-unsub-throw-");
@@ -1910,7 +1814,6 @@ describe("supervisor recycle: the new child's authority", () => {
     steps: [
       {
         stepId: "step-1",
-        address: "run_deployment-x-step-1@example.com",
         grants: [{ id: "run-grant" }],
         contentHash: "run-hash",
       },
@@ -1927,7 +1830,6 @@ describe("supervisor recycle: the new child's authority", () => {
     steps: [
       {
         stepId: "step-1",
-        address: "run_deployment-x-step-1@example.com",
         grants: [{ id: `grant-${contentHash}` }],
         contentHash,
       },
@@ -1963,11 +1865,9 @@ describe("supervisor recycle: the new child's authority", () => {
     ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
     onRunStart: NonNullable<WorkflowSupervisorBindings["onRunStart"]>;
   }) {
-    await seedStepGrants(
-      opts.baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(opts.baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const bindings = await buildBindings({
       baseDir: opts.baseDir,
       spawner: opts.tracker.spawner,
@@ -2448,11 +2348,9 @@ describe("supervisor recycle: the new child's authority", () => {
     const baseDir = await makeTempDir("recycle-definition-wait-shutdown-");
     const ipcKeypair = await generateKeyPair();
     const tracker = createSpawnTracker({ sigtermExits: true });
-    await seedStepGrants(
-      baseDir,
-      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
-      [{ resource: "thing", action: "read" }],
-    );
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
     const bindings = await buildBindings({
       baseDir,
       spawner: tracker.spawner,

@@ -331,7 +331,6 @@ async function buildRouter(args: {
     assertSourceBuildable: () => undefined,
     registerDeployment: () => undefined,
     removeRunRepository: async () => undefined,
-    removeAgentStateRepository: async () => undefined,
     unregisterDeployment: () => undefined,
     reportDeploymentRefTips: async () => ({}),
     multistepSubprocessSpawner: args.spawner,
@@ -404,9 +403,8 @@ async function measureRestore(n: number): Promise<number> {
     addresses.push(`run_boot_${String(i)}@example.com`);
   }
 
-  // SETUP: deploy each address through the first router so its restore record,
-  // workflow.json, and step grants land on disk. Not part of the measured
-  // interval.
+  // SETUP: deploy each address through the first router so its restore record
+  // lands on disk. Not part of the measured interval.
   const setupTransport = createInMemoryTransport();
   const setup = makeReadyDrivingSpawner(20000);
   const routerA = await buildRouter({

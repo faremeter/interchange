@@ -13,17 +13,10 @@ export {
 } from "./supervisor";
 
 export {
-  assembleCredentialsSnapshot,
   isErrnoNotFound,
-  defaultStepRepoId,
   hashGrants,
-  STEP_GRANTS_PATH,
-  STEP_GRANTS_REF,
-  type AssembleCredentialsSnapshotOpts,
   type CredentialsSnapshot,
   type CredentialsSnapshotStep,
-  type DeriveStepAddress,
-  type DeriveStepRepoId,
 } from "./credentials";
 
 export {

@@ -57,7 +57,6 @@ const CONFIG: HarnessConfig = {
   agentAddress: "run_nonagenttop@workflow.interchange",
   systemPrompt: "shared",
   tools: [],
-  grants: [],
   sources: [DEFAULT_SOURCE],
   defaultSource: DEFAULT_SOURCE.id,
 };

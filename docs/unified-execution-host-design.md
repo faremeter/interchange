@@ -177,14 +177,14 @@ threads up through every rung to the hub timeline.
 
 **A single-agent deploy** (`run_<hex>@<domain>`):
 
-1. Hub deploy -> the deploy path mints the run address, ships
-   grants on disk (the 8a grants-bridge, see §3g).
+1. Hub deploy -> the deploy path mints the run address and sends
+   `agent.deploy`; the run's grants follow in `run.grants` frames (see §3g).
 2. The deploy carries a one-step workflow whose single step is the
    deployed agent. The DeployRouter routes it to the supervisor for the
    address's isolation-domain.
-3. The supervisor registers the run address on the mail bus, assembles the
-   step's credentials snapshot from the on-disk grants, spawns (or reuses) the
-   child, and pushes `grants-updated`.
+3. The supervisor registers the run address on the mail bus, spawns (or reuses)
+   the child, and sends it the run's credentials snapshot, read from the run's
+   grants file, in `authority.set`.
 4. Inbound mail lands at the supervisor, enters the inbox claim-check, and the
    dispatch loop emits `trigger.fired`. The child opens a `runtimeRun` for the
    one-step workflow; the **real step-invoker** instantiates the agent with
@@ -1003,17 +1003,10 @@ same child/workflow-run model as the multi-step path:
   function
   (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`). The read/write repo-id
   invariant (hub reconstructs the same slug for reads) is preserved.
-- **Grants placement.** The supervisor's credentials assembly reads each step's
-  grants from `state/grants.json` in the step's `agent-state` repo
-  (`packages/workflow-host/src/supervisor/credentials.ts`, `STEP_GRANTS_PATH`).
-  The single-agent deploy's grants must land there. **This is exactly the
-  grants-on-disk bridge already built and proven** during the Commit-1
-  exploration, saved as
-  `dispatch/workflow-launch-and-converge/8a-route_single_step_via_child/8a-groundwork.patch`.
-  It is reusable here verbatim: the single-step deploy writes `state/grants.json`
-  from `config.grants` before spawn, and the per-step `deriveStepAddress` /
-  `deriveStepRepoId` return the run address and the agent-state repo
-  id. Reuse this patch as the identity/grants foundation.
+- **Grants placement.** The supervisor's `onRunStart` binding reads a run's
+  grants from `runs/<runId>/grants.json`
+  (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`), which the
+  sidecar writes from the Hub's `run.grants` frames.
 
 ### 3h. Trigger budget: how long a step lives
 
@@ -1254,7 +1247,7 @@ buildEnv, agentFactory: createAgent })`. Tools empty for now.
 - **Changes.** Warm-agent cache in the child (§3b); supervisor-as-sole-mail-owner
   with synthesized step-input delivery (§3a); conversation state committed to
   the workflow-run substrate (§3c); supervisor-backed outbound transport for
-  replies. Apply the 8a grants-bridge patch for identity/grants (§3g).
+  replies.
 - **Verification.** (1) Two sequential messages to one address reuse one warm
   agent and preserve conversation state. (2) Multi-turn conversation over the
   inbox claim-check produces a durable, resumable run log. (3) **Kill + respawn
@@ -1609,8 +1602,8 @@ INTR-209 end state; the hardened boundaries (Phase 6) are a follow-on.
    (§3f). Flagged as an open question, not designed here.
 
 8. **Credentials snapshot / grants flow to a sandboxed sub-child.** The rung-0
-   supervisor assembles the credentials snapshot and pushes it over the control
-   IPC (`assembleCredentialsSnapshot`, `grants-updated`). For an **in-process**
+   supervisor reads the credentials snapshot and pushes it over the control
+   IPC (`onRunStart`, `grants-updated`). For an **in-process**
    rung the snapshot is shared from the parent (same process): each in-process
    child caps its parent's current grants, which trace back to the top-level
    run's live snapshot reference, so a grant change reaches it as described
@@ -1756,8 +1749,8 @@ The unified host is proven by four classes of check:
    - Kill + respawn mid-conversation: `discoverInFlightRuns` resumes and
      conversation state is restored from the substrate.
    - Identity: the run keeps its `run_<hex>` address; the deploy-ack listener
-     persists the public key; grants resolve from `state/grants.json` and an
-     authorize call that depends on a granted resource succeeds while an
+     persists the public key; grants resolve from the run's `grants.json` and
+     an authorize call that depends on a granted resource succeeds while an
      ungranted one fails closed.
 
 3. **Multiplex + workflow-declared isolation integration tests.**
@@ -1820,8 +1813,7 @@ are explicitly **not** a go-live gate for INTR-209.
   (`createWorkflowStepInvoker`, `WorkflowStepInvokerOpts`, `invokeStep`).
 - Supervisor: `packages/workflow-host/src/supervisor/supervisor.ts`
   (mail ingestion, dispatch loop, `spawn`); `supervisor/credentials.ts`
-  (`assembleCredentialsSnapshot`, `deriveStepAddress`, `deriveStepRepoId`,
-  `STEP_GRANTS_PATH`, `defaultStepRepoId`); `supervisor/types.ts`
+  (`CredentialsSnapshot`, `hashGrants`); `supervisor/types.ts`
   (`WorkflowSupervisorBindings`, `SubprocessSpawner`, `SubprocessHandle`);
   `supervisor/recycle.ts`; `drain-controller.ts`.
 - Child: `packages/workflow-host/src/child/run-child.ts`
@@ -1884,8 +1876,6 @@ are explicitly **not** a go-live gate for INTR-209.
   `packages/hub-sessions/src/hub-session-lookups.ts`
   (`resolveRoutableAddress`); sidecar reconnect identity and hosted bindings in
   `packages/hub-sessions/src/ws/sidecar-token-authenticator.ts`.
-- Grants bridge (reusable):
-  `dispatch/workflow-launch-and-converge/8a-route_single_step_via_child/8a-groundwork.patch`.
 - Transport interface: `packages/types/src/runtime-core.ts` (`MessageTransport`).
 - Tool packaging: `@intx/tool-packaging` (`createToolLoader`, `applyAtomic`,
   `createTarballCache`).

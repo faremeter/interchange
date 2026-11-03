@@ -290,7 +290,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: deploymentMailAddress,
         systemPrompt: "Fallback prompt (overridden per step by the definition)",
         tools: [],
-        grants: [],
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
       };

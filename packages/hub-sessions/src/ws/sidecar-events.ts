@@ -95,8 +95,7 @@ export type SidecarEventMap = {
 
   /** Notification. Emitted when a sidecar's connection closes, and when
    * one allocation leaves a connection that stays open for others,
-   * carrying every workflow address that lost its route: deployment
-   * addresses and the step addresses staged for them. */
+   * carrying every workflow address that lost its route. */
   "sidecar.disconnect": {
     ownedAddresses: string[];
     /** Allocation generations whose current connection this was. */
