@@ -271,6 +271,7 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
       collectDeclaredCredentialConsumers: () => new Set<string>(),
       filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
         parentGrants,
+      closurePackageDir: "/unused-closure",
       directors: createDefaultDirectorRegistry(),
     });
 
@@ -355,6 +356,7 @@ describe("createSidecarRunChild root grants at depth", () => {
       collectDeclaredCredentialConsumers: () => new Set<string>(),
       filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
         parentGrants,
+      closurePackageDir: "/unused-closure",
       directors: createDefaultDirectorRegistry(),
     });
   }
@@ -495,6 +497,7 @@ describe("createSidecarRunChild per-rung cap", () => {
             typeof g.resource === "string" &&
             declared.has(g.resource),
         ),
+      closurePackageDir: "/unused-closure",
       directors: createDefaultDirectorRegistry(),
     });
     const rootGrants = {

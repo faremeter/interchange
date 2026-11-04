@@ -273,7 +273,7 @@ const refuseStep: SidecarChildStepInvoker = () => {
 
 function makeDeps(
   substrate: ReturnType<typeof createRepoStore>,
-  packageDir: string | undefined,
+  packageDir: string,
 ): Parameters<typeof createSidecarRunChild>[0] {
   return {
     substrate,
@@ -299,7 +299,7 @@ function makeDeps(
     credentialProviders: createCredentialProviderRegistry(
       builtinCredentialProviders(),
     ),
-    ...(packageDir !== undefined ? { closurePackageDir: packageDir } : {}),
+    closurePackageDir: packageDir,
     collectDeclaredResources: () => new Set([SHIP_RESOURCE]),
     collectDeclaredCredentialConsumers: () => new Set<string>(),
     filterGrantsToDeclaredResources: (parentGrants, declared) =>
@@ -430,32 +430,6 @@ describe("spawned body action steps", () => {
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("completed");
     expect(await fs.promises.readFile(marker, "utf8")).toBe("shipped");
-  });
-
-  test("rejects an action body when the closure directory is missing", async () => {
-    const substrate = await makeSubstrate("child-action-nodir-");
-    const parentRunId = "run-parent-nodir";
-    await seedRunGrants(substrate, parentRunId, [grant(SHIP_RESOURCE)]);
-    const marker = await markerPath();
-    const runChild = createSidecarRunChild(makeDeps(substrate, undefined));
-
-    await expect(
-      runChild(
-        {
-          definition: actionBody(ALLOW_BODY_ID, [SHIP_CAPABILITY]),
-          definitionRef: REF,
-          childRunId: "run-body-nodir",
-          input: { marker, capability: SHIP_CAPABILITY },
-          parentRunId,
-          parentStepId: "spawn",
-          signal: new AbortController().signal,
-          depth: 1,
-          maxChildSpawnDepth: 32,
-        },
-        () => undefined,
-      ),
-    ).rejects.toThrow(/deps\.closurePackageDir is missing/);
-    await expect(fs.promises.access(marker)).rejects.toThrow();
   });
 });
 

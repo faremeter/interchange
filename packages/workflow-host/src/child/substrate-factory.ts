@@ -843,16 +843,16 @@ export interface SidecarStepBuildEnvDeps {
   durableConversation?: DurableConversationRegistry;
   /**
    * Sidecar-local directory of the materialized workflow-definition closure
-   * (`env.spawn.closurePackageDir`), present only on the source-ref lineage.
-   * The source arm materializes each step agent's declared plugin packages
-   * (`req.agent.plugins`) from this already-laid-out closure -- resolving them
+   * (`env.spawn.closurePackageDir`). The invoker materializes each step
+   * agent's declared plugin packages (`req.agent.plugins`) from this
+   * already-laid-out closure -- resolving them
    * through the workflow package's `node_modules/` graph, no re-download -- and
    * feeds the resulting plugin factories into the per-step plugin chain. A
    * plugin package contributes no agent-visible tool factory, so this closure
    * load is the only channel that reaches an `env.plugins` a source workflow's
    * posix bundle consumes.
    */
-  closurePackageDir?: string;
+  closurePackageDir: string;
   /**
    * Director registry each step env carries. Required: the source-ref lineage
    * supplies the closure-composed registry so a step agent's `director` ref
@@ -867,11 +867,7 @@ export interface SidecarStepBuildEnvDeps {
 /**
  * Materialize the plugin factories a source-ref step agent declares
  * (`req.agent.plugins`) from the workflow's frozen closure. Returns an
- * empty list when the agent declares no plugins. Fails closed when plugins
- * are declared but the source-ref closure dir is absent -- that pairing is a
- * wiring bug (the source arm always carries `closurePackageDir`), and
- * silently dropping the plugins would run the workflow without the tools it
- * declared and leave the reactor to fail closed on the un-loaded tool.
+ * empty list when the agent declares no plugins.
  *
  * The closure is already laid out on disk from the deploy-side apply, so
  * this is a load-only pass -- no re-download -- resolving each plugin
@@ -885,11 +881,6 @@ async function materializeSourcePluginFactories(
   const plugins = req.agent.plugins ?? [];
   if (plugins.length === 0) {
     return [];
-  }
-  if (deps.closurePackageDir === undefined) {
-    throw new Error(
-      `sidecar workflow-child step invoker: step agent ${JSON.stringify(req.agent.id)} declares plugins ${JSON.stringify(plugins)} but the source-ref closure package dir is absent; a source workflow's plugin factories can only be materialized from its frozen closure`,
-    );
   }
   return loadWorkflowPluginFactoriesFromClosure({
     packageDir: deps.closurePackageDir,
@@ -1315,10 +1306,9 @@ interface SidecarRunChildDeps {
    * from it so a plugin-contributed `tool:<name>` the child loads is declared
    * when capping the child's inherited grants, and loads `interchange.actions`
    * when this body can reach an action. A body that declares neither a plugin
-   * nor an action needs no closure read; absent on a lineage that stages no
-   * closure. A body that reaches an action and has no directory fails at spawn.
+   * nor an action needs no closure read.
    */
-  closurePackageDir?: string;
+  closurePackageDir: string;
   /** Clock for timestamp generation; defaults to `() => new Date()`. */
   clock?: () => Date;
   /**
@@ -1711,13 +1701,10 @@ async function collectChildCapInputs(
   deps: SidecarRunChildDeps,
   definition: WorkflowDefinition,
 ): Promise<ChildCapInputs> {
-  const pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]> =
-    deps.closurePackageDir === undefined
-      ? new Map<string, readonly ToolDeclaration[]>()
-      : await loadWorkflowPluginToolDefinitionsFromClosure({
-          packageDir: deps.closurePackageDir,
-          plugins: collectDeclaredPluginNames(definition),
-        });
+  const pluginDefs = await loadWorkflowPluginToolDefinitionsFromClosure({
+    packageDir: deps.closurePackageDir,
+    plugins: collectDeclaredPluginNames(definition),
+  });
   return {
     declaredResources: deps.collectDeclaredResources(
       definition,
@@ -1900,16 +1887,9 @@ async function buildChildRunEnv(args: {
     }
   }
   // Resolve the loop while/carry fns from the closure so a loop in this body can
-  // run. Only load when the body contains a loop. If it declares a loop but no
-  // closure is wired, that is a wiring defect -- fail loud, mirroring the
-  // establish-time posture rather than deferring to a mid-run resolve failure.
+  // run. Only load when the body contains a loop.
   let loopFns: LoopFnRegistry | undefined;
   if (loopBodies.length > 0) {
-    if (deps.closurePackageDir === undefined) {
-      throw new Error(
-        "sidecar child: a loop is nested in this spawned body but deps.closurePackageDir is missing; the loop while/carry fns cannot be resolved",
-      );
-    }
     loopFns = await loadWorkflowLoopFnsFromClosure({
       packageDir: deps.closurePackageDir,
     });
@@ -2041,11 +2021,6 @@ async function buildChildRunEnv(args: {
   });
   let actionResolver: ((ref: string) => ActionHandler) | undefined;
   if (actionReachable) {
-    if (deps.closurePackageDir === undefined) {
-      throw new Error(
-        "sidecar child: an action is reachable in this spawned body but deps.closurePackageDir is missing; the action handlers cannot be resolved",
-      );
-    }
     actionResolver = await loadWorkflowActionHandlersFromClosure({
       packageDir: deps.closurePackageDir,
     });
@@ -2477,8 +2452,8 @@ export function createSidecarSubstrateFactory(
       mailboxAddress: env.spawn.mailboxAddress,
       outboundMailBridge: env.outboundMailBridge,
       adapters: childAdapterRegistry,
-      // The materialized closure dir the source arm materializes each step
-      // agent's declared plugin packages from. Always present (source-ref only).
+      // The materialized closure dir the invoker materializes each step
+      // agent's declared plugin packages from.
       closurePackageDir: env.spawn.closurePackageDir,
       directors: stepDirectors,
       // Activate the warm agent's inbound mail surface. Mail tools ask the

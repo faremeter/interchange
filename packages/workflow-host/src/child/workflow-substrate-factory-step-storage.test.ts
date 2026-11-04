@@ -152,6 +152,7 @@ function buildDeps(opts: {
     mailboxAddress: "run_deployment-keying@example.com",
     outboundMailBridge: stubOutboundMailBridge(),
     adapters: createBuiltinRegistry(),
+    closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }

@@ -269,6 +269,7 @@ function makeRunChild(
     collectDeclaredCredentialConsumers:
       grantCap.collectDeclaredCredentialConsumers,
     filterGrantsToDeclaredResources: grantCap.filterGrantsToDeclaredResources,
+    closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
   });
 }

@@ -238,6 +238,7 @@ function sharedDeps(
     collectDeclaredCredentialConsumers: () => new Set<string>(),
     filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
       parentGrants,
+    closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
   };
 }
