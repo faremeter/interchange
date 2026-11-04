@@ -18,7 +18,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
 
-import { grant, principal, runToken } from "@intx/db/schema";
+import { grant, principal, runToken, workflowRun } from "@intx/db/schema";
 import { deriveRunPrincipalId } from "@intx/hub-common";
 import type { GrantRequirement } from "@intx/types";
 import { harnessDbEnvAvailable } from "@intx/test-harness/db-harness";
@@ -131,9 +131,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("expected an expiring self-read grant on the run");
       }
       expect(selfRead.origin).toBe("invoker");
-      expect(selfRead.expiresAt.getTime() - selfRead.createdAt.getTime()).toBe(
-        INVOKER_GRANT_LIFETIME_MS,
-      );
+      // The lifetime counts from the run principal's creation, at deploy.
+      const [runPrincipalA] = await t.h.db
+        .select({ createdAt: principal.createdAt })
+        .from(principal)
+        .where(eq(principal.id, principalA));
+      if (runPrincipalA === undefined) {
+        throw new Error("expected the run principal deploy created");
+      }
+      expect(
+        selfRead.expiresAt.getTime() - runPrincipalA.createdAt.getTime(),
+      ).toBe(INVOKER_GRANT_LIFETIME_MS);
 
       await deploy(RUN_B, {
         resource: "secret:vault",
@@ -148,12 +156,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await refused.json()).toMatchObject({
         error: { code: "insufficient_grants" },
       });
+      // Deploy created run B's principal; the refused trigger neither linked
+      // it to the run nor gave it grants or tokens.
       const principalB = await deriveRunPrincipalId(TENANT_ID, RUN_B);
       expect(
         await t.h.db
-          .select({ id: principal.id })
-          .from(principal)
-          .where(eq(principal.id, principalB)),
+          .select({ principalId: workflowRun.principalId })
+          .from(workflowRun)
+          .where(eq(workflowRun.id, RUN_B)),
+      ).toEqual([{ principalId: null }]);
+      expect(
+        await t.h.db
+          .select({ id: grant.id })
+          .from(grant)
+          .where(eq(grant.principalId, principalB)),
       ).toEqual([]);
       expect(
         await t.h.db

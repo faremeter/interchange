@@ -247,6 +247,8 @@ describe("triggerWorkflowRun first-trigger staging", () => {
     const tx = {
       select: queuedSelect(opts.txRows),
       query: { asset: { findFirst: async () => asset } },
+      // The tenant re-derivation lock; the mock serializes nothing.
+      execute: async () => [],
     };
     const db = {
       select: queuedSelect(
@@ -360,6 +362,30 @@ describe("triggerWorkflowRun first-trigger staging", () => {
     });
     expect(executors).toEqual([tx]);
     expect(collected).toEqual([CREATOR_ID]);
+  });
+
+  test("refuses a first trigger whose run principal an operator suspended", async () => {
+    const { trigger } = makeTrigger({
+      txRows: [
+        // The anchor lock.
+        [{ status: "running", expiresAt: null, cancellationRequestedAt: null }],
+        // No run grants committed by a concurrent trigger.
+        [],
+        // The run principal deploy created, since suspended.
+        [{ id: "prn_run", status: "suspended", createdAt: new Date() }],
+      ],
+      grantStoreFor: () => {
+        throw new Error("a refused first trigger must not stage");
+      },
+    });
+
+    const result = await trigger(triggerArgs);
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: 409,
+      body: { error: { code: "workflow_run_principal_inactive" } },
+    });
   });
 
   test("a trigger that lost the first-fire race sends the winner's grants without staging", async () => {

@@ -12,10 +12,11 @@ type PrincipalInsert = typeof principal.$inferInsert;
 type ParsedPrincipal = ReturnType<typeof parsePrincipalRow>;
 
 /**
- * Store for the `principal` table -- the single owner of principal creation.
- * Every principal insert in the system routes through this one factory, and
- * every principal it creates is minted an active signing key in the same
- * transaction, so a principal never exists without a key.
+ * Store for the `principal` table. This module is the single owner of
+ * principal creation: every principal insert in the system routes through
+ * this factory or `insertRunPrincipal`. Every principal the factory creates
+ * is minted an active signing key in the same transaction, so a user
+ * principal never exists without a key. A run principal gets no hub key.
  *
  * Each method accepts an optional transaction handle so the principal row and
  * its key join the transaction that co-writes the principal's roles and grants.
@@ -53,44 +54,43 @@ export function createPrincipalStore(
       };
       return tx === undefined ? db.transaction(run) : run(tx);
     },
-
-    /**
-     * Idempotent variant of `create` for the run path, where concurrent first
-     * deliveries race to reserve the same principal. On a win it inserts the
-     * principal, mints its key, and returns the parsed row; on a loss it returns
-     * `null` WITHOUT minting -- the winning transaction already minted the one
-     * active key -- so the caller can fall back to the winner's state.
-     *
-     * The conflict target is the natural key `(tenantId, kind, refId)`, NOT the
-     * surrogate `id`: user principals carry a random `generateId("principal")`,
-     * so their only real conflict key is the natural triple. The run path
-     * derives a deterministic id that agrees with the triple, so one target
-     * unifies both callers. Do not switch this to `principal.id`.
-     */
-    async createIfAbsent(
-      row: PrincipalInsert,
-      tx?: DBExecutor,
-    ): Promise<ParsedPrincipal | null> {
-      const run = async (
-        executor: DBExecutor,
-      ): Promise<ParsedPrincipal | null> => {
-        const [inserted] = await executor
-          .insert(principal)
-          .values(row)
-          .onConflictDoNothing({
-            target: [principal.tenantId, principal.kind, principal.refId],
-          })
-          .returning();
-        if (inserted === undefined) return null;
-        await principalKeyStore.generate(inserted.id, executor);
-        return parsePrincipalRow(inserted);
-      };
-      return tx === undefined ? db.transaction(run) : run(tx);
-    },
   };
 }
 
 export type PrincipalStore = ReturnType<typeof createPrincipalStore>;
+
+/**
+ * Insert the run principal of a run, in the caller's transaction, unless the
+ * run already has one. A run principal is the `kind = 'workflow'` principal
+ * whose `refId` is the run id. It gets no hub signing key: the party that
+ * runs the workflow holds its private key.
+ *
+ * The conflict target is the natural key `(tenantId, kind, refId)`, so a
+ * second insert for the same run inserts nothing. Returns whether this call
+ * inserted the row; a caller that expects a fresh run decides what an
+ * existing principal means.
+ */
+export async function insertRunPrincipal(
+  tx: DBExecutor,
+  row: { id: string; tenantId: string; runId: string; createdAt: Date },
+): Promise<boolean> {
+  const inserted = await tx
+    .insert(principal)
+    .values({
+      id: row.id,
+      tenantId: row.tenantId,
+      kind: "workflow",
+      refId: row.runId,
+      status: "active",
+      createdAt: row.createdAt,
+      updatedAt: row.createdAt,
+    })
+    .onConflictDoNothing({
+      target: [principal.tenantId, principal.kind, principal.refId],
+    })
+    .returning({ id: principal.id });
+  return inserted.length > 0;
+}
 
 /**
  * Deactivate the run principals of the given runs and delete their run

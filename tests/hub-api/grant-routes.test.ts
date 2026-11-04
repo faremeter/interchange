@@ -425,7 +425,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       describe("on a workflow run's principal", () => {
         const TOOL = { tool: "tool:pkg" };
 
-        async function setupRun(slug: string) {
+        async function setupRun(slug: string, opts = { fired: true }) {
           const app = makeApp();
           const { tenantId, roleId } = await bootstrapTenant(app, slug);
           const principalId = `prn_run_${slug}`;
@@ -435,10 +435,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
             kind: "workflow",
             refId: `run_${slug}`,
           });
+          // A run that has not fired is "deployed", and its principal is
+          // not linked to the run row yet.
           await seedWorkflowRun(h.db, {
             id: `run_${slug}`,
             tenantId,
-            principalId,
+            principalId: opts.fired ? principalId : null,
+            status: opts.fired ? "running" : "deployed",
           });
           const runGrant = (
             resource: string,
@@ -457,6 +460,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         test("POST refuses a tool condition on a non-credential resource", async () => {
           const { app, tenantId, runGrant } = await setupRun("run-tool");
+
+          const res = await postGrant(
+            app,
+            tenantId,
+            runGrant("tool:search", "invoke", TOOL),
+          );
+
+          expect(res.status).toBe(400);
+          expect(ErrorBody.assert(await res.json()).error.message).toContain(
+            "a workflow run cannot evaluate this grant",
+          );
+        });
+
+        test("POST refuses a tool condition on a run that has not fired", async () => {
+          const { app, tenantId, runGrant } = await setupRun("run-unfired", {
+            fired: false,
+          });
 
           const res = await postGrant(
             app,

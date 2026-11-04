@@ -36,6 +36,7 @@ export {
 export {
   createPrincipalStore,
   deactivateRunPrincipals,
+  insertRunPrincipal,
   type PrincipalStore,
 } from "./principal-store";
 export {

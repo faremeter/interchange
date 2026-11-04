@@ -143,19 +143,32 @@ const CONDITIONS_400_DESCRIPTION =
   "Validation error. A body that fails its schema gets the body validator's error envelope. A body whose `conditions` names an unregistered condition, holds a malformed condition body, or, on a workflow run's principal, holds a condition the run cannot evaluate gets an `ErrorResponse` whose message lists each problem as a JSON array.";
 
 // A grant on a workflow run's principal ships to the run, which evaluates it
-// with narrower registries than the hub's.
+// with narrower registries than the hub's. A run principal is the workflow
+// principal whose `refId` names a run in the tenant; it exists from deploy,
+// before its first trigger links it to the run.
 async function isRunPrincipal(
   db: DB["db"],
   tenantId: string,
   principalId: string,
 ): Promise<boolean> {
-  const run = await db.query.workflowRun.findFirst({
-    columns: { id: true },
-    where: and(
-      eq(workflowRun.tenantId, tenantId),
-      eq(workflowRun.principalId, principalId),
-    ),
-  });
+  const [run] = await db
+    .select({ id: workflowRun.id })
+    .from(principal)
+    .innerJoin(
+      workflowRun,
+      and(
+        eq(workflowRun.id, principal.refId),
+        eq(workflowRun.tenantId, principal.tenantId),
+      ),
+    )
+    .where(
+      and(
+        eq(principal.id, principalId),
+        eq(principal.tenantId, tenantId),
+        eq(principal.kind, "workflow"),
+      ),
+    )
+    .limit(1);
   return run !== undefined;
 }
 

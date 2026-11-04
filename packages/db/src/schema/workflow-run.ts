@@ -87,12 +87,14 @@ export const workflowRun = pgTable(
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
-    // Nullable by design: an internal, workflow-spawned run has no principal of
-    // its own -- it inherits the deployment's grants at read time -- so null is
-    // the honest signal for "this run has no own principal." `onDelete: "set
-    // null"` is deliberate (unlike agent_instance's principal, which uses the
-    // implicit default): deleting a run's principal nulls the column rather than
-    // wedging the run row.
+    // The link to the run's own principal, written by its first grant commit.
+    // Null on a deployment anchor whose first trigger has not committed -- its
+    // run principal already exists from deploy, found by `refId` -- and on an
+    // internal, workflow-spawned run, which has no principal of its own and
+    // inherits the deployment's grants at read time. Find a run's principal by
+    // `refId`, not by this link. `onDelete: "set null"` is deliberate (unlike
+    // agent_instance's principal, which uses the implicit default): deleting a
+    // run's principal nulls the column rather than wedging the run row.
     principalId: text("principal_id").references(() => principal.id, {
       onDelete: "set null",
     }),

@@ -306,7 +306,6 @@ export async function createHubServer({
     materializeMailTriggeredRunGrants: createMailTriggeredRunGrantsMaterializer(
       {
         db,
-        principalKeyStore,
         runTokenStore,
         grantStoreFor: createGrantStore,
         // The registry createHubApp uses, so a conditioned operator

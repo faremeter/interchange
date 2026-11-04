@@ -5,11 +5,15 @@ import {
   buildCredentialDelivery,
   createSidecarAllocationStore,
   createWorkflowDefinitionArtifactStore,
+  deactivateRunPrincipals,
+  insertRunPrincipal,
   resolveInferenceMaterials,
   type DB,
   type SidecarAllocation,
 } from "@intx/db";
+import { deriveRunPrincipalId } from "@intx/hub-common";
 import {
+  principal as principalTable,
   workflowDefinition as workflowDefinitionTable,
   workflowRun as workflowRunTable,
   type WorkflowRunCredentialRefs,
@@ -877,21 +881,41 @@ export async function deployCodeSourcedWorkflow(
   const { definitionId, sendArgs, hubConsumers } =
     await prepareSourceRefDeploy(args);
 
-  // INSERT the anchor before the frame. A collision or DB error here spawned
-  // nothing (no frame went out), so it is a clean, non-leaking failure.
+  // INSERT the anchor and its run principal before the frame. A collision or
+  // DB error here spawned nothing (no frame went out), so it is a clean,
+  // non-leaking failure.
   try {
-    await args.db.insert(workflowRunTable).values({
-      id: args.anchorRunId,
-      tenantId: args.tenantId,
-      anchorRunId: args.anchorRunId,
-      definitionId,
-      address: args.agentAddress,
-      publicKey: null,
-      status: "deployed",
-      createdAt: new Date(),
-      // Persist the non-secret shape of the delivery so the reconnect resync
-      // can re-resolve current materials for these ids. Secrets never land here.
-      ...credentialRefsField(sendArgs.credentials, hubConsumers),
+    const runPrincipalId = await deriveRunPrincipalId(
+      args.tenantId,
+      args.anchorRunId,
+    );
+    await args.db.transaction(async (tx) => {
+      const createdAt = new Date();
+      await tx.insert(workflowRunTable).values({
+        id: args.anchorRunId,
+        tenantId: args.tenantId,
+        anchorRunId: args.anchorRunId,
+        definitionId,
+        address: args.agentAddress,
+        publicKey: null,
+        status: "deployed",
+        createdAt,
+        // Persist the non-secret shape of the delivery so the reconnect resync
+        // can re-resolve current materials for these ids. Secrets never land
+        // here.
+        ...credentialRefsField(sendArgs.credentials, hubConsumers),
+      });
+      const runPrincipalCreated = await insertRunPrincipal(tx, {
+        id: runPrincipalId,
+        tenantId: args.tenantId,
+        runId: args.anchorRunId,
+        createdAt,
+      });
+      if (!runPrincipalCreated) {
+        throw new Error(
+          `Deployment ${args.anchorRunId} already has a run principal`,
+        );
+      }
     });
   } catch (cause) {
     throw new SessionLaunchError(cause, false);
@@ -907,19 +931,34 @@ export async function deployCodeSourcedWorkflow(
       // fully roll the anchor back. The guard (`deployed`, null key) is a
       // tripwire on the `frameSent: false` contract -- a 0-row delete means the
       // row advanced or vanished, so the contract lied and a child may be live;
-      // surface that loudly and refuse to claim it is safe to roll back.
-      const deleted = await args.db
-        .delete(workflowRunTable)
-        .where(
-          and(
-            eq(workflowRunTable.id, args.anchorRunId),
-            eq(workflowRunTable.anchorRunId, args.anchorRunId),
-            eq(workflowRunTable.tenantId, args.tenantId),
-            eq(workflowRunTable.status, "deployed"),
-            isNull(workflowRunTable.publicKey),
-          ),
-        )
-        .returning({ id: workflowRunTable.id });
+      // surface that loudly and refuse to claim it is safe to roll back. The
+      // run principal goes with the anchor.
+      const deleted = await args.db.transaction(async (tx) => {
+        const rows = await tx
+          .delete(workflowRunTable)
+          .where(
+            and(
+              eq(workflowRunTable.id, args.anchorRunId),
+              eq(workflowRunTable.anchorRunId, args.anchorRunId),
+              eq(workflowRunTable.tenantId, args.tenantId),
+              eq(workflowRunTable.status, "deployed"),
+              isNull(workflowRunTable.publicKey),
+            ),
+          )
+          .returning({ id: workflowRunTable.id });
+        if (rows.length > 0) {
+          await tx
+            .delete(principalTable)
+            .where(
+              and(
+                eq(principalTable.tenantId, args.tenantId),
+                eq(principalTable.kind, "workflow"),
+                eq(principalTable.refId, args.anchorRunId),
+              ),
+            );
+        }
+        return rows;
+      });
       if (deleted.length === 0) {
         logger.error`anchor-before-frame rollback found no deployed/null-key row for ${args.anchorRunId} after a frameSent:false failure; the never-sent contract was violated and a child may be live`;
         throw new SessionLaunchError(cause, true);
@@ -930,20 +969,30 @@ export async function deployCodeSourcedWorkflow(
     // a sent-but-unacked frame or unexpected error leaves it possibly live. Fence the
     // anchor `deployed` -> `failed` (guarded so a self-flip to "running" by a
     // trigger that already landed is left alone). Do NOT delete: a live child
-    // needs the anchor to bootstrap.
-    const flipped = await args.db
-      .update(workflowRunTable)
-      .set({ status: "failed" })
-      .where(
-        and(
-          eq(workflowRunTable.id, args.anchorRunId),
-          eq(workflowRunTable.anchorRunId, args.anchorRunId),
-          eq(workflowRunTable.tenantId, args.tenantId),
-          eq(workflowRunTable.status, "deployed"),
-          isNull(workflowRunTable.publicKey),
-        ),
-      )
-      .returning({ id: workflowRunTable.id });
+    // needs the anchor to bootstrap. The failed run's principal is deactivated
+    // with it.
+    const flipped = await args.db.transaction(async (tx) => {
+      const rows = await tx
+        .update(workflowRunTable)
+        .set({ status: "failed" })
+        .where(
+          and(
+            eq(workflowRunTable.id, args.anchorRunId),
+            eq(workflowRunTable.anchorRunId, args.anchorRunId),
+            eq(workflowRunTable.tenantId, args.tenantId),
+            eq(workflowRunTable.status, "deployed"),
+            isNull(workflowRunTable.publicKey),
+          ),
+        )
+        .returning({ id: workflowRunTable.id });
+      await deactivateRunPrincipals(
+        tx,
+        args.tenantId,
+        rows.map((row) => row.id),
+        new Date(),
+      );
+      return rows;
+    });
     if (flipped.length === 0) {
       // The anchor already advanced past deployed -- a trigger flipped it to
       // "running", so the deploy actually succeeded and the run is progressing

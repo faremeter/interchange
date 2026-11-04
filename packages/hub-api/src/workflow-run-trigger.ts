@@ -68,7 +68,11 @@ import {
   lockDispatchableAllocation,
   lockWorkflowRunState,
   credentialUseBindings,
+  inactiveRunPrincipalRejection,
   loadCommittedRunGrantsFromExecutor,
+  loadRunPrincipalBeforeFirstCommit,
+  lockTenantRunDelegatedGrants,
+  runInvokerExpiresAt,
   stageFirstTriggerRunGrants,
 } from "./run-grant-materialization";
 import type { GrantMaterializationRejection } from "./grant-materialization";
@@ -437,7 +441,6 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     > => {
       const grantArgs = {
         db,
-        principalKeyStore,
         runTokenStore,
         tenantId: tenant.id,
         anchorRunId,
@@ -460,6 +463,13 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         runId,
       );
       if (raced !== null) return raced.stepGrants;
+      const runPrincipal = await loadRunPrincipalBeforeFirstCommit(
+        tx,
+        tenant.id,
+        runId,
+      );
+      const inactive = inactiveRunPrincipalRejection(runId, runPrincipal);
+      if (inactive !== null) return { rejected: inactive };
       // Invoker-sourced requirements resolve against the deployment's
       // deployer, not this caller, so the trigger path cannot change whose
       // authority a run delegates. The deployer and the asset behind the
@@ -477,6 +487,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         legacyMailAccept: anchor.legacyMailAccept,
         credentialBindings: credentialUseBindings(anchor.credentialRefs),
         now,
+        invokerExpiresAt: runInvokerExpiresAt(runPrincipal, now),
       });
       if (!staged.ok) return { rejected: staged.rejection };
       const resolution = await lockAnchorCredentialResolution(tx, anchorRunId);
@@ -491,9 +502,6 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         { tenantId: tenant.id, runPrincipalId, now },
       );
       if (grantRows === "not-ready") return grantRows;
-      // `now` stamps the staged rows, and the run principal's creation when
-      // this commit creates it, so an invoker `allow` row expires
-      // `INVOKER_GRANT_TTL_MS` after the first commit at the latest.
       return commitRunGrants(
         {
           ...grantArgs,
@@ -520,6 +528,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         };
       }
       const committed = await db.transaction(async (tx) => {
+        if (firstTriggerSnapshot !== null) {
+          await lockTenantRunDelegatedGrants(tx, tenant.id);
+        }
         if (
           !(await lockDispatchableAllocation(tx, allocationId, anchorRunId))
         ) {
@@ -600,6 +611,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     }
 
     const reserved = await db.transaction(async (tx) => {
+      if (firstTriggerSnapshot !== null) {
+        await lockTenantRunDelegatedGrants(tx, tenant.id);
+      }
       const anchorState = await lockWorkflowRunState(
         tx,
         anchorRunId,

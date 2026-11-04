@@ -376,10 +376,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           cipher: createTestCredentialCipher(),
         }),
         db: h.db,
-        principalKeyStore: createPrincipalKeyStore({
-          db: h.db,
-          cipher: createTestCredentialCipher(),
-        }),
         grantStoreFor: createGrantStore,
       });
       return materializer({ agentAddress, runId, ...sender });

@@ -29,10 +29,13 @@ function first<T>(rows: readonly T[]): T {
 
 const NOW = new Date("2026-07-21T00:00:00.000Z");
 
+const INVOKER_EXPIRES_AT = new Date(NOW.getTime() + INVOKER_GRANT_TTL_MS);
+
 const base = {
   tenantId: "t_1",
   targetPrincipalId: "p_target",
   now: NOW,
+  invokerExpiresAt: INVOKER_EXPIRES_AT,
 };
 
 describe("resolveGrantMaterialization", () => {
@@ -76,7 +79,27 @@ describe("resolveGrantMaterialization", () => {
     if (!res.ok) return;
     const r = first(res.grantRows);
     expect(r.origin).toBe("invoker");
-    expect(r.expiresAt).toEqual(new Date(NOW.getTime() + INVOKER_GRANT_TTL_MS));
+    expect(r.expiresAt).toEqual(INVOKER_EXPIRES_AT);
+  });
+
+  test("an invoker allow row whose expiry has passed is left out", async () => {
+    const res = await resolveGrantMaterialization({
+      ...base,
+      invokerExpiresAt: NOW,
+      grantRequirements: [
+        { resource: "wallet:w1", action: "spend", source: "invoker" },
+        { resource: "wallet:w2", action: "spend", source: "creator" },
+      ],
+      invokerGrants: [
+        grant({ resource: "wallet:w1", action: "spend", origin: "role" }),
+      ],
+      creatorGrants: [
+        grant({ resource: "wallet:w2", action: "spend", origin: "creator" }),
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.grantRows.map((row) => row.resource)).toEqual(["wallet:w2"]);
   });
 
   test("invoker-origin grants are NOT delegatable (filtered out before resolution)", async () => {

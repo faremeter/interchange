@@ -12,6 +12,7 @@ import {
   createPrincipalStore,
   createPrincipalKeyStore,
   deactivateRunPrincipals,
+  insertRunPrincipal,
   type PrincipalKeyStore,
 } from "@intx/db";
 import { principal, principalKey, runToken } from "@intx/db/schema";
@@ -69,28 +70,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return rows.length;
     }
 
-    test("createIfAbsent inserts, mints a key, and is idempotent", async () => {
-      const store = newStore();
-      const now = new Date();
+    test("insertRunPrincipal inserts a keyless run principal once per run", async () => {
+      const createdAt = new Date("2026-01-02T03:04:05Z");
       const row = {
-        id: "prn_first",
+        id: "prn_run_first",
         tenantId: TENANT,
-        kind: "user" as const,
-        refId: "usr_shared",
-        status: "active" as const,
-        createdAt: now,
-        updatedAt: now,
+        runId: "run_shared",
+        createdAt,
       };
 
-      const first = await store.createIfAbsent(row);
-      expect(first?.id).toBe("prn_first");
-      expect(await activeKeyCount("prn_first")).toBe(1);
-
-      // A second reservation of the same (tenantId, kind, refId) -- even with a
-      // different surrogate id -- inserts no row and mints no second key: the
-      // winning transaction already minted the one active key.
-      const second = await store.createIfAbsent({ ...row, id: "prn_second" });
-      expect(second).toBeNull();
+      expect(await insertRunPrincipal(h.db, row)).toBe(true);
+      // A second insert for the same run -- even with a different surrogate
+      // id -- inserts no row.
+      expect(
+        await insertRunPrincipal(h.db, { ...row, id: "prn_run_second" }),
+      ).toBe(false);
 
       const rows = await h.db
         .select()
@@ -98,14 +92,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(
           and(
             eq(principal.tenantId, TENANT),
-            eq(principal.kind, "user"),
-            eq(principal.refId, "usr_shared"),
+            eq(principal.kind, "workflow"),
+            eq(principal.refId, "run_shared"),
           ),
         );
       expect(rows).toHaveLength(1);
-      expect(rows[0]?.id).toBe("prn_first");
-      expect(await activeKeyCount("prn_first")).toBe(1);
-      expect(await activeKeyCount("prn_second")).toBe(0);
+      expect(rows[0]).toMatchObject({
+        id: "prn_run_first",
+        status: "active",
+        createdAt,
+      });
+      const keys = await h.db
+        .select()
+        .from(principalKey)
+        .where(eq(principalKey.principalId, "prn_run_first"));
+      expect(keys).toHaveLength(0);
     });
 
     test("create mints an active signing key for the new principal", async () => {
@@ -175,7 +176,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("a failed key mint rolls back the principal insert", async () => {
       // The key store throws on mint, so the whole transaction -- the principal
       // insert included -- must roll back and leave no principal row. This pins
-      // the feature's headline invariant: a principal never exists without a key.
+      // the store's invariant: a principal it creates never exists without a
+      // key.
       const throwingKeyStore: PrincipalKeyStore = {
         generate: async () => {
           throw new Error("mint boom");
@@ -200,19 +202,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).rejects.toThrow(/mint boom/);
       expect(await principalExists("prn_create_rollback")).toBe(false);
-
-      await expect(
-        store.createIfAbsent({
-          id: "prn_ifabsent_rollback",
-          tenantId: TENANT,
-          kind: "user",
-          refId: "usr_ifabsent_rollback",
-          status: "active",
-          createdAt: now,
-          updatedAt: now,
-        }),
-      ).rejects.toThrow(/mint boom/);
-      expect(await principalExists("prn_ifabsent_rollback")).toBe(false);
     });
   },
 );

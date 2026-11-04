@@ -5928,6 +5928,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .update(workflowRun)
         .set({ status: "deployed" })
         .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      // Deploy created the run principal; no trigger has linked it yet.
+      await seedPrincipal(h.db, {
+        id: "prn-deployed-anchor",
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        refId: ANCHOR_RUN_ID,
+        status: "active",
+      });
 
       const store = createSidecarAllocationStore(h.db);
       const pending = await store.createPending({
@@ -5974,6 +5982,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           columns: { status: true, endedAt: true },
         }),
       ).toEqual({ status: "failed", endedAt });
+      expect(
+        await h.db.query.principal.findFirst({
+          where: (row, { eq }) => eq(row.id, "prn-deployed-anchor"),
+          columns: { status: true },
+        }),
+      ).toEqual({ status: "deactivated" });
     });
 
     test("fails active runs when a lost worker is released", async () => {

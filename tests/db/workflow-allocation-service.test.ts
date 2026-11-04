@@ -17,11 +17,14 @@ import {
   SidecarInventoryUnavailableError,
 } from "@intx/db";
 import {
+  principal,
+  principalKey,
   sidecar,
   workflowDefinition,
   workflowProbe,
   workflowRun,
 } from "@intx/db/schema";
+import { deriveRunPrincipalId } from "@intx/hub-common";
 import { eq, sql } from "drizzle-orm";
 import {
   adapterManifestDigest,
@@ -945,6 +948,32 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const prepared = await service.prepareProvisionedDeployment(
         prepareArgs("run-anchor-ordering"),
       );
+
+      // The deploy transaction creates the run principal with the anchor,
+      // unlinked and with no hub key.
+      const anchor = await h.db.query.workflowRun.findFirst({
+        where: eq(workflowRun.id, prepared.anchorRunId),
+      });
+      const runPrincipals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, prepared.anchorRunId));
+      expect(anchor?.principalId).toBeNull();
+      expect(runPrincipals).toEqual([
+        expect.objectContaining({
+          id: await deriveRunPrincipalId(TENANT_ID, prepared.anchorRunId),
+          kind: "workflow",
+          status: "active",
+          createdAt: anchor?.createdAt,
+        }),
+      ]);
+      expect(
+        await h.db
+          .select()
+          .from(principalKey)
+          .where(eq(principalKey.principalId, runPrincipals[0]?.id ?? "")),
+      ).toEqual([]);
+
       const allocation = await createSidecarAllocationStore(
         h.db,
       ).findByAnchorRunId(prepared.anchorRunId);

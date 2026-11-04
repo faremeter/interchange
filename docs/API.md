@@ -585,7 +585,7 @@ Body: SendMessage
 202: unknown -- Trigger accepted for delivery
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run address is not routable, its allocation is no longer active, the run is stopping or terminal, or (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active
+409: ErrorResponse -- Run address is not routable, its allocation is no longer active, the run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, or (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Run trigger substrate unavailable
 
@@ -712,7 +712,7 @@ Body: SendMessage
 202: unknown -- Trigger accepted for delivery
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Workflow deployment not found
-409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, its top-level run is stopping or terminal, or (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active
+409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, its top-level run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, or (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Durable workflow dispatch unavailable
 

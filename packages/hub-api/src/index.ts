@@ -30,13 +30,13 @@ export {
   createMailTriggeredRunGrantsMaterializer,
   createCorrespondentGrantMinter,
   createRunGrantsLoader,
+  lockTenantRunDelegatedGrants,
   setRunToolGrantEffect,
   type MailTriggeredRunGrantsDeps,
   type CorrespondentGrantMinterDeps,
 } from "./run-grant-materialization";
 export {
   findDelegatedAnchorRunIds,
-  lockTenantRunDelegatedGrants,
   rederiveRunDelegatedGrants,
   sweepLapsedDeployerGrants,
   type RederiveRunDelegatedGrantsArgs,
