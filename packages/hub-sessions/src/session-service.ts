@@ -528,13 +528,11 @@ async function prepareSourceRefDeploy(
   // These entries ride the `referencedDefinitions` wire field. Each entry's
   // `definition` is the approved inert body def straight from the frozen,
   // hash-covered projection (id set to the ref); the sidecar reads that id to
-  // key the per-body approved hash and to stage the body's `sources.json`, which
-  // the body child reads to pin its steps. The body child resolves the body
-  // DEFINITION itself in-memory from the re-verified closure and hard-fails
-  // rather than reading it off disk, so no body workflow.json is staged (see the
-  // staging loop in workflow-host-wiring.ts and the anti-fallback guard in
-  // workflow-host run-child.ts).
-  const referencedDefinitions = await buildReferencedWorkflowSourcePins({
+  // key the body's sources in the run record, which the body child reads to pin
+  // its steps. The body child resolves the body DEFINITION itself in-memory from
+  // the re-verified closure and hard-fails rather than reading it off disk (see
+  // the anti-fallback guard in workflow-host run-child.ts).
+  const referencedDefinitions = buildReferencedWorkflowSourcePins({
     projection,
     config: args.config,
     operatorApprovals: approval.approvedSurface,

@@ -752,9 +752,8 @@ export type WorkflowSourceAssetMount = typeof WorkflowSourceAssetMount.infer;
  * (`validateWorkflowProjection`), since the frame holds no definition to cover.
  *
  * This is deliberately NOT built on `WorkflowProjectionWithSources`: that shape
- * (definition + sources + approved hash) is the approval/probe projection and
- * stays intact for the probe surface and for each `referencedDefinitions` body,
- * which still carry their own inert definition.
+ * (definition + sources) is a `referencedDefinitions` body, which still carries
+ * its own inert definition.
  */
 export const AgentDeployWorkflow = type({
   // Per-step inference-source failover chains, one per step in the closure's
@@ -769,8 +768,8 @@ export const AgentDeployWorkflow = type({
   // closed if it is absent.
   "approvedWireHash?": "string > 0",
   // Extracted trigger bodies -- onTrigger sections and childWorkflow children,
-  // lifted transitively. Each entry carries the body's inert definition, its own
-  // per-step inference-source pins, and its approved wire hash. The sidecar seals
+  // lifted transitively. Each entry carries the body's inert definition and its
+  // own per-step inference-source pins. The sidecar seals
   // each body's sources into the per-run record and delivers the plaintext to the
   // run child through the spawn env, so a body child -- in-process, its env lost
   // across a restart -- resolves inference durably without holding the cipher

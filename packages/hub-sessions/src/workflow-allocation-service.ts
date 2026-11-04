@@ -836,7 +836,7 @@ export function createWorkflowAllocationService({
           stepStateSeeds.reason,
         );
       }
-      await buildReferencedWorkflowSourcePins({
+      buildReferencedWorkflowSourcePins({
         projection: approved.projection,
         config,
         operatorApprovals: approved.approval.approvedSurface,
