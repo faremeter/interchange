@@ -1234,6 +1234,26 @@ describe("createSidecarAllocationReconciler", () => {
     },
   );
 
+  // A provisioner's `retireIfIdle` from `destroy` relies on this order: the row
+  // being destroyed must already read as removed.
+  test("records connected cleanup as confirmed before calling destroy", async () => {
+    const { state, store } = releasingState();
+    let confirmedAtDestroy: boolean | undefined;
+    const options = deps({
+      store,
+      provisioner: testProvisioner({
+        destroy: async () => {
+          confirmedAtDestroy = state.row.deploymentCleanupConfirmed;
+          return { kind: "destroyed", cleanup: "required" };
+        },
+      }),
+    });
+    options.router.undeployAllocation = sentUndeploy(async () => undefined);
+    await createSidecarAllocationReconciler(options).reconcileNext();
+    expect(confirmedAtDestroy).toBe(true);
+    expect(state.row.status).toBe("released");
+  });
+
   test("still destroys the worker when connected cleanup fails", async () => {
     const { state, store } = releasingState();
     const calls: string[] = [];

@@ -2,6 +2,7 @@ import { type } from "arktype";
 
 import type {
   AdapterManifest,
+  RetireIdleSidecarResult,
   SidecarCapabilityDeclaration,
 } from "@intx/types";
 
@@ -103,8 +104,9 @@ export type EnsureSidecarResult = typeof EnsureSidecarResult.infer;
  * kept running idle, needs `cleanup: required`; the Hub reserves its slot
  * until the sidecar acknowledges removal. Retries must preserve this
  * distinction, including after restarts. Stopping a worker in answer to a
- * destroy must also remove its restorable deployment state and confirm
- * cleanup. A result requiring sidecar cleanup must leave that cleanup path
+ * destroy must also remove its restorable deployment state and confirm cleanup;
+ * one that may host other work needs `retireIfIdle` to answer `retired` first.
+ * A result requiring sidecar cleanup must leave that cleanup path
  * available; absence from a provider's in-memory map is not proof.
  * A non-retryable rejection of an outstanding hold release stops automatic cleanup
  * and leaves the provider obligation and cleanup binding for operator recovery.
@@ -141,11 +143,25 @@ export type SidecarStoppedOptions = typeof SidecarStoppedOptions.infer;
 /** Calls the Hub offers a provisioner through `attach`. */
 export interface SidecarProvisionerHost {
   /**
+   * Retires a sidecar only if nothing is left on it; stop a sidecar that may
+   * host other work only on `retired`. Owed cleanup counts as work. A copy the
+   * Hub confirmed removed and a probe being released do not, so it works from
+   * `destroy`. A placement racing it either commits first, giving `in_use`, or
+   * is refused with `sidecar_reuse_rejected`.
+   *
+   * It cannot see a placement whose `ensure` is still in flight, so never
+   * overlap it with your own `ensure` on the same sidecar; see
+   * docs/SIDECAR_PLACEMENT.md. Idempotent. `not_owned` is final. A throw is
+   * transient; invalid arguments also throw, and retrying them never succeeds.
+   */
+  retireIfIdle(sidecarId: string): Promise<RetireIdleSidecarResult>;
+  /**
    * Reports that a sidecar this provisioner started under its current binding
-   * is gone for good, such as an idle sidecar it stopped after its last
-   * destroy. The Hub retires the identity. Idempotent. A throw is transient:
-   * keep the report durably and retry it, also after a Hub restart. Invalid
-   * arguments also throw, and retrying them never succeeds.
+   * is already gone for good, such as one that died. The Hub retires the
+   * identity whatever is on it. To stop an idle sidecar, call `retireIfIdle`
+   * first instead. Idempotent. A throw is transient: keep the report durably
+   * and retry it, also after a Hub restart. Invalid arguments also throw, and
+   * retrying them never succeeds.
    */
   sidecarStopped(
     sidecarId: string,

@@ -6,13 +6,16 @@ import type {
   SidecarProvisionerBinding,
 } from "@intx/db";
 import { getLogger } from "@intx/log";
+import type { RetireIdleSidecarResult } from "@intx/types";
 
 import { SidecarStoppedOptions, type SidecarProvisioner } from "./contracts";
 
 const logger = getLogger(["hub", "sidecar-allocation"]);
 
+const SidecarId = type("string > 0");
+
 const SidecarStoppedArgs = type({
-  sidecarId: "string > 0",
+  sidecarId: SidecarId,
   options: SidecarStoppedOptions.or("undefined"),
 });
 
@@ -24,6 +27,10 @@ export type AttachSidecarProvisionersDeps = {
     readonly endReconnectWindow: boolean;
     readonly isConnected: AllocationConnectionCheck;
   }) => Promise<ProvisionerSidecarRetirement | null>;
+  readonly retireIdleProvisionerSidecar: (args: {
+    readonly sidecarId: string;
+    readonly binding: SidecarProvisionerBinding;
+  }) => Promise<RetireIdleSidecarResult>;
   readonly isConnected: AllocationConnectionCheck;
 };
 
@@ -32,6 +39,7 @@ export type AttachSidecarProvisionersDeps = {
 export function attachSidecarProvisioners({
   provisioners,
   retireProvisionerSidecar,
+  retireIdleProvisionerSidecar,
   isConnected,
 }: AttachSidecarProvisionersDeps): void {
   for (const provisioner of new Set(provisioners)) {
@@ -41,6 +49,14 @@ export function attachSidecarProvisioners({
       provisionerBindingFingerprint: provisioner.bindingFingerprint,
     };
     provisioner.attach?.({
+      async retireIfIdle(rawSidecarId) {
+        const sidecarId = SidecarId(rawSidecarId);
+        if (sidecarId instanceof type.errors)
+          throw new Error(
+            `Provisioner ${provisioner.id} sent an invalid retireIfIdle call: ${sidecarId.summary}`,
+          );
+        return retireIdleProvisionerSidecar({ sidecarId, binding });
+      },
       async sidecarStopped(rawSidecarId, rawOptions) {
         // A provisioner is outside the Hub's type checks; its report is input.
         const args = SidecarStoppedArgs({

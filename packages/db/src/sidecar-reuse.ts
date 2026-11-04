@@ -2,12 +2,14 @@ import { and, eq, inArray, isNull, ne, type SQL } from "drizzle-orm";
 
 import {
   hostedSidecarAllocationStatuses,
+  occupyingWorkflowProbeStatuses,
+  type RetireIdleSidecarResult,
   type SidecarAllocationStatus,
 } from "@intx/types";
 import type { SidecarCapacity } from "@intx/types/sidecar";
 
 import type { DBExecutor } from "./client";
-import { sidecar, sidecarAllocation } from "./schema";
+import { sidecar, sidecarAllocation, workflowProbe } from "./schema";
 
 /** A provisioner named a sidecar the Hub cannot place its work on. */
 export class SidecarReuseRejectedError extends Error {
@@ -243,6 +245,55 @@ export async function retireProvisionerSidecar(
         .where(inArray(sidecarAllocation.id, disconnectedAllocationIds));
   }
   return { connectedAllocationIds };
+}
+
+/**
+ * Retires a sidecar only if nothing is left on it. The check and the write
+ * share the lock placements take, so a placement either commits first and this
+ * answers `in_use`, or comes later and is refused because the sidecar is
+ * retired.
+ *
+ * A provisioner may call this from `destroy`, so the row being destroyed must
+ * not count: the Hub confirms a connected copy removed before calling
+ * `destroy`, and records a probe's result before releasing it.
+ */
+export async function retireIdleProvisionerSidecar(
+  tx: DBExecutor,
+  args: {
+    readonly sidecarId: string;
+    readonly binding: SidecarProvisionerBinding;
+    readonly now: Date | SQL;
+  },
+): Promise<RetireIdleSidecarResult> {
+  if (!(await lockSidecarMintedFor(tx, args.sidecarId, args.binding)))
+    return { kind: "not_owned" };
+  const deployments = await tx
+    .select({
+      status: sidecarAllocation.status,
+      deploymentCleanupConfirmed: sidecarAllocation.deploymentCleanupConfirmed,
+    })
+    .from(sidecarAllocation)
+    .where(
+      and(
+        eq(sidecarAllocation.sidecarId, args.sidecarId),
+        inArray(sidecarAllocation.status, [...hostedSidecarAllocationStatuses]),
+      ),
+    );
+  if (deployments.some((deployment) => occupiesSidecar(deployment)))
+    return { kind: "in_use" };
+  const [probe] = await tx
+    .select({ id: workflowProbe.id })
+    .from(workflowProbe)
+    .where(
+      and(
+        eq(workflowProbe.sidecarId, args.sidecarId),
+        inArray(workflowProbe.status, [...occupyingWorkflowProbeStatuses]),
+      ),
+    )
+    .limit(1);
+  if (probe !== undefined) return { kind: "in_use" };
+  await retireSidecar(tx, { sidecarId: args.sidecarId, now: args.now });
+  return { kind: "retired" };
 }
 
 type SlotReservation = {
