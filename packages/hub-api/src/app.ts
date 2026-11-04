@@ -362,7 +362,7 @@ export function mountHubRoutes(
   );
   app.route(
     "/api/tenants/:tenantId/principals/:principalId/evaluate",
-    createEvaluateRoutes({ db, grantStore, conditionRegistry }),
+    createEvaluateRoutes({ db, requireGrant, grantStore, conditionRegistry }),
   );
   // The run management surface -- list, observe, stop, mail a single run.
   // Mounted as `/workflows/runs` (tenant-wide runs) before the `/workflows`

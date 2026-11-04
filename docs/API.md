@@ -454,11 +454,12 @@ Revoke a grant
 ### POST /api/tenants/:tenantId/principals/:principalId/evaluate
 Evaluate grants for a principal
 
-Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization. Pass `consumer` to evaluate as a workflow run token's consumer, so grants scoped to that consumer match.
+Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization. Pass `consumer` to evaluate as a workflow run token's consumer, so grants scoped to that consumer match. Requires read on grants (`grant:*` / `read`).
 
 Body: EvaluateRequest
 
 200: EvaluateResult -- Evaluation result
+403: ErrorResponse -- Insufficient grants
 404: ErrorResponse -- Principal not found
 
 ## Runs
