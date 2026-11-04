@@ -80,6 +80,8 @@ function deployHostBindings() {
     resolveInboundMailPolicy: () => resolvedInboundMailPolicy,
     materializeWorkflowAssets: () => Promise.resolve(undefined),
     maxInlineAssetPayloadBytes: 32 * 1024 * 1024,
+    closureCacheMaxBytes: 1_000_000,
+    registryMaxTarballBytes: 1_000_000,
     multistepBinaryPath: "/fake/bin/workflow-child",
     multistepSubprocessSpawner: (): never => {
       throw new Error("workflow child spawner was not provided");
@@ -244,9 +246,6 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       multistepSubprocessSpawner: spawner,
       multistepSubstrateEnv: {
         SIDECAR_DATA_DIR: dataDir,
-        // Source-ref materialization reads both byte caps from the substrate env.
-        SIDECAR_CACHE_MAX_BYTES: "1000000",
-        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
       // Source-ref is the only deploy lineage: the router materializes the
       // pin's closure through this dependency for the child, which reports the

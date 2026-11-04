@@ -109,6 +109,8 @@ function deployHostBindings() {
     resolveInboundMailPolicy: () => resolvedInboundMailPolicy,
     materializeWorkflowAssets: () => Promise.resolve(undefined),
     maxInlineAssetPayloadBytes: 32 * 1024 * 1024,
+    closureCacheMaxBytes: 1_000_000,
+    registryMaxTarballBytes: 1_000_000,
     multistepBinaryPath: "/fake/bin/workflow-child",
     multistepSubprocessSpawner: (): never => {
       throw new Error("workflow child spawner was not provided");
@@ -827,13 +829,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // passing `multistepSubstrateEnv`.
     const defaultSubstrateEnv: Record<string, string> = {
       SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-multistep-data-"),
-      // Source-ref is the only deploy lineage: every deploy materializes the
-      // pin's frozen closure, and the materializer requires both substrate byte
-      // caps in the env. Default them so a deploy test need not thread them; a
-      // test that overrides `multistepSubstrateEnv` keeps these unless it sets
-      // its own.
-      SIDECAR_CACHE_MAX_BYTES: "1000000",
-      SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
     };
     const mergedSubstrateEnv: Record<string, string> = {
       ...defaultSubstrateEnv,
@@ -3153,8 +3148,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       transport: freshTransport,
       multistepSubstrateEnv: {
         SIDECAR_DATA_DIR: dataDir,
-        SIDECAR_CACHE_MAX_BYTES: "1000000",
-        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
       applyFrozenWorkflowClosure: applyStub,
     });

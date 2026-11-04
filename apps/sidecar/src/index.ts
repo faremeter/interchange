@@ -101,9 +101,8 @@ const credentialCipher = createEnvKeyCredentialCipher(
   readCredentialEncryptionKey(),
 );
 
-// Resolve cache configuration at the boot edge so the workflow-child's
-// per-apply loader receives a concrete path and cap through its spawn
-// env rather than re-reading env at non-boundary call sites.
+// Resolve cache configuration at the boot edge so nothing re-reads env at
+// a non-boundary call site.
 const sidecarCacheDir = process.env["SIDECAR_CACHE_DIR"];
 const cacheRoot =
   sidecarCacheDir !== undefined && sidecarCacheDir.trim() !== ""
@@ -441,11 +440,6 @@ const multistepSubstrateEnv: Record<string, string> = {
   SIDECAR_SIGNING_PUBLIC_KEY: hexEncode(sidecarSigningKey.publicKey),
   SIDECAR_SIGNING_PRIVATE_KEY: hexEncode(sidecarSigningKey.privateKey),
   PATH: requireEnv("PATH"),
-  // Tarball caps a frozen closure is applied under. Resolved once at the
-  // boot edge and threaded through the substrate config so nothing re-reads
-  // env at a non-boundary site.
-  SIDECAR_CACHE_MAX_BYTES: String(cacheMaxBytes),
-  SIDECAR_REGISTRY_MAX_TARBALL_BYTES: String(registryMaxTarballBytes),
   // Serialize the parent's ALREADY-VALIDATED manifest (the object
   // `readAdapterManifest` returned), not the raw env string, so the
   // child rebuilds the same custom-adapter set. Always present (defaults
@@ -653,6 +647,8 @@ const orchestrator = createSidecarOrchestrator({
       multistepBinaryPath: SIDECAR_WORKFLOW_CHILD_BINARY,
       createWorkflowCache: createTarballCache,
       applyFrozenWorkflowClosure,
+      closureCacheMaxBytes: cacheMaxBytes,
+      registryMaxTarballBytes,
       readRegistries,
       resolveHostPlatform,
       resolveInboundMailPolicy,

@@ -261,34 +261,6 @@ export async function resolveDeploymentAssetMounts(
 }
 
 /**
- * Read a substrate-config byte cap (`SIDECAR_CACHE_MAX_BYTES` /
- * `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`) from the multi-step substrate env and
- * parse it to a positive finite number. The boot edge resolves these once and
- * threads them through the substrate env; a source-ref deploy needs them to
- * size the tarball cache and per-fetch cap when it materializes the frozen
- * workflow closure. A missing or non-numeric value is a boot-edge wiring bug,
- * so it fails loud rather than defaulting.
- */
-function requireSubstrateByteCap(
-  env: Record<string, string>,
-  key: string,
-): number {
-  const raw = env[key];
-  if (raw === undefined) {
-    throw new Error(
-      `sidecar deploy router: ${key} must be present in the multi-step substrate env to materialize a frozen workflow closure`,
-    );
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(
-      `sidecar deploy router: ${key} must be a positive finite number, got ${JSON.stringify(raw)}`,
-    );
-  }
-  return parsed;
-}
-
-/**
  * Hub principal the deploy router presents when it writes a run's grants. The
  * deploy router is the local stand-in for the hub on the sidecar's disk, so it
  * claims the hub principal for this single bookkeeping write.
@@ -1051,6 +1023,10 @@ export function createSidecarDeployRouter<
     readonly packageDir: string;
     readonly deployDir: string;
   }>;
+  /** On-disk size cap of the tarball cache closure applies share. */
+  closureCacheMaxBytes: number;
+  /** Size cap of one registry tarball a closure apply downloads. */
+  registryMaxTarballBytes: number;
   /** Registry table the closure apply selects optional dependencies against. */
   readRegistries: () => TRegistries;
   /** Platform pair the closure apply selects optional dependencies with. */
@@ -1600,10 +1576,7 @@ export function createSidecarDeployRouter<
   function closureCache(dataDir: string): TCache {
     sharedClosureCache ??= deps.createWorkflowCache({
       rootDir: pathJoin(dataDir, "workflow-definition-closure-cache"),
-      maxBytes: requireSubstrateByteCap(
-        multistepSubstrateEnv,
-        "SIDECAR_CACHE_MAX_BYTES",
-      ),
+      maxBytes: deps.closureCacheMaxBytes,
     });
     return sharedClosureCache;
   }
@@ -1613,7 +1586,7 @@ export function createSidecarDeployRouter<
    * instance dir and return the applied result. Owns the plumbing both the
    * deploy path and the boot-time restore path share: the deterministic
    * instance dir under `<dataDir>/workflow-definition-closures/<deploymentId>`,
-   * the content-addressed cache root, the two substrate byte caps, and the
+   * the content-addressed cache root, the two byte caps, and the
    * registry table. Both callers take `packageDir`, which the workflow child
    * evaluates; restore also re-carries the pin on its spec.
    *
@@ -1654,10 +1627,7 @@ export function createSidecarDeployRouter<
       closure: pin.closure,
       instanceDir,
       cache: closureCache(dataDir),
-      registryMaxTarballBytes: requireSubstrateByteCap(
-        multistepSubstrateEnv,
-        "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
-      ),
+      registryMaxTarballBytes: deps.registryMaxTarballBytes,
       registries: deps.readRegistries(),
       host: deps.resolveHostPlatform(),
       assetRoot,
