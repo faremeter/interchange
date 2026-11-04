@@ -531,16 +531,13 @@ const CONSUMED_FILENAME_RE = /^(.+)\.json$/;
  *   - `receivedAt`: epoch-ms timestamp the reactor accepted the
  *     message; sortable FIFO key prefix.
  *   - `address`: decoded canonical address (not URL-encoded).
- *   - `mailAuditRef`: pointer to the raw mail bytes in the mail-audit
- *     store.
  *   - `rawMessage`: base64 of the inbound mail's raw MIME bytes,
  *     inlined so the workflow-process child can read its step input by
  *     messageId at `trigger.fired` time. The supervisor is the sole
  *     mail owner under the unified-execution host (§3a); it has no
  *     separate durable byte store the child can read, so the bytes ride
  *     the claim-check envelope itself. Present whenever the supervisor
- *     enqueued the entry; omitted by callers that only stamp the audit
- *     ref. The bytes survive the inbox→processing transition verbatim
+ *     enqueued the entry. The bytes survive the inbox→processing transition verbatim
  *     (the dequeue copies the entry bytes), so a `trigger.fired` for a
  *     processing entry can always recover the input.
  */
@@ -548,10 +545,6 @@ const ClaimCheckEnvelope = type({
   messageId: "string > 0",
   receivedAt: "number >= 0",
   address: "string > 0",
-  mailAuditRef: {
-    store: "string > 0",
-    path: "string > 0",
-  },
   "rawMessage?": "string > 0",
   "+": "ignore",
 });
@@ -568,10 +561,6 @@ const ConsumedEnvelope = type({
   address: "string > 0",
   runId: "string > 0",
   consumedAt: "number >= 0",
-  mailAuditRef: {
-    store: "string > 0",
-    path: "string > 0",
-  },
   "rejection?": {
     code: "string > 0",
     message: "string > 0",
@@ -3745,13 +3734,12 @@ export type EnqueueInboxArgs = {
   address: string;
   messageId: string;
   receivedAt: number;
-  mailAuditRef: { store: string; path: string };
   /**
    * Base64 of the inbound mail's raw MIME bytes. Inlined on the
    * claim-check envelope so the workflow-process child can recover its
    * step input by messageId at `trigger.fired` time (§3a -- the
    * supervisor is the sole mail owner and has no separate durable byte
-   * store the child reads). Omit to stamp only the audit ref.
+   * store the child reads).
    */
   rawMessage?: string;
 };
@@ -3859,7 +3847,6 @@ export async function enqueueInbox(
     messageId: args.messageId,
     receivedAt: args.receivedAt,
     address: args.address,
-    mailAuditRef: args.mailAuditRef,
     ...(args.rawMessage !== undefined ? { rawMessage: args.rawMessage } : {}),
   };
   const newInboxPath = inboxPath(addressSegment, inboxKey);
@@ -4029,10 +4016,9 @@ export type ReadProcessingEntryResult = {
 
 /**
  * Read the processing-queue entry for `messageId` at `address` without
- * mutating the tree. Returns the decoded claim-check envelope (carrying
- * `mailAuditRef` and, when the enqueuer inlined them, the base64
- * `rawMessage` bytes) or `null` when no processing entry exists for the
- * messageId.
+ * mutating the tree. Returns the decoded claim-check envelope (carrying,
+ * when the enqueuer inlined them, the base64 `rawMessage` bytes) or `null`
+ * when no processing entry exists for the messageId.
  *
  * This is the read half of mailbox ownership (§3a): the supervisor's
  * dispatch loop moves an inbox entry to processing and forwards a
@@ -4134,9 +4120,8 @@ export type MarkConsumedResult = {
  * called `dequeueToProcessing` for this messageId; calling
  * `markConsumed` without a matching processing entry throws.
  *
- * The consumed envelope preserves the original `receivedAt` and
- * `mailAuditRef` from the processing entry so the dedup index doubles
- * as an audit record.
+ * The consumed envelope preserves the original `receivedAt` from the
+ * processing entry so the dedup index doubles as an audit record.
  *
  * Retention (the bounded-`consumed/` contract): the watermark advances
  * to `max(priorWatermark, min(consumedAt - retentionHorizonMs,
@@ -4193,7 +4178,6 @@ export async function markConsumed(
         address: args.address,
         runId: args.runId,
         consumedAt: args.consumedAt,
-        mailAuditRef: processingEnvelope.mailAuditRef,
         ...(args.rejection !== undefined ? { rejection: args.rejection } : {}),
       };
       consumedEnvelope = envelope;

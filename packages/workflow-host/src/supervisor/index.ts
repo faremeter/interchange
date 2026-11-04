@@ -52,12 +52,10 @@ export {
 } from "./recycle";
 
 export type {
-  DeriveMailAuditRef,
   DispatchStructuralCounters,
   DispatchSubstrateLeg,
   DispatchTimingMark,
   InboxPrimitives,
-  MailAuditRef,
   MailBusBindings,
   PrincipalSigner,
   SignedPayload,

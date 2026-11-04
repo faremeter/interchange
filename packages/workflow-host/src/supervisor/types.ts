@@ -197,32 +197,6 @@ export type SubprocessSpawner = (args: {
 }) => SubprocessHandle;
 
 /**
- * Logical pointer to the raw mail bytes the inbox claim-check
- * envelope stamps. The substrate stores this as the `mailAuditRef`
- * on every inbox/processing/consumed envelope; the substrate itself
- * never dereferences it. The boot edge supplies a derivation
- * coherent with wherever the deployment's mail audit actually lives
- * (a sidecar's session-mail audit, an alternative host's audit
- * store, etc.).
- */
-export type MailAuditRef = { store: string; path: string };
-
-/**
- * Host-supplied derivation that maps a parsed `messageId` plus the
- * raw mail bytes into the logical audit reference the inbox claim-
- * check envelope carries. Pure -- the supervisor invokes it on the
- * mail-arrival hot path and expects no I/O. Absent binding falls
- * back to a deterministic in-process derivation that synthesizes
- * `{ store: "in-process", path: <messageId> }` so the supervisor's
- * library tests that do not stand up an audit store still work; the
- * production sidecar boot edge supplies a real derivation.
- */
-export type DeriveMailAuditRef = (
-  messageId: string,
-  rawMessage: Uint8Array,
-) => MailAuditRef;
-
-/**
  * Inbox claim-check primitives the supervisor's mail-arrival path
  * and dispatch loop reach into. Production wires this against the
  * concrete `enqueueInbox` / `dequeueToProcessing` / `markConsumed`
@@ -511,17 +485,6 @@ export interface WorkflowSupervisorBindings {
    */
   recyclePolicySetTimer?: (cb: () => void, ms: number) => unknown;
   recyclePolicyClearTimer?: (handle: unknown) => void;
-  /**
-   * Compute the logical audit reference for an inbox entry. The
-   * substrate stamps this onto the envelope; the substrate itself
-   * does not dereference it. The boot edge supplies a derivation
-   * coherent with wherever the deployment's mail audit lives.
-   *
-   * Absent binding falls back to `{ store: "in-process",
-   * path: <messageId> }`, a deterministic derivation that lets the
-   * supervisor's library tests run without a host-side audit store.
-   */
-  deriveMailAuditRef?: DeriveMailAuditRef;
   /**
    * Inbox claim-check primitives the dispatch loop reaches into.
    * Production wires this against `@intx/hub-sessions`'s concrete

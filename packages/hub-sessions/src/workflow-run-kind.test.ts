@@ -2717,7 +2717,6 @@ function inboxBody(
     messageId,
     receivedAt,
     address,
-    mailAuditRef: { store: "audit", path: `mail/${messageId}` },
   });
 }
 
@@ -2734,11 +2733,23 @@ function consumedBody(
     address,
     runId,
     consumedAt,
-    mailAuditRef: { store: "audit", path: `mail/${messageId}` },
   });
 }
 
 describe("workflowRunKindHandler.validatePush — claim-check subtree shape", () => {
+  test("accepts an inbox entry carrying a since-removed envelope field", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [inboxPathFor(ADDRESS_SEG, 100, "msg-1")]: JSON.stringify({
+        messageId: "msg-1",
+        receivedAt: 100,
+        address: ADDRESS,
+        mailAuditRef: { store: "audit", path: "mail/msg-1" },
+      }),
+    });
+    expect(r.ok).toBe(true);
+  });
+
   test("accepts a single inbox entry with a well-formed envelope", async () => {
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -3045,7 +3056,6 @@ describe("claim-check API — enqueueInbox", () => {
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     expect(result.outcome).toBe("enqueued");
     if (result.outcome !== "enqueued") throw new Error("expected enqueued");
@@ -3078,13 +3088,11 @@ describe("claim-check API — enqueueInbox", () => {
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-2",
       receivedAt: 200,
-      mailAuditRef: { store: "audit", path: "mail/msg-2" },
     });
     const repoDir = store.getRepoDir(repoId);
     const inboxDir = path.join(
@@ -3102,14 +3110,12 @@ describe("claim-check API — enqueueInbox", () => {
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const outcome = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 300,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     expect(outcome).toEqual({
       outcome: "already-present",
@@ -3119,13 +3125,69 @@ describe("claim-check API — enqueueInbox", () => {
 });
 
 describe("claim-check API — markConsumed", () => {
+  test("entries written with a since-removed envelope field keep moving", async () => {
+    // The real handler refuses a consumed entry with no prior processing
+    // entry, so seed through a permissive one.
+    const store = createRepoStore({
+      dataDir: await makeClaimCheckTempDir("cc-old-entries-"),
+      signingKey: claimCheckSigningKey,
+      handlers: {
+        "workflow-run": {
+          kind: "workflow-run",
+          directoryPrefix: "workflow-runs",
+          validatePush: () => ({ ok: true }),
+          onRefUpdated: () => undefined,
+        },
+      },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-oldentries" };
+    await store.initRepo(repoId);
+    const removedField = { mailAuditRef: { store: "audit", path: "mail/x" } };
+    await store.writeTree(HUB_PRINCIPAL, repoId, "refs/heads/events", {
+      files: {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [inboxPathFor(ADDRESS_SEG, 100, "msg-old")]: JSON.stringify({
+          messageId: "msg-old",
+          receivedAt: 100,
+          address: ADDRESS,
+          ...removedField,
+        }),
+        [consumedPathFor(ADDRESS_SEG, "msg-older")]: JSON.stringify({
+          messageId: "msg-older",
+          receivedAt: 50,
+          address: ADDRESS,
+          runId: "run-W",
+          consumedAt: 60,
+          ...removedField,
+        }),
+      },
+      message: "seed entries from before the field was removed",
+    });
+
+    await dequeueToProcessing(store, HUB_PRINCIPAL, repoId, ADDRESS);
+    const consumed = await markConsumed(store, HUB_PRINCIPAL, repoId, {
+      address: ADDRESS,
+      messageId: "msg-old",
+      runId: "run-X",
+      consumedAt: 500,
+    });
+    expect(consumed.envelope.receivedAt).toBe(100);
+
+    const redelivered = await enqueueInbox(store, HUB_PRINCIPAL, repoId, {
+      address: ADDRESS,
+      messageId: "msg-older",
+      receivedAt: 50,
+    });
+    expect(redelivered.outcome).toBe("already-present");
+  });
+
   test("atomic move from processing to consumed preserves originating receivedAt", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore("cc-mark-");
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const result = await markConsumed(store, principal, repoId, {
@@ -3184,13 +3246,11 @@ describe("claim-check substrate FIFO invariant", () => {
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-2",
       receivedAt: 200,
-      mailAuditRef: { store: "audit", path: "mail/msg-2" },
     });
 
     const first = await dequeueToProcessing(store, principal, repoId, ADDRESS);
@@ -3257,7 +3317,6 @@ describe("claim-check substrate FIFO invariant", () => {
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     const replay = await replayProcessingToInbox(
       store,
@@ -3287,13 +3346,11 @@ describe("claim-check substrate FIFO invariant", () => {
       address: ADDRESS,
       messageId: "msg-A",
       receivedAt: 99,
-      mailAuditRef: { store: "audit", path: "mail/A" },
     });
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-B",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/B" },
     });
     const first = await dequeueToProcessing(store, principal, repoId, ADDRESS);
     expect(first).not.toBeNull();
@@ -3678,13 +3735,11 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       address: ADDRESS,
       messageId: "live",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/live" },
     });
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "orphan",
       receivedAt: 200,
-      mailAuditRef: { store: "audit", path: "mail/orphan" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
@@ -3733,7 +3788,6 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       address: ADDRESS,
       messageId: "live",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/live" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     await store.writeTree(principal, repoId, "refs/heads/main", {
@@ -3774,13 +3828,11 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
       address: ADDRESS,
       messageId: "msg-X",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/X" },
     });
     const outcome = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-X",
       receivedAt: 200,
-      mailAuditRef: { store: "audit", path: "mail/X" },
     });
     expect(outcome).toEqual({
       outcome: "already-present",
@@ -3802,13 +3854,11 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
       address: ADDRESS,
       messageId: "msg-D",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/D" },
     });
     const outcome = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-D",
       receivedAt: 100,
-      mailAuditRef: { store: "audit", path: "mail/D" },
     });
     expect(outcome).toEqual({
       outcome: "already-present",
@@ -3939,7 +3989,6 @@ describe("workflow-run substrate — per-commit pack validation", () => {
         address: ADDRESS,
         messageId: "msg-1",
         receivedAt: 100,
-        mailAuditRef: { store: "audit", path: "mail/msg-1" },
       },
     );
     if (enqueueResult.outcome !== "enqueued") {
@@ -5007,7 +5056,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 1000,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     await markConsumed(store, principal, repoId, {
@@ -5025,7 +5073,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 3000,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     expect(outcome).toEqual({ outcome: "already-present", reason: "consumed" });
   });
@@ -5042,7 +5089,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "msg-driver",
       receivedAt: 100_000,
-      mailAuditRef: { store: "audit", path: "mail/msg-driver" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const consumed = await markConsumed(store, principal, repoId, {
@@ -5061,7 +5107,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
         address: ADDRESS,
         messageId: "msg-stale",
         receivedAt: 50_000,
-        mailAuditRef: { store: "audit", path: "mail/msg-stale" },
       }),
     ).rejects.toThrow(/claim_check_stale_enqueue/);
   });
@@ -5075,7 +5120,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "msg-driver",
       receivedAt: 100_000,
-      mailAuditRef: { store: "audit", path: "mail/msg-driver" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     await markConsumed(store, principal, repoId, {
@@ -5090,7 +5134,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "msg-fresh",
       receivedAt: 100_500,
-      mailAuditRef: { store: "audit", path: "mail/msg-fresh" },
     });
     expect(r.outcome).toBe("enqueued");
     if (r.outcome !== "enqueued") throw new Error("expected enqueued");
@@ -5121,7 +5164,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
         address: ADDRESS,
         messageId,
         receivedAt: t,
-        mailAuditRef: { store: "audit", path: `mail/${messageId}` },
       });
       await dequeueToProcessing(store, principal, repoId, ADDRESS);
       await markConsumed(store, principal, repoId, {
@@ -5155,7 +5197,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "a",
       receivedAt: 50_000,
-      mailAuditRef: { store: "audit", path: "mail/a" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     await markConsumed(store, principal, repoId, {
@@ -5175,7 +5216,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "b",
       receivedAt: 49_500,
-      mailAuditRef: { store: "audit", path: "mail/b" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const consumedB = await markConsumed(store, principal, repoId, {
@@ -5212,7 +5252,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "inflight",
       receivedAt: 10_000,
-      mailAuditRef: { store: "audit", path: "mail/inflight" },
     });
     const inflightDequeue = await dequeueToProcessing(
       store,
@@ -5230,7 +5269,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "newer",
       receivedAt: 100_000,
-      mailAuditRef: { store: "audit", path: "mail/newer" },
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const newerConsumed = await markConsumed(store, principal, repoId, {
@@ -5303,7 +5341,6 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       address: ADDRESS,
       messageId: "inflight",
       receivedAt: 102_000,
-      mailAuditRef: { store: "audit", path: "mail/inflight" },
     });
     expect(outcome).toEqual({ outcome: "already-present", reason: "consumed" });
   });
@@ -5321,7 +5358,6 @@ describe("claim-check API — a receive whose prior watermark the receiver lost"
       address: ADDRESS,
       messageId: "msg-1",
       receivedAt: 1000,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     await dequeueToProcessing(hub.store, principal, repoId, ADDRESS);
     await markConsumed(hub.store, principal, repoId, {
@@ -5369,7 +5405,6 @@ describe("claim-check API — a receive whose prior watermark the receiver lost"
       address: ADDRESS,
       messageId: "msg-2",
       receivedAt: 150_000,
-      mailAuditRef: { store: "audit", path: "mail/msg-2" },
     });
     await dequeueToProcessing(sender, principal, repoId, ADDRESS);
     const parentSha = await ship(ackedSha);

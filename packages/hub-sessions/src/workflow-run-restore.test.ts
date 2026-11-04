@@ -39,7 +39,6 @@ test("sends the Hub's main and events refs sequentially to the exact allocation"
       address: agentAddress,
       messageId: "message-1",
       receivedAt: 1,
-      mailAuditRef: { store: "mail", path: "message-1" },
     });
 
     const sends: {

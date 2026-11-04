@@ -61,7 +61,6 @@ describe("workflow-run principal-vs-path scoping (regression)", () => {
         messageId: "msg-1",
         receivedAt: 100,
         address: ADDR,
-        mailAuditRef: { store: "audit", path: "x" },
       }),
     };
     const r = await validateRun(prospective, {}, principal);
@@ -174,7 +173,6 @@ describe("workflow-run inbox deletion is rejected (regression)", () => {
       messageId: "msg-1",
       receivedAt: 100,
       address: ADDR_SEG,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     const prior = {
       [`addresses/${ADDR_SEG}/inbox/100-msg-1.json`]: inboxBody,
@@ -195,7 +193,6 @@ describe("workflow-run inbox deletion is rejected (regression)", () => {
       messageId: "msg-1",
       receivedAt: 100,
       address: ADDR_SEG,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     const prior = {
       [`addresses/${ADDR_SEG}/inbox/100-msg-1.json`]: body,

@@ -186,7 +186,6 @@ function createStubRepoStore(opts: {
 type MemoryEntry = {
   messageId: string;
   receivedAt: number;
-  mailAuditRef: { store: string; path: string };
 };
 
 function createMemoryInboxPrimitives(opts: {
@@ -233,7 +232,6 @@ function createMemoryInboxPrimitives(opts: {
       const envelope: MemoryEntry = {
         messageId: args.messageId,
         receivedAt: args.receivedAt,
-        mailAuditRef: args.mailAuditRef,
       };
       s.inbox.set(k, envelope);
       return {
@@ -244,7 +242,6 @@ function createMemoryInboxPrimitives(opts: {
           messageId: args.messageId,
           receivedAt: args.receivedAt,
           address: args.address,
-          mailAuditRef: args.mailAuditRef,
         },
       };
     },
@@ -269,7 +266,6 @@ function createMemoryInboxPrimitives(opts: {
           messageId: envelope.messageId,
           receivedAt: envelope.receivedAt,
           address,
-          mailAuditRef: envelope.mailAuditRef,
         },
       };
     },
@@ -300,7 +296,6 @@ function createMemoryInboxPrimitives(opts: {
           address: args.address,
           runId: args.runId,
           consumedAt: args.consumedAt,
-          mailAuditRef: envelope.mailAuditRef,
         },
         watermark: 0,
         prunedMessageIds: [],

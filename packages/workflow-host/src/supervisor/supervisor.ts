@@ -148,11 +148,9 @@ import {
   type RecyclePolicy,
 } from "./recycle";
 import type {
-  DeriveMailAuditRef,
   DispatchStructuralCounters,
   DispatchSubstrateLeg,
   InboxPrimitives,
-  MailAuditRef,
   SubprocessHandle,
   TerminalEventSource,
   TerminalRunEvent,
@@ -1009,8 +1007,6 @@ export function createWorkflowSupervisor(
     markConsumed: defaultMarkConsumed,
     replayProcessingToInbox: defaultReplayProcessingToInbox,
   };
-  const deriveMailAuditRef: DeriveMailAuditRef =
-    bindings.deriveMailAuditRef ?? defaultInProcessMailAuditRef;
   const defaultInboxWritePrincipal: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
     anchorRunId: bindings.anchorRunId,
@@ -1665,10 +1661,6 @@ export function createWorkflowSupervisor(
 
   async function enqueueInboundMail(rawMessage: Uint8Array): Promise<void> {
     const messageId = await deriveMessageId(rawMessage);
-    const mailAuditRef: MailAuditRef = deriveMailAuditRef(
-      messageId,
-      rawMessage,
-    );
     const receivedAt = Date.now();
     // Inline the raw mail bytes on the claim-check envelope so the
     // workflow-process child can recover its step input by messageId at
@@ -1691,7 +1683,6 @@ export function createWorkflowSupervisor(
         address: bindings.deploymentMailAddress,
         messageId,
         receivedAt,
-        mailAuditRef,
         rawMessage: rawMessageBase64,
       },
     );
@@ -5310,20 +5301,6 @@ async function pumpEvents(
   for await (const event of iter) {
     onInferenceEvent(event);
   }
-}
-
-/**
- * Default `deriveMailAuditRef` derivation used when no host binding
- * is configured. The reference points at an "in-process" store with
- * the messageId as the path, which keeps the supervisor's library
- * tests independent of any audit-store wiring. Production hosts
- * supply a derivation coherent with their own mail-audit surface.
- */
-function defaultInProcessMailAuditRef(
-  messageId: string,
-  _rawMessage: Uint8Array,
-): MailAuditRef {
-  return { store: "in-process", path: messageId };
 }
 
 /**

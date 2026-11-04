@@ -60,7 +60,6 @@ test("a first deploy keeps its seeded refs and the next sidecar commit fast-forw
       address: agentAddress,
       messageId: "message-seeded",
       receivedAt: 1,
-      mailAuditRef: { store: "mail", path: "before" },
     });
 
     const pushed: string[] = [];
@@ -137,7 +136,6 @@ test("a first deploy keeps its seeded refs and the next sidecar commit fast-forw
       address: agentAddress,
       messageId: "message-after-deploy",
       receivedAt: 2,
-      mailAuditRef: { store: "mail", path: "after" },
     });
     await packClient.push({
       agentAddress,

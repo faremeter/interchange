@@ -461,7 +461,6 @@ describe("P2 consumed/-retention microbench", () => {
         address: BENCH_ADDRESS,
         messageId,
         receivedAt: t,
-        mailAuditRef: { store: "audit", path: `mail/${messageId}` },
       });
       await dequeueToProcessing(store, HUB, repoId, BENCH_ADDRESS);
       const mc0 = performance.now();
