@@ -75,6 +75,8 @@ function deployHostBindings() {
     resolveInboundMailPolicy: () => resolvedInboundMailPolicy,
     materializeWorkflowAssets: () => Promise.resolve(undefined),
     maxInlineAssetPayloadBytes: 32 * 1024 * 1024,
+    closureCacheMaxBytes: 1_000_000,
+    registryMaxTarballBytes: 1_000_000,
     multistepBinaryPath: "/fake/bin/workflow-child",
     multistepSubprocessSpawner: (): never => {
       throw new Error("workflow child spawner was not provided");
@@ -269,9 +271,6 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_SIGNING_PUBLIC_KEY: "00".repeat(32),
         SIDECAR_SIGNING_PRIVATE_KEY: "00".repeat(32),
         PATH: "/usr/bin",
-        // Source-ref materialization reads both byte caps from the substrate env.
-        SIDECAR_CACHE_MAX_BYTES: "1000000",
-        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
       multistepSubprocessSpawner: failingSpawner,
       applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure(),
@@ -394,9 +393,6 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_SIGNING_PUBLIC_KEY: "00".repeat(32),
         SIDECAR_SIGNING_PRIVATE_KEY: "00".repeat(32),
         PATH: "/usr/bin",
-        // Source-ref materialization reads both byte caps from the substrate env.
-        SIDECAR_CACHE_MAX_BYTES: "1000000",
-        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
       multistepSubprocessSpawner: reportThenExitSpawner(SINGLE_STEP_PROJECTION),
       applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure(),
@@ -484,8 +480,6 @@ describe("deploy-failure registry leak", () => {
       multistepDrainRouter: drainRouter,
       multistepSubstrateEnv: {
         SIDECAR_DATA_DIR: dataDir,
-        SIDECAR_CACHE_MAX_BYTES: "1000000",
-        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
       multistepSubprocessSpawner: () => {
         throw new Error("undeploy never spawns");
