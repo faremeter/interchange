@@ -677,8 +677,6 @@ function createMockPrincipalKeyStore(): PrincipalKeyStore {
     // signing a verifiable message is covered by the run-mail-send integration
     // test.
     sign: async () => new Uint8Array(64),
-    recordPublicKey: async () => undefined,
-    retireActive: async () => undefined,
   };
 }
 

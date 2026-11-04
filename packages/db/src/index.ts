@@ -41,6 +41,8 @@ export {
 } from "./principal-store";
 export {
   createPrincipalKeyStore,
+  recordPublicKey,
+  retireActiveKey,
   type CreatePrincipalKeyStoreDeps,
   type PrincipalKeyStore,
 } from "./principal-key-store";
