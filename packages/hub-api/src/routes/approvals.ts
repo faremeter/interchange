@@ -32,7 +32,7 @@ import {
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
-import { createAuthorizeGrant } from "../middleware/grant";
+import { createAuthorizeGrant, type RequireGrant } from "../middleware/grant";
 import { ts } from "../format";
 import {
   approvalToolName,
@@ -70,7 +70,7 @@ export function formatApproval(row: ParsedApproval) {
   };
 }
 
-export type CreateApprovalRoutesDeps = {
+export type ResolveApprovalDeps = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   workflowDispatchService?: Pick<
@@ -83,6 +83,10 @@ export type CreateApprovalRoutesDeps = {
   conditionRegistry: ConditionRegistry;
   approvalStore: ApprovalStore;
   signalCorrelationStore: SignalCorrelationStore;
+};
+
+export type CreateApprovalRoutesDeps = ResolveApprovalDeps & {
+  requireGrant: RequireGrant;
 };
 
 export type ReadRunLifecycles = (
@@ -136,7 +140,7 @@ type PendingFailureKind = Extract<
  * allocation retain their direct sidecar delivery behavior.
  */
 export async function resolveApproval(
-  deps: CreateApprovalRoutesDeps,
+  deps: ResolveApprovalDeps,
   args: ResolveApprovalRequest,
 ): Promise<ResolveApprovalOutcome> {
   const {
@@ -385,6 +389,13 @@ export function createApprovalRoutes(
 
   app.get(
     "/",
+    // Listing spans the whole tenant, so it needs a tenant-wide grant
+    // (`approval:*`), not a per-deployment one: a per-deployment approver
+    // holds only `approval:<their deployment>` and reads individual
+    // approvals by id via the detail route. The action is `resolve`, the
+    // same capability the approve/reject routes gate on -- reading an
+    // approval is part of being able to resolve it.
+    deps.requireGrant("approval:*", "resolve"),
     describeRoute({
       tags: ["Approvals"],
       summary: "List pending approvals in the tenant",
@@ -404,28 +415,6 @@ export function createApprovalRoutes(
     }),
     async (c) => {
       const tenant = c.get("tenant");
-      const principal = c.get("principal");
-
-      // Listing spans the whole tenant, so it needs a tenant-wide grant
-      // (`approval:*`), not a per-deployment one: a per-deployment approver
-      // holds only `approval:<their deployment>` and reads individual
-      // approvals by id via the detail route. The action is `resolve`, the
-      // same capability the approve/reject routes gate on -- reading an
-      // approval is part of being able to resolve it.
-      const allowed = await authorizeGrant({
-        principalId: principal.id,
-        tenantId: tenant.id,
-        resource: "approval:*",
-        action: "resolve",
-        consumer: c.get("consumer"),
-      });
-      if (!allowed) {
-        return errorResponse(
-          c,
-          "forbidden",
-          "You do not have permission to list approvals",
-        );
-      }
 
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),

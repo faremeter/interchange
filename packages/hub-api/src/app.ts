@@ -463,6 +463,7 @@ export function mountHubRoutes(
               },
             }
           : {}),
+      requireGrant,
       grantStore,
       grantStoreFor,
       conditionRegistry,
