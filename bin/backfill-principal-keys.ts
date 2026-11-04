@@ -4,9 +4,9 @@
 // per-principal-key feature.
 //
 // Run ONCE as the last step of the deploy that introduces per-principal keys,
-// AFTER the key-minting hub is live. It is safe against a live hub: nothing
-// reads principal keys yet, the hub only mints for newly-created principals,
-// and the active-key unique index blocks a double key. Idempotent -- a
+// AFTER the key-minting hub is live. It is safe against a live hub: the hub
+// only mints for newly-created principals, and the active-key unique index
+// blocks a double key. It keys only user principals. Idempotent -- a
 // principal that already holds an active key is skipped -- so it is safe to
 // re-run or resume after a partial failure. On a database where every principal
 // was created after the feature landed (e.g. local dev), it does nothing.

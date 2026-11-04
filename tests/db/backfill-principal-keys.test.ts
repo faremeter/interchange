@@ -21,12 +21,15 @@ import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 const TENANT = "tnt_bf";
 const cipher = createTestCredentialCipher();
 
-// Every non-agent principal is keyless at seed time except `prn_keyed`, which
-// is pre-keyed below. Covers both kinds and every status, since the backfill
-// keys them all.
-const KEYLESS_NON_AGENT = [
+// Every seeded principal is keyless at seed time except `prn_keyed`, which is
+// pre-keyed below. The backfill keys user principals of every status.
+const KEYLESS_USERS = [
   { id: "prn_user_active", kind: "user" as const, status: "active" as const },
   { id: "prn_user_invited", kind: "user" as const, status: "invited" as const },
+];
+
+// The backfill skips workflow principals of every status.
+const KEYLESS_WORKFLOWS = [
   { id: "prn_wf_active", kind: "workflow" as const, status: "active" as const },
   {
     id: "prn_wf_suspended",
@@ -56,7 +59,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeEach(async () => {
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT }]);
-      for (const p of KEYLESS_NON_AGENT) {
+      for (const p of [...KEYLESS_USERS, ...KEYLESS_WORKFLOWS]) {
         await seedPrincipal(h.db, {
           id: p.id,
           tenantId: TENANT,
@@ -105,19 +108,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return rows.length;
     }
 
-    test("keys every keyless non-agent principal, skips agent and already-keyed", async () => {
+    test("keys every keyless user principal, skips workflow, agent, and already-keyed", async () => {
       const store = newStore();
       await store.generate("prn_keyed");
       const before = await activeKeyRow("prn_keyed");
       if (before === undefined) throw new Error("expected a pre-keyed row");
 
       const report = await backfillPrincipalKeys(h.db, store);
-      expect(report).toEqual({ keysGenerated: 5, alreadyKeyed: 1 });
+      expect(report).toEqual({ keysGenerated: 2, alreadyKeyed: 1 });
 
-      // Every keyless non-agent principal now holds exactly one active key.
-      for (const p of KEYLESS_NON_AGENT) {
+      // Every keyless user principal now holds exactly one active key.
+      for (const p of KEYLESS_USERS) {
         expect(await keyCount(p.id)).toBe(1);
         expect((await activeKeyRow(p.id))?.status).toBe("active");
+      }
+
+      // The workflow principals were skipped -- no key minted.
+      for (const p of KEYLESS_WORKFLOWS) {
+        expect(await keyCount(p.id)).toBe(0);
       }
 
       // The agent-kind principal was skipped -- no key minted.
@@ -136,7 +144,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await backfillPrincipalKeys(h.db, store);
 
       const rerun = await backfillPrincipalKeys(h.db, store);
-      expect(rerun).toEqual({ keysGenerated: 0, alreadyKeyed: 6 });
+      expect(rerun).toEqual({ keysGenerated: 0, alreadyKeyed: 3 });
+    });
+
+    test("a workflow principal whose only key is retired gets no new key", async () => {
+      const store = newStore();
+      await h.db.transaction((tx) =>
+        store.recordPublicKey("prn_wf_active", "aa".repeat(32), tx),
+      );
+      await store.retireActive("prn_wf_active");
+
+      await backfillPrincipalKeys(h.db, store);
+
+      expect(await activeKeyRow("prn_wf_active")).toBeUndefined();
+      expect(await keyCount("prn_wf_active")).toBe(1);
     });
   },
 );
