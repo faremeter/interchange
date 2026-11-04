@@ -7,6 +7,7 @@ import {
   createWorkflowDefinitionArtifactStore,
   deactivateRunPrincipals,
   insertRunPrincipal,
+  recordRunPrincipalKey,
   resolveInferenceMaterials,
   type DB,
   type SidecarAllocation,
@@ -1013,18 +1014,30 @@ export async function deployCodeSourcedWorkflow(
   // "running", and skipping the stamp there would strand a live run with a null
   // key. A 0-row update is an anomaly (nothing should remove a deployed anchor
   // on the success path), but the deploy succeeded, so log it rather than
-  // failing a live run.
-  const stamped = await args.db
-    .update(workflowRunTable)
-    .set({ publicKey })
-    .where(
-      and(
-        eq(workflowRunTable.id, args.anchorRunId),
-        eq(workflowRunTable.anchorRunId, args.anchorRunId),
-        eq(workflowRunTable.tenantId, args.tenantId),
-      ),
-    )
-    .returning({ id: workflowRunTable.id });
+  // failing a live run. The update holds the anchor row lock, which
+  // serializes recording the key on the run principal.
+  const stamped = await args.db.transaction(async (tx) => {
+    const rows = await tx
+      .update(workflowRunTable)
+      .set({ publicKey })
+      .where(
+        and(
+          eq(workflowRunTable.id, args.anchorRunId),
+          eq(workflowRunTable.anchorRunId, args.anchorRunId),
+          eq(workflowRunTable.tenantId, args.tenantId),
+        ),
+      )
+      .returning({ id: workflowRunTable.id });
+    if (rows.length > 0) {
+      await recordRunPrincipalKey(
+        tx,
+        args.tenantId,
+        args.anchorRunId,
+        publicKey,
+      );
+    }
+    return rows;
+  });
   if (stamped.length === 0) {
     logger.error`anchor-before-frame: anchor ${args.anchorRunId} vanished before its public key could be stamped on a successful deploy`;
   }

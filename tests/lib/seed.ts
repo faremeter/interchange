@@ -8,7 +8,12 @@
 // assertions actually depend on.
 
 import type { DB } from "@intx/db";
-import { createPrincipalKeyStore } from "@intx/db";
+import {
+  createPrincipalKeyStore,
+  insertRunPrincipal,
+  recordRunPrincipalKey,
+} from "@intx/db";
+import { deriveRunPrincipalId } from "@intx/hub-common";
 import type { WorkflowRunCredentialRefs } from "@intx/db/schema";
 import { TenantSlug, type GrantWalkSnapshot } from "@intx/types";
 import { createNoopCredentialCipher } from "@intx/crypto";
@@ -383,7 +388,9 @@ export async function seedWorkflowRun(
   await db.insert(workflowRun).values({
     id: r.id,
     tenantId: r.tenantId,
-    anchorRunId: r.anchorRunId ?? null,
+    // Only a deployment anchor holds a key, so a keyed run is its own anchor
+    // unless the caller names one.
+    anchorRunId: r.anchorRunId ?? (r.publicKey != null ? r.id : null),
     definitionId,
     principalId: r.principalId ?? null,
     address: r.address ?? null,
@@ -395,6 +402,18 @@ export async function seedWorkflowRun(
     ...(r.createdAt !== undefined ? { createdAt: r.createdAt } : {}),
     ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
   });
+  // A recorded key also lives on the run principal, as a deploy records it.
+  // The run principal is the one a test already seeded for the run, or the
+  // one deploy would have created.
+  if (r.publicKey != null) {
+    await insertRunPrincipal(db, {
+      id: await deriveRunPrincipalId(r.tenantId, r.id),
+      tenantId: r.tenantId,
+      runId: r.id,
+      createdAt: r.createdAt ?? new Date(),
+    });
+    await recordRunPrincipalKey(db, r.tenantId, r.id, r.publicKey);
+  }
 }
 
 export type SeedWorkflowRunLaunchSpec = {

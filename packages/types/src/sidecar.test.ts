@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import { APPROVAL_SNAPSHOT_MAX_BYTES } from "./runtime";
 import {
+  AgentDeployAckFrame,
   AgentDeployFrame,
   fitDeploymentError,
   CredentialsUpdateFrame,
@@ -52,6 +53,32 @@ describe("MailOutboundFrame sender ownership claim", () => {
     const { senderAddress: _, ...missingSender } = frame;
     expect(MailOutboundFrame(missingSender) instanceof type.errors).toBe(true);
     expect(SidecarFrame(missingSender) instanceof type.errors).toBe(true);
+  });
+});
+
+describe("AgentDeployAckFrame public key", () => {
+  // The hub records the key as the run principal's key, which must be the
+  // 32-byte key the sidecar minted, in the lowercase hex it encodes.
+  const ack = {
+    type: "agent.deploy.ack",
+    requestId: "req-1",
+    agentAddress: "run_deploy@tenant.example",
+    generation: 1,
+    publicKey: "ab".repeat(32),
+  };
+
+  test("accepts 32 bytes of lowercase hex", () => {
+    expect(AgentDeployAckFrame(ack) instanceof type.errors).toBe(false);
+  });
+
+  test.each([
+    ["uppercase hex", "AB".repeat(32)],
+    ["a 16-byte key", "ab".repeat(16)],
+    ["non-hex characters", "zz".repeat(32)],
+  ])("rejects %s", (_label, publicKey) => {
+    expect(
+      AgentDeployAckFrame({ ...ack, publicKey }) instanceof type.errors,
+    ).toBe(true);
   });
 });
 

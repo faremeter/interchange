@@ -10,6 +10,7 @@ import {
 import { eq } from "drizzle-orm";
 
 import { createWorkflowRunStore } from "@intx/db";
+import { deriveRunPrincipalId } from "@intx/hub-common";
 import { workflowDefinition, workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
@@ -86,21 +87,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(beforeTrigger?.status).toBe("deployed");
       expect(beforeTrigger?.principalId).toBeNull();
 
-      // The first trigger mints a principal and reconciles the anchor.
-      await seedPrincipal(h.db, {
-        id: "prn-run",
-        tenantId: TENANT,
-        kind: "workflow",
-        refId: RUN_ID,
-        status: "active",
-      });
+      // The first trigger links the run principal the deploy created and
+      // reconciles the anchor.
+      const runPrincipalId = await deriveRunPrincipalId(TENANT, RUN_ID);
       const store = createWorkflowRunStore(h.db);
       const linked = await store.anchorWithPrincipal({
         id: RUN_ID,
         anchorRunId: RUN_ID,
         tenantId: TENANT,
         definitionId: DEFINITION,
-        principalId: "prn-run",
+        principalId: runPrincipalId,
         status: "running",
       });
       expect(linked).toBe(true);
@@ -110,7 +106,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(workflowRun)
         .where(eq(workflowRun.id, RUN_ID));
       expect(afterFirst?.status).toBe("running");
-      expect(afterFirst?.principalId).toBe("prn-run");
+      expect(afterFirst?.principalId).toBe(runPrincipalId);
 
       // A second trigger (a redelivery) reconciles nothing: the three-part guard
       // no longer matches once the anchor is "running", so it is a no-op on the
@@ -137,7 +133,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(workflowRun)
         .where(eq(workflowRun.id, RUN_ID));
       expect(afterSecond?.status).toBe("running");
-      expect(afterSecond?.principalId).toBe("prn-run");
+      expect(afterSecond?.principalId).toBe(runPrincipalId);
     });
   },
 );

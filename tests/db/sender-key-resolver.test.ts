@@ -467,7 +467,7 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
       id: "run_a2",
       tenantId: "tnt_a",
       address: "run_a2@a.localhost",
-      publicKey: RUN_PUBLIC_KEY,
+      publicKey: "cd".repeat(32),
       status: "completed",
     });
     await seedWorkflowRun(h.db, {
