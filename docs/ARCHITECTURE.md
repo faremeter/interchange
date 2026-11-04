@@ -493,7 +493,7 @@ Payments between agents in different tenants work through standard x402 flows. T
 
 ## Change History
 
-Runtime state lives in the deployment's workflow-run repository, so the full history of what the agent did is available in a single DAG.
+A run's durable state lives in the deployment's workflow-run repository: its event log and each step's checkpoint and write-ahead log. Per-cycle commits stay in a per-step store on the sidecar, which undeploy reclaims.
 
 The reactor auto-commits at every cycle boundary (after each inference completes, after a batch of tool calls completes, after a compaction runs). The director's `checkpoint` action no longer decides _whether_ a commit happens; it supplies the human-meaningful message for the next auto-commit. Audit records (`state/audit/`) and error records (`state/errors/`) are still committed separately by the audit store on its existing schedule (`afterCheckpoint` and `onShutdown`). The agent has no awareness of or control over when commits occur (see Trust Boundary).
 

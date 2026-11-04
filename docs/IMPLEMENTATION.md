@@ -488,7 +488,7 @@ The workflow-process runs code the operator deploys but the sidecar does not ful
 
 Each deployment gets two channels:
 
-- **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries the child's first `authority.set`, trigger fires, signal deliveries, drain, recycle, shutdown, grants-updated, credentials-updated, sources-updated, and back from the child its `definition` report and its `ready` signal. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
+- **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries the child's first `authority.set`, trigger fires, signal deliveries, drain, shutdown, grants-updated, credentials-updated, sources-updated, and back from the child its `definition` report and its `ready` signal. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
 - **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-message `message.run.started` / `message.run.ended` brackets). High rate. Sending lives in `packages/workflow-host/src/ipc/event-sender.ts`; receiving and payload validation live in `event-channel.ts`.
 
 Each side signs control frames with its own private key and verifies incoming frames against its peer's public key, so the child cannot forge supervisor commands. Symmetric HMAC authenticates the event stream at reactor cadence — Ed25519 per frame at that rate would dominate runtime cost. The control receiver validates each payload against its message kind's schema. Those schemas and the `InferenceEvent` schema applied by `parseInferenceEvent` accept disjoint payload shapes: control schemas reject inference-event shapes, and the event schema rejects control-plane shapes, so a confused-deputy attack that smuggles a `drain` or `recycle` over the event channel fails at validation.
@@ -502,13 +502,13 @@ Every frame on either channel carries `{ seq, channelId, payload }` inside the b
 Two complementary mechanisms run side by side:
 
 - **Monotonic seq per channelId.** The receiver tracks the highest seq seen and requires the next frame's seq to equal `highestSeq + 1` exactly. A repeat or decrease is a replay; a gap is a drop. Either crashes the receiver.
-- **ChannelId rotation on every spawn and every recycle.** The supervisor mints a fresh 16-byte channelId via `crypto.randomBytes` (hex-encoded) at every spawn and at every recycle (the `generateChannelId` helper in `packages/workflow-host/src/ipc/crypto.ts`). The receiver compares the incoming channelId against the current one byte for byte; any mismatch crashes the receiver. A frame from a recycled child's predecessor, or a frame captured from a previous channelId's lifetime, carries the wrong channelId and is rejected loudly rather than silently dropped.
+- **ChannelId rotation on every spawn and every recycle.** The supervisor mints a fresh 16-byte channelId via `crypto.getRandomValues` (hex-encoded) at every spawn and at every recycle (the `generateChannelId` helper in `packages/workflow-host/src/ipc/crypto.ts`). The receiver compares the incoming channelId against the current one byte for byte; any mismatch crashes the receiver. A frame from a recycled child's predecessor, or a frame captured from a previous channelId's lifetime, carries the wrong channelId and is rejected loudly rather than silently dropped.
 
 The combination is what defends against frame replay across the spawn/recycle boundary that monotonic seq alone cannot defend against. The seq counter resets per channelId.
 
 ### Trust-Anchor Bootstrap
 
-The spawn-time environment is the only channel the supervisor uses to hand trust anchors to the child. It carries exactly three values: `HOST_PUBKEY` (the supervisor's Ed25519 32-byte public key, hex), `IPC_HMAC_KEY` (the freshly minted 32-byte HMAC key, hex), and `IPC_CHANNEL_ID` (the freshly minted channelId, hex). The supervisor's Ed25519 private key never appears in env, never appears in any IPC payload, never appears in a log line, and never appears in an audit-log frame — it lives only as a 32-byte `Uint8Array` held in closure by the signing-key callback the supervisor wraps the control channel sender around. The env is constructed as a fresh object containing only those three variables, with no `...process.env` spread that could accidentally propagate a private value the supervisor's parent put in its own env.
+The spawn-time environment is the only channel the supervisor uses to hand trust anchors to the child. It carries three trust anchors, plus deployment identifiers and substrate config: `HOST_PUBKEY` (the supervisor's Ed25519 32-byte public key, hex), `IPC_HMAC_KEY` (the freshly minted 32-byte HMAC key, hex), and `IPC_CHANNEL_ID` (the freshly minted channelId, hex). The supervisor's Ed25519 private key never appears in env, never appears in any IPC payload, never appears in a log line, and never appears in an audit-log frame — it lives only as a 32-byte `Uint8Array` held in closure by the signing-key callback the supervisor wraps the control channel sender around. The env is constructed as a fresh object, with no `...process.env` spread that could accidentally propagate a private value the supervisor's parent put in its own env.
 
 ### Failure Stance
 
@@ -654,12 +654,7 @@ ChannelSender` writes against; the event channel is the
      field keeps it and replaces only the material.
    - `grants-updated` -> swap the active credentialsSnapshot.
    - `credentials-updated` -> merge into the material cell.
-   - `drain` -> forward to the drain controller (no-op placeholder
-     in this commit; the real controller lands separately).
-   - `recycle` -> log-only notification on the child side; the
-     supervisor's recycle path drives the kill/respawn from outside
-     the child, so the downstream `recycle` payload exists for
-     symmetry with the protocol but is not the trigger.
+   - `drain` -> flip the drain controller's signal.
    - `shutdown` -> stop accepting new triggers and exit the loop.
 
 #### Trust Anchors
@@ -718,7 +713,7 @@ grants until the next send, and it can ask again.
 
 - **Control channel.** Supervisor -> child. Carries every
   `ControlPayload` variant (`authority.set`, `trigger.fire`,
-  `signal.deliver`, `drain`, `recycle`, `shutdown`, `grants-updated`,
+  `signal.deliver`, `drain`, `shutdown`, `grants-updated`,
   `credentials-updated`, `sources-updated`) plus the child's upstream
   `ready` ride. Every
   inbound frame is verified against `HOST_PUBKEY`; the receiver
@@ -1006,7 +1001,7 @@ either case is one the operator must see. Once the new child emits
 
 **ChannelId rotation per the IPC contract.** Every respawn mints a
 new channelId via `generateChannelId` (16 bytes from
-`crypto.randomBytes`, hex-encoded). The new channel's receiver
+`crypto.getRandomValues`, hex-encoded). The new channel's receiver
 crashes on any frame carrying the predecessor channelId -- a stale
 frame is by construction either a replay or a programming bug, and
 crashing on mismatch is the only honest response. The seq counter
@@ -1425,21 +1420,22 @@ Packfile chunks are base64-encoded within JSON frames, consistent with how mail 
 Pack transfers share the WebSocket with live session traffic. To prevent interference:
 
 - Pack chunks are interleaved with other frames at the WebSocket message level (messages are atomic; the receiver processes each independently)
-- The sender limits unacknowledged pack data to a configurable window before pausing
-- Session-critical frames (`mail.inbound`, `message.send`) are never delayed by pack transfers
-- The receiver buffers incoming chunks in memory (or a temp file for large transfers) and only unpacks atomically on `repo.pack.done`
+- Session-critical frames (`mail.inbound`) are never delayed by pack transfers
+- The receiver buffers incoming chunks in memory and only unpacks atomically on `repo.pack.done`
 
 ### Rejection Reasons
 
 `repo.pack.reject` carries a `reason` field distinguishing failure modes:
 
-| Reason            | Meaning                                                                                        | Sender action                 |
-| ----------------- | ---------------------------------------------------------------------------------------------- | ----------------------------- |
-| `path_violation`  | Commit modifies paths outside sender's ownership, or the connection does not host that address | Do not retry                  |
-| `backpressure`    | Receiver is overwhelmed                                                                        | Pause and retry after a delay |
-| `conflict`        | Ref update conflicts with receiver state                                                       | Reconcile before retrying     |
-| `corrupt`         | Packfile failed index verification                                                             | Resend from scratch           |
-| `missing_objects` | A commit needs an object that neither the pack nor the receiver holds                          | Resend the full history once  |
+| Reason            | Meaning                                                                                        |
+| ----------------- | ---------------------------------------------------------------------------------------------- |
+| `path_violation`  | Commit modifies paths outside sender's ownership, or the connection does not host that address |
+| `conflict`        | Ref update conflicts with receiver state                                                       |
+| `corrupt`         | Packfile failed index verification                                                             |
+| `sha_mismatch`    | The applied pack's tip does not match the frame's `commitSha`                                  |
+| `missing_objects` | A commit needs an object that neither the pack nor the receiver holds                          |
+
+A `missing_objects` reject makes the sender ship the full history once. Any other reason ends the push with a failure.
 
 The Hub answers every transfer, rejecting one for an address the connection does not host rather than dropping it, and one it failed to parse or receive with `corrupt`: the sender holds a transfer open until it is answered and queues later pushes to the same repository ref behind it.
 
@@ -1507,7 +1503,7 @@ The signature structure:
 -----END SSH SIGNATURE-----
 ```
 
-State commits carry an author identity of `<agentAddress> <agent-id@interchange.local>` rather than a shared harness identity, making commits attributable in standard git tooling.
+State commits carry the shared author identity `interchange-harness <harness@interchange.local>`.
 
 ### Deploy Content Integrity
 

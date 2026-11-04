@@ -12,11 +12,11 @@ to provision it on the connected sidecar, and event collectors
 feed agent events back to the HTTP layer for observability.
 
 `createSessionService` takes a `SessionServiceDeps` of
-`sidecarRouter`, `agentRepoStore`, and an optional
-`assetService` paired with a `db` handle for the asset manifest
-inserts. `createHubSessionOrchestrator` takes a
-`HubSessionOrchestratorDeps` of `events`, `router`, `db`,
-`eventCollectors`, and `agentRepoStore`. See the
+`sidecarRouter`, `agentRepoStore`, `loadRunCredentials`, and optional
+`sidecarAllocationRouter`, `db`, and `toolPackageRegistries`.
+`createHubSessionOrchestrator` takes a
+`HubSessionOrchestratorDeps` of `events`, `router`, `db`, and
+`eventCollectors`. See the
 exported types in `src/session-service.ts` and
 `src/hub-session-orchestrator.ts` for the authoritative shapes;
 `@intx/hub-api` is the in-tree consumer that wires these
@@ -99,10 +99,8 @@ for the authoritative type shapes.
   `CreateAssetParams`, `PopulateAssetParams`, `AssetServiceErrorReason`,
   `ReadAssetBlobParams`, `ListAssetBlobsParams`.
 
-### Skills stanza and credential push
+### Credential push
 
-- `buildAvailableSkillsStanza` / `AvailableSkillEntry` — renders the
-  available-skills stanza injected into agent context.
 - `pushCredentialRotation` — after a secret rotation, pushes the new secret
   to every live deployment that holds the credential, in the tenant and its
   descendants.

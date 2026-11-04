@@ -249,8 +249,8 @@ export const packageRegistryKindHandler: KindHandler = {
     return { ok: true };
   },
   onRefUpdated() {
-    // No cached index today. The resolver reads the asset's contents
-    // through `readAssetBlob`/`listAssetBlobs` at session time.
+    // No cached index: the closure resolver reads the asset's contents when
+    // it resolves a workflow's closure.
   },
 };
 

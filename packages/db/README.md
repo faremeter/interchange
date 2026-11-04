@@ -21,13 +21,13 @@ agent repo metadata).
 
 ```ts
 import { createDB } from "@intx/db";
-import { agent } from "@intx/db/schema";
+import { workflowRun } from "@intx/db/schema";
 import { eq } from "drizzle-orm";
 
 const { db } = createDB(process.env);
 
-const row = await db.query.agent.findFirst({
-  where: eq(agent.id, agentId),
+const row = await db.query.workflowRun.findFirst({
+  where: eq(workflowRun.id, runId),
 });
 ```
 

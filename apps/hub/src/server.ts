@@ -271,13 +271,9 @@ export async function createHubServer({
     signingKey: hubSigningKey,
   });
 
-  // The asset service shares the agent-repo store's substrate so skill
-  // assets land under the same on-disk root and reuse the same signing
-  // key for commit signatures. It is consumed by the session service for
-  // per-attachment pack fan-out, by the smart-HTTP asset routes for clone
-  // and push, and by the mail-triggered run-grants materializer to hydrate
-  // a receiving deployment's definition. The E2E test seeds fixtures
-  // directly through this service object.
+  // The asset service shares the agent-repo store's substrate so assets land
+  // under the same on-disk root and reuse the same signing key for commit
+  // signatures. It backs the asset REST and smart-HTTP routes.
   const httpRegistries = new Map([
     ["npmjs", { url: "https://registry.npmjs.org" }],
   ]);

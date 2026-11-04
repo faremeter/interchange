@@ -64,8 +64,9 @@ see [`LAYOUT.md`](../LAYOUT.md).
 
 ## Implementation notes
 
-- [`IMPLEMENTATION.md`](./IMPLEMENTATION.md) — implementation notes.
-  Currently covers the SMTP/IMAP message bus.
+- [`IMPLEMENTATION.md`](./IMPLEMENTATION.md) — implementation notes,
+  including the message bus, allocation, step state, supervisor IPC and pack
+  transport.
 - [`inference-discovery-anthropic/docs/discovery.md`](../packages/inference-discovery-anthropic/docs/discovery.md) — observed vs
   documented wire behaviour of Anthropic's `/v1/messages` and
   `/v1/files` surfaces. Narrative companion to the discovery fixtures

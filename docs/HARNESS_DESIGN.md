@@ -101,7 +101,7 @@ When the Hub sends `agent.deploy`, the sidecar spawns a supervised **workflow-pr
 
 When the hub sends `agent.undeploy`, the sidecar shuts the deployment's supervisor down (killing the workflow-process child and releasing its IPC pipes and event-channel handle), unregisters the deployment address from the transport and from the mail/signal/drain routers, reclaims the deployment's per-step scratch, removes its workflow-run repository, and deletes the `deployment.json` record so a later boot does not re-spawn a torn-down deployment. It marks the record `tearing-down` first and deletes it only once every other step succeeded, so a crash mid-undeploy or a step that fails leaves the deployment reported as tearing down, and the Hub retries removal while the allocation's cleanup policy permits it. A cleanup disconnect timeout resumes after reconnect; exhausted retries or a permanent cleanup rejection require operator recovery and keep a cleanup-only binding for inventory. These terminal failures do not trigger another undeploy on hello. A copy stops occupying an active slot once removal or retained storage is confirmed, even if the provider obligation remains failed. It also deletes the deployment's agent directory, key pair included, and its local conversation copy, which carries a conversation only across child respawns and sidecar restarts of the deployment that wrote it.
 
-Credentials travel in the `agent.deploy` frame's inference **sources** — `config.sources`, and the per-step `workflow.sources` failover chains — where each `InferenceSource` carries its own API key. There is no separate credential push endpoint.
+An `InferenceSource` names its credential by `credentialId`. The secrets travel separately: in the `agent.deploy` frame's `workflow.credentials`, and later in `credentials.update` frames.
 
 ## Per-Agent Key Pairs
 
@@ -113,6 +113,7 @@ Directory layout under `SIDECAR_DATA_DIR`:
 
 ```
 SIDECAR_DATA_DIR/
+  .sidecar-signing/              # the sidecar's own signing keypair
   <sanitized-agent-address>/     # per-agent key custody
     keys/
       id_ed25519                 # agent private key (raw 32 bytes, mode 0600)
@@ -124,6 +125,16 @@ SIDECAR_DATA_DIR/
     <runId>/                     # per-step scratch and working stores, reclaimed on undeploy
   agent-conversation-state/
     <runId>/                     # local conversation copy, reclaimed on undeploy
+  workflow-definition-sources/
+    <runId>/
+      source-assets/<assetId>/   # mounted tarball asset
+  workflow-definition-source-gits/
+    <runId>/                     # retained `.git` of each source-format asset
+  workflow-definition-closures/
+    <runId>/                     # laid-out closure the workflow child imports from
+  workflow-definition-closure-cache/  # tarball cache the deploy closure applies share
+  cache/tarballs/                # the probe's tarball cache (`SIDECAR_CACHE_DIR`)
+  workflow-probe/closures/       # per-probe scratch
 ```
 
 The per-agent key directory is keyed by the sanitized run address; the workflow subtrees are keyed by the derived run id.
@@ -156,22 +167,9 @@ The router does not read `Interchange-Type`. A structured payload that names a `
 
 Connector state has four parts: `threadRoot` (the first message's id), `lastMessageId` (the most recent message in either direction), `replyTo` (the most recent speaker — the primary recipient on the next outbound reply), and `cc` (every other participant who has spoken on the thread, deduplicated, in arrival order). `threadRoot` and `lastMessageId` are each present only when the message that set them named an id; `replyTo` is always present, because a message that names no reply address starts no thread. When the reactor emits `connector.reply`, the outbound mail is addressed to `replyTo` with `cc` carrying everyone else — whoever spoke most recently gets the direct reply and the rest stay in the loop. The reply carries `In-Reply-To` whenever the thread holds an identified ancestor — `lastMessageId`, or `threadRoot` when the most recent message named no id. With neither present the header is omitted, since RFC 5322 defines it as one or more message ids and admits no empty one.
 
-When a hub user composes mail to an agent, the hub decides what threading headers to stamp:
-
-1. **Session history wins.** If the user already has prior mail in this session, the hub stamps `inReplyTo` and `references` from that session-history chain. The harness routes the message as `continue` against whatever thread the user's prior session message was part of.
-2. **Connector cache fallback.** With no session history, the hub looks up the agent's cached connector state. If a thread is active, the hub stamps `inReplyTo = lastMessageId` and `references = [threadRoot]` — regardless of who else is on the thread. The user joins whatever conversation is in progress.
-3. **No threading.** With no session history and no active connector, the hub sends the message threading-less. The harness routes it as `start`, establishing this user as the first participant on a new thread.
-
-The hub learns the cached connector state from a `connector.state.changed` frame the sidecar emits whenever the router's state mutates. Cache entries are dropped on sidecar disconnect.
-
-On reconnect, agents whose persisted state is non-null re-bootstrap the cache automatically: the router's `restore()` call from the reactor's first `wrappedStore.load()` fires `onStateChanged` because the state transitions from the cold-start `null` to the persisted value, and the sidecar lifts that callback onto a wire frame. Agents whose persisted state is null emit no frame — the cache stays absent until the harness produces its first real state change. The route handler treats absent and null identically.
+Mail a hub user sends to a run carries no threading headers (`packages/hub-api/src/workflow-run-trigger.ts`).
 
 The bootstrap restore happens **only on the first `wrappedStore.load()`**. Subsequent loads return the store's payload but do not restore from disk; once the router emits its first state change, the harness flips an `inMemoryStateAuthoritative` bit and refuses to clobber in-memory state with a stale disk value. This closes a race where the reactor's startup `load()` lands on the same microtask boundary as the watch callback's `commit()`: without the dirty bit, the second load would reset the router's freshly committed thread state to disk's null and the next `connector.reply` would fail to compose.
-
-Two observable windows where the cache may be empty or stale, both of which fall through to threading-less mail and self-heal on the next state change:
-
-1. **Between WebSocket connection and the reactor's first `wrappedStore.load()`.** A user message composed in this window finds an absent cache entry. After the load, a bootstrap frame populates the cache.
-2. **Between a sidecar disconnect and the same sidecar's next `wrappedStore.load()` on reconnect.** The disconnect clears the cache. A user message composed in this window also finds an absent entry. If the cache was ahead of the persisted store at disconnect (a state mutation fired between the last `writeMetadata` cycle and the drop), the bootstrap will restore the persisted snapshot rather than the prior in-memory cache value. The cache reflects the freshest source of truth available, not a continuous history.
 
 ## Registration and Reconnection
 
@@ -203,7 +201,7 @@ The sidecar's isogit repository is the source of truth for agent inference conte
 
 ## Security Model
 
-Credentials travel in the `agent.deploy` frame's inference `sources` (each `InferenceSource` carries its own API key) and are held in memory by the running deployment. They are also persisted to disk in the deployment's `deployment.json` record — the `sources` field embeds those API keys — so the sidecar can restore a deployment on restart without re-receiving them from the hub. The record is written owner-only (mode 0600), but storing provider API keys on the sidecar's disk at all is a known limitation of the prototype that should be addressed before production use.
+Credential secrets travel in the `agent.deploy` frame's `workflow.credentials` and in `credentials.update` frames, and are held in memory by the running deployment. The `deployment.json` record also keeps them, sealed with `SIDECAR_CREDENTIAL_ENCRYPTION_KEY`, so the sidecar can restore a deployment on restart without re-receiving them from the hub. The record is written owner-only (mode 0600).
 
 ## Key Rotation
 
@@ -219,7 +217,7 @@ If a deployment the sidecar restores has no key pair on disk (for example, keys 
 
 Mail is the first-class communication primitive. The sidecar persists outbound mail from agents via `mail.outbound` frames sent to the hub. The hub persists inbound mail sent by users via `POST .../workflows/runs/:runId/mail` and dispatches it to the sidecar as a `mail.delivered` agent event.
 
-The composition-layer harness exposes the agent's reactor event stream as `harness.stream()`, an `AsyncIterable<ReactorEmittedEvent>`. The sidecar's `HarnessBuilder` drains that stream and adapts each event into an `onEvent(event)` callback for the hub session channel. The stream carries inference activity, tool execution, reactor lifecycle, and fork events. `message.received` is a `ReactorInboundEvent` — it is delivered directly to the reactor director and is not forwarded to session channel subscribers. This keeps the external event stream focused on observable inference activity rather than internal routing signals.
+The composition-layer harness exposes the agent's reactor event stream as `harness.stream()`, an `AsyncIterable<ReactorEmittedEvent>`. The workflow child sends those events to the supervisor over the event channel, and the supervisor forwards them to the hub session channel. The stream carries inference activity, tool execution, reactor lifecycle, and fork events. `message.received` is a `ReactorInboundEvent` — it is delivered directly to the reactor director and is not forwarded to session channel subscribers. This keeps the external event stream focused on observable inference activity rather than internal routing signals.
 
 Inference traces are stored separately from mail. The hub records one `inference_turn` per inference cycle and one or more `turn_part` rows per turn. The `/turns` endpoint serves these to UI clients independently of the `/mail` endpoint.
 

@@ -260,7 +260,7 @@ All scripts live in `bin/`. The bash scripts source the bundled [opsh](https://g
 
 ## Seed Data
 
-`bin/seed` creates the full dev dataset: users, tenants, agents, roles, grants, credentials, and offerings. It requires a running hub (the dev orchestrator handles this when `--seed` is passed). See the Quick Start section for seed account credentials.
+`bin/seed` creates the full dev dataset: users, tenants, workflows, roles, grants, credentials, and offerings. It requires a running hub (the dev orchestrator handles this when `--seed` is passed). See the Quick Start section for seed account credentials.
 
 ## Project Structure
 
