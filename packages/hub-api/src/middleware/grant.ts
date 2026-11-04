@@ -90,6 +90,8 @@ export function createAuthorizeGrant({
   };
 }
 
+const grantChecks = new WeakSet<object>();
+
 /**
  * Builds a `requireGrant` middleware factory bound to the application's
  * grant store and condition registry. Usage:
@@ -100,7 +102,7 @@ export function createAuthorizeGrant({
 export function createRequireGrant(deps: CreateRequireGrantDeps): RequireGrant {
   const authorizeGrant = createAuthorizeGrant(deps);
   return function requireGrant(resource, action) {
-    return createMiddleware<TenantEnv>(async (c, next) => {
+    const middleware = createMiddleware<TenantEnv>(async (c, next) => {
       const resolvedResource =
         typeof resource === "function"
           ? resource({ param: (name) => c.req.param(name) })
@@ -124,7 +126,19 @@ export function createRequireGrant(deps: CreateRequireGrantDeps): RequireGrant {
         "You do not have permission to perform this action",
       );
     });
+    grantChecks.add(middleware);
+    return middleware;
   };
+}
+
+/**
+ * Whether `handler` is a grant check that `requireGrant` built. Only the
+ * middleware itself carries the tag: a wrapper around it, such as one that
+ * `hono/combine` builds, does not, so a check over a route's handler chain
+ * finds only grant checks mounted directly.
+ */
+export function isGrantCheck(handler: object): boolean {
+  return grantChecks.has(handler);
 }
 
 /**
