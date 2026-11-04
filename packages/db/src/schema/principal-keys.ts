@@ -4,15 +4,18 @@ import { pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { principal } from "./principals";
 
 // A principal's Ed25519 signing key. `public_key` is the hex-encoded 32-byte
-// public point; `private_key` holds the hex-encoded 32-byte seed sealed by the
-// credential cipher (`enc:aead:...` ciphertext), so the seed is never at rest in
-// plaintext under a configured key. The hub custodies the private key: a
-// signature attributes an action to the principal, but is not non-repudiable
-// against the hub operator. See docs/AUTH.md.
+// public point. When the hub custodies the key, `private_key` holds the
+// hex-encoded 32-byte seed sealed by the credential cipher (`enc:aead:...`
+// ciphertext), so the seed is never at rest in plaintext under a configured
+// key. A null `private_key` means another party holds the private key and the
+// hub holds only the public key: the hub can verify the principal's signatures
+// but cannot sign as it. A hub-custodied signature attributes an action to the
+// principal, but is not non-repudiable against the hub operator. See
+// docs/AUTH.md.
 //
 // The `status` axis expresses the one-active-key-per-principal invariant, which
-// the partial unique index below enforces at the database. No path retires a
-// key; every key a principal holds today is "active".
+// the partial unique index below enforces at the database. A retired row stays
+// for the record; only the active row signs or answers for the principal.
 export const principalKey = pgTable(
   "principal_key",
   {
@@ -21,7 +24,7 @@ export const principalKey = pgTable(
       .notNull()
       .references(() => principal.id, { onDelete: "cascade" }),
     publicKey: text("public_key").notNull().unique(),
-    privateKey: text("private_key").notNull(),
+    privateKey: text("private_key"),
     status: text("status", { enum: ["active", "retired"] }).notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

@@ -176,6 +176,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         sign: async () => new Uint8Array(64),
         getPublicKey: async () => "pky_unused",
+        recordPublicKey: async () => undefined,
+        retireActive: async () => undefined,
       };
       const store = createPrincipalStore(h.db, throwingKeyStore);
       const now = new Date();

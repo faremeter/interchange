@@ -43,23 +43,28 @@ principal
 
 ### Signing keys
 
-The `principal_key` table holds a principal's Ed25519 signing key, giving it a stable cryptographic identity. The public key is a stable handle a verifier can check a signature against; the hub custodies the private key.
+The `principal_key` table holds a principal's Ed25519 signing key, giving it a stable cryptographic identity. The public key is a stable handle a verifier can check a signature against. For a hub-custodied key the hub also holds the private key; for a public-only key another party holds it.
 
 ```
 principal_key
   id            text PK        -- pky_...
   principal_id  text FK -> principal (ON DELETE CASCADE)
   public_key    text NOT NULL UNIQUE  -- hex-encoded 32-byte Ed25519 public key
-  private_key   text NOT NULL         -- hex-encoded 32-byte seed, sealed by the cipher
+  private_key   text NULL             -- hex-encoded 32-byte seed, sealed by the cipher;
+                                      -- NULL when another party holds the private key
   status        text NOT NULL         -- 'active' | 'retired'
   created_at    timestamptz
   updated_at    timestamptz
   UNIQUE(principal_id) WHERE status = 'active'   -- one active key per principal
 ```
 
+A row with a NULL `private_key` is public-only: another party holds the private key, and the hub holds only the public key. The hub can check the principal's signatures against it, but `principalKeyStore.sign` refuses to sign with it.
+
+Only the active row signs or answers for a principal. Retiring a key sets its row to `retired`; the row stays, `sign` and `getPublicKey` ignore it, and another key can then become active. Recording a retired public-only key again for the same principal makes that row active again; recording the public key of a hub-custodied row is refused, so a key recorded as public-only never signs.
+
 The private key seed is sealed at rest with the same AEAD cipher that protects credential secrets, bound to its row and column so a sealed key cannot be transplanted to another row. See [CREDENTIALS.md](./CREDENTIALS.md) for the encryption-at-rest mechanics.
 
-Custody is an **attribution** model, not non-repudiation. A signature proves the action came from a holder of the principal's private key, which is enough to attribute the action to the principal within the system. It is **not** proof against the hub operator, who also holds the key and could sign as the principal. Non-repudiation would require the private key to live somewhere the hub cannot reach, which the hub-custodied model does not provide.
+Hub custody is an **attribution** model, not non-repudiation. A signature with a hub-custodied key proves the action came from a holder of the principal's private key, which is enough to attribute the action to the principal within the system. It is **not** proof against the hub operator, who also holds the key and could sign as the principal. Non-repudiation would require the private key to live somewhere the hub cannot reach, which the hub-custodied model does not provide.
 
 Every principal is minted a signing key when it is created, in the same transaction as the principal row, so a principal never exists without a key. The hub seals the seed under `PRINCIPAL_KEY_ENCRYPTION_KEY` (32 bytes, hex) -- a separate key from `CREDENTIAL_ENCRYPTION_KEY`, so the two rotate independently -- and refuses to start without it.
 
