@@ -3,24 +3,27 @@
 //
 // Minting a key lives only in the principal-creation owner, so every principal
 // CREATED after that landed already has an active key. This one-shot pass keys
-// the pre-existing population so the whole non-agent principal set matches the
-// invariant "every non-agent principal has an active key".
+// the pre-existing `user` population so it matches the invariant "every user
+// principal has an active key".
 //
-// Scope is every `user` and `workflow` principal REGARDLESS of status, not just
-// active ones. A status flip (e.g. an invite moving from `invited` to `active`)
-// reuses the same principal row and does not re-mint, so an active-only pass
-// would leave a pre-existing `invited`/`suspended` principal keyless and turn it
-// into a keyless ACTIVE principal the moment it is activated. `agent` is a
-// legacy/inert kind that is never keyed at creation either, so it is skipped to
-// keep the populations consistent.
+// Scope is every `user` principal REGARDLESS of status, not just active ones. A
+// status flip (e.g. an invite moving from `invited` to `active`) reuses the same
+// principal row and does not re-mint, so an active-only pass would leave a
+// pre-existing `invited`/`suspended` principal keyless and turn it into a
+// keyless ACTIVE principal the moment it is activated.
+//
+// `workflow` principals are skipped. The pass counts a principal whose only key
+// is retired as keyless, so on a workflow principal it would mint a
+// hub-custodied key in place of the one that was retired. `agent` is a
+// legacy/inert kind that is never keyed at creation either, so it is skipped
+// too.
 //
 // Idempotent: a principal that already holds an active key is skipped, so the
 // pass is safe to re-run or resume after a partial failure. Each principal is
 // keyed in its own autocommit, so a partial failure leaves the earlier
-// principals keyed. Safe to run against a LIVE hub -- nothing reads principal
-// keys yet, the hub only mints for newly-created principals (disjoint from this
-// pass's pre-existing set), and the `principal_key` active-key unique index
-// blocks a double active key.
+// principals keyed. Safe to run against a LIVE hub: the hub only mints for
+// newly-created principals (disjoint from this pass's pre-existing set), and
+// the `principal_key` active-key unique index blocks a double active key.
 
 import { and, eq, inArray } from "drizzle-orm";
 
@@ -29,7 +32,7 @@ import { principal } from "./schema/principals";
 import { principalKey } from "./schema/principal-keys";
 import type { PrincipalKeyStore } from "./principal-key-store";
 
-const BACKFILLED_KINDS = ["user", "workflow"] as const;
+const BACKFILLED_KINDS = ["user"] as const;
 
 export type BackfillPrincipalKeysReport = {
   /** Principals that were keyless and received a fresh active key. */
