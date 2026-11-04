@@ -6,7 +6,7 @@ import type {
   SidecarProvisionerBinding,
 } from "@intx/db";
 import { getLogger } from "@intx/log";
-import type { RetireIdleSidecarResult } from "@intx/types";
+import type { RetireIdleSidecarResult, SidecarView } from "@intx/types";
 
 import { SidecarStoppedOptions, type SidecarProvisioner } from "./contracts";
 
@@ -31,6 +31,9 @@ export type AttachSidecarProvisionersDeps = {
     readonly sidecarId: string;
     readonly binding: SidecarProvisionerBinding;
   }) => Promise<RetireIdleSidecarResult>;
+  readonly listProvisionerSidecars: (
+    binding: SidecarProvisionerBinding,
+  ) => Promise<readonly SidecarView[]>;
   readonly isConnected: AllocationConnectionCheck;
 };
 
@@ -40,6 +43,7 @@ export function attachSidecarProvisioners({
   provisioners,
   retireProvisionerSidecar,
   retireIdleProvisionerSidecar,
+  listProvisionerSidecars,
   isConnected,
 }: AttachSidecarProvisionersDeps): void {
   for (const provisioner of new Set(provisioners)) {
@@ -49,6 +53,7 @@ export function attachSidecarProvisioners({
       provisionerBindingFingerprint: provisioner.bindingFingerprint,
     };
     provisioner.attach?.({
+      listSidecars: () => listProvisionerSidecars(binding),
       async retireIfIdle(rawSidecarId) {
         const sidecarId = SidecarId(rawSidecarId);
         if (sidecarId instanceof type.errors)

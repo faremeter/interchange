@@ -1,0 +1,2 @@
+CREATE INDEX "sidecar_live_binding_idx" ON "sidecar" USING btree ("provisioner_id","provisioner_api_version","provisioner_binding_fingerprint") WHERE "sidecar"."retired_at" is null;--> statement-breakpoint
+CREATE INDEX "sidecar_allocation_status_sidecar_idx" ON "sidecar_allocation" USING btree ("status","sidecar_id");

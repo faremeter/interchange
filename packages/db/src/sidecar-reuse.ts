@@ -2,14 +2,23 @@ import { and, eq, inArray, isNull, ne, type SQL } from "drizzle-orm";
 
 import {
   hostedSidecarAllocationStatuses,
+  hostedWorkflowProbeStatuses,
   occupyingWorkflowProbeStatuses,
   type RetireIdleSidecarResult,
   type SidecarAllocationStatus,
+  type SidecarDeploymentView,
+  type SidecarProbeView,
+  type SidecarView,
 } from "@intx/types";
 import type { SidecarCapacity } from "@intx/types/sidecar";
 
 import type { DBExecutor } from "./client";
-import { sidecar, sidecarAllocation, workflowProbe } from "./schema";
+import {
+  sidecar,
+  sidecarAllocation,
+  workflowProbe,
+  workflowRun,
+} from "./schema";
 
 /** A provisioner named a sidecar the Hub cannot place its work on. */
 export class SidecarReuseRejectedError extends Error {
@@ -322,6 +331,152 @@ function holdsActiveSlot(
       incarnation.allocationId === reservation.id &&
       incarnation.generation === reservation.ensureAcceptedGeneration,
   );
+}
+
+function hostedStatus<T extends string>(
+  hosted: readonly T[],
+  rowId: string,
+  status: string,
+): T {
+  const match = hosted.find((candidate) => candidate === status);
+  if (match === undefined)
+    throw new Error(`Listed row ${rowId} has unlisted status ${status}`);
+  return match;
+}
+
+/**
+ * The sidecars minted for `binding` and what is on them: every one not retired,
+ * and every retired one with work left. Call it in one snapshot, since adoption
+ * moves a hold from a probe row to an allocation row in a single commit.
+ */
+export async function listProvisionerSidecars(
+  tx: DBExecutor,
+  args: {
+    readonly binding: SidecarProvisionerBinding;
+  } & SidecarAllocationStoreOptions,
+): Promise<readonly SidecarView[]> {
+  const sidecarColumns = {
+    id: sidecar.id,
+    retiredAt: sidecar.retiredAt,
+    adapterManifestDigest: sidecar.adapterManifestDigest,
+  };
+  const notRetired = await tx
+    .select(sidecarColumns)
+    .from(sidecar)
+    .where(and(mintedFor(args.binding), isNull(sidecar.retiredAt)));
+  const deployments = await tx
+    .select({
+      sidecar: sidecarColumns,
+      allocation: {
+        id: sidecarAllocation.id,
+        generation: sidecarAllocation.generation,
+        tenantId: sidecarAllocation.tenantId,
+        anchorRunId: sidecarAllocation.anchorRunId,
+        status: sidecarAllocation.status,
+        deploymentCleanupConfirmed:
+          sidecarAllocation.deploymentCleanupConfirmed,
+        ensureAcceptedGeneration: sidecarAllocation.ensureAcceptedGeneration,
+        externalRef: sidecarAllocation.externalRef,
+      },
+      run: {
+        address: workflowRun.address,
+        definitionId: workflowRun.definitionId,
+        status: workflowRun.status,
+      },
+    })
+    .from(sidecarAllocation)
+    .innerJoin(sidecar, eq(sidecarAllocation.sidecarId, sidecar.id))
+    .innerJoin(workflowRun, eq(sidecarAllocation.anchorRunId, workflowRun.id))
+    .where(
+      and(
+        mintedFor(args.binding),
+        inArray(sidecarAllocation.status, [...hostedSidecarAllocationStatuses]),
+      ),
+    );
+  const probes = await tx
+    .select({
+      sidecar: sidecarColumns,
+      probe: {
+        id: workflowProbe.id,
+        generation: workflowProbe.generation,
+        tenantId: workflowProbe.tenantId,
+        status: workflowProbe.status,
+        externalRef: workflowProbe.externalRef,
+      },
+    })
+    .from(workflowProbe)
+    .innerJoin(sidecar, eq(workflowProbe.sidecarId, sidecar.id))
+    .where(
+      and(
+        mintedFor(args.binding),
+        inArray(workflowProbe.status, [...hostedWorkflowProbeStatuses]),
+      ),
+    );
+
+  const sidecars = new Map(notRetired.map((row) => [row.id, row]));
+  for (const row of [...deployments, ...probes])
+    sidecars.set(row.sidecar.id, row.sidecar);
+  const deploymentsBySidecar = Map.groupBy(
+    deployments,
+    (row) => row.sidecar.id,
+  );
+  const probesBySidecar = Map.groupBy(probes, (row) => row.sidecar.id);
+
+  return [...sidecars.values()].map((row) => {
+    const onSidecar = deploymentsBySidecar.get(row.id) ?? [];
+    // Read after the database reads: the connection may have changed meanwhile.
+    const inventory = args.getSidecarInventory?.(row.id);
+    return {
+      sidecarId: row.id,
+      retired: row.retiredAt !== null,
+      adapterManifestDigest: row.adapterManifestDigest,
+      ...(inventory !== undefined
+        ? {
+            capacity: {
+              maxActiveDeployments: inventory.capacity.maxActiveDeployments,
+              activeDeployments: onSidecar.filter(({ allocation }) =>
+                holdsActiveSlot(allocation, inventory),
+              ).length,
+            },
+          }
+        : {}),
+      deployments: onSidecar.map(
+        ({ allocation, run }): SidecarDeploymentView => ({
+          allocationId: allocation.id,
+          generation: allocation.generation,
+          tenantId: allocation.tenantId,
+          anchorRunId: allocation.anchorRunId,
+          ...(run.address !== null ? { address: run.address } : {}),
+          definitionId: run.definitionId,
+          status: hostedStatus(
+            hostedSidecarAllocationStatuses,
+            allocation.id,
+            allocation.status,
+          ),
+          runStatus: run.status,
+          cleanupConfirmed: allocation.deploymentCleanupConfirmed,
+          ...(allocation.externalRef !== null
+            ? { externalRef: allocation.externalRef }
+            : {}),
+        }),
+      ),
+      probes: (probesBySidecar.get(row.id) ?? []).map(
+        ({ probe }): SidecarProbeView => ({
+          allocationId: probe.id,
+          generation: probe.generation,
+          tenantId: probe.tenantId,
+          status: hostedStatus(
+            hostedWorkflowProbeStatuses,
+            probe.id,
+            probe.status,
+          ),
+          ...(probe.externalRef !== null
+            ? { externalRef: probe.externalRef }
+            : {}),
+        }),
+      ),
+    };
+  });
 }
 
 /**

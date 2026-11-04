@@ -78,6 +78,10 @@ export const sidecarAllocation = pgTable(
   (t) => [
     uniqueIndex("sidecar_allocation_anchor_run_idx").on(t.anchorRunId),
     index("sidecar_allocation_sidecar_idx").on(t.sidecarId),
+    // Finished rows stay, so listing what is on a binding's sidecars starts
+    // from the rows in a live status. Not partial, so it fits whatever status
+    // list a query passes.
+    index("sidecar_allocation_status_sidecar_idx").on(t.status, t.sidecarId),
     index("sidecar_allocation_reconciliation_idx")
       .on(t.nextAttemptAt, t.createdAt)
       .where(

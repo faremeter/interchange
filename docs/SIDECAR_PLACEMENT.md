@@ -98,17 +98,14 @@ answers `ensure` with that sidecar's id instead of starting capacity for the
 identity the request carries. The Hub accepts that sidecar only when it was
 minted for the same provisioner binding, whether or not it still hosts other
 work, and has not been retired; otherwise it rejects the placement with
-`sidecar_reuse_rejected`. The provisioner counts its holds on a sidecar, one
-per allocation id it answered with that sidecar, and releases one per
-`destroy`. When none remain, it decides whether the sidecar keeps running idle
-for later work or stops. The Hub keeps an idle sidecar connected and routes
-nothing to it. A provisioner that keeps it running answers `cleanup: required`,
-and the Hub removes the deployment over that connection if it has not already.
-Stopping a sidecar in answer to a `destroy` must remove its restorable
-deployment state and report `cleanup: confirmed`; one that may host other work
-needs `retireIfIdle`, below, to answer `retired` first. A provider returning
-`cleanup: required` must keep a sidecar cleanup path available. The provisioner
-keeps its holds durably, since the Hub never re-announces them after a restart.
+`sidecar_reuse_rejected`. The provisioner decides whether a sidecar with no work
+left keeps running idle for later work or stops. The Hub keeps an idle sidecar
+connected and routes nothing to it. A provisioner that keeps it running answers
+`cleanup: required`, and the Hub removes the deployment over that connection if
+it has not already. Stopping a sidecar in answer to a `destroy` must remove its
+restorable deployment state and report `cleanup: confirmed`; one that may host
+other work needs `retireIfIdle`, below, to answer `retired` first. A provider
+returning `cleanup: required` must keep a sidecar cleanup path available.
 
 The Hub retires a sidecar identity once it learns that no sidecar runs with
 it: its `ensure` was rejected, a `destroy` confirmed cleanup, or its
@@ -121,7 +118,16 @@ handshakes are refused; a connection already open stays open, idle, until it
 closes.
 
 The Hub calls the optional `attach` hook once at start with a host whose calls
-are scoped to that provisioner's current binding.
+are scoped to that provisioner's current binding, so a provisioner needs no
+record of its own of what is on its sidecars.
+
+`listSidecars` returns every sidecar not retired, idle ones included, and every
+retired one with work left, with the deployments and probes on each. A sidecar's
+`capacity` is present only on the Hub holding its connection; absent means
+unknown, not disconnected. The list is a hint. The Hub records which sidecar a
+placement chose only after `ensure` returns; until then the list shows it as
+`provisioning` on the identity the request offered. A provisioner capping probes
+per sidecar can therefore overshoot, since probe placement has no room check.
 
 `retireIfIdle` is what permits stopping a sidecar that may host other work. It
 retires the sidecar only when nothing is left on it, and answers `retired`,
@@ -141,20 +147,31 @@ sidecar running.
 
 Within one provisioner, an `ensure` placing work on a sidecar and `retireIfIdle`
 on that sidecar must not overlap. The Hub records a placement only after
-`ensure` returns, so `retireIfIdle` cannot see one in flight and answers
-`retired`; the placement is then refused, which fails a probe and costs a
-deployment one of its ensure attempts. So a provisioner does not offer a sidecar
-to `ensure` while retiring it, and does not retire a sidecar its own `ensure` is
-still placing work on, whether from `destroy` or a sweep. Provisioner instances
-on other Hubs cannot be coordinated this way; for them the refusal stands.
+`ensure` returns, and later still when it has to wait for the sidecar's
+inventory, which can take until the connection deadline. Until then
+`retireIfIdle` cannot see the placement and answers `retired`; the placement is
+then refused, which fails a probe and costs a deployment one of its ensure
+attempts. So a provisioner does not offer a sidecar to `ensure` while retiring
+it, and does not retire a sidecar its own `ensure` chose until `listSidecars`
+shows that placement on it or the placement's `destroy` arrives, whether it
+retires from `destroy` or a sweep. A note kept in memory is enough for this: a
+provisioner runs in its Hub's process, so the note and an `ensure` in flight are
+lost together, and the Hub cleans up such a placement before it tries again.
+
+The Hub does not close this race itself. Provisioner instances on other Hubs
+cannot see each other's `ensure` calls, so there a retirement can still land
+between an `ensure` choosing a sidecar and the Hub recording the placement. The
+refusal then stands: a deployment retries on a new generation, and a probe
+fails the deploy that requested it.
 
 A sidecar can still go idle with no `destroy` to notice: the work that made
 `destroy` answer `in_use` finished later, or a crash left a worker behind. A
-periodic sweep covers these: for each worker in the provider's inventory, it
-calls `retireIfIdle` and stops the worker on `retired`. A worker that just
-started answers `in_use`. A provisioner that keeps idle sidecars running for
-later work leaves them out of the sweep, and the sweep follows the rule above
-for sidecars its own `ensure` calls are still placing work on.
+periodic sweep covers these: for each sidecar in the provider's inventory or
+`listSidecars`, it calls `retireIfIdle` and stops the worker on `retired`. A
+worker that just started answers `in_use`, so the order of those two reads does
+not matter. A provisioner that keeps idle sidecars running for later work leaves
+them out of the sweep, and the sweep follows the rule above for sidecars its own
+`ensure` calls are still placing work on.
 
 A sidecar disconnected at its last `destroy` stays in use. Its copy is not
 confirmed removed, so `retireIfIdle` answers `in_use`, and still does once the
@@ -163,11 +180,18 @@ reconnects, the Hub finishes that cleanup and a later sweep retires it. A
 provider that knows the worker is dead reports it with `sidecarStopped`.
 Otherwise the sidecar waits for operator recovery of that allocation.
 
+Provider resources are tagged with the sidecar id, which `destroy` needs anyway
+because a Hub crash can lose `externalRef`, and with the binding fingerprint. A
+sweep touches only resources of the current fingerprint, because the list leaves
+out sidecars of an older binding, which may still run healthy work. A placement
+the Hub never recorded got no deployment, so nothing is left to release for it
+on the sidecar.
+
 `sidecarStopped` reports a sidecar that is already gone, such as one that died.
-It retires a sidecar minted for that provisioner's current binding whatever is on
-it, and answers `not_owned`, which is final, for any other. A thrown
-`sidecarStopped` is transient, so the provisioner keeps the report durably, like
-its holds, and retries it, also after a Hub restart. Without a report, a stopped
+It retires a sidecar minted for that provisioner's current binding whatever is
+on it, and answers `not_owned`, which is final, for any other. A thrown
+`sidecarStopped` is transient, so the provisioner retries it. Work on a sidecar
+nobody reports waits for its disconnect deadline. Without a report, a stopped
 sidecar keeps a valid token, which opens only an idle connection that gets work
 only if a provisioner places work on that sidecar again. The same holds for a
 sidecar minted under a binding the provisioner no longer has: it cannot report

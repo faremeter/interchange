@@ -28,6 +28,7 @@ const isConnected = () => false;
 
 const unusedHostCalls = {
   retireIdleProvisionerSidecar: async () => ({ kind: "not_owned" as const }),
+  listProvisionerSidecars: async () => [],
 };
 
 describe("attachSidecarProvisioners", () => {
@@ -170,5 +171,38 @@ describe("attachSidecarProvisioners", () => {
       "invalid retireIfIdle call",
     );
     expect(retired).toBe(0);
+  });
+
+  test("lists the sidecars of the provisioner's own binding", async () => {
+    const hosts: SidecarProvisionerHost[] = [];
+    const listed: unknown[] = [];
+    const sidecars = [
+      {
+        sidecarId: "sc-idle",
+        retired: false,
+        adapterManifestDigest: "digest",
+        deployments: [],
+        probes: [],
+      },
+    ];
+    attachSidecarProvisioners({
+      provisioners: [provisioner("sandbox", hosts)],
+      retireProvisionerSidecar: async () => null,
+      ...unusedHostCalls,
+      listProvisionerSidecars: async (binding) => {
+        listed.push(binding);
+        return sidecars;
+      },
+      isConnected,
+    });
+
+    expect(await hosts[0]?.listSidecars()).toEqual(sidecars);
+    expect(listed).toEqual([
+      {
+        provisionerId: "sandbox",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "sandbox:v1",
+      },
+    ]);
   });
 });

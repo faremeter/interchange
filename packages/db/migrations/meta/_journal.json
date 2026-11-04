@@ -883,6 +883,13 @@
       "when": 1794429445378,
       "tag": "0126_workflow_run_standby",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1794519093644,
+      "tag": "0127_sidecar_live_indexes",
+      "breakpoints": true
     }
   ]
 }
