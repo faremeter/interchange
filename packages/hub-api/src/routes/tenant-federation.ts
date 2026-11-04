@@ -106,6 +106,8 @@ export function createTenantFederationRoutes({
     },
   );
 
+  // Checks its grant in the handler, after the body names the target tenant;
+  // see GRANT_EXEMPTIONS in route-registration.test.ts.
   app.post(
     "/",
     describeRoute({

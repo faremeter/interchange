@@ -898,6 +898,8 @@ export function createAssetRoutes({
     repoId: RepoId;
   };
 
+  // The smart-HTTP routes check their grant here, after the URL names the
+  // asset; see GRANT_EXEMPTIONS in route-registration.test.ts.
   async function resolveSmartHttp(
     c: Context<TenantGitTokenEnv>,
     action: RepoAction,
