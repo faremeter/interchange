@@ -761,8 +761,7 @@ export type CommitRunGrantsArgs = {
   runTokenStore: RunTokenStore;
   /**
    * The consumers that get a hub run token, from the locked anchor's
-   * `credentialRefs.hubConsumers`. Minted only by the commit that creates
-   * the run principal.
+   * `credentialRefs.hubConsumers`. Minted only by the run's first commit.
    */
   hubConsumers: readonly string[];
   tenantId: string;
@@ -853,28 +852,50 @@ export async function lockDispatchableAllocation(
   );
 }
 
-export async function loadCommittedRunGrantsFromExecutor(
+/**
+ * The run principal a run's first trigger linked to its run row, or null
+ * before that trigger commits. Only the run's own workflow principal counts:
+ * the link must name the `kind = 'workflow'` principal whose `refId` is the
+ * run id.
+ */
+async function loadLinkedRunPrincipalId(
   executor: DBExecutor,
   tenantId: string,
   runId: string,
-): Promise<CommittedRunGrants | null> {
-  const [runPrincipal] = await executor
+): Promise<string | null> {
+  const [linked] = await executor
     .select({ id: principalTable.id })
-    .from(principalTable)
+    .from(workflowRun)
+    .innerJoin(principalTable, eq(principalTable.id, workflowRun.principalId))
     .where(
       and(
+        eq(workflowRun.id, runId),
+        eq(workflowRun.tenantId, tenantId),
         eq(principalTable.tenantId, tenantId),
         eq(principalTable.kind, "workflow"),
         eq(principalTable.refId, runId),
       ),
     )
     .limit(1);
-  if (runPrincipal === undefined) return null;
+  return linked?.id ?? null;
+}
+
+export async function loadCommittedRunGrantsFromExecutor(
+  executor: DBExecutor,
+  tenantId: string,
+  runId: string,
+): Promise<CommittedRunGrants | null> {
+  const runPrincipalId = await loadLinkedRunPrincipalId(
+    executor,
+    tenantId,
+    runId,
+  );
+  if (runPrincipalId === null) return null;
 
   const rows = await executor
     .select()
     .from(grantTable)
-    .where(eq(grantTable.principalId, runPrincipal.id))
+    .where(eq(grantTable.principalId, runPrincipalId))
     .orderBy(asc(grantTable.id));
   const validated = RunGrantsFrame.assert({
     type: "run.grants",
@@ -893,7 +914,7 @@ export async function loadCommittedRunGrantsFromExecutor(
     })),
   });
   return {
-    runPrincipalId: runPrincipal.id,
+    runPrincipalId,
     stepGrants: validated.stepGrants,
   };
 }
@@ -962,8 +983,9 @@ export function approvalToolName(
  * the deploy already granted-with-a-checkpoint -- in the direction the operator
  * chose. Runs against the passed executor, so the caller mutates inside the
  * resolve transaction and a rolled-back resolve rolls back the grant change with
- * it. A run with no principal (nothing to mutate) is a no-op. Returns the run
- * principal's id when a row changed, and null otherwise.
+ * it. A run whose first trigger has not committed (nothing to mutate) is a
+ * no-op. Returns the run principal's id when a row changed, and null
+ * otherwise.
  */
 export async function setRunToolGrantEffect(
   executor: DBExecutor,
@@ -972,113 +994,144 @@ export async function setRunToolGrantEffect(
   toolName: string,
   effect: "allow" | "deny",
 ): Promise<string | null> {
-  const [runPrincipal] = await executor
-    .select({ id: principalTable.id })
-    .from(principalTable)
-    .where(
-      and(
-        eq(principalTable.tenantId, tenantId),
-        eq(principalTable.kind, "workflow"),
-        eq(principalTable.refId, runId),
-      ),
-    )
-    .limit(1);
-  if (runPrincipal === undefined) return null;
+  const runPrincipalId = await loadLinkedRunPrincipalId(
+    executor,
+    tenantId,
+    runId,
+  );
+  if (runPrincipalId === null) return null;
   const changed = await executor
     .update(grantTable)
     .set({ effect, updatedAt: new Date() })
     .where(
       and(
-        eq(grantTable.principalId, runPrincipal.id),
+        eq(grantTable.principalId, runPrincipalId),
         eq(grantTable.resource, `${TOOL_GRANT_PREFIX}${toolName}`),
         eq(grantTable.effect, "ask"),
       ),
     )
     .returning({ id: grantTable.id });
-  return changed.length > 0 ? runPrincipal.id : null;
+  return changed.length > 0 ? runPrincipalId : null;
 }
 
 /**
- * Idempotently reserve a run's principal, run row, and immutable grant rows
- * in one transaction, keyed on the deployment's stable top-level run id.
+ * Idempotently commit a run's first trigger: its principal, run tokens,
+ * anchor link, and immutable grant rows, keyed on the deployment's stable
+ * top-level run id.
  *
- * The transaction that wins the unique principal insert owns the grant
- * inserts. A concurrent or later caller returns those exact persisted grants
- * instead of sending its independently staged snapshot. This keeps the
+ * The caller holds the anchor row `FOR UPDATE` on an executable anchor, which
+ * serializes first commits. The anchor's link to its run principal marks the
+ * commit: a later caller finds the link and returns the exact persisted
+ * grants instead of its independently staged snapshot. This keeps the
  * database and Git authorization views identical when first deliveries race.
  *
- * On the first commit the `runPrincipalId` is derived deterministically
- * from `(tenantId, runId)` by the caller, so the principal insert and the
- * grant rows that reference it agree on the id even across a retry.
+ * The `runPrincipalId` is derived deterministically from `(tenantId, runId)`
+ * by the caller, so the principal and the grant rows that reference it agree
+ * on the id even across a retry. A run principal that already exists without
+ * a link is reused only when it has that id, is active, and holds no grants,
+ * so a commit never links a different or deactivated principal or merges into
+ * an earlier snapshot.
  */
 export async function commitRunGrants(
   args: CommitRunGrantsArgs,
-  tx?: DBExecutor,
+  tx: DBExecutor,
 ): Promise<RunGrantsFrame["stepGrants"]> {
   const workflowRunStore = createWorkflowRunStore(args.db);
   const principalStore = createPrincipalStore(args.db, args.principalKeyStore);
-  const commit = async (
-    executor: DBExecutor,
-  ): Promise<RunGrantsFrame["stepGrants"]> => {
-    const existing = await loadCommittedRunGrantsFromExecutor(
-      executor,
-      args.tenantId,
-      args.runId,
-    );
-    if (existing !== null) return existing.stepGrants;
+  const existing = await loadCommittedRunGrantsFromExecutor(
+    tx,
+    args.tenantId,
+    args.runId,
+  );
+  if (existing !== null) return existing.stepGrants;
 
-    const insertedPrincipal = await principalStore.createIfAbsent(
-      {
-        id: args.runPrincipalId,
-        tenantId: args.tenantId,
-        kind: "workflow",
-        refId: args.runId,
-        status: "active",
-        createdAt: args.now,
-        updatedAt: args.now,
-      },
-      executor,
-    );
-    if (insertedPrincipal === null) {
-      const winner = await loadCommittedRunGrantsFromExecutor(
-        executor,
-        args.tenantId,
-        args.runId,
-      );
-      if (winner === null) {
-        throw new Error(
-          `commitRunGrants: principal race for ${args.runId} did not expose the winning grant snapshot`,
-        );
-      }
-      return winner.stepGrants;
-    }
-
-    await args.runTokenStore.mintIfAbsent(
-      { principalId: args.runPrincipalId, consumers: args.hubConsumers },
-      executor,
-    );
-    await workflowRunStore.anchorWithPrincipal(
-      {
-        id: args.runId,
-        anchorRunId: args.anchorRunId,
-        definitionId: args.definitionId,
-        tenantId: args.tenantId,
-        principalId: args.runPrincipalId,
-        status: "running",
-      },
-      executor,
-    );
-    for (const g of args.grantRows) {
-      await executor.insert(grantTable).values(g);
-    }
-    return [...args.grantRows]
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((grant) => runGrantToWire(grant));
-  };
-  if (tx !== undefined) {
-    return commit(tx);
+  const insertedPrincipal = await principalStore.createIfAbsent(
+    {
+      id: args.runPrincipalId,
+      tenantId: args.tenantId,
+      kind: "workflow",
+      refId: args.runId,
+      status: "active",
+      createdAt: args.now,
+      updatedAt: args.now,
+    },
+    tx,
+  );
+  if (insertedPrincipal === null) {
+    await assertReusableRunPrincipal(tx, args);
   }
-  return args.db.transaction(commit);
+
+  await args.runTokenStore.mintIfAbsent(
+    { principalId: args.runPrincipalId, consumers: args.hubConsumers },
+    tx,
+  );
+  const linked = await workflowRunStore.anchorWithPrincipal(
+    {
+      id: args.runId,
+      anchorRunId: args.anchorRunId,
+      definitionId: args.definitionId,
+      tenantId: args.tenantId,
+      principalId: args.runPrincipalId,
+      status: "running",
+    },
+    tx,
+  );
+  if (!linked) {
+    const [anchor] = await tx
+      .select({
+        status: workflowRun.status,
+        principalId: workflowRun.principalId,
+      })
+      .from(workflowRun)
+      .where(eq(workflowRun.id, args.runId))
+      .limit(1);
+    throw new Error(
+      `commitRunGrants: anchor ${args.runId} did not link principal ${args.runPrincipalId} (status ${anchor?.status ?? "absent"}, linked principal ${anchor?.principalId ?? "none"})`,
+    );
+  }
+  for (const g of args.grantRows) {
+    await tx.insert(grantTable).values(g);
+  }
+  return [...args.grantRows]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((grant) => runGrantToWire(grant));
+}
+
+async function assertReusableRunPrincipal(
+  tx: DBExecutor,
+  args: CommitRunGrantsArgs,
+): Promise<void> {
+  const [existing] = await tx
+    .select({ id: principalTable.id, status: principalTable.status })
+    .from(principalTable)
+    .where(
+      and(
+        eq(principalTable.tenantId, args.tenantId),
+        eq(principalTable.kind, "workflow"),
+        eq(principalTable.refId, args.runId),
+      ),
+    )
+    .limit(1);
+  if (existing?.id !== args.runPrincipalId) {
+    throw new Error(
+      `commitRunGrants: run ${args.runId} has principal ${existing?.id ?? "none"}, not the derived ${args.runPrincipalId}`,
+    );
+  }
+  if (existing.status !== "active") {
+    throw new Error(
+      `commitRunGrants: run principal ${args.runPrincipalId} is ${existing.status}, not active`,
+    );
+  }
+  const [grant] = await tx
+    .select({ id: grantTable.id })
+    .from(grantTable)
+    .where(eq(grantTable.principalId, args.runPrincipalId))
+    .limit(1);
+  if (grant !== undefined) {
+    throw new Error(
+      `commitRunGrants: run principal ${args.runPrincipalId} already holds grants before its first commit`,
+    );
+  }
 }
 
 export type MailTriggeredRunGrantsDeps = {
@@ -1281,10 +1334,11 @@ export function createMailTriggeredRunGrantsMaterializer(
     // `evaluateMailAdmission` filters them to the `mail.accept` namespace,
     // picks one winning grant across the sender's coordinates, and
     // default-denies when none match. A `null` sender coordinate set is never
-    // admitted. The run principal does not exist before this commit, so no
-    // operator grant can target it yet: first-fire admission is governed by the
-    // deploy-approved accept surface alone, and an operator deny on the run
-    // principal binds from the next delivery on.
+    // admitted. The commit below refuses a run principal that already holds
+    // grants, so no operator grant on it takes part in the first fire:
+    // first-fire admission is governed by the deploy-approved accept surface
+    // alone, and an operator deny on the run principal binds from the next
+    // delivery on.
     //
     // The check runs before the grant requirements resolve, so a refused
     // sender is refused as `mail_admission_denied` and costs no grant reads.
@@ -1399,9 +1453,9 @@ export function createMailTriggeredRunGrantsMaterializer(
         { tenantId, runPrincipalId, now },
       );
       if (grantRows === "not-ready") return grantRows;
-      // `now` stamps both the staged rows and the run principal's creation,
-      // so an invoker `allow` row expires `INVOKER_GRANT_TTL_MS` after the
-      // principal is created at the latest.
+      // `now` stamps the staged rows, and the run principal's creation when
+      // this commit creates it, so an invoker `allow` row expires
+      // `INVOKER_GRANT_TTL_MS` after the first commit at the latest.
       return commitRunGrants(
         {
           db: deps.db,

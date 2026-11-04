@@ -95,7 +95,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "active",
       });
       const store = createWorkflowRunStore(h.db);
-      await store.anchorWithPrincipal({
+      const linked = await store.anchorWithPrincipal({
         id: RUN_ID,
         anchorRunId: RUN_ID,
         tenantId: TENANT,
@@ -103,6 +103,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn-run",
         status: "running",
       });
+      expect(linked).toBe(true);
 
       const [afterFirst] = await h.db
         .select()
@@ -121,7 +122,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         refId: "run-other",
         status: "active",
       });
-      await store.anchorWithPrincipal({
+      const relinked = await store.anchorWithPrincipal({
         id: RUN_ID,
         anchorRunId: RUN_ID,
         tenantId: TENANT,
@@ -129,6 +130,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn-run-2",
         status: "running",
       });
+      expect(relinked).toBe(false);
 
       const [afterSecond] = await h.db
         .select()

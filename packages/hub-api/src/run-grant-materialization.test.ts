@@ -7,7 +7,6 @@ import { SELF_RUN_RESOURCE, type GrantWalkSnapshot } from "@intx/types";
 import {
   grant as grantTable,
   type LegacyMailAcceptRule,
-  principal as principalTable,
   sidecarAllocation as sidecarAllocationTable,
   workflowRun as workflowRunTable,
   workflowRunLaunchSpec as workflowRunLaunchSpecTable,
@@ -146,7 +145,20 @@ function mockDb(opts: {
    */
   deployer?: { id: string; status: string } | null;
 }) {
-  function rows(table: unknown, joined: boolean): unknown[] {
+  function rows(
+    table: unknown,
+    joined: boolean,
+    fields: Record<string, unknown> | undefined,
+  ): unknown[] {
+    // The committed-grants lookup reads the run principal linked to the run
+    // row, selecting only its id.
+    const linkLookup =
+      fields !== undefined && Object.keys(fields).join() === "id";
+    if (table === workflowRunTable && joined && linkLookup) {
+      return opts.committedGrants === undefined
+        ? []
+        : [{ id: opts.committedGrants.runPrincipalId }];
+    }
     if (table === workflowRunTable && opts.deploymentRow) {
       return joined
         ? [
@@ -181,13 +193,10 @@ function mockDb(opts: {
       if (opts.snapshotReads) opts.snapshotReads.count += 1;
       return [{ snapshot: opts.grantSnapshot }];
     }
-    if (table === principalTable && opts.committedGrants !== undefined) {
-      return [{ id: opts.committedGrants.runPrincipalId }];
-    }
     if (table === grantTable) return opts.committedGrants?.stepGrants ?? [];
     return [];
   }
-  const select = () => ({
+  const select = (fields?: Record<string, unknown>) => ({
     from: (table: unknown) => {
       let joined = false;
       const chain = {
@@ -200,7 +209,7 @@ function mockDb(opts: {
           return chain;
         },
         where: () => ({
-          orderBy: () => Promise.resolve(rows(table, joined)),
+          orderBy: () => Promise.resolve(rows(table, joined, fields)),
           limit: () => {
             const selected =
               table === sidecarAllocationTable
@@ -211,7 +220,7 @@ function mockDb(opts: {
                         initializationLeaseId: opts.initializationLeaseId,
                       },
                     ]
-                : rows(table, joined);
+                : rows(table, joined, fields);
             return Object.assign(Promise.resolve(selected), {
               for: () =>
                 Promise.resolve(

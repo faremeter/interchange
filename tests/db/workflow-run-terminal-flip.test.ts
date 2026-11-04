@@ -1586,7 +1586,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // A later anchor attempt (the shape a first-fire trigger uses) must not
       // flip the terminal row back to running.
-      await store.anchorWithPrincipal({
+      const linked = await store.anchorWithPrincipal({
         id: "run-terminal-guard",
         anchorRunId: DEPLOYMENT,
         definitionId: seededDefinitionId,
@@ -1594,6 +1594,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn-terminal-guard",
         status: "running",
       });
+      expect(linked).toBe(false);
 
       // A later createIfAbsent on the same id is a no-op: the row exists.
       const created = await store.createIfAbsent({

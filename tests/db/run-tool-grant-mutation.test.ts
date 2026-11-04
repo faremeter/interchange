@@ -27,7 +27,12 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedGrant, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import {
+  seedGrant,
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 
 const TENANT = "tnt_grant_mut";
 const RUN_ID = "run_grant_mut";
@@ -49,13 +54,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeEach(async () => {
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT }]);
-      // The run's authorization principal: kind "workflow", refId the runId --
-      // exactly what setRunToolGrantEffect resolves the run's grants by.
+      // The run's authorization principal: kind "workflow", refId the runId,
+      // linked from the run row the first trigger committed -- exactly what
+      // setRunToolGrantEffect resolves the run's grants by.
       await seedPrincipal(h.db, {
         id: RUN_PRINCIPAL,
         tenantId: TENANT,
         kind: "workflow",
         refId: RUN_ID,
+      });
+      await seedWorkflowRun(h.db, {
+        id: RUN_ID,
+        tenantId: TENANT,
+        anchorRunId: RUN_ID,
+        principalId: RUN_PRINCIPAL,
       });
     });
 

@@ -42,16 +42,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("returns the run principal's committed grants in id order", async () => {
-      await seedWorkflowRun(h.db, {
-        id: "run_a",
-        tenantId: "tnt",
-        status: "running",
-      });
       await seedPrincipal(h.db, {
         id: "prn_run_a",
         tenantId: "tnt",
         kind: "workflow",
         refId: "run_a",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run_a",
+        tenantId: "tnt",
+        principalId: "prn_run_a",
+        status: "running",
       });
       for (const [id, effect] of [
         ["grt_2", "allow"],
@@ -84,6 +85,75 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const load = createRunGrantsLoader({ db: h.db });
       expect(await load("run_missing")).toBeNull();
       expect(await load("run_child")).toBeNull();
+    });
+
+    test("returns null for a run row linked to another run's principal", async () => {
+      await seedPrincipal(h.db, {
+        id: "prn_other",
+        tenantId: "tnt",
+        kind: "workflow",
+        refId: "run_other",
+      });
+      await seedGrant(h.db, {
+        id: "grt_other",
+        tenantId: "tnt",
+        principalId: "prn_other",
+        resource: "tool:x",
+        action: "use",
+        effect: "allow",
+        origin: "creator",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run_a",
+        tenantId: "tnt",
+        principalId: "prn_other",
+        status: "running",
+      });
+      expect(await createRunGrantsLoader({ db: h.db })("run_a")).toBeNull();
+    });
+
+    test("returns null for a run row linked to a principal that is not a workflow", async () => {
+      await seedPrincipal(h.db, {
+        id: "prn_user_a",
+        tenantId: "tnt",
+        kind: "user",
+        refId: "run_a",
+      });
+      await seedGrant(h.db, {
+        id: "grt_user_a",
+        tenantId: "tnt",
+        principalId: "prn_user_a",
+        resource: "tool:x",
+        action: "use",
+        effect: "allow",
+        origin: "creator",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run_a",
+        tenantId: "tnt",
+        principalId: "prn_user_a",
+        status: "running",
+      });
+      expect(await createRunGrantsLoader({ db: h.db })("run_a")).toBeNull();
+    });
+
+    test("returns null for a run whose principal is not linked yet", async () => {
+      // The run principal exists, but no first trigger has linked it to the
+      // run row, so the run has committed no grants.
+      await seedWorkflowRun(h.db, {
+        id: "run_unfired",
+        tenantId: "tnt",
+        status: "deployed",
+      });
+      await seedPrincipal(h.db, {
+        id: "prn_run_unfired",
+        tenantId: "tnt",
+        kind: "workflow",
+        refId: "run_unfired",
+      });
+      expect(
+        await createRunGrantsLoader({ db: h.db })("run_unfired"),
+      ).toBeNull();
     });
   },
 );

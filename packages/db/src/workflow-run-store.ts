@@ -53,30 +53,29 @@ export function createWorkflowRunStore(db: DBHandle) {
     },
 
     /**
-     * Anchor an externally-triggered run onto its deploy-time anchor row. The
-     * anchor is created at deploy (born "deployed" with a null principal); the
-     * first trigger reconciles it here, attaching `principalId` and flipping
-     * "deployed" -> "running" in one UPDATE. The insert is a conflict-tolerant
-     * safety net: the anchor provably exists by the time a trigger runs, so it
-     * normally no-ops. The three-part guard makes the reconcile single-shot and
-     * safe: `principalId IS NULL` never overwrites a principal a concurrent
-     * winner already set, and `status = 'deployed'` never resurrects a run a
-     * concurrent teardown already settled terminal (the null-principal guard
-     * alone would). `principalId` must be non-null: only the externally-
-     * triggered path anchors through here, and it always mints one.
+     * Link an externally-triggered run row to its run principal at the first
+     * trigger. A deployment's anchor is created at deploy (born "deployed"
+     * with a null principal); this attaches `principalId` and flips "deployed"
+     * -> "running" in one UPDATE. A top-level run whose id is not the
+     * anchor's has no row yet, and the insert creates it already linked. The
+     * link marks the run's first trigger as committed. The guard makes the
+     * link single-shot: `principalId IS NULL` never overwrites a principal
+     * already linked, and `status = 'deployed'` never resurrects a run a
+     * teardown already settled terminal (the null-principal guard alone
+     * would). Returns whether this call inserted or linked the row.
      */
     async anchorWithPrincipal(
       row: WorkflowRunInsert & { principalId: string },
       tx?: DBExecutor,
-    ): Promise<void> {
+    ): Promise<boolean> {
       const executor = tx ?? db;
       const [inserted] = await executor
         .insert(workflowRun)
         .values(row)
         .onConflictDoNothing({ target: workflowRun.id })
-        .returning();
-      if (inserted !== undefined) return;
-      await executor
+        .returning({ id: workflowRun.id });
+      if (inserted !== undefined) return true;
+      const linked = await executor
         .update(workflowRun)
         .set({ principalId: row.principalId, status: "running" })
         .where(
@@ -85,7 +84,9 @@ export function createWorkflowRunStore(db: DBHandle) {
             isNull(workflowRun.principalId),
             eq(workflowRun.status, "deployed"),
           ),
-        );
+        )
+        .returning({ id: workflowRun.id });
+      return linked.length > 0;
     },
 
     /**
