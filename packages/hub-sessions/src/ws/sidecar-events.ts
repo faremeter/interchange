@@ -156,11 +156,6 @@ export type SidecarEventMap = {
   "agent.deploy.ack": {
     agentAddress: string;
     publicKey: string;
-    allocated?: {
-      allocationId: string;
-      anchorRunId: string;
-      generation: number;
-    };
   };
 
   /** Notification. Emitted when the sidecar reports a change to an

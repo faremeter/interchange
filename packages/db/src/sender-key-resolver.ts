@@ -137,10 +137,11 @@ export async function resolveSenderKey(
 
   if (localPart.startsWith(RUN_PREFIX)) {
     // A run sender resolves to the sidecar-minted key the hub recorded on the
-    // deployment anchor at `agent.deploy.ack`. `workflow_run.address` is unique
-    // among the runs that set it, so there is at most one row. A row whose
-    // `public_key` is still null is a deployed-but-not-yet-acked run -- the
-    // expected pre-ack state -- so it resolves to nothing rather than erroring,
+    // deployment anchor when the deployment's initialization completed.
+    // `workflow_run.address` is unique among the runs that set it, so there is
+    // at most one row. A row whose `public_key` is still null is a deployment
+    // whose initialization has not completed -- an expected state -- so it
+    // resolves to nothing rather than erroring,
     // unlike the keyless-principal invariant break below.
     const [row] = await db
       .select({

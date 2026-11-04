@@ -97,8 +97,8 @@ capability ceiling.
   layer over the agent repo store. Their tool/inference/reactor
   _composition_ moves into the child and is reused.
 - **Identity is preserved.** A deploy keeps its run's
-  `run_<hex>@<domain>` address; the deploy-ack listener, mail routing,
-  grants, and reconnect continue to find it.
+  `run_<hex>@<domain>` address; the key record, mail routing, grants, and
+  reconnect continue to find it.
 
 ## 2. Target architecture
 
@@ -987,10 +987,10 @@ same child/workflow-run model as the multi-step path:
 - **Address shape.** A deploy mints one run address, `run_<hex>@<domain>` via
   `formatRunAddress(generateId("workflowRun"), domain)`. Single-agent and
   multi-step deploys share the one address shape; there is no separate
-  launched-agent form and no address-space discriminator. The deploy-ack
-  listener persists the published identity key against that address, while the
-  sidecar credential authorizes reconnect routing
-  (`packages/hub-sessions/src/hub-session-orchestrator.ts`).
+  launched-agent form and no address-space discriminator. A provisioned
+  deployment's completed initialization records the published identity key
+  under the allocation lock, while the sidecar credential authorizes
+  reconnect routing (`packages/db/src/sidecar-allocation-store.ts`).
 - **Workflow-run repo id.** The child's workflow-run repo for a single-agent
   deploy is keyed by `deriveWorkflowRunRepoId(address)`
   (`packages/workflow-deploy/src/addresses.ts`), which sanitizes the run
@@ -1743,10 +1743,10 @@ The unified host is proven by four classes of check:
    - Multi-turn conversation produces a durable, resumable workflow-run log.
    - Kill + respawn mid-conversation: `discoverInFlightRuns` resumes and
      conversation state is restored from the substrate.
-   - Identity: the run keeps its `run_<hex>` address; the deploy-ack listener
-     persists the public key; grants resolve from the run's `grants.json` and
-     an authorize call that depends on a granted resource succeeds while an
-     ungranted one fails closed.
+   - Identity: the run keeps its `run_<hex>` address; its completed
+     initialization records the public key; grants resolve from the run's
+     `grants.json` and an authorize call that depends on a granted resource
+     succeeds while an ungranted one fails closed.
 
 3. **Multiplex + workflow-declared isolation integration tests.**
    - One child hosts two deployments' runs concurrently; assert no
@@ -1867,7 +1867,7 @@ are explicitly **not** a go-live gate for INTR-209.
   (`buildSingleStepAgentDefinition`);
   `packages/types/src/agent-address.ts`
   (`formatRunAddress`, `parseRunAddress`, `isRunAddress`);
-  `packages/hub-sessions/src/hub-session-orchestrator.ts` (deploy-ack listener);
+  `packages/db/src/sidecar-allocation-store.ts` (initialization key record);
   `packages/hub-sessions/src/hub-session-lookups.ts`
   (`resolveRoutableAddress`); sidecar reconnect identity and hosted bindings in
   `packages/hub-sessions/src/ws/sidecar-token-authenticator.ts`.
