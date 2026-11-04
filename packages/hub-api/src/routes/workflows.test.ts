@@ -535,6 +535,8 @@ function createMockDB(opts: MockDBOpts) {
     principal: { findFirst: async () => testPrincipal },
     asset: { findFirst: async () => opts.assetRow },
   };
+  // The tenant re-derivation lock; the mock serializes nothing.
+  const execute = async () => [];
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
     query,
@@ -545,9 +547,10 @@ function createMockDB(opts: MockDBOpts) {
         query: typeof query;
         insert: typeof insert;
         select: typeof select;
+        execute: typeof execute;
       }) => Promise<unknown>,
     ) => {
-      return fn({ query, insert, select });
+      return fn({ query, insert, select, execute });
     },
   } as unknown as Parameters<typeof createApp>[0]["db"];
 }
@@ -659,8 +662,8 @@ function createMockSessionService(): SessionService {
 
 function createMockPrincipalKeyStore(): PrincipalKeyStore {
   return {
-    // The trigger mints the run principal's key while materializing grants; the
-    // return value is not read, so a canned hex public key suffices.
+    // The trigger generates no key; the store type requires `generate`, so a
+    // canned hex public key suffices.
     generate: async () => "ab".repeat(32),
     // The trigger resolves the triggering principal's public key to stamp on
     // the inbound frame (so the recipient can verify the mail). Return the same

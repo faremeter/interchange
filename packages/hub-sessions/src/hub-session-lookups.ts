@@ -331,7 +331,7 @@ export function createHubSessionLookups(
 
         // Lazily anchor the run before its correlation and approval reference
         // it. A workflow-spawned internal run never crosses the external
-        // trigger route that mints a run principal, so its run row would
+        // trigger route that links a run principal, so its run row would
         // otherwise not exist; ensure it here so the co-written rows have a
         // referent. The principal is null: an internal run inherits its
         // deployment's grants and has no principal of its own. The insert is
@@ -742,8 +742,8 @@ export async function resolveRunIdForSession(
   tenantId: string,
 ): Promise<string | null> {
   // No `endedAt` filter: a stopped run's mail must stay fetchable, so the
-  // session resolves whether or not it has ended. The run principal is minted
-  // per launch and shared 1:1 by the run and its session, so at most one row
+  // session resolves whether or not it has ended. The run principal is created
+  // per deployment and shared 1:1 by the run and its session, so at most one row
   // matches; order deterministically anyway so a hypothetical second row cannot
   // make the pick flap, mirroring `resolveRunSessionId`.
   const row = await db

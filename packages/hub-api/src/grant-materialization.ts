@@ -61,17 +61,23 @@ export type ResolveGrantMaterializationArgs = {
   // The creator's collected grants. Used to authorize creator-sourced
   // requirements. Empty when the definition declares no creator requirements.
   creatorGrants: GrantRule[];
-  // Timestamp stamped onto materialized rows and used to compute the invoker
-  // grant expiry.
+  // Timestamp stamped onto materialized rows. A row that has expired by `now`
+  // is not materialized.
   now: Date;
+  // The latest expiry of an invoker-sourced `allow` row.
+  invokerExpiresAt: Date;
 };
 
 // A rejection carries the wire error shape and HTTP status the caller returns
-// verbatim. `insufficient_grants` is a 403; `not_launchable` and
-// `deployer_unavailable` are 409s.
+// verbatim. `insufficient_grants` is a 403; `not_launchable`,
+// `deployer_unavailable`, and `workflow_run_principal_inactive` are 409s.
 export type GrantMaterializationRejection = {
   status: 403 | 409;
-  code: "insufficient_grants" | "not_launchable" | "deployer_unavailable";
+  code:
+    | "insufficient_grants"
+    | "not_launchable"
+    | "deployer_unavailable"
+    | "workflow_run_principal_inactive";
   message: string;
 };
 
@@ -80,17 +86,14 @@ export type ResolveGrantMaterializationResult =
   | { ok: false; rejection: GrantMaterializationRejection };
 
 // Invoker-delegated `allow` rows are short-lived: they expire a day after the
-// run's first trigger at the latest, and nothing renews them. An invoker
-// `deny` or `ask` row is a floor and does not expire.
+// run principal is created, at deploy, at the latest, and nothing renews them.
+// An invoker `deny` or `ask` row is a floor and does not expire.
 export const INVOKER_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type ResolveRequirementGrantContext = Omit<
   ResolveGrantMaterializationArgs,
   "grantRequirements"
-> & {
-  // The latest expiry of an invoker-sourced `allow` row.
-  invokerExpiresAt: Date;
-};
+>;
 
 /**
  * The expiry of a requirement's row with `effect`. An `allow` row ends at
@@ -238,30 +241,20 @@ export async function resolveRequirementGrant(
  *
  * Decides each requirement with `resolveRequirementGrant` and stops at the
  * first rejection, so the caller writes every row or none. An invoker-sourced
- * `allow` row expires `INVOKER_GRANT_TTL_MS` after `now` at the latest.
+ * `allow` row expires at `invokerExpiresAt` at the latest, and a row that has
+ * already expired by `now` is left out: it would grant nothing.
  * Nothing is written to the database; the caller inserts the returned rows.
  */
 export async function resolveGrantMaterialization({
-  tenantId,
-  targetPrincipalId,
   grantRequirements,
-  invokerGrants,
-  creatorGrants,
-  now,
+  ...ctx
 }: ResolveGrantMaterializationArgs): Promise<ResolveGrantMaterializationResult> {
-  const ctx: ResolveRequirementGrantContext = {
-    tenantId,
-    targetPrincipalId,
-    creatorGrants,
-    invokerGrants,
-    now,
-    invokerExpiresAt: new Date(now.getTime() + INVOKER_GRANT_TTL_MS),
-  };
-
   const grantRows: MaterializedGrantRow[] = [];
   for (const req of grantRequirements) {
     const resolved = await resolveRequirementGrant(req, ctx);
     if (!resolved.ok) return resolved;
+    const { expiresAt } = resolved.row;
+    if (expiresAt !== null && expiresAt <= ctx.now) continue;
     grantRows.push(resolved.row);
   }
 

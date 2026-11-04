@@ -1,15 +1,4 @@
-import {
-  and,
-  asc,
-  eq,
-  exists,
-  gt,
-  inArray,
-  isNull,
-  ne,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, exists, gt, inArray, isNull, ne, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
@@ -51,29 +40,11 @@ import {
   collectCreatorGrants,
   loadActiveDeployerId,
   loadAssetCreatorPrincipalId,
+  lockTenantRunDelegatedGrants,
   TOOL_GRANT_PREFIX,
 } from "./run-grant-materialization";
 
 const log = getLogger(["hub-api", "run-delegated-grants"]);
-
-/**
- * Serialize re-derivations of run grants in one tenant for the rest of the
- * transaction.
- *
- * A caller that changes a delegator's grants and then re-derives must take
- * this lock before its own write. Otherwise it holds the written rows while
- * it waits here, and a re-derivation that holds this lock can wait on those
- * rows. The lock is transaction-scoped, so a second call in the same
- * transaction does not block.
- */
-export async function lockTenantRunDelegatedGrants(
-  tx: DBExecutor,
-  tenantId: string,
-): Promise<void> {
-  await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`run-delegated-grants:${tenantId}`}, 0))`,
-  );
-}
 
 /**
  * The tenant's live deployment anchors whose definition asset was created
@@ -466,8 +437,8 @@ async function rederiveRun(
     creatorGrants,
     invokerGrants,
     now,
-    // The first trigger stamps the run principal and the invoker expiry from
-    // one `now`, so a re-added invoker row never outlives the first one.
+    // The first trigger's invoker expiry is anchored on the run principal's
+    // creation too, so a re-added invoker row never outlives the first one.
     invokerExpiresAt: new Date(
       run.principalCreatedAt.getTime() + INVOKER_GRANT_TTL_MS,
     ),

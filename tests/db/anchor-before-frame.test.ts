@@ -38,6 +38,7 @@ import { DeploymentRejectedError } from "@intx/types/sidecar";
 import { createNoopCredentialCipher, generateKeyPair } from "@intx/crypto";
 import { createSidecarAllocationStore } from "@intx/db";
 import {
+  principal,
   sidecarAllocation,
   workflowDefinition,
   workflowRun,
@@ -58,7 +59,11 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 import type {
   HarnessConfig,
   InferenceSource,
@@ -275,6 +280,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     }
 
+    async function readRunPrincipalStatus(): Promise<string | undefined> {
+      const [row] = await h.db
+        .select({ status: principal.status })
+        .from(principal)
+        .where(eq(principal.refId, ANCHOR_RUN_ID))
+        .limit(1);
+      return row?.status;
+    }
+
     async function readAnchor(): Promise<
       { status: string; publicKey: string | null } | undefined
     > {
@@ -386,8 +400,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       );
       await expectLeaked(deployWith(router), false);
-      // Proven never on the wire: the anchor is fully rolled back.
+      // Proven never on the wire: the anchor and its run principal are fully
+      // rolled back.
       expect(await readAnchor()).toBeUndefined();
+      expect(await readRunPrincipalStatus()).toBeUndefined();
     });
 
     test("a sent-but-unacked frame (frameSent:true) fences the anchor and reports a leak", async () => {
@@ -395,10 +411,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         Object.assign(new Error("ack timeout"), { frameSent: true }),
       );
       await expectLeaked(deployWith(router), true);
-      // A child may be live: the anchor is fenced to failed, not deleted.
+      // A child may be live: the anchor is fenced to failed, not deleted, and
+      // its run principal is deactivated.
       const row = await readAnchor();
       expect(row?.status).toBe("failed");
       expect(row?.publicKey).toBeNull();
+      expect(await readRunPrincipalStatus()).toBe("deactivated");
     });
 
     test("an untagged emit error is treated as possibly-live: fence and report a leak", async () => {
@@ -540,6 +558,25 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await expectLeaked(deployWith(router), false);
       expect(sendCalled).toBe(false);
       expect((await readAnchor())?.status).toBe("running");
+    });
+
+    test("an existing run principal fails the deploy closed before the frame with no leak", async () => {
+      // A principal already answers for this run, so deploy does not adopt
+      // it: the anchor insert rolls back and the frame never goes out.
+      await seedPrincipal(h.db, {
+        id: "prn_stale_run",
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        refId: ANCHOR_RUN_ID,
+        status: "active",
+      });
+      let sendCalled = false;
+      const router = throwingRouter(new Error("unused"), async () => {
+        sendCalled = true;
+      });
+      await expectLeaked(deployWith(router), false);
+      expect(sendCalled).toBe(false);
+      expect(await readAnchor()).toBeUndefined();
     });
 
     test("a frameSent:false failure whose anchor already vanished refuses to claim safe", async () => {

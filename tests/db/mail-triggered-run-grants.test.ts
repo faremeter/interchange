@@ -7,7 +7,7 @@ import {
   test,
 } from "bun:test";
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import {
   createGrantStore,
@@ -18,6 +18,8 @@ import {
 import {
   grant,
   principal,
+  principalRole,
+  role,
   runToken,
   workflowDefinition,
   workflowDefinitionVersion,
@@ -169,10 +171,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
     ): ReturnType<ReturnType<typeof createMailTriggeredRunGrantsMaterializer>> {
       const materialize = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
-        principalKeyStore: createPrincipalKeyStore({
-          db: h.db,
-          cipher: createTestCredentialCipher(),
-        }),
         runTokenStore: createRunTokenStore({
           db: h.db,
           cipher: createTestCredentialCipher(),
@@ -234,10 +232,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // first deployment's snapshot to the second.
       const materialize = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
-        principalKeyStore: createPrincipalKeyStore({
-          db: h.db,
-          cipher: createTestCredentialCipher(),
-        }),
         runTokenStore: createRunTokenStore({
           db: h.db,
           cipher: createTestCredentialCipher(),
@@ -1019,10 +1013,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
             cipher: createTestCredentialCipher(),
           }),
           db: h.db,
-          principalKeyStore: createPrincipalKeyStore({
-            db: h.db,
-            cipher: createTestCredentialCipher(),
-          }),
           grantStoreFor: () => countingGrantStore,
         });
 
@@ -1373,47 +1363,156 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(await runGrantCount("prn_not_derived")).toBe(0);
       });
 
-      test("the first commit refuses an unlinked run principal that is not active", async () => {
-        await seedFrozenSnapshot(snapshot("secret:vault"));
+      async function seedRunPrincipal(
+        status: "active" | "suspended" | "deactivated",
+        createdAt = new Date(),
+      ): Promise<string> {
         const derived = await deriveRunPrincipalId(TENANT, RUN_ID);
-        await seedPrincipal(h.db, {
+        await h.db.insert(principal).values({
           id: derived,
           tenantId: TENANT,
           kind: "workflow",
           refId: RUN_ID,
-          status: "deactivated",
+          status,
+          createdAt,
+          updatedAt: createdAt,
+        });
+        return derived;
+      }
+
+      for (const status of ["suspended", "deactivated"] as const) {
+        test(`the first fire refuses a run principal an operator ${status}`, async () => {
+          await seedFrozenSnapshot(snapshot("secret:vault"));
+          const derived = await seedRunPrincipal(status);
+
+          const result = await materializeOnce(RUN_ID);
+
+          expect(result).toMatchObject({
+            outcome: "rejected",
+            status: 409,
+            code: "workflow_run_principal_inactive",
+          });
+          expect(await runGrantCount(derived)).toBe(0);
+        });
+      }
+
+      test("an operator mail.accept deny through a role refuses the first mail", async () => {
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+        const derived = await seedRunPrincipal("active");
+        await h.db.insert(role).values({
+          id: "rol_block_tenant_mail",
+          tenantId: TENANT,
+          name: "block tenant mail",
+        });
+        await seedGrant(h.db, {
+          id: "grt_role_deny",
+          tenantId: TENANT,
+          roleId: "rol_block_tenant_mail",
+          resource: mailAcceptResource("tenant", TENANT),
+          action: "accept",
+          effect: "deny",
+          origin: "system",
+        });
+        await h.db.insert(principalRole).values({
+          principalId: derived,
+          roleId: "rol_block_tenant_mail",
         });
 
-        await expect(materializeOnce(RUN_ID)).rejects.toThrow(
-          /is deactivated, not active/,
-        );
+        const result = await materializeOnce(RUN_ID);
+
+        expect(result).toMatchObject({
+          outcome: "rejected",
+          code: "mail_admission_denied",
+        });
         expect(await runGrantCount(derived)).toBe(0);
       });
 
-      test("the first commit refuses an unlinked run principal that already holds grants", async () => {
+      test("the first commit keeps an operator grant given before the first trigger", async () => {
         await seedFrozenSnapshot(snapshot("secret:vault"));
-        const derived = await deriveRunPrincipalId(TENANT, RUN_ID);
-        await seedPrincipal(h.db, {
-          id: derived,
-          tenantId: TENANT,
-          kind: "workflow",
-          refId: RUN_ID,
-          status: "active",
-        });
+        const derived = await seedRunPrincipal("active");
         await seedGrant(h.db, {
           id: "grt_before_commit",
           tenantId: TENANT,
           principalId: derived,
           resource: "tool:write_file",
-          action: "use",
+          action: "invoke",
           effect: "allow",
-          origin: "creator",
+          origin: "system",
         });
 
-        await expect(materializeOnce(RUN_ID)).rejects.toThrow(
-          /already holds grants before its first commit/,
+        const result = await materializeOnce(RUN_ID);
+
+        if (result.outcome !== "materialized") {
+          throw new Error(`expected materialized, got ${result.outcome}`);
+        }
+        expect(result.stepGrants.map((g) => g.id)).toContain(
+          "grt_before_commit",
         );
+        expect(await runGrantCount(derived)).toBe(result.stepGrants.length);
+        expect(await runGrantCount(derived)).toBeGreaterThan(1);
+      });
+
+      test("an operator mail.accept deny given before the first trigger refuses the first mail", async () => {
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+        const derived = await seedRunPrincipal("active");
+        await seedGrant(h.db, {
+          id: "grt_operator_deny",
+          tenantId: TENANT,
+          principalId: derived,
+          resource: mailAcceptResource("tenant", TENANT),
+          action: "accept",
+          effect: "deny",
+          origin: "system",
+        });
+
+        const result = await materializeOnce(RUN_ID);
+
+        expect(result).toMatchObject({
+          outcome: "rejected",
+          code: "mail_admission_denied",
+        });
         expect(await runGrantCount(derived)).toBe(1);
+      });
+
+      async function invokerRowsAfterFirstFire(
+        deployedAgoMs: number,
+      ): Promise<{ expiresAt: Date | null }[]> {
+        await seedFrozenSnapshot({
+          ...snapshot("secret:vault"),
+          grantRequirements: [
+            { resource: "secret:vault", action: "use", source: "invoker" },
+          ],
+        });
+        const deployedAt = new Date(Date.now() - deployedAgoMs);
+        const derived = await seedRunPrincipal("active", deployedAt);
+
+        const result = await materializeOnce(RUN_ID);
+
+        expect(result.outcome).toBe("materialized");
+        return h.db
+          .select({ expiresAt: grant.expiresAt })
+          .from(grant)
+          .where(
+            and(eq(grant.principalId, derived), eq(grant.origin, "invoker")),
+          );
+      }
+
+      test("a first fire within a day of deploy gets an invoker allow row that ends a day after deploy", async () => {
+        const hourMs = 60 * 60 * 1000;
+        const rows = await invokerRowsAfterFirstFire(hourMs);
+
+        expect(rows).toHaveLength(1);
+        const expiresAt = rows[0]?.expiresAt?.getTime() ?? 0;
+        // The run principal was created an hour ago, so the row has about
+        // 23 hours left, not a full day from the first fire.
+        expect(expiresAt).toBeLessThan(Date.now() + 24 * hourMs - hourMs / 2);
+        expect(expiresAt).toBeGreaterThan(Date.now() + 22 * hourMs);
+      });
+
+      test("a first fire more than a day after deploy gets no invoker allow row", async () => {
+        const rows = await invokerRowsAfterFirstFire(2 * 24 * 60 * 60 * 1000);
+
+        expect(rows).toHaveLength(0);
       });
 
       test("the first commit throws when the live run row cannot be linked", async () => {
@@ -1560,6 +1659,60 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expect(result.code).toBe("mail_admission_denied");
         }
         expect(await runGrantCount()).toBe(0);
+      });
+
+      test("an operator allow cannot admit the first mail once the deployer rule is gone", async () => {
+        // As above, but an operator also allowed the sender on the run
+        // principal before its first trigger. A first mail needs a declared
+        // rule, so the operator allow does not admit it.
+        await seedFrozenSnapshot({
+          perStep: [
+            {
+              stepId: "work",
+              grants: [MAIL_TRIGGER_GRANT, "mail.accept:invoker"],
+              grantEffects: {},
+            },
+          ],
+          grantRequirements: [],
+        });
+        const runPrincipalId = await deriveRunPrincipalId(TENANT, RUN_ID);
+        await seedPrincipal(h.db, {
+          id: runPrincipalId,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: RUN_ID,
+          status: "active",
+        });
+        await seedGrant(h.db, {
+          id: "grt_operator_allow",
+          tenantId: TENANT,
+          principalId: runPrincipalId,
+          resource: mailAcceptResource("principal", CREATOR),
+          action: "accept",
+          effect: "allow",
+          origin: "system",
+        });
+
+        const result = await firstFireAcross(
+          async (tx) => {
+            await tx
+              .update(principal)
+              .set({ status: "deactivated" })
+              .where(eq(principal.id, CREATOR));
+          },
+          {
+            senderCoordinates: [
+              { coordType: "principal", id: CREATOR },
+              { coordType: "tenant", id: TENANT },
+            ],
+          },
+        );
+
+        expect(result.outcome).toBe("rejected");
+        if (result.outcome === "rejected") {
+          expect(result.code).toBe("mail_admission_denied");
+        }
+        expect(await runGrantCount()).toBe(1);
       });
     });
 
@@ -2096,7 +2249,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
               cipher: createTestCredentialCipher(),
             }),
             db: h.db,
-            principalKeyStore: keyStore(),
             grantStoreFor: createGrantStore,
           });
         }

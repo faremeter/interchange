@@ -32,9 +32,9 @@ const logger = getLogger(["db", "sender-key-resolver"]);
  * with no translation.
  *
  * A run's `principalId` is nullable: a deployment anchor holds a signing key
- * (recorded at deploy ack) before its first trigger mints and reconciles its
- * principal, so a run that CAN sign mail may not yet carry a principal. The key
- * still resolves for signature checks; `senderCoordinates` returns `null` for
+ * (recorded at deploy ack) before its first trigger links its run principal
+ * to the anchor, so a run that CAN sign mail may not yet carry a principal.
+ * The key still resolves for signature checks; `senderCoordinates` returns `null` for
  * such a sender, which the admission gate treats as the `unknown` outcome. A
  * user sender always resolves to a concrete principal, so its `principalId` is
  * never null.
@@ -158,8 +158,8 @@ export async function resolveSenderKey(
       .limit(1);
     if (row === undefined || row.publicKey === null) return null;
     // `principalId` may be null: an acked anchor holds a signing key before its
-    // first trigger mints and reconciles its principal, so it CAN sign yet has
-    // no principal. The key still resolves (the send path is unaffected);
+    // first trigger links its run principal, so it CAN sign yet has no linked
+    // principal. The key still resolves (the send path is unaffected);
     // `senderCoordinates` fails closed on the null principal for admission.
     // `tenantId` is a non-null column. `assetId` is null when the definition
     // has no asset.
@@ -176,10 +176,11 @@ export async function resolveSenderKey(
   // `(tenant domain, user refId)` its address carries.
   const resolved = await resolveUserPrincipal(db, domain, localPart);
   if (resolved === null) return null;
-  // The principal exists; a principal with no active key violates the invariant
-  // that every principal is minted with one, so `getPublicKey` throws rather
-  // than defaulting. Do not soften that to null -- unlike the pre-ack run key
-  // above, a keyless principal is a real breakage that must surface.
+  // The principal exists; a user principal with no active key violates the
+  // invariant that every user principal is minted with one, so `getPublicKey`
+  // throws rather than defaulting. Do not soften that to null -- unlike the
+  // pre-ack run key above, a keyless principal is a real breakage that must
+  // surface.
   const publicKey = await principalKeyStore.getPublicKey(
     resolved.principalId,
     db,
@@ -211,7 +212,7 @@ export type ResolvedSenderPrincipal = {
  *
  * Returns `null` when there is no durable identity to bind: an unresolvable
  * address, or a principal-less run (an acked anchor before its first trigger
- * mints a principal, for which `senderCoordinates` returns `null`). A `null`
+ * links its principal, for which `senderCoordinates` returns `null`). A `null`
  * leaves the sender unadmitted rather than admitting a partial identity. The
  * strict resolver's throw on an ambiguous address or a keyless-principal
  * invariant break is preserved for the caller to catch, so a fault never

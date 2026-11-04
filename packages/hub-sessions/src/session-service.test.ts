@@ -13,7 +13,10 @@ import {
   type AgentDeployFrame,
   WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
-import { sidecarAllocation } from "@intx/db/schema";
+import {
+  sidecarAllocation,
+  workflowRun as workflowRunTable,
+} from "@intx/db/schema";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { DB, SidecarAllocation } from "@intx/db";
@@ -519,10 +522,16 @@ describe("deployCodeSourcedWorkflow", () => {
           }),
       },
     },
-    insert: () => ({
+    // The anchor insert is captured; the run principal insert that joins it
+    // reports a fresh row.
+    insert: (table: unknown) => ({
       values: (row: Record<string, unknown>) => {
-        capturedAnchorRow = row;
-        return Promise.resolve();
+        if (table === workflowRunTable) capturedAnchorRow = row;
+        return Object.assign(Promise.resolve(), {
+          onConflictDoNothing: () => ({
+            returning: () => Promise.resolve([row]),
+          }),
+        });
       },
     }),
     update: () => ({
@@ -535,6 +544,7 @@ describe("deployCodeSourcedWorkflow", () => {
         };
       },
     }),
+    transaction: (run: (tx: unknown) => Promise<unknown>) => run(CAPTURING_DB),
   } as unknown as DB["db"];
 
   async function capturePreparedDeployError(
@@ -1991,7 +2001,15 @@ describe("deployCodeSourcedWorkflow", () => {
             }),
         },
       },
-      insert: () => ({ values: () => Promise.resolve() }),
+      insert: () => ({
+        values: (row: Record<string, unknown>) =>
+          Object.assign(Promise.resolve(), {
+            onConflictDoNothing: () => ({
+              returning: () => Promise.resolve([row]),
+            }),
+          }),
+      }),
+      transaction: (run: (tx: unknown) => Promise<unknown>) => run(COUNTING_DB),
       update: () => ({
         set: () => ({
           where: () => ({
@@ -2169,7 +2187,15 @@ describe("deployCodeSourcedWorkflow", () => {
             }),
         },
       },
-      insert: () => ({ values: () => Promise.resolve() }),
+      insert: () => ({
+        values: (row: Record<string, unknown>) =>
+          Object.assign(Promise.resolve(), {
+            onConflictDoNothing: () => ({
+              returning: () => Promise.resolve([row]),
+            }),
+          }),
+      }),
+      transaction: (run: (tx: unknown) => Promise<unknown>) => run(COUNTING_DB),
       update: () => ({
         set: () => ({
           where: () => ({

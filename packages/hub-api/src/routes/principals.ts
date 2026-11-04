@@ -30,8 +30,8 @@ import { resolveWorkflowPrincipalLabels } from "./workflow-principal-name";
 import {
   changeDelegatorGrants,
   findDelegatedAnchorRunIds,
-  lockTenantRunDelegatedGrants,
 } from "../run-delegated-grants";
+import { lockTenantRunDelegatedGrants } from "../run-grant-materialization";
 import {
   parsePageParams,
   cursorCondition,

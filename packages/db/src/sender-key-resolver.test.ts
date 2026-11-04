@@ -54,9 +54,10 @@ describe("senderCoordinates", () => {
   });
 
   test("a run sender with no principal fails closed to null", () => {
-    // An acked anchor holds a signing key before its first trigger mints its
-    // principal. It can sign, but has no principal to key admission on, so the
-    // coordinate set is null (the gate treats it as the unknown sender).
+    // An acked anchor holds a signing key before its first trigger links its
+    // run principal. It can sign, but has no linked principal to key admission
+    // on, so the coordinate set is null (the gate treats it as the unknown
+    // sender).
     const resolution: SenderKeyResolution = {
       source: "run",
       publicKey: "0xrunkey",

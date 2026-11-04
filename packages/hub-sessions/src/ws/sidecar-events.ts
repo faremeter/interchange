@@ -345,8 +345,8 @@ export type SidecarLookups = {
    * degrade-to-null path.
    *
    * Returns `null` when the sender does not resolve to a concrete principal --
-   * an address matching no principal, or a run whose deploy is acked but whose
-   * principal is not yet minted (a principal-less signer). THROWS on a genuine
+   * an address matching no principal, or an initialized run whose first
+   * trigger has not yet linked its run principal. THROWS on a genuine
    * fault (an ambiguous address, a data-integrity break). Both a `null` and a
    * throw leave the sender with no admission coordinates at the seam, so the
    * gate never admits it. Wraps the strict `resolveSenderKey` in `@intx/db`

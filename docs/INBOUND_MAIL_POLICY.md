@@ -18,8 +18,9 @@ not receiving mail an author expected is the symptom this document exists for.
 The signature gate is the second of two gates. Before it, the hub admits or
 refuses the sender itself against the workflow's `mailAccept` rules. A
 workflow that declares no `mailAccept` admits a sender only through an
-operator grant on the run principal, so it refuses the first mail that fires
-it. See _The sender gate runs first_ below.
+operator grant on the run principal, and such a grant cannot admit the first
+mail that fires the run, so it refuses that mail. See _The sender gate runs
+first_ below.
 
 ## Declaring a policy
 
@@ -173,9 +174,11 @@ Each relation admits a sender that stands in that relation to the deployment:
 
 The default is deny. A workflow that declares no `mailAccept`, or declares no
 rule that matches the sender, refuses the mail unless an operator grant on the
-run principal admits the sender. The first mail that fires a run has no run
-principal yet, so no operator grant can admit it. An unknown sender is always
-refused. The operator approves the rules at deploy time, as the `mail.accept:`
+run principal admits the sender. The run principal exists from deploy, but an
+operator grant on it cannot admit the first mail that fires the run: that mail
+needs a declared rule. An operator `mail.accept` deny on the run principal
+does refuse the first mail. An unknown sender is always refused. The
+operator approves the rules at deploy time, as the `mail.accept:`
 strings of the capability walk. `defineWorkflow` rejects a grant requirement in
 the `mail.accept` namespace, so `mailAccept` is the only way to author a rule.
 
@@ -261,11 +264,11 @@ spec of its deployment:
   `mail.accept:tenant:<id>` grant for its own tenant. The backfill adds no
   invoker row and does not know the parties it mailed, so an existing run
   admits only senders in its own tenant.
-- A deployment that has not fired has no run principal, so it gets only the
-  legacy rule and no tenant grant. After its first fire, a mail-trigger
-  deployment admits its invoker and the parties it mails. A sending deployment
-  admits only the parties it mails, so mail from the HTTP caller that started
-  the run is refused. Neither admits other senders in its own tenant, so each
+- A deployment that had not fired had no run principal when the migration
+  ran, so it got only the legacy rule and no tenant grant. After its first
+  fire, a mail-trigger deployment admits its invoker and the parties it
+  mails. A sending deployment admits only the parties it mails, so mail from
+  the HTTP caller that started the run is refused. Neither admits other senders in its own tenant, so each
   admits fewer senders than a deployment that fired before the migration.
 - A known gap remains. A live run that mailed a party outside its tenant before
   the migration has no `correspondent` grant for that party, so the reply from

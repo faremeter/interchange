@@ -5,6 +5,7 @@ import {
   createSidecarAllocationStore,
   createWorkflowProbeStore,
   createWorkflowRunLaunchSpecStore,
+  insertRunPrincipal,
   resolveTenantSidecarCapabilityPolicies,
   resolveDeploymentLifecyclePolicy,
   canExecuteWorkflowRun,
@@ -17,7 +18,7 @@ import {
 } from "@intx/db";
 import { grant, workflowRun } from "@intx/db/schema";
 import { eq } from "drizzle-orm";
-import { generateId } from "@intx/hub-common";
+import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import {
   hexEncode,
@@ -471,6 +472,19 @@ export function createWorkflowAllocationService({
         expiresAt: lifecycleDeadline(createdAt, lifecycle.maxLifetime),
         createdAt,
       });
+      // The deployment's run principal exists from deploy. It holds no hub
+      // key, and the first trigger links it to the anchor.
+      const runPrincipalCreated = await insertRunPrincipal(tx, {
+        id: await deriveRunPrincipalId(request.tenantId, request.anchorRunId),
+        tenantId: request.tenantId,
+        runId: request.anchorRunId,
+        createdAt,
+      });
+      if (!runPrincipalCreated) {
+        throw new Error(
+          `Deployment ${request.anchorRunId} already has a run principal`,
+        );
+      }
       const maxDisconnectedMs = lifecycleDurationMs(lifecycle.maxDisconnected);
       await tx.insert(grant).values({
         id: generateId("grant"),

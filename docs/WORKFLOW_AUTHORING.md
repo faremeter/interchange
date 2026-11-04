@@ -431,9 +431,9 @@ receives only mail the signature gate found nothing to complain about.
 Before that gate, the hub refuses hub-relayed mail from a sender that no
 `mailAccept` rule and no operator grant admits. A workflow declaring no
 `mailAccept` receives hub-relayed mail only when an operator grant on the run
-principal admits the sender. That needs a run principal, so the first mail
-that fires such a workflow is always refused. Every other message is dropped
-before the workflow sees it. The HTTP trigger route is governed by its own
+principal admits the sender. Such a grant cannot admit the first mail that
+fires the run, so the first mail that fires such a workflow is always
+refused. Every other message is dropped before the workflow sees it. The HTTP trigger route is governed by its own
 authorization, not by this gate. Mail cannot start a deployment that has no
 mail trigger: the hub refuses the first mail to it. The `mailAccept` rules of
 such a workflow take effect after its own trigger starts the run.

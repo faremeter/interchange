@@ -6,6 +6,7 @@ import type { GrantRule } from "@intx/types/authz";
 import { SELF_RUN_RESOURCE, type GrantWalkSnapshot } from "@intx/types";
 import {
   grant as grantTable,
+  principal as principalTable,
   type LegacyMailAcceptRule,
   sidecarAllocation as sidecarAllocationTable,
   workflowRun as workflowRunTable,
@@ -26,17 +27,6 @@ import {
   type CommittedRunGrants,
   type MailAcceptGrantContext,
 } from "./run-grant-materialization";
-
-// This suite exercises grant materialization, not key minting. The key store is
-// a no-op stub so the winning-reservation path does not try to insert into
-// principal_key against the hand-rolled mock DB.
-const stubPrincipalKeyStore: PrincipalKeyStore = {
-  generate: async () => "pky_stub",
-  sign: async () => new Uint8Array(64),
-  getPublicKey: async () => "pky_stub_public",
-  recordPublicKey: async () => undefined,
-  retireActive: async () => undefined,
-};
 
 // Minting is the run-token store's concern; this suite records which consumers
 // the commit asks it to mint for.
@@ -145,6 +135,12 @@ function mockDb(opts: {
    */
   deployer?: { id: string; status: string } | null;
 }) {
+  const inserted: { table: unknown; values: Record<string, unknown> }[] = [];
+  function insertedValues(table: unknown): Record<string, unknown>[] {
+    return inserted
+      .filter((record) => record.table === table)
+      .map((record) => record.values);
+  }
   function rows(
     table: unknown,
     joined: boolean,
@@ -154,9 +150,11 @@ function mockDb(opts: {
     // row, selecting only its id.
     const linkLookup =
       fields !== undefined && Object.keys(fields).join() === "id";
+    // A run principal this mock's commit inserted is linked by the same
+    // commit.
     if (table === workflowRunTable && joined && linkLookup) {
       return opts.committedGrants === undefined
-        ? []
+        ? insertedValues(principalTable)
         : [{ id: opts.committedGrants.runPrincipalId }];
     }
     if (table === workflowRunTable && opts.deploymentRow) {
@@ -193,7 +191,11 @@ function mockDb(opts: {
       if (opts.snapshotReads) opts.snapshotReads.count += 1;
       return [{ snapshot: opts.grantSnapshot }];
     }
-    if (table === grantTable) return opts.committedGrants?.stepGrants ?? [];
+    if (table === grantTable) {
+      return opts.committedGrants === undefined
+        ? insertedValues(grantTable).map((row) => ({ ...row, roleId: null }))
+        : opts.committedGrants.stepGrants;
+    }
     return [];
   }
   const select = (fields?: Record<string, unknown>) => ({
@@ -252,17 +254,21 @@ function mockDb(opts: {
       return chain;
     },
   });
-  const insert = (_table: unknown) => ({
-    values: (values: unknown) =>
-      Object.assign(Promise.resolve(), {
+  const insert = (table: unknown) => ({
+    values: (values: Record<string, unknown>) => {
+      inserted.push({ table, values });
+      return Object.assign(Promise.resolve(), {
         onConflictDoNothing: () => ({
           returning: () => Promise.resolve([values]),
         }),
-      }),
+      });
+    },
   });
   const query = {
     asset: { findFirst: async () => opts.assetRow },
   };
+  // The tenant re-derivation lock; the mock serializes nothing.
+  const execute = async () => [];
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return {
     query,
@@ -273,8 +279,9 @@ function mockDb(opts: {
         query: typeof query;
         select: typeof select;
         insert: typeof insert;
+        execute: typeof execute;
       }) => Promise<unknown> | unknown,
-    ) => fn({ query, select, insert }),
+    ) => fn({ query, select, insert, execute }),
   } as unknown as Parameters<
     typeof createMailTriggeredRunGrantsMaterializer
   >[0]["db"];
@@ -344,6 +351,7 @@ describe("stageRunGrantsFromSnapshot with the run's own resource", () => {
       runId: STAGED_RUN_ID,
       runPrincipalId: "prn_run",
       now: new Date("2026-01-01"),
+      invokerExpiresAt: new Date("2026-01-02"),
       invokerPrincipalId: null,
       assetId: ASSET_ID,
       legacyMailAccept: null,
@@ -395,7 +403,6 @@ describe("createMailTriggeredRunGrantsMaterializer hub tokens", () => {
           hubConsumers: ["action:a"],
         },
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () => createInMemoryGrantStore([]),
     });
@@ -645,7 +652,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         assetRow,
         grantSnapshot: snapshot(),
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () =>
         createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
@@ -668,7 +674,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         snapshotReads: reads,
         topLevelRunStatus: "completed",
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () =>
         createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
@@ -698,7 +703,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         topLevelRunStatus: null,
         lockedRunStatus: "failed",
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       // Both the creator and the deployer's invoker grant are held, so staging
       // succeeds and the run reaches the under-lock revalidation the test
       // exercises -- the lock, not an insufficient-authority reject, is what
@@ -731,7 +735,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         snapshotReads: reads,
         anchorCancellationRequestedAt: new Date(),
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () =>
         createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
@@ -760,7 +763,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         topLevelRunStatus: null,
         lockedCancellationRequestedAt: new Date(),
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       // Both the creator and the deployer's invoker grant are held, so staging
       // succeeds and the run reaches the under-lock revalidation the test
       // exercises -- the lock, not an insufficient-authority reject, is what
@@ -786,7 +788,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
   test("stages the tool grant, the creator requirement, and the invoker requirement bound to the deployer", async () => {
     const materialize = createMailTriggeredRunGrantsMaterializer({
       db: mockDb({ deploymentRow, assetRow, grantSnapshot: snapshot() }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () =>
         createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
@@ -834,7 +835,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         assetRow,
         grantSnapshot: invokerOnlySnapshot(),
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
@@ -868,7 +868,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         assetRow,
         grantSnapshot: invokerOnlySnapshot(),
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       grantStoreFor: () => createInMemoryGrantStore([invokerGrant()]),
     });
     const result = await materialize({
@@ -894,7 +893,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         assetRow,
         grantSnapshot: snapshot,
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     const result = await materialize({
@@ -920,7 +918,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         assetRow,
         grantSnapshot: invokerOnlySnapshot(),
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
     await expect(
@@ -948,7 +945,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
           grantSnapshot: invokerOnlySnapshot(),
           deployer,
         }),
-        principalKeyStore: stubPrincipalKeyStore,
         runTokenStore: stubRunTokenStore,
         grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
       });
@@ -973,7 +969,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         grantSnapshot: { ...snapshot(), grantRequirements: [] },
         deployer: null,
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () => createInMemoryGrantStore([]),
     });
@@ -1000,7 +995,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
           ],
         },
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
@@ -1043,7 +1037,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
           ],
         },
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
@@ -1076,7 +1069,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         grantSnapshot: invokerOnlySnapshot(),
         credentialRefs: { credentialIds: ["inference-only"], bindings: [] },
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
@@ -1101,7 +1093,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         grantSnapshot: invokerOnlySnapshot(),
         publicKey: null,
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
@@ -1132,7 +1123,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         },
         initializationLeaseId: "lease-1",
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () => createInMemoryGrantStore([deployerGrant()]),
     });
@@ -1149,7 +1139,6 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     // set.
     const materialize = createMailTriggeredRunGrantsMaterializer({
       db: mockDb({ deploymentRow, assetRow, grantSnapshot: null }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () =>
         createInMemoryGrantStore([creatorGrant(), deployerGrant()]),
@@ -1244,7 +1233,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         assetRow,
         grantSnapshot: noAcceptSnapshot(),
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       grantStoreFor: () => createInMemoryGrantStore([creatorGrant()]),
     });
     await expect(
@@ -1268,7 +1256,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         assetRow,
         grantSnapshot: explicitPrincipalSnapshot(SENDER_PRINCIPAL_ID),
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       grantStoreFor: () => createInMemoryGrantStore([]),
     });
     const result = await materialize({
@@ -1289,7 +1276,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         assetRow,
         grantSnapshot: explicitPrincipalSnapshot("prn_admitted"),
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       grantStoreFor: () => createInMemoryGrantStore([]),
     });
     await expect(
@@ -1329,7 +1315,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
         assetRow,
         grantSnapshot: tenantAcceptSnapshot,
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       grantStoreFor: () => createInMemoryGrantStore([]),
     });
     await expect(
@@ -1357,7 +1342,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
           stepGrants: [committedGrantRow],
         },
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       grantStoreFor: () =>
         createInMemoryGrantStore([
           runAcceptGrant(`mail.accept:principal:${SENDER_PRINCIPAL_ID}`),
@@ -1389,7 +1373,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
           stepGrants: [committedGrantRow],
         },
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       // The run holds no accept-grant naming this sender.
       grantStoreFor: () =>
         createInMemoryGrantStore([
@@ -1421,7 +1404,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
           stepGrants: [committedGrantRow],
         },
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       // A broad `*` grant matches `mail.accept:...` under pattern matching, but
       // the admission helper filters to the `mail.accept` namespace first, so it
       // never auto-admits.
@@ -1469,7 +1451,6 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
           stepGrants: [committedGrantRow],
         },
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       grantStoreFor: () =>
         createInMemoryGrantStore([
           runAcceptGrant(`mail.accept:principal:${SENDER_PRINCIPAL_ID}`),
@@ -1681,7 +1662,6 @@ describe("createMailTriggeredRunGrantsMaterializer committed grants", () => {
         snapshotReads: reads,
         committedGrants,
       }),
-      principalKeyStore: stubPrincipalKeyStore,
       runTokenStore: stubRunTokenStore,
       grantStoreFor: () =>
         createInMemoryGrantStore([
@@ -1722,6 +1702,7 @@ describe("stageRunGrantsFromSnapshot for an HTTP launch", () => {
       runId: "run_http_launch",
       runPrincipalId: "prn_run",
       now: new Date("2026-01-01T00:00:00.000Z"),
+      invokerExpiresAt: new Date("2026-01-02T00:00:00.000Z"),
       invokerPrincipalId: DEPLOYER_PRINCIPAL_ID,
       assetId: ASSET_ID,
       legacyMailAccept: null,
@@ -1743,6 +1724,16 @@ describe("stageRunGrantsFromSnapshot for an HTTP launch", () => {
 });
 
 describe("createCorrespondentGrantMinter", () => {
+  // The minter resolves correspondents through the key store; these cases
+  // mint nothing, so a no-op stub suffices.
+  const stubPrincipalKeyStore: PrincipalKeyStore = {
+    generate: async () => "pky_stub",
+    sign: async () => new Uint8Array(64),
+    getPublicKey: async () => "pky_stub_public",
+    recordPublicKey: async () => undefined,
+    retireActive: async () => undefined,
+  };
+
   // A DB stand-in for the minter's unlocked rule check. It serves the sending
   // anchor and the frozen snapshot of its definition, and counts the
   // transactions the minter opens. The locked path itself is covered by the DB

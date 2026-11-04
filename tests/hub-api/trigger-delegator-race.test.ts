@@ -17,7 +17,13 @@ import {
   type RepoStore,
   type SessionService,
 } from "@intx/hub-sessions";
-import { grant, principal, workflowDefinition } from "@intx/db/schema";
+import {
+  grant,
+  principal,
+  workflowDefinition,
+  workflowRun,
+} from "@intx/db/schema";
+import { deriveRunPrincipalId } from "@intx/hub-common";
 import type { GrantRequirement } from "@intx/types";
 import {
   createTestDb,
@@ -125,9 +131,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     // Create the tenant through the route, so the caller is its owner, then
-    // seed a deployment that has not fired: an anchor run with no run
-    // principal and a frozen snapshot that holds `requirements`.
-    async function setup(requirements: GrantRequirement[]) {
+    // seed a deployment that has not fired: an anchor run, the unlinked run
+    // principal deploy creates, and a frozen snapshot that holds
+    // `requirements`.
+    async function setup(
+      requirements: GrantRequirement[],
+      runPrincipalStatus: "active" | "suspended" = "active",
+    ) {
       const router = createSidecarRouter({
         withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
@@ -180,13 +190,33 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: ANCHOR,
         definitionId: "wfd_first",
         address: `${ANCHOR}@acme.example`,
+        status: "deployed",
+      });
+      const runPrincipalId = await deriveRunPrincipalId(tenantId, ANCHOR);
+      await seedPrincipal(h.db, {
+        id: runPrincipalId,
+        tenantId,
+        kind: "workflow",
+        refId: ANCHOR,
+        status: runPrincipalStatus,
       });
       await seedWorkflowRunLaunchSpec(h.db, {
         anchorRunId: ANCHOR,
         sourceAuthorityPrincipalId: DEPLOYER,
         grantSnapshot: { perStep: [], grantRequirements: requirements },
       });
-      return { app, tenantId };
+      return { app, tenantId, runPrincipalId };
+    }
+
+    async function trigger(
+      app: Awaited<ReturnType<typeof setup>>["app"],
+      tenantId: string,
+    ) {
+      return app.request(`/api/tenants/${tenantId}/workflows/${ANCHOR}/mail`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "hi" }),
+      });
     }
 
     async function waitForBlocked(blockerPid: number) {
@@ -297,6 +327,56 @@ describe.skipIf(!harnessDbEnvAvailable())(
         error: { code: "deployer_unavailable" },
       });
       expect(await runGrantCount(tenantId)).toBe(0);
+    });
+
+    test("the first trigger keeps an operator grant on the run principal and links it", async () => {
+      const { app, tenantId, runPrincipalId } = await setup([]);
+      await seedGrant(h.db, {
+        id: "grt_operator_tool",
+        tenantId,
+        principalId: runPrincipalId,
+        resource: "tool:write_file",
+        action: "invoke",
+        effect: "allow",
+        origin: "system",
+      });
+
+      // The deploy ack recorded the anchor's initialization.
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "ab".repeat(32) })
+        .where(eq(workflowRun.id, ANCHOR));
+
+      await trigger(app, tenantId);
+
+      const [anchor] = await h.db
+        .select({ principalId: workflowRun.principalId })
+        .from(workflowRun)
+        .where(eq(workflowRun.id, ANCHOR));
+      expect(anchor?.principalId).toBe(runPrincipalId);
+      const ids = (
+        await h.db
+          .select({ id: grant.id })
+          .from(grant)
+          .where(eq(grant.principalId, runPrincipalId))
+      ).map((row) => row.id);
+      expect(ids).toContain("grt_operator_tool");
+    });
+
+    test("the first trigger refuses a suspended run principal", async () => {
+      const { app, tenantId } = await setup([], "suspended");
+
+      const res = await trigger(app, tenantId);
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        error: { code: "workflow_run_principal_inactive" },
+      });
+      const [anchor] = await h.db
+        .select({ principalId: workflowRun.principalId })
+        .from(workflowRun)
+        .where(eq(workflowRun.id, ANCHOR));
+      expect(anchor?.principalId).toBeNull();
     });
   },
 );
