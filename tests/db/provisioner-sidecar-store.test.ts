@@ -10,6 +10,7 @@ import { eq } from "drizzle-orm";
 
 import {
   createSidecarAllocationStore,
+  type SidecarInventory,
   type SidecarProvisionerBinding,
 } from "@intx/db";
 import { sidecar, sidecarAllocation, workflowProbe } from "@intx/db/schema";
@@ -18,6 +19,7 @@ import type {
   HostedWorkflowProbeStatus,
   SidecarAllocationStatus,
 } from "@intx/types";
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -71,6 +73,14 @@ describe.skipIf(!harnessDbEnvAvailable())("provisioner sidecar store", () => {
     });
   });
 
+  function storeWith(
+    getSidecarInventory: (
+      sidecarId: string,
+    ) => SidecarInventory | undefined = () => undefined,
+  ) {
+    return createSidecarAllocationStore(h.db, { getSidecarInventory });
+  }
+
   async function seedSidecar(
     id: string,
     args: {
@@ -93,13 +103,18 @@ describe.skipIf(!harnessDbEnvAvailable())("provisioner sidecar store", () => {
     sidecarId: string,
     status: SidecarAllocationStatus,
     args: {
+      readonly externalRef?: string;
       readonly cleanupConfirmed?: boolean;
+      readonly address?: string | null;
     } = {},
   ) {
+    const address =
+      args.address === undefined ? `${id}@example.test` : args.address;
     await seedWorkflowRun(h.db, {
       id: `run-${id}`,
       anchorRunId: `run-${id}`,
       tenantId: TENANT_ID,
+      ...(address !== null ? { address } : {}),
     });
     await h.db.insert(sidecarAllocation).values({
       id,
@@ -113,6 +128,9 @@ describe.skipIf(!harnessDbEnvAvailable())("provisioner sidecar store", () => {
       maxDisconnectedMs: 900_000,
       ...BINDING,
       adapterManifestDigest: MANIFEST_DIGEST,
+      ...(args.externalRef !== undefined
+        ? { externalRef: args.externalRef }
+        : {}),
     });
   }
 
@@ -153,6 +171,139 @@ describe.skipIf(!harnessDbEnvAvailable())("provisioner sidecar store", () => {
       .where(eq(sidecar.id, sidecarId));
     return row?.retiredAt;
   }
+
+  describe("listProvisionerSidecars", () => {
+    test("lists the binding's idle and busy sidecars with what is on them", async () => {
+      await seedSidecar("sc-idle");
+      await seedSidecar("sc-busy");
+      await seedSidecar("sc-other", { binding: OTHER_BINDING });
+      await seedAllocation("alloc-busy", "sc-busy", "allocated", {
+        externalRef: "vm-1",
+      });
+      await seedAllocation("alloc-other", "sc-other", "allocated");
+      await seedProbe("probe-busy", "sc-busy", "probing");
+
+      const listed = await storeWith().listProvisionerSidecars(BINDING);
+
+      expect(
+        listed.toSorted((a, b) => a.sidecarId.localeCompare(b.sidecarId)),
+      ).toEqual([
+        {
+          sidecarId: "sc-busy",
+          retired: false,
+          adapterManifestDigest: MANIFEST_DIGEST,
+          deployments: [
+            {
+              allocationId: "alloc-busy",
+              generation: 1,
+              tenantId: TENANT_ID,
+              anchorRunId: "run-alloc-busy",
+              address: "alloc-busy@example.test",
+              definitionId: expect.any(String),
+              status: "allocated",
+              runStatus: "running",
+              cleanupConfirmed: false,
+              externalRef: "vm-1",
+            },
+          ],
+          probes: [
+            {
+              allocationId: "probe-busy",
+              generation: 1,
+              tenantId: TENANT_ID,
+              status: "probing",
+            },
+          ],
+        },
+        {
+          sidecarId: "sc-idle",
+          retired: false,
+          adapterManifestDigest: MANIFEST_DIGEST,
+          deployments: [],
+          probes: [],
+        },
+      ]);
+    });
+
+    test("lists a retired sidecar only while work is left on it", async () => {
+      await seedSidecar("sc-retired-idle", { retired: true });
+      await seedSidecar("sc-retired-deployment", { retired: true });
+      await seedSidecar("sc-retired-probe", { retired: true });
+      await seedAllocation("alloc", "sc-retired-deployment", "allocated");
+      await seedProbe("probe", "sc-retired-probe", "probing");
+
+      const listed = await storeWith().listProvisionerSidecars(BINDING);
+
+      expect(listed.map((view) => view.sidecarId).toSorted()).toEqual([
+        "sc-retired-deployment",
+        "sc-retired-probe",
+      ]);
+      expect(listed.every((view) => view.retired)).toBe(true);
+    });
+
+    test("leaves out finished work", async () => {
+      await seedSidecar("sc-finished");
+      await seedAllocation("alloc-released", "sc-finished", "released");
+      await seedAllocation("alloc-failed", "sc-finished", "failed");
+      await seedProbe("probe-succeeded", "sc-finished", "succeeded");
+      await seedProbe("probe-failed", "sc-finished", "failed");
+
+      expect(await storeWith().listProvisionerSidecars(BINDING)).toEqual([
+        {
+          sidecarId: "sc-finished",
+          retired: false,
+          adapterManifestDigest: MANIFEST_DIGEST,
+          deployments: [],
+          probes: [],
+        },
+      ]);
+    });
+
+    test("keeps a deployment whose anchor has no address", async () => {
+      await seedSidecar("sc-busy");
+      await seedAllocation("alloc", "sc-busy", "allocated", {
+        address: null,
+      });
+
+      const [view] = await storeWith().listProvisionerSidecars(BINDING);
+
+      expect(view?.deployments).toMatchObject([{ allocationId: "alloc" }]);
+      expect(view?.deployments[0]).not.toHaveProperty("address");
+    });
+
+    test("reports capacity only for a sidecar this Hub has inventory for", async () => {
+      await seedSidecar("sc-connected");
+      await seedSidecar("sc-elsewhere");
+      await seedAllocation("placing", "sc-connected", "provisioning");
+      await seedAllocation("running", "sc-connected", "allocated");
+      await seedAllocation("removing", "sc-connected", "releasing");
+      await seedAllocation("removed", "sc-connected", "releasing", {
+        cleanupConfirmed: true,
+      });
+      await seedAllocation("retained", "sc-connected", "allocated");
+
+      const listed = await storeWith((sidecarId) =>
+        sidecarId === "sc-connected"
+          ? {
+              capacity: DEFAULT_SIDECAR_CAPACITY,
+              retainedIncarnations: [
+                { allocationId: "retained", generation: 1 },
+              ],
+            }
+          : undefined,
+      ).listProvisionerSidecars(BINDING);
+
+      expect(
+        listed.find((view) => view.sidecarId === "sc-connected")?.capacity,
+      ).toEqual({
+        maxActiveDeployments: DEFAULT_SIDECAR_CAPACITY.maxActiveDeployments,
+        activeDeployments: 3,
+      });
+      expect(
+        listed.find((view) => view.sidecarId === "sc-elsewhere"),
+      ).not.toHaveProperty("capacity");
+    });
+  });
 
   describe("retireIdleProvisionerSidecar", () => {
     const retire = (sidecarId: string, binding = BINDING) =>
