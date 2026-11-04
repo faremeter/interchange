@@ -1,11 +1,11 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import {
-  deleteRunTokensForPrincipals,
+  deactivateRunPrincipals,
   type DBExecutor,
   type WorkflowRunStore,
 } from "@intx/db";
-import { principal, workflowRun } from "@intx/db/schema";
+import { workflowRun } from "@intx/db/schema";
 
 import { getWorkflowRunEndedAt } from "./workflow-run-ended-at";
 
@@ -92,22 +92,12 @@ export async function projectTerminalRun(
   // deployment (the guard above), so no live row matched only because the run
   // is already terminal. Leave its settled status and `endedAt` alone.
   if (won === null) return "settled";
-  // Deactivate the run's own principal, if it has one. Externally-triggered
-  // runs carry a principal; internal, workflow-spawned runs have
-  // `principalId = null` and inherit the deployment's grants, so there is
-  // nothing to deactivate. Deactivation is gated on winning the flip -- the
-  // single claim point -- not on the principal's own status.
-  if (won.principalId !== null) {
-    await tx
-      .update(principal)
-      .set({ status: "deactivated", updatedAt: now })
-      // `won.principalId` is already this run's own principal and
-      // `principal.id` is the primary key, so the `refId` match only confirms
-      // the id we won belongs to this run.
-      .where(
-        and(eq(principal.id, won.principalId), eq(principal.refId, runId)),
-      );
-    await deleteRunTokensForPrincipals(tx, [won.principalId]);
-  }
+  // Deactivate the run's own principal, found by its run reference, so a
+  // principal its run has not linked yet is deactivated too. Internal,
+  // workflow-spawned runs have no principal and inherit the deployment's
+  // grants, so there is nothing to deactivate. Deactivation is gated on
+  // winning the flip -- the single claim point -- not on the principal's own
+  // status.
+  await deactivateRunPrincipals(tx, anchor.tenantId, [runId], now);
   return "projected";
 }
