@@ -37,3 +37,12 @@ export function isSidecarAllocationDispatchable(
     }
   }
 }
+
+/** Allocation statuses with work or owed cleanup on the sidecar the row names. */
+export const hostedSidecarAllocationStatuses = [
+  "provisioning",
+  "allocated",
+  "replacing",
+  "releasing",
+  "destroy_failed",
+] as const satisfies readonly SidecarAllocationStatus[];
