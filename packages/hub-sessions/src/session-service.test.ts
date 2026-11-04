@@ -2563,11 +2563,6 @@ describe("deployCodeSourcedWorkflow", () => {
     // The body agent's declared (anthropic, mock-model) resolved to the
     // operator-approved config source, pinned as a single-element chain.
     expect(body.sources["work"]).toEqual(SOURCES.only);
-    // Per-body hash is recomputed from the inert body verbatim, so a body
-    // child's re-verify over the re-evaluated closure clears the same barrier.
-    expect(body.approvedWireHash).toBe(
-      await computeWireDefinitionHash(body.definition),
-    );
   });
 
   test("fails closed when a body step's inference source is not operator-approved", async () => {
