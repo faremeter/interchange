@@ -13,6 +13,8 @@ import {
   parsePrincipalKeyRow,
   pgErrorCode,
   PG_UNIQUE_VIOLATION,
+  recordPublicKey,
+  retireActiveKey,
 } from "@intx/db";
 import { principalKey } from "@intx/db/schema";
 import { isCiphertext, verifyEd25519 } from "@intx/crypto";
@@ -115,9 +117,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("recordPublicKey makes a public-only key active, and sign refuses it", async () => {
       const store = createPrincipalKeyStore({ db: h.db, cipher });
-      await h.db.transaction((tx) =>
-        store.recordPublicKey(PRINCIPAL, KEY_A, tx),
-      );
+      await h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_A));
 
       expect(await store.getPublicKey(PRINCIPAL)).toBe(KEY_A);
       const rows = await keyRows(PRINCIPAL);
@@ -129,25 +129,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("recordPublicKey of the active key is a no-op", async () => {
-      const store = createPrincipalKeyStore({ db: h.db, cipher });
-      await h.db.transaction((tx) =>
-        store.recordPublicKey(PRINCIPAL, KEY_A, tx),
-      );
+      await h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_A));
       const [before] = await keyRows(PRINCIPAL);
 
-      await h.db.transaction((tx) =>
-        store.recordPublicKey(PRINCIPAL, KEY_A, tx),
-      );
+      await h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_A));
 
       expect(await keyRows(PRINCIPAL)).toEqual(before ? [before] : []);
     });
 
     test("recordPublicKey makes a retired key of the same principal active again", async () => {
       const store = createPrincipalKeyStore({ db: h.db, cipher });
-      await h.db.transaction((tx) =>
-        store.recordPublicKey(PRINCIPAL, KEY_A, tx),
-      );
-      await store.retireActive(PRINCIPAL);
+      await h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_A));
+      await retireActiveKey(h.db, PRINCIPAL);
       const retiredAt = new Date("2020-01-01T00:00:00Z");
       await h.db
         .update(principalKey)
@@ -156,9 +149,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const [retired] = await keyRows(PRINCIPAL);
       if (retired === undefined) throw new Error("expected a key row");
 
-      await h.db.transaction((tx) =>
-        store.recordPublicKey(PRINCIPAL, KEY_A, tx),
-      );
+      await h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_A));
 
       const rows = await keyRows(PRINCIPAL);
       expect(rows).toHaveLength(1);
@@ -170,41 +161,34 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("recordPublicKey throws when the principal has a different active key", async () => {
       const store = createPrincipalKeyStore({ db: h.db, cipher });
-      await h.db.transaction((tx) =>
-        store.recordPublicKey(PRINCIPAL, KEY_A, tx),
-      );
+      await h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_A));
 
       await expect(
-        h.db.transaction((tx) => store.recordPublicKey(PRINCIPAL, KEY_B, tx)),
+        h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_B)),
       ).rejects.toThrow(/already has active key .*; retire it first/);
       expect(await store.getPublicKey(PRINCIPAL)).toBe(KEY_A);
     });
 
     test("recordPublicKey of a retired key throws when a different key is active", async () => {
       const store = createPrincipalKeyStore({ db: h.db, cipher });
-      await h.db.transaction((tx) =>
-        store.recordPublicKey(PRINCIPAL, KEY_A, tx),
-      );
-      await store.retireActive(PRINCIPAL);
-      await h.db.transaction((tx) =>
-        store.recordPublicKey(PRINCIPAL, KEY_B, tx),
-      );
+      await h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_A));
+      await retireActiveKey(h.db, PRINCIPAL);
+      await h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_B));
 
       await expect(
-        h.db.transaction((tx) => store.recordPublicKey(PRINCIPAL, KEY_A, tx)),
+        h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_A)),
       ).rejects.toThrow(/already has active key .*; retire it first/);
       expect(await store.getPublicKey(PRINCIPAL)).toBe(KEY_B);
     });
 
     test("recordPublicKey throws for a key that belongs to another principal", async () => {
-      const store = createPrincipalKeyStore({ db: h.db, cipher });
       await seedPrincipal(h.db, { id: OTHER_PRINCIPAL, tenantId: TENANT });
       await h.db.transaction((tx) =>
-        store.recordPublicKey(OTHER_PRINCIPAL, KEY_A, tx),
+        recordPublicKey(tx, OTHER_PRINCIPAL, KEY_A),
       );
 
       await expect(
-        h.db.transaction((tx) => store.recordPublicKey(PRINCIPAL, KEY_A, tx)),
+        h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, KEY_A)),
       ).rejects.toThrow(/belongs to principal prn_pk_other/);
       expect(await keyRows(PRINCIPAL)).toHaveLength(0);
     });
@@ -214,12 +198,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const minted = await store.generate(PRINCIPAL);
 
       await expect(
-        h.db.transaction((tx) => store.recordPublicKey(PRINCIPAL, minted, tx)),
+        h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, minted)),
       ).rejects.toThrow(/is hub-custodied, not public-only/);
 
-      await store.retireActive(PRINCIPAL);
+      await retireActiveKey(h.db, PRINCIPAL);
       await expect(
-        h.db.transaction((tx) => store.recordPublicKey(PRINCIPAL, minted, tx)),
+        h.db.transaction((tx) => recordPublicKey(tx, PRINCIPAL, minted)),
       ).rejects.toThrow(/is hub-custodied, not public-only/);
       await expect(store.getPublicKey(PRINCIPAL)).rejects.toThrow(
         /no active key/,
@@ -227,12 +211,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("recordPublicKey in a rolled-back transaction leaves no row", async () => {
-      const store = createPrincipalKeyStore({ db: h.db, cipher });
       const rollback = new Error("roll back");
 
       await expect(
         h.db.transaction(async (tx) => {
-          await store.recordPublicKey(PRINCIPAL, KEY_A, tx);
+          await recordPublicKey(tx, PRINCIPAL, KEY_A);
           throw rollback;
         }),
       ).rejects.toBe(rollback);
@@ -240,17 +223,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await keyRows(PRINCIPAL)).toHaveLength(0);
     });
 
-    test("retireActive leaves a principal with no active key as it is", async () => {
-      const store = createPrincipalKeyStore({ db: h.db, cipher });
-      await store.retireActive(PRINCIPAL);
+    test("retireActiveKey leaves a principal with no active key as it is", async () => {
+      await retireActiveKey(h.db, PRINCIPAL);
       expect(await keyRows(PRINCIPAL)).toHaveLength(0);
     });
 
-    test("retireActive retires a hub-minted key so a new key can be minted", async () => {
+    test("retireActiveKey retires a hub-minted key so a new key can be minted", async () => {
       const store = createPrincipalKeyStore({ db: h.db, cipher });
       const first = await store.generate(PRINCIPAL);
 
-      await store.retireActive(PRINCIPAL);
+      await retireActiveKey(h.db, PRINCIPAL);
       await expect(store.getPublicKey(PRINCIPAL)).rejects.toThrow(
         /no active key/,
       );

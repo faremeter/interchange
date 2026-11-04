@@ -1730,8 +1730,6 @@ describe("createCorrespondentGrantMinter", () => {
     generate: async () => "pky_stub",
     sign: async () => new Uint8Array(64),
     getPublicKey: async () => "pky_stub_public",
-    recordPublicKey: async () => undefined,
-    retireActive: async () => undefined,
   };
 
   // A DB stand-in for the minter's unlocked rule check. It serves the sending

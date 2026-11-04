@@ -8,7 +8,12 @@ import {
 } from "bun:test";
 import { and, eq } from "drizzle-orm";
 
-import { backfillPrincipalKeys, createPrincipalKeyStore } from "@intx/db";
+import {
+  backfillPrincipalKeys,
+  createPrincipalKeyStore,
+  recordPublicKey,
+  retireActiveKey,
+} from "@intx/db";
 import { principalKey } from "@intx/db/schema";
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
@@ -150,9 +155,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("a workflow principal whose only key is retired gets no new key", async () => {
       const store = newStore();
       await h.db.transaction((tx) =>
-        store.recordPublicKey("prn_wf_active", "aa".repeat(32), tx),
+        recordPublicKey(tx, "prn_wf_active", "aa".repeat(32)),
       );
-      await store.retireActive("prn_wf_active");
+      await retireActiveKey(h.db, "prn_wf_active");
 
       await backfillPrincipalKeys(h.db, store);
 
