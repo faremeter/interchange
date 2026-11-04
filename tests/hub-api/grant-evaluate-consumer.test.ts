@@ -26,7 +26,8 @@ import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
 // The evaluate endpoint explains an authorization decision. A run token's
 // requests carry a workflow consumer, so an operator evaluating a run
 // principal must be able to name that consumer to see the decision the token
-// gets.
+// gets. The response lists the principal's matching grants, so the caller
+// needs read on grants.
 
 const TENANT_ID = "tnt_evaluate";
 const OPERATOR_PRINCIPAL_ID = "prn_operator";
@@ -53,8 +54,7 @@ function grantRule(
   };
 }
 
-const GRANTS: GrantRule[] = [
-  grantRule("grt_operator", OPERATOR_PRINCIPAL_ID, "*", "*", null),
+const RUN_GRANTS: GrantRule[] = [
   grantRule("grt_run", RUN_PRINCIPAL_ID, "widget:*", "read", {
     tool: "action:a",
   }),
@@ -66,6 +66,16 @@ const GRANTS: GrantRule[] = [
     effect: "deny",
   },
 ];
+
+function operatorGrant(resource: string, action: string): GrantRule {
+  return grantRule(
+    `grt_operator_${resource}_${action}`,
+    OPERATOR_PRINCIPAL_ID,
+    resource,
+    action,
+    null,
+  );
+}
 
 function mockGetSession(userId: string): GetSession {
   const now = new Date("2026-01-01");
@@ -102,7 +112,7 @@ function mockSessionService(): SessionService {
 const EvaluateBody = type({ effect: "string" });
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "POST /api/tenants/:tenantId/principals/:principalId/evaluate with a consumer",
+  "POST /api/tenants/:tenantId/principals/:principalId/evaluate",
   () => {
     let h: TestDb;
 
@@ -132,12 +142,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     async function evaluateResponse(
       body: Record<string, unknown>,
+      operatorGrants: GrantRule[] = [operatorGrant("*", "*")],
     ): Promise<Response> {
       const app = createApp({
         getSession: mockGetSession(OPERATOR_USER_ID),
         authHandler: () => new Response("", { status: 404 }),
         db: h.db,
-        grantStore: createInMemoryGrantStore(GRANTS),
+        grantStore: createInMemoryGrantStore([
+          ...operatorGrants,
+          ...RUN_GRANTS,
+        ]),
         sidecarRouter: createSidecarRouter({
           withExecutableWorkflowRun: async (_target, send) => send(),
           authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
@@ -216,6 +230,29 @@ describe.skipIf(!harnessDbEnvAvailable())(
         consumer: "",
       });
       expect(res.status).toBe(400);
+    });
+
+    const WIDGET_READ = { resource: "widget:w1", action: "read" };
+
+    test("refuses a caller without read on grants", async () => {
+      const res = await evaluateResponse(WIDGET_READ, [
+        operatorGrant("widget:*", "read"),
+      ]);
+      expect(res.status).toBe(403);
+    });
+
+    test("answers a caller holding read on grants", async () => {
+      const res = await evaluateResponse(WIDGET_READ, [
+        operatorGrant("grant:*", "read"),
+      ]);
+      expect(res.status).toBe(200);
+    });
+
+    test("answers a caller holding read on every resource", async () => {
+      const res = await evaluateResponse(WIDGET_READ, [
+        operatorGrant("*", "read"),
+      ]);
+      expect(res.status).toBe(200);
     });
   },
 );

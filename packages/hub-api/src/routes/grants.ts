@@ -483,12 +483,14 @@ export function createGrantRoutes({
 // Evaluate endpoint is mounted under principals
 export type CreateEvaluateRoutesDeps = {
   db: DB["db"];
+  requireGrant: RequireGrant;
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
 };
 
 export function createEvaluateRoutes({
   db,
+  requireGrant,
   grantStore,
   conditionRegistry,
 }: CreateEvaluateRoutesDeps): Hono<TenantEnv> {
@@ -496,13 +498,15 @@ export function createEvaluateRoutes({
 
   evaluateApp.post(
     "/",
+    requireGrant("grant:*", "read"),
     describeRoute({
       tags: ["Grants"],
       summary: "Evaluate grants for a principal",
       description:
-        "Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization. Pass `consumer` to evaluate as a workflow run token's consumer, so grants scoped to that consumer match.",
+        "Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization. Pass `consumer` to evaluate as a workflow run token's consumer, so grants scoped to that consumer match. Requires read on grants (`grant:*` / `read`).",
       responses: {
         200: jsonResponse("Evaluation result", EvaluateResult),
+        403: jsonResponse("Insufficient grants", ErrorResponse),
         404: jsonResponse("Principal not found", ErrorResponse),
       },
     }),
