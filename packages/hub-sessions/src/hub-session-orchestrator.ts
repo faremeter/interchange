@@ -10,17 +10,13 @@
 // than the full SidecarRouter, so tests can drive subscriber behavior
 // with a small stub and an isolated emitter.
 
-import { eq } from "drizzle-orm";
 import { type } from "arktype";
-import type { DB } from "@intx/db";
-import { workflowRun } from "@intx/db/schema";
 import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
 
 import type { EventCollectorRegistry } from "./event-collector-registry";
 import type { SidecarEventEmitter } from "./ws/sidecar-events";
-import type { SenderDeploySettledOutcome } from "./ws/sidecar-handler";
 
 const log = getLogger(["hub", "orchestrator"]);
 
@@ -29,16 +25,11 @@ const log = getLogger(["hub", "orchestrator"]);
  * from the rest of the router API. */
 export type HubSessionRouterFacade = {
   dispatchAgentEvent(agentAddress: string, event: unknown): void;
-  noteSenderDeploySettled(
-    address: string,
-    outcome: SenderDeploySettledOutcome,
-  ): void;
 };
 
 export type HubSessionOrchestratorDeps = {
   events: SidecarEventEmitter;
   router: HubSessionRouterFacade;
-  db: DB["db"];
   eventCollectors: EventCollectorRegistry;
 };
 
@@ -52,7 +43,7 @@ export type HubSessionOrchestrator = {
 export function createHubSessionOrchestrator(
   deps: HubSessionOrchestratorDeps,
 ): HubSessionOrchestrator {
-  const { events, router, db, eventCollectors } = deps;
+  const { events, router, eventCollectors } = deps;
 
   const unsubscribers: (() => void)[] = [];
 
@@ -86,33 +77,6 @@ export function createHubSessionOrchestrator(
       log.warn("Dropping mail with no local recipient: {recipients}", {
         recipients: recipients.join(", "),
       });
-    }),
-  );
-
-  unsubscribers.push(
-    events.on("agent.deploy.ack", async (event) => {
-      const { agentAddress, publicKey, allocated } = event;
-      // Provisioned initialization publishes its key only after its deploy
-      // succeeds under the allocation generation fence.
-      if (allocated !== undefined) return;
-
-      // Every deploy address names a workflow run whose public key lives on its
-      // single self-anchored workflow_run row, keyed by address. Persist it
-      // there as the deployment's published identity. Reconnect routing is
-      // allocation-authenticated, so this projection is not connection
-      // authority.
-      await db
-        .update(workflowRun)
-        .set({ publicKey })
-        .where(eq(workflowRun.address, agentAddress));
-
-      // The key is now durable. Wake any mail the run parked while pre-ack so it
-      // is delivered with the sender key co-delivered, closing the window where
-      // a run sends before its key is recorded. The write above happens-before
-      // this settle, so a re-drive resolves the recorded key. The address is the
-      // run's own deploy address, byte-identical to the sender address its mail
-      // was sent under.
-      router.noteSenderDeploySettled(agentAddress, { recorded: publicKey });
     }),
   );
 

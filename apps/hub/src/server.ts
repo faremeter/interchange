@@ -392,7 +392,6 @@ export async function createHubServer({
   createHubSessionOrchestrator({
     events: sidecarRouter.events,
     router: sidecarRouter,
-    db,
     eventCollectors,
   });
 

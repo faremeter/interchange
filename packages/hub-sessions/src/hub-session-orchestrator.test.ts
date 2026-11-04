@@ -1,13 +1,10 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 
-import { getTableName, is, Table, type SQL } from "drizzle-orm";
-import type { DB } from "@intx/db";
 import type { InferenceEvent } from "@intx/types/runtime";
 
 import type { AgentRepoStore } from "./agent-repo";
 import type { LocalRepoStore } from "./repo-store";
 import type { EventCollectorRegistry } from "./event-collector-registry";
-import { agentSession, workflowRun } from "@intx/db/schema";
 
 import { createHubSessionOrchestrator } from "./hub-session-orchestrator";
 import {
@@ -19,125 +16,15 @@ import {
 // Fixtures and mocks
 // ---------------------------------------------------------------------------
 
-const TENANT_ID = "tnt_1";
 const INSTANCE_ID = "run_1";
 const AGENT_ADDRESS = "run_1@tenant.local";
 const SESSION_ID = "ses_1";
 
-const RUN_PRINCIPAL_ID = "prn_run";
-const RUN_SESSION_ID = "ses_run";
-
-// The projection `resolveRoutableAddress` reads off a `workflow_run` row.
-type RunRow = {
-  id: string;
-  tenantId: string;
-  principalId: string | null;
-  address: string;
-  status: string;
-  publicKey: string | null;
-  endedAt: Date | null;
+type RouterCall = {
+  kind: "dispatchAgentEvent";
+  addr: string;
+  event: unknown;
 };
-
-function makeRun(overrides: Partial<RunRow> = {}): RunRow {
-  return {
-    id: INSTANCE_ID,
-    tenantId: TENANT_ID,
-    principalId: RUN_PRINCIPAL_ID,
-    address: AGENT_ADDRESS,
-    status: "running",
-    publicKey: null,
-    endedAt: null,
-    ...overrides,
-  };
-}
-
-type UpdateCall = {
-  table: string;
-  set: Record<string, unknown>;
-  guard: SQL;
-};
-
-type MockDBOpts = {
-  run?: RunRow | undefined;
-  // The live agent_session id `resolveRunSessionId` finds for a run's
-  // principal; null/undefined leaves the run session-less.
-  runSessionId?: string | null;
-  recordUpdates?: UpdateCall[];
-};
-
-function createMockDB(opts: MockDBOpts) {
-  const updates = opts.recordUpdates ?? [];
-
-  function tableName(t: unknown): string {
-    return is(t, Table) ? getTableName(t) : "<unknown>";
-  }
-
-  /* eslint-disable @typescript-eslint/no-unsafe-type-assertion --
-   * drizzle PgDatabase type cannot be structurally satisfied in tests */
-  return {
-    query: {
-      agent: { findFirst: async () => undefined },
-      agentSession: { findFirst: async () => undefined },
-      provider: { findFirst: async () => undefined, findMany: async () => [] },
-      credential: {
-        findFirst: async () => undefined,
-        findMany: async () => [],
-      },
-      oauthClient: { findFirst: async () => undefined },
-      tenant: { findFirst: async () => undefined },
-    },
-    update(t: unknown) {
-      return {
-        set(values: Record<string, unknown>) {
-          return {
-            // Capture the where-condition so a test can render it to SQL and
-            // assert a status flip is guarded, not an unconditional write.
-            where: async (guard: SQL) => {
-              updates.push({ table: tableName(t), set: values, guard });
-            },
-          };
-        },
-      };
-    },
-    select() {
-      return {
-        from: (t: unknown) => {
-          // `resolveRoutableAddress` selects the routing endpoint from
-          // `workflow_run`; `resolveRunSessionId` then reads the run principal's
-          // live `agent_session`. Back whichever the test seeded.
-          let rows: unknown[] = [];
-          if (t === workflowRun && opts.run !== undefined) {
-            rows = [opts.run];
-          } else if (t === agentSession && opts.runSessionId != null) {
-            rows = [{ id: opts.runSessionId }];
-          }
-          return {
-            where: () => ({
-              limit: () => Promise.resolve(rows),
-              orderBy: () => ({ limit: () => Promise.resolve(rows) }),
-            }),
-            innerJoin: () => ({
-              where: () => ({ limit: () => Promise.resolve([]) }),
-            }),
-          };
-        },
-      };
-    },
-  } as unknown as DB["db"];
-  /* eslint-enable @typescript-eslint/no-unsafe-type-assertion */
-}
-
-type RouterCall =
-  | {
-      kind: "dispatchAgentEvent";
-      addr: string;
-      event: unknown;
-    }
-  | {
-      kind: "noteSenderDeploySettled";
-      addr: string;
-      outcome: { recorded: string } | { failed: string };
-    };
 
 function createRouterFacade(): {
   facade: Parameters<typeof createHubSessionOrchestrator>[0]["router"];
@@ -149,9 +36,6 @@ function createRouterFacade(): {
     facade: {
       dispatchAgentEvent(addr, event) {
         calls.push({ kind: "dispatchAgentEvent", addr, event });
-      },
-      noteSenderDeploySettled(addr, outcome) {
-        calls.push({ kind: "noteSenderDeploySettled", addr, outcome });
       },
     },
   };
@@ -246,13 +130,10 @@ type Harness = {
   router: ReturnType<typeof createRouterFacade>;
   collectors: ReturnType<typeof createCollectorRegistry>;
   repo: ReturnType<typeof createRepoStoreStub>;
-  updates: UpdateCall[];
   dispose: () => void;
 };
 
-function setup(opts: MockDBOpts = {}): Harness {
-  const updates: UpdateCall[] = [];
-  const db = createMockDB({ ...opts, recordUpdates: updates });
+function setup(): Harness {
   const events = createSidecarEmitter();
   const router = createRouterFacade();
   const collectors = createCollectorRegistry();
@@ -261,7 +142,6 @@ function setup(opts: MockDBOpts = {}): Harness {
   const orchestrator = createHubSessionOrchestrator({
     events,
     router: router.facade,
-    db,
     eventCollectors: collectors.registry,
   });
 
@@ -270,7 +150,6 @@ function setup(opts: MockDBOpts = {}): Harness {
     router,
     collectors,
     repo,
-    updates,
     dispose: orchestrator.dispose,
   };
 }
@@ -283,7 +162,7 @@ describe("createHubSessionOrchestrator", () => {
   let harness: Harness;
 
   beforeEach(() => {
-    harness = setup({ run: makeRun(), runSessionId: RUN_SESSION_ID });
+    harness = setup();
   });
 
   describe("agent.event", () => {
@@ -325,65 +204,6 @@ describe("createHubSessionOrchestrator", () => {
         .filter((c) => c.kind === "abandon")
         .map((c) => (c.kind === "abandon" ? c.addr : null));
       expect(abandonedAddrs).toEqual(["a@x", "b@x", "c@x"]);
-    });
-  });
-
-  describe("agent.deploy.ack", () => {
-    test("stores the public key on the active run", async () => {
-      await harness.events.emitAndAwait("agent.deploy.ack", {
-        agentAddress: AGENT_ADDRESS,
-        publicKey: "deadbeef",
-      });
-      expect(harness.updates).toHaveLength(1);
-      expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
-      expect(harness.updates[0]?.table).toBe("workflow_run");
-      // The durable write settles the sender's deploy so its parked pre-ack mail
-      // wakes, keyed byte-identically on the deploy address.
-      expect(harness.router.calls).toContainEqual({
-        kind: "noteSenderDeploySettled",
-        addr: AGENT_ADDRESS,
-        outcome: { recorded: "deadbeef" },
-      });
-    });
-
-    test("persists the public key for a workflow-derived deployment address", async () => {
-      harness = setup({});
-      await harness.events.emitAndAwait("agent.deploy.ack", {
-        agentAddress: "run_abc@workflow.interchange",
-        publicKey: "deadbeef",
-      });
-      // A workflow-derived deployment address has no agent_instance row; its
-      // key is persisted on the deployment's anchor workflow_run row, keyed by
-      // address.
-      expect(harness.updates).toHaveLength(1);
-      expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
-      expect(harness.updates[0]?.table).toBe("workflow_run");
-      expect(harness.router.calls).toContainEqual({
-        kind: "noteSenderDeploySettled",
-        addr: "run_abc@workflow.interchange",
-        outcome: { recorded: "deadbeef" },
-      });
-    });
-
-    test("defers an allocated deployment key until initialization completes", async () => {
-      await harness.events.emitAndAwait("agent.deploy.ack", {
-        agentAddress: "run_abc@workflow.interchange",
-        publicKey: "deadbeef",
-        allocated: {
-          allocationId: "alloc-1",
-          anchorRunId: "run_abc",
-          generation: 3,
-        },
-      });
-
-      expect(harness.updates).toEqual([]);
-      // The allocated path settles its own key under the allocation lock, so the
-      // non-allocated projection neither writes nor settles here.
-      expect(
-        harness.router.calls.filter(
-          (c) => c.kind === "noteSenderDeploySettled",
-        ),
-      ).toEqual([]);
     });
   });
 
