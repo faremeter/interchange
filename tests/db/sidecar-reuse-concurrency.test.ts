@@ -662,6 +662,54 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
     });
   });
 
+  test("listing sidecars reads a probe adoption that commits between its reads once", async () => {
+    await seedProbe("probing");
+    await seedWorkflowRun(h.db, {
+      id: "run-adopted",
+      anchorRunId: "run-adopted",
+      tenantId: TENANT_ID,
+    });
+    const store = createSidecarAllocationStore(h.db, {
+      getSidecarInventory: () => undefined,
+    });
+    const listing = await h.db.transaction(async (tx) => {
+      // The list reads probes last, so this holds it after its allocation read.
+      await tx.execute(
+        sql`lock table ${workflowProbe} in access exclusive mode`,
+      );
+      const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+      const pid = backend?.["pid"];
+      if (typeof pid !== "number") throw new Error("Missing backend PID");
+      const blocked = observe(store.listProvisionerSidecars(BINDING));
+      await waitForBlocked(pid, blocked);
+      await adoptHolderProbe(tx);
+      return blocked;
+    });
+
+    expect(await listing.result).toMatchObject({
+      status: "fulfilled",
+      value: expect.arrayContaining([
+        expect.objectContaining({
+          sidecarId: SHARED_SIDECAR_ID,
+          deployments: [],
+          probes: [
+            expect.objectContaining({
+              allocationId: "probe-holder",
+              status: "probing",
+            }),
+          ],
+        }),
+      ]),
+    });
+    const listed = await store.listProvisionerSidecars(BINDING);
+    expect(
+      listed.find((view) => view.sidecarId === SHARED_SIDECAR_ID),
+    ).toMatchObject({
+      deployments: [{ allocationId: "probe-holder", status: "allocated" }],
+      probes: [],
+    });
+  });
+
   for (const placementFirst of [true, false]) {
     test(`probe completion serializes with placement (placement first: ${String(placementFirst)})`, async () => {
       await seedProbe("releasing");

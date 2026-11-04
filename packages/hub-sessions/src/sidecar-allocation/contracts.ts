@@ -4,6 +4,7 @@ import type {
   AdapterManifest,
   RetireIdleSidecarResult,
   SidecarCapabilityDeclaration,
+  SidecarView,
 } from "@intx/types";
 
 export type EnsureSidecarRequest = {
@@ -43,13 +44,11 @@ export type DestroySidecarRequest = {
   /**
    * The sidecar the Hub last recorded for this generation. When the Hub never
    * learned an ensure's outcome, this is the identity that ensure was offered
-   * even if the provisioner placed the work on an existing sidecar, so a
-   * provisioner that reuses sidecars must be able to release by allocationId.
-   * A destroy releases the allocation's hold at `generation` or any older one:
-   * release and replacement advance the generation before destroying. The
-   * Hub never re-announces holds, so such a provisioner stores them durably;
-   * held only in memory, they are lost on its restart, leaking sidecars or
-   * stopping one that other work still uses.
+   * even if the provisioner placed the work on an existing sidecar. The Hub
+   * sent such a placement no deployment, so nothing is left to release for it
+   * on that sidecar. A destroy releases the allocation's hold at `generation`
+   * or any older one: release and replacement advance the generation before
+   * destroying.
    */
   readonly sidecarId: string;
   /**
@@ -143,6 +142,20 @@ export type SidecarStoppedOptions = typeof SidecarStoppedOptions.infer;
 /** Calls the Hub offers a provisioner through `attach`. */
 export interface SidecarProvisionerHost {
   /**
+   * The sidecars minted under this provisioner's current binding and what is
+   * on them, so a provisioner needs no record of its own: every sidecar not
+   * retired, idle ones included, and every retired one with work left. Sidecars
+   * of an older binding are not listed, and may still run healthy work.
+   *
+   * This is a hint for placement and for catching up after a restart, not a
+   * reason to stop a sidecar. A worker missing from the list may have started
+   * after the read, so stop it only after `retireIfIdle` answers `retired`. The
+   * Hub records which sidecar a placement chose only after `ensure` returns;
+   * until then the list shows it as `provisioning` on the identity the request
+   * offered.
+   */
+  listSidecars(): Promise<readonly SidecarView[]>;
+  /**
    * Retires a sidecar only if nothing is left on it. A deployment whose cleanup
    * is still owed counts, even once that cleanup failed; one the Hub confirmed
    * removed and a probe being released do not. Call it before stopping a
@@ -163,9 +176,9 @@ export interface SidecarProvisionerHost {
    * Reports that a sidecar this provisioner started under its current binding
    * is already gone for good, such as one that died. The Hub retires the
    * identity whatever is on it. To stop an idle sidecar, call `retireIfIdle`
-   * first instead. Idempotent. A throw is transient: keep the report durably
-   * and retry it, also after a Hub restart. Invalid arguments also throw, and
-   * retrying them never succeeds.
+   * first instead. Idempotent. A throw is transient: retry it. Work on a
+   * sidecar nobody reports waits for its disconnect deadline. Invalid arguments
+   * also throw, and retrying them never succeeds.
    */
   sidecarStopped(
     sidecarId: string,

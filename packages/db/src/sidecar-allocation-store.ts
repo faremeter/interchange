@@ -18,6 +18,7 @@ import {
   sidecarAllocationStatuses,
   type RetireIdleSidecarResult,
   type SidecarAllocationStatus,
+  type SidecarView,
 } from "@intx/types";
 
 import type { DB, DBExecutor } from "./client";
@@ -33,6 +34,7 @@ import {
   assertSidecarHasRoom,
   assertSidecarReusable,
   type AllocationConnectionCheck,
+  listProvisionerSidecars,
   lockSidecars,
   type ProvisionerSidecarRetirement,
   retireIdleProvisionerSidecar,
@@ -485,10 +487,13 @@ function leaseCondition(expectedLeaseId?: string) {
 }
 
 // Stores used only for lifecycle updates cannot accidentally place work without
-// the connection's current retained-inventory proof.
+// the connection's current retained-inventory proof, or report capacity.
 export function createSidecarAllocationStore(
   db: DBHandle,
-): Omit<SidecarAllocationStore, "markAllocated" | "createAdopted">;
+): Omit<
+  SidecarAllocationStore,
+  "markAllocated" | "createAdopted" | "listProvisionerSidecars"
+>;
 export function createSidecarAllocationStore(
   db: DBHandle,
   options: Required<SidecarAllocationStoreOptions>,
@@ -1435,6 +1440,16 @@ function buildSidecarAllocationStore(
           binding: args.binding,
           now: databaseTimestamp(args.now),
         }),
+      );
+    },
+
+    /** See `listProvisionerSidecars`. */
+    async listProvisionerSidecars(
+      binding: SidecarProvisionerBinding,
+    ): Promise<readonly SidecarView[]> {
+      return db.transaction(
+        (tx) => listProvisionerSidecars(tx, { ...options, binding }),
+        { isolationLevel: "repeatable read", accessMode: "read only" },
       );
     },
 
