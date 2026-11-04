@@ -365,7 +365,7 @@ function createMockDB(opts: MockDBOpts) {
   // already-materialized guard select resolves through `.limit`, returning
   // no rows so the mock always exercises the first-commit insert path (a
   // redelivery no-op is covered against a real database).
-  const select = () => {
+  const select = (fields?: Record<string, unknown>) => {
     const from = (table: unknown) => {
       // The anchor-run existence check selects the run alone; the trigger route
       // and the deploy readback additionally inner-join the definition to read
@@ -374,6 +374,19 @@ function createMockDB(opts: MockDBOpts) {
       // plain case with the bare id, both keyed on the deployment.
       let joined = false;
       const selectedRows = (locked: boolean) => {
+        // The committed-grants lookup reads the run principal linked to the
+        // run row, selecting only its id. A run principal the commit inserted
+        // is linked by the same commit.
+        if (
+          table === workflowRunTable &&
+          joined &&
+          fields !== undefined &&
+          Object.keys(fields).join() === "id"
+        ) {
+          return inserts
+            .filter((record) => record.table === principalTable)
+            .map((record) => record.values);
+        }
         if (table === sidecarAllocationTable) {
           const status = opts.allocationStatus ?? "allocated";
           return opts.allocationId === undefined

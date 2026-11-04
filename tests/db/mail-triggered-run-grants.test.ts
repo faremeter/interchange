@@ -29,6 +29,7 @@ import {
   createCorrespondentGrantMinter,
   createMailTriggeredRunGrantsMaterializer,
 } from "@intx/hub-api";
+import { deriveRunPrincipalId } from "@intx/hub-common";
 import { createRunCredentialsLoader } from "@intx/hub-sessions";
 import {
   createTestDb,
@@ -1243,9 +1244,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           grantRequirements: [],
         });
         // The blocker plays the winner: under the anchor lock it commits the
-        // run principal with the winner's accept-grant, and it clears the
-        // anchor's key so credential resolution is not ready afterwards. The
-        // loser must be gated as a delivery to the live run, not parked.
+        // run principal with the winner's accept-grant and the run row linked
+        // to it, and it clears the anchor's key so credential resolution is
+        // not ready afterwards. The loser must be gated as a delivery to the
+        // live run, not parked.
         const locked = Promise.withResolvers<number>();
         const release = Promise.withResolvers<undefined>();
         const blocker = h.db.transaction(async (tx) => {
@@ -1269,6 +1271,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
             action: "accept",
             effect: "allow",
             origin: "creator",
+          });
+          await tx.insert(workflowRun).values({
+            id: RUN_ID,
+            anchorRunId: DEPLOYMENT,
+            tenantId: TENANT,
+            definitionId: DEFINITION,
+            principalId: "prn_committed_run",
+            status: "running",
           });
           await tx
             .update(workflowRun)
@@ -1306,6 +1316,127 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         expect(winner.outcome).toBe("materialized");
         expect(loser.outcome).toBe("materialized");
+      });
+    });
+
+    describe("a run principal that exists before the first commit", () => {
+      async function runGrantCount(principalId: string): Promise<number> {
+        const rows = await h.db
+          .select({ id: grant.id })
+          .from(grant)
+          .where(eq(grant.principalId, principalId));
+        return rows.length;
+      }
+
+      test("the first commit links and reuses an unlinked principal with the derived id", async () => {
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+        const derived = await deriveRunPrincipalId(TENANT, RUN_ID);
+        await seedPrincipal(h.db, {
+          id: derived,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: RUN_ID,
+          status: "active",
+        });
+
+        const first = await materializeOnce(RUN_ID);
+        const second = await materializeOnce(RUN_ID);
+
+        expect(first.outcome).toBe("materialized");
+        expect(second).toEqual(first);
+        const [run] = await h.db
+          .select({ principalId: workflowRun.principalId })
+          .from(workflowRun)
+          .where(eq(workflowRun.id, RUN_ID));
+        expect(run?.principalId).toBe(derived);
+        expect(await runGrantCount(derived)).toBeGreaterThan(0);
+        const principals = await h.db
+          .select({ id: principal.id })
+          .from(principal)
+          .where(eq(principal.refId, RUN_ID));
+        expect(principals).toEqual([{ id: derived }]);
+      });
+
+      test("the first commit refuses a run principal whose id is not the derived one", async () => {
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+        await seedPrincipal(h.db, {
+          id: "prn_not_derived",
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: RUN_ID,
+          status: "active",
+        });
+
+        await expect(materializeOnce(RUN_ID)).rejects.toThrow(
+          /has principal prn_not_derived, not the derived/,
+        );
+        expect(await runGrantCount("prn_not_derived")).toBe(0);
+      });
+
+      test("the first commit refuses an unlinked run principal that is not active", async () => {
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+        const derived = await deriveRunPrincipalId(TENANT, RUN_ID);
+        await seedPrincipal(h.db, {
+          id: derived,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: RUN_ID,
+          status: "deactivated",
+        });
+
+        await expect(materializeOnce(RUN_ID)).rejects.toThrow(
+          /is deactivated, not active/,
+        );
+        expect(await runGrantCount(derived)).toBe(0);
+      });
+
+      test("the first commit refuses an unlinked run principal that already holds grants", async () => {
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+        const derived = await deriveRunPrincipalId(TENANT, RUN_ID);
+        await seedPrincipal(h.db, {
+          id: derived,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: RUN_ID,
+          status: "active",
+        });
+        await seedGrant(h.db, {
+          id: "grt_before_commit",
+          tenantId: TENANT,
+          principalId: derived,
+          resource: "tool:write_file",
+          action: "use",
+          effect: "allow",
+          origin: "creator",
+        });
+
+        await expect(materializeOnce(RUN_ID)).rejects.toThrow(
+          /already holds grants before its first commit/,
+        );
+        expect(await runGrantCount(derived)).toBe(1);
+      });
+
+      test("the first commit throws when the live run row cannot be linked", async () => {
+        // A live run row with no principal link that is not a "deployed"
+        // anchor: the guarded link updates nothing, which no first commit
+        // under the anchor lock can explain.
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+        await h.db.insert(workflowRun).values({
+          id: RUN_ID,
+          tenantId: TENANT,
+          anchorRunId: DEPLOYMENT,
+          definitionId: DEFINITION,
+          status: "running",
+        });
+
+        await expect(materializeOnce(RUN_ID)).rejects.toThrow(
+          /did not link principal .* \(status running, linked principal none\)/,
+        );
+        const principals = await h.db
+          .select({ id: principal.id })
+          .from(principal)
+          .where(eq(principal.refId, RUN_ID));
+        expect(principals).toHaveLength(0);
       });
     });
 

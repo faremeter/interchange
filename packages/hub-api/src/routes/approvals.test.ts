@@ -9,7 +9,7 @@ import {
 } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import type { ApprovalStore, SignalCorrelationStore, DB } from "@intx/db";
-import { principal, sidecarAllocation, workflowRun } from "@intx/db/schema";
+import { sidecarAllocation, workflowRun } from "@intx/db/schema";
 import type { WorkflowRunLifecycle } from "@intx/hub-sessions";
 
 import { createApp } from "../app";
@@ -129,14 +129,14 @@ function createMockDB(
         },
         select: () => ({
           from: (table: unknown) => {
-            if (table === principal) {
-              // A standing resolution's setRunToolGrantEffect resolves the run
-              // principal here; this mock seeds none, so the mutation no-ops.
-              // Its correctness is covered by the setRunToolGrantEffect real-DB
-              // test.
-              return { where: () => ({ limit: () => Promise.resolve([]) }) };
-            }
             return {
+              // A standing resolution's setRunToolGrantEffect resolves the run
+              // principal linked to the run row here; this mock seeds none, so
+              // the mutation no-ops. Its correctness is covered by the
+              // setRunToolGrantEffect real-DB test.
+              innerJoin: () => ({
+                where: () => ({ limit: () => Promise.resolve([]) }),
+              }),
               where: () => ({
                 limit: () => ({
                   for: async (lock: string) => {

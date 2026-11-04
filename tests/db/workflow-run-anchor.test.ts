@@ -72,7 +72,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("inserts a fresh run row carrying the principal", async () => {
       const store = createWorkflowRunStore(h.db);
-      await store.anchorWithPrincipal({
+      const linked = await store.anchorWithPrincipal({
         id: "run-1",
         anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
@@ -80,6 +80,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn-run",
         status: "running",
       });
+      expect(linked).toBe(true);
 
       const [row] = await h.db
         .select()
@@ -104,7 +105,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const store = createWorkflowRunStore(h.db);
-      await store.anchorWithPrincipal({
+      const linked = await store.anchorWithPrincipal({
         id: "run-1",
         anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
@@ -112,6 +113,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn-run",
         status: "running",
       });
+      expect(linked).toBe(true);
 
       const rows = await h.db
         .select()
@@ -140,7 +142,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const store = createWorkflowRunStore(h.db);
-      await store.anchorWithPrincipal({
+      const linked = await store.anchorWithPrincipal({
         id: "run-1",
         anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
@@ -148,6 +150,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn-run",
         status: "running",
       });
+      expect(linked).toBe(false);
 
       const [row] = await h.db
         .select()
@@ -176,7 +179,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const store = createWorkflowRunStore(h.db);
-      await store.anchorWithPrincipal({
+      const linked = await store.anchorWithPrincipal({
         id: "run-1",
         anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
@@ -184,6 +187,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn-run",
         status: "running",
       });
+      expect(linked).toBe(false);
 
       const [row] = await h.db
         .select()

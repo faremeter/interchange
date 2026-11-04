@@ -11,7 +11,7 @@ import type { SessionStatus } from "@intx/types";
 import type { ConnectorThreadState } from "@intx/types/runtime";
 
 import { createApp } from "../app";
-import { agentSession, grant, principal, workflowRun } from "@intx/db/schema";
+import { agentSession, grant, workflowRun } from "@intx/db/schema";
 import {
   createAgentRepoStore,
   createSidecarEmitter,
@@ -128,8 +128,9 @@ type MockDBOpts = {
   /** Captured rows passed to db.insert(sessionMail).values(...). */
   inserts?: Record<string, unknown>[];
   /** The run's committed grants the authorization view reads: the run principal
-   * (a `principal` select) then its grant rows (a `grant` select). Omitted, the
-   * principal select returns empty and loadCommittedRunGrants yields null. */
+   * linked to the run row (a joined `workflowRun` select) then its grant rows (a
+   * `grant` select). Omitted, the link select returns empty and
+   * loadCommittedRunGrants yields null. */
   committedRunGrants?: { runPrincipalId: string; grantRows: unknown[] };
   /** Rows the approvals-list route's `approvalStore.listByRunId` returns
    * (query.approval.findMany). Defaults to `[]`. */
@@ -154,7 +155,8 @@ function createMockDB(opts: MockDBOpts) {
 
   // Builder chain, distinguished by the target table `t`:
   //   - workflowRun: `findRoutableById`'s run query (.where().limit() -> the
-  //     seeded run, or empty when none is seeded).
+  //     seeded run, or empty when none is seeded), and the committed-grants
+  //     link lookup (.innerJoin().where().limit()).
   //   - anything else (sessionMail): the priorMail query used by POST mail
   //     (.where().orderBy().limit()).
   function selectChain() {
@@ -163,17 +165,16 @@ function createMockDB(opts: MockDBOpts) {
     return {
       from: (t: unknown) => {
         if (t === workflowRun) {
-          return {
-            where: () => ({ limit: () => Promise.resolve(runRows) }),
-          };
-        }
-        if (t === principal) {
-          // loadCommittedRunGrants: the run principal, `.where().limit(1)`.
+          // loadCommittedRunGrants: the run principal linked to the run row,
+          // `.innerJoin(principal).where().limit(1)`.
           const principalRows = opts.committedRunGrants
             ? [{ id: opts.committedRunGrants.runPrincipalId }]
             : [];
           return {
-            where: () => ({ limit: () => Promise.resolve(principalRows) }),
+            where: () => ({ limit: () => Promise.resolve(runRows) }),
+            innerJoin: () => ({
+              where: () => ({ limit: () => Promise.resolve(principalRows) }),
+            }),
           };
         }
         if (t === grant) {
