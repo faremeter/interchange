@@ -293,6 +293,8 @@ type ResolveSmartHttpDeps = {
   conditionRegistry: ConditionRegistry;
 };
 
+// The smart-HTTP routes check their grant here, after the URL names the
+// run; see GRANT_EXEMPTIONS in route-registration.test.ts.
 async function resolveSmartHttp(
   deps: ResolveSmartHttpDeps,
   c: Context<TenantGitTokenEnv>,

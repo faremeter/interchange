@@ -138,6 +138,9 @@ type PendingFailureKind = Extract<
  * allocation's durable, generation-fenced dispatch path and remains replayable
  * until workflow Git records the signal as received. Deployments without an
  * allocation retain their direct sidecar delivery behavior.
+ *
+ * The approve and reject routes check their grant here, after the approval
+ * row names the run; see GRANT_EXEMPTIONS in route-registration.test.ts.
  */
 export async function resolveApproval(
   deps: ResolveApprovalDeps,
@@ -444,6 +447,8 @@ export function createApprovalRoutes(
     },
   );
 
+  // Checks its grant in the handler, after the approval row names the run;
+  // see GRANT_EXEMPTIONS in route-registration.test.ts.
   app.get(
     "/:approvalId",
     describeRoute({

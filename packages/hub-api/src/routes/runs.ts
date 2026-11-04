@@ -353,6 +353,8 @@ export function createRunRoutes({
     },
   );
 
+  // Checks its grant in the handler, after the session mail row names the
+  // run; see GRANT_EXEMPTIONS in route-registration.test.ts.
   app.get(
     "/blobs/:blobId",
     describeRoute({
