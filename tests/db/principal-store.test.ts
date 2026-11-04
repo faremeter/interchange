@@ -11,18 +11,24 @@ import { and, eq } from "drizzle-orm";
 import {
   createPrincipalStore,
   createPrincipalKeyStore,
+  deactivateRunPrincipals,
   type PrincipalKeyStore,
 } from "@intx/db";
-import { principal, principalKey } from "@intx/db/schema";
+import { principal, principalKey, runToken } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
-import { seedTenants } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedRunToken,
+  seedTenants,
+} from "@intx/test-harness/seed";
 
 const TENANT = "tnt_ps";
+const OTHER_TENANT = "tnt_ps_other";
 const cipher = createTestCredentialCipher();
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -207,6 +213,92 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).rejects.toThrow(/mint boom/);
       expect(await principalExists("prn_ifabsent_rollback")).toBe(false);
+    });
+  },
+);
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "deactivateRunPrincipals (real DB)",
+  () => {
+    let h: TestDb;
+
+    beforeAll(async () => {
+      h = await createTestDb();
+    });
+
+    afterAll(async () => {
+      await h.close();
+    });
+
+    beforeEach(async () => {
+      await h.reset();
+      await seedTenants(h.db, [{ id: TENANT }, { id: OTHER_TENANT }]);
+    });
+
+    async function statusOf(principalId: string): Promise<string | undefined> {
+      const [row] = await h.db
+        .select({ status: principal.status })
+        .from(principal)
+        .where(eq(principal.id, principalId));
+      return row?.status;
+    }
+
+    async function tokenCount(principalId: string): Promise<number> {
+      const rows = await h.db
+        .select({ id: runToken.id })
+        .from(runToken)
+        .where(eq(runToken.principalId, principalId));
+      return rows.length;
+    }
+
+    test("deactivates the run principals of the given runs and deletes their tokens", async () => {
+      await seedPrincipal(h.db, {
+        id: "prn_run_a",
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: "run_a",
+      });
+      await seedRunToken(h.db, { id: "rtk_run_a", principalId: "prn_run_a" });
+
+      // `run_child` has no principal of its own and is skipped.
+      await deactivateRunPrincipals(
+        h.db,
+        TENANT,
+        ["run_a", "run_child"],
+        new Date(),
+      );
+
+      expect(await statusOf("prn_run_a")).toBe("deactivated");
+      expect(await tokenCount("prn_run_a")).toBe(0);
+    });
+
+    test("leaves other runs, other tenants, and other kinds alone", async () => {
+      await seedPrincipal(h.db, {
+        id: "prn_run_b",
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: "run_b",
+      });
+      await seedPrincipal(h.db, {
+        id: "prn_other_tenant_a",
+        tenantId: OTHER_TENANT,
+        kind: "workflow",
+        refId: "run_a",
+      });
+      await seedPrincipal(h.db, {
+        id: "prn_user_a",
+        tenantId: TENANT,
+        kind: "user",
+        refId: "run_a",
+      });
+      await seedRunToken(h.db, { id: "rtk_run_b", principalId: "prn_run_b" });
+
+      await deactivateRunPrincipals(h.db, TENANT, ["run_a"], new Date());
+
+      expect(await statusOf("prn_run_b")).toBe("active");
+      expect(await tokenCount("prn_run_b")).toBe(1);
+      expect(await statusOf("prn_other_tenant_a")).toBe("active");
+      expect(await statusOf("prn_user_a")).toBe("active");
     });
   },
 );

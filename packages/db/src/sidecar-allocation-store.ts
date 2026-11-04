@@ -20,7 +20,7 @@ import {
 } from "@intx/types";
 
 import type { DB, DBExecutor } from "./client";
-import { deleteRunTokensForPrincipals } from "./run-token-store";
+import { deactivateRunPrincipals } from "./principal-store";
 import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
 import {
   assertSidecarHasRoom,
@@ -38,7 +38,6 @@ import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
 import {
   isLiveWorkflowRunStatus,
   liveWorkflowRunStatuses,
-  principal,
   sidecar,
   sidecarAllocation,
   workflowRun,
@@ -793,16 +792,15 @@ function buildSidecarAllocationStore(
           inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
         ),
       )
-      .returning({ id: workflowRun.id, principalId: workflowRun.principalId });
-    const principalIds = failedRuns.flatMap(({ principalId }) =>
-      principalId === null ? [] : [principalId],
-    );
-    if (principalIds.length > 0) {
-      await tx
-        .update(principal)
-        .set({ status: "deactivated", updatedAt: now })
-        .where(inArray(principal.id, principalIds));
-      await deleteRunTokensForPrincipals(tx, principalIds);
+      .returning({ id: workflowRun.id, tenantId: workflowRun.tenantId });
+    const [failedRun] = failedRuns;
+    if (failedRun !== undefined) {
+      await deactivateRunPrincipals(
+        tx,
+        failedRun.tenantId,
+        failedRuns.map(({ id }) => id),
+        now,
+      );
     }
     return failedRuns.map(({ id }) => id);
   }

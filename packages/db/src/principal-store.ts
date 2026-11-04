@@ -1,7 +1,10 @@
+import { and, eq, inArray, type SQL } from "drizzle-orm";
+
 import type { DB, DBExecutor } from "./client";
 import { principal } from "./schema/principals";
 import { parsePrincipalRow } from "./parse-row";
 import type { PrincipalKeyStore } from "./principal-key-store";
+import { deleteRunTokensForPrincipals } from "./run-token-store";
 
 type DBHandle = DB["db"];
 
@@ -88,3 +91,33 @@ export function createPrincipalStore(
 }
 
 export type PrincipalStore = ReturnType<typeof createPrincipalStore>;
+
+/**
+ * Deactivate the run principals of the given runs and delete their run
+ * tokens, in the caller's transaction. A run's principal is the
+ * `kind = 'workflow'` principal whose `refId` is the run id; a run with none
+ * (an internal, workflow-spawned run) is skipped.
+ */
+export async function deactivateRunPrincipals(
+  tx: DBExecutor,
+  tenantId: string,
+  runIds: readonly string[],
+  now: Date | SQL,
+): Promise<void> {
+  if (runIds.length === 0) return;
+  const deactivated = await tx
+    .update(principal)
+    .set({ status: "deactivated", updatedAt: now })
+    .where(
+      and(
+        eq(principal.tenantId, tenantId),
+        eq(principal.kind, "workflow"),
+        inArray(principal.refId, [...runIds]),
+      ),
+    )
+    .returning({ id: principal.id });
+  await deleteRunTokensForPrincipals(
+    tx,
+    deactivated.map((row) => row.id),
+  );
+}

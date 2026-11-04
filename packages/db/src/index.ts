@@ -33,7 +33,11 @@ export {
   resolveDeploymentLifecyclePolicy,
   validateLifecyclePolicyEdit,
 } from "./workflow-lifecycle-policy";
-export { createPrincipalStore, type PrincipalStore } from "./principal-store";
+export {
+  createPrincipalStore,
+  deactivateRunPrincipals,
+  type PrincipalStore,
+} from "./principal-store";
 export {
   createPrincipalKeyStore,
   type CreatePrincipalKeyStoreDeps,

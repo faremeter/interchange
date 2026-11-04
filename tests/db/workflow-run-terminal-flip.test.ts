@@ -454,7 +454,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("deactivates only the run's own principal, not a bystander", async () => {
       // The run's own principal, plus an unrelated bystander principal on the
       // same tenant. The flip must deactivate only the run's own principal
-      // (matched by `won.principalId`), leaving the bystander active. (The
+      // (matched by its run reference), leaving the bystander active. (The
       // bystander cannot share the run's refId: the principal table's
       // (tenantId, kind, refId) uniqueness forbids two workflow principals with
       // the same refId, so scoping is proven through the id match.)
@@ -493,15 +493,47 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(other?.status).toBe("active");
     });
 
+    test("deactivates a run principal that its run has not linked yet", async () => {
+      // The principal deploy creates for a run answers for it before the run's
+      // first trigger links it, so a run that ends unlinked loses it too.
+      await seedPrincipal(h.db, {
+        id: "prn-unlinked",
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: "run-unlinked",
+        status: "active",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run-unlinked",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        principalId: null,
+        status: "deployed",
+      });
+
+      await buildAndReceive("run-unlinked", "RunFailed");
+
+      const [run] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-unlinked"));
+      expect(run?.status).toBe("failed");
+      const [own] = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.id, "prn-unlinked"));
+      expect(own?.status).toBe("deactivated");
+    });
+
     test("an internal run with no principal is flipped and touches no principal", async () => {
-      // A second active principal on the tenant that shares the run's id as its
-      // refId, so a mis-scoped deactivation would visibly hit it. The internal
-      // run carries principalId = null, so nothing must be deactivated.
+      // An unrelated active workflow principal on the tenant, so a mis-scoped
+      // deactivation would visibly hit it. The internal run has no principal
+      // of its own, so nothing must be deactivated.
       await seedPrincipal(h.db, {
         id: "prn-bystander",
         tenantId: TENANT,
         kind: "workflow",
-        refId: "run-internal",
+        refId: "run-bystander",
         status: "active",
       });
       await seedWorkflowRun(h.db, {
@@ -520,8 +552,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(run?.status).toBe("completed");
       expect(run?.endedAt).not.toBeNull();
 
-      // The run had no principal of its own; the guarded flip won but the
-      // principal branch never ran, so the bystander stays active.
       const [bystander] = await h.db
         .select()
         .from(principal)
