@@ -519,6 +519,8 @@ export async function createHubServer({
   attachSidecarProvisioners({
     provisioners: [...sidecarProvisioners, ...probeSidecarProvisioners],
     retireProvisionerSidecar: sidecarAllocationStore.retireProvisionerSidecar,
+    retireIdleProvisionerSidecar:
+      sidecarAllocationStore.retireIdleProvisionerSidecar,
     isConnected: sidecarRouter.holdsAllocatedBinding,
   });
   sidecarRouter.events.on("sidecar.disconnect", async ({ allocated }) => {
