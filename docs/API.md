@@ -251,8 +251,10 @@ Body: CreateTenant
 ### GET /api/tenants/:tenantId
 Get tenant details
 
+Requires read on the tenant (`tenant:<id>` / `read`).
+
 200: TenantResponse -- Tenant details
-403: ErrorResponse -- Not an active member of this tenant
+403: ErrorResponse -- Not an active member of this tenant, or insufficient grants
 404: ErrorResponse -- Tenant not found
 409: ErrorResponse -- Stored tenant config is invalid
 

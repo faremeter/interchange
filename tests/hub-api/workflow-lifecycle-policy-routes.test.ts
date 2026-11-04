@@ -368,9 +368,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("reading a tenant reports its invalid stored config", async () => {
       await setTenantConfig(INVALID_LIFECYCLE);
-      const res = await makeApp(createInMemoryGrantStore([])).request(
-        `/api/tenants/${TENANT_ID}`,
-      );
+      const res = await makeApp(
+        createInMemoryGrantStore([allow(`tenant:${TENANT_ID}`, "read")]),
+      ).request(`/api/tenants/${TENANT_ID}`);
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({
         error: {
