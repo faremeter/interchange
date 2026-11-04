@@ -46,3 +46,24 @@ export const hostedSidecarAllocationStatuses = [
   "releasing",
   "destroy_failed",
 ] as const satisfies readonly SidecarAllocationStatus[];
+export type HostedSidecarAllocationStatus =
+  (typeof hostedSidecarAllocationStatuses)[number];
+
+/** Probe statuses with work on the sidecar the row names. */
+export const occupyingWorkflowProbeStatuses = [
+  "provisioning",
+  "probing",
+] as const;
+
+/** Probe statuses that name a sidecar; releasing ones no longer occupy it. */
+export const hostedWorkflowProbeStatuses = [
+  ...occupyingWorkflowProbeStatuses,
+  "releasing",
+] as const;
+export type HostedWorkflowProbeStatus =
+  (typeof hostedWorkflowProbeStatuses)[number];
+
+export type RetireIdleSidecarResult =
+  | { readonly kind: "retired" }
+  | { readonly kind: "in_use" }
+  | { readonly kind: "not_owned" };

@@ -26,6 +26,10 @@ function provisioner(
 
 const isConnected = () => false;
 
+const unusedHostCalls = {
+  retireIdleProvisionerSidecar: async () => ({ kind: "not_owned" as const }),
+};
+
 describe("attachSidecarProvisioners", () => {
   test("attaches a provisioner in both registries once and retires under its binding", async () => {
     const hosts: SidecarProvisionerHost[] = [];
@@ -37,6 +41,7 @@ describe("attachSidecarProvisioners", () => {
         retired.push(args);
         return { connectedAllocationIds: [] };
       },
+      ...unusedHostCalls,
       isConnected,
     });
 
@@ -70,6 +75,7 @@ describe("attachSidecarProvisioners", () => {
     attachSidecarProvisioners({
       provisioners: [provisioner("sandbox", hosts)],
       retireProvisionerSidecar: async () => null,
+      ...unusedHostCalls,
       isConnected,
     });
 
@@ -85,6 +91,7 @@ describe("attachSidecarProvisioners", () => {
       retireProvisionerSidecar: async () => {
         throw new Error("database unavailable");
       },
+      ...unusedHostCalls,
       isConnected,
     });
 
@@ -102,6 +109,7 @@ describe("attachSidecarProvisioners", () => {
         retired += 1;
         return { connectedAllocationIds: [] };
       },
+      ...unusedHostCalls,
       isConnected,
     });
     const host = hosts[0];
@@ -113,6 +121,53 @@ describe("attachSidecarProvisioners", () => {
     ).rejects.toThrow("invalid sidecarStopped report");
     await expect(host.sidecarStopped("")).rejects.toThrow(
       "invalid sidecarStopped report",
+    );
+    expect(retired).toBe(0);
+  });
+
+  test("retires an idle sidecar under the provisioner's own binding", async () => {
+    const hosts: SidecarProvisionerHost[] = [];
+    const retired: unknown[] = [];
+    attachSidecarProvisioners({
+      provisioners: [provisioner("sandbox", hosts)],
+      retireProvisionerSidecar: async () => null,
+      ...unusedHostCalls,
+      retireIdleProvisionerSidecar: async (args) => {
+        retired.push(args);
+        return { kind: "in_use" };
+      },
+      isConnected,
+    });
+
+    expect(await hosts[0]?.retireIfIdle("sc-busy")).toEqual({ kind: "in_use" });
+    expect(retired).toEqual([
+      {
+        sidecarId: "sc-busy",
+        binding: {
+          provisionerId: "sandbox",
+          provisionerApiVersion: 2,
+          provisionerBindingFingerprint: "sandbox:v1",
+        },
+      },
+    ]);
+  });
+
+  test("rejects retireIfIdle with an invalid id without retiring anything", async () => {
+    const hosts: SidecarProvisionerHost[] = [];
+    let retired = 0;
+    attachSidecarProvisioners({
+      provisioners: [provisioner("sandbox", hosts)],
+      retireProvisionerSidecar: async () => null,
+      ...unusedHostCalls,
+      retireIdleProvisionerSidecar: async () => {
+        retired += 1;
+        return { kind: "retired" };
+      },
+      isConnected,
+    });
+
+    await expect(hosts[0]?.retireIfIdle("")).rejects.toThrow(
+      "invalid retireIfIdle call",
     );
     expect(retired).toBe(0);
   });

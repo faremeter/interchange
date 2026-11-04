@@ -15,6 +15,7 @@ import {
 import {
   createSidecarAllocationStore,
   createWorkflowProbeStore,
+  type DBExecutor,
   SidecarReuseRejectedError,
   SidecarInventoryUnavailableError,
 } from "@intx/db";
@@ -110,12 +111,15 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
     });
   }
 
-  async function seedProbe(status: "provisioning" | "probing" | "releasing") {
+  async function seedProbe(
+    status: "provisioning" | "probing" | "releasing",
+    sidecarId = SHARED_SIDECAR_ID,
+  ) {
     await h.db.insert(workflowProbe).values({
       id: "probe-holder",
       tenantId: TENANT_ID,
       definitionAssetId: ASSET_ID,
-      sidecarId: SHARED_SIDECAR_ID,
+      sidecarId,
       source: { kind: "registry", registry: "npmjs" },
       entry: "./workflow.js",
       status,
@@ -129,6 +133,38 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
       ...BINDING,
       adapterManifestDigest: MANIFEST_DIGEST,
     });
+  }
+
+  async function adoptHolderProbe(tx: DBExecutor) {
+    const store = createSidecarAllocationStore(h.db, {
+      getSidecarInventory: () => ({
+        capacity: DEFAULT_SIDECAR_CAPACITY,
+        retainedIncarnations: [],
+      }),
+    });
+    const allocation = await store.createAdopted(
+      {
+        id: "probe-holder",
+        anchorRunId: "run-adopted",
+        tenantId: TENANT_ID,
+        sidecarId: SHARED_SIDECAR_ID,
+        generation: 1,
+        maxDisconnectedMs: 900_000,
+        connectDeadline: new Date(Date.now() + 60_000),
+        ...BINDING,
+        adapterManifestDigest: MANIFEST_DIGEST,
+      },
+      tx,
+    );
+    expect(
+      await createWorkflowProbeStore(h.db).transition(
+        "probe-holder",
+        ["probing"],
+        "succeeded",
+        { tx },
+      ),
+    ).not.toBeNull();
+    return allocation;
   }
 
   async function waitForBlocked(
@@ -468,6 +504,163 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
       }
     });
   }
+
+  for (const placementFirst of [true, false]) {
+    test(`retiring an idle sidecar serializes with a deployment placement (placement first: ${String(placementFirst)})`, async () => {
+      await seedAllocation("joining", "provisioning", "sidecar-offered");
+      const store = createSidecarAllocationStore(h.db, {
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
+      });
+      const place = () =>
+        store.markAllocated({
+          allocationId: "joining",
+          generation: 1,
+          sidecarId: SHARED_SIDECAR_ID,
+        });
+      const retire = () =>
+        store.retireIdleProvisionerSidecar({
+          sidecarId: SHARED_SIDECAR_ID,
+          binding: BINDING,
+        });
+      if (placementFirst) {
+        const [placed, retired] = await runInLockOrder(place, retire);
+        expect(placed).toMatchObject({
+          status: "fulfilled",
+          value: { status: "allocated", sidecarId: SHARED_SIDECAR_ID },
+        });
+        expect(retired).toMatchObject({
+          status: "fulfilled",
+          value: { kind: "in_use" },
+        });
+      } else {
+        const [retired, placed] = await runInLockOrder(retire, place);
+        expect(retired).toMatchObject({
+          status: "fulfilled",
+          value: { kind: "retired" },
+        });
+        expect(placed).toMatchObject({
+          status: "rejected",
+          reason: expect.any(SidecarReuseRejectedError),
+        });
+        expect(await store.findById("joining")).toMatchObject({
+          status: "provisioning",
+          sidecarId: "sidecar-offered",
+        });
+      }
+    });
+
+    test(`retiring an idle sidecar serializes with a probe placement (placement first: ${String(placementFirst)})`, async () => {
+      await seedProbe("provisioning", "sidecar-offered");
+      const store = createSidecarAllocationStore(h.db);
+      const probes = createWorkflowProbeStore(h.db);
+      const place = () =>
+        probes.markProbing({
+          probeId: "probe-holder",
+          sidecarId: SHARED_SIDECAR_ID,
+        });
+      const retire = () =>
+        store.retireIdleProvisionerSidecar({
+          sidecarId: SHARED_SIDECAR_ID,
+          binding: BINDING,
+        });
+      if (placementFirst) {
+        const [placed, retired] = await runInLockOrder(place, retire);
+        expect(placed).toMatchObject({
+          status: "fulfilled",
+          value: { status: "probing", sidecarId: SHARED_SIDECAR_ID },
+        });
+        expect(retired).toMatchObject({
+          status: "fulfilled",
+          value: { kind: "in_use" },
+        });
+      } else {
+        const [retired, placed] = await runInLockOrder(retire, place);
+        expect(retired).toMatchObject({
+          status: "fulfilled",
+          value: { kind: "retired" },
+        });
+        expect(placed).toMatchObject({
+          status: "rejected",
+          reason: expect.any(SidecarReuseRejectedError),
+        });
+      }
+    });
+  }
+
+  for (const placementFirst of [true, false]) {
+    test(`retiring from the last destroy serializes with a placement (placement first: ${String(placementFirst)})`, async () => {
+      await seedAllocation("leaving", "releasing");
+      await h.db
+        .update(sidecarAllocation)
+        .set({ deploymentCleanupConfirmed: true })
+        .where(eq(sidecarAllocation.id, "leaving"));
+      await seedAllocation("joining", "provisioning", "sidecar-offered");
+      const store = createSidecarAllocationStore(h.db, {
+        getSidecarInventory: () => ({
+          capacity: DEFAULT_SIDECAR_CAPACITY,
+          retainedIncarnations: [],
+        }),
+      });
+      const place = () =>
+        store.markAllocated({
+          allocationId: "joining",
+          generation: 1,
+          sidecarId: SHARED_SIDECAR_ID,
+        });
+      const retire = () =>
+        store.retireIdleProvisionerSidecar({
+          sidecarId: SHARED_SIDECAR_ID,
+          binding: BINDING,
+        });
+      if (placementFirst) {
+        const [placed, retired] = await runInLockOrder(place, retire);
+        expect(placed).toMatchObject({ status: "fulfilled" });
+        expect(retired).toMatchObject({
+          status: "fulfilled",
+          value: { kind: "in_use" },
+        });
+      } else {
+        const [retired, placed] = await runInLockOrder(retire, place);
+        expect(retired).toMatchObject({
+          status: "fulfilled",
+          value: { kind: "retired" },
+        });
+        expect(placed).toMatchObject({
+          status: "rejected",
+          reason: expect.any(SidecarReuseRejectedError),
+        });
+      }
+    });
+  }
+
+  test("retiring an idle sidecar sees a probe adoption it waited for", async () => {
+    await seedProbe("probing");
+    await seedWorkflowRun(h.db, {
+      id: "run-adopted",
+      anchorRunId: "run-adopted",
+      tenantId: TENANT_ID,
+    });
+    const store = createSidecarAllocationStore(h.db);
+    const [adopted, retired] = await runInLockOrder(
+      () => h.db.transaction((tx) => adoptHolderProbe(tx)),
+      () =>
+        store.retireIdleProvisionerSidecar({
+          sidecarId: SHARED_SIDECAR_ID,
+          binding: BINDING,
+        }),
+    );
+    expect(adopted).toMatchObject({
+      status: "fulfilled",
+      value: { status: "allocated", sidecarId: SHARED_SIDECAR_ID },
+    });
+    expect(retired).toMatchObject({
+      status: "fulfilled",
+      value: { kind: "in_use" },
+    });
+  });
 
   for (const placementFirst of [true, false]) {
     test(`probe completion serializes with placement (placement first: ${String(placementFirst)})`, async () => {

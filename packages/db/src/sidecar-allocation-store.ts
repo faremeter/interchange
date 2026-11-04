@@ -16,6 +16,7 @@ import {
 
 import {
   sidecarAllocationStatuses,
+  type RetireIdleSidecarResult,
   type SidecarAllocationStatus,
 } from "@intx/types";
 
@@ -34,6 +35,7 @@ import {
   type AllocationConnectionCheck,
   lockSidecars,
   type ProvisionerSidecarRetirement,
+  retireIdleProvisionerSidecar,
   retireProvisionerSidecar,
   retireSidecar,
   type SidecarAllocationStoreOptions,
@@ -1416,6 +1418,21 @@ function buildSidecarAllocationStore(
           binding: args.binding,
           endReconnectWindow: args.endReconnectWindow,
           isConnected: args.isConnected,
+          now: databaseTimestamp(args.now),
+        }),
+      );
+    },
+
+    /** See `retireIdleProvisionerSidecar`. */
+    async retireIdleProvisionerSidecar(args: {
+      readonly sidecarId: string;
+      readonly binding: SidecarProvisionerBinding;
+      readonly now?: Date;
+    }): Promise<RetireIdleSidecarResult> {
+      return db.transaction((tx) =>
+        retireIdleProvisionerSidecar(tx, {
+          sidecarId: args.sidecarId,
+          binding: args.binding,
           now: databaseTimestamp(args.now),
         }),
       );
