@@ -7,13 +7,20 @@ import {
   test,
 } from "bun:test";
 import { Hono } from "hono";
+import { every } from "hono/combine";
+import { createMiddleware } from "hono/factory";
 
 import { createInMemoryGrantStore, toolConsumerEvaluator } from "@intx/authz";
 import { configureSync, getConfig } from "@intx/log";
 import type { GrantRule, GrantStore } from "@intx/types/authz";
 
 import type { PrincipalRow, TenantEnv, TenantRow } from "../context";
-import { createAuthorizeGrant, createRequireGrant } from "./grant";
+import {
+  createAuthorizeGrant,
+  createRequireGrant,
+  idResource,
+  isGrantCheck,
+} from "./grant";
 
 const PRINCIPAL_ID = "prn_caller";
 const TENANT_ID = "tnt_a";
@@ -261,5 +268,40 @@ describe("createRequireGrant with a consumer", () => {
   test("a grant with no conditions allows every consumer", async () => {
     const app = appWith([scopedGrant(null)], "action:a");
     expect((await app.request("/")).status).toBe(200);
+  });
+});
+
+describe("isGrantCheck", () => {
+  const requireGrant = createRequireGrant({
+    grantStore: createInMemoryGrantStore([]),
+    conditionRegistry: {},
+  });
+
+  test("recognizes a check for a fixed resource", () => {
+    expect(isGrantCheck(requireGrant("widget:*", "read"))).toBe(true);
+  });
+
+  test("recognizes a check for a resource read from the URL", () => {
+    expect(isGrantCheck(requireGrant(idResource("widget", "id"), "read"))).toBe(
+      true,
+    );
+  });
+
+  test("recognizes a check from any requireGrant factory", () => {
+    const other = createRequireGrant({
+      grantStore: createInMemoryGrantStore([]),
+      conditionRegistry: {},
+    });
+    expect(isGrantCheck(other("widget:*", "read"))).toBe(true);
+  });
+
+  test("does not recognize other middleware", () => {
+    expect(isGrantCheck(createMiddleware(async (_c, next) => next()))).toBe(
+      false,
+    );
+  });
+
+  test("does not recognize a wrapper around a grant check", () => {
+    expect(isGrantCheck(every(requireGrant("widget:*", "read")))).toBe(false);
   });
 });
