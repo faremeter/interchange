@@ -34,6 +34,7 @@ import {
   seedAsset,
   seedGrant,
   seedPrincipal,
+  seedRunPrincipalKey,
   seedWorkflowRun,
   seedWorkflowRunLaunchSpec,
 } from "@intx/test-harness/seed";
@@ -342,10 +343,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       // The deploy ack recorded the anchor's initialization.
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: "ab".repeat(32) })
-        .where(eq(workflowRun.id, ANCHOR));
+      await seedRunPrincipalKey(h.db, tenantId, ANCHOR, "ab".repeat(32));
 
       await trigger(app, tenantId);
 

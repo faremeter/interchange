@@ -91,6 +91,7 @@ import {
   seedGrant,
   seedPrincipal,
   seedPrincipalKey,
+  seedRunPrincipalKey,
   seedWorkflowRunLaunchSpec,
   tenantSlugFromId,
 } from "@intx/test-harness/seed";
@@ -361,11 +362,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address,
         // The deploy-time birth state; the first mail trigger flips it running.
         status: "deployed",
-        // A recorded key with no credential refs is a finished initialization
-        // that delivered nothing. The first grant commit refuses an anchor
-        // that has recorded neither.
-        publicKey: "test-public-key",
       });
+      // A recorded key with no credential refs is a finished initialization
+      // that delivered nothing. The first grant commit refuses an anchor that
+      // has recorded neither.
+      await seedRunPrincipalKey(
+        h.db,
+        TENANT_ID,
+        opts.anchorRunId,
+        `key-${opts.anchorRunId}`,
+      );
       // Freeze the deploy-approved grant-walk snapshot into the deployment's
       // launch spec: the trigger route materializes the run's grants from it,
       // including the creator-sourced requirement resolved against the asset
@@ -505,8 +511,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const body = ErrorBody.assert(await res.json());
       expect(body.error.code).toBe("insufficient_grants");
 
-      // Nothing committed: no run principal, no run row, no grant rows on a
-      // run principal. The route rejects before `commitRunGrants` runs.
+      // Nothing committed: the run principal deploy created stays unlinked and
+      // holds no grant rows, and no run row exists. The route rejects before
+      // `commitRunGrants` runs.
       const runPrincipals = await h.db
         .select()
         .from(principalTable)
@@ -516,7 +523,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
             eq(principalTable.kind, "workflow"),
           ),
         );
-      expect(runPrincipals).toHaveLength(0);
+      expect(runPrincipals.map((p) => p.refId)).toEqual([anchorRunId]);
+      const [anchor] = await h.db
+        .select({ principalId: workflowRunTable.principalId })
+        .from(workflowRunTable)
+        .where(eq(workflowRunTable.id, anchorRunId));
+      expect(anchor?.principalId).toBeNull();
+      const runPrincipalGrants = await h.db
+        .select()
+        .from(grantTable)
+        .where(eq(grantTable.principalId, runPrincipals[0]?.id ?? ""));
+      expect(runPrincipalGrants).toHaveLength(0);
 
       // Only the deployment's seeded anchor run (id == anchorRunId) exists;
       // the rejected trigger committed no child run of its own.

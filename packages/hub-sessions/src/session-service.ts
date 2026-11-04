@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, not } from "drizzle-orm";
 
 import { getLogger } from "@intx/log";
 import {
@@ -7,7 +7,9 @@ import {
   createWorkflowDefinitionArtifactStore,
   deactivateRunPrincipals,
   insertRunPrincipal,
+  loadRunPrincipalActiveKey,
   recordRunPrincipalKey,
+  runPrincipalHasActiveKey,
   resolveInferenceMaterials,
   type DB,
   type SidecarAllocation,
@@ -943,7 +945,12 @@ export async function deployCodeSourcedWorkflow(
               eq(workflowRunTable.anchorRunId, args.anchorRunId),
               eq(workflowRunTable.tenantId, args.tenantId),
               eq(workflowRunTable.status, "deployed"),
-              isNull(workflowRunTable.publicKey),
+              not(
+                runPrincipalHasActiveKey(
+                  workflowRunTable.tenantId,
+                  workflowRunTable.id,
+                ),
+              ),
             ),
           )
           .returning({ id: workflowRunTable.id });
@@ -982,7 +989,12 @@ export async function deployCodeSourcedWorkflow(
             eq(workflowRunTable.anchorRunId, args.anchorRunId),
             eq(workflowRunTable.tenantId, args.tenantId),
             eq(workflowRunTable.status, "deployed"),
-            isNull(workflowRunTable.publicKey),
+            not(
+              runPrincipalHasActiveKey(
+                workflowRunTable.tenantId,
+                workflowRunTable.id,
+              ),
+            ),
           ),
         )
         .returning({ id: workflowRunTable.id });
@@ -1062,15 +1074,16 @@ export async function recoverSenderDeploy(args: {
   // Claiming the lease prevents the previous attempt from publishing. Its
   // marker and key now distinguish a committed initialization from failure,
   // even before the worker reconnects or the old response arrives.
-  const anchor = await args.db.query.workflowRun.findFirst({
-    where: eq(workflowRunTable.id, allocation.anchorRunId),
-    columns: { publicKey: true },
-  });
+  const publicKey = await loadRunPrincipalActiveKey(
+    args.db,
+    allocation.tenantId,
+    allocation.anchorRunId,
+  );
   reconciliation.signal.throwIfAborted();
   args.sidecarRouter.noteSenderDeploySettled(
     { allocationId: allocation.id, generation: allocation.generation },
-    anchor !== undefined && anchor.publicKey !== null
-      ? { recorded: anchor.publicKey }
+    publicKey !== null
+      ? { recorded: publicKey }
       : { failed: "Previous deployment initialization did not complete" },
   );
 }

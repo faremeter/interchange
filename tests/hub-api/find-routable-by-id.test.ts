@@ -12,8 +12,10 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
+import { retireRunPrincipalKey } from "@intx/db";
 import {
   seedPrincipal,
+  seedRunPrincipalKey,
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
@@ -68,6 +70,30 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     expect(record?.status).toBe("running");
     // A run has no updatedAt column; a live run reports createdAt.
     expect(record?.updatedAt).toEqual(new Date("2026-01-01T00:00:00Z"));
+  });
+
+  test("reports the active key of the run's principal", async () => {
+    await seedBase();
+    await seedWorkflowRun(h.db, {
+      id: "run_keyed",
+      tenantId: "tnt_root",
+      anchorRunId: "run_keyed",
+      address: "run_keyed@root.example",
+    });
+    expect(
+      (await findRoutableById(h.db, "run_keyed", "tnt_root"))?.publicKey,
+    ).toBeNull();
+
+    await seedRunPrincipalKey(h.db, "tnt_root", "run_keyed", "aa".repeat(32));
+    expect(
+      (await findRoutableById(h.db, "run_keyed", "tnt_root"))?.publicKey,
+    ).toBe("aa".repeat(32));
+
+    // A sidecar replacement retires the key.
+    await retireRunPrincipalKey(h.db, "tnt_root", "run_keyed");
+    expect(
+      (await findRoutableById(h.db, "run_keyed", "tnt_root"))?.publicKey,
+    ).toBeNull();
   });
 
   test("a terminal run reports endedAt as its updatedAt", async () => {

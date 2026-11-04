@@ -193,10 +193,11 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     // and its From address (`${principal.refId}@${tenant.domain}`) must resolve
     // back to that same key when the signature is verified. Only a user
     // principal's address resolves to its hub principal key; a run principal's
-    // address resolves to the sidecar-minted `workflow_run.public_key`, and an
-    // agent principal's address has no resolution surface, so signing here as a
-    // non-user principal would guarantee a verification mismatch. The route
-    // layer only ever admits user principals to this path, so this is an
+    // address resolves to the sidecar-minted key the hub holds only the public
+    // half of, and an agent principal's address has no resolution surface, so
+    // signing here as a non-user principal would guarantee a verification
+    // mismatch. The route layer only ever admits user principals to this path,
+    // so this is an
     // invariant assertion, not a client-facing rejection: fail loud if a wiring
     // change ever lets another kind through, rather than silently emitting mail
     // that verification cannot resolve. Revisit this fence if the resolver

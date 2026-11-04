@@ -403,8 +403,8 @@ describe("SenderKeyCache", () => {
     await cache.put("run_job1@tenant.example", makeKey(9));
     await cache.put("usr_bob@tenant.example", makeKey(13));
 
-    // A run sender's key is the immutable workflow_run.public_key, so only the
-    // user senders are worth re-resolving on reconnect.
+    // A run sender's current key arrives with its next mail, so only the user
+    // senders are worth re-resolving on reconnect.
     expect([...cache.rotatableAddresses()].sort()).toEqual([
       "usr_alice@tenant.example",
       "usr_bob@tenant.example",

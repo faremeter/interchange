@@ -6,6 +6,10 @@ import { getLogger } from "@intx/log";
 
 import type { DBExecutor } from "./client";
 import type { PrincipalKeyStore } from "./principal-key-store";
+import {
+  loadRunPrincipalActiveKey,
+  runPrincipalHasActiveKey,
+} from "./run-principal-key";
 import { principal } from "./schema/principals";
 import { tenant } from "./schema/tenants";
 import { workflowDefinition } from "./schema/workflow-definitions";
@@ -31,9 +35,10 @@ const logger = getLogger(["db", "sender-key-resolver"]);
  * renders these ids as the `MailAcceptCoordinate` set the gate compares against
  * with no translation.
  *
- * A run's `principalId` is nullable: a deployment anchor holds a signing key
- * (recorded at deploy ack) before its first trigger links its run principal
- * to the anchor, so a run that CAN sign mail may not yet carry a principal.
+ * A run's `principalId` is nullable: a deployment's run principal holds its
+ * signing key (recorded when its initialization completes) before the first
+ * trigger links that principal to the anchor, so a run that CAN sign mail may
+ * not yet carry a principal link.
  * The key still resolves for signature checks; `senderCoordinates` returns `null` for
  * such a sender, which the admission gate treats as the `unknown` outcome. A
  * user sender always resolves to a concrete principal, so its `principalId` is
@@ -89,8 +94,9 @@ export function senderCoordinates(
 /**
  * Resolve the durable public key a signed mail sender must verify against, plus
  * the sender's admission coordinates, unioning the two existing durable-key
- * sources: a run address (`run_<id>@<domain>`) resolves to the run's
- * `workflow_run.public_key` and its `(principal, asset, tenant)` ids; any
+ * sources: a run address (`run_<id>@<domain>`) resolves to the active key of
+ * the run's principal, which the sidecar running the deployment minted, and
+ * its `(principal, asset, tenant)` ids; any
  * other address (`<refId>@<domain>`) is treated as a user sender and resolves
  * to that principal's hub-custodied key and its `(principal, tenant)` ids. The
  * sender is identified only from the passed address; the MIME `From` is never
@@ -136,16 +142,19 @@ export async function resolveSenderKey(
   const { localPart, domain } = parsed;
 
   if (localPart.startsWith(RUN_PREFIX)) {
-    // A run sender resolves to the sidecar-minted key the hub recorded on the
-    // deployment anchor when the deployment's initialization completed.
-    // `workflow_run.address` is unique among the runs that set it, so there is
-    // at most one row. A row whose `public_key` is still null is a deployment
-    // whose initialization has not completed -- an expected state -- so it
-    // resolves to nothing rather than erroring,
-    // unlike the keyless-principal invariant break below.
+    // A run sender resolves to the sidecar-minted key the hub recorded as the
+    // active key of the run's principal when the deployment's initialization
+    // completed. `workflow_run.address` is unique among the runs that set it,
+    // so there is at most one row. A run whose principal holds no active key
+    // has not finished initializing, or its sidecar was replaced and the
+    // replacement has not recorded a key yet -- an expected state -- so it
+    // resolves to nothing rather than erroring, unlike the keyless-principal
+    // invariant break below. A retired key no longer resolves, so the hub
+    // vouches for no key for mail its replaced sidecar signed. The principal's
+    // status is not read: a terminal run's in-flight mail still verifies.
     const [row] = await db
       .select({
-        publicKey: workflowRun.publicKey,
+        id: workflowRun.id,
         principalId: workflowRun.principalId,
         assetId: workflowDefinition.assetId,
         tenantId: workflowRun.tenantId,
@@ -157,7 +166,9 @@ export async function resolveSenderKey(
       )
       .where(eq(sql`lower(${workflowRun.address})`, normalized))
       .limit(1);
-    if (row === undefined || row.publicKey === null) return null;
+    if (row === undefined) return null;
+    const publicKey = await loadRunPrincipalActiveKey(db, row.tenantId, row.id);
+    if (publicKey === null) return null;
     // `principalId` may be null: an acked anchor holds a signing key before its
     // first trigger links its run principal, so it CAN sign yet has no linked
     // principal. The key still resolves (the send path is unaffected);
@@ -166,7 +177,7 @@ export async function resolveSenderKey(
     // has no asset.
     return {
       source: "run",
-      publicKey: row.publicKey,
+      publicKey,
       principalId: row.principalId,
       assetId: row.assetId,
       tenantId: row.tenantId,
@@ -212,8 +223,9 @@ export type ResolvedSenderPrincipal = {
  * principal, tenant, and admission coordinates carry through.
  *
  * Returns `null` when there is no durable identity to bind: an unresolvable
- * address, or a principal-less run (an acked anchor before its first trigger
- * links its principal, for which `senderCoordinates` returns `null`). A `null`
+ * address, or a run with no principal link (an initialized anchor before its
+ * first trigger links its run principal, for which `senderCoordinates`
+ * returns `null`). A `null`
  * leaves the sender unadmitted rather than admitting a partial identity. The
  * strict resolver's throw on an ambiguous address or a keyless-principal
  * invariant break is preserved for the caller to catch, so a fault never
@@ -375,7 +387,10 @@ export async function auditSenderKeys(
         // or was cancelled before ack (address set, key null, never signed).
         // Match "running" literally, NOT isLiveWorkflowRunStatus, which also
         // admits "deployed" and would re-open the pre-ack false positive.
-        or(isNotNull(workflowRun.publicKey), eq(workflowRun.status, "running")),
+        or(
+          runPrincipalHasActiveKey(workflowRun.tenantId, workflowRun.id),
+          eq(workflowRun.status, "running"),
+        ),
       ),
     );
   for (const run of runs) {

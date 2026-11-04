@@ -468,7 +468,7 @@ describe("SidecarRouter allocation routing", () => {
     );
     // The run address is filtered before resolution; only the user sender is
     // resolved and refreshed. The run address is never resolved and thus never
-    // evicted -- its key is the immutable workflow_run.public_key.
+    // evicted -- its key reaches a receiver with its next mail.
     expect(resolved).toEqual(["usr_bob@exclusive"]);
     const reconciled = ws.sent
       .map((raw): Record<string, unknown> => JSON.parse(raw))

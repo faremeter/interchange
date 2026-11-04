@@ -22,8 +22,10 @@ import {
 import type { DB, DBExecutor } from "./client";
 import { deactivateRunPrincipals } from "./principal-store";
 import {
+  loadRunPrincipalActiveKey,
   recordRunPrincipalKey,
   retireRunPrincipalKey,
+  runPrincipalHasActiveKey,
 } from "./run-principal-key";
 import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
 import {
@@ -443,7 +445,7 @@ function reconnectDeadline(
   args: MarkSidecarConnectionLostArgs,
   beforeFirstDeploy: SQL,
 ) {
-  return sql`case when exists (select 1 from ${sidecar} where ${sidecar.id} = ${sidecarAllocation.sidecarId} and ${sidecar.reconnectWindowEndedAt} is not null) then ${deadlineTimestamp(args.now)} when exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then ${disconnectDeadline(args.now)} else ${beforeFirstDeploy} end`;
+  return sql`case when exists (select 1 from ${sidecar} where ${sidecar.id} = ${sidecarAllocation.sidecarId} and ${sidecar.reconnectWindowEndedAt} is not null) then ${deadlineTimestamp(args.now)} when ${runPrincipalHasActiveKey(sidecarAllocation.tenantId, sidecarAllocation.anchorRunId)} then ${disconnectDeadline(args.now)} else ${beforeFirstDeploy} end`;
 }
 
 function firstConnectDeadline(args: MarkSidecarConnectionLostArgs) {
@@ -620,6 +622,7 @@ function buildSidecarAllocationStore(
   ): Promise<boolean> {
     const [allocation] = await tx
       .select({
+        tenantId: sidecarAllocation.tenantId,
         anchorRunId: sidecarAllocation.anchorRunId,
         initializationLeaseId: sidecarAllocation.initializationLeaseId,
       })
@@ -636,11 +639,13 @@ function buildSidecarAllocationStore(
       return false;
     // Read the key after acquiring the allocation lock, so a completion that
     // committed while we waited is visible even if its response was lost.
-    const [anchor] = await tx
-      .select({ publicKey: workflowRun.publicKey })
-      .from(workflowRun)
-      .where(eq(workflowRun.id, allocation.anchorRunId));
-    return anchor !== undefined && anchor.publicKey !== null;
+    return (
+      (await loadRunPrincipalActiveKey(
+        tx,
+        allocation.tenantId,
+        allocation.anchorRunId,
+      )) !== null
+    );
   }
 
   async function insertSidecarIdentity(
@@ -840,7 +845,7 @@ function buildSidecarAllocationStore(
         // Preserve the disconnect window for an initialized deployment or
         // replacement cleanup, which has already cleared the anchor's key.
         // A first-connect deadline does not bound subsequent cleanup waiting.
-        connectDeadline: sql`case when ${sidecarAllocation.status} = 'replacing' or exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then ${sidecarAllocation.connectDeadline} else null end`,
+        connectDeadline: sql`case when ${sidecarAllocation.status} = 'replacing' or ${runPrincipalHasActiveKey(sidecarAllocation.tenantId, sidecarAllocation.anchorRunId)} then ${sidecarAllocation.connectDeadline} else null end`,
         // Placement and initialization retry diagnostics are not release causes.
         // Preserve a recorded workflow failure, or the reason supplied by release.
         failureCode:
@@ -2273,7 +2278,7 @@ function buildSidecarAllocationStore(
           // completes; repeated hellos must not extend initialization forever.
           ...(connected
             ? {
-                connectDeadline: sql`case when ${sidecarAllocation.status} in ('releasing', 'replacing') or exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then null else ${sidecarAllocation.connectDeadline} end`,
+                connectDeadline: sql`case when ${sidecarAllocation.status} in ('releasing', 'replacing') or ${runPrincipalHasActiveKey(sidecarAllocation.tenantId, sidecarAllocation.anchorRunId)} then null else ${sidecarAllocation.connectDeadline} end`,
               }
             : {}),
         })

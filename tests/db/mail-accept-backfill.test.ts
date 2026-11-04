@@ -50,6 +50,7 @@ import { REPO_ROOT } from "@intx/test-harness/env";
 import {
   seedAsset,
   seedPrincipal,
+  seedRunPrincipalKey,
   seedTenants,
   seedWorkflowRunLaunchSpec,
 } from "@intx/test-harness/seed";
@@ -250,7 +251,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           definitionId: MAIL_DEFINITION,
           address: WORKFLOW_ADDRESS,
           status: "running",
-          publicKey: "test-public-key",
         },
         {
           id: SENDING_DEPLOYMENT,
@@ -259,7 +259,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           definitionId: SENDING_DEFINITION,
           address: SENDING_ADDRESS,
           status: "deployed",
-          publicKey: "test-public-key",
         },
         {
           id: MANUAL_DEPLOYMENT,
@@ -268,7 +267,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           definitionId: MANUAL_DEFINITION,
           address: "run_manual@tenant.example",
           status: "deployed",
-          publicKey: "test-public-key",
         },
       ]);
       for (const [anchorRunId, grantSnapshot] of [
@@ -283,6 +281,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       }
     });
+
+    // Record the deployment's key, as its completed first deploy does, so its
+    // first mail can fire it. Only a test that fires the deployment calls
+    // this: the run principal it creates did not exist when the backfill
+    // shipped, and the backfill would give it an accept row.
+    async function initializeDeployment(): Promise<void> {
+      await seedRunPrincipalKey(h.db, TENANT, DEPLOYMENT, "deployment-key");
+    }
 
     async function runBackfill(): Promise<void> {
       for (const statement of BACKFILL_DATA_STATEMENTS) {
@@ -347,7 +353,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionId: args.definitionId ?? MAIL_DEFINITION,
         status: args.status,
         principalId: args.principalId,
-        publicKey: "test-public-key",
       });
     }
 
@@ -490,8 +495,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionId: WAITING_DEFINITION,
         address: "run_waiting@tenant.example",
         status: "deployed",
-        publicKey: "test-public-key",
       });
+      await seedRunPrincipalKey(
+        h.db,
+        TENANT,
+        WAITING_DEPLOYMENT,
+        "waiting-key",
+      );
       await seedWorkflowRunLaunchSpec(h.db, {
         anchorRunId: WAITING_DEPLOYMENT,
         sourceAuthorityPrincipalId: CREATOR,
@@ -611,6 +621,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("after the backfill a deployment that has not fired admits its first mail from its deployer", async () => {
+      await initializeDeployment();
       const firstRun = "<mail-run-first@tenant.example>";
       const before = await materialize(firstRun, DEPLOYER_SENDER);
       expect(before.outcome).toBe("rejected");
@@ -644,6 +655,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("a new deployment of the same definition keeps the older deployment's rule and refuses by default", async () => {
+      await initializeDeployment();
       await runBackfill();
 
       // A new deployment of the unchanged definition: a new anchor, a new
@@ -657,8 +669,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionId: MAIL_DEFINITION,
         address: "run_mail_new@tenant.example",
         status: "deployed",
-        publicKey: "test-public-key",
       });
+      await seedRunPrincipalKey(h.db, TENANT, "run_mail_new", "mail-new-key");
       await seedWorkflowRunLaunchSpec(h.db, {
         anchorRunId: "run_mail_new",
         sourceAuthorityPrincipalId: CREATOR,
@@ -701,6 +713,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           .update(workflowRun)
           .set({ principalId: SENDER_PRINCIPAL, status: "running" })
           .where(eq(workflowRun.id, SENDING_DEPLOYMENT));
+        await seedRunPrincipalKey(
+          h.db,
+          TENANT,
+          SENDING_DEPLOYMENT,
+          "sending-key",
+        );
         // A recipient that resolves to a durable principal.
         await seedPrincipal(h.db, {
           id: RECIPIENT_PRINCIPAL,
@@ -716,8 +734,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           address: RECIPIENT_ADDRESS,
           status: "running",
           principalId: RECIPIENT_PRINCIPAL,
-          publicKey: "ab".repeat(32),
         });
+        await seedRunPrincipalKey(
+          h.db,
+          TENANT,
+          RECIPIENT_RUN_ID,
+          "ab".repeat(32),
+        );
       });
 
       async function mintAndCount(): Promise<number> {

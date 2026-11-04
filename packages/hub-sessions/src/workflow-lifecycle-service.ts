@@ -22,6 +22,7 @@ import {
   createWorkflowRunStore,
   createWorkflowRunDispatchStore,
   parseWorkflowRunRow,
+  runPrincipalHasActiveKey,
   workflowCapacityReleaseAt,
   SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
   SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
@@ -744,7 +745,7 @@ export function createWorkflowLifecycleService({
           eq(workflowRun.id, runId),
           eq(workflowRun.tenantId, tenantId),
           notInArray(workflowRun.status, [...liveWorkflowRunStatuses]),
-          isNotNull(workflowRun.publicKey),
+          runPrincipalHasActiveKey(workflowRun.tenantId, workflowRun.id),
           eq(sidecarAllocation.status, "allocated"),
           eq(
             sidecarAllocation.ensureAcceptedGeneration,
@@ -1141,7 +1142,7 @@ export function createLifecycleSweepQueries(
           sidecarAllocation.anchorRunId,
           and(
             notInArray(workflowRun.status, [...liveWorkflowRunStatuses]),
-            isNotNull(workflowRun.publicKey),
+            runPrincipalHasActiveKey(workflowRun.tenantId, workflowRun.id),
             // Undated policies go through releaseDue, which derives the deadline.
             or(
               gt(

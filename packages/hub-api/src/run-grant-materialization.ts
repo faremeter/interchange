@@ -45,6 +45,7 @@ import type {
 import {
   createWorkflowRunStore,
   insertRunPrincipal,
+  loadRunPrincipalActiveKey,
   workflowRunExecutability,
   loadDeploymentGrantSnapshot,
   resolveSenderPrincipal,
@@ -151,19 +152,20 @@ export function credentialUseBindings(
 
 /**
  * Credential resolution is unrecorded while initialization has not published
- * it. That is an anchor with neither a public key nor credential refs, or an
- * anchor whose allocation holds an initialization lease. The lease means a
- * deploy has cleared the key and the refs still on the row are the previous
- * attempt's. A key with null refs and no lease means initialization finished
- * and there was no delivery.
+ * it. That is a deployment that has neither finished initializing (its run
+ * principal holds no key) nor recorded credential refs, or one whose
+ * allocation holds an initialization lease. The lease means a deploy has
+ * retired the key and the refs still on the row are the previous attempt's.
+ * A finished initialization with null refs and no lease means there was no
+ * delivery.
  */
 export function credentialResolutionUnrecorded(resolution: {
   credentialRefs: WorkflowRunCredentialRefs | null;
-  publicKey: string | null;
+  initialized: boolean;
   initializationLeaseId: string | null;
 }): boolean {
   if (resolution.initializationLeaseId !== null) return true;
-  return resolution.credentialRefs === null && resolution.publicKey === null;
+  return resolution.credentialRefs === null && !resolution.initialized;
 }
 
 /**
@@ -176,17 +178,18 @@ export async function lockAnchorCredentialResolution(
   anchorRunId: string,
 ): Promise<{
   credentialRefs: WorkflowRunCredentialRefs | null;
-  publicKey: string | null;
+  initialized: boolean;
   initializationLeaseId: string | null;
 } | null> {
   // Lock the anchor only. The allocation lease is read afterwards and is not
   // locked: beginInitialization takes the allocation lock before the anchor,
-  // so locking it here would deadlock. The lease and the key are written in
-  // that same transaction, which cannot commit while this one holds the anchor.
+  // so locking it here would deadlock. The lease and the run principal's key
+  // are written in a transaction that holds the anchor lock, which cannot
+  // commit while this one holds the anchor.
   const [run] = await tx
     .select({
+      tenantId: workflowRun.tenantId,
       credentialRefs: workflowRun.credentialRefs,
-      publicKey: workflowRun.publicKey,
     })
     .from(workflowRun)
     .where(
@@ -207,7 +210,8 @@ export async function lockAnchorCredentialResolution(
     .limit(1);
   return {
     credentialRefs: run.credentialRefs,
-    publicKey: run.publicKey,
+    initialized:
+      (await loadRunPrincipalActiveKey(tx, run.tenantId, anchorRunId)) !== null,
     initializationLeaseId:
       allocation === undefined ? null : allocation.initializationLeaseId,
   };
@@ -222,7 +226,7 @@ export function grantRowsWithLockedCredentialResolution(
   rows: readonly MaterializedGrantRow[],
   resolution: {
     credentialRefs: WorkflowRunCredentialRefs | null;
-    publicKey: string | null;
+    initialized: boolean;
     initializationLeaseId: string | null;
   },
   args: {
@@ -1610,7 +1614,7 @@ const correspondentLogger = getLogger(["hub-api", "correspondent-grant"]);
  * durable identity resolves through the same `resolveSenderPrincipal` the reply
  * resolves through. A local deployment that `resolveSenderPrincipal` cannot
  * resolve -- one that has not fired yet (the first fire links its principal to
- * the anchor), or one whose signing key is cleared while its sidecar is
+ * the anchor), or one whose signing key is retired while its sidecar is
  * replaced -- resolves from its anchor row instead: the linked principal when
  * there is one, else `deriveRunPrincipalId(tenantId, runId)` with the runId
  * taken from the deployment address. Deploy creates the run principal with

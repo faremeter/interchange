@@ -67,7 +67,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: "prn_run",
         address: "run_folded@root.example",
         status: "running",
-        publicKey: "pk-run",
       });
 
       const endpoint = await resolveRoutableAddress(
@@ -76,7 +75,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(endpoint?.id).toBe("run_folded");
       expect(endpoint?.tenantId).toBe("tnt_root");
-      expect(endpoint?.publicKey).toBe("pk-run");
       expect(endpoint?.sessionId).toBe("ses_r");
     });
 

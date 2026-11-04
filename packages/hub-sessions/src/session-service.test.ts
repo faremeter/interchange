@@ -509,6 +509,22 @@ describe("deployCodeSourcedWorkflow", () => {
       insert: inner.insert ?? (() => ({ values: async () => undefined })),
     };
   }
+  // The read of the active key of an anchor's run principal:
+  // select().from(principal).innerJoin(principalKey).where().limit().
+  function runPrincipalKeyRead(read: () => Promise<string | null>) {
+    return () => ({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () => {
+              const key = await read();
+              return key === null ? [] : [{ publicKey: key }];
+            },
+          }),
+        }),
+      }),
+    });
+  }
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only the definition existence query, the anchor insert, and the success-path public-key update are exercised
   const CAPTURING_DB = {
     query: {
@@ -842,16 +858,14 @@ describe("deployCodeSourcedWorkflow", () => {
             workflowDefinition: {
               findFirst: async () => ({ id: "definition" }),
             },
-            workflowRun: {
-              findFirst: async () => {
-                if (holdRecoveryRead) {
-                  recoveryRead.resolve(true);
-                  await recoveryResponse.promise;
-                }
-                return { publicKey };
-              },
-            },
           },
+          select: runPrincipalKeyRead(async () => {
+            if (holdRecoveryRead) {
+              recoveryRead.resolve(true);
+              await recoveryResponse.promise;
+            }
+            return publicKey;
+          }),
         } as unknown as DB["db"];
         const repoStore = createMockRepoStore();
         repoStore.repoStore.resolveRef = async () => null;
@@ -1013,11 +1027,7 @@ describe("deployCodeSourcedWorkflow", () => {
       const router = createMockRouter();
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- DB stub answers only the anchor-key read recoverSenderDeploy performs
       const db = {
-        query: {
-          workflowRun: {
-            findFirst: async () => ({ publicKey: null }),
-          },
-        },
+        select: runPrincipalKeyRead(async () => null),
       } as unknown as DB["db"];
       const allocation: SidecarAllocation = {
         id: TEST_TARGET.allocationId,
@@ -1330,10 +1340,7 @@ describe("deployCodeSourcedWorkflow", () => {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- transaction double records the narrow initialization writes; real atomicity is covered by DB tests
         const db = {
           ...CAPTURING_DB,
-          query: {
-            ...CAPTURING_DB.query,
-            workflowRun: { findFirst: async () => ({ publicKey: null }) },
-          },
+          select: runPrincipalKeyRead(async () => null),
           transaction: async (run: (handle: typeof tx) => Promise<unknown>) => {
             const result = await run(withRunPrincipalKeys(tx));
             if (lostResponse === "reservation")

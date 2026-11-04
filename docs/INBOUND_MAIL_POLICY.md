@@ -106,7 +106,8 @@ sender if its principal is gone, which deletes the file. A hub-side resolve that
 itself faults changes nothing, so the entry stays unreadable until a later
 reconnect. A run sender is repaired by the next grants barrier that co-delivers
 its key instead, because the hub never re-resolves a run sender on reconnect: a
-run's key is immutable.
+run's key changes only when its sidecar is replaced, and the run's next mail
+carries the replacement's key.
 
 ## Admission weighs every finding, not one
 

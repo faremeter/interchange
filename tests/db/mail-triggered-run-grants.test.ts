@@ -13,7 +13,9 @@ import {
   createGrantStore,
   createPrincipalKeyStore,
   createRunTokenStore,
+  insertRunPrincipal,
   resolveSenderPrincipal,
+  retireRunPrincipalKey,
 } from "@intx/db";
 import {
   grant,
@@ -43,6 +45,7 @@ import {
   seedAsset,
   seedGrant,
   seedPrincipal,
+  seedRunPrincipalKey,
   seedTenants,
   seedWorkflowRunLaunchSpec,
 } from "@intx/test-harness/seed";
@@ -51,6 +54,8 @@ const TENANT = "tnt";
 const ASSET = "ast";
 const DEFINITION = "wfd_real";
 const DEPLOYMENT = "run_real";
+// The run principal deploy creates for the deployment.
+const DEPLOYMENT_PRINCIPAL = await deriveRunPrincipalId(TENANT, DEPLOYMENT);
 const WORKFLOW_ADDRESS = "run_real@tenant.example";
 // The capability walk emits this grant for the workflow's mail trigger. A
 // snapshot without it belongs to a workflow that mail does not start.
@@ -137,8 +142,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionId: DEFINITION,
         address: WORKFLOW_ADDRESS,
         status: "running",
-        publicKey: "test-public-key",
       });
+      await seedRunPrincipalKey(h.db, TENANT, DEPLOYMENT, "test-public-key");
       // The creator holds the grant its creator-sourced requirement demands,
       // so the happy path resolves it. The rejection test overrides the
       // requirement to a resource the creator does NOT hold.
@@ -202,8 +207,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionId: DEFINITION,
         address: "run_second@tenant.example",
         status: "running",
-        publicKey: "test-public-key",
       });
+      await seedRunPrincipalKey(h.db, TENANT, second, "second-public-key");
       const writeSnapshot: GrantWalkSnapshot = {
         ...snapshot("secret:vault"),
         perStep: [
@@ -481,10 +486,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("does not commit grants before credential resolution is recorded", async () => {
       await seedFrozenSnapshot(snapshot("secret:vault"));
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: null })
-        .where(eq(workflowRun.id, DEPLOYMENT));
+      await retireRunPrincipalKey(h.db, TENANT, DEPLOYMENT);
 
       const runId = "<mail-run-unresolved@tenant.example>";
       const result = await materializeOnce(runId);
@@ -769,20 +771,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ],
         grantRequirements: [],
       });
-      await seedPrincipal(h.db, {
-        id: "prn_http_run",
-        tenantId: TENANT,
-        kind: "workflow",
-        refId: DEPLOYMENT,
-      });
       await h.db
         .update(workflowRun)
-        .set({ principalId: "prn_http_run" })
+        .set({ principalId: DEPLOYMENT_PRINCIPAL })
         .where(eq(workflowRun.id, DEPLOYMENT));
       await seedGrant(h.db, {
         id: "grt_http_run_tool",
         tenantId: TENANT,
-        principalId: "prn_http_run",
+        principalId: DEPLOYMENT_PRINCIPAL,
         resource: "tool:mail_send",
         action: "invoke",
         effect: "allow",
@@ -831,31 +827,32 @@ describe.skipIf(!harnessDbEnvAvailable())(
         if (result.outcome === "rejected") {
           expect(result.code).toBe("mail_admission_denied");
         }
-        const runPrincipals = await h.db
-          .select({ id: principal.id })
-          .from(principal)
-          .where(eq(principal.refId, DEPLOYMENT));
-        expect(runPrincipals).toHaveLength(0);
+        // The refused fire leaves the principal deploy created unlinked and
+        // without grants.
+        const [anchor] = await h.db
+          .select({ principalId: workflowRun.principalId })
+          .from(workflowRun)
+          .where(eq(workflowRun.id, DEPLOYMENT));
+        expect(anchor?.principalId).toBeNull();
+        const runGrants = await h.db
+          .select({ id: grant.id })
+          .from(grant)
+          .where(eq(grant.principalId, DEPLOYMENT_PRINCIPAL));
+        expect(runGrants).toHaveLength(0);
       });
 
       test("admits mail to the run that its own trigger started", async () => {
         // The run's own trigger committed its principal and its accept rule:
         // here the caller that started it, the tenant's creator.
         await seedFrozenSnapshot(manualSnapshot);
-        await seedPrincipal(h.db, {
-          id: "prn_manual_run",
-          tenantId: TENANT,
-          kind: "workflow",
-          refId: DEPLOYMENT,
-        });
         await h.db
           .update(workflowRun)
-          .set({ principalId: "prn_manual_run" })
+          .set({ principalId: DEPLOYMENT_PRINCIPAL })
           .where(eq(workflowRun.id, DEPLOYMENT));
         await seedGrant(h.db, {
           id: "grt_manual_run_invoker",
           tenantId: TENANT,
-          principalId: "prn_manual_run",
+          principalId: DEPLOYMENT_PRINCIPAL,
           resource: mailAcceptResource("principal", CREATOR),
           action: "accept",
           effect: "allow",
@@ -1270,10 +1267,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             principalId: "prn_committed_run",
             status: "running",
           });
-          await tx
-            .update(workflowRun)
-            .set({ publicKey: null })
-            .where(eq(workflowRun.id, DEPLOYMENT));
+          await retireRunPrincipalKey(tx, TENANT, DEPLOYMENT);
           const [backend] = await tx.execute(
             sql`select pg_backend_pid() as pid`,
           );
@@ -1717,7 +1711,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     describe("createCorrespondentGrantMinter (send-seam)", () => {
-      const SENDER_PRINCIPAL = "prn_sender_run";
+      const SENDER_PRINCIPAL = DEPLOYMENT_PRINCIPAL;
       const RECIPIENT_RUN_ID = "run_recipient";
       const RECIPIENT_ADDRESS = "run_recipient@tenant.example";
       const RECIPIENT_PRINCIPAL = "prn_recipient";
@@ -1749,12 +1743,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "running" | "completed",
         overrides: { cancellationRequestedAt?: Date; expiresAt?: Date } = {},
       ) {
-        await seedPrincipal(h.db, {
-          id: SENDER_PRINCIPAL,
-          tenantId: TENANT,
-          kind: "workflow",
-          refId: DEPLOYMENT,
-        });
         await h.db
           .update(workflowRun)
           .set({ principalId: SENDER_PRINCIPAL, status, ...overrides })
@@ -1770,8 +1758,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
 
       // A recipient run that resolves to a durable principal: `resolveSenderKey`
-      // reads its `public_key`/`principal_id` off the run row, so the reply's
-      // coordinate the gate later matches is exactly this principal.
+      // reads its key off its run principal and its `principal_id` off the run
+      // row, so the reply's coordinate the gate later matches is exactly this
+      // principal.
       async function seedRecipientRun() {
         await seedPrincipal(h.db, {
           id: RECIPIENT_PRINCIPAL,
@@ -1787,8 +1776,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           address: RECIPIENT_ADDRESS,
           status: "running",
           principalId: RECIPIENT_PRINCIPAL,
-          publicKey: "ab".repeat(32),
         });
+        await seedRunPrincipalKey(
+          h.db,
+          TENANT,
+          RECIPIENT_RUN_ID,
+          "ab".repeat(32),
+        );
       }
 
       function mint() {
@@ -1998,15 +1992,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(reply.outcome).toBe("materialized");
       });
 
-      test("mints for a fired recipient whose signing key is cleared", async () => {
+      test("mints for a fired recipient whose signing key is retired", async () => {
         await seedFrozenSnapshot(correspondentSnapshot());
         await makeSenderRun("running");
         await seedRecipientRun();
-        // A sidecar replacement clears the recorded key but keeps the principal.
-        await h.db
-          .update(workflowRun)
-          .set({ publicKey: null })
-          .where(eq(workflowRun.id, RECIPIENT_RUN_ID));
+        // A sidecar replacement retires the recorded key but keeps the principal.
+        await retireRunPrincipalKey(h.db, TENANT, RECIPIENT_RUN_ID);
 
         await mint()({
           senderAddress: WORKFLOW_ADDRESS,
@@ -2054,8 +2045,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           address: RECIPIENT2_ADDRESS,
           status: "running",
           principalId: RECIPIENT2_PRINCIPAL,
-          publicKey: "cd".repeat(32),
         });
+        await seedRunPrincipalKey(
+          h.db,
+          TENANT,
+          RECIPIENT2_RUN_ID,
+          "cd".repeat(32),
+        );
 
         await mint()({
           senderAddress: WORKFLOW_ADDRESS,
@@ -2191,15 +2187,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const FRESH_RUN_ID = "run_fresh";
         const FRESH_ADDRESS = "run_fresh@tenant.example";
 
-        // A deployed, acked anchor with no principal, which the sending run
-        // deployed: its first fire mints the principal, and its own snapshot
-        // admits mail from its deployer, the invoker.
-        async function seedFreshRecipient(
-          overrides: {
-            cancellationRequestedAt?: Date;
-            publicKey?: string | null;
-          } = {},
-        ) {
+        // A deployed, acked anchor that the sending run deployed: its run
+        // principal exists from deploy, its first fire links it, and its own
+        // snapshot admits mail from its deployer, the invoker.
+        async function seedFreshRecipient({
+          publicKey = "ef".repeat(32),
+          ...overrides
+        }: {
+          cancellationRequestedAt?: Date;
+          publicKey?: string | null;
+        } = {}) {
           await h.db.insert(workflowDefinition).values({
             id: FRESH_DEFINITION,
             tenantId: TENANT,
@@ -2213,9 +2210,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
             definitionId: FRESH_DEFINITION,
             address: FRESH_ADDRESS,
             status: "deployed",
-            publicKey: "ef".repeat(32),
             ...overrides,
           });
+          // Deploy creates the run principal; the key arrives with the ack.
+          await insertRunPrincipal(h.db, {
+            id: await deriveRunPrincipalId(TENANT, FRESH_RUN_ID),
+            tenantId: TENANT,
+            runId: FRESH_RUN_ID,
+            createdAt: new Date(),
+          });
+          if (publicKey !== null) {
+            await seedRunPrincipalKey(h.db, TENANT, FRESH_RUN_ID, publicKey);
+          }
           await seedWorkflowRunLaunchSpec(h.db, {
             anchorRunId: FRESH_RUN_ID,
             sourceAuthorityPrincipalId: SENDER_PRINCIPAL,

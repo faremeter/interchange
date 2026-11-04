@@ -34,7 +34,8 @@ type MockDBOpts = {
     generation: number;
   } | null;
   anchorAddress?: string | null;
-  anchorPublicKey?: string | null;
+  // The active key of the anchor's run principal.
+  runPrincipalKey?: string | null;
   anchorStatus?: string;
   anchorCancellationRequestedAt?: Date;
   anchorFailureCode?: string;
@@ -88,7 +89,6 @@ function createMockDB(opts: MockDBOpts): DB["db"] {
             ? undefined
             : {
                 address: opts.anchorAddress,
-                publicKey: opts.anchorPublicKey ?? null,
                 status: opts.anchorStatus ?? "running",
                 expiresAt: null,
                 endedAt: null,
@@ -111,6 +111,20 @@ function createMockDB(opts: MockDBOpts): DB["db"] {
               ],
       },
     },
+    // The run principal key read: select().from().innerJoin().where().limit().
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () =>
+              opts.runPrincipalKey === null ||
+              opts.runPrincipalKey === undefined
+                ? []
+                : [{ publicKey: opts.runPrincipalKey }],
+          }),
+        }),
+      }),
+    }),
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
   return mock as unknown as DB["db"];
@@ -238,7 +252,7 @@ describe("createSidecarTokenAuthenticator", () => {
     } as const;
     const resolverWith = (
       initializationLeaseId: string | null,
-      anchorPublicKey: string | null,
+      runPrincipalKey: string | null,
       anchorStatus = "running",
     ) =>
       createSidecarCredentialResolver({
@@ -254,7 +268,7 @@ describe("createSidecarTokenAuthenticator", () => {
             initializationLeaseId,
           },
           anchorAddress: "workflow@exclusive",
-          anchorPublicKey,
+          runPrincipalKey,
           anchorStatus,
         }),
       });
@@ -291,7 +305,7 @@ describe("createSidecarTokenAuthenticator", () => {
     } as const;
     const resolverWith = (
       initializationLeaseId: string | null,
-      anchorPublicKey: string | null,
+      runPrincipalKey: string | null,
       anchorStatus: string,
       outcome: {
         cancelled?: boolean;
@@ -312,7 +326,7 @@ describe("createSidecarTokenAuthenticator", () => {
             initializationLeaseId,
           },
           anchorAddress: "workflow@exclusive",
-          anchorPublicKey,
+          runPrincipalKey,
           anchorStatus,
           ...(outcome.releaseAt !== undefined
             ? { anchorCapacityReleaseAt: outcome.releaseAt }

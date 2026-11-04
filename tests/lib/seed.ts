@@ -402,18 +402,30 @@ export async function seedWorkflowRun(
     ...(r.createdAt !== undefined ? { createdAt: r.createdAt } : {}),
     ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
   });
-  // A recorded key also lives on the run principal, as a deploy records it.
-  // The run principal is the one a test already seeded for the run, or the
-  // one deploy would have created.
   if (r.publicKey != null) {
-    await insertRunPrincipal(db, {
-      id: await deriveRunPrincipalId(r.tenantId, r.id),
-      tenantId: r.tenantId,
-      runId: r.id,
-      createdAt: r.createdAt ?? new Date(),
-    });
-    await recordRunPrincipalKey(db, r.tenantId, r.id, r.publicKey);
+    await seedRunPrincipalKey(db, r.tenantId, r.id, r.publicKey, r.createdAt);
   }
+}
+
+/**
+ * Make `publicKey` the active key of the run's principal, as a deploy records
+ * it. The run principal is the one a test already seeded for the run, or the
+ * one deploy would have created.
+ */
+export async function seedRunPrincipalKey(
+  db: Db,
+  tenantId: string,
+  runId: string,
+  publicKey: string,
+  createdAt: Date = new Date(),
+): Promise<void> {
+  await insertRunPrincipal(db, {
+    id: await deriveRunPrincipalId(tenantId, runId),
+    tenantId,
+    runId,
+    createdAt,
+  });
+  await recordRunPrincipalKey(db, tenantId, runId, publicKey);
 }
 
 export type SeedWorkflowRunLaunchSpec = {

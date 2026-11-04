@@ -47,8 +47,11 @@ export {
   type PrincipalKeyStore,
 } from "./principal-key-store";
 export {
+  loadRunPrincipalActiveKey,
   recordRunPrincipalKey,
   retireRunPrincipalKey,
+  runPrincipalActiveKeySql,
+  runPrincipalHasActiveKey,
 } from "./run-principal-key";
 export {
   createRunTokenStore,

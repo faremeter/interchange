@@ -6,6 +6,7 @@ import {
   createWorkflowProbeStore,
   createWorkflowRunLaunchSpecStore,
   insertRunPrincipal,
+  loadRunPrincipalActiveKey,
   resolveTenantSidecarCapabilityPolicies,
   resolveDeploymentLifecyclePolicy,
   canExecuteWorkflowRun,
@@ -940,7 +941,6 @@ export function createWorkflowAllocationService({
     const anchor = await db.query.workflowRun.findFirst({
       where: eq(workflowRun.id, allocation.anchorRunId),
       columns: {
-        publicKey: true,
         definitionId: true,
         status: true,
         expiresAt: true,
@@ -951,8 +951,16 @@ export function createWorkflowAllocationService({
       throw new Error(`Allocation ${allocation.id} has no workflow anchor run`);
     }
     if (!canExecuteWorkflowRun(anchor, now())) return null;
+    // The run principal holds a key once this generation's first deploy
+    // completed.
+    const initialized =
+      (await loadRunPrincipalActiveKey(
+        db,
+        allocation.tenantId,
+        allocation.anchorRunId,
+      )) !== null;
     if (await allocationRouter.isAllocatedWorkflowActive(allocationTarget)) {
-      if (anchor.publicKey !== null) return null;
+      if (initialized) return null;
       throw new SessionLaunchError(
         new Error(
           `Allocation ${allocation.id} has an active workflow without a completed initialization key`,
@@ -985,7 +993,7 @@ export function createWorkflowAllocationService({
     }
     // The key commits only once the first deploy completed, so a connected
     // sidecar that did not report the deployment no longer holds it.
-    if (anchor.publicKey !== null) {
+    if (initialized) {
       throw new SidecarDeploymentMissingError(
         allocation.id,
         allocation.generation,
