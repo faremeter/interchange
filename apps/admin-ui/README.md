@@ -9,9 +9,9 @@ client, and renders the TanStack Router defined in `src/router.tsx`.
 The router gates every authenticated route behind a `/api/me`
 session check (redirecting to `/login` on failure) and exposes the
 tenant-management console: a dashboard plus per-tenant pages for
-agents, instances, principals, roles, grants, credentials, wallets,
+approvals, principals, roles, grants, credentials, wallets,
 offerings, models, model providers, model offerings, and workflows,
-each with a list and detail view.
+each with a list and detail view, plus a detail view for each run.
 
 Develop with `bun run dev` (Vite dev server), build with
 `bun run build`, and preview a production build with

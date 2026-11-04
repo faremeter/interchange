@@ -5,8 +5,7 @@ messages with PGP detached signatures, parses inbound wire bytes
 back into structured parts, and owns the JMAP-shaped envelope the
 rest of the mail pipeline depends on.
 
-Consumed by `@intx/mail-memory` (in-process transport),
-`@intx/storage-isogit` (mail audit log), and `@intx/harness`
+Consumed by `@intx/mail-memory` (in-process transport) and `@intx/harness`
 (sidecar mail-tool plumbing).
 
 ```ts

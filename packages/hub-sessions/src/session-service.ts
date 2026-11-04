@@ -218,8 +218,8 @@ export type SessionServiceDeps = {
 };
 
 // Hub-side principal for reading asset repos. Assets are signed by the
-// hub itself, and the launch fan-out reads them on the hub to assemble
-// packs for delivery to a sidecar -- so the hub principal is correct.
+// hub itself, and a source deploy reads them on the hub to assemble the
+// packs it delivers to a sidecar -- so the hub principal is correct.
 const HUB_PRINCIPAL: Principal = { kind: "hub" };
 
 /** Fields the deploy frame carries onto `sendAgentDeployToAllocation`. */

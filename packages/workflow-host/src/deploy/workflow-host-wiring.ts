@@ -848,8 +848,7 @@ export function createSidecarDeployRouter<
   }) => void;
   /**
    * Per-deployment-address mail handler registry the hub-link's
-   * `mail.inbound` path consults before falling back to the legacy
-   * session-routed delivery. The multi-step branch registers
+   * `mail.inbound` path consults. The multi-step branch registers
    * `wired.routeInbound` against the deployment's mail address once
    * `supervisor.spawn` succeeds so inbound mail aimed at the
    * deployment address flows into the supervisor's mail-bus

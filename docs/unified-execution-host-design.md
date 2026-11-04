@@ -194,16 +194,11 @@ threads up through every rung to the hub timeline.
    Conversation state is committed to the workflow-run substrate (§3a, §3c),
    so kill+respawn resumes via `discoverInFlightRuns`.
 
-**A multi-step workflow** (`run_<hex>`, with per-step derived addresses):
-identical machinery. The
+**A multi-step workflow** (`run_<hex>`): identical machinery. The
 supervisor owns mail at the deployment address; the dispatch loop drives
 `runtimeRun` over the multi-step definition; each step uses the same real
-step-invoker; per-step addresses/grants come from the credentials snapshot.
-The only difference from the single-agent case is the number of steps and the
-address shape — both already handled by the existing derivation
-(`deriveStepAddress` / `deriveStepRepoId` in
-`packages/workflow-host/src/supervisor/credentials.ts`, which already
-documents the single-step collapse to the deployment's own address).
+step-invoker; per-step grants come from the credentials snapshot.
+The only difference from the single-agent case is the number of steps.
 
 **A workflow with a `childWorkflow` / `map` fan-out / per-step isolated node**:
 a top-level `map` fans out by running its inner step in place through the
@@ -1817,7 +1812,7 @@ are explicitly **not** a go-live gate for INTR-209.
   (`WorkflowSupervisorBindings`, `SubprocessSpawner`, `SubprocessHandle`);
   `supervisor/recycle.ts`; `drain-controller.ts`.
 - Child: `packages/workflow-host/src/child/run-child.ts`
-  (`runWorkflowChild`, `loadWorkflowDefinition`, `discoverInFlightRuns`,
+  (`runWorkflowChild`, `loadVerifiedWorkflowDefinitionFromClosure`, `discoverInFlightRuns`,
   event sender, `trigger.fired` handling).
 - Mail bus: `packages/workflow-host/src/mail-bus/hub-transport-adapter.ts`
   (`routeInbound`, `subscribeMailForAddress`).
@@ -1863,8 +1858,8 @@ are explicitly **not** a go-live gate for INTR-209.
   `packages/workflow-host/src/child/substrate-factory.ts` (`createSidecarRunChild`
   self-referential `runChild`, sub-namespace `runs/<runId>/...`, proxy
   `RepoStore`); `packages/workflow-host/src/adapters/spawn-child.ts`
-  (`createInMemorySpawnChild`, `SpawnChildWorkflow`, `RunChildWorkflow`,
-  `WorkflowSpawnChildOpts`); child-process principal
+  (`createInMemorySpawnChild`, `SpawnChildWorkflow`, `RunChildWorkflow`);
+  child-process principal
   `WorkflowRunWorkflowProcessPrincipal`.
 - Identity: `packages/workflow-deploy/src/addresses.ts`
   (`deriveWorkflowRunRepoId`);

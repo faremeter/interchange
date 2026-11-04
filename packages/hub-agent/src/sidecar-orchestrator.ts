@@ -147,11 +147,11 @@ export type SidecarOrchestratorConfig = {
    */
   createDeployRouter: CreateDeployRouter;
   /**
-   * Optional pre-fallback mail dispatcher the link consults on every
+   * Optional mail dispatcher the link consults on every
    * inbound `mail.inbound` frame. Production wires this against the
    * sidecar's multi-step deployment mail handler registry so a
    * deployment-address inbound flows into the supervisor's mail-bus
-   * subscription instead of the legacy session path. The orchestrator
+   * subscription. The orchestrator
    * forwards the binding unchanged to `createHubLink`.
    */
   mailInboundRouter?: MailInboundRouter;
