@@ -14,6 +14,8 @@ import {
   WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
 import {
+  principal as principalTable,
+  principalKey as principalKeyTable,
   sidecarAllocation,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
@@ -485,6 +487,28 @@ describe("deployCodeSourcedWorkflow", () => {
   // before reaching the insert.
   let capturedAnchorRow: Record<string, unknown> | undefined;
   let capturedAnchorUpdate: Record<string, unknown> | undefined;
+
+  // Recording a deployment's key reads its run principal and the principal's
+  // keys, then inserts the key. Answer those reads with the run principal and
+  // no keys, and pass every other read to the wrapped double.
+  function withRunPrincipalKeys<T extends object>(handle: T): T {
+    const inner = handle as {
+      select?: () => { from: (table: unknown) => unknown };
+      insert?: unknown;
+    };
+    return {
+      ...handle,
+      select: () => ({
+        from: (table: unknown) =>
+          table === principalTable
+            ? { where: () => ({ limit: async () => [{ id: "prn_run" }] }) }
+            : table === principalKeyTable
+              ? { where: () => ({ limit: async () => [] }) }
+              : inner.select?.().from(table),
+      }),
+      insert: inner.insert ?? (() => ({ values: async () => undefined })),
+    };
+  }
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only the definition existence query, the anchor insert, and the success-path public-key update are exercised
   const CAPTURING_DB = {
     query: {
@@ -544,7 +568,8 @@ describe("deployCodeSourcedWorkflow", () => {
         };
       },
     }),
-    transaction: (run: (tx: unknown) => Promise<unknown>) => run(CAPTURING_DB),
+    transaction: (run: (tx: unknown) => Promise<unknown>) =>
+      run(withRunPrincipalKeys(CAPTURING_DB)),
   } as unknown as DB["db"];
 
   async function capturePreparedDeployError(
@@ -628,7 +653,7 @@ describe("deployCodeSourcedWorkflow", () => {
     const db = {
       ...CAPTURING_DB,
       transaction: async (run: (handle: typeof tx) => Promise<unknown>) => {
-        const result = await run(tx);
+        const result = await run(withRunPrincipalKeys(tx));
         if (writes.some(({ status }) => status === "releasing"))
           events.push("rejection committed");
         return result;
@@ -754,24 +779,26 @@ describe("deployCodeSourcedWorkflow", () => {
           let nextKey = publicKey;
           let nextMarker = initializationLeaseId;
           const result = await run(
-            transactionHandle((values) => {
-              if ("publicKey" in values) {
-                if (
-                  values.publicKey !== null &&
-                  typeof values.publicKey !== "string"
-                )
-                  throw new Error("Invalid key write");
-                nextKey = values.publicKey;
-              }
-              if ("initializationLeaseId" in values) {
-                if (
-                  values.initializationLeaseId !== null &&
-                  typeof values.initializationLeaseId !== "string"
-                )
-                  throw new Error("Invalid marker write");
-                nextMarker = values.initializationLeaseId;
-              }
-            }),
+            withRunPrincipalKeys(
+              transactionHandle((values) => {
+                if ("publicKey" in values) {
+                  if (
+                    values.publicKey !== null &&
+                    typeof values.publicKey !== "string"
+                  )
+                    throw new Error("Invalid key write");
+                  nextKey = values.publicKey;
+                }
+                if ("initializationLeaseId" in values) {
+                  if (
+                    values.initializationLeaseId !== null &&
+                    typeof values.initializationLeaseId !== "string"
+                  )
+                    throw new Error("Invalid marker write");
+                  nextMarker = values.initializationLeaseId;
+                }
+              }),
+            ),
           );
           if (transactions === 1 || scenario !== "rolled back publication") {
             publicKey = nextKey;
@@ -1063,7 +1090,7 @@ describe("deployCodeSourcedWorkflow", () => {
         const db = {
           ...CAPTURING_DB,
           transaction: async (run: (handle: typeof tx) => Promise<unknown>) =>
-            run(tx),
+            run(withRunPrincipalKeys(tx)),
         } as unknown as DB["db"];
         const allocationRouter = createMockAllocationRouter();
         allocationRouter.sendAgentDeployToAllocation = async (
@@ -1168,7 +1195,7 @@ describe("deployCodeSourcedWorkflow", () => {
         const db = {
           ...CAPTURING_DB,
           transaction: async (run: (handle: typeof tx) => Promise<unknown>) =>
-            run(tx),
+            run(withRunPrincipalKeys(tx)),
           select: () => ({
             from: () => ({
               where: async () => {
@@ -1308,7 +1335,7 @@ describe("deployCodeSourcedWorkflow", () => {
             workflowRun: { findFirst: async () => ({ publicKey: null }) },
           },
           transaction: async (run: (handle: typeof tx) => Promise<unknown>) => {
-            const result = await run(tx);
+            const result = await run(withRunPrincipalKeys(tx));
             if (lostResponse === "reservation")
               throw new Error("Transaction response lost after commit");
             return result;
@@ -1502,7 +1529,7 @@ describe("deployCodeSourcedWorkflow", () => {
         const db = {
           ...CAPTURING_DB,
           transaction: async (run: (tx: typeof handle) => Promise<unknown>) =>
-            run(handle),
+            run(withRunPrincipalKeys(handle)),
         } as unknown as DB["db"];
         const preparedRepoStore = createMockRepoStore();
         preparedRepoStore.repoStore.resolveRef = async () => null;
@@ -2009,7 +2036,8 @@ describe("deployCodeSourcedWorkflow", () => {
             }),
           }),
       }),
-      transaction: (run: (tx: unknown) => Promise<unknown>) => run(COUNTING_DB),
+      transaction: (run: (tx: unknown) => Promise<unknown>) =>
+        run(withRunPrincipalKeys(COUNTING_DB)),
       update: () => ({
         set: () => ({
           where: () => ({
@@ -2195,7 +2223,8 @@ describe("deployCodeSourcedWorkflow", () => {
             }),
           }),
       }),
-      transaction: (run: (tx: unknown) => Promise<unknown>) => run(COUNTING_DB),
+      transaction: (run: (tx: unknown) => Promise<unknown>) =>
+        run(withRunPrincipalKeys(COUNTING_DB)),
       update: () => ({
         set: () => ({
           where: () => ({

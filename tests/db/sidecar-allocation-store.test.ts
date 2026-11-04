@@ -29,9 +29,11 @@ import {
   SIDECAR_CLEANUP_PREPARATION_TIMEOUT_FAILURE_CODE,
   SIDECAR_CLEANUP_OPERATOR_RELEASED_FAILURE_CODE,
   SidecarReuseRejectedError,
+  recordPublicKey,
   type RetainedSidecarIncarnation,
 } from "@intx/db";
 import {
+  principalKey,
   sidecar,
   sidecarAllocation,
   workflowDefinition,
@@ -55,6 +57,7 @@ import {
 const TENANT_ID = "tnt-allocation";
 const DEFINITION_ID = "wfd-allocation";
 const ANCHOR_RUN_ID = "dep-allocation";
+const ANCHOR_RUN_PRINCIPAL_ID = "prn-dep-allocation";
 const PRINCIPAL_ID = "prn-allocation";
 const MANIFEST_DIGEST = "1".repeat(64);
 const OTHER_MANIFEST_DIGEST = "2".repeat(64);
@@ -71,6 +74,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
     afterAll(async () => {
       await h.close();
     });
+
+    // The keys of the anchor's run principal, oldest first.
+    async function runPrincipalKeys() {
+      return h.db
+        .select({
+          publicKey: principalKey.publicKey,
+          status: principalKey.status,
+        })
+        .from(principalKey)
+        .where(eq(principalKey.principalId, ANCHOR_RUN_PRINCIPAL_ID))
+        .orderBy(principalKey.createdAt);
+    }
 
     beforeEach(async () => {
       await h.reset();
@@ -92,6 +107,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
         definitionId: DEFINITION_ID,
+      });
+      // The run principal deploy creates; it holds the deployment's key.
+      await seedPrincipal(h.db, {
+        id: ANCHOR_RUN_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        refId: ANCHOR_RUN_ID,
+        status: "active",
       });
       await createWorkflowRunLaunchSpecStore(h.db).create({
         anchorRunId: ANCHOR_RUN_ID,
@@ -3459,12 +3482,46 @@ describe.skipIf(!harnessDbEnvAvailable())(
           where: eq(workflowRun.id, ANCHOR_RUN_ID),
         }),
       ).toMatchObject({ publicKey: "new-key", credentialRefs });
+      // The same completion makes the key the run principal's, public-only.
+      expect(await runPrincipalKeys()).toEqual([
+        { publicKey: "new-key", status: "active" },
+      ]);
       expect(
         await store.completeInitialization({
           ...initialization,
           publicKey: "late-key",
         }),
       ).toBe(false);
+      expect(await runPrincipalKeys()).toEqual([
+        { publicKey: "new-key", status: "active" },
+      ]);
+    });
+
+    test("a completion whose key cannot be recorded leaves the anchor and lease unchanged", async () => {
+      const { store, allocation, leaseId, initialization } =
+        await createClaimedAllocation("alloc-key-refused");
+      expect(await store.beginInitialization(initialization)).toBe(true);
+      // Another principal already holds the key the sidecar reports.
+      await recordPublicKey(h.db, PRINCIPAL_ID, "ab".repeat(32));
+
+      await expect(
+        store.completeInitialization({
+          ...initialization,
+          publicKey: "ab".repeat(32),
+        }),
+      ).rejects.toThrow(/belongs to principal/);
+
+      expect(
+        (
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, ANCHOR_RUN_ID),
+          })
+        )?.publicKey,
+      ).toBeNull();
+      expect(await runPrincipalKeys()).toEqual([]);
+      expect((await store.findById(allocation.id))?.initializationLeaseId).toBe(
+        leaseId,
+      );
     });
 
     test("a proven rejection survives disconnect and a new reconciliation claim", async () => {
@@ -4032,6 +4089,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
           credentialRefs: previousRefs,
         })
         .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      await recordPublicKey(
+        h.db,
+        ANCHOR_RUN_PRINCIPAL_ID,
+        "generation-1-public-key",
+      );
 
       expect(
         await store.beginReplacement({
@@ -4054,6 +4116,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         publicKey: "generation-1-public-key",
         credentialRefs: previousRefs,
       });
+      expect(await runPrincipalKeys()).toEqual([
+        { publicKey: "generation-1-public-key", status: "active" },
+      ]);
 
       const replacing = await store.beginReplacement({
         allocationId: pending.id,
@@ -4081,6 +4146,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           columns: { publicKey: true, credentialRefs: true },
         }),
       ).toEqual({ publicKey: null, credentialRefs: null });
+      // The replaced sidecar's key no longer answers for the run.
+      expect(await runPrincipalKeys()).toEqual([
+        { publicKey: "generation-1-public-key", status: "retired" },
+      ]);
 
       await h.db
         .update(sidecarAllocation)
@@ -5928,14 +5997,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .update(workflowRun)
         .set({ status: "deployed" })
         .where(eq(workflowRun.id, ANCHOR_RUN_ID));
-      // Deploy created the run principal; no trigger has linked it yet.
-      await seedPrincipal(h.db, {
-        id: "prn-deployed-anchor",
-        tenantId: TENANT_ID,
-        kind: "workflow",
-        refId: ANCHOR_RUN_ID,
-        status: "active",
-      });
+      // The fixture's run principal is unlinked: no trigger has fired.
 
       const store = createSidecarAllocationStore(h.db);
       const pending = await store.createPending({
@@ -5984,7 +6046,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toEqual({ status: "failed", endedAt });
       expect(
         await h.db.query.principal.findFirst({
-          where: (row, { eq }) => eq(row.id, "prn-deployed-anchor"),
+          where: (row, { eq }) => eq(row.id, ANCHOR_RUN_PRINCIPAL_ID),
           columns: { status: true },
         }),
       ).toEqual({ status: "deactivated" });

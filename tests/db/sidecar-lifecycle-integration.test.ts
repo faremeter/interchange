@@ -13,6 +13,7 @@ import path from "node:path";
 import { eq, inArray } from "drizzle-orm";
 
 import { generateKeyPair, sha256 } from "@intx/crypto";
+import { hexEncode } from "@intx/types";
 import {
   createSidecarAllocationStore,
   createWorkflowPendingProjectionStore,
@@ -98,11 +99,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT,
         address,
         status: "failed",
+        // Each copy's deployment holds its own key on its run principal.
+        publicKey: hexEncode(await sha256(id)),
       });
       await h.db
         .update(workflowRun)
         .set({
-          publicKey: "ab".repeat(32),
           endedAt: now,
           failureCode: "original_failure",
           failureMessage: "Original workflow failure",

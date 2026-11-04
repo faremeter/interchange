@@ -68,6 +68,8 @@ Hub custody is an **attribution** model, not non-repudiation. A signature with a
 
 Every user principal is minted a signing key when it is created, in the same transaction as the principal row, so a user principal never exists without a key. A workflow run principal is different: deploy creates it with no hub-held key, and the run's first trigger links it to the run. The hub seals a hub-custodied key's seed under `PRINCIPAL_KEY_ENCRYPTION_KEY` (32 bytes, hex) -- a separate key from `CREDENTIAL_ENCRYPTION_KEY`, so the two rotate independently -- and refuses to start without it.
 
+A workflow run signs its mail with a key that the sidecar running its deployment mints. The sidecar holds the private key. When the deployment finishes initializing, the hub records the public key as the active, public-only key of the run principal. When the hub replaces the sidecar, it retires that key, and the key the replacement sidecar reports becomes active when the replacement's initialization completes. A replacement that reuses the replaced sidecar's disk reports the same key, and that key becomes active again. The hub resolves no retired key, so while the key stays retired it vouches for no key for mail that the replaced sidecar signed. A recipient sidecar that cached the retired key keeps it until the run's next mail carries the replacement's key.
+
 ### Request resolution flow
 
 ```

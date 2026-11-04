@@ -47,6 +47,10 @@ export {
   type PrincipalKeyStore,
 } from "./principal-key-store";
 export {
+  recordRunPrincipalKey,
+  retireRunPrincipalKey,
+} from "./run-principal-key";
+export {
   createRunTokenStore,
   deleteRunTokensForPrincipals,
   type RunTokenStore,

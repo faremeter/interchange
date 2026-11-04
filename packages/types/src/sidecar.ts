@@ -261,15 +261,16 @@ export type HelloFrame = typeof HelloFrame.infer;
 
 /**
  * Acknowledges a successful agent deployment. Includes the agent's Ed25519
- * public key (hex-encoded) for published identity and content provenance.
- * Echoes the request id and incarnation of the `agent.deploy` it answers.
+ * public key, 32 bytes as lowercase hex, for published identity and content
+ * provenance. Echoes the request id and incarnation of the `agent.deploy` it
+ * answers.
  */
 export const AgentDeployAckFrame = type({
   type: "'agent.deploy.ack'",
   requestId: "string",
   agentAddress: "string",
   generation: Generation,
-  publicKey: "string",
+  publicKey: /^[0-9a-f]{64}$/,
 });
 export type AgentDeployAckFrame = typeof AgentDeployAckFrame.infer;
 

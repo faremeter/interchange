@@ -21,6 +21,10 @@ import {
 
 import type { DB, DBExecutor } from "./client";
 import { deactivateRunPrincipals } from "./principal-store";
+import {
+  recordRunPrincipalKey,
+  retireRunPrincipalKey,
+} from "./run-principal-key";
 import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
 import {
   assertSidecarHasRoom,
@@ -581,6 +585,14 @@ function buildSidecarAllocationStore(
           .returning({ id: workflowRun.id });
         if (anchor === undefined)
           throw new Error("Initialization anchor is missing");
+        // The anchor update above holds the anchor row lock, which serializes
+        // this with every other writer of the run's key.
+        await recordRunPrincipalKey(
+          tx,
+          args.tenantId,
+          args.anchorRunId,
+          completion.publicKey,
+        );
       }
       // Check the lease again: ownership can expire while the transaction holds
       // the allocation lock, such as while a completion waits on the anchor
@@ -1529,11 +1541,13 @@ function buildSidecarAllocationStore(
         // the credential refs with the generation advance so a replacement
         // cannot mistake stale local sidecar state for a restored
         // workflow. Leftover refs are the previous attempt, and a first
-        // grant commit would freeze them.
+        // grant commit would freeze them. The replacement sidecar mints a
+        // new key, so the run principal's key retires with it.
         await tx
           .update(workflowRun)
           .set({ publicKey: null, credentialRefs: null })
           .where(eq(workflowRun.id, updated.anchorRunId));
+        await retireRunPrincipalKey(tx, updated.tenantId, updated.anchorRunId);
 
         return parseSidecarAllocationRow(updated);
       });
