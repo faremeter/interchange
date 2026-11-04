@@ -827,6 +827,13 @@
       "when": 1793729632421,
       "tag": "0118_drop_launch_spec_deploy_content",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1793841949636,
+      "tag": "0119_principal_key_public_only",
+      "breakpoints": true
     }
   ]
 }

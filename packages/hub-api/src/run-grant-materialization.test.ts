@@ -35,6 +35,8 @@ const stubPrincipalKeyStore: PrincipalKeyStore = {
   generate: async () => "pky_stub",
   sign: async () => new Uint8Array(64),
   getPublicKey: async () => "pky_stub_public",
+  recordPublicKey: async () => undefined,
+  retireActive: async () => undefined,
 };
 
 // Minting is the run-token store's concern; this suite records which consumers

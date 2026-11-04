@@ -1,0 +1,1 @@
+ALTER TABLE "principal_key" ALTER COLUMN "private_key" DROP NOT NULL;
