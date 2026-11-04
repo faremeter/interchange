@@ -1035,7 +1035,11 @@ async function executeRunBody(
   // protects these `resolveRef` calls runs up front, before any blob
   // resolution.
   const canonicalLog = await env.repoStore.read(runId);
+  // Selectors read the trigger payload the log's RunStarted recorded, so a
+  // resume, which is given none, reads what the run started with.
+  let triggerPayload = options.triggerPayload;
   for (const event of canonicalLog) {
+    if (event.kind === "RunStarted") triggerPayload = event.trigger.payload;
     if (event.kind !== "StepCompleted") continue;
     stepOutputs[event.stepId] = await env.blobs.resolveRef(event.output.ref);
   }
@@ -1180,7 +1184,7 @@ async function executeRunBody(
       for (const primitive of ready) {
         inFlight.add(primitive.id);
         const ctx: SelectorContext = {
-          trigger: { payload: options.triggerPayload },
+          trigger: { payload: triggerPayload },
           steps: Object.fromEntries(
             Object.entries(stepOutputs).map(([id, output]) => [id, { output }]),
           ),
