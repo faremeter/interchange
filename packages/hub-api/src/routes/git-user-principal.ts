@@ -48,6 +48,12 @@ export async function resolveAuthzVerdict(args: {
   tenantId: string;
   resource: string;
   action: RepoAction;
+  /**
+   * The run-token consumer, or `undefined` for a caller that is not one.
+   * Required so that no request-driven check can forget it: a check without
+   * the consumer would skip a `{tool}`-scoped deny grant.
+   */
+  consumer: string | undefined;
 }): Promise<UserPrincipal["authz"]> {
   const grantVerb = repoActionToGrantVerb(args.action);
   const verdict = await authorize(
@@ -56,7 +62,10 @@ export async function resolveAuthzVerdict(args: {
     args.tenantId,
     args.resource,
     grantVerb,
-    { conditions: args.conditionRegistry },
+    {
+      conditions: args.conditionRegistry,
+      ...(args.consumer !== undefined ? { consumer: args.consumer } : {}),
+    },
   );
   return {
     effect: verdict.effect === "allow" ? "allow" : "deny",

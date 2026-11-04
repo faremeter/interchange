@@ -941,6 +941,9 @@ export function createAssetRoutes({
       tenantId,
       resource: `asset:${resolvedAsset.asset.id}`,
       action,
+      // Only a run token carries a consumer, and the git token middleware
+      // refuses run tokens.
+      consumer: undefined,
     });
     if (authz.effect !== "allow") {
       log.info("smart-HTTP authz denied {tenantId} asset={assetId}", {
