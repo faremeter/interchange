@@ -1,5 +1,9 @@
-import { and, eq, inArray, isNull, ne, or, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, type SQL } from "drizzle-orm";
 
+import {
+  hostedSidecarAllocationStatuses,
+  type SidecarAllocationStatus,
+} from "@intx/types";
 import type { SidecarCapacity } from "@intx/types/sidecar";
 
 import type { DBExecutor } from "./client";
@@ -144,6 +148,30 @@ export type AllocationConnectionCheck = (target: {
   readonly generation: number;
 }) => boolean;
 
+function mintedFor(binding: SidecarProvisionerBinding) {
+  return and(
+    eq(sidecar.provisionerId, binding.provisionerId),
+    eq(sidecar.provisionerApiVersion, binding.provisionerApiVersion),
+    eq(
+      sidecar.provisionerBindingFingerprint,
+      binding.provisionerBindingFingerprint,
+    ),
+  );
+}
+
+async function lockSidecarMintedFor(
+  tx: DBExecutor,
+  sidecarId: string,
+  binding: SidecarProvisionerBinding,
+): Promise<boolean> {
+  const [owned] = await tx
+    .select({ id: sidecar.id })
+    .from(sidecar)
+    .where(and(eq(sidecar.id, sidecarId), mintedFor(binding)))
+    .for("update");
+  return owned !== undefined;
+}
+
 /**
  * Retires a sidecar its provisioner reports stopped. Returns null, retiring
  * nothing, when no sidecar with that id was minted for `binding`. With
@@ -161,22 +189,8 @@ export async function retireProvisionerSidecar(
     readonly now: Date | SQL;
   },
 ): Promise<ProvisionerSidecarRetirement | null> {
-  const [owned] = await tx
-    .select({ id: sidecar.id })
-    .from(sidecar)
-    .where(
-      and(
-        eq(sidecar.id, args.sidecarId),
-        eq(sidecar.provisionerId, args.binding.provisionerId),
-        eq(sidecar.provisionerApiVersion, args.binding.provisionerApiVersion),
-        eq(
-          sidecar.provisionerBindingFingerprint,
-          args.binding.provisionerBindingFingerprint,
-        ),
-      ),
-    )
-    .for("update");
-  if (owned === undefined) return null;
+  if (!(await lockSidecarMintedFor(tx, args.sidecarId, args.binding)))
+    return null;
   await retireSidecar(tx, { sidecarId: args.sidecarId, now: args.now });
   const allocated = await tx
     .select({
@@ -231,6 +245,34 @@ export async function retireProvisionerSidecar(
   return { connectedAllocationIds };
 }
 
+type SlotReservation = {
+  readonly id: string;
+  readonly status: SidecarAllocationStatus;
+  readonly deploymentCleanupConfirmed: boolean;
+  readonly ensureAcceptedGeneration: number | null;
+};
+
+// Placed work is on the sidecar; a copy being removed stays until confirmed.
+function occupiesSidecar(
+  row: Pick<SlotReservation, "status" | "deploymentCleanupConfirmed">,
+): boolean {
+  const placed = row.status === "provisioning" || row.status === "allocated";
+  return placed || !row.deploymentCleanupConfirmed;
+}
+
+// An incarnation durably retained also frees the active slot.
+function holdsActiveSlot(
+  reservation: SlotReservation,
+  inventory: SidecarInventory,
+): boolean {
+  if (!occupiesSidecar(reservation)) return false;
+  return !inventory.retainedIncarnations.some(
+    (incarnation) =>
+      incarnation.allocationId === reservation.id &&
+      incarnation.generation === reservation.ensureAcceptedGeneration,
+  );
+}
+
 /**
  * Locks the sidecar so placements serialize, counting every reservation
  * except cleanup confirmed removed or an incarnation durably retained.
@@ -250,6 +292,8 @@ export async function assertSidecarHasRoom(
   const reservations = await tx
     .select({
       id: sidecarAllocation.id,
+      status: sidecarAllocation.status,
+      deploymentCleanupConfirmed: sidecarAllocation.deploymentCleanupConfirmed,
       ensureAcceptedGeneration: sidecarAllocation.ensureAcceptedGeneration,
     })
     .from(sidecarAllocation)
@@ -257,30 +301,15 @@ export async function assertSidecarHasRoom(
       and(
         eq(sidecarAllocation.sidecarId, args.sidecarId),
         ne(sidecarAllocation.id, args.placing.allocationId),
-        or(
-          inArray(sidecarAllocation.status, ["provisioning", "allocated"]),
-          and(
-            inArray(sidecarAllocation.status, [
-              "replacing",
-              "releasing",
-              "destroy_failed",
-            ]),
-            eq(sidecarAllocation.deploymentCleanupConfirmed, false),
-          ),
-        ),
+        inArray(sidecarAllocation.status, [...hostedSidecarAllocationStatuses]),
       ),
     );
   // Read after the database wait: the connection may have changed meanwhile.
   const inventory = args.getSidecarInventory?.(args.sidecarId);
   if (inventory === undefined)
     throw new SidecarInventoryUnavailableError(args.sidecarId);
-  const active = reservations.filter(
-    (reservation) =>
-      !inventory.retainedIncarnations.some(
-        (incarnation) =>
-          incarnation.allocationId === reservation.id &&
-          incarnation.generation === reservation.ensureAcceptedGeneration,
-      ),
+  const active = reservations.filter((reservation) =>
+    holdsActiveSlot(reservation, inventory),
   ).length;
   if (active >= inventory.capacity.maxActiveDeployments) {
     throw new SidecarReuseRejectedError(
