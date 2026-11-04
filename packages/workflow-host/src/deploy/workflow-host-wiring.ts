@@ -2845,28 +2845,6 @@ export function createSidecarDeployRouter<
 }
 
 /**
- * Logical mail-audit reference the supervisor stamps onto every
- * inbox/processing/consumed envelope for sidecar-hosted deployments.
- * The substrate does not dereference the value; it is a host-side
- * pointer the audit consumer joins on. The mail audit is keyed by the
- * deployment id plus the parsed messageId, which is unique per inbound
- * message and stable across the FIFO pipeline's
- * enqueue/dequeue/markConsumed transitions.
- */
-export function deriveSidecarMailAuditRef(runId: string): (
-  messageId: string,
-  rawMessage: Uint8Array,
-) => {
-  store: string;
-  path: string;
-} {
-  return (messageId, _rawMessage) => ({
-    store: "sidecar-mail-audit",
-    path: `${runId}/${messageId}`,
-  });
-}
-
-/**
  * Construct a per-deployment supervisor with the sidecar's bindings
  * pre-wired. The router calls this once per multi-step `agent.deploy`
  * frame to stand up the workflow-process child that hosts the
@@ -2956,7 +2934,6 @@ export function createSidecarWorkflowSupervisor(
     ...(opts.onSelfTerminate !== undefined
       ? { onSelfTerminate: opts.onSelfTerminate }
       : {}),
-    deriveMailAuditRef: deriveSidecarMailAuditRef(opts.runId),
     ...(opts.onDispatchTiming !== undefined
       ? { onDispatchTiming: opts.onDispatchTiming }
       : {}),

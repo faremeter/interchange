@@ -80,13 +80,11 @@ describe("workflow-run validatePush: deletion-bypass surface", () => {
       address: ADDR,
       runId: "run-1",
       consumedAt: 200,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     const inboxBody = JSON.stringify({
       messageId: "msg-1",
       receivedAt: 300,
       address: ADDR,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     const prior = {
       [`addresses/${ADDR_SEG}/consumed/msg-1.json`]: consumedBody,
@@ -111,7 +109,6 @@ describe("workflow-run validatePush: deletion-bypass surface", () => {
       messageId: "msg-1",
       receivedAt: 100,
       address: ADDR,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     const prior = {
       [`addresses/${ADDR_SEG}/processing/100-msg-1.json`]: body,
@@ -137,7 +134,6 @@ describe("workflow-run validatePush: deletion-bypass surface", () => {
       address: ADDR,
       runId: "run-1",
       consumedAt: 200,
-      mailAuditRef: { store: "audit", path: "mail/msg-1" },
     });
     const prior = {
       [`addresses/${ADDR_SEG}/consumed/msg-1.json`]: consumedBody,

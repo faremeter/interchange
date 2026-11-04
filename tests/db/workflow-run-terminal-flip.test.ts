@@ -256,7 +256,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: DEPLOYMENT_ADDRESS,
         messageId,
         receivedAt: now,
-        mailAuditRef: { store: "audit", path: `mail/${messageId}` },
       });
       await dequeueToProcessing(store, writer, repoId, DEPLOYMENT_ADDRESS);
       await markConsumed(store, writer, repoId, {

@@ -341,7 +341,6 @@ async function seedProcessingEntry(
     messageId: opts.messageId,
     receivedAt: opts.receivedAt,
     address: opts.address,
-    mailAuditRef: { store: "test", path: opts.messageId },
     rawMessage: base64Encode(rawMessage),
   };
   await fs.writeFile(
@@ -2061,7 +2060,6 @@ async function seedProcessingEntryInDir(
     messageId: opts.messageId,
     receivedAt: opts.receivedAt,
     address: opts.address,
-    mailAuditRef: { store: "test", path: opts.messageId },
     rawMessage: base64Encode(rawMessage),
   };
   await fs.writeFile(

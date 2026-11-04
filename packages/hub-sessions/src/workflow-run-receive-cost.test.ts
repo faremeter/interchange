@@ -123,7 +123,6 @@ async function manyRunsFixture(commits: number): Promise<PackFixture> {
         messageId,
         receivedAt: i,
         address: ADDRESS,
-        mailAuditRef: { store: "audit", path: `mail/${messageId}` },
       });
       inbox.push({ filename, body });
       puts[`${ADDRESS_DIR}/${WORKFLOW_RUN_INBOX_DIR}/${filename}`] = body;

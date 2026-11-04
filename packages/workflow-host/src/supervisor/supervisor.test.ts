@@ -526,7 +526,6 @@ function enqueuedOutcome(args: {
   address: string;
   messageId: string;
   receivedAt: number;
-  mailAuditRef: { store: string; path: string };
 }): EnqueueInboxOutcome {
   return {
     outcome: "enqueued",
@@ -536,7 +535,6 @@ function enqueuedOutcome(args: {
       messageId: args.messageId,
       receivedAt: args.receivedAt,
       address: args.address,
-      mailAuditRef: args.mailAuditRef,
     },
   };
 }
@@ -777,7 +775,6 @@ function createStubRepoStore(opts: {
 type MemoryInboxEntry = {
   messageId: string;
   receivedAt: number;
-  mailAuditRef: { store: string; path: string };
   rawMessage?: string;
   rejection?: { code: string; message: string };
 };
@@ -842,7 +839,6 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       const envelope: MemoryInboxEntry = {
         messageId: args.messageId,
         receivedAt: args.receivedAt,
-        mailAuditRef: args.mailAuditRef,
         ...(args.rawMessage !== undefined
           ? { rawMessage: args.rawMessage }
           : {}),
@@ -857,7 +853,6 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
           messageId: args.messageId,
           receivedAt: args.receivedAt,
           address: args.address,
-          mailAuditRef: args.mailAuditRef,
         },
       };
     },
@@ -884,7 +879,6 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
           messageId: envelope.messageId,
           receivedAt: envelope.receivedAt,
           address,
-          mailAuditRef: envelope.mailAuditRef,
           ...(envelope.rawMessage !== undefined
             ? { rawMessage: envelope.rawMessage }
             : {}),
@@ -923,7 +917,6 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
           address: args.address,
           runId: args.runId,
           consumedAt: args.consumedAt,
-          mailAuditRef: envelope.mailAuditRef,
           ...(args.rejection !== undefined
             ? { rejection: args.rejection }
             : {}),
@@ -2795,7 +2788,6 @@ describe("createWorkflowSupervisor", () => {
       address: string;
       messageId: string;
       receivedAt: number;
-      mailAuditRef: { store: string; path: string };
     }) => EnqueueInboxOutcome = () => {
       throw new Error("disk exploded");
     };
@@ -5812,10 +5804,6 @@ describe("supervisor inbox FIFO dispatch loop", () => {
   async function buildFifoTestFixture(opts: {
     label: string;
     inbox: InboxPrimitives;
-    deriveMailAuditRef?: (
-      messageId: string,
-      rawMessage: Uint8Array,
-    ) => { store: string; path: string };
   }) {
     const baseDir = await makeTempDir(opts.label);
     await seedStepGrants(baseDir, "step-1", [
@@ -5862,9 +5850,6 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
-      ...(opts.deriveMailAuditRef !== undefined
-        ? { deriveMailAuditRef: opts.deriveMailAuditRef }
-        : {}),
     };
     const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     const spawnPromise = supervisor.spawn({
@@ -5900,86 +5885,6 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       childSender,
     };
   }
-
-  test("default deriveMailAuditRef stamps `in-process` store on enqueued envelopes", async () => {
-    const inbox = createMemoryInboxPrimitives();
-    const { supervisor, mailBus } = await buildFifoTestFixture({
-      label: "fifo-default-audit-",
-      inbox,
-    });
-    mailBus.deliver(
-      "run_deployment-x@example.com",
-      new TextEncoder().encode("audit-default-1"),
-    );
-    // Wait for the enqueue to land in the in-memory inbox, which reports
-    // every mutation it makes. The dispatch loop may pull the entry into
-    // `processing` before the assertion fires (the loop dequeues immediately
-    // once the supervisor's spawn handshake completes), so the wait covers
-    // every claim-check substate -- and the entry never leaves all three, so
-    // a later move cannot take the state back out from under it.
-    await inbox.awaitState(() => {
-      const snap = inbox.snapshot("run_deployment-x@example.com");
-      return (
-        snap.inbox.size > 0 ||
-        snap.processing.size > 0 ||
-        snap.consumed.size > 0
-      );
-    });
-    const snapshot = inbox.snapshot("run_deployment-x@example.com");
-    const all = [
-      ...snapshot.consumed.values(),
-      ...snapshot.processing.values(),
-      ...snapshot.inbox.values(),
-    ];
-    expect(all.length).toBeGreaterThanOrEqual(1);
-    const first = all[0];
-    if (first === undefined) throw new Error("unreachable");
-    expect(first.mailAuditRef.store).toBe("in-process");
-    expect(first.mailAuditRef.path.length).toBeGreaterThan(0);
-    await supervisor.shutdown();
-  });
-
-  test("deriveMailAuditRef override is invoked with messageId and stamps the envelope", async () => {
-    const inbox = createMemoryInboxPrimitives();
-    const observed: { messageId: string; len: number }[] = [];
-    // The override being invoked is the event; the poll it replaces re-read
-    // the array on a timer until something landed in it.
-    const observedChanges = createChangeNotifier();
-    const { supervisor, mailBus } = await buildFifoTestFixture({
-      label: "fifo-override-audit-",
-      inbox,
-      deriveMailAuditRef: (messageId, rawMessage) => {
-        observed.push({ messageId, len: rawMessage.byteLength });
-        observedChanges.notify();
-        return {
-          store: "test-audit",
-          path: `deployment-x/${messageId}`,
-        };
-      },
-    });
-    const payload = new TextEncoder().encode("audit-override-1");
-    mailBus.deliver("run_deployment-x@example.com", payload);
-    await observedChanges.until(() => observed.length > 0);
-    expect(observed.length).toBe(1);
-    const observedEntry = observed[0];
-    if (observedEntry === undefined) throw new Error("unreachable");
-    expect(observedEntry.len).toBe(payload.byteLength);
-    expect(observedEntry.messageId.length).toBeGreaterThan(0);
-    const overrideSnapshot = inbox.snapshot("run_deployment-x@example.com");
-    const allEntries = [
-      ...overrideSnapshot.inbox.values(),
-      ...overrideSnapshot.processing.values(),
-      ...overrideSnapshot.consumed.values(),
-    ];
-    expect(allEntries.length).toBeGreaterThanOrEqual(1);
-    const first = allEntries[0];
-    if (first === undefined) throw new Error("unreachable");
-    expect(first.mailAuditRef.store).toBe("test-audit");
-    expect(first.mailAuditRef.path).toBe(
-      `deployment-x/${observedEntry.messageId}`,
-    );
-    await supervisor.shutdown();
-  });
 
   test("two queued messages fire once, then reject the post-terminal message", async () => {
     const inbox = createMemoryInboxPrimitives();
@@ -6048,7 +5953,6 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     state.processing.set("1000-msg-orphan", {
       messageId: "msg-orphan",
       receivedAt: 1000,
-      mailAuditRef: { store: "test", path: "test/orphan" },
       // The recovered entry must carry decodable mail bytes: the dispatch loop
       // decodes and commits them before forwarding the trigger.fire.
       rawMessage: base64Encode(

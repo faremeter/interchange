@@ -2660,10 +2660,6 @@ export async function simulateProcessingCrash(
       address,
       messageId,
       receivedAt,
-      mailAuditRef: {
-        store: "deploy-flow-env-simulated-crash",
-        path: `${address}/${messageId}`,
-      },
     },
   );
   const dequeued = await dequeueToProcessing(

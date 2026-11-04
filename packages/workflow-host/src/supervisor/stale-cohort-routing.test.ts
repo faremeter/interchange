@@ -92,7 +92,6 @@ function createMemoryInbox(): InboxPrimitives & {
   type E = {
     messageId: string;
     receivedAt: number;
-    mailAuditRef: { store: string; path: string };
     rawMessage?: string;
   };
   const st = new Map<
@@ -121,7 +120,6 @@ function createMemoryInbox(): InboxPrimitives & {
       const env: E = {
         messageId: args.messageId,
         receivedAt: args.receivedAt,
-        mailAuditRef: args.mailAuditRef,
         ...(args.rawMessage !== undefined
           ? { rawMessage: args.rawMessage }
           : {}),
@@ -135,7 +133,6 @@ function createMemoryInbox(): InboxPrimitives & {
           messageId: args.messageId,
           receivedAt: args.receivedAt,
           address: args.address,
-          mailAuditRef: args.mailAuditRef,
         },
       };
     },
@@ -156,7 +153,6 @@ function createMemoryInbox(): InboxPrimitives & {
           messageId: env.messageId,
           receivedAt: env.receivedAt,
           address,
-          mailAuditRef: env.mailAuditRef,
           ...(env.rawMessage !== undefined
             ? { rawMessage: env.rawMessage }
             : {}),
@@ -177,7 +173,6 @@ function createMemoryInbox(): InboxPrimitives & {
               address: args.address,
               runId: args.runId,
               consumedAt: args.consumedAt,
-              mailAuditRef: value.mailAuditRef,
             },
             watermark: 0,
             prunedMessageIds: [],
@@ -200,7 +195,6 @@ function createMemoryInbox(): InboxPrimitives & {
       s.processing.set(key, {
         messageId,
         receivedAt,
-        mailAuditRef: { store: "memory", path: messageId },
         rawMessage: base64Encode(
           new TextEncoder().encode(`Message-ID: ${messageId}\r\n\r\nbody`),
         ),

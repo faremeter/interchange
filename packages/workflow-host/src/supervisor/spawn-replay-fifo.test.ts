@@ -65,7 +65,6 @@ async function makeTempDir(prefix: string): Promise<string> {
 type MemoryEntry = {
   messageId: string;
   receivedAt: number;
-  mailAuditRef: { store: string; path: string };
   rawMessage?: string;
 };
 
@@ -122,7 +121,6 @@ function createGatedInboxPrimitives(): {
       const envelope: MemoryEntry = {
         messageId: args.messageId,
         receivedAt: args.receivedAt,
-        mailAuditRef: args.mailAuditRef,
         ...(args.rawMessage !== undefined
           ? { rawMessage: args.rawMessage }
           : {}),
@@ -136,7 +134,6 @@ function createGatedInboxPrimitives(): {
           messageId: args.messageId,
           receivedAt: args.receivedAt,
           address: args.address,
-          mailAuditRef: args.mailAuditRef,
           ...(args.rawMessage !== undefined
             ? { rawMessage: args.rawMessage }
             : {}),
@@ -164,7 +161,6 @@ function createGatedInboxPrimitives(): {
           messageId: envelope.messageId,
           receivedAt: envelope.receivedAt,
           address,
-          mailAuditRef: envelope.mailAuditRef,
           ...(envelope.rawMessage !== undefined
             ? { rawMessage: envelope.rawMessage }
             : {}),
@@ -195,7 +191,6 @@ function createGatedInboxPrimitives(): {
           address: args.address,
           runId: args.runId,
           consumedAt: args.consumedAt,
-          mailAuditRef: envelope.mailAuditRef,
         },
         watermark: 0,
         prunedMessageIds: [],
@@ -261,13 +256,10 @@ async function seedOrphanedProcessing(
   messageId: string,
   receivedAt: number,
 ): Promise<void> {
-  // The seed only needs the messageId; the supervisor's primitives
-  // do not validate the auditRef beyond passing it through.
   await primitives.enqueueInbox(store, { kind: "supervisor" }, repoId, {
     address,
     messageId,
     receivedAt,
-    mailAuditRef: { store: "memory", path: `audit/${messageId}` },
     // Decodable mail bytes: the dispatch loop decodes and commits them
     // before forwarding the trigger.fire for the recovered orphan.
     rawMessage: base64Encode(

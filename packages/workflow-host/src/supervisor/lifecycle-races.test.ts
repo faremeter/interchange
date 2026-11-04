@@ -51,7 +51,6 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
   type Entry = {
     messageId: string;
     receivedAt: number;
-    mailAuditRef: { store: string; path: string };
   };
   const state = new Map<
     string,
@@ -79,7 +78,6 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
       const envelope: Entry = {
         messageId: args.messageId,
         receivedAt: args.receivedAt,
-        mailAuditRef: args.mailAuditRef,
       };
       s.inbox.set(k, envelope);
       return {
@@ -90,7 +88,6 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
           messageId: args.messageId,
           receivedAt: args.receivedAt,
           address: args.address,
-          mailAuditRef: args.mailAuditRef,
         },
       };
     },
@@ -115,7 +112,6 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
           messageId: envelope.messageId,
           receivedAt: envelope.receivedAt,
           address,
-          mailAuditRef: envelope.mailAuditRef,
         },
       };
     },
@@ -143,7 +139,6 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
           address: args.address,
           runId: args.runId,
           consumedAt: args.consumedAt,
-          mailAuditRef: envelope.mailAuditRef,
         },
         watermark: 0,
         prunedMessageIds: [],
