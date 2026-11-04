@@ -145,10 +145,11 @@ export type SenderKeyCache = {
    * a user sender's hub principal key can rotate while the sidecar is
    * disconnected; and an address whose on-disk entry failed to load, because the
    * hub's re-push is what replaces the file the cache cannot read. Run addresses
-   * are excluded in both cases -- a run sender's key is the immutable
-   * `workflow_run.public_key`, the hub skips a reported run address whatever this
-   * returns, and a run sender's next grants barrier re-pushes its key anyway,
-   * which repairs a faulted file through `put`. This is a work-saving filter, not
+   * are excluded in both cases -- a run sender's key changes only when its
+   * sidecar is replaced, the hub skips a reported run address whatever this
+   * returns, and a run sender's next grants barrier re-pushes its current key
+   * with its mail, which repairs a faulted file through `put` and carries a
+   * replacement sidecar's key. This is a work-saving filter, not
    * a trust boundary -- the hub resolves every reported address on its own.
    */
   rotatableAddresses(): string[];

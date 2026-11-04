@@ -122,10 +122,11 @@ function mockDb(opts: {
   credentialRefs?: CredentialRefs;
   /** The anchor's legacy mail accept rule; absent means none. */
   legacyMailAccept?: LegacyMailAcceptRule;
-  /** Null models an anchor whose initialization has not published a key. */
+  /** The run principal's active key; null models a deployment whose
+   * initialization has not recorded one. */
   publicKey?: string | null;
   /**
-   * Set while a deploy has cleared the key and left the previous refs.
+   * Set while a replacement has retired the key and left the previous refs.
    * Absent means the anchor has no allocation row.
    */
   initializationLeaseId?: string | null;
@@ -191,6 +192,18 @@ function mockDb(opts: {
       if (opts.snapshotReads) opts.snapshotReads.count += 1;
       return [{ snapshot: opts.grantSnapshot }];
     }
+    // The run principal's active key: the deployment finished initializing
+    // when it has one.
+    if (
+      table === principalTable &&
+      joined &&
+      fields !== undefined &&
+      "publicKey" in fields
+    ) {
+      const publicKey =
+        opts.publicKey !== undefined ? opts.publicKey : "recorded-key";
+      return publicKey === null ? [] : [{ publicKey }];
+    }
     if (table === grantTable) {
       return opts.committedGrants === undefined
         ? insertedValues(grantTable).map((row) => ({ ...row, roleId: null }))
@@ -233,10 +246,7 @@ function mockDb(opts: {
                           expiresAt: null,
                           cancellationRequestedAt:
                             opts.lockedCancellationRequestedAt ?? null,
-                          publicKey:
-                            opts.publicKey !== undefined
-                              ? opts.publicKey
-                              : "recorded-key",
+                          tenantId: opts.deploymentRow.tenantId,
                           credentialRefs:
                             opts.credentialRefs !== undefined
                               ? opts.credentialRefs
@@ -474,7 +484,7 @@ describe("grantRowsWithLockedCredentialResolution", () => {
           bindings: [],
           hubConsumers: ["action:a", "tool:@acme/t"],
         },
-        publicKey: "recorded-key",
+        initialized: true,
         initializationLeaseId: null,
       },
       args,
@@ -497,7 +507,7 @@ describe("grantRowsWithLockedCredentialResolution", () => {
     expect(
       credentialResolutionUnrecorded({
         credentialRefs: null,
-        publicKey: "recorded-key",
+        initialized: true,
         initializationLeaseId: null,
       }),
     ).toBe(false);
@@ -527,7 +537,7 @@ describe("grantRowsWithLockedCredentialResolution", () => {
       [creator, stale],
       {
         credentialRefs: null,
-        publicKey: "recorded-key",
+        initialized: true,
         initializationLeaseId: null,
       },
       args,
@@ -551,7 +561,7 @@ describe("grantRowsWithLockedCredentialResolution", () => {
     expect(
       credentialResolutionUnrecorded({
         credentialRefs: refs,
-        publicKey: null,
+        initialized: false,
         initializationLeaseId: null,
       }),
     ).toBe(false);
@@ -559,7 +569,7 @@ describe("grantRowsWithLockedCredentialResolution", () => {
       [],
       {
         credentialRefs: refs,
-        publicKey: null,
+        initialized: false,
         initializationLeaseId: null,
       },
       args,
@@ -595,7 +605,7 @@ describe("grantRowsWithLockedCredentialResolution", () => {
     expect(
       credentialResolutionUnrecorded({
         credentialRefs: refs,
-        publicKey: null,
+        initialized: false,
         initializationLeaseId: "lease-1",
       }),
     ).toBe(true);
@@ -604,7 +614,7 @@ describe("grantRowsWithLockedCredentialResolution", () => {
         [],
         {
           credentialRefs: refs,
-          publicKey: null,
+          initialized: false,
           initializationLeaseId: "lease-1",
         },
         args,

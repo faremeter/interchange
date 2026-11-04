@@ -332,8 +332,11 @@ type MockDBOpts = {
     bindings: { handle: string; credentialId: string; consumer: string }[];
     hubConsumers?: string[];
   };
-  /** Null models an anchor whose initialization has not published a key. */
-  publicKey?: string | null;
+  /**
+   * The active key of the anchor's run principal. Null models an anchor whose
+   * initialization has not recorded a key.
+   */
+  runPrincipalKey?: string | null;
   initializationLeaseId?: string | null;
   /**
    * The deployment's recorded deployer. Absent means an active deployer;
@@ -386,6 +389,19 @@ function createMockDB(opts: MockDBOpts) {
           return inserts
             .filter((record) => record.table === principalTable)
             .map((record) => record.values);
+        }
+        // The initialization check reads the active key of the anchor's run
+        // principal.
+        if (
+          table === principalTable &&
+          fields !== undefined &&
+          "publicKey" in fields
+        ) {
+          const key =
+            opts.runPrincipalKey !== undefined
+              ? opts.runPrincipalKey
+              : "recorded-key";
+          return key === null ? [] : [{ publicKey: key }];
         }
         if (table === sidecarAllocationTable) {
           const status = opts.allocationStatus ?? "allocated";
@@ -460,6 +476,7 @@ function createMockDB(opts: MockDBOpts) {
           : [
               {
                 id: opts.deploymentRow.id,
+                tenantId: opts.deploymentRow.tenantId,
                 allocationId: opts.allocationId ?? null,
                 allocationStatus:
                   opts.allocationId === undefined
@@ -469,10 +486,6 @@ function createMockDB(opts: MockDBOpts) {
                   opts.topLevelRunStatus ?? opts.anchorStatus ?? "running",
                 cancellationRequestedAt: opts.cancellationRequestedAt ?? null,
                 expiresAt: opts.expiresAt ?? null,
-                publicKey:
-                  opts.publicKey !== undefined
-                    ? opts.publicKey
-                    : "recorded-key",
                 credentialRefs:
                   opts.credentialRefs !== undefined
                     ? opts.credentialRefs
@@ -3331,7 +3344,7 @@ describe("POST /workflows/:anchorRunId/mail", () => {
         deploymentRow,
         assetRow: workflowAssetRow,
         inserts,
-        publicKey: null,
+        runPrincipalKey: null,
       },
       workflowJson: WORKFLOW_JSON_WITH_TOOLS,
     });

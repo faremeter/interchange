@@ -16,6 +16,7 @@ import type {
   PrincipalKeyStore,
   RunTokenStore,
 } from "@intx/db";
+import { runPrincipalActiveKeySql } from "@intx/db";
 import { getLogger } from "@intx/log";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { extractPartByPath } from "@intx/mime";
@@ -142,6 +143,7 @@ const RUN_STATUSES_BY_VIEW_STATUS: Record<
 type RunListRow = {
   run: typeof workflowRun.$inferSelect;
   definitionName: string;
+  publicKey: string | null;
 };
 
 // Shape a listed run into the routing record the run view expects, through the
@@ -151,7 +153,7 @@ function runToRecord(row: RunListRow): RoutableRecord {
   if (row.run.address === null) {
     throw new Error(`run ${row.run.id} listed with a null address`);
   }
-  return runRowToRoutableRecord(row.run, row.run.address);
+  return runRowToRoutableRecord(row.run, row.run.address, row.publicKey);
 }
 
 export type CreateRunRoutesDeps = {
@@ -332,6 +334,10 @@ export function createRunRoutes({
           .select({
             run: workflowRun,
             definitionName: workflowDefinition.name,
+            publicKey: runPrincipalActiveKeySql(
+              workflowRun.tenantId,
+              workflowRun.id,
+            ),
           })
           .from(workflowRun)
           .innerJoin(

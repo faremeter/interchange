@@ -69,6 +69,7 @@ import {
   seedModelProvider,
   seedPrincipal,
   seedProvider,
+  seedRunPrincipalKey,
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
@@ -1192,10 +1193,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         h.db,
       ).findByAnchorRunId(prepared.anchorRunId);
       if (allocation === null) throw new Error("expected adopted allocation");
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: "committed-key" })
-        .where(eq(workflowRun.id, prepared.anchorRunId));
+      await seedRunPrincipalKey(
+        h.db,
+        TENANT_ID,
+        prepared.anchorRunId,
+        "committed-key",
+      );
       const reconciliation = {
         signal: new AbortController().signal,
         leaseId: "initialization-test",

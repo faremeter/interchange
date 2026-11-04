@@ -17,6 +17,7 @@ import {
 } from "@intx/test-harness/db-harness";
 import {
   seedPrincipal,
+  seedRunPrincipalKey,
   seedTenants,
   seedRunToken,
 } from "@intx/test-harness/seed";
@@ -198,6 +199,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     function complete(type: "RunCompleted" | "RunFailed") {
       events = [{ seq: 1, type, body: { type, at: current.toISOString() } }];
+    }
+
+    // Record the key the deployment's sidecar minted, as a completed first
+    // deploy does. A key is unique, so each deployment gets its own.
+    async function recordRunKey(id: string): Promise<void> {
+      await seedRunPrincipalKey(h.db, tenantId, id, `key-${id}`);
     }
 
     // A receive whose run-status projection failed leaves this row behind.
@@ -525,13 +532,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("a terminal copy without a retention deadline transfers once and keeps its allocation", async () => {
+      await recordRunKey(runId);
       await h.db
         .update(workflowRun)
         .set({
           status: "completed",
           endedAt: current,
           lifecyclePolicy: null,
-          publicKey: "ab".repeat(32),
         })
         .where(eq(workflowRun.id, runId));
       let kept = false;
@@ -589,10 +596,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           definitionId: "definition",
           status: "completed",
           endedAt: current,
-          publicKey: "ab".repeat(32),
           address: `${id}@example.test`,
           createdAt,
         });
+        await recordRunKey(id);
         await h.db.insert(sidecarAllocation).values({
           ...template,
           id: retainedAllocationId,
@@ -698,13 +705,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("a kept copy remains sweep work until its history handoff completes", async () => {
+      await recordRunKey(runId);
       await h.db
         .update(workflowRun)
         .set({
           status: "completed",
           endedAt: current,
           lifecyclePolicy: null,
-          publicKey: "ab".repeat(32),
         })
         .where(eq(workflowRun.id, runId));
       let recovered = false;
@@ -739,13 +746,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("unreceived retained history does not extend the release deadline", async () => {
+      await recordRunKey(runId);
       await h.db
         .update(workflowRun)
         .set({
           status: "failed",
           endedAt: current,
           lifecyclePolicy: { capacityRetention: { failed: "1m" } },
-          publicKey: "ab".repeat(32),
         })
         .where(eq(workflowRun.id, runId));
       let requests = 0;
@@ -775,12 +782,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test.each(["completed", "failed", "cancelled"] as const)(
       "retention overflow releases a %s copy without changing its outcome",
       async (status) => {
+        await recordRunKey(runId);
         await h.db
           .update(workflowRun)
           .set({
             status,
             endedAt: current,
-            publicKey: "ab".repeat(32),
             failureCode: status === "failed" ? "original_failure" : null,
             lifecyclePolicy: { capacityRetention: { [status]: "1d" } },
           })
@@ -817,6 +824,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test.each(["saved", "derived"] as const)(
       "a %s release deadline that is already due never reserves a kept slot",
       async (deadline) => {
+        await recordRunKey(runId);
         await h.db
           .update(workflowRun)
           .set({
@@ -824,7 +832,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
             endedAt: new Date(
               current.getTime() - (deadline === "saved" ? 30_000 : 60_000),
             ),
-            publicKey: "ab".repeat(32),
             lifecyclePolicy: { capacityRetention: { completed: "1m" } },
             capacityReleaseAt: deadline === "saved" ? current : null,
           })
@@ -855,9 +862,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     );
 
     test("retention stops a terminal copy before history recovery but overflow cleanup waits for accepted history", async () => {
+      await recordRunKey(runId);
       await h.db
         .update(workflowRun)
-        .set({ status: "failed", endedAt: current, publicKey: "ab".repeat(32) })
+        .set({ status: "failed", endedAt: current })
         .where(eq(workflowRun.id, runId));
       await leavePending();
       let refused = false;
@@ -911,12 +919,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("refused retention still expires at its policy deadline when accepted history cannot be recovered", async () => {
+      await recordRunKey(runId);
       await h.db
         .update(workflowRun)
         .set({
           status: "failed",
           endedAt: current,
-          publicKey: "ab".repeat(32),
           lifecyclePolicy: { capacityRetention: { failed: "1m" } },
         })
         .where(eq(workflowRun.id, runId));
@@ -954,13 +962,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("an unconfirmed retain keeps its reservation until retained inventory confirms it without another request", async () => {
+      await recordRunKey(runId);
       await h.db
         .update(workflowRun)
         .set({
           status: "completed",
           endedAt: current,
           lifecyclePolicy: null,
-          publicKey: "ab".repeat(32),
         })
         .where(eq(workflowRun.id, runId));
       // This copy occupies the last active slot until its retained proof arrives.
@@ -1056,12 +1064,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test.each(["none", "other status", "future"] as const)(
       "a confirmed kept copy with %s retention work is not revisited",
       async (policy) => {
+        await recordRunKey(runId);
         await h.db
           .update(workflowRun)
           .set({
             status: "completed",
             endedAt: current,
-            publicKey: "ab".repeat(32),
             lifecyclePolicy:
               policy === "none"
                 ? null
@@ -1084,12 +1092,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("kept copies still recover accepted history and release when their deadline arrives", async () => {
       const deadline = new Date(current.getTime() + 60_000);
+      await recordRunKey(runId);
       await h.db
         .update(workflowRun)
         .set({
           status: "completed",
           endedAt: current,
-          publicKey: "ab".repeat(32),
           lifecyclePolicy: null,
           capacityReleaseAt: deadline,
         })
@@ -1111,12 +1119,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("retention waits quietly while disconnected and resumes on a current connection", async () => {
+      await recordRunKey(runId);
       await h.db
         .update(workflowRun)
         .set({
           status: "completed",
           endedAt: current,
-          publicKey: "ab".repeat(32),
           lifecyclePolicy: null,
         })
         .where(eq(workflowRun.id, runId));
@@ -1154,12 +1162,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("retention scheduling ignores a candidate for an older generation", async () => {
+      await recordRunKey(runId);
       await h.db
         .update(workflowRun)
         .set({
           status: "completed",
           endedAt: current,
-          publicKey: "ab".repeat(32),
           lifecyclePolicy: null,
         })
         .where(eq(workflowRun.id, runId));

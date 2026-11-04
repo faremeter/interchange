@@ -75,6 +75,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.close();
     });
 
+    // Record the key a completed initialization leaves: on the anchor and as
+    // the active key of its run principal.
+    async function recordAnchorKey(publicKey: string) {
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey })
+        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      await recordPublicKey(h.db, ANCHOR_RUN_PRINCIPAL_ID, publicKey);
+    }
+
     // The keys of the anchor's run principal, oldest first.
     async function runPrincipalKeys() {
       return h.db
@@ -670,10 +680,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const id = "alloc-cleanup-disconnected";
       const store = await bindFirstGeneration(id, ANCHOR_RUN_ID);
       await store.markAllocated({ allocationId: id, generation: 1 });
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: "committed-key" })
-        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      await recordAnchorKey("committed-key");
       const at = new Date();
       const disconnected = await store.markConnectionLost({
         allocationId: id,
@@ -1687,10 +1694,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             }),
           ).toMatchObject({ status: "running" });
 
-          await h.db
-            .update(workflowRun)
-            .set({ publicKey: "restored-key" })
-            .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+          await recordAnchorKey("restored-key");
           restored = false;
           const healthy = createSidecarAllocationReconciler(options);
           await healthy.initialize();
@@ -4407,7 +4411,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const locked = Promise.withResolvers<boolean>();
       const unlock = Promise.withResolvers<boolean>();
       const blocker = h.db.transaction(async (tx) => {
-        await tx.execute(sql`lock table workflow_run in access exclusive mode`);
+        // Recovery reads the run principal's key, so blocking that table
+        // holds each recovery read open.
+        await tx.execute(
+          sql`lock table principal_key in access exclusive mode`,
+        );
         locked.resolve(true);
         await unlock.promise;
       });
@@ -5248,10 +5256,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(deploying?.connectDeadline).toEqual(firstConnectDeadline);
       expect(deploying?.nextAttemptAt).toEqual(firstConnectDeadline);
 
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: "committed-key" })
-        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      await recordAnchorKey("committed-key");
       const deadline = new Date(lostAt.getTime() + 120_000);
       const disconnected = await store.markConnectionLost({
         allocationId: "alloc-reconnect",
@@ -5329,10 +5334,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(kept?.connectDeadline).toEqual(fresh);
 
       // Once its first deploy completed, it gets its whole disconnect limit.
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: "committed-key" })
-        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      await recordAnchorKey("committed-key");
       const running = await store.scheduleReconnectAfterHubStart({
         ...target,
         now: startedAt,
@@ -5376,10 +5378,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         allocationId: "alloc-repair",
         generation: 1,
       });
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: "committed-key" })
-        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      await recordAnchorKey("committed-key");
 
       const repairedAt = new Date();
       const deadline = new Date(repairedAt.getTime() + 120_000);

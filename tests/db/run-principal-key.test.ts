@@ -8,14 +8,24 @@ import {
 } from "bun:test";
 import { asc, eq } from "drizzle-orm";
 
-import { recordRunPrincipalKey, retireRunPrincipalKey } from "@intx/db";
-import { principalKey } from "@intx/db/schema";
+import {
+  recordRunPrincipalKey,
+  retireRunPrincipalKey,
+  runPrincipalActiveKeySql,
+  runPrincipalHasActiveKey,
+} from "@intx/db";
+import { principalKey, workflowDefinition, workflowRun } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedRunPrincipalKey,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 
 const TENANT = "tnt_rpk";
 const RUN_ID = "run_rpk";
@@ -80,6 +90,54 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       expect(await keys()).toEqual([
         { publicKey: FIRST_KEY, status: "active" },
+      ]);
+    });
+
+    test("a query over many runs reads each run's own active key", async () => {
+      const OTHER_TENANT = "tnt_rpk_other";
+      await seedTenants(h.db, [{ id: OTHER_TENANT }]);
+      for (const id of [RUN_ID, "run_retired", "run_unkeyed", "run_foreign"]) {
+        await seedWorkflowRun(h.db, { id, tenantId: TENANT, anchorRunId: id });
+      }
+      await recordRunPrincipalKey(h.db, TENANT, RUN_ID, FIRST_KEY);
+      await seedRunPrincipalKey(h.db, TENANT, "run_retired", REPLACEMENT_KEY);
+      await retireRunPrincipalKey(h.db, TENANT, "run_retired");
+      // A run principal with the same run id in another tenant is not the
+      // run's principal.
+      await seedRunPrincipalKey(
+        h.db,
+        OTHER_TENANT,
+        "run_foreign",
+        "cc".repeat(32),
+      );
+
+      // Joined, as the run list reads runs, so the subqueries' outer columns
+      // are qualified against more than one table in scope.
+      const rows = await h.db
+        .select({
+          id: workflowRun.id,
+          publicKey: runPrincipalActiveKeySql(
+            workflowRun.tenantId,
+            workflowRun.id,
+          ),
+          initialized: runPrincipalHasActiveKey(
+            workflowRun.tenantId,
+            workflowRun.id,
+          ),
+        })
+        .from(workflowRun)
+        .innerJoin(
+          workflowDefinition,
+          eq(workflowDefinition.id, workflowRun.definitionId),
+        )
+        .where(eq(workflowRun.tenantId, TENANT))
+        .orderBy(asc(workflowRun.id));
+
+      expect(rows).toEqual([
+        { id: "run_foreign", publicKey: null, initialized: false },
+        { id: "run_retired", publicKey: null, initialized: false },
+        { id: RUN_ID, publicKey: FIRST_KEY, initialized: true },
+        { id: "run_unkeyed", publicKey: null, initialized: false },
       ]);
     });
 

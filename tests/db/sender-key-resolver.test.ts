@@ -10,8 +10,10 @@ import {
 import {
   auditSenderKeys,
   createPrincipalKeyStore,
+  recordRunPrincipalKey,
   resolveSenderKey,
   resolveFrameSenderKey,
+  retireRunPrincipalKey,
   senderCoordinates,
   type PrincipalKeyStore,
 } from "@intx/db";
@@ -189,8 +191,8 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
   test("returns null for a run whose deploy has not been acked yet", async () => {
     await seedTenant("tnt_preack", "preack.localhost");
     const address = "run_preack01@preack.localhost";
-    // A deployed-but-not-yet-acked anchor carries an address with a null
-    // public_key; that is the expected pre-ack state, not an error.
+    // A deployed-but-not-yet-acked anchor carries an address, and its run
+    // principal holds no key; that is the expected pre-ack state, not an error.
     await seedWorkflowRun(h.db, {
       id: "run_preack01",
       tenantId: "tnt_preack",
@@ -200,6 +202,29 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
     });
 
     expect(await resolveSenderKey(h.db, store, address)).toBeNull();
+  });
+
+  test("resolves a run to the key its replacement sidecar recorded, not the retired one", async () => {
+    await seedTenant("tnt_rotate", "rotate.localhost");
+    const address = "run_rotate01@rotate.localhost";
+    await seedWorkflowRun(h.db, {
+      id: "run_rotate01",
+      tenantId: "tnt_rotate",
+      address,
+      publicKey: RUN_PUBLIC_KEY,
+      status: "running",
+    });
+
+    // Replacing the sidecar retires the key the old sidecar held.
+    await retireRunPrincipalKey(h.db, "tnt_rotate", "run_rotate01");
+    expect(await resolveSenderKey(h.db, store, address)).toBeNull();
+
+    const rotated = "cd".repeat(32);
+    await recordRunPrincipalKey(h.db, "tnt_rotate", "run_rotate01", rotated);
+    expect(await resolveSenderKey(h.db, store, address)).toMatchObject({
+      source: "run",
+      publicKey: rotated,
+    });
   });
 
   test("returns null for an unknown run address", async () => {

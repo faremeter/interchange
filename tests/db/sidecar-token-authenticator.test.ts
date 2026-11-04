@@ -9,6 +9,7 @@ import {
 
 import { sha256 } from "@intx/crypto";
 import {
+  retireRunPrincipalKey,
   SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
   SIDECAR_CLEANUP_DISCONNECT_TIMEOUT_FAILURE_CODE,
 } from "@intx/db";
@@ -30,6 +31,7 @@ import {
 } from "@intx/test-harness/db-harness";
 import {
   seedAsset,
+  seedRunPrincipalKey,
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
@@ -63,6 +65,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT_ID }]);
     });
+
+    // Record the key the deployment's sidecar minted, as a completed first
+    // deploy does. A key is unique, so each deployment gets its own.
+    async function recordAnchorKey(anchorRunId: string): Promise<void> {
+      await seedRunPrincipalKey(
+        h.db,
+        TENANT_ID,
+        anchorRunId,
+        `key-${anchorRunId}`,
+      );
+    }
 
     // Seed a sidecar identity the same way provisioning does: store the
     // SHA-256 digest of the token as the `bytea` hash. `url` is not read
@@ -423,10 +436,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await resolver.isCurrent(binding, "routing")).toBe(true);
       expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
 
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: "public-key" })
-        .where(eq(workflowRun.id, binding.anchorRunId));
+      await recordAnchorKey(binding.anchorRunId);
       expect(await resolver.isCurrent(binding, "reclaim")).toBe(true);
 
       await h.db
@@ -441,10 +451,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const resolver = createSidecarCredentialResolver({ db: h.db });
       const allowed = () => resolver.isCurrent(binding, "retention-transition");
       expect(await allowed()).toBe(false);
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: "public-key" })
-        .where(eq(workflowRun.id, binding.anchorRunId));
+      await recordAnchorKey(binding.anchorRunId);
       expect(await allowed()).toBe(false);
       await h.db
         .update(workflowRun)
@@ -481,19 +488,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .update(sidecarAllocation)
         .set({ initializationLeaseId: null })
         .where(eq(sidecarAllocation.id, binding.allocationId));
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: null })
-        .where(eq(workflowRun.id, binding.anchorRunId));
+      await h.db.transaction((tx) =>
+        retireRunPrincipalKey(tx, TENANT_ID, binding.anchorRunId),
+      );
       expect(await allowed()).toBe(false);
     });
 
     test("retains instead of reclaiming a copy of a run that ended on its own", async () => {
       const binding = await seedSidecar({ id: "sc-ended", token: "t" });
       const resolver = createSidecarCredentialResolver({ db: h.db });
+      await recordAnchorKey(binding.anchorRunId);
       await h.db
         .update(workflowRun)
-        .set({ publicKey: "public-key", status: "failed", endedAt: new Date() })
+        .set({ status: "failed", endedAt: new Date() })
         .where(eq(workflowRun.id, binding.anchorRunId));
       expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
       // Its copy stays, unrouted, until the Hub releases the deployment.
@@ -513,10 +520,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           db: h.db,
           now: () => now,
         });
+        await recordAnchorKey(binding.anchorRunId);
         await h.db
           .update(workflowRun)
           .set({
-            publicKey: "public-key",
             status: "completed",
             endedAt,
             lifecyclePolicy: { capacityRetention: { completed: "1m" } },
@@ -539,9 +546,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("retains a Hub-ended copy only once its run is terminal", async () => {
       const binding = await seedSidecar({ id: "sc-cancelled", token: "t" });
       const resolver = createSidecarCredentialResolver({ db: h.db });
+      await recordAnchorKey(binding.anchorRunId);
       await h.db
         .update(workflowRun)
-        .set({ publicKey: "public-key", cancellationRequestedAt: new Date() })
+        .set({ cancellationRequestedAt: new Date() })
         .where(eq(workflowRun.id, binding.anchorRunId));
       // A run still cancelling keeps its copy, which records the cancel.
       expect(await resolver.isCurrent(binding, "reclaim")).toBe(true);
@@ -555,10 +563,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await resolver.isCurrent(binding, "retention")).toBe(true);
 
       const failed = await seedSidecar({ id: "sc-failed", token: "t2" });
+      await recordAnchorKey(failed.anchorRunId);
       await h.db
         .update(workflowRun)
         .set({
-          publicKey: "public-key",
           failureCode: "sidecar_deployment_stopped",
           infrastructureFailedAt: new Date(),
         })

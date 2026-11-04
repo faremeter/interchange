@@ -764,9 +764,9 @@ describe("SidecarRouter allocation mail durability", () => {
   test("re-resolves and co-delivers a keyless run sender's key on reconnect replay", async () => {
     // A trigger tracked with NO captured senderIdentities and a RUN-address
     // sender is the gap: replaying it as-is would leave the recipient with no
-    // key and see the sender as unknown. A run's deployment key is immutable
-    // once acked, so re-resolving at replay is safe and co-delivers the key
-    // ahead of the mail.
+    // key and see the sender as unknown. A run's key changes only when its
+    // sidecar is replaced, so re-resolving at replay is safe and co-delivers
+    // the key ahead of the mail.
     const runSender = "run_peer@tenant.example";
     const hexKey = "ee".repeat(32);
     const router = createAllocatedRouter({

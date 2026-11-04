@@ -10,6 +10,7 @@ import { eq, and, asc, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { DB } from "@intx/db";
 import {
   createApprovalStore,
+  runPrincipalActiveKeySql,
   createSignalCorrelationStore,
   createWorkflowPendingProjectionStore,
   createWorkflowRunStore,
@@ -636,7 +637,6 @@ export interface RoutableEndpoint {
   readonly id: string;
   readonly tenantId: string;
   readonly address: string;
-  readonly publicKey: string | null;
   /**
    * The endpoint's raw run status. Resolution is `endedAt`-filtered, so a
    * resolved endpoint is not necessarily live: a leaked run is deliberately
@@ -668,7 +668,6 @@ export async function resolveRoutableAddress(
     .select({
       id: workflowRun.id,
       tenantId: workflowRun.tenantId,
-      publicKey: workflowRun.publicKey,
       status: workflowRun.status,
       principalId: workflowRun.principalId,
     })
@@ -685,7 +684,6 @@ export async function resolveRoutableAddress(
     id: runRow.id,
     tenantId: runRow.tenantId,
     address,
-    publicKey: runRow.publicKey,
     status: runRow.status,
     sessionId: await resolveRunSessionId(db, runRow.principalId),
   };
@@ -795,17 +793,16 @@ export interface RoutableRecord {
 }
 
 /**
- * Shape a run row and its already-resolved routing address into the run
- * record. Callers decide whether the run resolves at all -- only a top-level
- * run (`isTopLevelRun`) does -- and pass the address they have narrowed; this
- * only maps the columns, including the run's `endedAt ?? createdAt` stand-in
- * for the absent `updatedAt`.
+ * Shape a run row, its already-resolved routing address, and the active key
+ * of its run principal into the run record. Callers decide whether the run
+ * resolves at all -- only a top-level run (`isTopLevelRun`) does -- and pass
+ * the address they have narrowed; this only maps the columns, including the
+ * run's `endedAt ?? createdAt` stand-in for the absent `updatedAt`.
  */
 export function runRowToRoutableRecord(
   run: {
     id: string;
     tenantId: string;
-    publicKey: string | null;
     status: string;
     createdAt: Date;
     endedAt: Date | null;
@@ -818,6 +815,7 @@ export function runRowToRoutableRecord(
     infrastructureFailedAt: Date | null;
   },
   address: string,
+  publicKey: string | null,
 ): RoutableRecord {
   // A failure the Hub decided waits on history still being reconciled, and is
   // dropped if that history ends the run first, so only a failed run whose
@@ -828,7 +826,7 @@ export function runRowToRoutableRecord(
     id: run.id,
     tenantId: run.tenantId,
     address,
-    publicKey: run.publicKey,
+    publicKey,
     status: run.status,
     createdAt: run.createdAt,
     updatedAt: run.endedAt ?? run.createdAt,
@@ -873,7 +871,7 @@ export async function findRoutableById(
       tenantId: workflowRun.tenantId,
       address: workflowRun.address,
       anchorRunId: workflowRun.anchorRunId,
-      publicKey: workflowRun.publicKey,
+      publicKey: runPrincipalActiveKeySql(workflowRun.tenantId, workflowRun.id),
       status: workflowRun.status,
       createdAt: workflowRun.createdAt,
       endedAt: workflowRun.endedAt,
@@ -905,5 +903,6 @@ export async function findRoutableById(
   return runRowToRoutableRecord(
     { ...runRow, definitionId: runRow.definitionId },
     runRow.address,
+    runRow.publicKey,
   );
 }

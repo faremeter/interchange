@@ -547,9 +547,9 @@ const orchestrator = createSidecarOrchestrator({
   // Report the sidecar's cached rotatable senders on every (re)connect so the
   // hub re-resolves each current key and re-pushes it, catching a rotation that
   // landed while the sidecar was disconnected. The cache owns the "only user
-  // senders rotate" filter (a run sender's key is the immutable
-  // workflow_run.public_key); the link stays source-opaque and reports whatever
-  // this returns.
+  // senders rotate" filter (a run sender's key reaches the cache with that
+  // run's mail, on its grants barrier); the link stays source-opaque and
+  // reports whatever this returns.
   getCachedSenderAddresses: () => senderKeyCache.rotatableAddresses(),
   // When the Hub's `welcome` routes a held incarnation again, re-drive any
   // workflow-run pack the disconnect cancelled. The Hub has routed the

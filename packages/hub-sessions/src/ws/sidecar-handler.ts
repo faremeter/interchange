@@ -1033,7 +1033,7 @@ export function createSidecarRouter(
   const pendingMailRetention = new Map<string, ReturnType<typeof setTimeout>>();
   // sender address → pre-ack mail parked while the sender's public key is not
   // yet recorded. A run mints its signing keypair locally at the sidecar and can
-  // send mail before the hub has recorded its `public_key`; such mail resolves a
+  // send mail before the hub has recorded its public key; such mail resolves a
   // null sender key, so no key co-delivers and a strict recipient drops it as an
   // unknown sender. Each entry holds what a re-drive of `handleMailOutbound`
   // needs -- the raw message and its recipients -- plus a per-entry TTL timer.
@@ -1350,9 +1350,13 @@ export function createSidecarRouter(
   //     caches the key ahead of the mail;
   //   - `undefined` when nothing must precede the mail.
   //
-  // The re-resolve is KIND-GATED to run-address senders only. A run's
-  // deployment key is immutable once acked, so the re-resolved key equals the
-  // signing-time key -- safe. A user (non-run) sender's key may have rotated
+  // The re-resolve is KIND-GATED to run-address senders only. A run's key
+  // changes only when its sidecar is replaced, so the re-resolve returns the
+  // signing-time key, except for mail the replaced sidecar signed and that is
+  // replayed after the replacement: that resolves to no key, or to the
+  // replacement's key, which fails the check. The hub never vouches for a
+  // retired key, so the mail is refused rather than admitted. A user (non-run)
+  // sender's key may have rotated
   // since it signed, so re-resolving would check the fixed signed bytes against
   // a newer key and turn a valid message into a false `invalid`; such a sender
   // lacking a captured key stays keyless (an honest `unknown`). An entry that
@@ -1404,9 +1408,10 @@ export function createSidecarRouter(
   }
 
   // Best-effort re-resolve of a run sender's hub-held key at replay time. Only
-  // called for a run-address sender, whose deployment key is immutable once
-  // acked, so the current key equals the signing-time key. Returns null when no
-  // resolver is wired or the sender has no durable key.
+  // called for a run-address sender, whose key changes only when its sidecar is
+  // replaced; the hub vouches for no retired key, so the current key is the
+  // right one to co-deliver. Returns null when no resolver is wired or the
+  // sender has no durable key.
   //
   // This relies on `lookups.resolveSenderKey` being the BEST-EFFORT,
   // NEVER-THROWS resolver (the contract at sidecar-events.ts:274-279, wired to
@@ -2954,9 +2959,10 @@ export function createSidecarRouter(
       void (async () => {
         for (const address of sendersToResync) {
           // The sidecar already reports only non-run senders, but do not trust
-          // the report: a run sender's key is the immutable
-          // workflow_run.public_key and is never refreshed or evicted, so skip
-          // it here too rather than couple correctness to the sidecar's filter.
+          // the report: a run sender's key reaches a receiver with that run's
+          // next mail, on its grants barrier, and is never refreshed or
+          // evicted here, so skip it here too rather than couple correctness
+          // to the sidecar's filter.
           if (isRunAddress(address)) continue;
           // Tri-state, deleted-vs-fault distinguished by the STRICT resolver:
           //   - resolves to a key -> refresh the sidecar's cached key;
@@ -4966,8 +4972,9 @@ export function createSidecarRouter(
     //
     // Resolve its key here, at dispatch (redelivery) time, from that persisted
     // address, to co-deliver on the run's grants barrier so the recipient
-    // caches the sender's current hub-held key. A run sender's deployment key
-    // is immutable once acked; a user sender's key rotating mid-flight would
+    // caches the sender's current hub-held key. A run sender's key changes
+    // only when its sidecar is replaced, and the hub vouches for no retired
+    // key; a user sender's key rotating mid-flight would
     // leave the fixed signed bytes checked against the new key, which the
     // recipient logs as unverifiable. Null when unresolvable (no resolver
     // wired, or the sender has no durable key). The lookup contract (see

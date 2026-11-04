@@ -1,6 +1,7 @@
 import { and, eq, inArray, or } from "drizzle-orm";
 import { sha256 } from "@intx/crypto";
 import {
+  loadRunPrincipalActiveKey,
   workflowRunExecutability,
   workflowCapacityReleaseAt,
   type DB,
@@ -199,7 +200,6 @@ export function createSidecarCredentialResolver({
     const anchor = await db.query.workflowRun.findFirst({
       columns: {
         address: true,
-        publicKey: true,
         status: true,
         expiresAt: true,
         cancellationRequestedAt: true,
@@ -212,7 +212,13 @@ export function createSidecarCredentialResolver({
     });
     if (anchor?.address !== identity.workflowRunAddress) return false;
     if (!copyCheck) return true;
-    if (anchor.publicKey === null) return false;
+    const initialized =
+      (await loadRunPrincipalActiveKey(
+        db,
+        identity.tenantId,
+        identity.anchorRunId,
+      )) !== null;
+    if (!initialized) return false;
     // The Hub may have ended the run without the worker recording it, so the
     // run row, not the copy that reconnects, decides whether it is over.
     const ended = workflowRunExecutability(anchor) === "terminal";
