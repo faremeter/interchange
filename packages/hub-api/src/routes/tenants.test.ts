@@ -42,11 +42,11 @@ function principalWith(status: PrincipalRow["status"]): PrincipalRow {
   };
 }
 
-function manageGrant(): GrantRule {
+function allowGrant(resource: string, action: string): GrantRule {
   return {
-    id: "grant-tenant-manage",
-    resource: `tenant:${TENANT_ID}`,
-    action: "manage",
+    id: `grant-${resource}-${action}`,
+    resource,
+    action,
     effect: "allow",
     origin: "system",
     conditions: null,
@@ -54,6 +54,14 @@ function manageGrant(): GrantRule {
     roleId: null,
     principalId: PRINCIPAL_ID,
   };
+}
+
+function manageGrant(): GrantRule {
+  return allowGrant(`tenant:${TENANT_ID}`, "manage");
+}
+
+function readGrant(): GrantRule {
+  return allowGrant(`tenant:${TENANT_ID}`, "read");
 }
 
 function createMockDB(principal: PrincipalRow | undefined) {
@@ -117,23 +125,47 @@ function patchName(app: Hono<AppEnv>) {
 }
 
 describe("tenant detail and update gates", () => {
-  test("an active member reads the tenant", async () => {
-    const app = createTestApp({ principal: principalWith("active") });
+  test("an active member holding read reads the tenant", async () => {
+    const app = createTestApp({
+      principal: principalWith("active"),
+      grants: [readGrant()],
+    });
     const res = await app.request(`/api/tenants/${TENANT_ID}`);
     expect(res.status).toBe(200);
   });
 
+  test("an active member holding the default member grant reads the tenant", async () => {
+    const app = createTestApp({
+      principal: principalWith("active"),
+      grants: [allowGrant("*", "read")],
+    });
+    const res = await app.request(`/api/tenants/${TENANT_ID}`);
+    expect(res.status).toBe(200);
+  });
+
+  test("an active member without read cannot read the tenant", async () => {
+    const app = createTestApp({ principal: principalWith("active") });
+    const res = await app.request(`/api/tenants/${TENANT_ID}`);
+    expect(res.status).toBe(403);
+  });
+
   test.each(["suspended", "invited", "deactivated"] as const)(
-    "a principal with status %s cannot read the tenant",
+    "a principal with status %s holding read cannot read the tenant",
     async (status) => {
-      const app = createTestApp({ principal: principalWith(status) });
+      const app = createTestApp({
+        principal: principalWith(status),
+        grants: [readGrant()],
+      });
       const res = await app.request(`/api/tenants/${TENANT_ID}`);
       expect(res.status).toBe(403);
     },
   );
 
   test("a user outside the tenant cannot read it", async () => {
-    const app = createTestApp({ principal: undefined });
+    const app = createTestApp({
+      principal: undefined,
+      grants: [readGrant()],
+    });
     const res = await app.request(`/api/tenants/${TENANT_ID}`);
     expect(res.status).toBe(403);
   });

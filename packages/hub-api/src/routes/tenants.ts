@@ -303,14 +303,19 @@ export function createTenantRoutes({
     describeRoute({
       tags: ["Tenants"],
       summary: "Get tenant details",
+      description: "Requires read on the tenant (`tenant:<id>` / `read`).",
       responses: {
         200: jsonResponse("Tenant details", TenantResponse),
-        403: jsonResponse("Not an active member of this tenant", ErrorResponse),
+        403: jsonResponse(
+          "Not an active member of this tenant, or insufficient grants",
+          ErrorResponse,
+        ),
         404: jsonResponse("Tenant not found", ErrorResponse),
         409: jsonResponse("Stored tenant config is invalid", ErrorResponse),
       },
     }),
     resolveTenant,
+    requireGrant(idResource("tenant", "tenantId"), "read"),
     async (c) => {
       const tenantRow = c.get("tenant");
       try {
