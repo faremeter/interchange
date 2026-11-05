@@ -9,14 +9,7 @@
 // as an inert placeholder: the wire shape requires a source for every step,
 // but that step never issues a request through it.
 
-import type {
-  AgentDefinition,
-  AnnotatedToolFactory,
-  BaseEnv,
-  InferencePreference,
-} from "@intx/agent";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 
 import { type ApprovalSet } from "./capability-approval";
@@ -341,36 +334,4 @@ export function buildInertBodyStepSources(args: {
 
 function sameInferenceSource(a: InferenceSource, b: InferenceSource): boolean {
   return a.id === b.id && a.provider === b.provider && a.model === b.model;
-}
-
-/**
- * Assemble a single-step `AgentDefinition` from already-resolved fields. This
- * is the single place the single-step agent shape is constructed, so the
- * offline agent-to-workflow fold synthesis cannot drift on which fields a
- * folded agent carries. Callers pass resolved inputs: the fold passes empty
- * tool factories (its tools ride as `toolPackagePins`), the agent's own pins,
- * and its catalog-resolved inference preferences.
- */
-export function buildSingleStepAgentDefinition(args: {
-  id: string;
-  systemPrompt: string;
-  inferencePreferences: readonly InferencePreference[];
-  toolFactories: readonly AnnotatedToolFactory<BaseEnv>[];
-  capabilities?: readonly string[];
-  description?: string;
-  toolPackagePins?: readonly ToolPackagePin[];
-}): AgentDefinition<BaseEnv> {
-  return {
-    id: args.id,
-    systemPrompt: args.systemPrompt,
-    toolFactories: args.toolFactories,
-    capabilities: args.capabilities ?? [],
-    inference: { sources: args.inferencePreferences },
-    ...(args.description !== undefined
-      ? { description: args.description }
-      : {}),
-    ...(args.toolPackagePins !== undefined
-      ? { toolPackagePins: args.toolPackagePins }
-      : {}),
-  };
 }

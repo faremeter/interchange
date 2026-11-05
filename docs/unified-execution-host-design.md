@@ -813,9 +813,7 @@ oci-container`. A per-node declaration equal to or weaker than the current rung
   `host-subprocess` on a child node; the floor is monotonic going down a rung).
 - **Workflow-level defaulting.** Unchanged from Decision 2: `defineWorkflow`
   normalizes an absent workflow-level `isolation` to
-  `{ granularity: "per-tenant" }`. A single agent deploys as a single-step
-  workflow folded from its code source, which carries the workflow-level field
-  from the agent's declared policy.
+  `{ granularity: "per-tenant" }`.
 - **Validation.** `defineWorkflow`'s `normalize` validates every `isolation`
   occurrence — workflow-level and per-node — against the allowed
   `granularity` / `sandbox` sets, throwing a structured error on an unknown
@@ -1161,10 +1159,8 @@ Every surviving "trivial"-named symbol is renamed to reflect that the
 single-step identity path is the canonical single-agent deploy, not a "trivial"
 special case — or deleted where the in-process branch it served is gone:
 
-- The one-step definition is built from the folded code source rather than a
-  `HarnessConfig` wrapper; `buildSingleStepAgentDefinition`
-  (`packages/workflow-deploy/src/orchestrator.ts`) assembles the lone step's
-  agent definition.
+- The one-step definition is what the workflow package evaluates to; no
+  `HarnessConfig` wrapper builds it.
 - `buildTrivialApprovalSet`: deleted. The single-step approval set is built
   inline over `ApprovalSet` from `@intx/workflow-deploy` in
   `packages/hub-sessions/src/session-service.ts`; it was not renamed to a
@@ -1863,8 +1859,6 @@ are explicitly **not** a go-live gate for INTR-209.
   `WorkflowRunWorkflowProcessPrincipal`.
 - Identity: `packages/workflow-deploy/src/addresses.ts`
   (`deriveWorkflowRunRepoId`);
-  `packages/workflow-deploy/src/orchestrator.ts`
-  (`buildSingleStepAgentDefinition`);
   `packages/types/src/agent-address.ts`
   (`formatRunAddress`, `parseRunAddress`, `isRunAddress`);
   `packages/db/src/sidecar-allocation-store.ts` (initialization key record);

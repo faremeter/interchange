@@ -132,8 +132,6 @@ Public surface:
   referenced asset is deployed and walked on its own.
 - `deriveRunAddress` / `deriveWorkflowRunRepoId`
   — the pure address and id derivation helpers.
-- `extractFoldedBody(definition)` — read the launch-relevant fields back
-  out of a folded single-step definition.
 
 The capability walk emits the v1 grant-shape vocabulary: `tool:`,
 `director:`, `capability:`, `inference.source:`, `mail.address:`,

@@ -10,11 +10,6 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./testing": {
-      "intx-src": "./src/testing/index.ts",
-      "types": "./dist/testing/index.d.ts",
-      "default": "./dist/testing/index.js"
-    },
     "./capabilities": {
       "intx-src": "./src/capability-walk.ts",
       "types": "./dist/capability-walk.d.ts",

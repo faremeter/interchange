@@ -47,7 +47,6 @@ export {
   describeCredentialBindingViolation,
   type CredentialBindingViolation,
 } from "./credential-binding-check";
-export { extractFoldedBody, type FoldedBody } from "./fold-synthesis";
 export {
   enumerateInertBodies,
   inertFlatNamespaceStepIds,
@@ -62,7 +61,6 @@ export {
   collectAgentBearingStepIds,
   buildInertProjectionStepSources,
   buildInertBodyStepSources,
-  buildSingleStepAgentDefinition,
   WorkflowDefinitionInvalidError,
 } from "./orchestrator";
 export { deriveRunAddress, deriveWorkflowRunRepoId } from "./addresses";
