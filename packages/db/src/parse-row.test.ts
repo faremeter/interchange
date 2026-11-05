@@ -307,7 +307,6 @@ function makeWorkflowRunRow(
     principalId: null,
     status: "running",
     address: null,
-    publicKey: null,
     sidecarId: null,
     kernelId: null,
     modelPreferences: null,

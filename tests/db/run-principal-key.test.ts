@@ -6,9 +6,11 @@ import {
   expect,
   test,
 } from "bun:test";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 
 import {
+  loadRunPrincipalActiveKey,
+  recordPublicKey,
   recordRunPrincipalKey,
   retireRunPrincipalKey,
   runPrincipalActiveKeySql,
@@ -52,6 +54,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeEach(async () => {
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT }]);
+      await seedWorkflowRun(h.db, {
+        id: RUN_ID,
+        tenantId: TENANT,
+        anchorRunId: RUN_ID,
+      });
       await seedPrincipal(h.db, {
         id: RUN_PRINCIPAL,
         tenantId: TENANT,
@@ -71,6 +78,53 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(eq(principalKey.principalId, RUN_PRINCIPAL))
         .orderBy(asc(principalKey.publicKey));
     }
+
+    async function waitForBlocked(blockerPid: number) {
+      // Postgres exposes lock waits through its activity view only.
+      for (;;) {
+        const waiting = await h.db.execute(
+          sql`select pid from pg_stat_activity where ${blockerPid} = any(pg_blocking_pids(pid))`,
+        );
+        if (waiting.length > 0) return;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+
+    test("recording a key waits for a transaction that holds the deployment anchor", async () => {
+      const locked = Promise.withResolvers<number>();
+      const release = Promise.withResolvers<undefined>();
+      // A reader that must not race a key writer, as the first grant commit
+      // locks the anchor and then reads whether the deployment has a key.
+      const reader = h.db.transaction(async (tx) => {
+        await tx
+          .select({ id: workflowRun.id })
+          .from(workflowRun)
+          .where(
+            and(eq(workflowRun.id, RUN_ID), eq(workflowRun.tenantId, TENANT)),
+          )
+          .for("update");
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+        const pid = backend?.["pid"];
+        if (typeof pid !== "number") throw new Error("Missing backend PID");
+        locked.resolve(pid);
+        await release.promise;
+        return loadRunPrincipalActiveKey(tx, TENANT, RUN_ID);
+      });
+      void reader.catch(locked.reject);
+      const readerPid = await locked.promise;
+
+      const writer = h.db.transaction((tx) =>
+        recordRunPrincipalKey(tx, TENANT, RUN_ID, FIRST_KEY),
+      );
+      await waitForBlocked(readerPid);
+      release.resolve(undefined);
+
+      expect(await reader).toBeNull();
+      expect(await writer).toBe(true);
+      expect(await keys()).toEqual([
+        { publicKey: FIRST_KEY, status: "active" },
+      ]);
+    });
 
     test("a replacement retires the key and records its own", async () => {
       await recordRunPrincipalKey(h.db, TENANT, RUN_ID, FIRST_KEY);
@@ -96,7 +150,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("a query over many runs reads each run's own active key", async () => {
       const OTHER_TENANT = "tnt_rpk_other";
       await seedTenants(h.db, [{ id: OTHER_TENANT }]);
-      for (const id of [RUN_ID, "run_retired", "run_unkeyed", "run_foreign"]) {
+      for (const id of ["run_retired", "run_unkeyed", "run_foreign"]) {
         await seedWorkflowRun(h.db, { id, tenantId: TENANT, anchorRunId: id });
       }
       await recordRunPrincipalKey(h.db, TENANT, RUN_ID, FIRST_KEY);
@@ -104,12 +158,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await retireRunPrincipalKey(h.db, TENANT, "run_retired");
       // A run principal with the same run id in another tenant is not the
       // run's principal.
-      await seedRunPrincipalKey(
-        h.db,
-        OTHER_TENANT,
-        "run_foreign",
-        "cc".repeat(32),
-      );
+      await seedPrincipal(h.db, {
+        id: "prn_foreign",
+        tenantId: OTHER_TENANT,
+        kind: "workflow",
+        refId: "run_foreign",
+        status: "active",
+      });
+      await recordPublicKey(h.db, "prn_foreign", "cc".repeat(32));
 
       // Joined, as the run list reads runs, so the subqueries' outer columns
       // are qualified against more than one table in scope.
@@ -141,12 +197,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ]);
     });
 
-    test("a run with no run principal cannot record a key and has none to retire", async () => {
-      await expect(
-        recordRunPrincipalKey(h.db, TENANT, "run_missing", FIRST_KEY),
-      ).rejects.toThrow(/has no run principal/);
+    test("a run that is not a deployment anchor records no key and has none to retire", async () => {
+      expect(
+        await recordRunPrincipalKey(h.db, TENANT, "run_missing", FIRST_KEY),
+      ).toBe(false);
+      await seedWorkflowRun(h.db, {
+        id: "run_child",
+        tenantId: TENANT,
+        anchorRunId: RUN_ID,
+      });
+      expect(
+        await recordRunPrincipalKey(h.db, TENANT, "run_child", FIRST_KEY),
+      ).toBe(false);
       await retireRunPrincipalKey(h.db, TENANT, "run_missing");
       expect(await keys()).toEqual([]);
+    });
+
+    test("a deployment anchor with no run principal cannot record a key", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "run_orphan",
+        tenantId: TENANT,
+        anchorRunId: "run_orphan",
+      });
+      await expect(
+        recordRunPrincipalKey(h.db, TENANT, "run_orphan", FIRST_KEY),
+      ).rejects.toThrow(/has no run principal/);
     });
   },
 );

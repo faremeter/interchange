@@ -36,7 +36,10 @@ import { eq } from "drizzle-orm";
 import { defineAgent } from "@intx/agent";
 import { DeploymentRejectedError } from "@intx/types/sidecar";
 import { createNoopCredentialCipher, generateKeyPair } from "@intx/crypto";
-import { createSidecarAllocationStore } from "@intx/db";
+import {
+  createSidecarAllocationStore,
+  runPrincipalActiveKeySql,
+} from "@intx/db";
 import {
   principal,
   sidecarAllocation,
@@ -295,7 +298,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const [row] = await h.db
         .select({
           status: workflowRun.status,
-          publicKey: workflowRun.publicKey,
+          publicKey: runPrincipalActiveKeySql(
+            workflowRun.tenantId,
+            workflowRun.id,
+          ),
         })
         .from(workflowRun)
         .where(eq(workflowRun.id, ANCHOR_RUN_ID))
@@ -380,11 +386,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // did not exist yet, so the gate returned path_violation.
       expect(probeAccepted).toBe(true);
 
-      // The successful ack stamped the key onto the now-live anchor.
+      // The successful ack recorded the key on the anchor's run principal.
       const [row] = await h.db
         .select({
           status: workflowRun.status,
-          publicKey: workflowRun.publicKey,
+          publicKey: runPrincipalActiveKeySql(
+            workflowRun.tenantId,
+            workflowRun.id,
+          ),
         })
         .from(workflowRun)
         .where(eq(workflowRun.id, ANCHOR_RUN_ID))
@@ -612,11 +621,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect((await readAnchor())?.status).toBe("running");
     });
 
-    test("receiveWorkflowRunPack accepts a deployed anchor whose public key is still null", async () => {
-      // Pins the gate's publicKey-agnosticism: the anchor-before-frame window is
-      // a live "deployed" row with a null key, and the gate must accept a pack
-      // against it. A future "require publicKey on the anchor" change turns this
-      // red rather than silently re-breaking deploy bootstrap.
+    test("receiveWorkflowRunPack accepts a deployed anchor that has no key yet", async () => {
+      // Pins the gate's key-agnosticism: the anchor-before-frame window is a
+      // live "deployed" row whose run principal has no key yet, and the gate
+      // must accept a pack against it. A future "require a key" change turns
+      // this red rather than silently re-breaking deploy bootstrap.
       await seedWorkflowRun(h.db, {
         id: ANCHOR_RUN_ID,
         anchorRunId: ANCHOR_RUN_ID,

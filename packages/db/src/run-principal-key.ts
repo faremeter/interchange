@@ -11,6 +11,7 @@ import type { DBExecutor } from "./client";
 import { recordPublicKey, retireActiveKey } from "./principal-key-store";
 import { principal } from "./schema/principals";
 import { principalKey } from "./schema/principal-keys";
+import { workflowRun } from "./schema/workflow-run";
 
 // A column of the enclosing query, named with its table. Drizzle renders a
 // bare column reference unqualified in a single-table statement, and inside
@@ -111,28 +112,47 @@ async function loadRunPrincipalId(
 }
 
 /**
- * Make `publicKey`, which the sidecar running the run minted, the active key
- * of the run's principal. The sidecar holds the private key. The caller holds
- * the run's anchor row lock, which serializes every writer of a run's key.
- * Throws when the run has no run principal.
+ * Make `publicKey`, which the sidecar running the deployment minted, the
+ * active key of the deployment's run principal. The sidecar holds the private
+ * key. Locks the deployment's anchor row first: every writer of a run's key
+ * and every reader that must not race one holds that lock. Returns false when
+ * `runId` names no deployment anchor in the tenant, and throws when the
+ * anchor has no run principal. Call it in a transaction.
  */
 export async function recordRunPrincipalKey(
   tx: DBExecutor,
   tenantId: string,
   runId: string,
   publicKey: string,
-): Promise<void> {
+): Promise<boolean> {
+  // FOR NO KEY UPDATE, as an update of a non-key column would take: it
+  // conflicts with the other anchor locks but not with the key-share locks
+  // that inserts referencing the anchor take.
+  const [anchor] = await tx
+    .select({ id: workflowRun.id })
+    .from(workflowRun)
+    .where(
+      and(
+        eq(workflowRun.id, runId),
+        eq(workflowRun.anchorRunId, runId),
+        eq(workflowRun.tenantId, tenantId),
+      ),
+    )
+    .for("no key update");
+  if (anchor === undefined) return false;
   const principalId = await loadRunPrincipalId(tx, tenantId, runId);
   if (principalId === null) {
     throw new Error(`Run ${runId} has no run principal to hold its key`);
   }
   await recordPublicKey(tx, principalId, publicKey);
+  return true;
 }
 
 /**
  * Retire the active key of the run's principal, so the key a replaced sidecar
  * held no longer answers for the run. A run with no run principal, or with no
- * active key, is left as it is.
+ * active key, is left as it is. The caller holds the deployment's anchor row
+ * lock.
  */
 export async function retireRunPrincipalKey(
   tx: DBExecutor,

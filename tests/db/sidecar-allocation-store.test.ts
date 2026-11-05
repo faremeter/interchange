@@ -29,6 +29,7 @@ import {
   SIDECAR_CLEANUP_PREPARATION_TIMEOUT_FAILURE_CODE,
   SIDECAR_CLEANUP_OPERATOR_RELEASED_FAILURE_CODE,
   SidecarReuseRejectedError,
+  loadRunPrincipalActiveKey,
   recordPublicKey,
   type RetainedSidecarIncarnation,
 } from "@intx/db";
@@ -75,14 +76,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.close();
     });
 
-    // Record the key a completed initialization leaves: on the anchor and as
-    // the active key of its run principal.
+    // Record the key a completed initialization leaves: the active key of the
+    // anchor's run principal.
     async function recordAnchorKey(publicKey: string) {
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey })
-        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
       await recordPublicKey(h.db, ANCHOR_RUN_PRINCIPAL_ID, publicKey);
+    }
+
+    // The active key of the anchor's run principal, or null.
+    async function anchorKey() {
+      return loadRunPrincipalActiveKey(h.db, TENANT_ID, ANCHOR_RUN_ID);
     }
 
     // The keys of the anchor's run principal, oldest first.
@@ -1100,11 +1102,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const deadline = parked?.connectDeadline;
         if (deadline === undefined) throw new Error("Missing cleanup deadline");
         expect(parked?.status).toBe("replacing");
-        expect(
-          await h.db.query.workflowRun.findFirst({
-            where: eq(workflowRun.id, ANCHOR_RUN_ID),
-          }),
-        ).toMatchObject({ publicKey: null });
+        expect(await anchorKey()).toBeNull();
 
         state.now = new Date(deadline.getTime() - 1);
         const releasing = await store.beginRelease({
@@ -1344,7 +1342,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
               await h.db.query.workflowRun.findFirst({
                 where: eq(workflowRun.id, ANCHOR_RUN_ID),
               }),
-            ).toMatchObject({ status: "running", publicKey: "restored-key" });
+            ).toMatchObject({ status: "running" });
+            expect(await anchorKey()).toBe("restored-key");
             connected = false;
             const disconnected = await store.markConnectionLost({
               allocationId: current.id,
@@ -1365,11 +1364,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             expect(replacing?.nextAttemptAt?.getTime()).toBe(
               state.now.getTime() + 1_000,
             );
-            expect(
-              await h.db.query.workflowRun.findFirst({
-                where: eq(workflowRun.id, ANCHOR_RUN_ID),
-              }),
-            ).toMatchObject({ publicKey: null });
+            expect(await anchorKey()).toBeNull();
             connected = true;
           }
           const replacing = await store.findById(target.allocationId);
@@ -3452,13 +3447,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect((await store.findById(allocation.id))?.initializationLeaseId).toBe(
         leaseId,
       );
-      expect(
-        (
-          await h.db.query.workflowRun.findFirst({
-            where: eq(workflowRun.id, ANCHOR_RUN_ID),
-          })
-        )?.publicKey,
-      ).toBeNull();
+      expect(await anchorKey()).toBeNull();
       expect(
         await store.markConnectionReady({
           allocationId: allocation.id,
@@ -3485,7 +3474,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await h.db.query.workflowRun.findFirst({
           where: eq(workflowRun.id, ANCHOR_RUN_ID),
         }),
-      ).toMatchObject({ publicKey: "new-key", credentialRefs });
+      ).toMatchObject({ credentialRefs });
+      expect(await anchorKey()).toBe("new-key");
       // The same completion makes the key the run principal's, public-only.
       expect(await runPrincipalKeys()).toEqual([
         { publicKey: "new-key", status: "active" },
@@ -3515,13 +3505,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).rejects.toThrow(/belongs to principal/);
 
-      expect(
-        (
-          await h.db.query.workflowRun.findFirst({
-            where: eq(workflowRun.id, ANCHOR_RUN_ID),
-          })
-        )?.publicKey,
-      ).toBeNull();
+      expect(await anchorKey()).toBeNull();
       expect(await runPrincipalKeys()).toEqual([]);
       expect((await store.findById(allocation.id))?.initializationLeaseId).toBe(
         leaseId,
@@ -3624,11 +3608,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "allocated",
         generation: allocation.generation,
       });
-      expect(
-        await h.db.query.workflowRun.findFirst({
-          where: eq(workflowRun.id, ANCHOR_RUN_ID),
-        }),
-      ).toMatchObject({ publicKey: "new-key" });
+      expect(await anchorKey()).toBe("new-key");
     });
 
     test("unsent rollback clears its marker after lease loss without overwriting a later completion", async () => {
@@ -3673,11 +3653,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await store.completeInitialization({ ...next, publicKey: "new-key" }),
       ).toBe(true);
       expect(await store.clearUnsentInitialization(rollback)).toBe(false);
-      expect(
-        await h.db.query.workflowRun.findFirst({
-          where: eq(workflowRun.id, ANCHOR_RUN_ID),
-        }),
-      ).toMatchObject({ publicKey: "new-key" });
+      expect(await anchorKey()).toBe("new-key");
     });
 
     for (const nextAttempt of [false, true]) {
@@ -3726,7 +3702,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           await h.db.query.workflowRun.findFirst({
             where: eq(workflowRun.id, ANCHOR_RUN_ID),
           }),
-        ).toMatchObject({ status: "running", publicKey: null });
+        ).toMatchObject({ status: "running" });
+        expect(await anchorKey()).toBeNull();
         if (nextAttempt) {
           const currentCleanup = {
             ...cleanup,
@@ -3873,13 +3850,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "allocated",
         generation: allocation.generation,
       });
-      expect(
-        (
-          await h.db.query.workflowRun.findFirst({
-            where: eq(workflowRun.id, ANCHOR_RUN_ID),
-          })
-        )?.publicKey,
-      ).toBe("committed-key");
+      expect(await anchorKey()).toBe("committed-key");
     });
 
     test("cleanup waiting behind publication observes the committed key", async () => {
@@ -4019,13 +3990,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             ? "Initialization cancelled"
             : "Initialization lease expired",
         );
-        expect(
-          (
-            await h.db.query.workflowRun.findFirst({
-              where: eq(workflowRun.id, ANCHOR_RUN_ID),
-            })
-          )?.publicKey,
-        ).toBeNull();
+        expect(await anchorKey()).toBeNull();
         expect(
           (await store.findById(allocation.id))?.initializationLeaseId,
         ).toBe(initialization.leaseId);
@@ -4088,16 +4053,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       await h.db
         .update(workflowRun)
-        .set({
-          publicKey: "generation-1-public-key",
-          credentialRefs: previousRefs,
-        })
+        .set({ credentialRefs: previousRefs })
         .where(eq(workflowRun.id, ANCHOR_RUN_ID));
-      await recordPublicKey(
-        h.db,
-        ANCHOR_RUN_PRINCIPAL_ID,
-        "generation-1-public-key",
-      );
+      await recordAnchorKey("generation-1-public-key");
 
       expect(
         await store.beginReplacement({
@@ -4114,12 +4072,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         await h.db.query.workflowRun.findFirst({
           where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
-          columns: { publicKey: true, credentialRefs: true },
+          columns: { credentialRefs: true },
         }),
-      ).toEqual({
-        publicKey: "generation-1-public-key",
-        credentialRefs: previousRefs,
-      });
+      ).toEqual({ credentialRefs: previousRefs });
       expect(await runPrincipalKeys()).toEqual([
         { publicKey: "generation-1-public-key", status: "active" },
       ]);
@@ -4147,9 +4102,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         await h.db.query.workflowRun.findFirst({
           where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
-          columns: { publicKey: true, credentialRefs: true },
+          columns: { credentialRefs: true },
         }),
-      ).toEqual({ publicKey: null, credentialRefs: null });
+      ).toEqual({ credentialRefs: null });
       // The replaced sidecar's key no longer answers for the run.
       expect(await runPrincipalKeys()).toEqual([
         { publicKey: "generation-1-public-key", status: "retired" },

@@ -387,7 +387,7 @@ export type SidecarRouter = {
   ): void;
   /**
    * Mark a run-address sender's ALLOCATED deploy as mid-flight, before the deploy
-   * emit and its anchor-key update. An allocated run records its key later than
+   * emit and its key record. An allocated run records its key later than
    * the deploy ack clears `pendingDeploys`, so this marker covers the allocated
    * pre-ack window that `pendingDeploys` alone under-covers. `noteSenderDeploySettled`
    * clears it only when the durable outcome is known. Cancellation leaves it
@@ -961,7 +961,7 @@ export function createSidecarRouter(
   >();
   // Run addresses whose ALLOCATED deploy is mid-flight -- key-record has been
   // started but not yet committed. pendingDeploys clears at the deploy ack, but an
-  // allocated run's key is recorded LATER by session-service's anchor-key update,
+  // allocated run's key is recorded LATER, on its run principal, by session-service,
   // so pendingDeploys alone under-covers the allocated pre-ack window. session-
   // service brackets this marker across its deploy try/catch: set before the
   // deploy emit, cleared by noteSenderDeploySettled on record or failure.

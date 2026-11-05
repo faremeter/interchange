@@ -360,6 +360,8 @@ export type SeedWorkflowRun = {
   definitionId?: string;
   principalId?: string | null;
   address?: string | null;
+  // The key the deployment's sidecar minted, recorded as the active key of
+  // the run principal.
   publicKey?: string | null;
   status?: "deployed" | "running" | "completed" | "failed" | "cancelled";
   credentialRefs?: WorkflowRunCredentialRefs | null;
@@ -394,7 +396,6 @@ export async function seedWorkflowRun(
     definitionId,
     principalId: r.principalId ?? null,
     address: r.address ?? null,
-    publicKey: r.publicKey ?? null,
     status: r.status ?? "running",
     ...(r.credentialRefs !== undefined
       ? { credentialRefs: r.credentialRefs }
@@ -409,8 +410,8 @@ export async function seedWorkflowRun(
 
 /**
  * Make `publicKey` the active key of the run's principal, as a deploy records
- * it. The run principal is the one a test already seeded for the run, or the
- * one deploy would have created.
+ * it. The run must be a deployment anchor. The run principal is the one a test
+ * already seeded for the run, or the one deploy would have created.
  */
 export async function seedRunPrincipalKey(
   db: Db,
@@ -425,7 +426,9 @@ export async function seedRunPrincipalKey(
     runId,
     createdAt,
   });
-  await recordRunPrincipalKey(db, tenantId, runId, publicKey);
+  if (!(await recordRunPrincipalKey(db, tenantId, runId, publicKey))) {
+    throw new Error(`Run ${runId} is not a deployment anchor`);
+  }
 }
 
 export type SeedWorkflowRunLaunchSpec = {

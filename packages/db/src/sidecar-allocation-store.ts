@@ -569,32 +569,19 @@ function buildSidecarAllocationStore(
       args.signal.throwIfAborted();
       if (allocation === undefined) return false;
       if (completion !== undefined) {
-        const [anchor] = await tx
-          .update(workflowRun)
-          .set({
-            publicKey: completion.publicKey,
-            ...(completion.credentialRefs !== undefined
-              ? { credentialRefs: completion.credentialRefs }
-              : {}),
-          })
-          .where(
-            and(
-              eq(workflowRun.id, args.anchorRunId),
-              eq(workflowRun.anchorRunId, args.anchorRunId),
-              eq(workflowRun.tenantId, args.tenantId),
-            ),
-          )
-          .returning({ id: workflowRun.id });
-        if (anchor === undefined)
-          throw new Error("Initialization anchor is missing");
-        // The anchor update above holds the anchor row lock, which serializes
-        // this with every other writer of the run's key.
-        await recordRunPrincipalKey(
+        const recorded = await recordRunPrincipalKey(
           tx,
           args.tenantId,
           args.anchorRunId,
           completion.publicKey,
         );
+        if (!recorded) throw new Error("Initialization anchor is missing");
+        if (completion.credentialRefs !== undefined) {
+          await tx
+            .update(workflowRun)
+            .set({ credentialRefs: completion.credentialRefs })
+            .where(eq(workflowRun.id, args.anchorRunId));
+        }
       }
       // Check the lease again: ownership can expire while the transaction holds
       // the allocation lock, such as while a completion waits on the anchor
@@ -843,7 +830,7 @@ function buildSidecarAllocationStore(
         reconciliationLeaseId: null,
         reconciliationLeaseExpiresAt: null,
         // Preserve the disconnect window for an initialized deployment or
-        // replacement cleanup, which has already cleared the anchor's key.
+        // replacement cleanup, which has already retired the run's key.
         // A first-connect deadline does not bound subsequent cleanup waiting.
         connectDeadline: sql`case when ${sidecarAllocation.status} = 'replacing' or ${runPrincipalHasActiveKey(sidecarAllocation.tenantId, sidecarAllocation.anchorRunId)} then ${sidecarAllocation.connectDeadline} else null end`,
         // Placement and initialization retry diagnostics are not release causes.
@@ -1541,16 +1528,18 @@ function buildSidecarAllocationStore(
           .returning();
         if (updated === undefined) return null;
 
-        // The anchor public key is durable proof that this allocation
-        // generation completed restore and deployment. Clear the key and
-        // the credential refs with the generation advance so a replacement
-        // cannot mistake stale local sidecar state for a restored
-        // workflow. Leftover refs are the previous attempt, and a first
-        // grant commit would freeze them. The replacement sidecar mints a
-        // new key, so the run principal's key retires with it.
+        // The run principal's active key is durable proof that this
+        // allocation generation completed restore and deployment. Retire
+        // the key and clear the credential refs with the generation advance
+        // so a replacement cannot mistake stale local sidecar state for a
+        // restored workflow. Leftover refs are the previous attempt, and a
+        // first grant commit would freeze them. The replacement records the
+        // key its sidecar reports, which is the retired key again when it
+        // reuses the replaced sidecar's disk. The refs update holds the
+        // anchor row lock that retiring the key requires.
         await tx
           .update(workflowRun)
-          .set({ publicKey: null, credentialRefs: null })
+          .set({ credentialRefs: null })
           .where(eq(workflowRun.id, updated.anchorRunId));
         await retireRunPrincipalKey(tx, updated.tenantId, updated.anchorRunId);
 
