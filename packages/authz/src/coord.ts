@@ -24,6 +24,7 @@
  */
 
 import { MAIL_ACCEPT_NAMESPACE, isValidCoordId } from "@intx/types/mail-accept";
+import { MAIL_SEND_NAMESPACE } from "@intx/types/mail-send";
 
 export type CoordGrammar<T extends string> = {
   readonly namespace: string;
@@ -123,4 +124,29 @@ export function parseMailAcceptResource(
   resource: string,
 ): MailAcceptCoordinate | null {
   return parseCoordResource(MAIL_ACCEPT_GRAMMAR, resource);
+}
+
+export const MAIL_SEND_ACTION = "send";
+
+/**
+ * `mail.send` adds a `domain` coordinate below the local coordinates. Every
+ * recipient address whose domain is a host name has one, so such a recipient
+ * that the hub cannot resolve to a local principal is still named by its
+ * domain.
+ */
+export const MAIL_SEND_GRAMMAR = defineCoordGrammar({
+  namespace: MAIL_SEND_NAMESPACE,
+  action: MAIL_SEND_ACTION,
+  coordTypes: ["domain", "tenant", "asset", "principal"],
+});
+
+export type MailSendCoordType = (typeof MAIL_SEND_GRAMMAR.coordTypes)[number];
+
+export type MailSendCoordinate = Coordinate<MailSendCoordType>;
+
+export function mailSendResource(
+  coordType: MailSendCoordType,
+  id: string,
+): string {
+  return coordResource(MAIL_SEND_GRAMMAR, coordType, id);
 }

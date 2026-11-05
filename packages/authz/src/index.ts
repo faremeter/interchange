@@ -12,14 +12,27 @@ export {
   mailAcceptResource,
   parseMailAcceptResource,
   MAIL_ACCEPT_ACTION,
+  mailSendResource,
+  MAIL_SEND_ACTION,
 } from "./coord";
-export type { CoordType, MailAcceptCoordinate } from "./coord";
+export type {
+  CoordType,
+  MailAcceptCoordinate,
+  MailSendCoordType,
+  MailSendCoordinate,
+} from "./coord";
 export {
   mailAcceptRelationToken,
   resolveMailAcceptRelations,
 } from "./mail-accept-relation";
 export { evaluateMailAdmission } from "./mail-admission";
 export type { MailAdmissionResult } from "./mail-admission";
+export {
+  evaluateMailSend,
+  mailAddressDomain,
+  mailSendResourceProblem,
+} from "./mail-send";
+export type { MailSendResult } from "./mail-send";
 export { createConditionEvaluator } from "./condition-evaluator";
 export { evaluateConditions, validateConditions } from "./conditions";
 export { validateGrantConditions } from "./grant-conditions";

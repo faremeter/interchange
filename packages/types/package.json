@@ -80,6 +80,11 @@
       "types": "./dist/mail-accept.d.ts",
       "default": "./dist/mail-accept.js"
     },
+    "./mail-send": {
+      "intx-src": "./src/mail-send.ts",
+      "types": "./dist/mail-send.d.ts",
+      "default": "./dist/mail-send.js"
+    },
     "./workflow-definition": {
       "intx-src": "./src/workflow-definition.ts",
       "types": "./dist/workflow-definition.d.ts",
