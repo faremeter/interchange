@@ -1284,11 +1284,11 @@ describe("BoundedApprovalSnapshot", () => {
 
 describe("isMessageTransportError", () => {
   test("accepts a condition-bearing error the class did not construct", () => {
-    // The reason the guard is structural: a tool package is published as a
-    // bundle with its workspace imports inlined, so the consumer classifying a
-    // failure holds its own copy of MessageTransportError and an `instanceof`
-    // check against the host's copy answers false. This foreign class stands in
-    // for that second copy.
+    // The reason the guard is structural: a workflow bundle inlines its
+    // workspace imports, so the consumer classifying a failure holds its own
+    // copy of MessageTransportError and an `instanceof` check against the
+    // host's copy answers false. This foreign class stands in for that second
+    // copy.
     class ForeignTransportError extends Error {
       readonly condition = "NONEXISTENT";
     }

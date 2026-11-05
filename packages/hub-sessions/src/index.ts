@@ -185,7 +185,6 @@ export {
   TARBALLS_PREFIX,
   TARBALL_FILENAME_PATTERN,
   REGISTRY_INDEX_PATH,
-  WORKSPACE_BUILTINS_REGISTRY,
 } from "./package-registry-kind";
 export {
   workflowKindHandler,

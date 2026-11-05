@@ -30,29 +30,6 @@ export const TARBALLS_PREFIX = "tarballs/";
 export const REGISTRY_INDEX_PATH = "package-registry.json";
 
 /**
- * Canonical asset name for the workspace's bundled package-registry —
- * the in-tree `@intx/tools-*` packages live in an asset of this name
- * under the workspace's root tenant. The seed script ensures the asset
- * row exists, and the publish-tool-packages CLI defaults its target
- * registry to this name. The constant lives at one site so a rename
- * does not have to chase three independent string literals.
- *
- * Callers:
- *   - `bin/dev.ts` — orchestrator default for the registry the dev
- *     stack publishes the built-ins into.
- *   - `bin/seed.ts` — seeder that pins the workspace-builtins into
- *     the registry asset at boot.
- *   - `bin/publish-tool-packages.ts` — CLI default for the
- *     `--registry` flag.
- *
- * No test asserts that the seed's pinned built-ins actually land
- * under this exact name; a mismatch between the constant and a
- * caller would surface at apply time as a `tarball.missing`
- * structured failure, not as a build error.
- */
-export const WORKSPACE_BUILTINS_REGISTRY = "workspace-builtins";
-
-/**
  * Filename rule for tarballs in the repo tree. Filenames must end in
  * `.tgz`, start with an alphanumeric / underscore / scope-marker
  * character, and otherwise contain only filename-safe characters. The

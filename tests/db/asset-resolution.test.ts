@@ -256,13 +256,13 @@ describe.skipIf(!harnessDbEnvAvailable())("asset-resolution (real DB)", () => {
         id: "ast_pkg_outer",
         tenantId: "tnt_root",
         kind: "package-registry",
-        name: "workspace-builtins",
+        name: "tool-registry",
       });
       await seedAsset(h.db, {
         id: "ast_pkg_inner",
         tenantId: "tnt_leaf",
         kind: "package-registry",
-        name: "workspace-builtins",
+        name: "tool-registry",
       });
       const list = await listAssetsForTenant(
         h.db,

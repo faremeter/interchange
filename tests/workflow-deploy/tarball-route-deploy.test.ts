@@ -1,15 +1,14 @@
 // Route-to-run coverage for a workflow deploy sourced from a packed tarball.
 //
 // The definition is published as an npm tarball into a `package-registry`
-// asset, the same substrate tool packages use, and deployed through the
-// PRODUCTION `POST /workflows/deployments` route with `format: "tarball"` and a
-// `name@range` pin. The tarball is written through the repo store, so the
-// package-registry push validator admits it; the route admits the
-// package-registry asset; the real session service resolves the pin from the
-// asset's blobs and packs the asset for the probe; the deploy delivers it to a
-// live sidecar process. The run is then fired by mail and asserted complete,
-// so a 201 alone cannot pass this test: the route, the resolvers and the
-// sidecar all have to read the same repository.
+// asset and deployed through the PRODUCTION `POST /workflows/deployments`
+// route with `format: "tarball"` and a `name@range` pin. The tarball is written
+// through the repo store, so the package-registry push validator admits it; the
+// route admits the package-registry asset; the real session service resolves
+// the pin from the asset's blobs and packs the asset for the probe; the deploy
+// delivers it to a live sidecar process. The run is then fired by mail and
+// asserted complete, so a 201 alone cannot pass this test: the route, the
+// resolvers and the sidecar all have to read the same repository.
 
 import { promises as fs } from "node:fs";
 import os from "node:os";

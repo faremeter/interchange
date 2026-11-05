@@ -79,8 +79,8 @@ pull in the shapes they need:
   `ToolPackageAssetSourceTree`, unioned as `ToolPackageSource`), and the
   tool-package manifest (`ToolPackageManifestEntry`, `ToolPackageManifest`).
 - `@intx/types/package-json` — the `PackageJSON` validator for the
-  subset of `package.json` fields the asset substrate and tool-package
-  builders read, including the `interchange.tools` extension, plus
+  subset of `package.json` fields the asset substrate and closure tooling
+  read, including the `interchange.tools` extension, plus
   `isContainedEntryPath` for entry-path containment.
 - `@intx/types/wire-definition-hash` — `computeWireDefinitionHash` and
   the `canonicalJsonStringify` it builds on, the stable content hash a

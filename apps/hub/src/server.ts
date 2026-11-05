@@ -184,10 +184,10 @@ export async function createHubServer({
     ),
   });
 
-  // 10 MiB is the production cap for tool-package tarballs uploaded via
-  // the package-registry PUT endpoint. The npm registry's own per-tarball
-  // soft cap is several times this, but the substrate's tool packages are
-  // the curated subset the operator vets; an upload pushing past 10 MiB
+  // 10 MiB is the production cap for tarballs uploaded via the
+  // package-registry PUT endpoint. The npm registry's own per-tarball
+  // soft cap is several times this, but these uploads are the curated
+  // subset the operator vets; an upload pushing past 10 MiB
   // is far more likely to be misuse than a legitimate build. The
   // HUB_MAX_TARBALL_BYTES env var lets an operator opt into a different
   // cap without a code change.
