@@ -77,13 +77,11 @@ export interface MaterializeClosureArgs {
 
 /**
  * Result of `materializeClosure`: the per-instance store directory the
- * closure was laid out under (`<instanceScratchDir>/store`), plus the exact
- * host-filtered entries that were laid out under it. A caller computes a
- * specific package's directory with `storeEntryDir`.
+ * closure was laid out under (`<instanceScratchDir>/store`). A caller computes
+ * a specific package's directory with `storeEntryDir`.
  */
 export interface MaterializeClosureResult {
   readonly storeDir: string;
-  readonly entries: readonly ToolPackageManifestEntry[];
 }
 
 /**
@@ -270,7 +268,7 @@ export async function materializeClosure(
     }
   }
 
-  return { storeDir, entries: filtered };
+  return { storeDir };
 }
 
 /**
