@@ -8,9 +8,9 @@
 // the probe runs from the workflow's own source closure.
 //
 // The binding's `package` is the probe factory's `id` (`BUNDLE_ID`).
-// `sourceStepToolFactories` keys a source tool's `packageName` to the factory
+// `sourceStepToolFactories` keys a source tool's `factoryId` to the factory
 // `id`, and a credential is keyed to its consuming tool by
-// `toolConsumer(packageName)` on both the delivery descriptor and the Gate-2
+// `toolConsumer(factoryId)` on both the delivery descriptor and the Gate-2
 // grant. So the author names `credentialBindings[].package` = the factory id,
 // and the delivered credential's consumer matches the source tool at run time.
 
@@ -30,8 +30,8 @@ const CREDENTIAL_TOOL_MODULE = path.join(
 
 /**
  * The credential binding's `package`, which MUST equal the probe factory's
- * `id`: `sourceStepToolFactories` sets each factory's `packageName` to the
- * factory id, and a credential's consumer is `toolConsumer(packageName)`. A
+ * `id`: `sourceStepToolFactories` sets each factory's `factoryId` to the
+ * factory id, and a credential's consumer is `toolConsumer(factoryId)`. A
  * mismatch would deliver the credential to a consumer the source tool does not
  * key on, so the probe's `resolve` would find no binding.
  */

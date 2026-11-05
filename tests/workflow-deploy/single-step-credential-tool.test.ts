@@ -16,7 +16,7 @@
 // header it sees.
 //
 // The consumer both ends key on is the probe factory's `id`:
-// `sourceStepToolFactories` sets each step factory's `packageName` to its id,
+// `sourceStepToolFactories` sets each step factory's `factoryId` to its id,
 // and the author names `credentialBindings[].package` = that same id, so the delivered
 // descriptor's `consumer` and the source tool's runtime consumer match.
 //
@@ -89,7 +89,7 @@ const STEP_ID = "step1";
 const AGENT_ID = "single-step-credential-tool-agent";
 
 // The consumer identity Gate 2 checks. On the source path the tool's
-// `packageName` is the probe factory's `id`; the binding names that same id in
+// `factoryId` is the probe factory's `id`; the binding names that same id in
 // `package`, so the delivered descriptor's `consumer` and the credential-use
 // grant's `{ tool }` condition both equal this.
 const CONSUMER = toolConsumer(CREDENTIAL_BINDING_PACKAGE);

@@ -210,7 +210,7 @@ describe("runLocal with the real step invoker", () => {
         };
         attachStepTools(env, {
           factories: req.agent.toolFactories.map((factory) => ({
-            packageName: factory.id,
+            factoryId: factory.id,
             declaredCredentials: [],
             factory,
           })),

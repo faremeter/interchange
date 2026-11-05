@@ -34,8 +34,8 @@ import type { ConditionRegistry } from "./types";
  * inline the format. The granularity is the factory: every tool in one
  * `defineTool` bundle shares one consumer identity.
  */
-export function toolConsumer(packageName: string): string {
-  return `tool:${packageName}`;
+export function toolConsumer(factoryId: string): string {
+  return `tool:${factoryId}`;
 }
 
 /**

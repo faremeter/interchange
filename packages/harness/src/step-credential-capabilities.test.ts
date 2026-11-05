@@ -48,12 +48,12 @@ function grant(
   };
 }
 
-// The assembly reads only `packageName` and `declaredCredentials`.
+// The assembly reads only `factoryId` and `declaredCredentials`.
 function fac(
-  packageName: string,
+  factoryId: string,
   declaredCredentials: ToolCredentialDeclaration[],
 ) {
-  return { packageName, declaredCredentials };
+  return { factoryId, declaredCredentials };
 }
 
 const ORIGIN = "https://api.example.com";

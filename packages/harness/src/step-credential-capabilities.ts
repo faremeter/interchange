@@ -2,7 +2,7 @@
 // tool bundles.
 //
 // A step can carry several tool factories, and each factory is a distinct
-// credential consumer (`toolConsumer(packageName)`). Gate 2 -- the `{ tool }`
+// credential consumer (`toolConsumer(factoryId)`). Gate 2 -- the `{ tool }`
 // condition on a `credential:{id}` / `use` grant -- is baked into each
 // capability at construction, so a single capability shared across a step's
 // factories would be a confused-deputy hole (factory A's grant would authorize
@@ -73,7 +73,7 @@ export interface StepCredentialWiring {
 
 /**
  * Build the credential capabilities for a step's tool factories, one per
- * distinct `packageName`, which is the factory's id.
+ * distinct `factoryId`.
  *
  * A factory with neither a declared nor a bound credential gets no entry: its
  * bundles keep the base capabilities bag untouched, so `resolve("credentials")`
@@ -81,19 +81,19 @@ export interface StepCredentialWiring {
  * sub-registry. Every returned capability owns a `dispose` the caller must run
  * on teardown.
  *
- * The factory list is structural. The body reads only `packageName` and
+ * The factory list is structural. The body reads only `factoryId` and
  * `declaredCredentials`, and the caller's factory type lives in
  * `@intx/workflow-host`, which depends on this package.
  */
 export function buildCredentialCapabilities(
   factories: readonly {
-    readonly packageName: string;
+    readonly factoryId: string;
     readonly declaredCredentials: readonly ToolCredentialDeclaration[];
   }[],
   wiring: StepCredentialWiring,
 ): Map<string, HostCredentialCapability> {
-  const byPackage = new Map<string, HostCredentialCapability>();
-  const seenPackages = new Set<string>();
+  const byFactory = new Map<string, HostCredentialCapability>();
+  const seenFactories = new Set<string>();
   // Resolve the step's grants at most once, and only if some factory actually
   // needs a capability -- a step with no credential-consuming factory never
   // reads them (see StepCredentialWiring.resolveGrants).
@@ -104,20 +104,20 @@ export function buildCredentialCapabilities(
   };
 
   for (const stf of factories) {
-    if (seenPackages.has(stf.packageName)) continue;
-    seenPackages.add(stf.packageName);
+    if (seenFactories.has(stf.factoryId)) continue;
+    seenFactories.add(stf.factoryId);
 
     const capability = buildConsumerCredentialCapability(
-      toolConsumer(stf.packageName),
+      toolConsumer(stf.factoryId),
       stf.declaredCredentials,
       stepWiring,
     );
     if (capability !== undefined) {
-      byPackage.set(stf.packageName, capability);
+      byFactory.set(stf.factoryId, capability);
     }
   }
 
-  return byPackage;
+  return byFactory;
 }
 
 /**

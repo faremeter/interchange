@@ -26,7 +26,7 @@ export {
   attachStepCredentialWiring,
   attachStepTools,
   createToolBearingAgentFactory,
-  type StepToolMaterialization,
+  type StepToolRuntime,
 } from "./child/step-tools";
 export {
   createCredentialsBackedAuthorize,
