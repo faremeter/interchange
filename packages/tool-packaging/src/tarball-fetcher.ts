@@ -94,7 +94,6 @@ export function createTarballFetcher(
         throw new ClosureMaterializationError({
           category: "git.materialization.failed",
           message: `source-format asset entry ${entry.name}@${entry.version} reached the tarball fetcher`,
-          package: { name: entry.name, version: entry.version },
         });
       }
       const tarballPath = entry.source.package.path;
@@ -106,8 +105,7 @@ export function createTarballFetcher(
       if (mount === undefined) {
         throw new ClosureMaterializationError({
           category: "asset.mount.missing",
-          message: `default fetcher reached without a mount for assetId "${entry.source.assetId}"`,
-          package: { name: entry.name, version: entry.version },
+          message: `default fetcher reached for ${entry.name}@${entry.version} without a mount for assetId "${entry.source.assetId}"`,
         });
       }
       // Both `mount` and `entry.source.package.path` originate from the
@@ -127,7 +125,6 @@ export function createTarballFetcher(
         throw new ClosureMaterializationError({
           category: "package.entry.invalid",
           message: `assetMounts entry for ${entry.name}@${entry.version} is absolute (${JSON.stringify(mount)}); mounts must be assetRoot-relative`,
-          package: { name: entry.name, version: entry.version },
         });
       }
       const mountAbs = path.resolve(ctx.assetRoot, mount);
@@ -139,7 +136,6 @@ export function createTarballFetcher(
         throw new ClosureMaterializationError({
           category: "package.entry.invalid",
           message: `source.package.path for ${entry.name}@${entry.version} resolves to ${JSON.stringify(absPath)} which escapes the declared mount ${JSON.stringify(mountAbs)} (cross-mount traversal)`,
-          package: { name: entry.name, version: entry.version },
         });
       }
       try {
@@ -148,7 +144,6 @@ export function createTarballFetcher(
         throw new ClosureMaterializationError({
           category: "tarball.missing",
           message: `asset-stored tarball for ${entry.name}@${entry.version} not present at ${absPath}: ${describeError(err)}`,
-          package: { name: entry.name, version: entry.version },
         });
       }
     }
@@ -156,8 +151,7 @@ export function createTarballFetcher(
     if (registry === undefined) {
       throw new ClosureMaterializationError({
         category: "registry.unknown",
-        message: `manifest references registry "${entry.source.registry}" which is not in the sidecar config`,
-        package: { name: entry.name, version: entry.version },
+        message: `manifest entry ${entry.name}@${entry.version} references registry "${entry.source.registry}" which is not in the sidecar config`,
       });
     }
     const tarballUrl =
@@ -181,14 +175,12 @@ export function createTarballFetcher(
         throw new ClosureMaterializationError({
           category: "registry.auth.failed",
           message: `registry "${entry.source.registry}" rejected credentials for ${entry.name}@${entry.version} (HTTP ${String(res.status)})`,
-          package: { name: entry.name, version: entry.version },
         });
       }
       if (!res.ok) {
         throw new ClosureMaterializationError({
           category: "registry.fetch.failed",
           message: `registry "${entry.source.registry}" returned HTTP ${String(res.status)} fetching ${entry.name}@${entry.version}`,
-          package: { name: entry.name, version: entry.version },
         });
       }
       return await readResponseWithLimit(
@@ -207,13 +199,11 @@ export function createTarballFetcher(
         throw new ClosureMaterializationError({
           category: "registry.fetch.failed",
           message: `registry "${entry.source.registry}" fetch for ${entry.name}@${entry.version} exceeded the ${String(registryFetchTimeoutMs)}ms timeout`,
-          package: { name: entry.name, version: entry.version },
         });
       }
       throw new ClosureMaterializationError({
         category: "registry.fetch.failed",
         message: `registry "${entry.source.registry}" fetch failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
-        package: { name: entry.name, version: entry.version },
       });
     } finally {
       clearTimeout(timer);

@@ -60,7 +60,6 @@ export async function materializeGitEntry(args: {
     throw new ClosureMaterializationError({
       category: "git.materialization.failed",
       message: `git subtree ${JSON.stringify(source.packageDir)} for ${name}@${version} could not be read at ${source.commitSha}: ${describeError(err)}`,
-      package: { name, version },
     });
   }
 
@@ -71,7 +70,6 @@ export async function materializeGitEntry(args: {
     throw new ClosureMaterializationError({
       category: "git.materialization.failed",
       message: `git subtree ${JSON.stringify(source.packageDir)} at ${source.commitSha} for ${name}@${version} hashed to tree ${subtreeOid}, not the frozen ${source.treeOid}`,
-      package: { name, version },
     });
   }
 
@@ -94,7 +92,6 @@ export async function materializeGitEntry(args: {
     throw new ClosureMaterializationError({
       category: "git.materialization.failed",
       message: `writing git subtree for ${name}@${version} failed: ${describeError(err)}`,
-      package: { name, version },
     });
   }
 

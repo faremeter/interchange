@@ -119,7 +119,6 @@ export async function readResponseWithLimit(
       throw new ClosureMaterializationError({
         category: "registry.fetch.failed",
         message: `registry "${ctx.registry}" returned non-digit Content-Length ${JSON.stringify(declaredLengthRaw)} for ${ctx.name}@${ctx.version}`,
-        package: { name: ctx.name, version: ctx.version },
       });
     }
     const declaredLength = Number(declaredLengthRaw);
@@ -127,7 +126,6 @@ export async function readResponseWithLimit(
       throw new ClosureMaterializationError({
         category: "registry.fetch.failed",
         message: `tarball for ${ctx.name}@${ctx.version} declares Content-Length ${declaredLengthRaw} which exceeds the ${String(maxBytes)}-byte cap`,
-        package: { name: ctx.name, version: ctx.version },
       });
     }
   }
@@ -136,13 +134,11 @@ export async function readResponseWithLimit(
     new ClosureMaterializationError({
       category: "registry.fetch.failed",
       message: `tarball read for ${ctx.name}@${ctx.version} exceeded the registry fetch timeout`,
-      package: { name: ctx.name, version: ctx.version },
     });
   const capOverflowError = (): ClosureMaterializationError =>
     new ClosureMaterializationError({
       category: "registry.fetch.failed",
       message: `tarball for ${ctx.name}@${ctx.version} streamed past the ${String(maxBytes)}-byte cap`,
-      package: { name: ctx.name, version: ctx.version },
     });
 
   // `res.body`'s declared web-`ReadableStream` type is a lie on the
@@ -216,7 +212,6 @@ export async function readResponseWithLimit(
           throw new ClosureMaterializationError({
             category: "registry.fetch.failed",
             message: `registry "${ctx.registry}" streamed a non-binary chunk fetching ${ctx.name}@${ctx.version}`,
-            package: { name: ctx.name, version: ctx.version },
           });
         }
         total += chunk.byteLength;
@@ -238,7 +233,6 @@ export async function readResponseWithLimit(
     throw new ClosureMaterializationError({
       category: "registry.fetch.failed",
       message: `registry "${ctx.registry}" returned a response body of an unreadable shape for ${ctx.name}@${ctx.version}`,
-      package: { name: ctx.name, version: ctx.version },
     });
   }
 
