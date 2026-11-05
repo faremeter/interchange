@@ -1255,6 +1255,7 @@ describe("materialization error categories", () => {
       );
     }
     expect(caught.category).toBe("asset.mount.missing");
+    expect(caught.message).toContain("m@1.0.0");
   });
 });
 
@@ -1770,6 +1771,7 @@ describe("entry-path containment", () => {
       expect(caught.message).toMatch(
         /escapes the package extraction directory/,
       );
+      expect(caught.message).toContain("evil-symlink@1.0.0");
     }
   });
 

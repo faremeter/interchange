@@ -127,8 +127,7 @@ export async function materializeClosure(
       if (!args.registries.has(source.registry)) {
         throw new ClosureMaterializationError({
           category: "registry.unknown",
-          message: `manifest references registry "${source.registry}" which is not in the sidecar config`,
-          package: { name: entry.name, version: entry.version },
+          message: `manifest entry ${entry.name}@${entry.version} references registry "${source.registry}" which is not in the sidecar config`,
         });
       }
       integrity = source.integrity;
@@ -137,8 +136,7 @@ export async function materializeClosure(
       if (gitDir === undefined) {
         throw new ClosureMaterializationError({
           category: "git.materialization.failed",
-          message: `manifest entry references git assetId "${source.assetId}" which is not in the git-dirs map`,
-          package: { name: entry.name, version: entry.version },
+          message: `manifest entry ${entry.name}@${entry.version} references git assetId "${source.assetId}" which is not in the git-dirs map`,
         });
       }
       return materializeGitEntry({
@@ -152,8 +150,7 @@ export async function materializeClosure(
       if (!args.assetMounts.has(source.assetId)) {
         throw new ClosureMaterializationError({
           category: "asset.mount.missing",
-          message: `manifest entry references assetId "${source.assetId}" which is not in the asset-mounts map`,
-          package: { name: entry.name, version: entry.version },
+          message: `manifest entry ${entry.name}@${entry.version} references assetId "${source.assetId}" which is not in the asset-mounts map`,
         });
       }
       integrity = source.package.integrity;
@@ -193,7 +190,6 @@ export async function materializeClosure(
           throw new ClosureMaterializationError({
             category: "integrity.mismatch",
             message: `bytes for ${entry.name}@${entry.version} did not match pinned integrity`,
-            package: { name: entry.name, version: entry.version },
           });
         }
         throw err;
@@ -218,7 +214,6 @@ export async function materializeClosure(
       throw new ClosureMaterializationError({
         category: "tarball.extract.failed",
         message: `tar extraction failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
-        package: { name: entry.name, version: entry.version },
       });
     }
   }
@@ -357,7 +352,7 @@ async function buildStoreLayout(args: BuildStoreLayoutArgs): Promise<void> {
     }
     const layoutDir = storeEntryDir(args.storeDir, entry.name, entry.version);
     await fs.mkdir(path.dirname(layoutDir), { recursive: true });
-    await copyTree(extraction, layoutDir);
+    await copyTree(extraction, layoutDir, key);
   }
 
   for (const entry of args.filtered) {
@@ -385,7 +380,6 @@ async function buildStoreLayout(args: BuildStoreLayoutArgs): Promise<void> {
         throw new ClosureMaterializationError({
           category: "package.entry.invalid",
           message: `${entry.name}@${entry.version} depends on ${dep.name}@${dep.range} but the manifest closure has no satisfying version; the resolver was expected to include it`,
-          package: { name: entry.name, version: entry.version },
         });
       }
       const target = storeEntryDir(args.storeDir, dep.name, pickedVersion);
@@ -554,6 +548,7 @@ async function resolveRangesByFirstArrival(
 async function copyTree(
   srcDir: string,
   destDir: string,
+  packageLabel: string,
   extractionRoot: string = srcDir,
 ): Promise<void> {
   await fs.mkdir(destDir, { recursive: true });
@@ -562,7 +557,7 @@ async function copyTree(
     const src = path.join(srcDir, entry.name);
     const dest = path.join(destDir, entry.name);
     if (entry.isDirectory()) {
-      await copyTree(src, dest, extractionRoot);
+      await copyTree(src, dest, packageLabel, extractionRoot);
     } else if (entry.isFile()) {
       try {
         await fs.copyFile(src, dest, fsConstants.COPYFILE_EXCL);
@@ -617,7 +612,7 @@ async function copyTree(
       } catch (err) {
         throw new ClosureMaterializationError({
           category: "package.entry.invalid",
-          message: `tarball symlink ${src} → ${target}: extraction-root realpath failed: ${describeError(err)}`,
+          message: `tarball for ${packageLabel}: symlink ${src} → ${target}: extraction-root realpath failed: ${describeError(err)}`,
         });
       }
       // `path.resolve` produces the absolute path the symlink would
@@ -646,7 +641,7 @@ async function copyTree(
         if (!isENOENT(err)) {
           throw new ClosureMaterializationError({
             category: "package.entry.invalid",
-            message: `tarball contains symlink ${src} → ${target} whose target could not be resolved: ${describeError(err)}`,
+            message: `tarball for ${packageLabel} contains symlink ${src} → ${target} whose target could not be resolved: ${describeError(err)}`,
           });
         }
         let srcDirReal: string;
@@ -655,7 +650,7 @@ async function copyTree(
         } catch (dirErr) {
           throw new ClosureMaterializationError({
             category: "package.entry.invalid",
-            message: `tarball symlink ${src} → ${target}: dirname realpath failed during dangling-link fallback: ${describeError(dirErr)}`,
+            message: `tarball for ${packageLabel}: symlink ${src} → ${target}: dirname realpath failed during dangling-link fallback: ${describeError(dirErr)}`,
           });
         }
         targetAbs = path.resolve(srcDirReal, target);
@@ -669,7 +664,7 @@ async function copyTree(
       ) {
         throw new ClosureMaterializationError({
           category: "package.entry.invalid",
-          message: `tarball contains symlink ${src} → ${target} that escapes the package extraction directory`,
+          message: `tarball for ${packageLabel} contains symlink ${src} → ${target} that escapes the package extraction directory`,
         });
       }
       try {
@@ -713,7 +708,6 @@ async function readDirectDependencies(
     throw new ClosureMaterializationError({
       category: "package.entry.invalid",
       message: `malformed package.json in ${entry.name}@${entry.version}: ${describeError(err)}`,
-      package: { name: entry.name, version: entry.version },
     });
   }
   const byName = new Map<string, DirectDep>();
@@ -741,7 +735,6 @@ async function readDirectDependencies(
           throw new ClosureMaterializationError({
             category: "package.entry.invalid",
             message: `package.json field optionalDependencies["${name}"] in ${entry.name}@${entry.version} is ${typeof range}, expected a string range`,
-            package: { name: entry.name, version: entry.version },
           });
         }
         byName.set(name, {
@@ -761,7 +754,6 @@ async function readDirectDependencies(
           throw new ClosureMaterializationError({
             category: "package.entry.invalid",
             message: `package.json field dependencies["${name}"] in ${entry.name}@${entry.version} is ${typeof range}, expected a string range`,
-            package: { name: entry.name, version: entry.version },
           });
         }
         byName.set(name, {
@@ -815,7 +807,6 @@ function assertDepMapShape(
     throw new ClosureMaterializationError({
       category: "package.entry.invalid",
       message: `package.json#${field} for ${entry.name}@${entry.version} must be an object map of name→range, not an array`,
-      package: { name: entry.name, version: entry.version },
     });
   }
 }

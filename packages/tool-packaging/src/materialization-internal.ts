@@ -25,25 +25,15 @@ export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_REGISTRY_FETCH_TIMEOUT_MS = 120 * 1000;
 
 /**
- * A closure-materialization failure carrying its `DeployApplyErrorCategory`
- * (and, when the failure is attributable to a specific package, its name and
- * version).
+ * A closure-materialization failure carrying its `DeployApplyErrorCategory`.
  */
 export class ClosureMaterializationError extends Error {
   readonly category: DeployApplyErrorCategory;
-  readonly package:
-    | { readonly name: string; readonly version: string }
-    | undefined;
 
-  constructor(opts: {
-    category: DeployApplyErrorCategory;
-    message: string;
-    package?: { name: string; version: string };
-  }) {
+  constructor(opts: { category: DeployApplyErrorCategory; message: string }) {
     super(opts.message);
     this.name = "ClosureMaterializationError";
     this.category = opts.category;
-    this.package = opts.package;
   }
 }
 
