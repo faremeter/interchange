@@ -1,5 +1,5 @@
 // Sidecar-bundle entry for `@intx/tools-posix` — the convention-compliant
-// factory the tool-package loader invokes.
+// factory a workflow agent lists in its `toolFactories`.
 //
 // The factory reads the working tree it operates on from `env.toolCwd`
 // and the blob store from the `BaseEnv` `storage` field, plus the
@@ -47,8 +47,7 @@ function isToolPlugin(value: unknown): value is ToolPlugin {
 }
 
 /**
- * Named export the loader picks up. The id is package-namespaced per
- * the convention.
+ * The id is package-namespaced per the convention.
  */
 export const posix = defineTool<PosixToolEnv>({
   id: "@intx/tools-posix/sidecar-bundle",

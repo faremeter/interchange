@@ -555,7 +555,6 @@
       "name": "@intx/tool-packaging",
       "version": "0.5.0",
       "dependencies": {
-        "@intx/agent": "workspace:*",
         "@intx/log": "workspace:*",
         "@intx/storage-isogit": "workspace:*",
         "@intx/types": "workspace:*",

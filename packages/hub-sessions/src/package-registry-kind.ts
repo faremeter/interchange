@@ -209,7 +209,7 @@ export const packageRegistryKindHandler: KindHandler = {
     // resolver's AssetRegistrySource overwrite by fs.readdir order —
     // an undefined-behaviour outcome across filesystems. Reject the
     // collision at the substrate boundary so the registry asset's
-    // closure is unambiguous regardless of how the loader walks it.
+    // closure is unambiguous.
     const publishedNameVersions = new Set<string>();
     for (const child of tarballChildren) {
       const repoPath = `${TARBALLS_PREFIX}${child}`;

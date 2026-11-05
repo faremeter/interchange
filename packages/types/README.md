@@ -76,10 +76,8 @@ pull in the shapes they need:
   `ToolPackagePinName`), source variants
   (`ToolPackageRegistrySource`, `ToolPackageAssetSource`, and its
   `package` arms `ToolPackageAssetTarball` and
-  `ToolPackageAssetSourceTree`, unioned as `ToolPackageSource`), the
-  `getToolPackageSourceContentIdentity` helper that reads an entry's
-  content identity (tarball SRI or source tree oid), and the tool-package
-  manifest (`ToolPackageManifestEntry`, `ToolPackageManifest`).
+  `ToolPackageAssetSourceTree`, unioned as `ToolPackageSource`), and the
+  tool-package manifest (`ToolPackageManifestEntry`, `ToolPackageManifest`).
 - `@intx/types/package-json` — the `PackageJSON` validator for the
   subset of `package.json` fields the asset substrate and tool-package
   builders read, including the `interchange.tools` extension, plus

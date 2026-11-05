@@ -54,10 +54,10 @@
 //
 // Director resolution: the walk calls `effectiveDirectorRef` so the
 // absent-director normalization stays identical between this walk and
-// `getRequiredEnvKeys`. Director factories loaded from pinned tool
-// packages via `interchange.directors` are folded into the registry by
-// the caller; this module does not synthesize that registry itself
-// because the loader is the layer that owns package materialization.
+// `getRequiredEnvKeys`. Director factories from a workflow package's
+// `interchange.directors` are folded into the registry by the caller; this
+// module does not synthesize that registry itself because the definition
+// loader owns importing them.
 // An unresolvable director surfaces on `unresolvedDirectors` rather
 // than raising -- the deploy flow translates that into a deploy-time
 // `"unresolvable director"` failure when it wires this output into

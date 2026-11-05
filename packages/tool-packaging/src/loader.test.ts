@@ -3,25 +3,24 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { pathToFileURL } from "node:url";
 import * as tar from "tar";
 import ssri from "ssri";
 import npmRegistryFetch from "npm-registry-fetch";
 
 import { createTarballCache } from "./cache";
 import {
-  type LoadedDirectorFactory,
-  type LoadedToolFactory,
+  type MaterializeClosureArgs,
   type TarballFetcher,
   ToolLoaderError,
   buildRegistryFetchOpts,
-  createToolLoader,
+  createTarballFetcher,
   materializeClosure,
   readResponseWithLimit,
   storeEntryDir,
 } from "./loader";
 import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
-import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 
 let scratchRoot: string;
 let cacheDir: string;
@@ -52,11 +51,6 @@ interface FixtureSpec {
   version: string;
   interchangeToolsRelPath?: string | null; // null means omit the field
   entryModuleSource?: string; // emitted at the interchange.tools path
-  interchangeDirectorsRelPath?: string | null; // null means omit the field
-  directorsModuleSource?: string; // emitted at the interchange.directors path
-  // Inline `interchange.credentials` value, written verbatim into
-  // package.json. `unknown` so malformed-shape cases can be exercised.
-  interchangeCredentials?: unknown;
   extraFiles?: Record<string, string>;
   dependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
@@ -86,15 +80,6 @@ async function packFixture(
   if (spec.interchangeToolsRelPath !== null) {
     interchangeField.tools = spec.interchangeToolsRelPath ?? "./tools.js";
   }
-  if (
-    spec.interchangeDirectorsRelPath !== null &&
-    spec.interchangeDirectorsRelPath !== undefined
-  ) {
-    interchangeField.directors = spec.interchangeDirectorsRelPath;
-  }
-  if (spec.interchangeCredentials !== undefined) {
-    interchangeField.credentials = spec.interchangeCredentials;
-  }
   if (Object.keys(interchangeField).length > 0) {
     pkgJson.interchange = interchangeField;
   }
@@ -118,19 +103,6 @@ async function packFixture(
     await fs.writeFile(entryAbs, spec.entryModuleSource);
   }
 
-  if (
-    spec.directorsModuleSource !== undefined &&
-    spec.interchangeDirectorsRelPath !== undefined &&
-    spec.interchangeDirectorsRelPath !== null
-  ) {
-    const directorsAbs = path.resolve(
-      packageDir,
-      spec.interchangeDirectorsRelPath,
-    );
-    await fs.mkdir(path.dirname(directorsAbs), { recursive: true });
-    await fs.writeFile(directorsAbs, spec.directorsModuleSource);
-  }
-
   for (const [rel, contents] of Object.entries(spec.extraFiles ?? {})) {
     const abs = path.join(packageDir, rel);
     await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -151,102 +123,28 @@ async function packFixture(
   return { bytes, integrity };
 }
 
-function makeFakeFactory(
-  id: string,
-  requires: readonly string[] = [],
-): LoadedToolFactory {
-  const fn = () => ({
-    definitions: [],
-    run: async () => ({
-      callId: "stub",
-      content: "ok",
-    }),
-  });
-  return Object.assign(fn, { id, requires, definitions: [] });
-}
-
-/**
- * Build a director-factory-shaped stub the loader's structural check
- * accepts. `configSchema` is a callable arktype-shaped validator (the
- * real `defineDirector` requires this); the body returns a director
- * stub adequate for the loader's structural narrow without exercising
- * the runtime director protocol.
- */
-function makeFakeDirectorFactory(
-  id: string,
-  requires: readonly string[] = [],
-): LoadedDirectorFactory {
-  const fn = () => {
-    throw new Error(
-      `stub director factory ${id} should not be invoked in loader tests`,
-    );
+// Binds what a test holds fixed around `materializeClosure`'s per-call layout
+// arguments, and gives it the production fetcher unless it supplies its own.
+function createMaterializer(
+  config: Pick<MaterializeClosureArgs, "cache" | "registries" | "host"> &
+    Partial<Pick<MaterializeClosureArgs, "fetchTarball">>,
+) {
+  const fetchTarball = config.fetchTarball ?? createTarballFetcher();
+  return {
+    materialize: (
+      args: Pick<
+        MaterializeClosureArgs,
+        | "manifest"
+        | "instanceScratchDir"
+        | "assetRoot"
+        | "assetMounts"
+        | "gitDirs"
+      >,
+    ) => materializeClosure({ ...args, ...config, fetchTarball }),
   };
-  const configSchema = (value: unknown) => value;
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- LoadedDirectorFactory carries an erased Config (`unknown`); the structural fields the loader's predicate checks (id, requires, configSchema) are satisfied below, and the loader does not invoke the factory body in these tests.
-  return Object.assign(fn, {
-    id,
-    requires,
-    configSchema,
-  }) as unknown as LoadedDirectorFactory;
 }
 
-describe("createToolLoader", () => {
-  test("loads a single top-level package via injected fetcher and importer", async () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-leaf",
-      version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
-    });
-
-    const fakeFactory = makeFakeFactory("@vendor/leaf/main", ["env.thing"]);
-    const fetchTarball: TarballFetcher = async (entry) => {
-      expect(entry.name).toBe("tools-leaf");
-      return fixture.bytes;
-    };
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball,
-      importModule: async () => ({ main: fakeFactory }),
-    });
-
-    const manifest: ToolPackageManifest = {
-      schemaVersion: "1",
-      topLevel: [{ name: "tools-leaf", version: "1.0.0" }],
-      entries: [
-        {
-          name: "tools-leaf",
-          version: "1.0.0",
-          source: {
-            kind: "registry",
-            registry: "npmjs",
-            integrity: fixture.integrity,
-          },
-        },
-      ],
-    };
-
-    const loaded = await loader.loadManifest({
-      manifest,
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.name).toBe("tools-leaf");
-    expect(loaded[0]?.factories).toHaveLength(1);
-    expect(loaded[0]?.factories[0]?.id).toBe("@vendor/leaf/main");
-    // A package that declares no credentials surfaces an empty array,
-    // not a missing field -- the reconcile downstream reads it verbatim.
-    expect(loaded[0]?.credentials).toEqual([]);
-  });
-
+describe("materializeClosure layout", () => {
   test("lays out a workspace: protocol dependency against its closure member", async () => {
     // A source-workspace member depends on another member via `workspace:*`.
     // That protocol is not semver, so before it is normalized the range
@@ -259,7 +157,7 @@ describe("createToolLoader", () => {
     const app = await packFixture({
       name: "@wf/app",
       version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
+      entryModuleSource: "// stub",
       dependencies: { "@wf/lib": "workspace:*" },
     });
     const lib = await packFixture({
@@ -274,12 +172,11 @@ describe("createToolLoader", () => {
       if (entry.name === "@wf/lib") return lib.bytes;
       throw new Error(`unexpected fetch ${entry.name}`);
     };
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball,
-      importModule: async () => ({ main: makeFakeFactory("@wf/app/main") }),
     });
 
     const manifest: ToolPackageManifest = {
@@ -309,15 +206,14 @@ describe("createToolLoader", () => {
 
     // Before the workspace: normalization this rejected with
     // `package.entry.invalid`; it now lays out cleanly.
-    const loaded = await loader.loadManifest({
+    const { entries } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.name).toBe("@wf/app");
+    expect(entries.map((e) => e.name)).toEqual(["@wf/app", "@wf/lib"]);
   });
 
   test("lays out a catalog: protocol dependency against its closure member", async () => {
@@ -332,7 +228,7 @@ describe("createToolLoader", () => {
     const app = await packFixture({
       name: "@wf/catalog-app",
       version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
+      entryModuleSource: "// stub",
       dependencies: { "left-pad": "catalog:" },
     });
     const leftPad = await packFixture({
@@ -347,14 +243,11 @@ describe("createToolLoader", () => {
       if (entry.name === "left-pad") return leftPad.bytes;
       throw new Error(`unexpected fetch ${entry.name}`);
     };
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball,
-      importModule: async () => ({
-        main: makeFakeFactory("@wf/catalog-app/main"),
-      }),
     });
 
     const manifest: ToolPackageManifest = {
@@ -382,15 +275,14 @@ describe("createToolLoader", () => {
       ],
     };
 
-    const loaded = await loader.loadManifest({
+    const { entries } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.name).toBe("@wf/catalog-app");
+    expect(entries.map((e) => e.name)).toContain("@wf/catalog-app");
   });
 
   test("materializes package files independently from the cache extraction", async () => {
@@ -403,17 +295,14 @@ describe("createToolLoader", () => {
       version: "1.0.0",
       entryModuleSource: "original contents",
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({
-        main: makeFakeFactory("@vendor/copied/main"),
-      }),
     });
 
-    await loader.loadManifest({
+    await materializer.materialize({
       manifest: {
         schemaVersion: "1",
         topLevel: [{ name: "copied-tool", version: "1.0.0" }],
@@ -456,240 +345,10 @@ describe("createToolLoader", () => {
     }
   });
 
-  test("surfaces interchange.credentials declarations on the loaded package", async () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-creds",
-      version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
-      interchangeCredentials: [
-        { handle: "openai", scopes: ["chat"] },
-        { handle: "stripe" },
-      ],
-    });
-
-    const fakeFactory = makeFakeFactory("@vendor/creds/main", ["env.thing"]);
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({ main: fakeFactory }),
-    });
-
-    const loaded = await loader.loadManifest({
-      manifest: {
-        schemaVersion: "1",
-        topLevel: [{ name: "tools-creds", version: "1.0.0" }],
-        entries: [
-          {
-            name: "tools-creds",
-            version: "1.0.0",
-            source: {
-              kind: "registry",
-              registry: "npmjs",
-              integrity: fixture.integrity,
-            },
-          },
-        ],
-      },
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-
-    expect(loaded[0]?.credentials).toEqual([
-      { handle: "openai", scopes: ["chat"] },
-      { handle: "stripe" },
-    ]);
-  });
-
-  type Declarations = readonly {
-    readonly handle: string;
-    readonly scopes?: readonly string[];
-  }[];
-
-  // Load one package whose manifest declares `manifest` and whose only
-  // factory declares `factory` through `defineTool` (undefined: nothing).
-  // `factory` is whatever the package's module exports as the factory's
-  // `credentials`, so a test can hand the loader a malformed declaration.
-  async function loadWithDeclarations(
-    manifest: Declarations | undefined,
-    factory: unknown,
-  ) {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-creds",
-      version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
-      ...(manifest !== undefined ? { interchangeCredentials: manifest } : {}),
-    });
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({
-        main: Object.assign(
-          makeFakeFactory("@vendor/creds/main", ["env.thing"]),
-          factory === undefined ? {} : { credentials: factory },
-        ),
-      }),
-    });
-    return loader.loadManifest({
-      manifest: {
-        schemaVersion: "1",
-        topLevel: [{ name: "tools-creds", version: "1.0.0" }],
-        entries: [
-          {
-            name: "tools-creds",
-            version: "1.0.0",
-            source: {
-              kind: "registry",
-              registry: "npmjs",
-              integrity: fixture.integrity,
-            },
-          },
-        ],
-      },
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-  }
-
-  const MANIFEST: Declarations = [
-    { handle: "openai", scopes: ["chat", "embed"] },
-    { handle: "stripe" },
-  ];
-
-  for (const [label, factory] of [
-    ["declares nothing", undefined],
-    [
-      "declares one of the manifest's handles",
-      [{ handle: "openai", scopes: ["chat", "embed"] }],
-    ],
-    [
-      "declares the same handles in another order",
-      [{ handle: "stripe" }, { handle: "openai", scopes: ["chat", "embed"] }],
-    ],
-    [
-      "lists scopes in another order or more than once",
-      [
-        { handle: "openai", scopes: ["embed", "chat", "chat"] },
-        { handle: "stripe", scopes: [] },
-      ],
-    ],
-  ] as const) {
-    test(`accepts a factory that ${label}`, async () => {
-      const loaded = await loadWithDeclarations(MANIFEST, factory);
-      expect(loaded[0]?.credentials).toEqual([
-        { handle: "openai", scopes: ["chat", "embed"] },
-        { handle: "stripe" },
-      ]);
-    });
-  }
-
-  for (const [label, manifest, factory] of [
-    [
-      "declares different scopes",
-      MANIFEST,
-      [{ handle: "openai", scopes: ["chat"] }, { handle: "stripe" }],
-    ],
-    [
-      "declares handles the manifest does not",
-      undefined,
-      [{ handle: "stripe" }],
-    ],
-  ] as const) {
-    test(`rejects a factory that ${label}`, async () => {
-      await expect(loadWithDeclarations(manifest, factory)).rejects.toThrow(
-        /that the package's interchange.credentials does not/,
-      );
-    });
-  }
-
-  for (const [label, factory] of [
-    ["null", null],
-    ["a string", "openai"],
-    ["a list with a number", [1]],
-    ["a handle that is not a string", [{ handle: 1 }]],
-  ] as const) {
-    test(`rejects a factory whose credentials are ${label}`, async () => {
-      await expect(loadWithDeclarations(MANIFEST, factory)).rejects.toThrow(
-        /tool factory @vendor\/creds\/main credentials failed validation/,
-      );
-    });
-  }
-
-  test("rejects interchange.credentials with a duplicate handle", async () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-dupcred",
-      version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
-      interchangeCredentials: [{ handle: "openai" }, { handle: "openai" }],
-    });
-
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({
-        main: makeFakeFactory("@vendor/dupcred/main", ["env.thing"]),
-      }),
-    });
-
-    await expect(
-      loader.loadManifest({
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "tools-dupcred", version: "1.0.0" }],
-          entries: [
-            {
-              name: "tools-dupcred",
-              version: "1.0.0",
-              source: {
-                kind: "registry",
-                registry: "npmjs",
-                integrity: fixture.integrity,
-              },
-            },
-          ],
-        },
-        instanceScratchDir: instanceDir,
-        assetRoot,
-        assetMounts: new Map(),
-        gitDirs: new Map(),
-      }),
-    ).rejects.toThrow(/duplicate credential handles/);
-  });
-
   test("rejects a non-positive registryFetchTimeoutMs", () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    expect(() =>
-      createToolLoader({
-        cache,
-        registries: new Map([["npmjs", { url: "https://r.test" }]]),
-        host: { os: "linux", cpu: "x64" },
-        registryFetchTimeoutMs: 0,
-      }),
-    ).toThrow(/registryFetchTimeoutMs must be a positive finite number/);
+    expect(() => createTarballFetcher({ registryFetchTimeoutMs: 0 })).toThrow(
+      /registryFetchTimeoutMs must be a positive finite number/,
+    );
   });
 
   test("skips entries whose os does not match the host", async () => {
@@ -714,14 +373,11 @@ describe("createToolLoader", () => {
         ? matching.bytes
         : nonMatching.bytes;
     };
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball,
-      importModule: async () => ({
-        main: makeFakeFactory("@watcher/linux/main"),
-      }),
     });
 
     const manifest: ToolPackageManifest = {
@@ -754,15 +410,15 @@ describe("createToolLoader", () => {
       ],
     };
 
-    const loaded = await loader.loadManifest({
+    const { entries } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.name).toBe("watcher-linux");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.name).toBe("watcher-linux");
     expect(fetched).toEqual(["watcher-linux@1.0.0"]);
   });
 
@@ -804,7 +460,7 @@ describe("createToolLoader", () => {
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
@@ -813,7 +469,6 @@ describe("createToolLoader", () => {
         if (f === undefined) throw new Error(`no fixture: ${entry.name}`);
         return f.bytes;
       },
-      importModule: async () => ({ main: makeFakeFactory("@vendor/x/main") }),
     });
     const manifest: ToolPackageManifest = {
       schemaVersion: "1",
@@ -867,14 +522,14 @@ describe("createToolLoader", () => {
       ],
     };
 
-    const loaded = await loader.loadManifest({
+    const { entries } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    const names = loaded.map((p) => p.name).sort();
+    const names = entries.map((p) => p.name).sort();
     expect(names).toEqual(["allow-bare", "allow-negate"]);
   });
 
@@ -894,12 +549,11 @@ describe("createToolLoader", () => {
       fetcherCalls += 1;
       throw new Error("fetcher should not be called on cache hit");
     };
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball,
-      importModule: async () => ({ main: makeFakeFactory("@c/main") }),
     });
     const manifest: ToolPackageManifest = {
       schemaVersion: "1",
@@ -916,7 +570,7 @@ describe("createToolLoader", () => {
         },
       ],
     };
-    await loader.loadManifest({
+    await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
@@ -925,327 +579,6 @@ describe("createToolLoader", () => {
     });
     expect(fetcherCalls).toBe(0);
   });
-
-  test("cache-busts the import URL with the entry integrity so reapplies with new bytes import distinct modules", async () => {
-    // Same (name, version), different bytes — Node's ESM cache keys
-    // by resolved URL, so without the integrity query string both
-    // applies would share the first apply's module. Track the URLs
-    // the loader hands to import(): they must (a) carry the
-    // `integrity=<sri>` query string and (b) differ between the two
-    // applies whose integrities differ.
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixtureA = await packFixture({
-      name: "swappable",
-      version: "1.0.0",
-      entryModuleSource: "// bytes A",
-    });
-    const fixtureB = await packFixture({
-      name: "swappable",
-      version: "1.0.0",
-      entryModuleSource: "// bytes B (distinct from A)",
-    });
-    expect(fixtureA.integrity).not.toBe(fixtureB.integrity);
-
-    const importUrls: string[] = [];
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async (entry) =>
-        getToolPackageSourceContentIdentity(entry.source) === fixtureA.integrity
-          ? fixtureA.bytes
-          : fixtureB.bytes,
-      importModule: async (importUrl) => {
-        importUrls.push(importUrl);
-        return { main: makeFakeFactory("@swappable/main") };
-      },
-    });
-
-    const makeManifest = (integrity: string): ToolPackageManifest => ({
-      schemaVersion: "1",
-      topLevel: [{ name: "swappable", version: "1.0.0" }],
-      entries: [
-        {
-          name: "swappable",
-          version: "1.0.0",
-          source: { kind: "registry", registry: "npmjs", integrity },
-        },
-      ],
-    });
-
-    const instanceDirA = path.join(scratchRoot, "instance-a");
-    const instanceDirB = path.join(scratchRoot, "instance-b");
-    await fs.mkdir(instanceDirA, { recursive: true });
-    await fs.mkdir(instanceDirB, { recursive: true });
-
-    await loader.loadManifest({
-      manifest: makeManifest(fixtureA.integrity),
-      instanceScratchDir: instanceDirA,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-    await loader.loadManifest({
-      manifest: makeManifest(fixtureB.integrity),
-      instanceScratchDir: instanceDirB,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-
-    expect(importUrls).toHaveLength(2);
-    const [urlA, urlB] = importUrls;
-    if (urlA === undefined || urlB === undefined) {
-      throw new Error("expected two import URLs");
-    }
-    expect(urlA.startsWith("file://")).toBeTruthy();
-    expect(urlB.startsWith("file://")).toBeTruthy();
-    expect(urlA).toContain(
-      `integrity=${encodeURIComponent(fixtureA.integrity)}`,
-    );
-    expect(urlB).toContain(
-      `integrity=${encodeURIComponent(fixtureB.integrity)}`,
-    );
-    expect(urlA).not.toBe(urlB);
-  });
-
-  test("loader prefixes tool definitions with the bundle id", async () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-prefix",
-      version: "1.0.0",
-      entryModuleSource: "",
-    });
-    // The factory exports a definition named "search". The loader
-    // should expose it as "@vendor/prefix/main:search" to the model.
-    const factory = Object.assign(
-      () => ({
-        definitions: [{ name: "search", description: "test", inputSchema: {} }],
-        run: async (call: { id: string; name: string }) => ({
-          callId: call.id,
-          content: `ran ${call.name}`,
-        }),
-      }),
-      {
-        id: "@vendor/prefix/main",
-        requires: [] as readonly string[],
-        definitions: [{ name: "search" }],
-      },
-    );
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({ main: factory }),
-    });
-    const manifest: ToolPackageManifest = {
-      schemaVersion: "1",
-      topLevel: [{ name: "tools-prefix", version: "1.0.0" }],
-      entries: [
-        {
-          name: "tools-prefix",
-          version: "1.0.0",
-          source: {
-            kind: "registry",
-            registry: "npmjs",
-            integrity: fixture.integrity,
-          },
-        },
-      ],
-    };
-    const loaded = await loader.loadManifest({
-      manifest,
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-    const loadedFactory = loaded[0]?.factories[0];
-    if (loadedFactory === undefined) {
-      throw new Error("expected at least one factory");
-    }
-    // Stub env; the factory does not read anything from it in this
-    // test, but BaseEnv must satisfy the type at the call site.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- BaseEnv satisfied by the {} cast for this stub; the factory does not read env at runtime.
-    const bundle = loadedFactory({} as Parameters<typeof loadedFactory>[0]);
-    expect(bundle.definitions[0]?.name).toBe("@vendor/prefix/main:search");
-    // Invoking via the prefixed name should round-trip to the
-    // original handler.
-    const result = await bundle.run(
-      {
-        id: "c1",
-        name: "@vendor/prefix/main:search",
-        arguments: {},
-      },
-      new AbortController().signal,
-    );
-    expect(result.content).toBe("ran search");
-  });
-
-  test("loader rejects bundles that export duplicate-named tool definitions", async () => {
-    // Two definitions with the same name in the same bundle would
-    // silently collapse to one entry in the wrapper's name map and
-    // leave one tool unreachable. The wrapper surfaces the collision
-    // as tool.name.duplicate when the factory is invoked.
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-dup",
-      version: "1.0.0",
-      entryModuleSource: "",
-    });
-    const factory = Object.assign(
-      () => ({
-        definitions: [
-          { name: "search", description: "first", inputSchema: {} },
-          { name: "search", description: "second", inputSchema: {} },
-        ],
-        run: async (call: { id: string; name: string }) => ({
-          callId: call.id,
-          content: `ran ${call.name}`,
-        }),
-      }),
-      {
-        id: "@vendor/dup/main",
-        requires: [] as readonly string[],
-        definitions: [{ name: "search" }, { name: "search" }],
-      },
-    );
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({ main: factory }),
-    });
-    const loaded = await loader.loadManifest({
-      manifest: {
-        schemaVersion: "1",
-        topLevel: [{ name: "tools-dup", version: "1.0.0" }],
-        entries: [
-          {
-            name: "tools-dup",
-            version: "1.0.0",
-            source: {
-              kind: "registry",
-              registry: "npmjs",
-              integrity: fixture.integrity,
-            },
-          },
-        ],
-      },
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-    const loadedFactory = loaded[0]?.factories[0];
-    if (loadedFactory === undefined) {
-      throw new Error("expected at least one factory");
-    }
-    let caught: unknown;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- BaseEnv satisfied by the {} cast for this stub; the factory does not read env at runtime.
-      loadedFactory({} as Parameters<typeof loadedFactory>[0]);
-    } catch (err) {
-      caught = err;
-    }
-    if (!(caught instanceof ToolLoaderError)) {
-      throw new Error(`expected ToolLoaderError, got ${String(caught)}`);
-    }
-    expect(caught.category).toBe("tool.name.duplicate");
-    expect(caught.message).toMatch(/two tool definitions named/);
-  });
-
-  test("loader rejects bundles whose `definitions` field is not an array", async () => {
-    // A factory that returns `definitions: null` (or omits the field
-    // entirely) would otherwise yield a bare TypeError when the
-    // wrapper iterates `bundle.definitions`. The apply pipeline would
-    // route that through the unknown-shape catch-all
-    // (`factory.construct.failed`), which is wrong: the shape of the
-    // returned bundle is the violated invariant, so the failure
-    // belongs in `package.entry.invalid`. The wrapper shape-checks
-    // before iterating to keep the operator-facing taxonomy honest.
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-malformed",
-      version: "1.0.0",
-      entryModuleSource: "",
-    });
-    const factory = Object.assign(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the test exercises the wrapper's defensive shape-check, which catches malformed bundles whose runtime shape disagrees with the type. Suppressing the type system on the violating field is the point.
-      (): any => ({
-        // Deliberately violate the bundle shape — `definitions` must
-        // be an array per the `AnnotatedToolFactory` contract.
-        definitions: null,
-        run: async (call: { id: string; name: string }) => ({
-          callId: call.id,
-          content: `ran ${call.name}`,
-        }),
-      }),
-      {
-        id: "@vendor/malformed/main",
-        requires: [] as readonly string[],
-        definitions: [{ name: "search" }],
-      },
-    );
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({ main: factory }),
-    });
-    const loaded = await loader.loadManifest({
-      manifest: {
-        schemaVersion: "1",
-        topLevel: [{ name: "tools-malformed", version: "1.0.0" }],
-        entries: [
-          {
-            name: "tools-malformed",
-            version: "1.0.0",
-            source: {
-              kind: "registry",
-              registry: "npmjs",
-              integrity: fixture.integrity,
-            },
-          },
-        ],
-      },
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-    const loadedFactory = loaded[0]?.factories[0];
-    if (loadedFactory === undefined) {
-      throw new Error("expected at least one factory");
-    }
-    let caught: unknown;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- BaseEnv satisfied by the {} cast for this stub; the factory does not read env at runtime.
-      loadedFactory({} as Parameters<typeof loadedFactory>[0]);
-    } catch (err) {
-      caught = err;
-    }
-    if (!(caught instanceof ToolLoaderError)) {
-      throw new Error(`expected ToolLoaderError, got ${String(caught)}`);
-    }
-    expect(caught.category).toBe("package.entry.invalid");
-    expect(caught.message).toMatch(/non-array `definitions`/);
-  });
 });
 
 describe("loader error categories", () => {
@@ -1253,7 +586,6 @@ describe("loader error categories", () => {
     args: {
       manifest: ToolPackageManifest;
       fetchTarball: TarballFetcher;
-      importModule?: (p: string) => Promise<unknown>;
     },
     category: DeployApplyErrorCategory,
   ): Promise<void> {
@@ -1261,18 +593,15 @@ describe("loader error categories", () => {
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball: args.fetchTarball,
-      ...(args.importModule !== undefined
-        ? { importModule: args.importModule }
-        : {}),
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: args.manifest,
         instanceScratchDir: instanceDir,
         assetRoot,
@@ -1370,16 +699,15 @@ describe("loader error categories", () => {
       .fromData(garbage, { algorithms: ["sha512"] })
       .toString();
     await cache.put(integrity, garbage);
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball: async () => garbage,
-      importModule: async () => ({}),
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: {
           schemaVersion: "1",
           topLevel: [{ name: "g", version: "1.0.0" }],
@@ -1439,16 +767,15 @@ describe("loader error categories", () => {
         await realCache.evict(integrity);
       },
     };
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache: wrappedCache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({}),
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: {
           schemaVersion: "1",
           topLevel: [{ name: "t", version: "1.0.0" }],
@@ -1510,16 +837,15 @@ describe("loader error categories", () => {
         await realCache.evict(integrity);
       },
     };
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache: wrappedCache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
       fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({}),
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: {
           schemaVersion: "1",
           topLevel: [{ name: "m", version: "1.0.0" }],
@@ -1606,7 +932,7 @@ describe("loader error categories", () => {
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
@@ -1614,7 +940,7 @@ describe("loader error categories", () => {
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: {
           schemaVersion: "1",
           topLevel: [{ name: "bad-json", version: "1.0.0" }],
@@ -1671,7 +997,7 @@ describe("loader error categories", () => {
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
@@ -1679,7 +1005,7 @@ describe("loader error categories", () => {
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: {
           schemaVersion: "1",
           topLevel: [{ name: "deps-array", version: "1.0.0" }],
@@ -1733,7 +1059,7 @@ describe("loader error categories", () => {
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
@@ -1741,7 +1067,7 @@ describe("loader error categories", () => {
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: {
           schemaVersion: "1",
           topLevel: [{ name: "opt-deps-array", version: "1.0.0" }],
@@ -1775,14 +1101,14 @@ describe("loader error categories", () => {
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: {
           schemaVersion: "1",
           topLevel: [{ name: "m", version: "1.0.0" }],
@@ -1825,14 +1151,14 @@ describe("loader error categories", () => {
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: {
           schemaVersion: "1",
           topLevel: [{ name: "m", version: "1.0.0" }],
@@ -1872,7 +1198,7 @@ describe("loader error categories", () => {
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
@@ -1884,7 +1210,7 @@ describe("loader error categories", () => {
     });
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest: {
           schemaVersion: "1",
           topLevel: [{ name: "m", version: "1.0.0" }],
@@ -1917,97 +1243,6 @@ describe("loader error categories", () => {
     }
     expect(caught.category).toBe("asset.mount.missing");
   });
-
-  test("package.entry.missing when package.json has no interchange.tools field", async () => {
-    const fixture = await packFixture({
-      name: "pem",
-      version: "1.0.0",
-      interchangeToolsRelPath: null,
-    });
-    await expectCategory(
-      {
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "pem", version: "1.0.0" }],
-          entries: [
-            {
-              name: "pem",
-              version: "1.0.0",
-              source: {
-                kind: "registry",
-                registry: "npmjs",
-                integrity: fixture.integrity,
-              },
-            },
-          ],
-        },
-        fetchTarball: async () => fixture.bytes,
-      },
-      "package.entry.missing",
-    );
-  });
-
-  test("package.entry.invalid when import throws", async () => {
-    const fixture = await packFixture({
-      name: "pi",
-      version: "1.0.0",
-      entryModuleSource: "",
-    });
-    await expectCategory(
-      {
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "pi", version: "1.0.0" }],
-          entries: [
-            {
-              name: "pi",
-              version: "1.0.0",
-              source: {
-                kind: "registry",
-                registry: "npmjs",
-                integrity: fixture.integrity,
-              },
-            },
-          ],
-        },
-        fetchTarball: async () => fixture.bytes,
-        importModule: async () => {
-          throw new Error("boom");
-        },
-      },
-      "package.entry.invalid",
-    );
-  });
-
-  test("package.entry.invalid when entry exports nothing factory-shaped", async () => {
-    const fixture = await packFixture({
-      name: "ps",
-      version: "1.0.0",
-      entryModuleSource: "",
-    });
-    await expectCategory(
-      {
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "ps", version: "1.0.0" }],
-          entries: [
-            {
-              name: "ps",
-              version: "1.0.0",
-              source: {
-                kind: "registry",
-                registry: "npmjs",
-                integrity: fixture.integrity,
-              },
-            },
-          ],
-        },
-        fetchTarball: async () => fixture.bytes,
-        importModule: async () => ({ random: 42, alsoRandom: "hello" }),
-      },
-      "package.entry.invalid",
-    );
-  });
 });
 
 describe("transitive resolution contract", () => {
@@ -2015,114 +1250,6 @@ describe("transitive resolution contract", () => {
   // whose body imports a transitive that lives in the manifest closure
   // resolves through the per-instance node_modules layout the loader
   // builds, without help from the sidecar host's own node_modules.
-  test("a top-level package importing a closure transitive resolves through the loader's node_modules layout", async () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-
-    // The transitive dep ships a JS module the top-level can import by
-    // its bare specifier. The dep is a fully-formed npm package: it
-    // has a `main` so Node knows where to load from. The loader is
-    // expected to materialize it under
-    // `<scratch>/store/@closure-scope/transitive-dep/1.0.0/` and to
-    // place a symlink at `.../top/1.0.0/node_modules/@closure-scope/transitive-dep`
-    // pointing at it.
-    const depEntry = `export const greeting = "hello from transitive";`;
-    const depPkg = await packFixture({
-      name: "@closure-scope/transitive-dep",
-      version: "1.0.0",
-      interchangeToolsRelPath: null,
-      main: "./index.js",
-      type: "module",
-      extraFiles: {
-        "index.js": depEntry,
-      },
-    });
-
-    // The top-level imports the dep by name. The loaded module both
-    // re-exports a tool factory (so the loader accepts it as a valid
-    // entry) and proves the import succeeded by carrying the dep's
-    // greeting in a marker the test can read back.
-    const topEntry = `
-import { greeting } from "@closure-scope/transitive-dep";
-export const factory = Object.assign(
-  () => ({
-    definitions: [{ name: "echo", description: "", inputSchema: {} }],
-    run: async (call) => ({ callId: call.id, content: greeting }),
-  }),
-  { id: "closure/top", requires: [], definitions: [{ name: "echo" }] },
-);
-`;
-    const topPkg = await packFixture({
-      name: "@closure-scope/top",
-      version: "1.0.0",
-      interchangeToolsRelPath: "./index.js",
-      entryModuleSource: topEntry,
-      type: "module",
-      dependencies: { "@closure-scope/transitive-dep": "^1.0.0" },
-    });
-
-    await cache.put(topPkg.integrity, topPkg.bytes);
-    await cache.put(depPkg.integrity, depPkg.bytes);
-
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["test", { url: "https://example.test" }]]),
-      host: { os: process.platform, cpu: process.arch },
-      fetchTarball: async (entry) => {
-        if (entry.name === "@closure-scope/top") return topPkg.bytes;
-        if (entry.name === "@closure-scope/transitive-dep") return depPkg.bytes;
-        throw new Error(`unexpected fetch: ${entry.name}`);
-      },
-    });
-
-    const manifest: ToolPackageManifest = {
-      schemaVersion: "1",
-      topLevel: [{ name: "@closure-scope/top", version: "1.0.0" }],
-      entries: [
-        {
-          name: "@closure-scope/top",
-          version: "1.0.0",
-          source: {
-            kind: "registry",
-            registry: "test",
-            integrity: topPkg.integrity,
-          },
-        },
-        {
-          name: "@closure-scope/transitive-dep",
-          version: "1.0.0",
-          source: {
-            kind: "registry",
-            registry: "test",
-            integrity: depPkg.integrity,
-          },
-        },
-      ],
-    };
-
-    const loaded = await loader.loadManifest({
-      manifest,
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-    expect(loaded).toHaveLength(1);
-    const factory = loaded[0]?.factories[0];
-    if (factory === undefined) throw new Error("expected one factory");
-    // The factory's body returns the transitive's greeting, proving
-    // the bare-specifier import composed end-to-end.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- BaseEnv is satisfied by an empty object for this stub; the factory does not read env at runtime.
-    const bundle = factory({} as Parameters<typeof factory>[0]);
-    const result = await bundle.run(
-      { id: "c1", name: "closure/top:echo", arguments: {} },
-      new AbortController().signal,
-    );
-    expect(result.content).toBe("hello from transitive");
-  });
-
   test("scoped packages land under <store>/@scope/<name>/<version>", async () => {
     const cache = createTarballCache({
       rootDir: cacheDir,
@@ -2141,7 +1268,7 @@ export const factory = Object.assign(
     });
     await cache.put(scopedPkg.integrity, scopedPkg.bytes);
 
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["test", { url: "https://example.test" }]]),
       host: { os: process.platform, cpu: process.arch },
@@ -2164,15 +1291,15 @@ export const factory = Object.assign(
       ],
     };
 
-    const loaded = await loader.loadManifest({
+    const { entries } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.name).toBe("@scope/only");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.name).toBe("@scope/only");
 
     // The store dir keeps npm's `@scope/name` shape so the scope
     // segment is a real directory, not a slash baked into the name.
@@ -2236,16 +1363,7 @@ export const seenLodash = major;
       entryModuleSource: `
 import { major as topSawLodash } from "lodash";
 import { seenLodash } from "lib-a";
-export const factory = Object.assign(
-  () => ({
-    definitions: [{ name: "echo", description: "", inputSchema: {} }],
-    run: async (call) => ({
-      callId: call.id,
-      content: JSON.stringify({ top: topSawLodash, libA: seenLodash }),
-    }),
-  }),
-  { id: "vt/main", requires: [], definitions: [{ name: "echo" }] },
-);
+export const seen = { top: topSawLodash, libA: seenLodash };
 `,
       dependencies: { lodash: "^3.0.0", "lib-a": "^1.0.0" },
     });
@@ -2254,7 +1372,7 @@ export const factory = Object.assign(
     await cache.put(libA.integrity, libA.bytes);
     await cache.put(topPkg.integrity, topPkg.bytes);
 
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["test", { url: "https://example.test" }]]),
       host: { os: process.platform, cpu: process.arch },
@@ -2312,30 +1430,22 @@ export const factory = Object.assign(
       ],
     };
 
-    const loaded = await loader.loadManifest({
+    const { storeDir } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    const factory = loaded[0]?.factories[0];
-    if (factory === undefined) throw new Error("expected one factory");
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- BaseEnv stub
-    const bundle = factory({} as Parameters<typeof factory>[0]);
-    const result = await bundle.run(
-      { id: "c1", name: "vt/main:echo", arguments: {} },
-      new AbortController().signal,
-    );
+    const entryUrl = pathToFileURL(
+      path.join(storeEntryDir(storeDir, "version-top", "1.0.0"), "index.js"),
+    ).href;
+    const entry: unknown = await import(entryUrl);
     // The top saw lodash major 3 (the version satisfying its own
     // range); lib-a saw lodash major 4 (the version satisfying its
     // own range). Both must be true simultaneously, which is only
     // possible with nested node_modules entries.
-    if (typeof result.content !== "string") {
-      throw new Error("expected stringified content");
-    }
-    const parsed: unknown = JSON.parse(result.content);
-    expect(parsed).toEqual({ top: 3, libA: 4 });
+    expect(entry).toMatchObject({ seen: { top: 3, libA: 4 } });
 
     // Verify both lodash versions actually exist in the store at
     // their nested positions, not hoisted under a single one.
@@ -2453,7 +1563,7 @@ export const factory = Object.assign(
       await cache.put(fx.integrity, fx.bytes);
     }
 
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["test", { url: "https://example.test" }]]),
       host: { os: process.platform, cpu: process.arch },
@@ -2541,7 +1651,7 @@ export const factory = Object.assign(
       ],
     };
 
-    await loader.loadManifest({
+    await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
@@ -2574,84 +1684,6 @@ export const factory = Object.assign(
 });
 
 describe("entry-path containment", () => {
-  test("rejects an interchange.tools entry that escapes the package dir", async () => {
-    // Stage a tarball whose package.json points interchange.tools at
-    // a file outside the extracted package directory. The loader's
-    // path-resolve step must reject the escape rather than letting
-    // the dynamic import target arbitrary sidecar-readable files.
-    const sinkPath = path.join(scratchRoot, "loaded-from-outside.mjs");
-    await fs.writeFile(
-      sinkPath,
-      `export const mod = Object.assign(() => ({
-        definitions: [],
-        run: async () => ({ callId: "x", content: "ok" }),
-      }), { id: "external/sink", requires: [], definitions: [] });`,
-    );
-
-    const stagingDir = path.join(scratchRoot, "evil-staging");
-    const pkgDir = path.join(stagingDir, "package");
-    await fs.mkdir(pkgDir, { recursive: true });
-    const layoutDir = path.join(instanceDir, "store", "evil", "1.0.0");
-    const escapeRel = path.relative(layoutDir, sinkPath);
-    await fs.writeFile(
-      path.join(pkgDir, "package.json"),
-      JSON.stringify({
-        name: "evil",
-        version: "1.0.0",
-        interchange: { tools: escapeRel },
-      }),
-    );
-    const tarballPath = path.join(stagingDir, "evil.tgz");
-    await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
-      "package",
-    ]);
-    const finalBytes = await fs.readFile(tarballPath);
-    const integrity = ssri
-      .fromData(finalBytes, { algorithms: ["sha512"] })
-      .toString();
-
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => finalBytes,
-    });
-
-    const manifest: ToolPackageManifest = {
-      schemaVersion: "1",
-      topLevel: [{ name: "evil", version: "1.0.0" }],
-      entries: [
-        {
-          name: "evil",
-          version: "1.0.0",
-          source: { kind: "registry", registry: "npmjs", integrity },
-        },
-      ],
-    };
-
-    let caught: unknown;
-    try {
-      await loader.loadManifest({
-        manifest,
-        instanceScratchDir: instanceDir,
-        assetRoot,
-        assetMounts: new Map(),
-        gitDirs: new Map(),
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
-      expect(caught.category).toBe("package.entry.invalid");
-      expect(caught.message).toMatch(/escapes the package directory/);
-    }
-  });
-
   test("rejects a tarball symlink whose target escapes the extraction root", async () => {
     // node-tar strips escape-pointing symlinks at extraction time, so
     // the layout-build guard is defense-in-depth: corrupt cache state
@@ -2684,7 +1716,7 @@ describe("entry-path containment", () => {
     );
     extractedHandle.release();
 
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
@@ -2709,7 +1741,7 @@ describe("entry-path containment", () => {
 
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest,
         instanceScratchDir: instanceDir,
         assetRoot,
@@ -2769,7 +1801,7 @@ describe("entry-path containment", () => {
     );
     await fs.symlink("inner/escape", path.join(extractedRoot, "aaa-jump"));
 
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
@@ -2794,7 +1826,7 @@ describe("entry-path containment", () => {
 
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest,
         instanceScratchDir: instanceDir,
         assetRoot,
@@ -2819,7 +1851,7 @@ describe("entry-path containment", () => {
     // relative symlink within the extraction root cannot escape (the
     // target name is fixed; even if the target is later created, it
     // would land at the same inside-the-root path). Plant a
-    // dangling-but-contained symlink and verify the load succeeds.
+    // dangling-but-contained symlink and verify the layout succeeds.
     const fixture = await packFixture({
       name: "ok-dangling",
       version: "1.0.0",
@@ -2849,7 +1881,7 @@ export const main = Object.assign(
     );
     extractedHandle.release();
 
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
@@ -2872,15 +1904,15 @@ export const main = Object.assign(
       ],
     };
 
-    const loaded = await loader.loadManifest({
+    const { entries } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.name).toBe("ok-dangling");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.name).toBe("ok-dangling");
   });
 
   test("rejects a dangling symlink whose literal target escapes the extraction root", async () => {
@@ -2912,7 +1944,7 @@ export const main = Object.assign(
     );
     extractedHandle.release();
 
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       host: { os: "linux", cpu: "x64" },
@@ -2937,7 +1969,7 @@ export const main = Object.assign(
 
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest,
         instanceScratchDir: instanceDir,
         assetRoot,
@@ -2983,7 +2015,7 @@ export const main = Object.assign(
       rootDir: cacheDir,
       maxBytes: 10_000_000,
     });
-    const loader = createToolLoader({
+    const materializer = createMaterializer({
       cache,
       registries: new Map(),
       host: { os: process.platform, cpu: process.arch },
@@ -3011,7 +2043,7 @@ export const main = Object.assign(
 
     let caught: unknown;
     try {
-      await loader.loadManifest({
+      await materializer.materialize({
         manifest,
         instanceScratchDir: instanceDir,
         assetRoot,
@@ -3025,110 +2057,6 @@ export const main = Object.assign(
     if (caught instanceof ToolLoaderError) {
       expect(caught.category).toBe("package.entry.invalid");
       expect(caught.message).toMatch(/cross-mount traversal/);
-    }
-  });
-});
-
-describe("interchange.tools containment under symlink graph", () => {
-  test("rejects an interchange.tools entry that traverses a node_modules symlink to another package", async () => {
-    // The per-instance scratch tree contains a `node_modules/` symlink
-    // graph the loader builds for nested resolution. An
-    // interchange.tools entry that string-contains inside the top
-    // package's directory but realpath-resolves into a transitive
-    // dependency's bytes (or anywhere else the symlink target points)
-    // would bypass the string-level containment check entirely.
-    //
-    // Build a real two-package closure (top + transitive dep), then
-    // point the top's interchange.tools at a path that walks through
-    // its own `node_modules/<dep>/...` symlink. The string check
-    // accepts the path because it starts with the package directory;
-    // the realpath check must reject it because the resolved target
-    // lives under the dep's store entry.
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-
-    const depEntry = `export const x = 1;`;
-    const depPkg = await packFixture({
-      name: "evil-dep",
-      version: "1.0.0",
-      interchangeToolsRelPath: null,
-      main: "./index.js",
-      type: "module",
-      extraFiles: { "index.js": depEntry },
-    });
-
-    const topPkg = await packFixture({
-      name: "evil-top",
-      version: "1.0.0",
-      // The entry path strings-inside the top directory but
-      // realpath-walks through `node_modules/evil-dep` into the dep's
-      // store entry. Leave entryModuleSource undefined so the tarball
-      // ships no `node_modules/` of its own; the loader's layout pass
-      // will then build `node_modules/evil-dep` as a symlink to the
-      // dep's store entry, and the realpath check should fire when
-      // the entry path is resolved.
-      interchangeToolsRelPath: "./node_modules/evil-dep/index.js",
-      type: "module",
-      dependencies: { "evil-dep": "^1.0.0" },
-    });
-
-    await cache.put(topPkg.integrity, topPkg.bytes);
-    await cache.put(depPkg.integrity, depPkg.bytes);
-
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["test", { url: "https://example.test" }]]),
-      host: { os: process.platform, cpu: process.arch },
-      fetchTarball: async (entry) => {
-        if (entry.name === "evil-top") return topPkg.bytes;
-        if (entry.name === "evil-dep") return depPkg.bytes;
-        throw new Error(`unexpected fetch: ${entry.name}`);
-      },
-    });
-
-    const manifest: ToolPackageManifest = {
-      schemaVersion: "1",
-      topLevel: [{ name: "evil-top", version: "1.0.0" }],
-      entries: [
-        {
-          name: "evil-top",
-          version: "1.0.0",
-          source: {
-            kind: "registry",
-            registry: "test",
-            integrity: topPkg.integrity,
-          },
-        },
-        {
-          name: "evil-dep",
-          version: "1.0.0",
-          source: {
-            kind: "registry",
-            registry: "test",
-            integrity: depPkg.integrity,
-          },
-        },
-      ],
-    };
-
-    let caught: unknown;
-    try {
-      await loader.loadManifest({
-        manifest,
-        instanceScratchDir: instanceDir,
-        assetRoot,
-        assetMounts: new Map(),
-        gitDirs: new Map(),
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
-      expect(caught.category).toBe("package.entry.invalid");
-      expect(caught.message).toMatch(/symlink/);
     }
   });
 });
@@ -3359,554 +2287,6 @@ describe("readResponseWithLimit", () => {
     if (caught instanceof ToolLoaderError) {
       expect(caught.category).toBe("registry.fetch.failed");
       expect(caught.message).toMatch(/exceeded the registry fetch timeout/);
-    }
-  });
-});
-
-describe("interchange.directors walker", () => {
-  test("loads director factories from an interchange.directors entry alongside tool factories", async () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-and-directors",
-      version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
-      interchangeDirectorsRelPath: "./directors.js",
-      directorsModuleSource: "// stub; importer is faked",
-    });
-
-    const toolsModule = { main: makeFakeFactory("@vendor/main") };
-    const directorsModule = {
-      planner: makeFakeDirectorFactory("tools-and-directors/planner"),
-    };
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async (importUrl) => {
-        // Match on the entry basename rather than the substring
-        // "directors" because the per-instance scratch tree's mkdtemp
-        // suffix can happen to contain that substring.
-        if (importUrl.includes("directors.js")) return directorsModule;
-        return toolsModule;
-      },
-    });
-
-    const loaded = await loader.loadManifest({
-      manifest: {
-        schemaVersion: "1",
-        topLevel: [{ name: "tools-and-directors", version: "1.0.0" }],
-        entries: [
-          {
-            name: "tools-and-directors",
-            version: "1.0.0",
-            source: {
-              kind: "registry",
-              registry: "npmjs",
-              integrity: fixture.integrity,
-            },
-          },
-        ],
-      },
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.factories).toHaveLength(1);
-    expect(loaded[0]?.factories[0]?.id).toBe("@vendor/main");
-    expect(loaded[0]?.directors).toHaveLength(1);
-    expect(loaded[0]?.directors[0]?.id).toBe("tools-and-directors/planner");
-  });
-
-  test("rejects a director declared outside the shipping package's namespace", async () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-and-directors",
-      version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
-      interchangeDirectorsRelPath: "./directors.js",
-      directorsModuleSource: "// stub; importer is faked",
-    });
-
-    const toolsModule = {
-      main: makeFakeFactory("@vendor/main"),
-    };
-    const directorsModule = {
-      planner: makeFakeDirectorFactory("@vendor/other/planner"),
-    };
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async (url) =>
-        url.includes("directors.js") ? directorsModule : toolsModule,
-    });
-
-    let caught: unknown;
-    try {
-      await loader.loadManifest({
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "tools-and-directors", version: "1.0.0" }],
-          entries: [
-            {
-              name: "tools-and-directors",
-              version: "1.0.0",
-              source: {
-                kind: "registry",
-                registry: "npmjs",
-                integrity: fixture.integrity,
-              },
-            },
-          ],
-        },
-        instanceScratchDir: instanceDir,
-        assetRoot,
-        assetMounts: new Map(),
-        gitDirs: new Map(),
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
-      expect(caught.category).toBe("package.entry.invalid");
-      expect(caught.message).toMatch(/outside the package's own namespace/);
-    }
-  });
-
-  test("rejects a tarball whose manifest name differs from its pin", async () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-and-directors",
-      version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
-    });
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({ main: makeFakeFactory("@vendor/main") }),
-    });
-
-    let caught: unknown;
-    try {
-      await loader.loadManifest({
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "renamed-pin", version: "1.0.0" }],
-          entries: [
-            {
-              name: "renamed-pin",
-              version: "1.0.0",
-              source: {
-                kind: "registry",
-                registry: "npmjs",
-                integrity: fixture.integrity,
-              },
-            },
-          ],
-        },
-        instanceScratchDir: instanceDir,
-        assetRoot,
-        assetMounts: new Map(),
-        gitDirs: new Map(),
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
-      expect(caught.category).toBe("package.entry.invalid");
-      expect(caught.message).toMatch(/does not match the pinned package name/);
-    }
-  });
-
-  test("ignores a director-shaped export in the interchange.tools entry", async () => {
-    // The tools walker's predicate must reject director-shaped values so
-    // a director placed in `interchange.tools` is not silently
-    // classified as a tool and namespace-prefixed. Mirrors the
-    // discriminator the directors walker uses against tool shapes.
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-with-stray-director",
-      version: "1.0.0",
-      entryModuleSource: "// stub; importer is faked",
-    });
-
-    const toolsModule = {
-      tool: makeFakeFactory("@vendor/tool"),
-      strayDirector: makeFakeDirectorFactory("@vendor/director"),
-    };
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => toolsModule,
-    });
-
-    const loaded = await loader.loadManifest({
-      manifest: {
-        schemaVersion: "1",
-        topLevel: [{ name: "tools-with-stray-director", version: "1.0.0" }],
-        entries: [
-          {
-            name: "tools-with-stray-director",
-            version: "1.0.0",
-            source: {
-              kind: "registry",
-              registry: "npmjs",
-              integrity: fixture.integrity,
-            },
-          },
-        ],
-      },
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.factories).toHaveLength(1);
-    expect(loaded[0]?.factories[0]?.id).toBe("@vendor/tool");
-    expect(loaded[0]?.directors).toEqual([]);
-  });
-
-  test("treats a missing interchange.directors field as a no-op", async () => {
-    // Locks the absence-is-fine contract: a tools-only package must
-    // still load. The directors walker contributes an empty list.
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "tools-only",
-      version: "1.0.0",
-      entryModuleSource: "// stub",
-    });
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({
-        main: makeFakeFactory("@vendor/tools-only"),
-      }),
-    });
-
-    const loaded = await loader.loadManifest({
-      manifest: {
-        schemaVersion: "1",
-        topLevel: [{ name: "tools-only", version: "1.0.0" }],
-        entries: [
-          {
-            name: "tools-only",
-            version: "1.0.0",
-            source: {
-              kind: "registry",
-              registry: "npmjs",
-              integrity: fixture.integrity,
-            },
-          },
-        ],
-      },
-      instanceScratchDir: instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-    });
-
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0]?.directors).toEqual([]);
-  });
-
-  test("package.entry.invalid when the package.json bytes are malformed JSON", async () => {
-    // Cross-cuts the directors walker: the package-json read happens
-    // once for both walkers, so a malformed package.json blocks both.
-    // Pinned here to document the shared failure surface.
-    const stagingDir = path.join(scratchRoot, "bad-json-dir-staging");
-    const pkgDir = path.join(stagingDir, "package");
-    await fs.mkdir(pkgDir, { recursive: true });
-    await fs.writeFile(path.join(pkgDir, "package.json"), "{ not valid json");
-    const tarballPath = path.join(stagingDir, "bad.tgz");
-    await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
-      "package",
-    ]);
-    const bytes = await fs.readFile(tarballPath);
-    const integrity = ssri
-      .fromData(bytes, { algorithms: ["sha512"] })
-      .toString();
-
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => bytes,
-    });
-    let caught: unknown;
-    try {
-      await loader.loadManifest({
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "bad-json-dir", version: "1.0.0" }],
-          entries: [
-            {
-              name: "bad-json-dir",
-              version: "1.0.0",
-              source: { kind: "registry", registry: "npmjs", integrity },
-            },
-          ],
-        },
-        instanceScratchDir: instanceDir,
-        assetRoot,
-        assetMounts: new Map(),
-        gitDirs: new Map(),
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
-      expect(caught.category).toBe("package.entry.invalid");
-      expect(caught.message).toMatch(/malformed package\.json/);
-    }
-  });
-
-  test("rejects an interchange.directors entry path that escapes the package dir", async () => {
-    const sinkPath = path.join(scratchRoot, "loaded-directors-outside.mjs");
-    await fs.writeFile(sinkPath, "export const x = 1;");
-
-    const stagingDir = path.join(scratchRoot, "evil-dir-staging");
-    const pkgDir = path.join(stagingDir, "package");
-    await fs.mkdir(pkgDir, { recursive: true });
-    const layoutDir = path.join(instanceDir, "store", "evil-dir", "1.0.0");
-    const escapeRel = path.relative(layoutDir, sinkPath);
-    await fs.writeFile(
-      path.join(pkgDir, "package.json"),
-      JSON.stringify({
-        name: "evil-dir",
-        version: "1.0.0",
-        interchange: {
-          tools: "./tools.js",
-          directors: escapeRel,
-        },
-      }),
-    );
-    await fs.writeFile(path.join(pkgDir, "tools.js"), "");
-    const tarballPath = path.join(stagingDir, "evil-dir.tgz");
-    await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
-      "package",
-    ]);
-    const finalBytes = await fs.readFile(tarballPath);
-    const integrity = ssri
-      .fromData(finalBytes, { algorithms: ["sha512"] })
-      .toString();
-
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => finalBytes,
-      importModule: async () => ({
-        main: makeFakeFactory("@vendor/tools-stub"),
-      }),
-    });
-
-    let caught: unknown;
-    try {
-      await loader.loadManifest({
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "evil-dir", version: "1.0.0" }],
-          entries: [
-            {
-              name: "evil-dir",
-              version: "1.0.0",
-              source: { kind: "registry", registry: "npmjs", integrity },
-            },
-          ],
-        },
-        instanceScratchDir: instanceDir,
-        assetRoot,
-        assetMounts: new Map(),
-        gitDirs: new Map(),
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
-      expect(caught.category).toBe("package.entry.invalid");
-      expect(caught.message).toMatch(/interchange\.directors/);
-      expect(caught.message).toMatch(/escapes the package directory/);
-    }
-  });
-
-  test("rejects an interchange.directors target reached via a symlink that escapes the extraction root", async () => {
-    const sinkPath = path.join(scratchRoot, "directors-symlink-sink.mjs");
-    await fs.writeFile(sinkPath, "export const x = 1;");
-
-    const fixture = await packFixture({
-      name: "evil-dir-symlink",
-      version: "1.0.0",
-      entryModuleSource: `
-export const main = Object.assign(
-  () => ({ definitions: [], run: async () => ({ callId: "x", content: "" }) }),
-  { id: "@vendor/evil-dir-symlink", requires: [], definitions: [] },
-);
-`,
-      interchangeDirectorsRelPath: "./directors-link.js",
-    });
-
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    await cache.put(fixture.integrity, fixture.bytes);
-    const extractedHandle = await cache.extractTarball(fixture.integrity);
-    const extractedRoot = extractedHandle.dir;
-    // Plant a symlink at the directors-entry name whose realpath
-    // resolves outside the package extraction directory.
-    await fs.symlink(
-      path.relative(extractedRoot, sinkPath),
-      path.join(extractedRoot, "directors-link.js"),
-    );
-    extractedHandle.release();
-
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({
-        main: makeFakeFactory("@vendor/evil-dir-symlink"),
-      }),
-    });
-
-    let caught: unknown;
-    try {
-      await loader.loadManifest({
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "evil-dir-symlink", version: "1.0.0" }],
-          entries: [
-            {
-              name: "evil-dir-symlink",
-              version: "1.0.0",
-              source: {
-                kind: "registry",
-                registry: "npmjs",
-                integrity: fixture.integrity,
-              },
-            },
-          ],
-        },
-        instanceScratchDir: instanceDir,
-        assetRoot,
-        assetMounts: new Map(),
-        gitDirs: new Map(),
-      });
-    } catch (err) {
-      caught = err;
-    }
-    // The symlink fires `copyTree`'s containment guard at layout
-    // time, before either walker runs. The directors walker's own
-    // realpath containment check is the second line of defense and
-    // shares the same operator-facing category; the test asserts the
-    // taxonomy mapping, not which layer produced the message.
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
-      expect(caught.category).toBe("package.entry.invalid");
-      expect(caught.message).toMatch(
-        /escapes the package extraction directory/,
-      );
-    }
-  });
-
-  test("package.entry.invalid when the directors module import throws", async () => {
-    const cache = createTarballCache({
-      rootDir: cacheDir,
-      maxBytes: 10_000_000,
-    });
-    const fixture = await packFixture({
-      name: "dir-import-fail",
-      version: "1.0.0",
-      entryModuleSource: "// stub",
-      interchangeDirectorsRelPath: "./directors.js",
-      directorsModuleSource: "// stub",
-    });
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async (importUrl) => {
-        if (importUrl.includes("directors.js")) {
-          throw new Error("director module boom");
-        }
-        return { main: makeFakeFactory("@vendor/dir-import-fail") };
-      },
-    });
-
-    let caught: unknown;
-    try {
-      await loader.loadManifest({
-        manifest: {
-          schemaVersion: "1",
-          topLevel: [{ name: "dir-import-fail", version: "1.0.0" }],
-          entries: [
-            {
-              name: "dir-import-fail",
-              version: "1.0.0",
-              source: {
-                kind: "registry",
-                registry: "npmjs",
-                integrity: fixture.integrity,
-              },
-            },
-          ],
-        },
-        instanceScratchDir: instanceDir,
-        assetRoot,
-        assetMounts: new Map(),
-        gitDirs: new Map(),
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
-      expect(caught.category).toBe("package.entry.invalid");
-      expect(caught.message).toMatch(
-        /dynamic import of dir-import-fail@1\.0\.0 interchange\.directors failed/,
-      );
     }
   });
 });

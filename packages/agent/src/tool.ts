@@ -390,8 +390,7 @@ export function isToolPluginInstance(
  * own shape.
  *
  * `id` must be package-namespaced — same rule as `defineTool` — so
- * audit provenance threads through plugins as cleanly as through
- * tools.
+ * independently authored plugins cannot collide on an id.
  */
 export function definePlugin<
   Result extends object,

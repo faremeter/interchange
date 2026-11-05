@@ -4,7 +4,7 @@
 // Load smoke test for the published tool packages.
 //
 // The three `@intx/tools-*` packages ship a compiled `dist/sidecar-bundle.js`
-// that the interchange sidecar loads as a tool package. This proves that
+// that a workflow's closure imports. This proves that
 // bundle — and the real `@intx/*` dependency closure it imports — installs
 // and loads from npm-style tarballs, exactly as a consumer would get it:
 //
@@ -18,11 +18,11 @@
 //   4. Import each compiled `sidecar-bundle.js` in a plain `bun` subprocess
 //      that does NOT carry `--conditions=intx-src`, so `@intx/*` resolves
 //      through `default` -> `dist` (the compiled output), exactly as a
-//      consumer or the production sidecar loader does — never the
+//      consumer or the workflow child does — never the
 //      repo-internal source condition. Assert each exposes its tool or
 //      plugin factory.
 //
-// The interchange tool loader runs under Bun, so the load is exercised
+// The workflow child runs under Bun, so the load is exercised
 // under Bun to mirror the real runtime.
 //
 // This is build- and network-heavy (it emits dist and installs from npm),

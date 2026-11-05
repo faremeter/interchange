@@ -90,9 +90,7 @@ describe("DeployApplyErrorCategory", () => {
     "registry.unknown",
     "registry.auth.failed",
     "tarball.extract.failed",
-    "package.entry.missing",
     "package.entry.invalid",
-    "tool.name.duplicate",
   ] as const;
 
   for (const category of allCategories) {

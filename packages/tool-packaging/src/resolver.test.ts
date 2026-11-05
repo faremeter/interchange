@@ -4,7 +4,6 @@ import * as tar from "tar";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 
 import {
   type Packument,
@@ -1074,9 +1073,6 @@ describe("AssetRegistrySource", () => {
       },
     });
     expect(entry?.tarballUrl).toBeUndefined();
-    expect(entry && getToolPackageSourceContentIdentity(entry.source)).toMatch(
-      /^sha512-/,
-    );
   });
 
   test("harvests interchange.credentials from a tarball's package.json onto topLevel", async () => {
@@ -1133,9 +1129,12 @@ describe("AssetRegistrySource", () => {
       { name: "p", version: "1.0.0" },
       { name: "q", version: "1.0.0" },
     ]);
-    const integrities = manifest.entries.map((e) =>
-      getToolPackageSourceContentIdentity(e.source),
-    );
+    const integrities = manifest.entries.map((e) => {
+      if (e.source.kind !== "asset" || e.source.package.format !== "tarball") {
+        throw new Error(`expected an asset tarball entry for ${e.name}`);
+      }
+      return e.source.package.integrity;
+    });
     expect(new Set(integrities).size).toBe(integrities.length);
     for (const integrity of integrities) {
       expect(integrity).toMatch(/^sha512-/);

@@ -179,23 +179,6 @@ export const ToolPackageSource = ToolPackageRegistrySource.or(
 export type ToolPackageSource = typeof ToolPackageSource.infer;
 
 /**
- * A closure entry's content identity, whatever its source: the tarball
- * SRI for a `registry` entry or an `asset` tarball, the subtree git tree
- * oid for an `asset` source package. Cache-bust keys read this rather
- * than reaching into a shape-specific field.
- */
-export function getToolPackageSourceContentIdentity(
-  source: ToolPackageSource,
-): string {
-  if (source.kind === "registry") {
-    return source.integrity;
-  }
-  return source.package.format === "tarball"
-    ? source.package.integrity
-    : source.package.treeOid;
-}
-
-/**
  * A single pinned package in the closure.
  *
  * The entry's content identity lives on its `source` arm, because how it
@@ -228,19 +211,17 @@ export type ToolPackageManifestEntry = typeof ToolPackageManifestEntry.infer;
  * `schemaVersion` is a literal "1" for now. Future schema changes bump
  * this, and this validator refuses unknown versions.
  *
- * `topLevel` enumerates the packages the closure was resolved from.
- * The loader only scans these for `interchange.tools`; entries present
- * in `entries` but absent from `topLevel` are transitive dependencies
- * materialized for runtime `require()` / `import` resolution.
+ * `topLevel` enumerates the packages the closure was resolved from;
+ * entries present in `entries` but absent from `topLevel` are transitive
+ * dependencies materialized for runtime `require()` / `import` resolution.
  *
  * `topLevel` extends the `ToolPackagePin` shape with the package's
  * harvested `credentials` declarations. The `version` field here is
  * always a concrete version (e.g. `"1.2.3"`), not a range. The resolver
  * walks each pin's range through `npm-pick-manifest` and writes the
- * picked version. The sidecar loader pairs `topLevel[i]` against
- * `entries[j]` by `${name}@${version}` equality, so a range-form
- * `version` here would never match any entry and the package would
- * silently contribute no tool factories at apply time.
+ * picked version. The sidecar finds a top-level package in the store by
+ * this `${name}@${version}`, so a range-form `version` here would name a
+ * directory that does not exist.
  *
  * `entries` carries the full pinned closure: every top-level pin plus
  * every transitive dependency, deduped by `(name, version)`. The

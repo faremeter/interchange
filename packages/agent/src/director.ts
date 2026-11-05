@@ -148,11 +148,9 @@ export function validateDirectorConfig(
  * (which carry only `id` and `requires`); without it, any tool-factory
  * export from a directors-entry module would be accepted as a director.
  *
- * Shared by the tool-package loader (`@intx/tool-packaging`) and the
- * workflow-closure director loader (`@intx/workflow-host`) so both accept
- * and reject exactly the same shapes -- one accept/reject rule the
- * approval-time probe and the runtime cannot drift apart on. Two copies of
- * "is this a valid director" would be a silent congruence hole.
+ * The workflow-closure director loader (`@intx/workflow-host`) uses this
+ * for both the approval-time probe and the runtime, so the two cannot drift
+ * apart on what a valid director is.
  */
 export function isAnnotatedDirectorFactory(
   value: unknown,

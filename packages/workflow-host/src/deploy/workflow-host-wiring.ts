@@ -221,8 +221,8 @@ async function makeDirectoriesWritable(dir: string): Promise<void> {
  * Resolve the durable source-asset store root and `assetId -> mountPath` map a
  * pinned deployment materializes its `kind:"asset"` closure entries from,
  * asserting every referenced asset's mount directory is present on disk. This
- * is a cheap early gate for a missing checkout; the loader still SRI-verifies
- * each tarball's bytes at materialization. Derived purely from the pin, so the
+ * is a cheap early gate for a missing checkout; closure materialization still
+ * SRI-verifies each tarball's bytes. Derived purely from the pin, so the
  * deploy path and the boot-time restore path (which has only the pin, no
  * re-delivery) resolve the identical mounts. A missing mount is a broken
  * deployment that cannot run without it, so it fails loud rather than

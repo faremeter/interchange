@@ -1,5 +1,5 @@
 // Sidecar-bundle entry for `@intx/tools-mail` — the convention-compliant
-// factory the tool-package loader invokes.
+// factory a workflow agent lists in its `toolFactories`.
 //
 // The bundle consumes the host-assembled runtime capabilities rather than
 // building its own. The host (the sidecar's step-env builder) owns the
@@ -25,9 +25,7 @@ export interface MailToolEnv extends BaseEnv {
 }
 
 /**
- * Named export the loader picks up. The id is package-namespaced per
- * the convention; the model-facing tool names are synthesized by the
- * loader as `@intx/tools-mail/sidecar-bundle:<def.name>`.
+ * The id is package-namespaced per the convention.
  */
 export const mail = defineTool<MailToolEnv>({
   id: "@intx/tools-mail/sidecar-bundle",

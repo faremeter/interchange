@@ -1,10 +1,7 @@
-// Closure materialization and per-instance store layout for the tool-package
-// loader: fetching + SRI-verifying + extracting each platform-matching entry
-// into the content-addressable cache, resolving dependency ranges, and
-// copying the closure into a per-instance store the loader then imports
-// author code from. Extracted from `loader.ts` so this eval-free
-// materialization concern is isolated from author-code loading. `loader.ts`
-// re-exports `materializeClosure` and `storeEntryDir` for existing consumers.
+// Closure materialization and per-instance store layout: fetching +
+// SRI-verifying + extracting each platform-matching entry into the
+// content-addressable cache, resolving dependency ranges, and copying the
+// closure into a per-instance store. Nothing here imports author code.
 
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
@@ -32,7 +29,7 @@ const logger = getLogger(["sidecar", "tool-packaging", "store-layout"]);
 
 /**
  * Lay out a resolved manifest closure into the per-instance store
- * WITHOUT importing any author code. This is phases 1-2 of the loader:
+ * WITHOUT importing any author code:
  *
  *   1. Fetch + SRI-verify + extract each platform-matching entry into
  *      the content-addressable cache.
@@ -41,11 +38,9 @@ const logger = getLogger(["sidecar", "tool-packaging", "store-layout"]);
  *      and symlink each direct dep into that entry's `node_modules/` so
  *      Node's ancestor walk resolves bare-specifier imports.
  *
- * Returns the `storeDir` the closure was laid out under. The first real
- * `import()` of author code is NOT here — it belongs to `loadManifest`'s
- * phase-3 loop — so a caller (e.g. an install-time probe) can stage the
- * frozen closure into a package directory the loader consumes without
- * executing author code on its host.
+ * Returns the `storeDir` the closure was laid out under, so a caller (e.g.
+ * an install-time probe) can stage the frozen closure into a package
+ * directory without executing author code on its host.
  *
  * Only entries whose `os`/`cpu` match `host` are materialized; the rest
  * are skipped with a `platform.mismatch.skipped` debug log. Errors
@@ -182,9 +177,8 @@ export async function materializeClosure(
   //    pass below has finished walking every dir to copy files out.
   //    Releases are aggregated and drained in a `finally` so an error
   //    mid-layout still hands the cache its references back. They are
-  //    drained once the layout is built: the phase-3 import loop reads
-  //    from the copied store, not from these extraction trees, so
-  //    the extraction handles are a phase-1-2 concern only.
+  //    drained once the layout is built: nothing reads these extraction
+  //    trees after that.
   const extractionByEntry = new Map<string, string>();
   const entriesByNameVersion = new Map<string, ToolPackageManifestEntry>();
   const releases: (() => void)[] = [];
@@ -227,11 +221,7 @@ export async function materializeClosure(
 
 /**
  * True when `entry` may run on `host`: its `os`/`cpu` platform lists (if
- * present) accept the host per npm's allow/block-list semantics. Pure —
- * the single source of truth for the host-match decision, shared by the
- * logging filter `passesPlatformFilter` and `loadManifest`'s phase-3
- * re-selection (which must not re-emit the mismatch debug logs
- * `materializeClosure` already wrote).
+ * present) accept the host per npm's allow/block-list semantics.
  */
 function entryMatchesHost(
   entry: ToolPackageManifestEntry,
@@ -273,10 +263,9 @@ export function storeEntryDir(
   name: string,
   version: string,
 ): string {
-  // `@scope/name` carries a slash that, taken naively, would push the
-  // package's contents one directory deeper than `loadTopLevel`
-  // expects. Mirror npm's on-disk shape: `node_modules/@scope/name/`,
-  // so a scoped entry's dir is `<store>/@scope/name/<version>/`.
+  // `@scope/name` carries a slash, so a scoped entry's dir sits one level
+  // deeper, mirroring npm's on-disk shape `node_modules/@scope/name/`:
+  // `<store>/@scope/name/<version>/`.
   return path.join(storeDir, name, version);
 }
 

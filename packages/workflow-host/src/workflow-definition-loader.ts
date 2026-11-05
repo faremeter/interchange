@@ -612,8 +612,7 @@ export interface LoadWorkflowPluginsFromClosureArgs {
 /**
  * Import each declared plugin package's `interchange.tools` module from the
  * materialized workflow closure and collect the `AnnotatedPluginFactory`
- * values it exports. This is the run-child counterpart to the tool-package
- * loader's plugin channel: a source-ref workflow contributes no plugin factory
+ * values it exports. A source-ref workflow contributes no plugin factory
  * through its agent definition (a plugin has no agent slot), so the child
  * materializes the declared plugins straight from the already-laid-out closure
  * -- no re-download, no manifest -- and feeds them into the existing per-step
