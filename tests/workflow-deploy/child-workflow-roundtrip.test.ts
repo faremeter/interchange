@@ -372,7 +372,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
         `mail.address:${childMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
 
       const { workflowRunRepoId: parentWorkflowRunRepoId } = await deployParent(
@@ -580,7 +579,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
         `mail.address:${childMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
         // The child step declares the inline tool, so the deploy walk folds its
         // `tool:` grant into the parent step; the operator must approve it.
         `tool:${MAIL_TOOL_NAME}`,
@@ -715,7 +713,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
         `mail.address:${childMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
 
       const { workflowRunRepoId: parentWorkflowRunRepoId } = await deployParent(
@@ -819,7 +816,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
         `mail.address:${childMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
 
       const handle = await deployWorkflowSourceForTest(env, {
@@ -960,7 +956,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         `mail.address:${parentMailAddress}`,
         `mail.address:${childMailAddress}`,
         `mail.address:${grandchildMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
 
       const { workflowRunRepoId: parentWorkflowRunRepoId } = await deployParent(
@@ -1192,7 +1187,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
         ...siblingMailAddresses.map((a) => `mail.address:${a}`),
       ]);
 

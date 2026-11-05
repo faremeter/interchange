@@ -144,7 +144,6 @@ describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
       `tool:${MAIL_TOOL_NAME}`,
     ]);
 

@@ -315,7 +315,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
         `mail.address:${childMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
         `tool:${MAIL_TOOL_NAME}`,
       ]);
 

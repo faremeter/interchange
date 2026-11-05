@@ -29,9 +29,6 @@
 //   - `mail.address:<address>`       -- every workflow trigger of type
 //                                        `"mail"` (the deployment's
 //                                        right to register and receive)
-//   - `mail.send:<domain>`           -- the trigger address's domain
-//                                        (the deployment's right to
-//                                        send mail as that domain)
 //   - `mail.accept:<relation>`       -- a relational accept marker
 //                                        (`invoker`/`self`/`tenant`/
 //                                        `correspondent`)
@@ -160,11 +157,10 @@ function freezeDeclarations(
  * Walk a workflow definition and produce per-step grant declarations.
  *
  * The walk visits every step's agent definition once; deployment-wide
- * grants (the trigger-derived `mail.address:` / `mail.send:` axis and the
- * `mail.accept:*` accept axis) are attached to every step because the
- * workflow's mail-receive, mail-send, and mail-accept authority is a
- * deployment-wide property -- any step can be the one whose run consumes
- * inbound mail or generates a reply.
+ * grants (the trigger-derived `mail.address:` axis and the `mail.accept:*`
+ * accept axis) are attached to every step because the workflow's
+ * mail-receive and mail-accept authority is a deployment-wide property --
+ * any step can be the one whose run consumes inbound mail.
  */
 export function walkCapabilities(
   workflow: WorkflowDefinition,
@@ -532,10 +528,6 @@ function collectTriggerGrants(workflow: WorkflowDefinition): string[] {
   for (const trigger of workflow.triggers) {
     if (trigger.type !== "mail") continue;
     grants.add(`mail.address:${trigger.to}`);
-    const domain = extractDomain(trigger.to);
-    if (domain !== null) {
-      grants.add(`mail.send:${domain}`);
-    }
   }
   return [...grants];
 }
@@ -579,14 +571,6 @@ export function collectMailAcceptGrants(
     grants.add(mailAcceptResource("asset", id));
   }
   return [...grants];
-}
-
-function extractDomain(address: string): string | null {
-  const at = address.lastIndexOf("@");
-  if (at < 0 || at === address.length - 1) {
-    return null;
-  }
-  return address.slice(at + 1);
 }
 
 /**

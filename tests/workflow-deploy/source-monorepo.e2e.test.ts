@@ -317,7 +317,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
 
       // 1) Install: enumerate the monorepo members, probe, gate, freeze.

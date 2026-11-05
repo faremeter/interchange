@@ -323,7 +323,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           "inference.source:anthropic:mock-model",
           "director:@intx/agent/default",
           `mail.address:${mailAddress}`,
-          `mail.send:${DEPLOYMENT_DOMAIN}`,
           `tool:${TOOL_NAME}`,
         ]),
         router: env.hub.probeRouter,

@@ -121,10 +121,6 @@ function computeImplicitGrants(
   for (const trigger of workflow.triggers) {
     if (trigger.type !== "mail") continue;
     grants.add(`mail.address:${trigger.to}`);
-    const at = trigger.to.lastIndexOf("@");
-    if (at >= 0 && at < trigger.to.length - 1) {
-      grants.add(`mail.send:${trigger.to.slice(at + 1)}`);
-    }
   }
   // Mirror the walk's mail-accept axis: emitted for any trigger, relations
   // resolved through the shared default resolver, and explicit
@@ -573,7 +569,6 @@ describe("walkCapabilities", () => {
     const grants = new Set(declarations.grants);
 
     expect(grants.has("mail.address:support@example.com")).toBe(true);
-    expect(grants.has("mail.send:example.com")).toBe(true);
   });
 
   test("unresolved director surfaces on the result without raising", () => {
@@ -625,16 +620,14 @@ describe("walkCapabilities", () => {
     const declarations = walk.perStep.get(stepId);
     if (declarations === undefined) throw new Error("missing declarations");
 
-    expect(
-      declarations.grants.some(
-        (g) => g.startsWith("mail.address:") || g.startsWith("mail.send:"),
-      ),
-    ).toBe(false);
+    expect(declarations.grants.some((g) => g.startsWith("mail.address:"))).toBe(
+      false,
+    );
   });
 
   // The mail-accept axis (`mail.accept:*`) is emitted from the definition's
-  // authored `mailAccept` field, alongside the unchanged `mail.address:` /
-  // `mail.send:` axis. Relational toggles emit id-less relation tokens through
+  // authored `mailAccept` field, alongside the unchanged `mail.address:`
+  // axis. Relational toggles emit id-less relation tokens through
   // the shared default resolver; explicit principals/assets emit concrete
   // coordinates.
   function mailAcceptGrantsOf(workflow: WorkflowDefinition): Set<string> {
@@ -715,7 +708,7 @@ describe("walkCapabilities", () => {
     expect(grants.has("mail.accept:asset:ast_y")).toBe(true);
   });
 
-  test("mail.accept emission leaves the mail.address/mail.send axis unchanged", () => {
+  test("mail.accept emission leaves the mail.address axis unchanged", () => {
     const workflow = defineWorkflow({
       id: "wf_accept_axis",
       agent: makeTrivialAgent(),
@@ -726,7 +719,6 @@ describe("walkCapabilities", () => {
     const grants = mailAcceptGrantsOf(workflow);
 
     expect(grants.has("mail.address:support@example.com")).toBe(true);
-    expect(grants.has("mail.send:example.com")).toBe(true);
     expect(grants.has("mail.accept:invoker")).toBe(true);
   });
 
@@ -982,7 +974,11 @@ describe("grant-walk projections", () => {
       [
         "reply",
         {
-          grants: ["tool:send", "effect:push", "mail.send:example.com"],
+          grants: [
+            "tool:send",
+            "effect:push",
+            "mail.address:reply@example.com",
+          ],
           grantEffects: new Map<string, GrantEffect>([["tool:send", "ask"]]),
         },
       ],
@@ -999,7 +995,11 @@ describe("grant-walk projections", () => {
         },
         {
           stepId: "reply",
-          grants: ["tool:send", "effect:push", "mail.send:example.com"],
+          grants: [
+            "tool:send",
+            "effect:push",
+            "mail.address:reply@example.com",
+          ],
           grantEffects: { "tool:send": "ask" },
         },
       ],

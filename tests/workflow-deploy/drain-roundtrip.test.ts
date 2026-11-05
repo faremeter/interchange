@@ -171,7 +171,6 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]);
 
     // The gate is `drainBehavior: "cancel"` so a mid-flight drain
@@ -343,7 +342,6 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]);
     const entryModule = signalGateEntry({
       address: deploymentMailAddress,
@@ -493,7 +491,6 @@ async function deployParkedOnSignal(args: {
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${address}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]),
     config: {
       sessionId: SESSION_ID,

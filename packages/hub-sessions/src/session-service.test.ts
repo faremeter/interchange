@@ -2689,7 +2689,6 @@ describe("deployCodeSourcedWorkflow", () => {
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${DEPLOY_ADDRESS}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]);
     if (!approval.ok) throw new Error("expected approval");
 
@@ -2745,7 +2744,6 @@ describe("deployCodeSourcedWorkflow", () => {
     const { approval, projection, closure } = await makeBodyApproveOutput([
       "director:@intx/agent/default",
       `mail.address:${DEPLOY_ADDRESS}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]);
     if (!approval.ok) throw new Error("expected approval");
 
@@ -2786,7 +2784,6 @@ describe("deployCodeSourcedWorkflow", () => {
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${DEPLOY_ADDRESS}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ],
     );
     if (!approval.ok) throw new Error("expected approval");
@@ -2842,7 +2839,6 @@ describe("deployCodeSourcedWorkflow", () => {
       await makeEmptyAgentBodyApproveOutput([
         "director:@intx/agent/default",
         `mail.address:${DEPLOY_ADDRESS}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
     if (!approval.ok) throw new Error("expected approval");
 

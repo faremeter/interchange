@@ -134,11 +134,11 @@ Public surface:
   — the pure address and id derivation helpers.
 
 The capability walk emits the v1 grant-shape vocabulary: `tool:`,
-`director:`, `capability:`, `inference.source:`, `mail.address:`,
-`mail.send:`. The shapes are deliberately uniform with what the
-existing agent-deploy already enforces implicitly — the parity test
-in this package's test suite is the structural-identity check that
-backs the capability-surface uniformity claim.
+`director:`, `capability:`, `inference.source:`, `mail.address:`. The
+shapes are deliberately uniform with what the existing agent-deploy
+already enforces implicitly — the parity test in this package's test
+suite is the structural-identity check that backs the
+capability-surface uniformity claim.
 
 The walk also emits `mail.accept:` strings from the definition's
 authored `mailAccept` rules, for a definition of any trigger.

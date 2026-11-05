@@ -261,7 +261,6 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]);
 
     // 1) Install + probe + gate + freeze against the source asset.

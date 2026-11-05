@@ -177,7 +177,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
         // The loop body's step declares the inline tool, so the deploy walk
         // folds its grant into the top level; the operator must approve it.
         `tool:${MAIL_TOOL_NAME}`,

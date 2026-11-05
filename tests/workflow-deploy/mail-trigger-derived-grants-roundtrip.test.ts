@@ -317,7 +317,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const operatorApprovals: ApprovalSet = createApprovalSet([
         "effect:fs:write",
         `mail.address:${deploymentMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
       const handle = await deployWorkflowSourceForTest(env, {
         entryModule: actionStepEntry({

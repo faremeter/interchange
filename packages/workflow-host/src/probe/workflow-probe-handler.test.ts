@@ -231,10 +231,7 @@ describe("createWorkflowProbeExecutor", () => {
 
       expect(result.projection.id).toBe("probe-fixture");
       expect(result.projection.stepOrder).toEqual(["wait"]);
-      expect(result.grants).toEqual([
-        "mail.address:probe@example.com",
-        "mail.send:example.com",
-      ]);
+      expect(result.grants).toEqual(["mail.address:probe@example.com"]);
       // The un-flattened snapshot preserves the per-step grouping and the
       // (here empty) tool-grant effect map the flattened `grants` discards.
       // The `wait` step carries the deployment-wide trigger grants and no
@@ -244,7 +241,7 @@ describe("createWorkflowProbeExecutor", () => {
         perStep: [
           {
             stepId: "wait",
-            grants: ["mail.address:probe@example.com", "mail.send:example.com"],
+            grants: ["mail.address:probe@example.com"],
             grantEffects: {},
           },
         ],

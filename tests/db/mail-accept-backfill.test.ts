@@ -82,6 +82,8 @@ const TENANT_ROW = `mail.accept:tenant:${TENANT}`;
 
 // A snapshot that a mail-trigger definition froze before the sender gate: the
 // trigger-derived `mail.address:` / `mail.send:` grants and no accept markers.
+// The current walk does not emit `mail.send:<domain>`, but snapshots stored
+// by an earlier walk can still carry it.
 function preGateMailSnapshot(): GrantWalkSnapshot {
   return {
     perStep: [

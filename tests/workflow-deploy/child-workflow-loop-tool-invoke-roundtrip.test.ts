@@ -171,7 +171,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
         `mail.address:${childMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
         // The child's loop body declares the inline tool, so the deploy walk
         // folds its grant up into the parent's spawn step; the operator must
         // approve it.

@@ -106,7 +106,7 @@ function mkAgent(
 
 const OPENAI: InferencePreference = { provider: "openai", model: "gpt-4o" };
 
-const baseCapabilities = ["mail.send:acme.test"] as const;
+const baseCapabilities = ["web.fetch:acme.test"] as const;
 
 function mkSingleStep(agent: AgentDefinition): WorkflowDefinition {
   return defineWorkflow({
@@ -354,12 +354,12 @@ describe("hash binds to the grant surface", () => {
     await expectGrantMutation(mkSingleStep(mkPluginAgent()), LSP_TOOLS);
   });
 
-  test("adding a mail.send domain changes projection and hash", async () => {
+  test("adding a capability changes projection and hash", async () => {
     await expectGrantMutation(
       mkSingleStep(
         mkAgent(
           [alphaTool, betaTool],
-          ["mail.send:acme.test", "mail.send:beta.test"],
+          ["web.fetch:acme.test", "web.fetch:beta.test"],
           [OPENAI],
         ),
       ),

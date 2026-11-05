@@ -438,7 +438,6 @@ const distinctApprovals = (address: string): ApprovalSet =>
     "inference.source:anthropic:mock-model",
     "director:@intx/agent/default",
     `mail.address:${address}`,
-    `mail.send:${DEPLOYMENT_DOMAIN}`,
   ]);
 
 // Pull the text out of a captured inference request's `system` field. The mock
@@ -468,7 +467,6 @@ const collapseApprovals: ApprovalSet = createApprovalSet([
   "inference.source:anthropic:mock-model",
   "director:@intx/agent/default",
   `mail.address:${COLLAPSE_ADDRESS}`,
-  `mail.send:${DEPLOYMENT_DOMAIN}`,
 ]);
 
 describe.skipIf(!harnessDbEnvAvailable())(
