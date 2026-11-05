@@ -18,9 +18,6 @@
 //         `package-registry` asset via the asset service's in-process
 //         read API.
 //   - Version picking via npm-pick-manifest.
-//   - Scope routing: `@scope/foo` requests can be routed to a specific
-//     registry name from the scopeRouting table; everything else uses
-//     the registry named by `defaultRegistry`.
 //   - Per-entry source materialization: the walker asks the
 //     `RegistrySource` for the entry's `source` and `tarballUrl`. HTTP
 //     sources emit `kind: "registry"` plus the picked tarball URL;
@@ -58,20 +55,11 @@ import {
  * `auth.basic` mirror the npm-registry-fetch options for bearer /
  * basic auth.
  *
- * The registry's identifier (the string `scopeRouting` entries and
- * manifest `registry` references point at) is the slot it occupies
- * in the registry map: in the hub-side resolver, the key of the
- * `ReadonlyMap<string, RegistrySource>` passed to
- * `createClosureResolver`; in sidecar-side materialization, the key of
- * the `ReadonlyMap<string, RegistryConfig>` passed to `materializeClosure`.
- * Keeping the name on the map slot rather than on the value
- * eliminates the (until-now uninforced) "the map key must equal the
+ * The registry's identifier (the string manifest `registry` references
+ * point at) is its key in the `ReadonlyMap<string, RegistryConfig>`
+ * passed to `materializeClosure`. Keeping the name on the map slot
+ * rather than on the value eliminates the "the map key must equal the
  * config's name" invariant.
- *
- * The default-registry decision is owned by `defaultRegistry` on
- * `ClosureResolverConfig`, not by a per-registry flag; only one
- * entry can be the default and centralizing the choice keeps that
- * invariant in the config object.
  */
 export interface RegistryConfig {
   readonly url: string;
@@ -79,12 +67,6 @@ export interface RegistryConfig {
     readonly token?: string;
     readonly basic?: { readonly user: string; readonly pass: string };
   };
-}
-
-/** Route packages in a given scope (e.g. `@intx`) to a named registry. */
-export interface ScopeRoute {
-  readonly scope: string;
-  readonly registry: string;
 }
 
 /**
@@ -147,9 +129,8 @@ export interface MaterializedRef {
  * regardless of whether bytes live behind an HTTP registry or inside a
  * `package-registry` asset.
  *
- * `name` is the identifier the source was registered under in the
- * resolver's registry map. Diagnostics that need to print a
- * registry's name read it from here; the impls are the source of
+ * `name` is the registry's identifier. Diagnostics that need to print
+ * a registry's name read it from here; the impls are the source of
  * truth and the interface guarantees it is always available.
  */
 export interface RegistrySource {
@@ -163,20 +144,9 @@ export interface RegistrySource {
   ): MaterializedRef;
 }
 
-/**
- * Configuration for `createClosureResolver`.
- *
- * `registries` is keyed by registry name; `scopeRouting` and
- * `defaultRegistry` select an entry from it for each package.
- *
- * `defaultRegistry` names the entry in `registries` consulted for any
- * package whose scope does not match a `scopeRouting` entry. The map
- * must contain this key.
- */
+/** Configuration for `createClosureResolver`: the registry a closure resolves through. */
 export interface ClosureResolverConfig {
-  readonly registries: ReadonlyMap<string, RegistrySource>;
-  readonly defaultRegistry: string;
-  readonly scopeRouting?: readonly ScopeRoute[];
+  readonly source: RegistrySource;
 }
 
 export interface ClosureResolver {
@@ -247,8 +217,7 @@ export class HttpRegistrySource implements RegistrySource {
   readonly #fetchPackument: PackumentFetcher;
 
   constructor(args: {
-    /** Registry identifier. Becomes the map slot key in the
-     * resolver's registries map. */
+    /** Registry identifier, recorded on the entries it resolves. */
     readonly name: string;
     readonly config: RegistryConfig;
     /** Test seam: when omitted, the default `npm-registry-fetch`
@@ -486,55 +455,10 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
 }
 
-/**
- * npm scope shape: `@` followed by a name character class that matches
- * what npm itself accepts in `validate-npm-package-name`. We validate
- * the routing entries here rather than during pin resolution because
- * a typo (`intx` for `@intx`) silently never matches and the package
- * falls through to the default registry — the exact failure mode the
- * scope-routing feature exists to prevent.
- */
-const NPM_SCOPE_RE = /^@[a-z0-9][a-z0-9-_]*$/;
-
 export function createClosureResolver(
   config: ClosureResolverConfig,
 ): ClosureResolver {
-  if (config.registries.size === 0) {
-    throw new Error("createClosureResolver: registries cannot be empty");
-  }
-  const maybeDefault = config.registries.get(config.defaultRegistry);
-  if (maybeDefault === undefined) {
-    throw new Error(
-      `createClosureResolver: defaultRegistry "${config.defaultRegistry}" not present in registries map`,
-    );
-  }
-  if (config.scopeRouting !== undefined) {
-    for (const route of config.scopeRouting) {
-      if (!NPM_SCOPE_RE.test(route.scope)) {
-        throw new Error(
-          `createClosureResolver: scopeRouting entry has invalid scope ${JSON.stringify(route.scope)}; scopes must match ${NPM_SCOPE_RE.toString()} (e.g. "@intx")`,
-        );
-      }
-    }
-  }
-  const defaultSource: RegistrySource = maybeDefault;
-
-  function resolveSource(packageName: string): RegistrySource {
-    const scope = parseScope(packageName);
-    if (scope !== null && config.scopeRouting !== undefined) {
-      const route = config.scopeRouting.find((r) => r.scope === scope);
-      if (route !== undefined) {
-        const src = config.registries.get(route.registry);
-        if (src === undefined) {
-          throw new Error(
-            `scopeRouting references unknown registry "${route.registry}" for scope "${scope}"`,
-          );
-        }
-        return src;
-      }
-    }
-    return defaultSource;
-  }
+  const { source } = config;
 
   return {
     async resolveClosure(pins) {
@@ -565,24 +489,14 @@ export function createClosureResolver(
       // through an unrelated subtree, otherwise dropping the first
       // subtree would silently drop the dep for the second one too.
       // That correctness requirement would multiply packument requests
-      // against the upstream registry; this cache keeps each
-      // `(registry, name)` pair to one network round-trip per walk.
+      // against the upstream registry; this cache keeps each name to
+      // one network round-trip per walk.
       const packumentCache = new Map<string, Promise<Packument>>();
-      function fetchPackumentCached(
-        source: RegistrySource,
-        name: string,
-      ): Promise<Packument> {
-        // Length-prefix the registry name so two registries whose names
-        // happen to overlap with the package-name separator (e.g. a
-        // hypothetical registry literally named `foo::bar`) cannot
-        // collide on the cache key with another registry. The prefix
-        // makes the encoding injective on `(registryName, packageName)`
-        // regardless of which characters appear in either string.
-        const key = `${source.name.length.toString()}:${source.name}:${name}`;
-        const existing = packumentCache.get(key);
+      function fetchPackumentCached(name: string): Promise<Packument> {
+        const existing = packumentCache.get(name);
         if (existing !== undefined) return existing;
         const promise = source.fetchPackument(name);
-        packumentCache.set(key, promise);
+        packumentCache.set(name, promise);
         return promise;
       }
       // BFS so root-pin entries are visited before their transitive
@@ -729,11 +643,10 @@ export function createClosureResolver(
         }
         requested.add(requestKey);
 
-        const source = resolveSource(next.name);
         let packument: Packument;
         let picked: PackumentVersion;
         try {
-          packument = await fetchPackumentCached(source, next.name);
+          packument = await fetchPackumentCached(next.name);
           picked = npmPickManifest(packument, next.range);
         } catch (err) {
           if (next.subtreeId !== null) {
@@ -933,26 +846,6 @@ function checkPeerDependencies(
     }
   }
   return violations;
-}
-
-function parseScope(packageName: string): string | null {
-  if (!packageName.startsWith("@")) return null;
-  const slash = packageName.indexOf("/");
-  if (slash === -1) return null;
-  // npm package names are case-insensitive at the registry layer but
-  // npm's own validator forbids uppercase. Scope-routing lookups are
-  // gated on NPM_SCOPE_RE which rejects uppercase, so an uppercase
-  // scope in a package name would silently fail to match any routing
-  // entry. Lowercase the lookup so a `@INTX/foo` import still routes
-  // through a `@intx` routing entry rather than falling through to
-  // the default registry.
-  //
-  // Pin-time validation rejects uppercase top-level names, but
-  // transitive names sourced from registry packuments are not gated
-  // against the same rule. The lowercasing here is the only defense
-  // against a misconfigured registry returning mixed-case names that
-  // would otherwise mis-route at fetch time.
-  return packageName.slice(0, slash).toLowerCase();
 }
 
 /**

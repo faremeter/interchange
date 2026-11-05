@@ -28,7 +28,7 @@ import type {
 import { DeploymentRejectedError } from "@intx/types/sidecar";
 import type { CredentialCipher } from "@intx/types";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
-import { type RegistryConfig, type ScopeRoute } from "@intx/tool-packaging";
+import { type RegistryConfig } from "@intx/tool-packaging";
 import type {
   SourceRefPin,
   WorkflowProjectionWithSources,
@@ -205,17 +205,16 @@ export type SessionServiceDeps = {
    * The registries a source deploy resolves through. Required for a source
    * deploy. `httpRegistries` maps each registry name to its config. A registry
    * source names its registry, and a source-format asset's external
-   * dependencies use `defaultRegistry`. No deploy path reads `scopeRouting`.
+   * dependencies use `defaultRegistry`.
    */
   toolPackageRegistries?: {
     /**
      * Registry identifier → registry config. The key is the
-     * identifier `scopeRouting` entries and manifest `registry`
-     * references point at; the value carries url plus optional auth.
+     * identifier manifest `registry` references point at; the value
+     * carries url plus optional auth.
      */
     readonly httpRegistries: ReadonlyMap<string, RegistryConfig>;
     readonly defaultRegistry: string;
-    readonly scopeRouting?: readonly ScopeRoute[];
   };
   /**
    * Load a run's Hub tokens. A prepared deploy of an anchor that already has

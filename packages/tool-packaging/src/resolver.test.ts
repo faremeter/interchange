@@ -9,7 +9,6 @@ import {
   type Packument,
   type PackumentFetcher,
   type RegistryConfig,
-  type RegistrySource,
   AssetRegistrySource,
   HttpRegistrySource,
   ManifestInvalidError,
@@ -79,79 +78,6 @@ function httpSource(
   return new HttpRegistrySource({ name, config, fetchPackument });
 }
 
-function registriesOf(
-  ...sources: readonly RegistrySource[]
-): Map<string, RegistrySource> {
-  const m = new Map<string, RegistrySource>();
-  for (const src of sources) {
-    m.set(src.name, src);
-  }
-  return m;
-}
-
-describe("createResolver construction", () => {
-  test("throws if registries map is empty", () => {
-    expect(() =>
-      createClosureResolver({
-        registries: new Map(),
-        defaultRegistry: "any",
-      }),
-    ).toThrow(/registries cannot be empty/);
-  });
-
-  test("throws if defaultRegistry is not present in the map", () => {
-    expect(() =>
-      createClosureResolver({
-        registries: registriesOf(
-          httpSource({ name: "a", url: "https://a.test" }, {}),
-        ),
-        defaultRegistry: "missing",
-      }),
-    ).toThrow(/defaultRegistry "missing" not present/);
-  });
-
-  test("throws if a scopeRouting entry omits the leading @", () => {
-    // A bare scope like "intx" never matches any package name's scope
-    // (parseScope only returns strings that start with "@"), so the
-    // route would silently never fire and the package would fall
-    // through to the default registry. createClosureResolver must
-    // reject this at config-load time rather than swallow the typo.
-    expect(() =>
-      createClosureResolver({
-        registries: registriesOf(
-          httpSource({ name: "npmjs", url: "https://npmjs.test" }, {}),
-        ),
-        defaultRegistry: "npmjs",
-        scopeRouting: [{ scope: "intx", registry: "npmjs" }],
-      }),
-    ).toThrow(/scopeRouting entry has invalid scope/);
-  });
-
-  test("throws if a scopeRouting entry uses uppercase characters", () => {
-    expect(() =>
-      createClosureResolver({
-        registries: registriesOf(
-          httpSource({ name: "npmjs", url: "https://npmjs.test" }, {}),
-        ),
-        defaultRegistry: "npmjs",
-        scopeRouting: [{ scope: "@INTX", registry: "npmjs" }],
-      }),
-    ).toThrow(/scopeRouting entry has invalid scope/);
-  });
-
-  test("accepts a well-formed npm scope", () => {
-    expect(() =>
-      createClosureResolver({
-        registries: registriesOf(
-          httpSource({ name: "npmjs", url: "https://npmjs.test" }, {}),
-        ),
-        defaultRegistry: "npmjs",
-        scopeRouting: [{ scope: "@intx", registry: "npmjs" }],
-      }),
-    ).not.toThrow();
-  });
-});
-
 describe("resolveClosure", () => {
   test("resolves a single pin with no transitive deps", async () => {
     const src = httpSource(
@@ -159,8 +85,7 @@ describe("resolveClosure", () => {
       { "tools-leaf": packument("tools-leaf", { "1.0.0": {} }) },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "tools-leaf", version: "1.0.0" },
@@ -192,8 +117,7 @@ describe("resolveClosure", () => {
       },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "tools-with-deps", version: "1.0.0" },
@@ -212,8 +136,7 @@ describe("resolveClosure", () => {
       },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "a", version: "1.0.0" },
@@ -244,8 +167,7 @@ describe("resolveClosure", () => {
       },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "watcher", version: "1.0.0" },
@@ -254,89 +176,6 @@ describe("resolveClosure", () => {
     const linux = manifest.entries.find((e) => e.name === "watcher-linux");
     expect(darwin?.os).toEqual(["darwin"]);
     expect(linux?.os).toEqual(["linux"]);
-  });
-
-  test("routes scoped packages to the matching registry", async () => {
-    const calls: string[] = [];
-    const npmjs = new HttpRegistrySource({
-      name: "npmjs",
-      config: { url: "https://npmjs.test" },
-      fetchPackument: async (name) => {
-        calls.push(`${name}@npmjs`);
-        if (name === "left-pad") {
-          return packument("left-pad", { "1.0.0": {} });
-        }
-        throw new Error(`unexpected fetch: ${name}`);
-      },
-    });
-    const intxPrivate = new HttpRegistrySource({
-      name: "intx-private",
-      config: { url: "https://intx-private.test" },
-      fetchPackument: async (name) => {
-        calls.push(`${name}@intx-private`);
-        if (name === "@intx/tools-mail") {
-          return packument("@intx/tools-mail", { "1.0.0": {} });
-        }
-        throw new Error(`unexpected fetch: ${name}`);
-      },
-    });
-    const resolver = createClosureResolver({
-      registries: registriesOf(npmjs, intxPrivate),
-      defaultRegistry: "npmjs",
-      scopeRouting: [{ scope: "@intx", registry: "intx-private" }],
-    });
-    await resolver.resolveClosure([
-      { name: "@intx/tools-mail", version: "1.0.0" },
-      { name: "left-pad", version: "1.0.0" },
-    ]);
-    expect(calls).toContain("@intx/tools-mail@intx-private");
-    expect(calls).toContain("left-pad@npmjs");
-  });
-
-  test("keeps separate packument caches for registries whose names share a substring", async () => {
-    // Length-prefixed cache keys: regression for `${name}::${pkg}` that
-    // collided when one registry's name contained the separator.
-    const ambiguousCalls: string[] = [];
-    const baseCalls: string[] = [];
-    const ambiguous = new HttpRegistrySource({
-      name: "intx::a",
-      config: { url: "https://ambiguous.test" },
-      fetchPackument: async (name) => {
-        ambiguousCalls.push(name);
-        return packument(name, { "1.0.0": {} });
-      },
-    });
-    const base = new HttpRegistrySource({
-      name: "intx",
-      config: { url: "https://base.test" },
-      fetchPackument: async (name) => {
-        baseCalls.push(name);
-        return packument(name, { "1.0.0": {} });
-      },
-    });
-    const resolver = createClosureResolver({
-      registries: registriesOf(ambiguous, base),
-      defaultRegistry: "intx",
-      scopeRouting: [{ scope: "@a", registry: "intx::a" }],
-    });
-    await resolver.resolveClosure([
-      { name: "@a/foo", version: "1.0.0" },
-      { name: "foo", version: "1.0.0" },
-    ]);
-    expect(ambiguousCalls).toContain("@a/foo");
-    expect(baseCalls).toContain("foo");
-  });
-
-  test("throws if scopeRouting references unknown registry", async () => {
-    const src = httpSource({ name: "npmjs", url: "https://r.test" }, {});
-    const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
-      scopeRouting: [{ scope: "@intx", registry: "does-not-exist" }],
-    });
-    await expect(
-      resolver.resolveClosure([{ name: "@intx/foo", version: "1.0.0" }]),
-    ).rejects.toThrow(/scopeRouting references unknown registry/);
   });
 
   test("throws if a packument entry lacks dist.integrity", async () => {
@@ -355,8 +194,7 @@ describe("resolveClosure", () => {
       }),
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     await expect(
       resolver.resolveClosure([{ name: "broken", version: "1.0.0" }]),
@@ -379,8 +217,7 @@ describe("resolveClosure peer-dependency validation", () => {
       },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "react-tools", version: "1.0.0" },
@@ -399,8 +236,7 @@ describe("resolveClosure peer-dependency validation", () => {
       },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     await expect(
       resolver.resolveClosure([{ name: "react-tools", version: "1.0.0" }]),
@@ -420,8 +256,7 @@ describe("resolveClosure peer-dependency validation", () => {
       },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "react-tools", version: "1.0.0" },
@@ -444,8 +279,7 @@ describe("resolveClosure peer-dependency validation", () => {
       },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     await expect(
       resolver.resolveClosure([{ name: "react-tools", version: "1.0.0" }]),
@@ -462,8 +296,7 @@ describe("resolveClosure peer-dependency validation", () => {
       },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     let caught: unknown;
     try {
@@ -508,8 +341,7 @@ describe("resolveClosure top-level versions", () => {
       },
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "r",
+      source: src,
     });
 
     const manifest = await resolver.resolveClosure([
@@ -594,14 +426,11 @@ describe("resolveClosure top-level versions", () => {
       throw new Error(`no packument: ${name}`);
     };
     const resolver = createClosureResolver({
-      registries: registriesOf(
-        new HttpRegistrySource({
-          name: "r",
-          config: { url: "https://r.test" },
-          fetchPackument,
-        }),
-      ),
-      defaultRegistry: "r",
+      source: new HttpRegistrySource({
+        name: "r",
+        config: { url: "https://r.test" },
+        fetchPackument,
+      }),
     });
 
     // Pin `shared` to the narrow `~1.2.0` range (>=1.2.0, <1.3.0) so
@@ -641,8 +470,7 @@ describe("resolveClosure duplicate-pin gate", () => {
       },
     );
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "npmjs",
+      source: src,
     });
     await expect(
       resolver.resolveClosure([
@@ -679,8 +507,7 @@ describe("resolveClosure optionalDependencies", () => {
       },
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "r",
+      source: src,
     });
 
     const manifest = await resolver.resolveClosure([
@@ -715,8 +542,7 @@ describe("resolveClosure optionalDependencies", () => {
       },
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "r",
+      source: src,
     });
 
     let caught: unknown;
@@ -774,8 +600,7 @@ describe("resolveClosure optionalDependencies", () => {
       },
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "r",
+      source: src,
     });
 
     const manifest = await resolver.resolveClosure([
@@ -825,8 +650,7 @@ describe("resolveClosure optionalDependencies", () => {
       },
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "r",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "root", version: "1.0.0" },
@@ -876,8 +700,7 @@ describe("resolveClosure optionalDependencies", () => {
       },
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "r",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "A", version: "1.0.0" },
@@ -968,8 +791,7 @@ describe("AssetRegistrySource", () => {
       listBlobs: fixture.listBlobs,
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "workspace-builtins",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "tools-alpha", version: "1.0.0" },
@@ -1000,8 +822,7 @@ describe("AssetRegistrySource", () => {
       listBlobs: fixture.listBlobs,
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "wb",
+      source: src,
     });
     const manifest = await resolver.resolveClosure([
       { name: "p", version: "1.0.0" },
@@ -1033,146 +854,6 @@ describe("AssetRegistrySource", () => {
         .toString();
       expect(entry.source.package.integrity).toBe(expected);
     }
-  });
-
-  test("mixes with an HTTP source for transitive deps the asset does not publish", async () => {
-    // Top-level pins live in the asset; transitive `left-pad` lives in
-    // the HTTP registry. The asset registry is the default so unscoped
-    // top-level pins resolve through it; the transitive dep then
-    // bounces to the HTTP registry because the asset does not publish
-    // it. This is the asset-publishes-its-own-closure shape: the asset
-    // is authoritative for the names it carries and the http registry
-    // covers any name the asset does not.
-    //
-    // The two-step fallback is not implemented at the resolver layer —
-    // the walker queries the source the routing rule names and treats
-    // a miss as a fatal closure-walk failure. To make `left-pad` route
-    // to the http registry, exercise the scopeRouting feature: `@np`
-    // is a scope that routes to npmjs, but unscoped names that the
-    // asset does not publish need an alternative. For this test we
-    // exercise the cleaner shape: the asset-registry version of
-    // `tools-mixed` declares the transitive dep via a scoped name so
-    // scope routing carries it to the http registry.
-    const fixture = await buildAssetFixture([
-      {
-        name: "tools-mixed",
-        version: "1.0.0",
-        pkgJsonExtras: { dependencies: { "@np/left-pad": "^1.3.0" } },
-      },
-    ]);
-    const assetSrc = new AssetRegistrySource({
-      name: "asset-reg",
-      assetId: "asset_mixed",
-      readBlob: fixture.readBlob,
-      listBlobs: fixture.listBlobs,
-    });
-    const httpSrc = httpSource(
-      { name: "npmjs", url: "https://r.test" },
-      { "@np/left-pad": packument("@np/left-pad", { "1.3.0": {} }) },
-    );
-    const resolver = createClosureResolver({
-      registries: registriesOf(assetSrc, httpSrc),
-      defaultRegistry: "asset-reg",
-      scopeRouting: [{ scope: "@np", registry: "npmjs" }],
-    });
-    const manifest = await resolver.resolveClosure([
-      { name: "tools-mixed", version: "1.0.0" },
-    ]);
-    expect(manifest.entries).toHaveLength(2);
-    const byName = new Map(manifest.entries.map((e) => [e.name, e]));
-    expect(byName.get("tools-mixed")?.source.kind).toBe("asset");
-    expect(byName.get("@np/left-pad")?.source.kind).toBe("registry");
-  });
-
-  test("inner-tenancy asset shadows http registry of the same name", async () => {
-    // The resolver does not itself implement tenant inheritance — the
-    // session service walks the chain and decides which source claims
-    // each registry name. The collision behavior at the resolver layer
-    // is simpler: the map only carries one entry per name, so whichever
-    // source the session service inserted under "shared" wins. This
-    // test locks in that the resolver respects that single-entry
-    // contract end-to-end.
-    const fixture = await buildAssetFixture([
-      { name: "shadowed", version: "1.0.0" },
-    ]);
-    const inner = new AssetRegistrySource({
-      name: "shared",
-      assetId: "asset_inner",
-      readBlob: fixture.readBlob,
-      listBlobs: fixture.listBlobs,
-    });
-    // Build a map directly so the test calls out that the asset source
-    // occupies the slot the http source would otherwise hold.
-    const registries = new Map<string, RegistrySource>([[inner.name, inner]]);
-    const resolver = createClosureResolver({
-      registries,
-      defaultRegistry: "shared",
-    });
-    const manifest = await resolver.resolveClosure([
-      { name: "shadowed", version: "1.0.0" },
-    ]);
-    expect(manifest.entries).toHaveLength(1);
-    expect(manifest.entries[0]?.source.kind).toBe("asset");
-  });
-
-  test("asset registry wins over an http registry of the same name", async () => {
-    // Lock in the collision-resolution contract the session service
-    // enforces: when both an AssetRegistrySource and an
-    // HttpRegistrySource carry the same registry name, the asset
-    // entry is what the resolver consults. The session service
-    // populates its registry map by inserting assets first and
-    // skipping HTTP entries on name collision; this test replays the
-    // same composition and asserts the asset path produced the
-    // manifest entry.
-    const NAME = "shared-registry";
-    const fixture = await buildAssetFixture([
-      { name: "claimed", version: "1.0.0" },
-    ]);
-    const assetSrc = new AssetRegistrySource({
-      name: NAME,
-      assetId: "asset_winner",
-      readBlob: fixture.readBlob,
-      listBlobs: fixture.listBlobs,
-    });
-    const httpSrc = new HttpRegistrySource({
-      name: NAME,
-      config: { url: "https://shadowed.test" },
-      fetchPackument: async () => {
-        throw new Error(
-          "http registry was consulted but the asset registry should have shadowed it",
-        );
-      },
-    });
-
-    // Replay the session-service composition: asset first, then HTTP
-    // only when the name is not already claimed. The Map is the
-    // resolver's view of the world; the policy lives in how this
-    // map is built.
-    const registries = new Map<string, RegistrySource>();
-    for (const src of [assetSrc, httpSrc]) {
-      if (registries.has(src.name)) continue;
-      registries.set(src.name, src);
-    }
-    expect(registries.get(NAME)).toBe(assetSrc);
-
-    const resolver = createClosureResolver({
-      registries,
-      defaultRegistry: NAME,
-    });
-    const manifest = await resolver.resolveClosure([
-      { name: "claimed", version: "1.0.0" },
-    ]);
-    expect(manifest.entries).toHaveLength(1);
-    const entry = manifest.entries[0];
-    expect(entry?.source).toEqual({
-      kind: "asset",
-      assetId: "asset_winner",
-      package: {
-        format: "tarball",
-        path: `tarballs/${fixture.tarballNames[0]}`,
-        integrity: expect.stringMatching(/^sha512-/),
-      },
-    });
   });
 
   test("rejects the closure when a tarball's package.json fails validation", async () => {
@@ -1207,8 +888,7 @@ describe("AssetRegistrySource", () => {
         Array.from(byPath.keys()).map((p) => p.slice("tarballs/".length)),
     });
     const resolver = createClosureResolver({
-      registries: registriesOf(src),
-      defaultRegistry: "broken",
+      source: src,
     });
     await expect(
       resolver.resolveClosure([{ name: "anything", version: "1.0.0" }]),

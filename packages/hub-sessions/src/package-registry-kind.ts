@@ -32,8 +32,7 @@ export const REGISTRY_INDEX_PATH = "package-registry.json";
 /**
  * Canonical asset name for the workspace's bundled package-registry —
  * the in-tree `@intx/tools-*` packages live in an asset of this name
- * under the workspace's root tenant. The hub's scope-routing config
- * maps `@intx` to this registry, the seed script ensures the asset
+ * under the workspace's root tenant. The seed script ensures the asset
  * row exists, and the publish-tool-packages CLI defaults its target
  * registry to this name. The constant lives at one site so a rename
  * does not have to chase three independent string literals.

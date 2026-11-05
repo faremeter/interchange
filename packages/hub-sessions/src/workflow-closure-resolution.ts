@@ -68,14 +68,12 @@ export type ResolveWorkflowClosureRegistryArgs = {
  * Resolve a workflow definition's dependency closure against a single hub
  * `package-registry` asset.
  *
- * The resolver is single-source by design: the asset is the sole and default
- * registry, so a self-contained definition (its `@intx/*` imports bundled at
- * author time) resolves to one `kind:"asset"` entry. A specifier the asset does
- * not publish fails loud from `AssetRegistrySource` -- there is no silent
- * fallback to npm. A definition that genuinely needs external npm dependencies
- * would resolve through the mixed `AssetRegistrySource` + `HttpRegistrySource`
- * map `session-service` already builds for tool packages; that path is not
- * threaded here.
+ * The resolver is single-source by design: the asset is the sole registry, so a
+ * self-contained definition (its `@intx/*` imports bundled at author time)
+ * resolves to one `kind:"asset"` entry. A specifier the asset does not publish
+ * fails loud from `AssetRegistrySource` -- there is no silent fallback to npm. A
+ * definition that needs external npm dependencies cannot use this arm; the
+ * registry and asset-source arms resolve them.
  */
 export type ResolveWorkflowClosureAssetTarballArgs = {
   /** An asset source whose `package.format` is `"tarball"`. */
@@ -165,7 +163,7 @@ export async function resolveWorkflowClosure(
 
   if (isAssetTarballArgs(args)) {
     // The assetId is the source name so every walker resolution error is
-    // traceable to the exact asset; it is the sole and default source.
+    // traceable to the exact asset.
     const name = args.source.assetId;
     const assetSource = new AssetRegistrySource({
       name,
@@ -173,10 +171,7 @@ export async function resolveWorkflowClosure(
       readBlob: args.readBlob,
       listBlobs: args.listBlobs,
     });
-    const resolver = createClosureResolver({
-      registries: new Map([[name, assetSource]]),
-      defaultRegistry: name,
-    });
+    const resolver = createClosureResolver({ source: assetSource });
     return resolver.resolveClosure([parsePin(args.pin)]);
   }
 
@@ -187,10 +182,7 @@ export async function resolveWorkflowClosure(
       ? { fetchPackument: args.fetchPackument }
       : {}),
   });
-  const resolver = createClosureResolver({
-    registries: new Map([[registrySource.name, registrySource]]),
-    defaultRegistry: registrySource.name,
-  });
+  const resolver = createClosureResolver({ source: registrySource });
   return resolver.resolveClosure([parsePin(args.pin)]);
 }
 
