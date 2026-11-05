@@ -667,10 +667,11 @@ async function prepareSourceRefDeploy(
 /**
  * Prepare then emit the source-ref deploy frame, for the prepared provisioned
  * path whose anchor `workflow_run` row already exists (inserted at prepare
- * time). It emits the frame but does NOT touch the anchor row: the caller
- * (`deployPreparedCodeSourcedWorkflow`) stamps the acked key under the
- * allocation-ownership lock. A tagged `DeployFrameFailure` is converted to the
- * `SessionLaunchError` disposition the allocation reconciler consumes, while
+ * time). It emits the frame but does NOT record the deployment: the caller
+ * (`deployPreparedCodeSourcedWorkflow`) records the acked key on the run
+ * principal under the allocation-ownership lock. A tagged `DeployFrameFailure`
+ * is converted to the `SessionLaunchError` disposition the allocation
+ * reconciler consumes, while
  * untagged preparation errors remain safe same-generation retries. The ordinary
  * path does NOT use this wrapper -- it must interleave the anchor INSERT between
  * prepare and emit, so it drives `prepareSourceRefDeploy` and
@@ -845,10 +846,11 @@ async function emitSourceRefDeployFrame(
  * A direct allocation-bound composition entrypoint for tests and low-level
  * callers: prepare, INSERT the deployment's anchor `workflow_run` row, THEN emit
  * the source-ref frame. The anchor row is the deployment's first-class record
- * that owns its routing address and public key. Run-grant materialization keys
- * off this row (address + live status), so WITHOUT it no per-run grants (tool,
- * capability, OR credential) ever materialize for a source-ref deployment. Born
- * "deployed" (live but pre-trigger) with a null public key: the first trigger's
+ * that owns its routing address; its run principal holds its public key.
+ * Run-grant materialization keys off this row (address + live status), so
+ * WITHOUT it no per-run grants (tool, capability, OR credential) ever
+ * materialize for a source-ref deployment. Born
+ * "deployed" (live but pre-trigger) with no key yet: the first trigger's
  * materialization flips it to "running" via `anchorWithPrincipal`'s guarded
  * update, which a row born "running" would skip. Its `anchorRunId` equals its
  * own id, so the anchor references itself. The deployer read grant is deferred
@@ -900,7 +902,6 @@ export async function deployCodeSourcedWorkflow(
         anchorRunId: args.anchorRunId,
         definitionId,
         address: args.agentAddress,
-        publicKey: null,
         status: "deployed",
         createdAt,
         // Persist the non-secret shape of the delivery so the reconnect resync
@@ -931,7 +932,7 @@ export async function deployCodeSourcedWorkflow(
   } catch (cause) {
     if (isDeployFrameFailure(cause) && cause.frameSent === false) {
       // Positive proof the frame never reached the wire: nothing spawned, so
-      // fully roll the anchor back. The guard (`deployed`, null key) is a
+      // fully roll the anchor back. The guard (`deployed`, no key) is a
       // tripwire on the `frameSent: false` contract -- a 0-row delete means the
       // row advanced or vanished, so the contract lied and a child may be live;
       // surface that loudly and refuse to claim it is safe to roll back. The
@@ -968,7 +969,7 @@ export async function deployCodeSourcedWorkflow(
         return rows;
       });
       if (deleted.length === 0) {
-        logger.error`anchor-before-frame rollback found no deployed/null-key row for ${args.anchorRunId} after a frameSent:false failure; the never-sent contract was violated and a child may be live`;
+        logger.error`anchor-before-frame rollback found no deployed row without a key for ${args.anchorRunId} after a frameSent:false failure; the never-sent contract was violated and a child may be live`;
         throw new SessionLaunchError(cause, true);
       }
       throw new SessionLaunchError(cause, false);
@@ -1021,36 +1022,23 @@ export async function deployCodeSourcedWorkflow(
     throw new SessionLaunchError(cause, true);
   }
 
-  // Emit succeeded: stamp the acked key. No status guard -- the key is a fact
-  // regardless of whether the pack-ack race already flipped the row to
-  // "running", and skipping the stamp there would strand a live run with a null
-  // key. A 0-row update is an anomaly (nothing should remove a deployed anchor
-  // on the success path), but the deploy succeeded, so log it rather than
-  // failing a live run. The update holds the anchor row lock, which
-  // serializes recording the key on the run principal.
-  const stamped = await args.db.transaction(async (tx) => {
-    const rows = await tx
-      .update(workflowRunTable)
-      .set({ publicKey })
-      .where(
-        and(
-          eq(workflowRunTable.id, args.anchorRunId),
-          eq(workflowRunTable.anchorRunId, args.anchorRunId),
-          eq(workflowRunTable.tenantId, args.tenantId),
-        ),
-      )
-      .returning({ id: workflowRunTable.id });
-    if (rows.length > 0) {
-      await recordRunPrincipalKey(
-        tx,
-        args.tenantId,
-        args.anchorRunId,
-        publicKey,
-      );
-    }
-    return rows;
-  });
-  if (stamped.length === 0) {
+  // Emit succeeded: record the acked key on the run principal. No status guard
+  // -- the key is a fact regardless of whether the pack-ack race already
+  // flipped the row to "running", and skipping it there would strand a live
+  // run with no key. A missing anchor is an anomaly (nothing should remove a
+  // deployed anchor on the success path), but the deploy succeeded, so log it
+  // rather than failing a live run. Any other failure to record the key leaves
+  // a live agent whose key the hub does not hold, so it fails as a launch that
+  // may have leaked its agent.
+  let stamped: boolean;
+  try {
+    stamped = await args.db.transaction((tx) =>
+      recordRunPrincipalKey(tx, args.tenantId, args.anchorRunId, publicKey),
+    );
+  } catch (err) {
+    throw new SessionLaunchError(err, true);
+  }
+  if (!stamped) {
     logger.error`anchor-before-frame: anchor ${args.anchorRunId} vanished before its public key could be stamped on a successful deploy`;
   }
 
@@ -1338,16 +1326,17 @@ export function createSessionService(
   }
 
   /**
-   * Update a prepared anchor run's `publicKey` under the allocation-ownership
-   * lock. The anchor row was inserted at prepare time; this stamps the
-   * supervisor key returned by the deploy ack, but only while the allocation
+   * Record a prepared deployment's key on its run principal under the
+   * allocation-ownership lock. The anchor row and run principal were inserted
+   * at prepare time; this records the supervisor key returned by the deploy
+   * ack, but only while the allocation
    * still names this exact accepted generation and unexpired reconciliation
    * lease for this anchor. Lost ownership or cancellation fails closed as a
    * leaked-agent `SessionLaunchError` -- the deploy already reached the sidecar,
    * so the caller must treat the sidecar agent as possibly live. Used by the
    * `deployPreparedCodeSourcedWorkflow` prepared path.
    */
-  async function updateAnchorPublicKeyUnderAllocationLock(args: {
+  async function recordRunKeyUnderAllocationLock(args: {
     tenantId: string;
     anchorRunId: string;
     allocationTarget: AllocatedSidecarTarget;
@@ -1356,9 +1345,7 @@ export function createSessionService(
     credentialRefs?: WorkflowRunCredentialRefs;
   }): Promise<void> {
     if (db === undefined) {
-      throw new Error(
-        "updateAnchorPublicKeyUnderAllocationLock requires a db handle",
-      );
+      throw new Error("recordRunKeyUnderAllocationLock requires a db handle");
     }
     const dbHandle = db;
     try {
@@ -1472,7 +1459,7 @@ export function createSessionService(
     try {
       // Bracket the allocated pre-ack window: mark the sender's key-record as
       // mid-flight before the deploy emit so a run that sends mail before its
-      // anchor key is committed parks rather than delivering keyless. The settle
+      // key is committed parks rather than delivering keyless. The settle
       // follows durable completion; cancellation leaves the outcome to recovery.
       if (source.kind === "asset") {
         if (resolveAttachment === null) {
@@ -1491,7 +1478,7 @@ export function createSessionService(
         );
       }
 
-      await updateAnchorPublicKeyUnderAllocationLock({
+      await recordRunKeyUnderAllocationLock({
         tenantId: params.tenantId,
         anchorRunId: params.anchorRunId,
         allocationTarget: params.allocationTarget,
@@ -1502,7 +1489,7 @@ export function createSessionService(
           : {}),
       });
 
-      // The anchor's public key is now durable. Wake any mail the run parked
+      // The run principal's key is now durable. Wake any mail the run parked
       // while pre-ack so it delivers with the sender key co-delivered, closing
       // the window where a run sends before its key is recorded. The write above
       // happens-before this settle, so a re-drive resolves the recorded key.

@@ -17,6 +17,7 @@ import { hexEncode } from "@intx/types";
 import {
   createSidecarAllocationStore,
   createWorkflowPendingProjectionStore,
+  loadRunPrincipalActiveKey,
   withExecutableWorkflowRun,
 } from "@intx/db";
 import { sidecar, sidecarAllocation, workflowRun } from "@intx/db/schema";
@@ -591,9 +592,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).toMatchObject({
         status: "running",
-        publicKey: null,
         credentialRefs: null,
       });
+      // The replaced copy's key no longer answers for the run.
+      expect(await loadRunPrincipalActiveKey(h.db, TENANT, copy.id)).toBeNull();
     });
 
     test("a delayed cleanup hello cannot displace its running replacement", async () => {

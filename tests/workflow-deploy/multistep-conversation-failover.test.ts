@@ -42,12 +42,11 @@ import { type } from "arktype";
 import { and, eq } from "drizzle-orm";
 
 import { createEnvKeyCredentialCipher, generateKeyPair } from "@intx/crypto";
-import { createDB } from "@intx/db";
+import { createDB, loadRunPrincipalActiveKey } from "@intx/db";
 import {
   principal as principalTable,
   sidecarAllocation as sidecarAllocationTable,
   tenant as tenantTable,
-  workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { createAgentRepoStore, DEFAULT_ASSET_REF } from "@intx/hub-sessions";
 import {
@@ -322,10 +321,9 @@ async function deployConversation(
     deriveRunAddress({ runId: anchorRunId, domain: tenant.domain }),
   );
 
-  const readAnchor = () =>
-    db.query.workflowRun.findFirst({
-      where: eq(workflowRunTable.id, anchorRunId),
-    });
+  // The deployment's key, which commits when an initialization completes.
+  const readRunKey = () =>
+    loadRunPrincipalActiveKey(db, tenant.tenantId, anchorRunId);
   const readAllocation = () =>
     db.query.sidecarAllocation.findFirst({
       where: eq(sidecarAllocationTable.anchorRunId, anchorRunId),
@@ -384,7 +382,7 @@ async function deployConversation(
     return snapshot;
   };
   return {
-    readAnchor,
+    readRunKey,
     readAllocation,
     readEvents,
     inputParks,
@@ -440,13 +438,13 @@ describe.skipIf(!harnessHubEnvAvailable())(
       const tenant = await provisionTenant("conversation_failover");
       const assetId = "ast_conversation_failover_wf";
       const commitSha = await publishConversation(tenant, assetId);
-      const { readAnchor, readAllocation, readEvents, inputParks, sendMail } =
+      const { readRunKey, readAllocation, readEvents, inputParks, sendMail } =
         await deployConversation(tenant, assetId, commitSha);
 
       // --- Two turns on the first host -----------------------------------
       // No signal reports these states, so they are polled. The first deploy
-      // is complete once the anchor key commits.
-      await waitFor(async () => (await readAnchor())?.publicKey != null);
+      // is complete once the run principal's key commits.
+      await waitFor(async () => (await readRunKey()) !== null);
       const first = await readAllocation();
       if (first?.externalRef == null) {
         throw new Error("the first sidecar has no process id");
@@ -464,14 +462,14 @@ describe.skipIf(!harnessHubEnvAvailable())(
       // releases the allocation and fails the deployment.
       await waitFor(async () => {
         const row = await readAllocation();
-        const anchor = await readAnchor();
+        const runKey = await readRunKey();
         return (
           row !== undefined &&
           row.generation > first.generation &&
           row.status === "allocated" &&
           row.externalRef !== null &&
           row.externalRef !== first.externalRef &&
-          anchor?.publicKey != null
+          runKey !== null
         );
       });
 
@@ -513,7 +511,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
         assetA,
         await publishConversation(tenant, assetA),
       );
-      await waitFor(async () => (await a.readAnchor())?.publicKey != null);
+      await waitFor(async () => (await a.readRunKey()) !== null);
       await a.sendMail(`Opening turn ${IMPORT_ONE}.`);
       await waitFor(async () => (await a.inputParks()) >= 1);
       await a.sendMail(`Second turn ${IMPORT_TWO}.`);
@@ -538,7 +536,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
         await publishConversation(tenant, assetB),
         { step1: exported },
       );
-      await waitFor(async () => (await b.readAnchor())?.publicKey != null);
+      await waitFor(async () => (await b.readRunKey()) !== null);
       expect(await b.exportStep1()).toEqual(exported);
       await b.sendMail(`Third turn ${IMPORT_THREE}.`);
       await waitFor(async () => (await b.inputParks()) >= 1);

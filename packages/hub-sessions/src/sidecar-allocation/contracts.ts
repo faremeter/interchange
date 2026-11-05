@@ -209,11 +209,11 @@ export type SidecarCredentials = {
 
 /**
  * `reclaim` also requires the deployment's first deploy to have completed: its
- * anchor's key is committed and no initialization is in flight. A copy whose
- * deploy is still uncertain is undeployed instead, since releasing it on a
- * sidecar that hosts other work does not stop the sidecar. It further requires
- * the anchor run not to be terminal: a copy of a run that has ended is not
- * routed, even when its own history never recorded the end.
+ * run principal holds the deployment's key and no initialization is in flight.
+ * A copy whose deploy is still uncertain is undeployed instead, since
+ * releasing it on a sidecar that hosts other work does not stop the sidecar. It
+ * further requires the anchor run not to be terminal: a copy of a run that has
+ * ended is not routed, even when its own history never recorded the end.
  *
  * `retention` permits retaining an initialized terminal copy while its capacity
  * retention period remains open. `retention-transition` validates terminal

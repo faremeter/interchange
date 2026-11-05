@@ -1232,7 +1232,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
         // The blocker plays the winner: under the anchor lock it commits the
         // run principal with the winner's accept-grant and the run row linked
-        // to it, and it clears the anchor's key so credential resolution is
+        // to it, and it retires the deployment's key so credential resolution is
         // not ready afterwards. The loser must be gated as a delivery to the
         // live run, not parked.
         const locked = Promise.withResolvers<number>();

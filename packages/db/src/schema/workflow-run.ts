@@ -114,13 +114,12 @@ export const workflowRun = pgTable(
     // Runtime bindings. `address` is a run's routing endpoint -- a deployment's
     // anchor run carries a workflow-derived address; nullable because an
     // address-less child run routes via its deployment, but unique among the
-    // runs that set it (the partial unique index below). `publicKey` is
-    // persisted when the sidecar acks the deploy. No code populates
+    // runs that set it (the partial unique index below). A deployment's
+    // signing key lives on its run principal, not here. No code populates
     // `sidecarId`/`kernelId`, and no code writes `modelPreferences`: only
     // the retired folded launch route wrote it, and readers parse rows it
     // left behind.
     address: text("address"),
-    publicKey: text("public_key"),
     sidecarId: text("sidecar_id").references(() => sidecar.id, {
       onDelete: "set null",
     }),

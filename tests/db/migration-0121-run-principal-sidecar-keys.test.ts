@@ -15,7 +15,7 @@ import {
 import { asc, eq, sql } from "drizzle-orm";
 
 import { createPrincipalKeyStore, recordPublicKey } from "@intx/db";
-import { principalKey, workflowRun } from "@intx/db/schema";
+import { principalKey } from "@intx/db/schema";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   createTestDb,
@@ -51,8 +51,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
     beforeEach(async () => {
       await h.reset();
+      // A later migration drops the anchor's key column; restore it to the
+      // shape this migration reads.
+      await h.db.execute(
+        sql`alter table workflow_run add column if not exists public_key text`,
+      );
       await seedTenants(h.db, [{ id: TENANT }]);
     });
+
+    // The key the deploy ack recorded on the anchor before this migration.
+    async function setAnchorKey(runId: string, publicKey: string | null) {
+      await h.db.execute(
+        sql`update workflow_run set public_key = ${publicKey} where id = ${runId}`,
+      );
+    }
 
     // An anchor run and the run principal deploy created, with the key the
     // deploy ack recorded only on the anchor, as before the migration.
@@ -67,10 +79,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT,
         status,
       });
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey })
-        .where(eq(workflowRun.id, runId));
+      await setAnchorKey(runId, publicKey);
       const principalId = `prn_${runId}`;
       await seedPrincipal(h.db, {
         id: principalId,
@@ -183,10 +192,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: "run_orphan",
         tenantId: TENANT,
       });
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: KEY_A })
-        .where(eq(workflowRun.id, "run_orphan"));
+      await setAnchorKey("run_orphan", KEY_A);
 
       await expect(replay()).rejects.toThrow(/has no run principal/);
     });
@@ -198,10 +204,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: "run_parent",
         tenantId: TENANT,
       });
-      await h.db
-        .update(workflowRun)
-        .set({ publicKey: KEY_A })
-        .where(eq(workflowRun.id, "run_child"));
+      await setAnchorKey("run_child", KEY_A);
 
       await expect(replay()).rejects.toThrow(/not a deployment anchor/);
     });

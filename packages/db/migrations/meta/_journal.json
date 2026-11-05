@@ -848,6 +848,13 @@
       "when": 1793842006891,
       "tag": "0121_run_principal_sidecar_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1793842023286,
+      "tag": "0122_drop_workflow_run_public_key",
+      "breakpoints": true
     }
   ]
 }

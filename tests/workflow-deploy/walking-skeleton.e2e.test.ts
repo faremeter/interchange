@@ -54,6 +54,7 @@ import {
   type RepoId,
 } from "@intx/hub-sessions";
 import { createNoopCredentialCipher } from "@intx/crypto";
+import { runPrincipalActiveKeySql } from "@intx/db";
 import {
   workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
@@ -566,7 +567,10 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     const anchorRow = await h.db
       .select({
         address: workflowRunTable.address,
-        publicKey: workflowRunTable.publicKey,
+        publicKey: runPrincipalActiveKeySql(
+          workflowRunTable.tenantId,
+          workflowRunTable.id,
+        ),
         tenantId: workflowRunTable.tenantId,
       })
       .from(workflowRunTable)

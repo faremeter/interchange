@@ -477,36 +477,76 @@ describe("deployCodeSourcedWorkflow", () => {
   const SOURCE = { kind: "registry", registry: "npm" } as const;
   const TENANT = "tnt_test";
   // These unit tests assert FRAME logic plus the SHAPE of the anchor
-  // workflow_run row the composed entrypoint writes (status, self-ref, born
-  // null-key) and its post-ack public-key stamp -- not its persistence (the
+  // workflow_run row the composed entrypoint writes (status, self-ref) and
+  // the key its ack records on the run principal -- not its persistence (the
   // real anchor-in-a-live-DB proof, including the prepare-before-deploy ordering,
   // lives in tests/db/workflow-allocation-service.test.ts). A capturing db
-  // records the anchor insert and the success-path public-key update, and
+  // records the anchor insert and the success-path key record, and
   // answers the persisted-definition
   // guard's existence query with a matching row; the fail-path tests throw
   // before reaching the insert.
   let capturedAnchorRow: Record<string, unknown> | undefined;
   let capturedAnchorUpdate: Record<string, unknown> | undefined;
+  // The key the success path records on the run principal.
+  let capturedRunKey: unknown;
 
-  // Recording a deployment's key reads its run principal and the principal's
-  // keys, then inserts the key. Answer those reads with the run principal and
-  // no keys, and pass every other read to the wrapped double.
-  function withRunPrincipalKeys<T extends object>(handle: T): T {
+  // Recording a deployment's key locks its anchor (the only FOR NO KEY UPDATE
+  // read of a run), reads its run principal and the principal's keys, then
+  // inserts the key. Answer those reads with the anchor, the run principal and
+  // no keys, report each recorded key to `onRecordKey`, and pass every other
+  // call to the wrapped double.
+  function withRunPrincipalKeys<T extends object>(
+    handle: T,
+    onRecordKey?: (publicKey: unknown) => void,
+  ): T {
     const inner = handle as {
-      select?: () => { from: (table: unknown) => unknown };
-      insert?: unknown;
+      select?: () => {
+        from: (table: unknown) => {
+          where?: (...args: unknown[]) => Record<string, unknown>;
+        };
+      };
+      insert?: (table: unknown) => unknown;
     };
+    function anchorLock(table: unknown) {
+      return {
+        where: (...args: unknown[]) => {
+          const read =
+            inner
+              .select?.()
+              .from(table)
+              .where?.(...args) ?? {};
+          const lock = read["for"];
+          return Object.assign(read, {
+            for: (mode: unknown, ...rest: unknown[]) =>
+              mode === "no key update"
+                ? Promise.resolve([{ id: ANCHOR_RUN_ID }])
+                : typeof lock === "function"
+                  ? lock(mode, ...rest)
+                  : Promise.resolve([]),
+          });
+        },
+      };
+    }
     return {
       ...handle,
       select: () => ({
         from: (table: unknown) =>
-          table === principalTable
-            ? { where: () => ({ limit: async () => [{ id: "prn_run" }] }) }
-            : table === principalKeyTable
-              ? { where: () => ({ limit: async () => [] }) }
-              : inner.select?.().from(table),
+          table === workflowRunTable
+            ? anchorLock(table)
+            : table === principalTable
+              ? { where: () => ({ limit: async () => [{ id: "prn_run" }] }) }
+              : table === principalKeyTable
+                ? { where: () => ({ limit: async () => [] }) }
+                : inner.select?.().from(table),
       }),
-      insert: inner.insert ?? (() => ({ values: async () => undefined })),
+      insert: (table: unknown) =>
+        table === principalKeyTable
+          ? {
+              values: async (values: { publicKey: unknown }) => {
+                onRecordKey?.(values.publicKey);
+              },
+            }
+          : (inner.insert?.(table) ?? { values: async () => undefined }),
     };
   }
   // The read of the active key of an anchor's run principal:
@@ -585,7 +625,11 @@ describe("deployCodeSourcedWorkflow", () => {
       },
     }),
     transaction: (run: (tx: unknown) => Promise<unknown>) =>
-      run(withRunPrincipalKeys(CAPTURING_DB)),
+      run(
+        withRunPrincipalKeys(CAPTURING_DB, (publicKey) => {
+          capturedRunKey = publicKey;
+        }),
+      ),
   } as unknown as DB["db"];
 
   async function capturePreparedDeployError(
@@ -797,14 +841,6 @@ describe("deployCodeSourcedWorkflow", () => {
           const result = await run(
             withRunPrincipalKeys(
               transactionHandle((values) => {
-                if ("publicKey" in values) {
-                  if (
-                    values.publicKey !== null &&
-                    typeof values.publicKey !== "string"
-                  )
-                    throw new Error("Invalid key write");
-                  nextKey = values.publicKey;
-                }
                 if ("initializationLeaseId" in values) {
                   if (
                     values.initializationLeaseId !== null &&
@@ -814,6 +850,10 @@ describe("deployCodeSourcedWorkflow", () => {
                   nextMarker = values.initializationLeaseId;
                 }
               }),
+              (key) => {
+                if (typeof key !== "string") throw new Error("Invalid key");
+                nextKey = key;
+              },
             ),
           );
           if (transactions === 1 || scenario !== "rolled back publication") {
@@ -1100,7 +1140,11 @@ describe("deployCodeSourcedWorkflow", () => {
         const db = {
           ...CAPTURING_DB,
           transaction: async (run: (handle: typeof tx) => Promise<unknown>) =>
-            run(withRunPrincipalKeys(tx)),
+            run(
+              withRunPrincipalKeys(tx, (publicKey) =>
+                writes.push({ publicKey }),
+              ),
+            ),
         } as unknown as DB["db"];
         const allocationRouter = createMockAllocationRouter();
         allocationRouter.sendAgentDeployToAllocation = async (
@@ -1136,6 +1180,7 @@ describe("deployCodeSourcedWorkflow", () => {
         ]);
         if (!approval.ok) throw new Error("expected approval");
         capturedAnchorUpdate = undefined;
+        capturedRunKey = undefined;
         const result = await service
           .deployPreparedCodeSourcedWorkflow({
             tenantId: TENANT,
@@ -1166,6 +1211,7 @@ describe("deployCodeSourcedWorkflow", () => {
           expect(writes).toEqual([]);
           // A rejected reservation must not clear an existing same-token marker.
           expect(capturedAnchorUpdate).toBeUndefined();
+          expect(capturedRunKey).toBeUndefined();
         }
       });
     }
@@ -1205,7 +1251,11 @@ describe("deployCodeSourcedWorkflow", () => {
         const db = {
           ...CAPTURING_DB,
           transaction: async (run: (handle: typeof tx) => Promise<unknown>) =>
-            run(withRunPrincipalKeys(tx)),
+            run(
+              withRunPrincipalKeys(tx, (publicKey) =>
+                writes.push({ publicKey }),
+              ),
+            ),
           select: () => ({
             from: () => ({
               where: async () => {
@@ -1264,10 +1314,11 @@ describe("deployCodeSourcedWorkflow", () => {
         expect(writesAtRecheck).toBeDefined();
         expect(
           writesAtRecheck?.some(
-            (values) =>
-              values.publicKey === "completed-key" &&
-              "credentialRefs" in values,
+            (values) => values.publicKey === "completed-key",
           ),
+        ).toBe(true);
+        expect(
+          writesAtRecheck?.some((values) => "credentialRefs" in values),
         ).toBe(true);
 
         const updates = router.calls.filter(
@@ -1522,14 +1573,14 @@ describe("deployCodeSourcedWorkflow", () => {
             }),
           }),
           update: () => ({
-            set: (values: Record<string, unknown>) => ({
-              where: () => ({
-                returning: async () => {
-                  writes.push(values);
-                  return [{ id: ANCHOR_RUN_ID }];
-                },
-              }),
-            }),
+            set: (values: Record<string, unknown>) => {
+              writes.push(values);
+              return {
+                where: () => ({
+                  returning: async () => [{ id: ANCHOR_RUN_ID }],
+                }),
+              };
+            },
           }),
         };
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a transaction double over the capturing DB; allocation-store DB tests cover the SQL guards
@@ -1681,6 +1732,7 @@ describe("deployCodeSourcedWorkflow", () => {
         "inference.source:anthropic:mock-model",
       ]);
       capturedAnchorUpdate = undefined;
+      capturedRunKey = undefined;
 
       const error = await service
         .deployPreparedCodeSourcedWorkflow({
@@ -1703,6 +1755,7 @@ describe("deployCodeSourcedWorkflow", () => {
       expect(error).toBe(cancelled);
       expect(allocationRouter.calls).toEqual([]);
       expect(capturedAnchorUpdate).toBeUndefined();
+      expect(capturedRunKey).toBeUndefined();
     });
 
     test("a cancelled deploy cannot publish its late key or declare definitive failure", async () => {
@@ -1734,6 +1787,7 @@ describe("deployCodeSourcedWorkflow", () => {
         "inference.source:anthropic:mock-model",
       ]);
       capturedAnchorUpdate = undefined;
+      capturedRunKey = undefined;
 
       const error = await service
         .deployPreparedCodeSourcedWorkflow({
@@ -1760,6 +1814,7 @@ describe("deployCodeSourcedWorkflow", () => {
       expect(error.leakedAgent).toBe(true);
       expect(error.cause).toBe(cancelled);
       expect(capturedAnchorUpdate).toBeUndefined();
+      expect(capturedRunKey).toBeUndefined();
       expect(sidecarRouter.calls.map((call) => call.method)).toEqual([
         "noteSenderDeployStarted",
       ]);
@@ -1844,6 +1899,7 @@ describe("deployCodeSourcedWorkflow", () => {
   });
 
   test("builds a self-consistent source-ref frame that binds to the gate's frozen hash and inert projection", async () => {
+    capturedRunKey = undefined;
     const mockRouter = createMockRouter();
     const sentWorkflows: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2][] =
       [];
@@ -1897,18 +1953,64 @@ describe("deployCodeSourcedWorkflow", () => {
 
     // The anchor workflow_run row is born "deployed" (live but pre-trigger) and
     // self-referential (anchorRunId === id); its address is the run address
-    // derived from the anchor run id. It is inserted with a NULL public key --
-    // the row must exist before the frame, but the key is only known from the
-    // ack -- and the key is stamped by a follow-up update once the ack returns.
+    // derived from the anchor run id. The row must exist before the frame, but
+    // the key is only known from the ack, so the key is recorded on the run
+    // principal once the ack returns.
     expect(capturedAnchorRow).toBeDefined();
     expect(capturedAnchorRow?.status).toBe("deployed");
     expect(capturedAnchorRow?.id).toBe(ANCHOR_RUN_ID);
     expect(capturedAnchorRow?.anchorRunId).toBe(ANCHOR_RUN_ID);
     expect(capturedAnchorRow?.address).toBe(DEPLOY_ADDRESS);
-    expect(capturedAnchorRow?.publicKey).toBeNull();
-    expect(capturedAnchorUpdate).toEqual({
-      publicKey: "ed25519-supervisor-pubkey",
-    });
+    expect(capturedRunKey).toBe("ed25519-supervisor-pubkey");
+  });
+
+  test("a deploy whose acked key cannot be recorded fails as a possibly leaked launch", async () => {
+    const mockRouter = createMockRouter();
+    mockRouter.sendAgentDeploy = (() =>
+      Promise.resolve({
+        publicKey: "ed25519-supervisor-pubkey",
+      })) as TestSidecarRouter["sendAgentDeploy"];
+    // The anchor insert commits; the key record after the ack fails.
+    let transactions = 0;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the capturing double with a failing second transaction
+    const db = {
+      ...CAPTURING_DB,
+      transaction: (run: (tx: unknown) => Promise<unknown>) => {
+        transactions += 1;
+        if (transactions > 1) {
+          return Promise.reject(new Error("connection lost"));
+        }
+        return run(withRunPrincipalKeys(CAPTURING_DB));
+      },
+    } as unknown as DB["db"];
+
+    const { deployCodeSourcedWorkflow } = await import("./session-service");
+    const { approval, projection, closure } = await makeApproveOutput([
+      "tool:read",
+    ]);
+    if (!approval.ok) throw new Error("expected approval");
+
+    const error = await deployCodeSourcedWorkflow({
+      sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+      allocationTarget: { allocationId: "alloc-test", generation: 1 },
+      agentAddress: DEPLOY_ADDRESS,
+      config: CONFIG,
+      sources: SOURCES,
+      approved: { approval, projection, closure },
+      source: SOURCE,
+      db,
+      tenantId: TENANT,
+      anchorRunId: ANCHOR_RUN_ID,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+      credentialCipher: createNoopCredentialCipher(),
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(SessionLaunchError);
+    if (!(error instanceof SessionLaunchError)) {
+      throw new Error("expected SessionLaunchError");
+    }
+    expect(error.leakedAgent).toBe(true);
+    expect(error.message).toBe("connection lost");
   });
 
   test("delivers no credential for a top-level step that cannot invoke inference", async () => {
