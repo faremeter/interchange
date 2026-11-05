@@ -1,8 +1,8 @@
 // Warm-agent cache for the workflow-process child (design §3b).
 //
-// A long-lived single-step agent is built once -- tools materialized,
+// A long-lived single-step agent is built once -- tool bundles built,
 // plugins instantiated, the LSP subprocess spawned -- and reused across
-// every inbound message. Re-materializing tools and re-spawning the LSP
+// every inbound message. Rebuilding tool bundles and re-spawning the LSP
 // per message is the instantiate-send-teardown cost the warm cache
 // removes; keeping the agent alive across messages is also what
 // preserves in-memory conversation continuity (durability across child

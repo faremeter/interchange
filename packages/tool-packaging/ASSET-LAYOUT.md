@@ -77,46 +77,33 @@ against the workspace's asset root.
 
 ## Per-instance apply state on the sidecar
 
-Each apply materializes its resolved closure into a stable, per-deploy-id
-directory under the agent's tool-package instance directory
-(`<storeDir>/tool-packages/`). The directory is never renamed:
+Each apply materializes a workflow deployment's frozen closure into a
+stable, per-deploy-id directory under the deployment's instance directory
+(`<dataDir>/workflow-definition-closures/<deployment-id>/`). The directory
+is never renamed:
 
 ```
-<storeDir>/tool-packages/
-├── active-deploy-id           # commit switch; content "v1:<deploy-id>"
-├── active-deploy-id.dirty     # present only after a degraded persist
+<instanceDir>/
 └── packages/
-    ├── <deploy-id-current>/   # store/<name>/<version>/... for the live deploy
-    └── <deploy-id-previous>/  # the immediately-prior deploy, retained
+    └── <deploy-id>/   # store/<name>/<version>/...
 ```
 
-The loader builds `packages/<deploy-id>/store/<name>/<version>/` and
-dynamic-imports each pinned package's `interchange.tools` entry from that
-path. Because the path is never renamed, a package that resolves files
-relative to its own on-disk location at run time — `import.meta.url`,
-`require.resolve()`, a call-time `await import("./sibling.js")` — keeps
-resolving for the life of the deploy.
+The workflow child evaluates the closure from
+`packages/<deploy-id>/store/<name>/<version>/`. Because the path is never
+renamed, a package that resolves files relative to its own on-disk
+location at run time — `import.meta.url`, `require.resolve()`, a call-time
+`await import("./sibling.js")` — keeps resolving for the life of the
+deployment.
 
-**Commit.** Staging a deploy directory does not make it live. The commit
-is a single write of the `active-deploy-id` file naming the new deploy
-id. Until that write lands, the instance is still running the previous
-deploy, whose directory is untouched. There is no filesystem rename in
-the apply path; the `active-deploy-id` write is the only atomic switch.
+**Retention.** A deployment keeps one closure on disk. Its instance
+directory is removed before each apply, and a deployment's apply stands
+alone, with no prior deploy to retain.
 
-**Retention.** A prelude sweep at the start of every apply removes every
-`packages/<id>/` except the current deploy and the immediately-prior
-one, bounding disk to ~2 closures. The prior deploy is retained as a
-liveness window: a session still draining against it may perform a
-call-time import into its tree. The next apply reaps it once the prior
-session's harness has been torn down.
-
-**Crash safety.** Boot never reads a deploy directory — the harness
-rebuilds from the current manifest into a fresh deploy id — so a
-half-written deploy directory left by a crash is self-healing: the next
-boot re-materializes and the prelude sweep reclaims the orphan. Only
-`active-deploy-id` needs durability; it carries an fsync + dirty-marker
-ladder owned by the sidecar's materialization layer. See
-`packages/tool-packaging/src/atomic-apply.ts` for the full protocol.
+**Crash safety.** Restoring a deployment never reads a deploy directory
+back. It removes the instance directory and re-materializes the closure
+into a fresh deploy id, so a half-written directory left by a crash cannot
+reach a child. See `packages/tool-packaging/src/workflow-closure-apply.ts`
+for the apply.
 
 ## Tarballs
 

@@ -291,7 +291,7 @@ export function credentialUseGrantRules(
  * credentials. This is the credential-cap input. It is not part of
  * `CapabilityWalkResult`: those strings are not operator-facing grants.
  * Plugin names are absent. A factory with an empty `definitions` array is
- * still present, because the source arm keys Gate 2 on the factory id.
+ * still present, because Gate 2 is keyed on the factory id.
  */
 export function collectCredentialConsumers(
   workflow: WorkflowDefinition,
@@ -427,7 +427,7 @@ function collectOwnGrants(
     collected.grants.add(grant);
   }
   // Unlike a tool factory, which counts even with empty `definitions`
-  // because the source arm keys Gate 2 on its id, an action counts only when
+  // because Gate 2 is keyed on its id, an action counts only when
   // it carries a `credentials` field: that list is its declared credential
   // surface, so an action without the field consumes nothing.
   if (primitive.kind === "action" && primitive.credentials !== undefined) {

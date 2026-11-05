@@ -15,9 +15,9 @@
 // pinned origin -- an in-process mock server that records the Authorization
 // header it sees.
 //
-// The consumer both ends key on is the probe factory's `id`: the source-ref arm
-// sets the synthetic `StepToolFactory.packageName` to the factory id, and the
-// author names `credentialBindings[].package` = that same id, so the delivered
+// The consumer both ends key on is the probe factory's `id`:
+// `sourceStepToolFactories` sets each step factory's `packageName` to its id,
+// and the author names `credentialBindings[].package` = that same id, so the delivered
 // descriptor's `consumer` and the source tool's runtime consumer match.
 //
 // The proofs:

@@ -99,11 +99,11 @@ export function createRuntimeCapabilities(
  * map and delegates every other key to `base`.
  *
  * The host uses this to add a per-bundle capability -- the consumer-scoped
- * `credentials` handle, one instance per tool package -- onto a shared
+ * `credentials` handle, one instance per tool factory -- onto a shared
  * per-step base bag without re-plumbing the base's keys (`mail.transport`
- * and any future shared key stay owned by the step bag). Each tool package's
+ * and any future shared key stay owned by the step bag). Each factory's
  * bundle receives the same base layered with ITS OWN credentials capability,
- * so a package cannot resolve a handle scoped to a different package.
+ * so a factory cannot resolve a handle scoped to a different factory.
  *
  * `overrides` is snapshotted at construction, mirroring
  * `createRuntimeCapabilities`, so later mutation of the input is not

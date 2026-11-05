@@ -1,4 +1,4 @@
-// Phase 2 proof: a step's agent runs a REAL tool materialized in the
+// Phase 2 proof: a step's agent runs a REAL tool built in the
 // spawned workflow-process child.
 //
 // Deploys a one-step workflow BY SOURCE-REF whose agent carries the inline

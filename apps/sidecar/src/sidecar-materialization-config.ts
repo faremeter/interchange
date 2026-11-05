@@ -1,4 +1,4 @@
-// Process edge for the tool-package materialization boundary.
+// Process edge for the workflow closure materialization boundary.
 //
 // `parseToolRegistries` and `hostPlatform` in `@intx/tool-packaging`
 // own the `SIDECAR_TOOL_REGISTRIES` rules and the npm `os`/`cpu`

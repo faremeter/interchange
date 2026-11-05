@@ -11,16 +11,14 @@
 // validated at this boundary before being returned.
 //
 // Materialization is deliberately NOT done here. `@intx/workflow-host`
-// stays free of a `@intx/tool-packaging` dependency (that layer lives
-// in `packages/tool-packaging/src/tool-materialization.ts`), so the
-// caller runs the closure machinery and hands the resulting package
-// directory in. This module only performs the import + evaluate +
-// validate step, which is the part that must run inside the child's
-// address space because it evaluates author code. The loader resolves
-// whatever the materializer laid out: the closure lays direct deps
-// (workspace members or pinned registry deps) into the workflow
-// package's `node_modules/`, and a published tarball that bundles its
-// own `node_modules` can also place them there.
+// stays free of a `@intx/tool-packaging` dependency, so the caller runs
+// the closure machinery and hands the resulting package directory in. This
+// module only performs the import + evaluate + validate step, which is the
+// part that must run inside the child's address space because it evaluates
+// author code. The loader resolves whatever the materializer laid out: the
+// closure lays direct deps (workspace members or pinned registry deps) into
+// the workflow package's `node_modules/`, and a published tarball that bundles
+// its own `node_modules` can also place them there.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";

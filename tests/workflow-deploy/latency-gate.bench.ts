@@ -38,7 +38,7 @@
 // Both paths measure the SUSTAINED interactive case: back-to-back
 // messages on ONE warm agent, message N+1 fired only after reply N (no
 // pipelining), and the FIRST (cold) message is discarded so the agent
-// build / tool materialization / LSP spawn cost is excluded -- the
+// build / tool construction / LSP spawn cost is excluded -- the
 // steady-state per-message round-trip is what the gate is about.
 //
 // Run:

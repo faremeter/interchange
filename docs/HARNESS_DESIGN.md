@@ -56,7 +56,7 @@ apps/sidecar/
 │   ├── index.ts                           # Entry point: wires the stores, the harness builder, and the hub link
 │   ├── config.ts                          # Boundary readers for the sidecar's env-config inputs
 │   ├── default-harness.ts                 # HarnessBuilder source-admission seam (canBuildSource) the deploy router consults before spawning
-│   ├── sidecar-materialization-config.ts  # Shared registry-map and host-platform resolution for tool materialization
+│   ├── sidecar-materialization-config.ts  # Shared registry-map and host-platform resolution for closure materialization
 │   ├── signing-keypair.ts                 # Loads or mints the sidecar's on-disk Ed25519 signing keypair
 │   ├── workflow-child-bindings.ts         # Closes the child factory over the grant cap
 │   ├── workflow-child-spawner.ts          # Bun spawner and resolved path for bin/workflow-child

@@ -510,8 +510,8 @@ describe("rewrapStepToolFactory", () => {
     if (seenEnv === undefined) {
       throw new Error("the bundle factory was not invoked");
     }
-    // The bundle sees a layered bag resolving THIS package's capability -- the
-    // seam that must never hand a bundle another package's capability.
+    // The bundle sees a layered bag resolving THIS factory's capability -- the
+    // seam that must never hand a bundle another factory's capability.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the slot is the RuntimeCapabilities resolver this test set
     const bag = Reflect.get(seenEnv, "capabilities") as RuntimeCapabilities;
     expect(bag.resolve("credentials")).toBe(capability);

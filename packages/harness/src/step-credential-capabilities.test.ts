@@ -87,9 +87,9 @@ function useGrant(consumer: string): GrantRule {
 }
 
 describe("buildCredentialCapabilities", () => {
-  test("a credential granted to one package cannot be resolved by another (confused deputy)", async () => {
+  test("a credential granted to one factory cannot be resolved by another (confused deputy)", async () => {
     const track = trackingProvider();
-    // The same credential is bound for both packages, but only pkg-a holds the
+    // The same credential is bound for both factories, but only pkg-a holds the
     // credential:c1/use grant scoped to its consumer.
     const cell = {
       current: {
@@ -298,9 +298,9 @@ describe("buildCredentialCapabilities", () => {
     ).toThrow(/delivery is malformed/);
   });
 
-  test("a package that declares and binds no credential gets no capability", () => {
+  test("a factory that declares and binds no credential gets no capability", () => {
     const track = trackingProvider();
-    // A credential is delivered, but only for a different package's consumer.
+    // A credential is delivered, but only for a different factory's consumer.
     const cell = {
       current: {
         bindings: [
@@ -328,7 +328,7 @@ describe("buildCredentialCapabilities", () => {
     expect(caps.has("@intx/pkg-a")).toBe(false);
   });
 
-  // The grants thunk must be read only when a package actually needs a
+  // The grants thunk must be read only when a factory actually needs a
   // capability. This pins the self-discovery-resume fix: a toolless resume
   // precedes the grants barrier, so resolving grants for it would fault on a
   // snapshot that is not present yet. The "no capability" test above passes a
@@ -338,7 +338,7 @@ describe("buildCredentialCapabilities", () => {
     throw new Error("resolveGrants must not be called for a step needing none");
   };
 
-  test("a step whose packages need no capability never resolves grants", () => {
+  test("a step whose factories need no capability never resolves grants", () => {
     const track = trackingProvider();
     const cell = { current: { bindings: [], materials: [] } };
     expect(() =>
@@ -350,7 +350,7 @@ describe("buildCredentialCapabilities", () => {
     ).not.toThrow();
   });
 
-  test("grants are resolved once a package needs a capability", () => {
+  test("grants are resolved once a factory needs a capability", () => {
     const track = trackingProvider();
     const cell = {
       current: {
@@ -382,16 +382,16 @@ describe("buildCredentialCapabilities", () => {
 });
 
 describe("buildCredentialCapabilities grants reads", () => {
-  test("a step reads its grants once, whatever the package order", () => {
+  test("a step reads its grants once, whatever the factory order", () => {
     const track = trackingProvider();
     const cell = deliveryFor(track.provider.key, [
       { consumer: toolConsumer("@intx/pkg-a"), handle: "cred" },
       { consumer: toolConsumer("@intx/pkg-b"), handle: "cred" },
     ]);
-    const packages = ["@intx/pkg-none", "@intx/pkg-a", "@intx/pkg-b"];
-    const rotations = packages.map((_unused, i) => [
-      ...packages.slice(i),
-      ...packages.slice(0, i),
+    const factoryIds = ["@intx/pkg-none", "@intx/pkg-a", "@intx/pkg-b"];
+    const rotations = factoryIds.map((_unused, i) => [
+      ...factoryIds.slice(i),
+      ...factoryIds.slice(0, i),
     ]);
     for (const order of rotations) {
       let reads = 0;

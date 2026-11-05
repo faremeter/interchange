@@ -411,8 +411,8 @@ await runWorkflowChildFromProcessEnv(createSubstrate, {
 
 The reference in-tree binary imports `createSubstrate` from
 `apps/sidecar/src/workflow-child-bindings.ts`, which closes this
-package's `createSidecarSubstrateFactory` over the app's tool
-materializer and the grant cap from `@intx/workflow-deploy`. The child
+package's `createSidecarSubstrateFactory` over the grant cap from
+`@intx/workflow-deploy`. The child
 binary path is resolved in
 `apps/sidecar/src/workflow-child-spawner.ts`. An alternative host
 follows the same pattern: write a substrate factory against its own

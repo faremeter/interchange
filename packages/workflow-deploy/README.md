@@ -114,7 +114,7 @@ Public surface:
   reserved hub handle `interchange.hub`, and a duplicate binding.
   The hub's probe gate refuses a definition with any of these.
 - `collectHubConsumers(projection)` — the consumers that declare the reserved
-  hub handle anywhere in a frozen inert projection, as `tool:<package>` and
+  hub handle anywhere in a frozen inert projection, as `tool:<factory id>` and
   `action:<handler>`. Each gets a run token for the hub REST API when the run
   principal is created.
 - `inertNestedBodies(step, descent)` — the nested body projections one step of

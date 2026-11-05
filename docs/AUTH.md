@@ -91,7 +91,7 @@ Request to /api/me/...
 
 ### Workflow run tokens
 
-A workflow run calls the tenant routes with a run token instead of a session. A run token is an opaque bearer of the form `itx_run_<base64url>`, held in the `run_token` table as a SHA-256 hash and as a copy sealed with the credential cipher. Each token belongs to one run principal and one consumer: a tool package (`tool:<package>`) or an action handler (`action:<handler>`).
+A workflow run calls the tenant routes with a run token instead of a session. A run token is an opaque bearer of the form `itx_run_<base64url>`, held in the `run_token` table as a SHA-256 hash and as a copy sealed with the credential cipher. Each token belongs to one run principal and one consumer: a tool factory (`tool:<factory id>`) or an action handler (`action:<handler>`).
 
 ```
 Request to /api/tenants/:tenantId/... with Authorization: Bearer itx_run_...
@@ -207,7 +207,7 @@ The hub-approved `approvedWireHash` is persisted on the sidecar's deployment rec
 
 A code-sourced workflow's package code is installed and **evaluated on the sidecar** — untrusted, author-controlled code runs there in an airlocked child to produce the inert projection and the capability walk. So it matters that **the sidecar is not trusted to decrypt credentials or to determine which code runs.** Those are the two things that grant a workflow real power, and both are anchored hub-side:
 
-**Credentials are decrypted and delivered by the hub.** The secrets a consumer (a tool package or a workflow action handler) uses to reach an external system are held encrypted in the tenant vault and decrypted **hub-side** (`buildCredentialDelivery`). The sidecar cannot decrypt the vault. It keeps the deliveries it received in each run record, so a restart can restore the run, and it seals every secret there under its own credential cipher, so no credential is plaintext at rest. The hub decides _which_ credentials to deliver from its **own** content-addressed workflow asset plus the operator's approval — never from anything the sidecar supplies — and each delivered credential grant is scoped `credential:{id}/use` to a specific consumer, resolving only a **tenant-owned** credential. A consumer whose secret the hub did not send is inert.
+**Credentials are decrypted and delivered by the hub.** The secrets a consumer (a tool factory or a workflow action handler) uses to reach an external system are held encrypted in the tenant vault and decrypted **hub-side** (`buildCredentialDelivery`). The sidecar cannot decrypt the vault. It keeps the deliveries it received in each run record, so a restart can restore the run, and it seals every secret there under its own credential cipher, so no credential is plaintext at rest. The hub decides _which_ credentials to deliver from its **own** content-addressed workflow asset plus the operator's approval — never from anything the sidecar supplies — and each delivered credential grant is scoped `credential:{id}/use` to a specific consumer, resolving only a **tenant-owned** credential. A consumer whose secret the hub did not send is inert.
 
 **The code that runs is the code the operator's approval was bound to.** The dependency closure is hub-resolved and SRI-pinned; at every load boundary the child re-materializes it, re-projects, and re-checks the projection's content hash against the hub-approved hash, failing closed on any mismatch (see _Definition Approval and Re-Verification_ above). A sidecar cannot substitute different code without failing this barrier. The long-lived sidecar process never evaluates the code itself: each workflow child reports the projection it verified, and the supervisor checks that report against the same hash before it uses it, because the child runs author code and could misreport it.
 
@@ -341,7 +341,7 @@ A standing decision changes the effect of an existing grant whose resource is th
 The `conditions` JSONB field constrains when a grant applies. Each key names a condition evaluator in the hub's condition registry. Two evaluators are registered:
 
 - `{ "time_window": { "after": "09:00", "before": "17:00", "timezone": "America/Los_Angeles" } }` -- time-based access. `timezone` is required and is an IANA zone name or a UTC offset. `after` and `before` are `HH:MM` in 24-hour format and must differ; `after` later than `before` gives a window that crosses midnight. No other key is allowed.
-- `{ "tool": "tool:<package>" }` -- a consumer-scoped grant, which applies only when the named credential consumer makes the request. The value is a non-empty consumer identity.
+- `{ "tool": "tool:<factory id>" }` -- a consumer-scoped grant, which applies only when the named credential consumer makes the request. The value is a non-empty consumer identity.
 
 Spending limits and threshold-based escalation are planned conditions with no evaluator yet:
 

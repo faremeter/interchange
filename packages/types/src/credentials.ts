@@ -32,7 +32,7 @@ const CredentialSourceType = type.enumerated(...credentialRequirementSources);
 
 // A credential binding on a workflow definition maps one consumer's declared
 // credential handle to a concrete credential resolved fresh at launch. The
-// consumer is a tool package, keyed `(package, handle)`, or an action handler,
+// consumer is a tool factory, keyed `(package, handle)`, or an action handler,
 // keyed `(action, handle)`; a binding names exactly one of the two. `locator`
 // is which credential namespace the name is resolved in; today only `tenant`
 // exists (a tenant-owned credential, authorized by ownership). A second locator
@@ -67,7 +67,7 @@ const credentialBindingFields = {
 // exported type.
 export const CredentialBinding = type({
   package: type("string").describe(
-    "The tool package the declared handle belongs to: the tool factory's bundle id.",
+    "The tool factory the declared handle belongs to, given as its bundle id.",
   ),
   "action?": "never",
   ...credentialBindingFields,

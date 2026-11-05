@@ -15,7 +15,7 @@ import { tenant } from "./tenants";
 // workflow_definition is the first-class definition entity for the workflow
 // model: one row per deployable definition, with a version table alongside it.
 //
-// The definition body (system prompt, context/model config, tool packages) is
+// The definition body (system prompt, context/model config, tool factories) is
 // not stored on this row -- it lives in the `workflow`-kind asset the row
 // points at, and the run reads it back from there. `asset_id` is nullable at
 // the schema level, but a runnable definition points at a materialized asset.
@@ -64,7 +64,7 @@ export const workflowDefinition = pgTable(
     // at parse time.
     modelRequirements: jsonb("model_requirements"),
     // Credential bindings manifest: maps a consumer's declared credential
-    // handle -- (package, handle) for a tool package or (action, handle) for an
+    // handle -- (package, handle) for a tool factory or (action, handle) for an
     // action handler -- to a concrete credential resolved fresh at launch (by
     // locator + provider + name against the tenant walk-up).
     // Validated as CredentialBinding[] at parse time. A binding is a request

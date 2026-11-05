@@ -90,13 +90,9 @@ describe("DeployApplyErrorCategory", () => {
     "registry.unknown",
     "registry.auth.failed",
     "tarball.extract.failed",
-    "manifest.invalid",
     "package.entry.missing",
     "package.entry.invalid",
-    "factory.construct.failed",
     "tool.name.duplicate",
-    "apply.swap.failed",
-    "apply.previous-rotation.failed",
   ] as const;
 
   for (const category of allCategories) {
@@ -190,7 +186,7 @@ describe("AgentDeployFrame", () => {
 
   // The source-ref pin every workflow frame carries: where the definition's
   // bytes come from plus the frozen dependency closure (empty here -- a
-  // workflow that pins no tool packages).
+  // workflow with no dependencies).
   const validSourceRef = {
     source: { kind: "registry", registry: "npmjs" },
     closure: { schemaVersion: "1", topLevel: [], entries: [] },

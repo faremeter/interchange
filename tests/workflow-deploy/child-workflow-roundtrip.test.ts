@@ -560,11 +560,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }, 180_000);
 
     // A tool-bearing child. The child step's agent carries the inline
-    // `mail_send` tool, so the child runs a REAL tool-bearing agent through the
-    // source-tools arm -- not a toolless one. The mock inference echoes the
-    // exposed tool names into the reply, so the child's `StepCompleted` reply
-    // listing the tool name is the proof the child materialized its tool from
-    // the shared closure. A regression that ran the child toolless (or failed
+    // `mail_send` tool, so the child runs a REAL tool-bearing agent -- not a
+    // toolless one. The mock inference echoes the exposed tool names into the
+    // reply, so the child's `StepCompleted` reply listing the tool name is the
+    // proof the child built its tool from the shared closure. A regression that ran the child toolless (or failed
     // to materialize the source tool) would omit the name from the reply.
     test("a childWorkflow child runs a real tool-bearing agent", async () => {
       const parentMailAddress = deriveRunAddress({
@@ -686,7 +685,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const childStepCompleted = childEvents.find(
         (e) => e.type === "StepCompleted" && e.body["stepId"] === "childStep",
       );
-      // The reply lists the materialized tool name: the child ran a real
+      // The reply lists the tool name: the child ran a real
       // tool-bearing agent. A toolless run would carry the bare
       // "I see these tools:" prefix with no tool name.
       const childReply = readStepReply(childStepCompleted);

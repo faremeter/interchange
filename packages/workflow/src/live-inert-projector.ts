@@ -226,7 +226,7 @@ export interface InertWorkflowDefinition {
   readonly stepOrder: readonly string[];
   readonly steps: Record<string, InertStep>;
   readonly state?: { readonly schema?: unknown };
-  // The definition's credential bindings -- each maps a tool package's or an
+  // The definition's credential bindings -- each maps a tool factory's or an
   // action handler's declared handle to a concrete provider/locator. These are
   // pure plain data (no secret material; the secret is resolved fresh at
   // deploy), so they project verbatim. They are part of the hashed surface on
