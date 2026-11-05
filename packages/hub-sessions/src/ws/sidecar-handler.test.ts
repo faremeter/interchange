@@ -1809,6 +1809,47 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     expect(undelivered).toEqual([]);
   });
 
+  test("delivers a run sender's mail keyless while its deploy is in flight with no allocated attempt open", async () => {
+    // Only an allocated attempt's completion or failure settles a run sender's
+    // parked mail. A deploy in flight with no attempt open has nothing that
+    // settles it, so parking would strand the mail to the TTL; the gate
+    // delivers it keyless instead.
+    const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+    const router = createInterlockRouter(async () => null);
+    router.events.on("mail.outbound.undelivered", (payload) => {
+      undelivered.push(payload);
+    });
+
+    const senderWs = await connectAs(router, "sc-sender", SENDER);
+    const recipientWs = await connectAs(router, "sc-recipient", RECIPIENT);
+
+    // The sender's deploy is sent and not yet answered, and no
+    // noteSenderDeployStarted opened an attempt for it.
+    const deploying = router
+      .sendAgentDeployToAllocation(
+        { allocationId: ATTEMPT.allocationId, generation: ATTEMPT.generation },
+        SENDER,
+        config,
+        TEST_WORKFLOW,
+      )
+      .catch((cause: unknown) => cause);
+    await waitUntil(() => framesOfType(senderWs, "agent.deploy").length === 1);
+
+    sendMail(router, senderWs);
+    const inbound = await waitForFrame(
+      recipientWs,
+      (f) => f.type === "mail.inbound" && f.authenticatedSender === SENDER,
+    );
+    expect(inbound.authenticatedSender).toBe(SENDER);
+    const grants = framesOfType(recipientWs, "run.grants");
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.senderIdentities).toBeUndefined();
+    expect(undelivered).toEqual([]);
+
+    router.handleClose(senderWs);
+    await deploying;
+  });
+
   test("does not park a run sender's mail to an external recipient even with a deploy in flight", async () => {
     // The co-delivered key is only ever consumed by a run recipient. Mail to a
     // purely external recipient never uses it, so the gate takes the normal path
