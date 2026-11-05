@@ -1,5 +1,6 @@
 // Schema for the subset of `package.json` fields the asset substrate
-// and tool-package builders read.
+// and tool-package builders read, plus the credential declaration
+// `defineTool` takes, which is not a `package.json` field.
 //
 // Promoted here so the package-registry kind handler (in
 // `@intx/hub-sessions`) and the workspace builtin-packing script
@@ -13,7 +14,7 @@ import { type } from "arktype";
 import { normalize } from "./posix-path";
 
 /**
- * A tool package's static declaration of one provider-backed credential it
+ * A tool factory's static declaration of one provider-backed credential it
  * needs: an abstract handle plus optional scopes. Advisory only -- a request
  * the workflow definition later binds to a concrete credential and the launch-time
  * grant gate authorizes; a declaration consents to nothing on its own. The
@@ -35,10 +36,10 @@ export type ReadonlyToolCredentialDeclaration = {
 };
 
 /**
- * The credential declarations for one package, with the unique-handle
+ * The credential declarations for one tool factory, with the unique-handle
  * invariant enforced at parse time: a handle is the binding/delivery key, so a
- * duplicate within a single package is a defect the upload boundary must
- * reject rather than let collapse silently downstream.
+ * duplicate is a defect `defineTool` and the inert projector must reject rather
+ * than let collapse silently downstream.
  */
 export const ToolCredentialDeclarationArray =
   ToolCredentialDeclaration.array().narrow((decls, ctx) => {
@@ -58,23 +59,21 @@ export type ToolCredentialDeclarationArray =
 
 /**
  * Required fields plus the `interchange` extensions used to identify
- * interchange packages: `tools` names the sidecar-bundle entry, `credentials`
- * statically declares the provider-backed credentials the package's tools may
- * need, `workflow` names the module whose evaluation produces a workflow
- * package's `WorkflowDefinition`, `directors` names the module whose exports
- * are the package's custom `defineDirector` factories, `loops` names the module
- * whose exports are the package's `loop` `while`/`carry` functions, and
- * `actions` names the module whose exports are the package's `action` handlers.
- * `loops` and `actions` refs are resolved by export name at establish.
- * `onUndeclaredKey("ignore")` lets the arbitrary upstream npm fields pass
- * through without listing them.
+ * interchange packages: `tools` names the module the built-in packer bundles
+ * and that plugin factories are imported from, `workflow` names the module
+ * whose evaluation produces a workflow package's `WorkflowDefinition`,
+ * `directors` names the module whose exports are the package's custom
+ * `defineDirector` factories, `loops` names the module whose exports are the
+ * package's `loop` `while`/`carry` functions, and `actions` names the module
+ * whose exports are the package's `action` handlers. `loops` and `actions` refs
+ * are resolved by export name at establish. `onUndeclaredKey("ignore")` lets the
+ * arbitrary upstream npm fields pass through without listing them.
  */
 export const PackageJSON = type({
   name: "string",
   version: "string",
   "interchange?": type({
     "tools?": "string",
-    "credentials?": ToolCredentialDeclarationArray,
     "workflow?": "string",
     "directors?": "string",
     "loops?": "string",

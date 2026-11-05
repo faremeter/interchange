@@ -94,10 +94,9 @@ Where it lives today: the same two loaders, plus
 `loadWorkflowDirectorRegistryFromClosure`,
 `packages/workflow-host/src/workflow-definition-loader.ts`
 
-**4.** Five of the `interchange.*` fields name a module -- `tools`,
+**4.** The five `interchange.*` fields each name a module -- `tools`,
 `workflow`, `directors`, `loops` and `actions` -- and all five may name the
-SAME module. The sixth field, `credentials`, is a declaration array, not a
-module ref. Every deployed loop fixture points `workflow`, `loops` and
+SAME module. Every deployed loop fixture points `workflow`, `loops` and
 `actions` at one bundled entry. Every field is optional, and an omission is
 not caught at deployment: per entry 3, an absent `loops` or `actions` fails
 closed only when a ref is resolved, and an absent `directors` falls back to

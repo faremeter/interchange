@@ -9,10 +9,7 @@
 
 import { type } from "arktype";
 
-import {
-  ToolCredentialDeclarationArray,
-  isContainedEntryPath,
-} from "./package-json";
+import { isContainedEntryPath } from "./package-json";
 
 /**
  * npm's documented package-name rules expressed as an arktype regex
@@ -56,16 +53,11 @@ export const ToolPackagePin = type({
 export type ToolPackagePin = typeof ToolPackagePin.infer;
 
 /**
- * A top-level manifest entry: a root package at its concrete resolved
- * version, carrying the credential declarations harvested from the package's
- * `interchange.credentials` (absent when it declares none). Only root packages
- * contribute declarations; transitive dependencies never do, which is why this
- * shape hangs off `topLevel` rather than `entries`.
+ * A top-level manifest entry: a root package at its concrete resolved version.
  */
 export const ToolPackageTopLevelEntry = type({
   name: ToolPackagePinName,
   version: "string",
-  "credentials?": ToolCredentialDeclarationArray,
 });
 export type ToolPackageTopLevelEntry = typeof ToolPackageTopLevelEntry.infer;
 
@@ -215,10 +207,8 @@ export type ToolPackageManifestEntry = typeof ToolPackageManifestEntry.infer;
  * entries present in `entries` but absent from `topLevel` are transitive
  * dependencies materialized for runtime `require()` / `import` resolution.
  *
- * `topLevel` extends the `ToolPackagePin` shape with the package's
- * harvested `credentials` declarations. The `version` field here is
- * always a concrete version (e.g. `"1.2.3"`), not a range. The resolver
- * walks each pin's range through `npm-pick-manifest` and writes the
+ * The `version` field of a `topLevel` entry is always a concrete version
+ * (e.g. `"1.2.3"`), not a range. The resolver walks each pin's range through `npm-pick-manifest` and writes the
  * picked version. The sidecar finds a top-level package in the store by
  * this `${name}@${version}`, so a range-form `version` here would name a
  * directory that does not exist.
