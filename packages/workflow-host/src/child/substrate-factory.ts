@@ -168,7 +168,7 @@ import {
   attachStepTools,
   createToolBearingAgentFactory,
   sourceStepToolFactories,
-  type StepToolMaterialization,
+  type StepToolRuntime,
 } from "./step-tools";
 import {
   createSupervisorBackedTransport,
@@ -1057,14 +1057,14 @@ export function createSidecarStepBuildEnv(
     // factories. The child holds the live re-verified `WorkflowDefinition`, and
     // the runtime threads each step's live agent in as `req.agent`, so
     // `req.agent.toolFactories` are the real callable `AnnotatedToolFactory`s,
-    // bare-named. `packageName` is the factory's bundle `id` (the credential
+    // bare-named. `factoryId` is the factory's bundle `id` (the credential
     // Gate-2 key), and its `defineTool` declaration feeds the declared-versus-
     // bound check; a mail/plain tool declares no credentials, so it stays inert.
     // Plugin factories -- which have no agent slot -- are materialized separately
     // from the frozen closure the child already holds
     // (`materializeSourcePluginFactories`), and the per-step plugin chain wires
     // them onto `env.plugins`.
-    const materialization: StepToolMaterialization = {
+    const stepTools: StepToolRuntime = {
       factories: sourceStepToolFactories(req.agent.toolFactories),
       pluginFactories: await materializeSourcePluginFactories(deps, req),
     };
@@ -1137,7 +1137,7 @@ export function createSidecarStepBuildEnv(
     // adapter spreads this env (`{ ...envBase, authorize }`) before
     // handing it to `agentFactory`; object spread preserves own
     // symbol-keyed properties, so the slot survives the spread.
-    attachStepTools(env, materialization);
+    attachStepTools(env, stepTools);
     // Attach the credential wiring so the `agentFactory` can assemble each
     // bundle's consumer-scoped `credentials` capability. Grants are wired as a
     // THUNK, resolved only when a factory actually needs a capability -- a

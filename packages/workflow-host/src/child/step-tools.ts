@@ -36,9 +36,9 @@ const logger = getLogger(["sidecar", "workflow-child", "step-tools"]);
  * the per-step env so the two callbacks of `createWorkflowStepInvoker`
  * can cooperate without widening the portable adapter's surface.
  */
-export interface StepToolMaterialization {
+export interface StepToolRuntime {
   readonly factories: readonly {
-    readonly packageName: string;
+    readonly factoryId: string;
     readonly declaredCredentials: readonly ToolCredentialDeclaration[];
     readonly factory: AnnotatedToolFactory<BaseEnv>;
   }[];
@@ -54,9 +54,9 @@ export interface StepToolMaterialization {
  */
 export function sourceStepToolFactories(
   toolFactories: readonly AnnotatedToolFactory<BaseEnv>[],
-): StepToolMaterialization["factories"] {
+): StepToolRuntime["factories"] {
   return toolFactories.map((factory) => ({
-    packageName: factory.id,
+    factoryId: factory.id,
     declaredCredentials: (factory.credentials ?? []).map((declaration) => ({
       handle: declaration.handle,
       ...(declaration.scopes !== undefined
@@ -81,27 +81,22 @@ const STEP_TOOLS = Symbol("intx.sidecar.step-tools");
 // through `Reflect.get`/`Reflect.set` so neither site needs a type
 // assertion: `BaseEnv` is an interface without a symbol index
 // signature, so a structural cast would otherwise be required.
-function setStepToolSlot(
-  env: object,
-  materialization: StepToolMaterialization,
-): void {
-  Reflect.set(env, STEP_TOOLS, materialization);
+function setStepToolSlot(env: object, stepTools: StepToolRuntime): void {
+  Reflect.set(env, STEP_TOOLS, stepTools);
 }
 
-function getStepToolSlot(env: object): StepToolMaterialization | undefined {
+function getStepToolSlot(env: object): StepToolRuntime | undefined {
   const value: unknown = Reflect.get(env, STEP_TOOLS);
   if (value === undefined) return undefined;
-  if (!isStepToolMaterialization(value)) {
+  if (!isStepToolRuntime(value)) {
     throw new Error(
-      "sidecar workflow-child step tools: the per-step env's tool slot is not a StepToolMaterialization; the slot is private to this module and must only be set by attachStepTools",
+      "sidecar workflow-child step tools: the per-step env's tool slot is not a StepToolRuntime; the slot is private to this module and must only be set by attachStepTools",
     );
   }
   return value;
 }
 
-function isStepToolMaterialization(
-  value: unknown,
-): value is StepToolMaterialization {
+function isStepToolRuntime(value: unknown): value is StepToolRuntime {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -204,9 +199,9 @@ function requireCapabilitiesBag(env: BaseEnv): RuntimeCapabilities {
  */
 export function attachStepTools(
   env: Omit<BaseEnv, "authorize">,
-  materialization: StepToolMaterialization,
+  stepTools: StepToolRuntime,
 ): void {
-  setStepToolSlot(env, materialization);
+  setStepToolSlot(env, stepTools);
 }
 
 /**
@@ -293,8 +288,8 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     def: AgentDefinition<EnvReq>,
     env: EnvReq,
   ): Promise<Agent> => {
-    const materialization = getStepToolSlot(env);
-    if (materialization === undefined) {
+    const stepTools = getStepToolSlot(env);
+    if (stepTools === undefined) {
       return createAgent(def, env);
     }
 
@@ -309,10 +304,7 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     const credentialCapabilities =
       credentialWiring === undefined
         ? new Map<string, HostCredentialCapability>()
-        : buildCredentialCapabilities(
-            materialization.factories,
-            credentialWiring,
-          );
+        : buildCredentialCapabilities(stepTools.factories, credentialWiring);
 
     // Wrap each tool factory so its bundle's `dispose` (when
     // present) is captured. Dedupe by closure identity: a factory whose
@@ -323,13 +315,13 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     for (const capability of credentialCapabilities.values()) {
       capturedDisposers.add(() => capability.dispose());
     }
-    const factoriesWithCapture = materialization.factories.map((stf) =>
+    const factoriesWithCapture = stepTools.factories.map((stf) =>
       rewrapStepToolFactory(
         stf.factory,
         (dispose) => {
           capturedDisposers.add(dispose);
         },
-        credentialCapabilities.get(stf.packageName),
+        credentialCapabilities.get(stf.factoryId),
       ),
     );
 
@@ -384,7 +376,7 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     const pluginInstances: unknown[] = [];
     let chainEnv: BaseEnv = env;
     try {
-      for (const factory of materialization.pluginFactories) {
+      for (const factory of stepTools.pluginFactories) {
         const instance = factory(chainEnv);
         pluginInstances.push(instance);
         chainEnv = {

@@ -227,7 +227,7 @@ const invokeStep = createWorkflowStepInvoker({
     const env = { ...stepEnvBase(stepId), capabilities };
     attachStepTools(env, {
       factories: req.agent.toolFactories.map((factory) => ({
-        packageName: factory.id,
+        factoryId: factory.id,
         declaredCredentials: [],
         factory,
       })),

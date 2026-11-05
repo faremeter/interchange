@@ -50,7 +50,7 @@ import {
   createToolBearingAgentFactory,
   rewrapStepToolFactory,
   sourceStepToolFactories,
-  type StepToolMaterialization,
+  type StepToolRuntime,
 } from "./step-tools";
 
 const tempDirs: string[] = [];
@@ -156,10 +156,10 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
       }),
     });
 
-    const materialization: StepToolMaterialization = {
+    const stepTools: StepToolRuntime = {
       factories: [
         {
-          packageName: "@intx/test-tool",
+          factoryId: "@intx/test-tool",
           declaredCredentials: [],
           factory: noopTool,
         },
@@ -168,7 +168,7 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     };
 
     const env = await buildStepEnv();
-    attachStepTools(env, materialization);
+    attachStepTools(env, stepTools);
     // The step-invoker adapter spreads the env (`{ ...envBase, authorize }`)
     // before handing it to the agent factory; replicate that spread so the
     // test exercises the symbol-slot-survives-spread path.
@@ -245,13 +245,13 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
       },
     });
 
-    const materialization: StepToolMaterialization = {
+    const stepTools: StepToolRuntime = {
       factories: [],
       pluginFactories: [firstPlugin, throwingPlugin],
     };
 
     const env = await buildStepEnv();
-    attachStepTools(env, materialization);
+    attachStepTools(env, stepTools);
 
     const agentFactory = createToolBearingAgentFactory();
     const def = {
@@ -308,13 +308,13 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
       }),
     });
 
-    const materialization: StepToolMaterialization = {
+    const stepTools: StepToolRuntime = {
       factories: [],
       pluginFactories: [throwingPlugin, survivorPlugin],
     };
 
     const env = await buildStepEnv();
-    attachStepTools(env, materialization);
+    attachStepTools(env, stepTools);
 
     const agentFactory = createToolBearingAgentFactory();
     const def = {
@@ -362,13 +362,13 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
       },
     });
 
-    const materialization: StepToolMaterialization = {
+    const stepTools: StepToolRuntime = {
       factories: [],
       pluginFactories: [firstPlugin, throwingPlugin],
     };
 
     const env = await buildStepEnv();
-    attachStepTools(env, materialization);
+    attachStepTools(env, stepTools);
 
     const agentFactory = createToolBearingAgentFactory();
     const def = {
@@ -397,13 +397,13 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
       }),
     });
 
-    const materialization: StepToolMaterialization = {
+    const stepTools: StepToolRuntime = {
       factories: [],
       pluginFactories: [throwingPlugin],
     };
 
     const env = await buildStepEnv();
-    attachStepTools(env, materialization);
+    attachStepTools(env, stepTools);
 
     const agentFactory = createToolBearingAgentFactory();
     const def = {
@@ -578,15 +578,15 @@ describe("sourceStepToolFactories", () => {
 
     expect(
       sourceStepToolFactories([declaring, legacy]).map((entry) => ({
-        packageName: entry.packageName,
+        factoryId: entry.factoryId,
         declaredCredentials: entry.declaredCredentials,
       })),
     ).toEqual([
       {
-        packageName: "@intx/test-tool/declaring",
+        factoryId: "@intx/test-tool/declaring",
         declaredCredentials: [{ handle: "api-token", scopes: ["read"] }],
       },
-      { packageName: "@intx/test-tool/legacy", declaredCredentials: [] },
+      { factoryId: "@intx/test-tool/legacy", declaredCredentials: [] },
     ]);
   });
 });
