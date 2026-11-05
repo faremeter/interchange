@@ -32,8 +32,8 @@ const logger = getLogger(["sidecar", "tool-packaging", "git-materialize"]);
  * `treeOid`, and write it into a fresh scratch directory under
  * `instanceScratchDir`. Returns the same `{ dir, release }` shape the tarball
  * path returns; `release` is a no-op because there is no content-addressed
- * cache handle to hold — the scratch dir lives under the deploy directory the
- * caller reclaims.
+ * cache handle to hold — the scratch dir lives under `instanceScratchDir`, which
+ * the caller reclaims.
  */
 export async function materializeGitEntry(args: {
   tree: ToolPackageAssetSourceTree;

@@ -78,31 +78,28 @@ against the workspace's asset root.
 ## Per-instance apply state on the sidecar
 
 Each apply materializes a workflow deployment's frozen closure into a
-stable, per-deploy-id directory under the deployment's instance directory
-(`<dataDir>/workflow-definition-closures/<deployment-id>/`). The directory
-is never renamed:
+fixed directory under the deployment's instance directory
+(`<dataDir>/workflow-definition-closures/<deployment-id>/`):
 
 ```
 <instanceDir>/
 └── packages/
-    └── <deploy-id>/   # store/<name>/<version>/...
+    └── store/<name>/<version>/...
 ```
 
 The workflow child evaluates the closure from
-`packages/<deploy-id>/store/<name>/<version>/`. Because the path is never
-renamed, a package that resolves files relative to its own on-disk
-location at run time — `import.meta.url`, `require.resolve()`, a call-time
+`packages/store/<name>/<version>/`. Nothing moves the tree once it is laid
+out, so a package that resolves files relative to its own on-disk location
+at run time — `import.meta.url`, `require.resolve()`, a call-time
 `await import("./sibling.js")` — keeps resolving for the life of the
 deployment.
 
-**Retention.** A deployment keeps one closure on disk. Its instance
-directory is removed before each apply, and a deployment's apply stands
-alone, with no prior deploy to retain.
+**Retention.** A deployment keeps one closure on disk. An apply clears
+`packages/` before it lays anything out.
 
-**Crash safety.** Restoring a deployment never reads a deploy directory
-back. It removes the instance directory and re-materializes the closure
-into a fresh deploy id, so a half-written directory left by a crash cannot
-reach a child. See `packages/tool-packaging/src/workflow-closure-apply.ts`
+**Crash safety.** Restoring a deployment never reads a closure back. It
+applies the closure again, which clears `packages/` first, so a
+half-written directory left by a crash cannot reach a child. See `packages/tool-packaging/src/workflow-closure-apply.ts`
 for the apply.
 
 ## Tarballs

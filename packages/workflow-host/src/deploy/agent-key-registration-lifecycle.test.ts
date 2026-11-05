@@ -253,7 +253,6 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       applyFrozenWorkflowClosure: (applyArgs) =>
         Promise.resolve({
           packageDir: path.join(applyArgs.instanceDir, "package"),
-          deployDir: path.join(applyArgs.instanceDir, "deploy"),
         }),
       multistepMailRouter: createMultistepMailRouter(),
       multistepSignalRouter: createMultistepSignalRouter(),

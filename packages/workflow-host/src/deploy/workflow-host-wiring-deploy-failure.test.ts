@@ -116,7 +116,6 @@ function stubApplyFrozenWorkflowClosure(): NonNullable<
   return (applyArgs) =>
     Promise.resolve({
       packageDir: pathJoin(applyArgs.instanceDir, "package"),
-      deployDir: pathJoin(applyArgs.instanceDir, "deploy"),
     });
 }
 

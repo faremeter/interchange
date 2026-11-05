@@ -87,8 +87,8 @@ Tool packages may resolve files relative to their own on-disk location
 at run time — `import.meta.url`, `require.resolve()`, or an
 `await import(new URL("./sibling.js", import.meta.url))` evaluated long
 after the module first loaded. A closure's packages run from a path
-under `<instanceDir>/packages/<deploy-id>/` that is never renamed, so a
-module's `import.meta.url` stays valid for the life of the deployment.
+under `<instanceDir>/packages/` that nothing moves, so a module's
+`import.meta.url` stays valid for the life of the deployment.
 See `ASSET-LAYOUT.md` for the on-disk layout and retention rules.
 
 ## Follow-up reference
