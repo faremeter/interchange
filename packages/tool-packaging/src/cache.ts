@@ -79,19 +79,17 @@ export interface TarballCache {
   put(integrity: string, bytes: Uint8Array): Promise<void>;
   /**
    * Mark the cache entry for `integrity` as poisoned and remove its
-   * tarball bytes immediately so a subsequent `extractTarball` call
-   * cannot reuse the on-disk extraction. The extraction directory's
-   * physical reclaim is deferred until every in-flight reader released
-   * by `extractTarball` has dropped its reference, so an evict that
-   * races a concurrent `copyTree` walk of the same extraction does
-   * not pull the tree out from under the walk and surface as ENOENT.
+   * tarball bytes immediately. The extraction directory's physical
+   * reclaim is deferred until every in-flight reader released by
+   * `extractTarball` has dropped its reference, so an evict that races
+   * a concurrent `copyTree` walk of the same extraction does not pull
+   * the tree out from under the walk and surface as ENOENT.
    *
-   * Until every reader releases, the on-disk extraction is left in
-   * place but is no longer reachable via a fresh `extractTarball`
-   * (because the tarball blob is gone). Callers that need the bytes
-   * back must re-fetch and `put` them, which will trigger a fresh
-   * extraction into a new directory once the deferred reclaim
-   * completes.
+   * While a reader holds it, the on-disk extraction stays in place and
+   * `extractTarball` refuses it, even if the bytes were `put` back.
+   * Callers that need the bytes back must re-fetch and `put` them, then
+   * extract once no reader holds the tree, which removes it and unpacks
+   * afresh.
    */
   evict(integrity: string): Promise<void>;
   /**
@@ -107,7 +105,8 @@ export interface TarballCache {
    * fully-populated directory and each get their own `release` handle.
    *
    * Throws if `integrity` is not present in the cache; callers must
-   * `put` (or otherwise materialize) the bytes first.
+   * `put` (or otherwise materialize) the bytes first. Also throws while
+   * a reader holds an extraction that `evict` poisoned.
    */
   extractTarball(integrity: string): Promise<{
     readonly dir: string;
@@ -181,6 +180,12 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
   // intra-process races between two agents on the same sidecar.
   const extractionRefcounts = new Map<string, number>();
   const pendingEvictions = new Set<string>();
+  // Pending entries `evict` poisoned. A cap sweep's pending entry is not here:
+  // its tree is good, and whoever pinned it may still use it.
+  const poisonedExtractions = new Set<string>();
+  // The extractions past the poison check, or handed out and not yet released.
+  // Unlike a pin, each of these can be walking the tree.
+  const extractionReaders = new Map<string, number>();
   // Entries a cap sweep could not evict because they were held. Their last
   // release requests another pass; releases in one burst share that pass.
   const heldOverCap = new Set<string>();
@@ -209,6 +214,29 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
     }
   }
 
+  function countExtractionReader(integrity: string, delta: 1 | -1): void {
+    const next = (extractionReaders.get(integrity) ?? 0) + delta;
+    if (next > 0) extractionReaders.set(integrity, next);
+    else extractionReaders.delete(integrity);
+  }
+
+  // A pin only keeps the entry from being swept, so with no reader left the
+  // poisoned tree can go and the caller's re-fetched bytes can unpack. That is
+  // the reclaim the last release was deferred to run, so it no longer has to.
+  async function discardPoisonedExtraction(integrity: string): Promise<void> {
+    if (extractionReaders.has(integrity)) {
+      throw new Error(
+        `extractTarball: the extraction for ${integrity} was evicted and a reader still holds it; retry once it is released`,
+      );
+    }
+    await reclaimEntry(integrity, async () => {
+      if (!poisonedExtractions.has(integrity)) return;
+      await fs.rm(extractedDir(integrity), { recursive: true, force: true });
+      poisonedExtractions.delete(integrity);
+      pendingEvictions.delete(integrity);
+    });
+  }
+
   function acquireExtraction(integrity: string): void {
     const next = (extractionRefcounts.get(integrity) ?? 0) + 1;
     extractionRefcounts.set(integrity, next);
@@ -233,6 +261,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
       if (heldOverCap.delete(integrity)) requestReleaseSweep();
       if (pendingEvictions.has(integrity)) {
         pendingEvictions.delete(integrity);
+        poisonedExtractions.delete(integrity);
         const entryDirPath = entryDir(integrity);
         try {
           await reclaimEntry(integrity, async () => {
@@ -646,6 +675,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
         const inFlight = extractionRefcounts.get(integrity) ?? 0;
         if (inFlight > 0) {
           pendingEvictions.add(integrity);
+          poisonedExtractions.add(integrity);
           logger.debug`deferring extraction reclaim for ${integrity}: ${String(inFlight)} reader(s) in flight`;
           return;
         }
@@ -663,6 +693,10 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
 
     async extractTarball(integrity) {
       const finalDir = extractedDir(integrity);
+      const releaseReader = (): void => {
+        countExtractionReader(integrity, -1);
+        void releaseExtraction(integrity);
+      };
 
       // Handle factory. The acquire MUST have already happened by the
       // time we call this — the cache-hit path acquires before the
@@ -681,7 +715,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
             // but release() returns synchronously so materialization's
             // walk-complete site does not need to await. Reclaim
             // failures are logged inside releaseExtraction.
-            void releaseExtraction(integrity);
+            releaseReader();
           },
         };
       };
@@ -697,6 +731,15 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
       // refcount before falling through to the unpack path.
       acquireExtraction(integrity);
       await reclaims.get(integrity);
+      if (poisonedExtractions.has(integrity)) {
+        try {
+          await discardPoisonedExtraction(integrity);
+        } catch (err) {
+          void releaseExtraction(integrity);
+          throw err;
+        }
+      }
+      countExtractionReader(integrity, 1);
       try {
         const stat = await fs.stat(finalDir);
         if (stat.isDirectory()) {
@@ -713,7 +756,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
         }
       } catch (err) {
         if (!isENOENT(err)) {
-          void releaseExtraction(integrity);
+          releaseReader();
           throw err;
         }
       }
@@ -810,7 +853,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
       } catch (err) {
         // Release the refcount on failure; the caller will not call
         // the handle's `release` because no handle was returned.
-        void releaseExtraction(integrity);
+        releaseReader();
         throw err;
       }
     },
