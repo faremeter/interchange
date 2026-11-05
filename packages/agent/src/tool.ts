@@ -257,7 +257,7 @@ export type AnnotatedToolFactory<EnvReq extends BaseEnv = BaseEnv> =
  *     contributes so callers (e.g. the deploy-time capability walk) can
  *     enumerate them without instantiating the factory.
  *   - `credentials` declares the credential handles the factory's tools
- *     resolve. Handles follow the package-manifest grammar and are unique;
+ *     resolve. Handles follow the `ToolCredentialHandle` grammar and are unique;
  *     an invalid list throws. Deploy refuses a declared handle that no
  *     binding names for this factory, except the reserved hub handle
  *     `interchange.hub`, which deploy binds itself.

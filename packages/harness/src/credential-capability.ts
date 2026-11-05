@@ -43,8 +43,8 @@ export interface ResolvedCredentialBinding {
 }
 
 /**
- * Reconcile a consumer's declared credential handles (a tool package's C5
- * `interchange.credentials`, or an action's `credentials`) against the handles
+ * Reconcile a consumer's declared credential handles (a tool's `defineTool`
+ * `credentials`, or an action's `credentials`) against the handles
  * a binding actually resolved for it. A declared handle with no binding is a
  * launch-blocking misconfiguration -- the consumer needs a credential the
  * definition never bound -- so this fails the launch loudly rather than letting
