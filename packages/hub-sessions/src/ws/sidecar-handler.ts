@@ -378,11 +378,10 @@ export type SidecarRouter = {
    * co-delivers; a `failed` outcome drains it to `mail.outbound.undelivered`.
    * Allocated callbacks name their exact attempt; recovery may settle the
    * previous attempt by generation after claiming its reconciliation lease.
-   * An address-only settlement belongs to a non-allocated deployment and cannot
-   * settle an allocated attempt. Stale or repeated settlements are no-ops.
+   * Stale or repeated settlements are no-ops.
    */
   noteSenderDeploySettled(
-    sender: string | AllocatedSidecarTarget | AllocatedSenderDeployAttempt,
+    sender: AllocatedSidecarTarget | AllocatedSenderDeployAttempt,
     outcome: SenderDeploySettledOutcome,
   ): void;
   /**
@@ -3134,25 +3133,20 @@ export function createSidecarRouter(
   }
 
   function noteSenderDeploySettled(
-    sender: string | AllocatedSidecarTarget | AllocatedSenderDeployAttempt,
+    sender: AllocatedSidecarTarget | AllocatedSenderDeployAttempt,
     outcome: SenderDeploySettledOutcome,
   ): void {
-    if (typeof sender !== "string") {
-      for (const [address, attempt] of [...allocatedKeyRecordInFlight]) {
-        if (
-          attempt.allocationId !== sender.allocationId ||
-          attempt.generation !== sender.generation ||
-          ("leaseId" in sender && attempt.leaseId !== sender.leaseId)
-        ) {
-          continue;
-        }
-        allocatedKeyRecordInFlight.delete(address);
-        settleSenderMail(address, outcome);
+    for (const [address, attempt] of [...allocatedKeyRecordInFlight]) {
+      if (
+        attempt.allocationId !== sender.allocationId ||
+        attempt.generation !== sender.generation ||
+        ("leaseId" in sender && attempt.leaseId !== sender.leaseId)
+      ) {
+        continue;
       }
-      return;
+      allocatedKeyRecordInFlight.delete(address);
+      settleSenderMail(address, outcome);
     }
-    if (allocatedKeyRecordInFlight.has(sender)) return;
-    settleSenderMail(sender, outcome);
   }
 
   function parkDeferredRecipientResolutionMail(
@@ -5053,40 +5047,11 @@ export function createSidecarRouter(
       : undefined;
   }
 
-  async function handleDeployAck(
-    ws: WsHandle,
-    frame: AgentDeployAckFrame,
-  ): Promise<void> {
+  function handleDeployAck(ws: WsHandle, frame: AgentDeployAckFrame): void {
     connections.get(ws)?.unansweredDeploys.delete(frame.requestId);
-    const req = deployAnsweredBy(ws, frame);
-    if (req === undefined) {
+    if (deployAnsweredBy(ws, frame) === undefined) {
       logger.warn`Ignoring agent.deploy.ack ${frame.requestId} for ${frame.agentAddress} generation ${String(frame.generation)}: it answers no deploy in flight on this connection`;
       return;
-    }
-    // The listeners below are awaited, and the deploy this ack answers can be
-    // settled meanwhile (a timeout, the allocation leaving) and the address
-    // deployed again. Only the deploy the ack answers may be settled by it.
-    const stillAnswered = (): boolean => {
-      if (pendingDeploys.get(frame.agentAddress) === req) return true;
-      logger.warn`Dropping agent.deploy.ack ${frame.requestId} for ${frame.agentAddress} generation ${String(frame.generation)}: its deploy was settled while the ack's listeners ran`;
-      return false;
-    };
-
-    if (events.listenerCount("agent.deploy.ack") > 0) {
-      try {
-        await events.emitAndAwait("agent.deploy.ack", {
-          agentAddress: frame.agentAddress,
-          publicKey: frame.publicKey,
-        });
-      } catch (err) {
-        if (!stillAnswered()) return;
-        pendingDeploys.reject(
-          frame.agentAddress,
-          `Failed to store public key: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        return;
-      }
-      if (!stillAnswered()) return;
     }
     pendingDeploys.resolve(frame.agentAddress, frame.publicKey);
   }

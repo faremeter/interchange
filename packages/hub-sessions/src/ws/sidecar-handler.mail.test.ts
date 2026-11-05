@@ -22,6 +22,25 @@ import { waitUntil } from "@intx/types/testing";
 
 const TEST_SENDER = "sender@example.test";
 
+type AllocatedRouter = ReturnType<typeof createAllocatedRouter>;
+
+// Settle the test sender's deploy as an allocated deploy does: open an attempt
+// for its address, then settle that attempt. Each call opens its own attempt,
+// because a settle closes the attempt it names.
+let senderAttempts = 0;
+function settleSenderDeploy(
+  router: AllocatedRouter,
+  outcome: Parameters<AllocatedRouter["noteSenderDeploySettled"]>[1],
+): void {
+  senderAttempts += 1;
+  const attempt = {
+    ...TEST_TARGET,
+    leaseId: `sender-settle-${String(senderAttempts)}`,
+  };
+  router.noteSenderDeployStarted(TEST_IDENTITY.workflowRunAddress, attempt);
+  router.noteSenderDeploySettled(attempt, outcome);
+}
+
 function framesOfType(ws: { sent: string[] }, type: string) {
   return parsedFrames(ws).filter(
     (frame): frame is Record<string, unknown> =>
@@ -1552,7 +1571,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(undelivered).toEqual([]);
 
     ready = true;
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();
@@ -1599,7 +1618,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
 
     ready = true;
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();
@@ -1651,7 +1670,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
 
     ready = true;
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();
@@ -1694,7 +1713,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       }),
     );
     await tick();
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       failed: "init failed",
     });
     await tick();
@@ -1702,7 +1721,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(undelivered).toEqual([]);
 
     ready = true;
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();
@@ -1746,7 +1765,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     );
     await tick();
     expect(calls).toBe(1);
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();
@@ -1799,7 +1818,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     );
     await tick();
     expect(calls).toBe(1);
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       failed: "init failed",
     });
     await tick();
@@ -1811,7 +1830,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(undelivered).toEqual([]);
 
     ready = true;
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();
@@ -1860,10 +1879,10 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     );
     await tick();
     expect(calls).toBe(1);
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       failed: "init failed",
     });
     await tick();
@@ -1923,7 +1942,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     await tick();
     expect(calls).toBe(1);
     expect(ttl.armedCount()).toBe(0);
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();
@@ -2053,7 +2072,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       }),
     );
     await tick();
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();
@@ -2155,7 +2174,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
 
     ready = true;
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();
@@ -2176,7 +2195,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(inboundAddresses(ws, TEST_IDENTITY.workflowRunAddress)).toBe(0);
     expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
 
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       failed: "init failed",
     });
     await tick();
@@ -2185,7 +2204,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(undelivered.map((event) => event.recipients)).toEqual([[later]]);
 
     ready = true;
-    router.noteSenderDeploySettled(TEST_IDENTITY.workflowRunAddress, {
+    settleSenderDeploy(router, {
       recorded: "recipient-key",
     });
     await tick();

@@ -1,23 +1,10 @@
 // Typed event emitter for the sidecar router.
 //
 // The router emits events at the points where wire-layer frame handling
-// completes and a host-side decision or side effect is required. Two
-// emission shapes are exposed:
-//
-// - `emit(type, payload)` — notification semantics. Each listener runs
-//   inside its own try/catch; a thrown error is logged and does not
-//   affect other listeners or the wire layer. Used for events whose
-//   outcome does not feed back into protocol behavior.
-//
-// - `emitAndAwait(type, payload)` — sequential await semantics.
-//   Listeners run in registration order; the first rejection propagates
-//   to the caller and stops the chain. Used for events whose outcome
-//   affects subsequent wire-layer state (e.g. reconnect rollback).
-//
-// The TSDoc on each entry in `SidecarEventMap` records which semantic
-// applies. Mixing the two on a single event is intentional: today's
-// wire layer already has both behaviors, and pretending otherwise
-// would silently change failure handling.
+// completes and a host-side decision or side effect is required.
+// `emit(type, payload)` has notification semantics: each listener runs
+// inside its own try/catch, and a thrown error is logged and does not
+// affect other listeners or the wire layer.
 
 import type {
   PackRejectReason,
@@ -151,13 +138,6 @@ export type SidecarEventMap = {
     };
   };
 
-  /** Awaited. Emitted when an agent.deploy.ack frame arrives. Rejection
-   * fails the pending deploy with the listener's error. */
-  "agent.deploy.ack": {
-    agentAddress: string;
-    publicKey: string;
-  };
-
   /** Notification. Emitted when the sidecar reports a change to an
    * agent's connector-thread state. The wire layer caches the state
    * per agent so the host can read it via
@@ -182,14 +162,6 @@ export type SidecarEventEmitter = {
     listener: SidecarEventListener<T>,
   ): () => void;
   emit<T extends SidecarEventType>(type: T, payload: SidecarEventMap[T]): void;
-  emitAndAwait<T extends SidecarEventType>(
-    type: T,
-    payload: SidecarEventMap[T],
-  ): Promise<void>;
-  /** Number of listeners registered for `type`. Wire-layer callers use
-   * this to skip an `await` when nothing is listening, preserving the
-   * synchronous scheduling of unconfigured-handler paths. */
-  listenerCount(type: SidecarEventType): number;
 };
 
 export function createSidecarEmitter(): SidecarEventEmitter {
@@ -201,7 +173,6 @@ export function createSidecarEmitter(): SidecarEventEmitter {
     "mail.outbound.undelivered": new Set(),
     "mail.persisted": new Set(),
     "mail.inbound.acknowledged": new Set(),
-    "agent.deploy.ack": new Set(),
     "connector.state.changed": new Set(),
   };
 
@@ -239,22 +210,7 @@ export function createSidecarEmitter(): SidecarEventEmitter {
     }
   }
 
-  async function emitAndAwait<T extends SidecarEventType>(
-    type: T,
-    payload: SidecarEventMap[T],
-  ): Promise<void> {
-    const set = listeners[type];
-    if (set.size === 0) return;
-    for (const listener of [...set]) {
-      await listener(payload);
-    }
-  }
-
-  function listenerCount(type: SidecarEventType): number {
-    return listeners[type].size;
-  }
-
-  return { on, emit, emitAndAwait, listenerCount };
+  return { on, emit };
 }
 
 export type SidecarLookups = {

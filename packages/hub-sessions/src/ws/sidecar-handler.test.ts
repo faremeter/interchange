@@ -1568,7 +1568,6 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       await tick();
       router.noteSenderDeploySettled(ATTEMPT, { recorded: KEY });
       router.noteSenderDeploySettled(ATTEMPT, { failed: "late failure" });
-      router.noteSenderDeploySettled(SENDER, { recorded: KEY });
       await tick();
       expect(dropped).toHaveLength(1);
       expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
@@ -1725,12 +1724,12 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(1);
   });
 
-  test("a settle only wakes mail parked under a byte-identical sender address", async () => {
-    // The allocated path passes its deploy address as the settle key, and that
-    // address is byte-identical to the sender address the run's mail was sent
-    // under. Prove the interlock is key-sensitive: a settle for any other
-    // address does NOT wake this sender's parked mail; only the exact address
-    // does. A diverging key would silently drop the mail to the TTL.
+  test("a settle only wakes mail parked under its own deploy attempt", async () => {
+    // A settle names the allocated deploy attempt it completes, and wakes the
+    // mail of the sender that attempt started. Prove the interlock is
+    // attempt-sensitive: a settle for another allocation does NOT wake this
+    // sender's parked mail; only its own attempt does. A diverging key would
+    // silently drop the mail to the TTL.
     //
     // `recordedKey` models the durable public-key write the settle reports: null
     // while the run is pre-ack (mail parks), then the key once recorded, so the
@@ -1748,15 +1747,18 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     sendMail(router, senderWs);
     await tick();
 
-    // The key is now recorded. A settle keyed on a DIFFERENT address matches no
-    // parked entry, so the sender's mail stays parked even though its key would
-    // now resolve -- proving the wake is keyed on the exact sender address.
+    // The key is now recorded. A settle for a DIFFERENT allocation matches no
+    // open attempt, so the sender's mail stays parked even though its key would
+    // now resolve -- proving the wake is keyed on the exact attempt.
     recordedKey = KEY;
-    router.noteSenderDeploySettled(RECIPIENT, { recorded: KEY });
+    router.noteSenderDeploySettled(
+      { ...ATTEMPT, allocationId: "alloc-recipient" },
+      { recorded: KEY },
+    );
     await tick();
     expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
 
-    // The byte-identical settle wakes it and it delivers with the key.
+    // The sender's own attempt wakes it and it delivers with the key.
     router.noteSenderDeploySettled(ATTEMPT, { recorded: KEY });
     const inbound = await waitForFrame(
       recipientWs,

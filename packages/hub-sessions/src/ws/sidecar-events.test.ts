@@ -61,39 +61,4 @@ describe("createSidecarEmitter", () => {
 
     expect(seen).toEqual(["ran"]);
   });
-
-  test("emitAndAwait runs listeners sequentially and rethrows the first failure", async () => {
-    const emitter = createSidecarEmitter();
-    const seen: string[] = [];
-    emitter.on("sidecar.allocated.connected", async () => {
-      seen.push("a");
-    });
-    emitter.on("sidecar.allocated.connected", async () => {
-      seen.push("b");
-      throw new Error("listener b failed");
-    });
-    emitter.on("sidecar.allocated.connected", async () => {
-      seen.push("c");
-    });
-
-    await expect(
-      emitter.emitAndAwait("sidecar.allocated.connected", {
-        allocationId: "alloc-1",
-        generation: 1,
-      }),
-    ).rejects.toThrow(/listener b failed/);
-
-    expect(seen).toEqual(["a", "b"]);
-  });
-
-  test("listenerCount reflects current subscriptions", () => {
-    const emitter = createSidecarEmitter();
-    expect(emitter.listenerCount("sidecar.allocated.connected")).toBe(0);
-
-    const off = emitter.on("sidecar.allocated.connected", () => undefined);
-    expect(emitter.listenerCount("sidecar.allocated.connected")).toBe(1);
-
-    off();
-    expect(emitter.listenerCount("sidecar.allocated.connected")).toBe(0);
-  });
 });
