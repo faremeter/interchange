@@ -84,8 +84,8 @@ export const WORKFLOW_RUN_GRANT_RESOURCE = "workflow-run:*";
 export const WORKFLOW_RUN_GRANT_ACTION = "manage";
 
 /**
- * Authored trigger address. The capability walk derives `mail.address`
- * / `mail.send` approvals from this value; the runtime inbound address
+ * Authored trigger address. The capability walk derives the
+ * `mail.address` approval from this value; the runtime inbound address
  * is derived independently from the deployment id at deploy time, so
  * this only has to be a well-formed address whose domain matches the
  * Acme tenant domain (`<slug>.localhost`) for a coherent approval set.

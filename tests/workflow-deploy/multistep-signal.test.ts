@@ -121,7 +121,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
 
       // Approval set: per-step grants plus the trigger-derived
-      // `mail.address` / `mail.send` pair. The capability walk attaches
+      // `mail.address` grant. The capability walk attaches
       // trigger grants to every step (including the `awaitSignal`
       // primitive); the operator approval set must therefore enumerate
       // them for every step that the walk surfaces.
@@ -129,7 +129,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
 
       // Two distinct agent system prompts exercise the per-step prompt

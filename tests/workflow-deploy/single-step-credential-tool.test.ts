@@ -296,7 +296,6 @@ async function deployProbeSource(opts: {
     "inference.source:anthropic:mock-model",
     "director:@intx/agent/default",
     `mail.address:${mailAddress}`,
-    `mail.send:${DEPLOYMENT_DOMAIN}`,
     `tool:${PROBE_DEFINITION_NAME}`,
     ...(withBinding ? [`credential:${CREDENTIAL_HANDLE}`] : []),
   ]);

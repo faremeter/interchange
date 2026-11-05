@@ -240,7 +240,6 @@ async function deployAndRunMap(opts: {
     "inference.source:anthropic:mock-model",
     "director:@intx/agent/default",
     `mail.address:${deploymentMailAddress}`,
-    `mail.send:${DEPLOYMENT_DOMAIN}`,
     ...(withTool ? [`tool:${TOOL_NAME}`] : []),
   ]);
 

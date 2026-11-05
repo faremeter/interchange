@@ -196,7 +196,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
         `tool:${MAIL_TOOL_NAME}`,
       ]);
 
@@ -328,7 +327,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
 
       // A tool-less single-step agent: the negative control is about the

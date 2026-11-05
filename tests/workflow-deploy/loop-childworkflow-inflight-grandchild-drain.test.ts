@@ -150,7 +150,6 @@ async function runGrandchildDrainTest(opts: {
     "inference.source:anthropic:mock-model",
     "director:@intx/agent/default",
     `mail.address:${deploymentMailAddress}`,
-    `mail.send:${DEPLOYMENT_DOMAIN}`,
   ]);
 
   const entryModule = loopChildWorkflowInFlightEntry({

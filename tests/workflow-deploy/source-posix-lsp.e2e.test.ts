@@ -437,7 +437,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
         `tool:${LSP_TOOL_NAME}`,
         ...POSIX_TOOL_NAMES.map((n) => `tool:${n}`),
       ]);

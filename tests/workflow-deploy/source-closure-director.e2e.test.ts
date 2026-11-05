@@ -434,7 +434,6 @@ const approvalsFor = (address: string, directorId: string): ApprovalSet =>
     "director:@intx/agent/default",
     `director:${directorId}`,
     `mail.address:${address}`,
-    `mail.send:${DEPLOYMENT_DOMAIN}`,
   ]);
 
 // Pull the text out of a captured inference request's `system` field. Narrows

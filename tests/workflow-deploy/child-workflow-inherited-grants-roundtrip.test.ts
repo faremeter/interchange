@@ -201,7 +201,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
         `mail.address:${childMailAddress}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
 
       const entryModule = childWorkflowEntry({

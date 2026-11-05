@@ -465,7 +465,6 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]);
 
     // 1) Install + probe + gate + freeze through the production entrypoint.
@@ -688,7 +687,6 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${bodyDeploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
     ]);
 
     const approved = await installAndApproveWorkflowDefinition({
