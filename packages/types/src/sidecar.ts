@@ -1069,53 +1069,6 @@ export const PackRejectFrame = type({
 });
 export type PackRejectFrame = typeof PackRejectFrame.infer;
 
-/**
- * Categories of deploy-apply failure surfaced by the sidecar's closure
- * materialization. Each value maps one-to-one to a distinct point in the
- * pipeline; a single category fires per failed attempt.
- *
- *   tarball.missing          — a manifest entry's asset-sourced tarball
- *                              is not present at the recorded path.
- *   asset.mount.missing      — a `kind: "asset"` manifest entry names
- *                              an `assetId` that the asset mount map
- *                              does not cover. Indicates a mismatch between the
- *                              resolver's view of attached assets and
- *                              the materialization fan-out, not a
- *                              missing file on disk.
- *   integrity.mismatch       — fetched tarball bytes do not match the
- *                              manifest's pinned SRI integrity.
- *   registry.fetch.failed    — the configured registry refused or
- *                              dropped the request for a tarball.
- *   registry.unknown         — the manifest entry references a registry
- *                              name not present in the sidecar's
- *                              registry config.
- *   registry.auth.failed     — the registry rejected the sidecar's
- *                              credentials.
- *   tarball.extract.failed   — tar extraction failed or the extracted
- *                              tree was malformed.
- *   git.materialization.failed
- *                            — a git-sourced entry could not be
- *                              materialized from its checked-out
- *                              subtree, or reached the tarball fetcher.
- *   package.entry.invalid    — a closure entry could not be laid out:
- *                              its package.json is malformed, a path
- *                              escapes its root, its dependencies
- *                              collide, or a hard dependency has no
- *                              satisfying closure version.
- */
-export const DeployApplyErrorCategory = type.enumerated(
-  "tarball.missing",
-  "asset.mount.missing",
-  "integrity.mismatch",
-  "registry.fetch.failed",
-  "registry.unknown",
-  "registry.auth.failed",
-  "tarball.extract.failed",
-  "git.materialization.failed",
-  "package.entry.invalid",
-);
-export type DeployApplyErrorCategory = typeof DeployApplyErrorCategory.infer;
-
 // ---------------------------------------------------------------------------
 // Workflow probe (bidirectional)
 // ---------------------------------------------------------------------------

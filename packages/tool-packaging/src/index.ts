@@ -67,7 +67,10 @@ export {
   createTarballFetcher,
 } from "./tarball-fetcher";
 
-export { ClosureMaterializationError } from "./materialization-internal";
+export {
+  type ClosureMaterializationErrorCategory,
+  ClosureMaterializationError,
+} from "./materialization-internal";
 
 export {
   type ExtractPackageJSONOutcome,

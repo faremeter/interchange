@@ -6,7 +6,6 @@ import {
   AgentDeployFrame,
   fitDeploymentError,
   CredentialsUpdateFrame,
-  DeployApplyErrorCategory,
   FrozenApprovalBundle,
   HubFrame,
   MAX_DEPLOYMENT_ADDRESS_LENGTH,
@@ -79,30 +78,6 @@ describe("AgentDeployAckFrame public key", () => {
     expect(
       AgentDeployAckFrame({ ...ack, publicKey }) instanceof type.errors,
     ).toBe(true);
-  });
-});
-
-describe("DeployApplyErrorCategory", () => {
-  const allCategories = [
-    "tarball.missing",
-    "integrity.mismatch",
-    "registry.fetch.failed",
-    "registry.unknown",
-    "registry.auth.failed",
-    "tarball.extract.failed",
-    "package.entry.invalid",
-  ] as const;
-
-  for (const category of allCategories) {
-    test(`accepts ${category}`, () => {
-      const result = DeployApplyErrorCategory(category);
-      expect(result instanceof type.errors).toBe(false);
-    });
-  }
-
-  test("rejects an unknown category", () => {
-    const result = DeployApplyErrorCategory("network.timeout");
-    expect(result instanceof type.errors).toBe(true);
   });
 });
 

@@ -2,7 +2,7 @@
 /// <reference path="./declarations.d.ts" />
 // The production tarball fetcher for closure materialization. Failures
 // surface as `ClosureMaterializationError` with a `category` matching one of
-// the `DeployApplyErrorCategory` values.
+// the `ClosureMaterializationErrorCategory` values.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
