@@ -1020,7 +1020,6 @@ export function createSidecarDeployRouter<
     readonly gitDirs: ReadonlyMap<string, string>;
   }) => Promise<{
     readonly packageDir: string;
-    readonly deployDir: string;
   }>;
   /** On-disk size cap of the tarball cache closure applies share. */
   closureCacheMaxBytes: number;
@@ -1589,13 +1588,12 @@ export function createSidecarDeployRouter<
    * registry table. Both callers take `packageDir`, which the workflow child
    * evaluates; restore also re-carries the pin on its spec.
    *
-   * The instance dir is force-reclaimed before the apply. `deploymentId` is
+   * The apply clears the closure's directory before writing. `deploymentId` is
    * deterministic per agent address, so a redeploy or a boot-restore reuses the
    * same dir; a prior soft-failed deploy or a dead prior process can leave it
-   * half-materialized. The rm makes the apply write into a clean dir either
-   * way (a no-op on a never-deployed address). It is safe to reclaim only
-   * because no live reader holds the dir when this runs -- a precondition each
-   * caller establishes and notes at its call site.
+   * half-materialized. Clearing it is safe only because no live reader holds
+   * the dir when this runs -- a precondition each caller establishes and notes
+   * at its call site.
    */
   async function materializeDeploymentClosure(
     dataDir: string,
@@ -1607,7 +1605,6 @@ export function createSidecarDeployRouter<
       "workflow-definition-closures",
       deploymentId,
     );
-    await rm(instanceDir, { recursive: true, force: true });
 
     // Tarball `kind:"asset"` entries read from the durable plain-file store; a
     // source-format entry checks its subtree out of the durable indexed git
@@ -2255,7 +2252,7 @@ export function createSidecarDeployRouter<
           maxAssetPayloadBytes: deps.maxInlineAssetPayloadBytes,
         });
       }
-      // Safe to reclaim the instance dir inside the helper: the `deploying`
+      // Safe for the apply to clear the closure's directory: the `deploying`
       // entry set above refuses a concurrent deploy of the address, and the
       // child is not yet spawned, so no live reader holds it.
       const applied = await materializeDeploymentClosure(
@@ -2685,11 +2682,11 @@ export function createSidecarDeployRouter<
           try {
             // Re-materialize the pinned closure for the restored child to
             // evaluate and verify, as on deploy; the closure IS the source of
-            // truth, and this process never evaluates it. The helper reclaims
-            // the instance dir first, which is safe here because the prior
-            // process (the only reader) is dead, each deployment has its own
-            // dir, and restore runs before `hubLink.connect()`, so no deploy
-            // reads it. Registry-sourced entries come from the
+            // truth, and this process never evaluates it. The apply clears
+            // the closure's directory first, which is safe here because the
+            // prior process (the only reader) is dead, each deployment has
+            // its own dir, and restore runs before `hubLink.connect()`, so no
+            // deploy reads it. Registry-sourced entries come from the
             // content-addressed closure cache, or from their registry when the
             // cache, which every deployment on this sidecar shares, has
             // evicted them; asset-sourced entries read from the durable source

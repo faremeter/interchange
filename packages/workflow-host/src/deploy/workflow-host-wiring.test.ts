@@ -846,7 +846,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       const deploymentId = path.basename(applyArgs.instanceDir);
       return Promise.resolve({
         packageDir: path.join(tempBase, "closure-package", deploymentId),
-        deployDir: path.join(tempBase, "closure-deploy", deploymentId),
       });
     };
     const router = createSidecarDeployRouter({
@@ -2631,7 +2630,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         }
         return Promise.resolve({
           packageDir: path.join(dataDir, "closure-package", deploymentId),
-          deployDir: path.join(dataDir, "closure-deploy", deploymentId),
         });
       },
     });
@@ -3137,7 +3135,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       });
       return Promise.resolve({
         packageDir: fakePackageDir,
-        deployDir: path.join(dataDir, "fake-deploy-dir"),
       });
     };
 

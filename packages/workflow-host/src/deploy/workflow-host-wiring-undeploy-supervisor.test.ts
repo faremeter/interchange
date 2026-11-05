@@ -271,7 +271,6 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         applyFrozenWorkflowClosure: (applyArgs) =>
           Promise.resolve({
             packageDir: path.join(applyArgs.instanceDir, "package"),
-            deployDir: path.join(applyArgs.instanceDir, "deploy"),
           }),
         multistepMailRouter: mailRouter,
         multistepSignalRouter: signalRouter,

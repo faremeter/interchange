@@ -160,6 +160,48 @@ describe("applyFrozenWorkflowClosure", () => {
     ]);
   });
 
+  test("replaces what an earlier apply left in the instance directory", async () => {
+    const fixture = await packWorkflowFixture();
+    const apply = () =>
+      applyFrozenWorkflowClosure({
+        source: { kind: "registry", registry: REGISTRY_NAME },
+        closure: {
+          schemaVersion: "1",
+          topLevel: [
+            { name: WORKFLOW_PACKAGE_NAME, version: WORKFLOW_PACKAGE_VERSION },
+          ],
+          entries: [
+            {
+              name: WORKFLOW_PACKAGE_NAME,
+              version: WORKFLOW_PACKAGE_VERSION,
+              source: {
+                kind: "registry",
+                registry: REGISTRY_NAME,
+                integrity: fixture.integrity,
+              },
+            },
+          ],
+        },
+        instanceDir,
+        cache,
+        registryMaxTarballBytes: 10_000_000,
+        registries: registries(),
+        host,
+        fetchTarball: async () => fixture.bytes,
+      });
+
+    const first = await apply();
+    const leftover = path.join(first.packageDir, "left-by-earlier-attempt.js");
+    await fs.writeFile(leftover, "");
+
+    const second = await apply();
+    expect(second.packageDir).toBe(first.packageDir);
+    expect(await fs.readdir(second.packageDir)).not.toContain(
+      "left-by-earlier-attempt.js",
+    );
+    expect(await fs.readdir(second.packageDir)).toContain("package.json");
+  });
+
   test("rejects fetched bytes whose SRI does not match the frozen closure", async () => {
     const fixture = await packWorkflowFixture();
     const manifest: ToolPackageManifest = {

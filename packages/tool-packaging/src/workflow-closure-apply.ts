@@ -51,8 +51,8 @@ export interface ApplyFrozenWorkflowClosureArgs {
   readonly closure: ToolPackageManifest;
   /**
    * Durable per-deployment directory the closure is staged under
-   * (`<instanceDir>/packages/<deploy-id>/store/...`). Each apply stages under
-   * a fresh deploy id, so the caller reclaims this directory between applies.
+   * (`<instanceDir>/packages/store/...`). An apply replaces whatever an earlier
+   * one left there.
    */
   readonly instanceDir: string;
   /**
@@ -91,8 +91,6 @@ export interface ApplyFrozenWorkflowClosureArgs {
 export interface AppliedWorkflowClosure {
   /** Directory of the materialized workflow package within the closure. */
   readonly packageDir: string;
-  /** The staged, never-renamed deploy directory the closure was laid out under. */
-  readonly deployDir: string;
 }
 
 /**
@@ -149,18 +147,17 @@ export async function applyFrozenWorkflowClosure(
     }
   }
 
-  const deployDir = path.join(
-    args.instanceDir,
-    "packages",
-    crypto.randomUUID(),
-  );
-  await fs.mkdir(deployDir, { recursive: true });
+  // The layout keeps files that already exist, so a tree left by an earlier
+  // attempt must not carry over into this one.
+  const packagesDir = path.join(args.instanceDir, "packages");
+  await fs.rm(packagesDir, { recursive: true, force: true });
+  await fs.mkdir(packagesDir, { recursive: true });
 
   let storeDir: string;
   try {
     ({ storeDir } = await materializeClosure({
       manifest: args.closure,
-      instanceScratchDir: deployDir,
+      instanceScratchDir: packagesDir,
       assetRoot: args.assetRoot ?? path.join(args.instanceDir, "workspace"),
       assetMounts: args.assetMounts ?? new Map(),
       gitDirs: args.gitDirs ?? new Map(),
@@ -174,7 +171,7 @@ export async function applyFrozenWorkflowClosure(
         }),
     }));
   } catch (cause) {
-    await fs.rm(deployDir, { recursive: true, force: true });
+    await fs.rm(packagesDir, { recursive: true, force: true });
     const detail =
       cause instanceof ClosureMaterializationError
         ? `${cause.category}: ${cause.message}`
@@ -192,5 +189,5 @@ export async function applyFrozenWorkflowClosure(
   );
 
   logger.debug`applied frozen workflow closure ${workflowPin.name}@${workflowPin.version}`;
-  return { packageDir, deployDir };
+  return { packageDir };
 }

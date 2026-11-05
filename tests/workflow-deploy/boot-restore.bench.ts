@@ -270,7 +270,6 @@ const stubApplyFrozenWorkflowClosure: NonNullable<
 > = (applyArgs) =>
   Promise.resolve({
     packageDir: path.join(applyArgs.instanceDir, "package"),
-    deployDir: path.join(applyArgs.instanceDir, "deploy"),
   });
 
 const resolvedInboundMailPolicy = {
