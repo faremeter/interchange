@@ -439,8 +439,11 @@ describe("LRU eviction when over cap", () => {
         spy.mockRestore();
         for (const [index, result] of results.entries()) {
           if (result.status === "fulfilled" && result.value !== undefined) {
+            // Only a cap eviction still has a reclaim waiting on this release.
             const removed =
-              index === 1 ? removalOf(result.value.dir) : undefined;
+              index === 1 && eviction === "cap"
+                ? removalOf(result.value.dir)
+                : undefined;
             result.value.release();
             await removed;
           }
@@ -823,8 +826,8 @@ describe("extractTarball", () => {
     // another agent in the same sidecar process trips an
     // integrity-mismatch evict for the same integrity. The cache holds
     // a refcount per (integrity, extraction-dir) pair: `evict` deletes
-    // the tarball blob immediately so a subsequent `extractTarball`
-    // cannot reuse the on-disk extraction, but the physical removal of
+    // the tarball blob immediately and a subsequent `extractTarball`
+    // refuses the on-disk extraction, but the physical removal of
     // the extraction tree is deferred until every outstanding
     // `release` from `extractTarball` has fired.
     const cache = createTarballCache({
@@ -841,10 +844,8 @@ describe("extractTarball", () => {
     expect(await fs.readdir(reader.dir)).toContain("package.json");
 
     // Evict races against the still-open reader. The tarball blob
-    // disappears immediately so a fresh `extractTarball` cannot
-    // short-circuit on the existing tree, but the tree itself must
-    // remain on disk so the in-flight reader's walk continues to
-    // succeed.
+    // disappears immediately, but the tree itself must remain on disk
+    // so the in-flight reader's walk continues to succeed.
     await cache.evict(integrity);
     expect(await cache.get(integrity)).toBeNull();
     expect(await fs.readdir(reader.dir)).toContain("package.json");
@@ -871,6 +872,80 @@ describe("extractTarball", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(cleared).toBe(true);
+  });
+
+  test("extractTarball refuses an evicted extraction a reader still holds", async () => {
+    const cache = createTarballCache({
+      rootDir: scratch,
+      maxBytes: 10_000_000,
+    });
+    const { bytes, integrity } = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "foo", version: "1.0.0" }),
+    });
+    await cache.put(integrity, bytes);
+    const reader = await cache.extractTarball(integrity);
+    await cache.evict(integrity);
+
+    // Re-fetched bytes do not make the tree still on disk reusable.
+    await cache.put(integrity, bytes);
+    await expect(cache.extractTarball(integrity)).rejects.toThrow(
+      /was evicted/,
+    );
+    expect(await fs.readdir(reader.dir)).toContain("package.json");
+
+    // The refused call gave its reference back, so this release is the last
+    // one and the tree goes.
+    reader.release();
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const present = await fs.access(reader.dir).then(
+        () => true,
+        () => false,
+      );
+      if (!present) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    const fresh = await cache.extractTarball(integrity);
+    expect(await fs.readdir(fresh.dir)).toContain("package.json");
+    fresh.release();
+  });
+
+  test("a pin alone does not keep an evicted extraction from being replaced", async () => {
+    const cache = createTarballCache({
+      rootDir: scratch,
+      maxBytes: 10_000_000,
+    });
+    const { bytes, integrity } = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "foo", version: "1.0.0" }),
+    });
+    await cache.put(integrity, bytes);
+    const stale = await cache.extractTarball(integrity);
+    const marker = path.join(stale.dir, "poisoned");
+    await fs.writeFile(marker, "");
+    stale.release();
+
+    // The pin holds the entry through the evict, the way a materialization
+    // that hit a corrupt tarball does, but nothing is walking the tree.
+    const unpin = await cache.pin(integrity);
+    await cache.evict(integrity);
+    await cache.put(integrity, bytes);
+
+    const first = await cache.extractTarball(integrity);
+    expect(await fs.readdir(first.dir)).toContain("package.json");
+    expect(await fs.readdir(first.dir)).not.toContain("poisoned");
+    await fs.writeFile(path.join(first.dir, "fresh"), "");
+    // That tree came from verified bytes, so a second reader may share it.
+    const second = await cache.extractTarball(integrity);
+    expect(second.dir).toBe(first.dir);
+
+    first.release();
+    second.release();
+    unpin();
+
+    // Replacing the tree was the reclaim, so the last release leaves it alone.
+    const next = await cache.extractTarball(integrity);
+    expect(await fs.readdir(next.dir)).toContain("fresh");
+    next.release();
   });
 
   test("refcount tracks each handle in isolation across sequential acquire/release cycles", async () => {
