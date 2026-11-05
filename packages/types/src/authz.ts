@@ -54,3 +54,17 @@ export type ConditionEvaluator = {
 };
 
 export type ConditionRegistry = Record<string, ConditionEvaluator>;
+
+/**
+ * Whether a grant resource lies inside `namespace`: the bare namespace or any
+ * `<namespace>:<...>` resource. A broader grant such as `*` or `mail.*`
+ * matches a resource in the namespace under pattern matching but is not in
+ * the namespace itself, so a gate that evaluates only this set never lets
+ * such a grant decide.
+ */
+export function isNamespaceResource(
+  namespace: string,
+  resource: string,
+): boolean {
+  return resource === namespace || resource.startsWith(`${namespace}:`);
+}

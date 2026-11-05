@@ -1,30 +1,27 @@
 import { type } from "arktype";
 
+import { isNamespaceResource } from "./authz";
+
 export const MAIL_ACCEPT_NAMESPACE = "mail.accept";
 
 /**
- * Whether a grant resource lies inside the `mail.accept` namespace: the bare
- * namespace or any `mail.accept:<...>` resource. This is exactly the set of
- * grants the inbound admission gate evaluates; a broader grant such as `*` or
- * `mail.*` matches `mail.accept:...` under pattern matching but falls outside
- * this set, so the gate never lets it admit mail.
+ * Whether a grant resource lies inside the `mail.accept` namespace. This is
+ * exactly the set of grants the inbound admission gate evaluates.
  */
 export function isMailAcceptNamespaceResource(resource: string): boolean {
-  return (
-    resource === MAIL_ACCEPT_NAMESPACE ||
-    resource.startsWith(`${MAIL_ACCEPT_NAMESPACE}:`)
-  );
+  return isNamespaceResource(MAIL_ACCEPT_NAMESPACE, resource);
 }
 
 /**
- * A `mail.accept` coordinate id is valid when it is a non-empty string with no
- * `:` and no `*`. The colon is the segment separator of the
- * `mail.accept:<type>:<id>` resource, so an id that carries one would split
- * into extra segments and make the shape ambiguous. The `*` is the wildcard of
- * grant matching, so an id that carries one would be a pattern that admits
- * many senders, not the one sender it names. This owns that rule: the resource
- * builder in `@intx/authz` imports it, and the `MailAccept` schema narrows on
- * it, so the authoring boundary and the resource builder share one definition.
+ * A coordinate id is valid when it is a non-empty string with no `:` and no
+ * `*`. The colon is the segment separator of a `<namespace>:<type>:<id>`
+ * coordinate resource, so an id that carries one would split into extra
+ * segments and make the shape ambiguous. The `*` is the wildcard of grant
+ * matching, so an id that carries one would be a pattern that matches many
+ * targets, not one concrete target. This owns that rule for every
+ * coordinate namespace: the resource builder in `@intx/authz` imports it, and
+ * the `MailAccept` schema narrows on it, so the authoring boundary and the
+ * resource builder share one definition.
  */
 export function isValidCoordId(id: string): boolean {
   return id.length > 0 && !id.includes(":") && !id.includes("*");
