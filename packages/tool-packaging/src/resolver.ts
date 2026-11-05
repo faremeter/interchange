@@ -2,7 +2,7 @@
 /// <reference path="./declarations.d.ts" />
 // Hub-side npm closure resolver.
 //
-// Walks a list of agent-pinned tool packages, resolves each pin against
+// Walks a list of pinned root packages, resolves each pin against
 // a configured registry source (HTTP-backed `npm-registry-fetch` or an
 // in-process `package-registry` asset), recurses on transitive
 // `dependencies` and `optionalDependencies`, and produces a
@@ -175,10 +175,8 @@ export interface RegistrySource {
 /**
  * Configuration for `createClosureResolver`.
  *
- * `registries` is keyed by the same name the agent's pin set
- * references via the `registry` field in `ToolPackagePin`-derived
- * entries (today indirectly via scope routing; built-ins reach this
- * map by the registry name the session service resolved them from).
+ * `registries` is keyed by registry name; `scopeRouting` and
+ * `defaultRegistry` select an entry from it for each package.
  *
  * `defaultRegistry` names the entry in `registries` consulted for any
  * package whose scope does not match a `scopeRouting` entry. The map
@@ -1108,15 +1106,8 @@ async function extractPackageJSON(
  * any-version range; the resolver then picks whatever the registry
  * advertises as latest at deploy-assembly time. Operators who care
  * about reproducibility of tool-package closures should pin to a
- * concrete range (`^1.2.3`) — `*` lets the closure shift under the
- * agent without any change to the pin set.
- *
- * NOTE: `*` is special-cased in two places — here and inside the
- * `ToolPackagePinArray` narrow at `@intx/types/tool-packages`. The
- * sites live in separate packages by design (resolver vs. wire-type
- * validation) and cannot import each other; any new magic-range
- * additions need to be made at both call sites to keep the
- * REST-boundary validator and the resolver in agreement.
+ * concrete range (`^1.2.3`) — `*` lets the closure shift between
+ * deployments without any change to the pin.
  */
 export function parsePin(spec: string): ToolPackagePin {
   const parsed = npmPackageArg(spec);

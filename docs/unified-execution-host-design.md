@@ -557,8 +557,8 @@ constraint of Decision 1. Because tools materialize and execute _in the child_
 (§3d), whatever boundary the child runs inside must contain the child's
 **entire tool runtime**:
 
-- The tool-package tarballs the agent pins — or network egress sufficient to
-  fetch them from the configured registries at materialization time.
+- The tarballs of the workflow's frozen closure — or network egress sufficient
+  to fetch them from the configured registries at materialization time.
 - The tarball cache (`createTarballCache`) and the tool instance dir, on a
   filesystem the child can write.
 - The LSP server binaries (and any other external tool binaries) the plugin

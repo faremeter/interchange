@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_run_launch_spec" DROP COLUMN "tool_package_pins";

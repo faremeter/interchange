@@ -406,13 +406,7 @@ export async function createHubServer({
       defaultRegistry: "npmjs",
       // The `workspace-builtins` package-registry asset hosts the
       // three in-tree tool packages (`@intx/tools-mail`,
-      // `@intx/tools-posix`, `@intx/tools-lsp`). Routing the `@intx`
-      // scope through it keeps an agent's pin set readable
-      // (`{ name: "@intx/tools-mail" }`) without forcing every pin to
-      // carry an explicit `registry` field. Operators who shadow this
-      // asset at a child tenancy with their own `workspace-builtins`
-      // asset get the closer-scope win for free, since the session
-      // service builds the per-launch registry map leaf-to-root.
+      // `@intx/tools-posix`, `@intx/tools-lsp`).
       scopeRouting: [{ scope: "@intx", registry: WORKSPACE_BUILTINS_REGISTRY }],
     },
   });

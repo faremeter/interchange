@@ -21,7 +21,6 @@ import {
 import { WireGrantRule } from "@intx/types/grant-wire";
 import { FrozenApprovalBundle } from "@intx/types/sidecar";
 import { RepoAction } from "@intx/types/repo";
-import { ToolPackagePinArray } from "@intx/types/tool-packages";
 import { workflowRunDispatchStatuses } from "./schema/workflow-run-dispatch";
 
 import type {
@@ -248,10 +247,6 @@ export function parseWorkflowRunLaunchSpecRow(
         ? null
         : GrantWalkSnapshot.assert(row.grantSnapshot),
     sourceOfferingIds,
-    toolPackagePins:
-      row.toolPackagePins !== null
-        ? ToolPackagePinArray.assert(row.toolPackagePins)
-        : null,
   };
 }
 

@@ -27,6 +27,5 @@ export const workflowRunLaunchSpec = pgTable("workflow_run_launch_spec", {
   grantSnapshot: jsonb("grant_snapshot"),
   sourceOfferingIds: jsonb("source_offering_ids").notNull(),
   defaultSourceOfferingId: text("default_source_offering_id").notNull(),
-  toolPackagePins: jsonb("tool_package_pins"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

@@ -1,17 +1,13 @@
 // Schemas for the tool-package distribution path.
 //
-// An agent pins one or more tool packages via `ToolPackagePin[]`. At
-// deploy-assembly time, the hub walks the pinned set, resolves the full
-// dependency closure, and writes a `ToolPackageManifest` into the deploy
-// pack. The sidecar reads the manifest at apply time and materializes
-// every entry.
+// At deploy-assembly time, the hub resolves a workflow's source to its
+// full dependency closure and freezes it as a `ToolPackageManifest`. The
+// sidecar materializes every entry of that manifest at apply time.
 //
-// Only entries listed in `topLevel` contribute tools to the agent;
-// transitive entries exist to satisfy `require()` / `import` resolution
-// inside the top-level packages.
+// `topLevel` names the packages the closure was resolved from; transitive
+// entries exist to satisfy `require()` / `import` resolution inside them.
 
 import { type } from "arktype";
-import semver from "semver";
 
 import {
   ToolCredentialDeclarationArray,
@@ -23,10 +19,9 @@ import {
  * literal: lowercase, may begin with a scope (`@scope/`), the rest of
  * each segment is URL-safe (letters, digits, `_`, `-`, `.`), no
  * leading dot or underscore, scoped names require a `/`. The npm
- * registry rejects anything else; mirroring the rule at the REST
- * boundary keeps mixed-case or malformed pins from threading past
- * the API into the resolver, which would otherwise self-resolve
- * them and then fail at the sidecar loader.
+ * registry rejects anything else; mirroring the rule here keeps a
+ * mixed-case or malformed name out of a manifest, where it would
+ * self-resolve and then fail at the sidecar loader.
  *
  * Using a regex literal (rather than a `narrow` predicate) lets the
  * JSON-Schema generator surface the rule as a `pattern` field in the
@@ -37,15 +32,12 @@ export const ToolPackagePinName = type(
 );
 
 /**
- * A pin in an agent definition: name + version range. The hub resolves
- * this against configured registries at deploy-assembly time.
+ * A package to resolve a closure from: name + version range. The hub
+ * resolves this against configured registries at deploy-assembly time.
  *
  * `version` is an npm-style spec ("^1.2.3", "~1.2", "1.2.3", "*").
  * Resolution is performed by `npm-pick-manifest` against the registry
- * packument. Semver-range validation lives on `ToolPackagePinArray`
- * (below) so the JSON-Schema generator sees a plain string here; the
- * array narrow is the actual REST boundary for pins and runs before
- * any value reaches the resolver.
+ * packument.
  *
  * `name` must match npm's documented package-name rules — lowercase,
  * optional scope prefix, URL-safe characters only. npm itself rejects
@@ -54,10 +46,8 @@ export const ToolPackagePinName = type(
  * `${name}@${version}` lookup against the lowercase entry the
  * packument produced.
  *
- * A `ToolPackagePin[]` must contain at most one entry per `name`. Use
- * `ToolPackagePinArray` (below) at REST boundaries to enforce dedup
- * before the resolver runs; the resolver still rejects duplicates at
- * its own boundary as belt-and-suspenders.
+ * A `ToolPackagePin[]` must contain at most one entry per `name`; the
+ * resolver rejects duplicates.
  */
 export const ToolPackagePin = type({
   name: ToolPackagePinName,
@@ -66,49 +56,11 @@ export const ToolPackagePin = type({
 export type ToolPackagePin = typeof ToolPackagePin.infer;
 
 /**
- * Array of pins with the no-duplicate-name and parseable-version
- * invariants enforced at parse time. The downstream resolver keys
- * its top-level resolution map by name; two pins of the same name
- * would silently collapse to the first arrival's resolved version,
- * and an unparseable semver range would fail mid-walk. Rejecting
- * both at the REST boundary surfaces the bug to the caller instead
- * of leaving it to misbehave at launch time.
- *
- * `*` is accepted as the documented any-version range; anything
- * else must satisfy `semver.validRange`.
- *
- * NOTE: the same `*` special-case lives in `parsePin` inside the
- * tool-packaging resolver. Any new magic-range additions need to be
- * carved at both sites — the packages are separated by the wire-type
- * vs. resolver boundary and cannot import each other.
- */
-export const ToolPackagePinArray = ToolPackagePin.array().narrow(
-  (pins, ctx) => {
-    const seen = new Set<string>();
-    for (const pin of pins) {
-      if (seen.has(pin.name)) {
-        return ctx.mustBe(
-          `an array with no duplicate package names; "${pin.name}" appears more than once`,
-        );
-      }
-      seen.add(pin.name);
-      if (pin.version !== "*" && semver.validRange(pin.version) === null) {
-        return ctx.mustBe(
-          `every pin to carry a parseable semver range; "${pin.name}" has version ${JSON.stringify(pin.version)}`,
-        );
-      }
-    }
-    return true;
-  },
-);
-export type ToolPackagePinArray = typeof ToolPackagePinArray.infer;
-
-/**
- * A top-level manifest entry: a pinned package at its concrete resolved
+ * A top-level manifest entry: a root package at its concrete resolved
  * version, carrying the credential declarations harvested from the package's
- * `interchange.credentials` (absent when it declares none). Only top-level
- * pins contribute declarations; transitive dependencies never do, which is why
- * this shape hangs off `topLevel` rather than `entries`.
+ * `interchange.credentials` (absent when it declares none). Only root packages
+ * contribute declarations; transitive dependencies never do, which is why this
+ * shape hangs off `topLevel` rather than `entries`.
  */
 export const ToolPackageTopLevelEntry = type({
   name: ToolPackagePinName,
@@ -119,9 +71,7 @@ export type ToolPackageTopLevelEntry = typeof ToolPackageTopLevelEntry.infer;
 
 /**
  * The manifest's top-level entries with the no-duplicate-name invariant
- * preserved -- the same guarantee `ToolPackagePinArray` gives agent-side pins.
- * Versions here are concrete (already picked by the resolver), so the
- * semver-range check that guards agent-side pins is unnecessary.
+ * preserved. Versions here are concrete, already picked by the resolver.
  */
 export const ToolPackageTopLevelArray = ToolPackageTopLevelEntry.array().narrow(
   (entries, ctx) => {
@@ -276,18 +226,17 @@ export type ToolPackageManifestEntry = typeof ToolPackageManifestEntry.infer;
  * The manifest of a resolved tool-package closure.
  *
  * `schemaVersion` is a literal "1" for now. Future schema changes bump
- * this and the loader refuses unknown versions with `manifest.invalid`.
+ * this, and this validator refuses unknown versions.
  *
- * `topLevel` enumerates the packages the agent definition explicitly
- * pinned. The loader only scans these for `interchange.tools`; entries
- * present in `entries` but absent from `topLevel` are transitive
- * dependencies materialized for runtime `require()` / `import`
- * resolution.
+ * `topLevel` enumerates the packages the closure was resolved from.
+ * The loader only scans these for `interchange.tools`; entries present
+ * in `entries` but absent from `topLevel` are transitive dependencies
+ * materialized for runtime `require()` / `import` resolution.
  *
- * `topLevel` extends the agent-side `ToolPackagePin` shape with the
- * package's harvested `credentials` declarations. The `version` field
- * here is always a concrete version (e.g. `"1.2.3"`), not a range. The resolver walks each
- * agent-side pin's range through `npm-pick-manifest` and writes the
+ * `topLevel` extends the `ToolPackagePin` shape with the package's
+ * harvested `credentials` declarations. The `version` field here is
+ * always a concrete version (e.g. `"1.2.3"`), not a range. The resolver
+ * walks each pin's range through `npm-pick-manifest` and writes the
  * picked version. The sidecar loader pairs `topLevel[i]` against
  * `entries[j]` by `${name}@${version}` equality, so a range-form
  * `version` here would never match any entry and the package would

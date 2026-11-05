@@ -92,7 +92,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         frozenApprovalBundle: FROZEN_APPROVAL_BUNDLE,
         sourceOfferingIds: ["offering-primary", "offering-fallback"],
         defaultSourceOfferingId: "offering-primary",
-        toolPackagePins: [{ name: "@intx/search", version: "^1.2.0" }],
       });
 
       const stored = await store.get(ANCHOR_RUN_ID);
