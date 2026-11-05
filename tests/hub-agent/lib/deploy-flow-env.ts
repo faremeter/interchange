@@ -40,6 +40,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import type { Subprocess } from "bun";
 
+import { AgentDeployAckFrame } from "@intx/types/sidecar";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -1063,9 +1064,14 @@ export async function startHub(
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
     agentEvents.push({ addr: agentAddress, sid: sessionId, event });
   });
-  router.events.on("agent.deploy.ack", ({ agentAddress, publicKey }) => {
-    deployAcks.set(agentAddress, publicKey);
-  });
+  // Record each deployment's key as its sidecar's deploy acknowledgement
+  // reports it.
+  function recordDeployAck(data: string): void {
+    const frame: unknown = JSON.parse(data);
+    if (AgentDeployAckFrame.allows(frame)) {
+      deployAcks.set(frame.agentAddress, frame.publicKey);
+    }
+  }
 
   const sessionService = createSessionService({
     loadRunCredentials: opts.loadRunCredentials ?? (async () => null),
@@ -1095,6 +1101,7 @@ export async function startHub(
         onMessage(evt, _ws) {
           if (typeof evt.data === "string") {
             router.handleMessage(handle, evt.data);
+            recordDeployAck(evt.data);
           }
         },
         onClose(_evt, _ws) {

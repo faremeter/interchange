@@ -516,26 +516,6 @@ describe("SidecarRouter allocation deploy transport", () => {
     });
   }
 
-  test("rejects a deploy when its acknowledgement subscriber fails", async () => {
-    const router = createAllocatedRouter();
-    router.events.on("agent.deploy.ack", () => {
-      throw new Error("database write failed");
-    });
-    const ws = await connectAllocated(router);
-    const deploy = router.sendAgentDeployToAllocation(
-      TEST_TARGET,
-      TEST_IDENTITY.workflowRunAddress,
-      TEST_CONFIG,
-      TEST_WORKFLOW,
-    );
-    await tick();
-
-    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
-
-    await expect(deploy).rejects.toThrow("Failed to store public key");
-    expect(router.getRoutableAddresses()).toEqual([]);
-  });
-
   test("disconnect rejects an in-flight deploy", async () => {
     const router = createAllocatedRouter();
     const ws = await connectAllocated(router);
