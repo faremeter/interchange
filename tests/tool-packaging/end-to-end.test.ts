@@ -203,7 +203,7 @@ describe("hub→sidecar pipeline (happy path)", () => {
       rootDir: cacheDir,
       maxBytes: 100_000_000,
     });
-    const { storeDir, entries } = await materializeClosure({
+    const { storeDir } = await materializeClosure({
       manifest: readBack,
       instanceScratchDir: instanceDir,
       assetRoot,
@@ -214,7 +214,6 @@ describe("hub→sidecar pipeline (happy path)", () => {
       registries,
       fetchTarball: async () => fixture.bytes,
     });
-    expect(entries).toHaveLength(1);
     expect(await storedPackageJSON(storeDir, fixture)).toMatchObject({
       name: fixture.name,
       version: fixture.version,
@@ -539,7 +538,7 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
       rootDir: cacheDir,
       maxBytes: 100_000_000,
     });
-    const { storeDir, entries } = await materializeClosure({
+    const { storeDir } = await materializeClosure({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
@@ -550,7 +549,6 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
       registries: new Map([["npmjs", { url: "https://r.test" }]]),
       fetchTarball: createTarballFetcher(),
     });
-    expect(entries).toHaveLength(1);
     expect(
       await storedPackageJSON(storeDir, {
         name: "asset-tool",

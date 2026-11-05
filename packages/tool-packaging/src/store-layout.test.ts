@@ -126,6 +126,21 @@ async function packFixture(
   return { bytes, integrity };
 }
 
+async function isLaidOut(
+  storeDir: string,
+  name: string,
+  version: string,
+): Promise<boolean> {
+  const manifest = path.join(
+    storeEntryDir(storeDir, name, version),
+    "package.json",
+  );
+  return fs.access(manifest).then(
+    () => true,
+    () => false,
+  );
+}
+
 // Binds what a test holds fixed around `materializeClosure`'s per-call layout
 // arguments, and gives it the production fetcher unless it supplies its own.
 function createMaterializer(
@@ -209,14 +224,15 @@ describe("materializeClosure layout", () => {
 
     // Before the workspace: normalization this rejected with
     // `package.entry.invalid`; it now lays out cleanly.
-    const { entries } = await materializer.materialize({
+    const { storeDir } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(entries.map((e) => e.name)).toEqual(["@wf/app", "@wf/lib"]);
+    expect(await isLaidOut(storeDir, "@wf/app", "1.0.0")).toBe(true);
+    expect(await isLaidOut(storeDir, "@wf/lib", "1.0.0")).toBe(true);
   });
 
   test("lays out a catalog: protocol dependency against its closure member", async () => {
@@ -278,14 +294,14 @@ describe("materializeClosure layout", () => {
       ],
     };
 
-    const { entries } = await materializer.materialize({
+    const { storeDir } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(entries.map((e) => e.name)).toContain("@wf/catalog-app");
+    expect(await isLaidOut(storeDir, "@wf/catalog-app", "1.0.0")).toBe(true);
   });
 
   test("materializes package files independently from the cache extraction", async () => {
@@ -413,15 +429,15 @@ describe("materializeClosure layout", () => {
       ],
     };
 
-    const { entries } = await materializer.materialize({
+    const { storeDir } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.name).toBe("watcher-linux");
+    expect(await isLaidOut(storeDir, "watcher-linux", "1.0.0")).toBe(true);
+    expect(await isLaidOut(storeDir, "watcher-darwin", "1.0.0")).toBe(false);
     expect(fetched).toEqual(["watcher-linux@1.0.0"]);
   });
 
@@ -525,15 +541,17 @@ describe("materializeClosure layout", () => {
       ],
     };
 
-    const { entries } = await materializer.materialize({
+    const { storeDir } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    const names = entries.map((p) => p.name).sort();
-    expect(names).toEqual(["allow-bare", "allow-negate"]);
+    expect(await isLaidOut(storeDir, "allow-bare", "1.0.0")).toBe(true);
+    expect(await isLaidOut(storeDir, "allow-negate", "1.0.0")).toBe(true);
+    expect(await isLaidOut(storeDir, "deny-bare", "1.0.0")).toBe(false);
+    expect(await isLaidOut(storeDir, "deny-negate", "1.0.0")).toBe(false);
   });
 
   test("uses cache hit and skips the fetcher", async () => {
@@ -1307,15 +1325,13 @@ export const factory = Object.assign(
       ],
     };
 
-    const { entries } = await materializer.materialize({
+    await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.name).toBe("@scope/only");
 
     // The store dir keeps npm's `@scope/name` shape so the scope
     // segment is a real directory, not a slash baked into the name.
@@ -1921,15 +1937,14 @@ export const main = Object.assign(
       ],
     };
 
-    const { entries } = await materializer.materialize({
+    const { storeDir } = await materializer.materialize({
       manifest,
       instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
     });
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.name).toBe("ok-dangling");
+    expect(await isLaidOut(storeDir, "ok-dangling", "1.0.0")).toBe(true);
   });
 
   test("rejects a dangling symlink whose literal target escapes the extraction root", async () => {
