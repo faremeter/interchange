@@ -2,7 +2,13 @@ import { eq, ne, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 
-import { principal, principalRole, role, user } from "@intx/db/schema";
+import {
+  principal,
+  principalRole,
+  role,
+  user,
+  workflowRun,
+} from "@intx/db/schema";
 import {
   createPrincipalStore,
   deleteRunTokensForPrincipals,
@@ -114,6 +120,15 @@ export type CreatePrincipalRoutesDeps = {
   grantStoreFor: GrantStoreFactory;
   sidecarRouter: Pick<SidecarRouter, "sendRunGrants">;
 };
+
+// A run principal whose run still exists cannot be removed: the run names it
+// by `refId`, and it holds the deployment's signing key.
+class RunPrincipalReferencedError extends Error {
+  constructor() {
+    super("Principal is still referenced by its run");
+    this.name = "RunPrincipalReferencedError";
+  }
+}
 
 export function createPrincipalRoutes({
   db,
@@ -361,7 +376,10 @@ export function createPrincipalRoutes({
       //     workflow_run_launch_spec.source_authority_principal_id (restrict),
       //     and workflow_definition.creator_principal_id (NO ACTION). The delete
       //     fires a violation only for a row actually being deleted, so the
-      //     catch maps it to a 409 instead of a 500.
+      //     catch maps it to a 409 instead of a 500. A run principal is the
+      //     exception: its run names it by `refId`, which no foreign key
+      //     covers, and it holds the deployment's signing key. The handler
+      //     refuses it with the same 409 while its run exists.
       // Grants, role assignments, and principal keys cascade from the
       // principal. An asset it created loses its creator, so the runs that
       // delegate from it as creator are found before the delete and
@@ -373,6 +391,25 @@ export function createPrincipalRoutes({
           delegatorDeps,
           tenantCtx.id,
           async (tx) => {
+            const [run] = await tx
+              .select({ id: workflowRun.id })
+              .from(principal)
+              .innerJoin(
+                workflowRun,
+                and(
+                  eq(workflowRun.id, principal.refId),
+                  eq(workflowRun.tenantId, principal.tenantId),
+                ),
+              )
+              .where(
+                and(
+                  eq(principal.id, principalId),
+                  eq(principal.tenantId, tenantCtx.id),
+                  eq(principal.kind, "workflow"),
+                ),
+              )
+              .limit(1);
+            if (run !== undefined) throw new RunPrincipalReferencedError();
             const anchorRunIds = await findDelegatedAnchorRunIds(
               tx,
               tenantCtx.id,
@@ -395,7 +432,10 @@ export function createPrincipalRoutes({
           },
         );
       } catch (err) {
-        if (!isReferencedRowViolation(err)) {
+        if (
+          !(err instanceof RunPrincipalReferencedError) &&
+          !isReferencedRowViolation(err)
+        ) {
           throw err;
         }
         return errorResponse(c, "conflict", "Principal is still referenced");

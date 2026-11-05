@@ -9,8 +9,10 @@ import {
 
 import { eq } from "drizzle-orm";
 
+import { deriveRunPrincipalId } from "@intx/hub-common";
+
 import { createInMemoryGrantStore } from "@intx/authz";
-import { credential, principal, runToken } from "@intx/db/schema";
+import { credential, principal, principalKey, runToken } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
   createSidecarEmitter,
@@ -29,6 +31,7 @@ import {
   seedCredential,
   seedPrincipal,
   seedProvider,
+  seedRunPrincipalKey,
   seedRunToken,
   seedTenants,
   seedWorkflowRun,
@@ -389,6 +392,62 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(credential)
         .where(eq(credential.id, ORG_CREDENTIAL_ID));
       expect(orgCredential?.principalId).toBeNull();
+    });
+
+    test("refuses to remove the run principal of an existing run", async () => {
+      const app = await setupDelete();
+      await seedWorkflowRun(h.db, {
+        id: DEPLOYMENT_ID,
+        tenantId: TENANT_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        address: DEPLOYMENT_ADDRESS,
+        status: "running",
+      });
+      // The run principal deploy created, holding the deployment's key.
+      await seedRunPrincipalKey(
+        h.db,
+        TENANT_ID,
+        DEPLOYMENT_ID,
+        "ab".repeat(32),
+      );
+      const runPrincipalId = await deriveRunPrincipalId(
+        TENANT_ID,
+        DEPLOYMENT_ID,
+      );
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/principals/${runPrincipalId}`,
+        { method: "DELETE" },
+      );
+      expect(res.status).toBe(409);
+      const body: unknown = await res.json();
+      if (!isObject(body)) throw new Error("expected object body");
+      const error = body["error"];
+      if (!isObject(error)) throw new Error("expected error body");
+      expect(error["code"]).toBe("conflict");
+      expect(error["message"]).toBe("Principal is still referenced");
+
+      const keys = await h.db
+        .select({ publicKey: principalKey.publicKey })
+        .from(principalKey)
+        .where(eq(principalKey.principalId, runPrincipalId));
+      expect(keys).toEqual([{ publicKey: "ab".repeat(32) }]);
+    });
+
+    test("removes a workflow principal that names no run", async () => {
+      const app = await setupDelete();
+      await seedPrincipal(h.db, {
+        id: WORKFLOW_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        refId: "wfd_definition",
+      });
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/principals/${WORKFLOW_PRINCIPAL_ID}`,
+        { method: "DELETE" },
+      );
+      expect(res.status).toBe(204);
     });
 
     test("returns not found for an unknown principal", async () => {
