@@ -1,22 +1,22 @@
 # @intx/tool-packaging
 
-Hub-side closure resolver and sidecar-side loader for the npm-distributed
+Hub-side closure resolver and sidecar-side closure materialization for the npm-distributed
 tool-package format. The contract below describes what the layered
-pipeline actually guarantees end-to-end; downstream code (the apply
-protocol, the session service, the deploy-flow integration tests) leans
+pipeline actually guarantees end-to-end; downstream code (the session
+service, the deploy-flow integration tests) leans
 on it as written.
 
 ## Closure resolution contract
 
 A closure package's body, and the JS it pulls in transitively, may
 `import` (or `require`) any bare specifier the manifest's resolved
-closure satisfies. The loader builds a per-instance
+closure satisfies. Materialization builds a per-instance
 nested `node_modules/` layout under the scratch directory so each
 package's direct dependencies are reachable through Node's standard
 ancestor walk; the layout composes recursively, so a transitive's own
 transitives are reachable from inside it.
 
-Concretely the loader:
+Concretely, materialization:
 
 1. Walks every manifest entry and validates that each one is
    source-consistent: every entry the manifest says lives at a

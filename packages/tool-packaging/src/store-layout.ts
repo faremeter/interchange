@@ -8,24 +8,83 @@ import path from "node:path";
 import semver from "semver";
 
 import { getLogger } from "@intx/log";
-import type { ToolPackageManifestEntry } from "@intx/types/tool-packages";
-
-import { TarballIntegrityMismatchError } from "./cache";
-import { materializeGitEntry } from "./git-materialize";
 import type {
-  HostPlatform,
-  MaterializeClosureArgs,
-  MaterializeClosureResult,
-} from "./loader";
+  ToolPackageManifest,
+  ToolPackageManifestEntry,
+} from "@intx/types/tool-packages";
+
+import { TarballIntegrityMismatchError, type TarballCache } from "./cache";
+import { materializeGitEntry } from "./git-materialize";
 import {
-  ToolLoaderError,
+  ClosureMaterializationError,
   describeError,
   isEEXIST,
   isENOENT,
   platformListMatches,
-} from "./loader-internal";
+} from "./materialization-internal";
+import type { RegistryConfig } from "./resolver";
+import type { TarballFetcher } from "./tarball-fetcher";
 
 const logger = getLogger(["sidecar", "tool-packaging", "store-layout"]);
+
+export interface HostPlatform {
+  readonly os: string;
+  readonly cpu: string;
+}
+
+/**
+ * Arguments for `materializeClosure`. Everything it needs is passed
+ * explicitly: the closure's `cache`, `registries`, `host`, and resolved
+ * `fetchTarball` are threaded in directly.
+ */
+export interface MaterializeClosureArgs {
+  readonly manifest: ToolPackageManifest;
+  readonly instanceScratchDir: string;
+  /**
+   * Filesystem root that `assetMounts` paths are joined against. Mount
+   * paths are workspace-relative; the fetcher resolves them against
+   * `assetRoot` to get the absolute tarball location for `kind: "asset"`
+   * entries.
+   */
+  readonly assetRoot: string;
+  /**
+   * Maps a `source.assetId` from a manifest entry to a
+   * workspace-relative mount path. Empty map is valid when no entry
+   * sources from an asset.
+   */
+  readonly assetMounts: ReadonlyMap<string, string>;
+  /**
+   * Maps a source-format asset entry's `source.assetId` to an absolute
+   * indexed git directory whose object database holds the pinned commit and
+   * its trees. Empty map is valid when no entry sources from a git subtree.
+   */
+  readonly gitDirs: ReadonlyMap<string, string>;
+  readonly host: HostPlatform;
+  readonly cache: TarballCache;
+  /**
+   * Registry identifier → registry config. The key is the `registry`
+   * identifier manifest entries point at. Used both to gate
+   * `kind: "registry"` entries against the sidecar config and as the
+   * `registries` context handed to `fetchTarball`.
+   */
+  readonly registries: ReadonlyMap<string, RegistryConfig>;
+  /**
+   * Resolved tarball fetcher, normally from `createTarballFetcher`.
+   * `materializeClosure` does not construct one of its own.
+   */
+  readonly fetchTarball: TarballFetcher;
+}
+
+/**
+ * Result of `materializeClosure`: the per-instance store directory the
+ * closure was laid out under (`<instanceScratchDir>/store`), plus the exact
+ * host-filtered entries that were laid out under it. A caller computes a
+ * specific package's directory with `storeEntryDir`.
+ */
+export interface MaterializeClosureResult {
+  readonly storeDir: string;
+  readonly entries: readonly ToolPackageManifestEntry[];
+}
 
 /**
  * Lay out a resolved manifest closure into the per-instance store
@@ -44,7 +103,7 @@ const logger = getLogger(["sidecar", "tool-packaging", "store-layout"]);
  *
  * Only entries whose `os`/`cpu` match `host` are materialized; the rest
  * are skipped with a `platform.mismatch.skipped` debug log. Errors
- * surface as `ToolLoaderError` with a `category` matching the
+ * surface as `ClosureMaterializationError` with a `category` matching the
  * corresponding `DeployApplyErrorCategory`.
  */
 export async function materializeClosure(
@@ -66,7 +125,7 @@ export async function materializeClosure(
     let integrity: string;
     if (source.kind === "registry") {
       if (!args.registries.has(source.registry)) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "registry.unknown",
           message: `manifest references registry "${source.registry}" which is not in the sidecar config`,
           package: { name: entry.name, version: entry.version },
@@ -76,7 +135,7 @@ export async function materializeClosure(
     } else if (source.package.format === "source") {
       const gitDir = args.gitDirs.get(source.assetId);
       if (gitDir === undefined) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "git.materialization.failed",
           message: `manifest entry references git assetId "${source.assetId}" which is not in the git-dirs map`,
           package: { name: entry.name, version: entry.version },
@@ -91,7 +150,7 @@ export async function materializeClosure(
       });
     } else {
       if (!args.assetMounts.has(source.assetId)) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "asset.mount.missing",
           message: `manifest entry references assetId "${source.assetId}" which is not in the asset-mounts map`,
           package: { name: entry.name, version: entry.version },
@@ -131,7 +190,7 @@ export async function materializeClosure(
         await args.cache.put(integrity, bytes);
       } catch (err) {
         if (err instanceof TarballIntegrityMismatchError) {
-          throw new ToolLoaderError({
+          throw new ClosureMaterializationError({
             category: "integrity.mismatch",
             message: `bytes for ${entry.name}@${entry.version} did not match pinned integrity`,
             package: { name: entry.name, version: entry.version },
@@ -156,7 +215,7 @@ export async function materializeClosure(
       if (err instanceof TarballIntegrityMismatchError) {
         await args.cache.evict(integrity);
       }
-      throw new ToolLoaderError({
+      throw new ClosureMaterializationError({
         category: "tarball.extract.failed",
         message: `tar extraction failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
         package: { name: entry.name, version: entry.version },
@@ -323,7 +382,7 @@ async function buildStoreLayout(args: BuildStoreLayoutArgs): Promise<void> {
           logger.debug`optional.dropped.skipped: ${entry.name}@${entry.version} optional dep ${dep.name}@${dep.range} has no satisfying version in the closure (likely platform-filtered out)`;
           continue;
         }
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "package.entry.invalid",
           message: `${entry.name}@${entry.version} depends on ${dep.name}@${dep.range} but the manifest closure has no satisfying version; the resolver was expected to include it`,
           package: { name: entry.name, version: entry.version },
@@ -344,7 +403,7 @@ async function buildStoreLayout(args: BuildStoreLayoutArgs): Promise<void> {
           // A symlink collision inside the per-package layout pass is a
           // layout invariant violation, not an unknown error shape, so it
           // carries the same structured envelope as every other failure here.
-          throw new ToolLoaderError({
+          throw new ClosureMaterializationError({
             category: "package.entry.invalid",
             message: `symlink collision at ${symlinkPath}: existing target ${existing} differs from ${relativeTarget}`,
           });
@@ -376,7 +435,7 @@ interface RangeResolution {
  * `semver.maxSatisfying` against the current closure shape.
  *
  * Mirrors the resolver's first-arrival-per-`(name, range)` semantics
- * on the loader side. Without this, two requirers with overlapping
+ * on the sidecar side. Without this, two requirers with overlapping
  * ranges of the same dep could each pick a different version of that
  * dep — `maxSatisfying` is deterministic given its candidate set, but
  * the candidate set is the full closure for the name and a transitive
@@ -452,7 +511,7 @@ async function resolveRangesByFirstArrival(
       // `recorded.get(key)` returning `null` is the "we picked this
       // range against the closure and got nothing" cached answer.
       // Caching the null is safe only because the closure is static
-      // across this loader pass — `entriesByNameVersion` does not
+      // across this layout pass — `entriesByNameVersion` does not
       // grow underneath us. If a future change starts adding entries
       // mid-walk (e.g. lazy fetches during BFS), the cached null
       // would shadow the new candidates and produce a phantom miss;
@@ -556,7 +615,7 @@ async function copyTree(
       try {
         realExtractionRoot = await fs.realpath(extractionRoot);
       } catch (err) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "package.entry.invalid",
           message: `tarball symlink ${src} → ${target}: extraction-root realpath failed: ${describeError(err)}`,
         });
@@ -585,7 +644,7 @@ async function copyTree(
         targetAbs = await fs.realpath(path.resolve(path.dirname(src), target));
       } catch (err) {
         if (!isENOENT(err)) {
-          throw new ToolLoaderError({
+          throw new ClosureMaterializationError({
             category: "package.entry.invalid",
             message: `tarball contains symlink ${src} → ${target} whose target could not be resolved: ${describeError(err)}`,
           });
@@ -594,7 +653,7 @@ async function copyTree(
         try {
           srcDirReal = await fs.realpath(path.dirname(src));
         } catch (dirErr) {
-          throw new ToolLoaderError({
+          throw new ClosureMaterializationError({
             category: "package.entry.invalid",
             message: `tarball symlink ${src} → ${target}: dirname realpath failed during dangling-link fallback: ${describeError(dirErr)}`,
           });
@@ -608,7 +667,7 @@ async function copyTree(
         targetAbs !== realExtractionRoot &&
         !targetAbs.startsWith(realContainmentRoot)
       ) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "package.entry.invalid",
           message: `tarball contains symlink ${src} → ${target} that escapes the package extraction directory`,
         });
@@ -651,7 +710,7 @@ async function readDirectDependencies(
   try {
     pkg = JSON.parse(pkgJsonRaw);
   } catch (err) {
-    throw new ToolLoaderError({
+    throw new ClosureMaterializationError({
       category: "package.entry.invalid",
       message: `malformed package.json in ${entry.name}@${entry.version}: ${describeError(err)}`,
       package: { name: entry.name, version: entry.version },
@@ -679,7 +738,7 @@ async function readDirectDependencies(
     if (optionalDeps !== null && typeof optionalDeps === "object") {
       for (const [name, range] of Object.entries(optionalDeps)) {
         if (typeof range !== "string") {
-          throw new ToolLoaderError({
+          throw new ClosureMaterializationError({
             category: "package.entry.invalid",
             message: `package.json field optionalDependencies["${name}"] in ${entry.name}@${entry.version} is ${typeof range}, expected a string range`,
             package: { name: entry.name, version: entry.version },
@@ -699,7 +758,7 @@ async function readDirectDependencies(
     if (deps !== null && typeof deps === "object") {
       for (const [name, range] of Object.entries(deps)) {
         if (typeof range !== "string") {
-          throw new ToolLoaderError({
+          throw new ClosureMaterializationError({
             category: "package.entry.invalid",
             message: `package.json field dependencies["${name}"] in ${entry.name}@${entry.version} is ${typeof range}, expected a string range`,
             package: { name: entry.name, version: entry.version },
@@ -753,7 +812,7 @@ function assertDepMapShape(
   entry: { readonly name: string; readonly version: string },
 ): void {
   if (Array.isArray(value)) {
-    throw new ToolLoaderError({
+    throw new ClosureMaterializationError({
       category: "package.entry.invalid",
       message: `package.json#${field} for ${entry.name}@${entry.version} must be an object map of name→range, not an array`,
       package: { name: entry.name, version: entry.version },

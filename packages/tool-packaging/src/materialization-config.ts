@@ -7,13 +7,13 @@
 
 import { type } from "arktype";
 
-import type { HostPlatform } from "./loader";
+import type { HostPlatform } from "./store-layout";
 import type { RegistryConfig } from "./resolver";
 
 // Boundary validator for the SIDECAR_TOOL_REGISTRIES env var. The
 // env-wire shape carries `name` alongside the registry config so an
 // operator can author the JSON as a flat array; the boundary collapses
-// the array into a Map keyed by name before handing it to the loader.
+// the array into a Map keyed by name before handing it to materialization.
 const RegistryConfigEnvEntry = type({
   name: "string",
   url: "string",
@@ -74,7 +74,7 @@ export function parseToolRegistries(
 
 // npm's `os` token namespace, mirrored from Node's `process.platform`
 // enum. Any value outside this set means the host is running a Node
-// build the loader's platform filter would silently mis-route — a
+// build materialization's platform filter would silently mis-route — a
 // pinned package whose `os` list excludes the host would not be
 // excluded if `process.platform` is a token npm has never heard of.
 // Validate at the boundary so an unknown platform fails the boot
@@ -103,7 +103,7 @@ const KNOWN_PROCESS_PLATFORMS = new Set<string>([
 
 // npm's `cpu` token namespace, mirrored from Node's `process.arch`
 // enum. Same rationale as KNOWN_PROCESS_PLATFORMS — an unknown arch
-// would mis-route the loader's filter without surfacing the gap.
+// would mis-route materialization's filter without surfacing the gap.
 // Same upgrade tax applies: Node has added `loong64` and `riscv64`
 // in recent releases, and future arch additions will need to be
 // added here when the sidecar is rebuilt against them.
@@ -137,7 +137,7 @@ function assertKnownHostArch(arch: string): void {
 }
 
 /**
- * Resolve the host platform token pair the loader filters manifest
+ * Resolve the host platform token pair materialization filters manifest
  * entries against, asserting each token is one npm recognizes before
  * returning it.
  */

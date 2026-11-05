@@ -18,7 +18,7 @@ import { isContainedEntryPath } from "./package-json";
  * leading dot or underscore, scoped names require a `/`. The npm
  * registry rejects anything else; mirroring the rule here keeps a
  * mixed-case or malformed name out of a manifest, where it would
- * self-resolve and then fail at the sidecar loader.
+ * self-resolve and then fail at the sidecar.
  *
  * Using a regex literal (rather than a `narrow` predicate) lets the
  * JSON-Schema generator surface the rule as a `pattern` field in the
@@ -39,7 +39,7 @@ export const ToolPackagePinName = type(
  * `name` must match npm's documented package-name rules — lowercase,
  * optional scope prefix, URL-safe characters only. npm itself rejects
  * uppercase names; packuments arrive lowercased, so a mixed-case pin
- * would self-resolve and then silently fail the sidecar loader's
+ * would self-resolve and then silently fail the sidecar's
  * `${name}@${version}` lookup against the lowercase entry the
  * packument produced.
  *
@@ -87,7 +87,7 @@ export type ToolPackageTopLevelArray = typeof ToolPackageTopLevelArray.infer;
  * credentials.
  *
  * `integrity` is the SRI string ("sha512-...") the registry served for
- * the picked version. The loader verifies the fetched bytes against it
+ * the picked version. The sidecar verifies the fetched bytes against it
  * before unpacking and uses it as the content-addressed cache key.
  */
 export const ToolPackageRegistrySource = type({
@@ -100,11 +100,11 @@ export type ToolPackageRegistrySource = typeof ToolPackageRegistrySource.infer;
 /**
  * The entry's bytes are a prepackaged npm tarball living at `path` inside
  * the asset's checkout (the package-registry kind stores them under
- * `tarballs/<filename>.tgz`). The loader reads the blob and extracts it.
+ * `tarballs/<filename>.tgz`). The sidecar reads the blob and extracts it.
  *
  * `integrity` is the SRI string ("sha512-...") of the tarball bytes. A
  * reclassified npm tarball keeps its SRI: it is the same artifact an
- * external registry would serve, so the loader verifies the read bytes
+ * external registry would serve, so the sidecar verifies the read bytes
  * against it and uses it as the content-addressed cache key, and a
  * byte-identical tarball has one identity regardless of transport.
  */
@@ -118,7 +118,7 @@ export type ToolPackageAssetTarball = typeof ToolPackageAssetTarball.infer;
 /**
  * The entry's bytes are a source package: the subtree at `packageDir`
  * of the asset's checkout at `commitSha`, used in place (not packed).
- * The loader checks the tree out and copies the subtree into the store.
+ * The sidecar checks the tree out and copies the subtree into the store.
  *
  * `packageDir` is the resolved POSIX subtree path of this package within
  * the repo ("." for a single-package repo root, "packages/foo" for a
@@ -128,7 +128,7 @@ export type ToolPackageAssetTarball = typeof ToolPackageAssetTarball.infer;
  * absolute paths and `..` traversal at the boundary.
  *
  * `treeOid` is the git tree object id of the subtree at `commitSha` --
- * the content identity the loader verifies the checked-out subtree
+ * the content identity the sidecar verifies the checked-out subtree
  * against. Unlike a tarball's `integrity`, it is a git tree oid, not an
  * SRI, because a source subtree has no tarball bytes to hash.
  */
@@ -148,7 +148,7 @@ export type ToolPackageAssetSourceTree =
 /**
  * A pinned entry's bytes come from a hub `asset` -- a checked-out git
  * repo attached to the agent at session time. `assetId` is the hub-side
- * asset row id; the loader resolves it against its mount
+ * asset row id; the sidecar resolves it against its mount
  * map to reach the asset's checkout. The package lives at a location
  * within the checkout, either a prepackaged `tarball` or a `source`
  * subtree, discriminated by `package.format`.

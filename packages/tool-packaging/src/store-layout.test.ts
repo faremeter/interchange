@@ -9,16 +9,17 @@ import ssri from "ssri";
 import npmRegistryFetch from "npm-registry-fetch";
 
 import { createTarballCache } from "./cache";
+import { ClosureMaterializationError } from "./materialization-internal";
+import {
+  buildRegistryFetchOpts,
+  readResponseWithLimit,
+} from "./registry-fetch";
 import {
   type MaterializeClosureArgs,
-  type TarballFetcher,
-  ToolLoaderError,
-  buildRegistryFetchOpts,
-  createTarballFetcher,
   materializeClosure,
-  readResponseWithLimit,
   storeEntryDir,
-} from "./loader";
+} from "./store-layout";
+import { type TarballFetcher, createTarballFetcher } from "./tarball-fetcher";
 import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
@@ -30,7 +31,7 @@ let fixtureSourceRoot: string;
 
 beforeEach(async () => {
   scratchRoot = await fs.mkdtemp(
-    path.join(os.tmpdir(), "tool-packaging-loader-"),
+    path.join(os.tmpdir(), "tool-packaging-store-layout-"),
   );
   cacheDir = path.join(scratchRoot, "cache");
   instanceDir = path.join(scratchRoot, "instance");
@@ -148,7 +149,7 @@ describe("materializeClosure layout", () => {
   test("lays out a workspace: protocol dependency against its closure member", async () => {
     // A source-workspace member depends on another member via `workspace:*`.
     // That protocol is not semver, so before it is normalized the range
-    // resolver rejects the layout with "no satisfying version"; the loader must
+    // resolver rejects the layout with "no satisfying version"; materialization must
     // instead match the one closure entry of that name.
     const cache = createTarballCache({
       rootDir: cacheDir,
@@ -581,7 +582,7 @@ describe("materializeClosure layout", () => {
   });
 });
 
-describe("loader error categories", () => {
+describe("materialization error categories", () => {
   async function expectCategory(
     args: {
       manifest: ToolPackageManifest;
@@ -611,9 +612,9 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    if (!(caught instanceof ToolLoaderError)) {
+    if (!(caught instanceof ClosureMaterializationError)) {
       throw new Error(
-        `expected ToolLoaderError, got ${caught === undefined ? "no error" : String(caught)}`,
+        `expected ClosureMaterializationError, got ${caught === undefined ? "no error" : String(caught)}`,
       );
     }
     expect(caught.category).toBe(category);
@@ -649,7 +650,7 @@ describe("loader error categories", () => {
     );
   });
 
-  test("git.materialization.failed when a git-sourced entry reaches the loader", async () => {
+  test("git.materialization.failed when a git-sourced entry has no gitDir", async () => {
     await expectCategory(
       {
         manifest: {
@@ -688,7 +689,7 @@ describe("loader error categories", () => {
     // bytes we control. Stuff the cache directly via a put with
     // matched integrity, then point the manifest at it. Extraction
     // fails inside `tar.extract` (not at the integrity re-check), so
-    // the loader must NOT evict — a sibling agent in the same process
+    // materialization must NOT evict — a sibling agent in the same process
     // may be copying from the same extraction tree at this moment.
     const cache = createTarballCache({
       rootDir: cacheDir,
@@ -727,8 +728,10 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    if (!(caught instanceof ToolLoaderError)) {
-      throw new Error(`expected ToolLoaderError, got ${String(caught)}`);
+    if (!(caught instanceof ClosureMaterializationError)) {
+      throw new Error(
+        `expected ClosureMaterializationError, got ${String(caught)}`,
+      );
     }
     expect(caught.category).toBe("tarball.extract.failed");
     // The integrity check at extract time passed; the failure was a
@@ -799,8 +802,10 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    if (!(caught instanceof ToolLoaderError)) {
-      throw new Error(`expected ToolLoaderError, got ${String(caught)}`);
+    if (!(caught instanceof ClosureMaterializationError)) {
+      throw new Error(
+        `expected ClosureMaterializationError, got ${String(caught)}`,
+      );
     }
     expect(caught.category).toBe("tarball.extract.failed");
     expect(evictCalls).toEqual([]);
@@ -869,8 +874,10 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    if (!(caught instanceof ToolLoaderError)) {
-      throw new Error(`expected ToolLoaderError, got ${String(caught)}`);
+    if (!(caught instanceof ClosureMaterializationError)) {
+      throw new Error(
+        `expected ClosureMaterializationError, got ${String(caught)}`,
+      );
     }
     expect(caught.category).toBe("tarball.extract.failed");
     expect(evictCalls).toEqual([fixture.integrity]);
@@ -900,7 +907,7 @@ describe("loader error categories", () => {
             },
           ],
         },
-        // Default fetcher used; no override; the loader resolves
+        // Default fetcher used; no override; materialization resolves
         // registry "ghost" against config and fails before fetching.
         fetchTarball: async () => {
           throw new Error("unreachable");
@@ -912,7 +919,7 @@ describe("loader error categories", () => {
 
   test("package.entry.invalid when the package.json bytes are malformed JSON", async () => {
     // Hand-pack a tarball whose package.json contains invalid JSON so
-    // the loader's JSON.parse throws. The wrapper translates the
+    // materialization's JSON.parse throws. The wrapper translates the
     // SyntaxError into the package.entry.invalid category rather than
     // letting it bubble out as a raw SyntaxError.
     const stagingDir = path.join(scratchRoot, "bad-json-staging");
@@ -960,8 +967,8 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("package.entry.invalid");
       expect(caught.message).toMatch(/malformed package\.json/);
     }
@@ -1025,8 +1032,8 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("package.entry.invalid");
       expect(caught.message).toMatch(
         /package\.json#dependencies.*must be an object map/,
@@ -1087,8 +1094,8 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("package.entry.invalid");
       expect(caught.message).toMatch(
         /package\.json#optionalDependencies.*must be an object map/,
@@ -1136,8 +1143,10 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    if (!(caught instanceof ToolLoaderError)) {
-      throw new Error(`expected ToolLoaderError, got ${String(caught)}`);
+    if (!(caught instanceof ClosureMaterializationError)) {
+      throw new Error(
+        `expected ClosureMaterializationError, got ${String(caught)}`,
+      );
     }
     expect(caught.category).toBe("tarball.missing");
   });
@@ -1186,8 +1195,10 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    if (!(caught instanceof ToolLoaderError)) {
-      throw new Error(`expected ToolLoaderError, got ${String(caught)}`);
+    if (!(caught instanceof ClosureMaterializationError)) {
+      throw new Error(
+        `expected ClosureMaterializationError, got ${String(caught)}`,
+      );
     }
     expect(caught.category).toBe("package.entry.invalid");
     expect(caught.message).toMatch(/escapes the declared mount/);
@@ -1238,8 +1249,10 @@ describe("loader error categories", () => {
     } catch (err) {
       caught = err;
     }
-    if (!(caught instanceof ToolLoaderError)) {
-      throw new Error(`expected ToolLoaderError, got ${String(caught)}`);
+    if (!(caught instanceof ClosureMaterializationError)) {
+      throw new Error(
+        `expected ClosureMaterializationError, got ${String(caught)}`,
+      );
     }
     expect(caught.category).toBe("asset.mount.missing");
   });
@@ -1248,7 +1261,7 @@ describe("loader error categories", () => {
 describe("transitive resolution contract", () => {
   // Locks the closure-satisfies-itself contract: a top-level package
   // whose body imports a transitive that lives in the manifest closure
-  // resolves through the per-instance node_modules layout the loader
+  // resolves through the per-instance node_modules layout materialization
   // builds, without help from the sidecar host's own node_modules.
   test("scoped packages land under <store>/@scope/<name>/<version>", async () => {
     const cache = createTarballCache({
@@ -1474,7 +1487,7 @@ export const seen = { top: topSawLodash, libA: seenLodash };
   test("three requirers with overlapping ranges land on the first-arrival pick", async () => {
     // Closure carries three versions of `dep` (1.0.0, 1.5.0, 2.0.0)
     // and three requirers, each declaring a range that more than one
-    // closure version satisfies. The loader's first-arrival BFS from
+    // closure version satisfies. Materialization's first-arrival BFS from
     // the top-level pin records its pick for each (name, range), so
     // later requirers see the same answer even though semver alone
     // would return a different "max satisfying" version. This locks
@@ -1503,7 +1516,7 @@ export const seen = { top: topSawLodash, libA: seenLodash };
     const dep2 = await packDep("2.0.0");
 
     // Three requirers under the top-level package. The top requires
-    // them in declaration order so the loader's BFS visits them in
+    // them in declaration order so materialization's BFS visits them in
     // that order; rA arrives first with range "^1" and records
     // dep->1.5.0 in the resolution map (max-satisfying inside the
     // closure for "^1" is 1.5.0). rB ("^1.0") and rC ("^1.5") both
@@ -1661,7 +1674,7 @@ export const factory = Object.assign(
 
     // Every requirer's node_modules/dep should resolve to the same
     // store slot — the first-arrival pick of 1.5.0 for ranges that
-    // all satisfy it. If the loader re-ran maxSatisfying per requirer
+    // all satisfy it. If materialization re-ran maxSatisfying per requirer
     // without the recording layer, all three would still pick 1.5.0
     // in this exact scenario, but the test's point is the
     // recorded-pick path: a future change that drifts requirer C onto
@@ -1706,7 +1719,7 @@ describe("entry-path containment", () => {
     });
     await cache.put(fixture.integrity, fixture.bytes);
     // Force the extraction to materialize once, then plant an
-    // escape-pointing symlink inside it before the loader's
+    // escape-pointing symlink inside it before materialization's
     // layout pass picks it up.
     const extractedHandle = await cache.extractTarball(fixture.integrity);
     const extractedRoot = extractedHandle.dir;
@@ -1751,8 +1764,8 @@ describe("entry-path containment", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("package.entry.invalid");
       expect(caught.message).toMatch(
         /escapes the package extraction directory/,
@@ -1836,8 +1849,8 @@ describe("entry-path containment", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("package.entry.invalid");
       expect(caught.message).toMatch(
         /escapes the package extraction directory/,
@@ -1873,7 +1886,7 @@ export const main = Object.assign(
 
     // Relative symlink whose literal target string resolves to a path
     // inside the extraction root, but the target does not exist on
-    // disk. realpath ENOENTs; the loader should fall back to the
+    // disk. realpath ENOENTs; materialization should fall back to the
     // literal-path containment check and accept.
     await fs.symlink(
       "missing-sibling.txt",
@@ -1979,8 +1992,8 @@ export const main = Object.assign(
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("package.entry.invalid");
       expect(caught.message).toMatch(
         /escapes the package extraction directory/,
@@ -2053,8 +2066,8 @@ export const main = Object.assign(
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("package.entry.invalid");
       expect(caught.message).toMatch(/cross-mount traversal/);
     }
@@ -2103,8 +2116,8 @@ describe("readResponseWithLimit", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("registry.fetch.failed");
       expect(caught.message).toMatch(/exceeds the/);
     }
@@ -2122,8 +2135,8 @@ describe("readResponseWithLimit", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("registry.fetch.failed");
       expect(caught.message).toMatch(/non-digit Content-Length/);
     }
@@ -2148,8 +2161,8 @@ describe("readResponseWithLimit", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("registry.fetch.failed");
       expect(caught.message).toMatch(/streamed past/);
     }
@@ -2186,8 +2199,8 @@ describe("readResponseWithLimit", () => {
     } finally {
       clearTimeout(timer);
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("registry.fetch.failed");
       expect(caught.message).toMatch(/exceeded the registry fetch timeout/);
     }
@@ -2256,8 +2269,8 @@ describe("readResponseWithLimit", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("registry.fetch.failed");
       expect(caught.message).toMatch(/streamed past/);
     }
@@ -2283,8 +2296,8 @@ describe("readResponseWithLimit", () => {
     } finally {
       clearTimeout(timer);
     }
-    expect(caught).toBeInstanceOf(ToolLoaderError);
-    if (caught instanceof ToolLoaderError) {
+    expect(caught).toBeInstanceOf(ClosureMaterializationError);
+    if (caught instanceof ClosureMaterializationError) {
       expect(caught.category).toBe("registry.fetch.failed");
       expect(caught.message).toMatch(/exceeded the registry fetch timeout/);
     }

@@ -87,8 +87,8 @@ export type PackageJSON = typeof PackageJSON.infer;
  * module path relative to its package -- stays inside the package directory.
  * An absolute path or a `..` traversal escapes and returns false.
  *
- * This is the string-level half of the loader's containment rule. The
- * load-time loader (`resolveContainedEntry`) pairs it with a realpath-based
+ * This is the string-level half of the containment rule. The workflow
+ * definition loader (`resolveContainedEntry`) pairs it with a realpath-based
  * symlink-escape check that only a materialized directory can run; the
  * push-time asset validator, which has no filesystem, relies on this string
  * half alone. Both boundaries call this one predicate so they cannot diverge

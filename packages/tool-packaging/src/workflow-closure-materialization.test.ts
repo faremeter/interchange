@@ -8,7 +8,7 @@ import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { createTarballCache, type TarballCache } from "./cache";
-import type { TarballFetcher } from "./loader";
+import type { TarballFetcher } from "./tarball-fetcher";
 import { hostPlatform } from "./materialization-config";
 import type { RegistryConfig } from "./resolver";
 import {
@@ -69,7 +69,7 @@ afterEach(async () => {
 
 /**
  * Pack a package directory into an npm-style tarball (with the `package/`
- * prefix the loader strips) and return its bytes plus the SRI integrity the
+ * prefix materialization strips) and return its bytes plus the SRI integrity the
  * frozen manifest pins.
  */
 async function packFixture(

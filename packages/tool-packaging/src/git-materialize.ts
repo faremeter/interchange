@@ -20,7 +20,10 @@ import {
 } from "@intx/storage-isogit/node";
 import type { ToolPackageAssetSourceTree } from "@intx/types/tool-packages";
 
-import { ToolLoaderError, describeError } from "./loader-internal";
+import {
+  ClosureMaterializationError,
+  describeError,
+} from "./materialization-internal";
 
 const logger = getLogger(["sidecar", "tool-packaging", "git-materialize"]);
 
@@ -54,7 +57,7 @@ export async function materializeGitEntry(args: {
     });
     subtreeOid = oid;
   } catch (err) {
-    throw new ToolLoaderError({
+    throw new ClosureMaterializationError({
       category: "git.materialization.failed",
       message: `git subtree ${JSON.stringify(source.packageDir)} for ${name}@${version} could not be read at ${source.commitSha}: ${describeError(err)}`,
       package: { name, version },
@@ -65,7 +68,7 @@ export async function materializeGitEntry(args: {
   // same git objects, so a mismatch means the delivered pack diverges from
   // what was frozen; fail loud rather than materialize unverified bytes.
   if (subtreeOid !== source.treeOid) {
-    throw new ToolLoaderError({
+    throw new ClosureMaterializationError({
       category: "git.materialization.failed",
       message: `git subtree ${JSON.stringify(source.packageDir)} at ${source.commitSha} for ${name}@${version} hashed to tree ${subtreeOid}, not the frozen ${source.treeOid}`,
       package: { name, version },
@@ -88,7 +91,7 @@ export async function materializeGitEntry(args: {
     await fs.rm(dir, { recursive: true, force: true }).catch((rmErr) => {
       logger.warn`git subtree scratch cleanup failed at ${dir}: ${describeError(rmErr)}`;
     });
-    throw new ToolLoaderError({
+    throw new ClosureMaterializationError({
       category: "git.materialization.failed",
       message: `writing git subtree for ${name}@${version} failed: ${describeError(err)}`,
       package: { name, version },

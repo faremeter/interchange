@@ -1237,7 +1237,7 @@ describe("parsePin", () => {
 
   test("rejects a mixed-case package name", () => {
     // npm itself forbids uppercase in package names; the sidecar
-    // loader matches entries by their lowercase packument name, so a
+    // matches entries by their lowercase packument name, so a
     // mixed-case pin would silently fall off the matcher's key set.
     expect(() => parsePin("@INTX/tools-mail@1.0.0")).toThrow(
       /pin name must be lowercase/,

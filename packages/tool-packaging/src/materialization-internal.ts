@@ -1,8 +1,7 @@
-// Shared internals of the tool-package loader: the failure type, the fetch
+// Shared internals of closure materialization: the failure type, the fetch
 // byte/time caps, and the small cross-cutting helpers. Split out so the
-// registry-fetch and store-layout modules and `loader.ts` itself can all depend
-// on them without an import cycle. `loader.ts` re-exports the public members
-// (`ToolLoaderError`, the `DEFAULT_*` caps) so existing consumers are unaffected.
+// registry-fetch, tarball-fetcher and store-layout modules can all depend on
+// them without an import cycle.
 
 import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
 
@@ -21,15 +20,16 @@ export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
  * block the fetch -- and the closure materialization awaiting it --
  * indefinitely. The deadline is generous so a legitimately large tarball on a
  * slow link still completes within it. Callers that need a different bound pass
- * `registryFetchTimeoutMs` to `createToolLoader`.
+ * `registryFetchTimeoutMs` to `createTarballFetcher`.
  */
 export const DEFAULT_REGISTRY_FETCH_TIMEOUT_MS = 120 * 1000;
 
 /**
- * A tool-loader failure carrying its `DeployApplyErrorCategory` (and, when the
- * failure is attributable to a specific package, its name and version).
+ * A closure-materialization failure carrying its `DeployApplyErrorCategory`
+ * (and, when the failure is attributable to a specific package, its name and
+ * version).
  */
-export class ToolLoaderError extends Error {
+export class ClosureMaterializationError extends Error {
   readonly category: DeployApplyErrorCategory;
   readonly package:
     | { readonly name: string; readonly version: string }
@@ -41,7 +41,7 @@ export class ToolLoaderError extends Error {
     package?: { name: string; version: string };
   }) {
     super(opts.message);
-    this.name = "ToolLoaderError";
+    this.name = "ClosureMaterializationError";
     this.category = opts.category;
     this.package = opts.package;
   }

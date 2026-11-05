@@ -28,13 +28,16 @@ import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import type { TarballCache } from "./cache";
 import {
-  createTarballFetcher,
-  type HostPlatform,
-  type TarballFetcher,
-} from "./loader";
-import { ToolLoaderError, describeError } from "./loader-internal";
+  ClosureMaterializationError,
+  describeError,
+} from "./materialization-internal";
 import type { RegistryConfig } from "./resolver";
-import { materializeClosure, storeEntryDir } from "./store-layout";
+import {
+  type HostPlatform,
+  materializeClosure,
+  storeEntryDir,
+} from "./store-layout";
+import { createTarballFetcher, type TarballFetcher } from "./tarball-fetcher";
 
 const logger = getLogger(["sidecar", "workflow-closure-apply"]);
 
@@ -60,9 +63,9 @@ export interface ApplyFrozenWorkflowClosureArgs {
   readonly cache: TarballCache;
   /** Byte cap for a single HTTP-registry tarball fetch. */
   readonly registryMaxTarballBytes: number;
-  /** Registry identifier -> URL + credentials the loader resolves entries against. */
+  /** Registry identifier -> URL + credentials materialization resolves entries against. */
   readonly registries: ReadonlyMap<string, RegistryConfig>;
-  /** npm `os`/`cpu` pair the loader selects optional dependencies with. */
+  /** npm `os`/`cpu` pair materialization selects optional dependencies with. */
   readonly host: HostPlatform;
   /**
    * Workspace root `kind: "asset"` closure entries mount against. A
@@ -122,9 +125,9 @@ export async function applyFrozenWorkflowClosure(
 
   // Boundary check on the definition's source. The `registry` arm surfaces a
   // missing source registry loudly before any I/O (the per-entry registry
-  // gates fire again inside the loader). An `asset` closure materializes its
+  // gates fire again inside materialization). An `asset` closure materializes its
   // entries from the durable stores the caller populated: tarball entries from
-  // `assetMounts`, source entries from `gitDirs`; the loader fails loud
+  // `assetMounts`, source entries from `gitDirs`; materialization fails loud
   // (`asset.mount.missing` / `git.materialization.failed`) if either is absent.
   // The `never` default makes a future source kind a compile error rather than
   // a silent fallthrough.
@@ -173,7 +176,7 @@ export async function applyFrozenWorkflowClosure(
   } catch (cause) {
     await fs.rm(deployDir, { recursive: true, force: true });
     const detail =
-      cause instanceof ToolLoaderError
+      cause instanceof ClosureMaterializationError
         ? `${cause.category}: ${cause.message}`
         : describeError(cause);
     throw new Error(
