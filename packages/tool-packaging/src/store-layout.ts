@@ -104,7 +104,7 @@ export interface MaterializeClosureResult {
  * Only entries whose `os`/`cpu` match `host` are materialized; the rest
  * are skipped with a `platform.mismatch.skipped` debug log. Errors
  * surface as `ClosureMaterializationError` with a `category` matching the
- * corresponding `DeployApplyErrorCategory`.
+ * corresponding `ClosureMaterializationErrorCategory`.
  */
 export async function materializeClosure(
   args: MaterializeClosureArgs,

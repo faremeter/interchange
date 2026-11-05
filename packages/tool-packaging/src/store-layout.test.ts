@@ -9,7 +9,10 @@ import ssri from "ssri";
 import npmRegistryFetch from "npm-registry-fetch";
 
 import { createTarballCache } from "./cache";
-import { ClosureMaterializationError } from "./materialization-internal";
+import {
+  type ClosureMaterializationErrorCategory,
+  ClosureMaterializationError,
+} from "./materialization-internal";
 import {
   buildRegistryFetchOpts,
   readResponseWithLimit,
@@ -20,7 +23,6 @@ import {
   storeEntryDir,
 } from "./store-layout";
 import { type TarballFetcher, createTarballFetcher } from "./tarball-fetcher";
-import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 let scratchRoot: string;
@@ -588,7 +590,7 @@ describe("materialization error categories", () => {
       manifest: ToolPackageManifest;
       fetchTarball: TarballFetcher;
     },
-    category: DeployApplyErrorCategory,
+    category: ClosureMaterializationErrorCategory,
   ): Promise<void> {
     const cache = createTarballCache({
       rootDir: cacheDir,

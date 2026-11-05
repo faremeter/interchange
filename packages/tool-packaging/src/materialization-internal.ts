@@ -3,8 +3,6 @@
 // registry-fetch, tarball-fetcher and store-layout modules can all depend on
 // them without an import cycle.
 
-import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
-
 /**
  * Maximum bytes a single registry tarball fetch will read before aborting. The
  * cap bounds the memory a malicious or misconfigured registry can force a
@@ -25,12 +23,48 @@ export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_REGISTRY_FETCH_TIMEOUT_MS = 120 * 1000;
 
 /**
- * A closure-materialization failure carrying its `DeployApplyErrorCategory`.
+ * Categories of closure materialization failure. Each value names one failure
+ * kind; a single category fires per failed attempt.
+ *
+ * - `tarball.missing`: a manifest entry's asset-sourced tarball is not present
+ *   at the recorded path.
+ * - `asset.mount.missing`: a `kind: "asset"` manifest entry names an `assetId`
+ *   the asset mount map does not cover. That is a mismatch between the assets
+ *   the closure names and those delivered, not a missing file.
+ * - `integrity.mismatch`: fetched tarball bytes do not match the manifest's
+ *   pinned SRI integrity.
+ * - `registry.fetch.failed`: the configured registry refused or dropped the
+ *   request for a tarball.
+ * - `registry.unknown`: the manifest entry references a registry name not
+ *   present in the sidecar's registry config.
+ * - `registry.auth.failed`: the registry rejected the sidecar's credentials.
+ * - `tarball.extract.failed`: reading, re-verifying, or unpacking the cached
+ *   tarball failed.
+ * - `git.materialization.failed`: a git-sourced entry could not be materialized
+ *   from its checked-out subtree, or reached the tarball fetcher.
+ * - `package.entry.invalid`: a closure entry could not be laid out: its
+ *   package.json is malformed, a path escapes its root, its dependencies
+ *   collide, or a hard dependency has no satisfying closure version.
  */
-export class ClosureMaterializationError extends Error {
-  readonly category: DeployApplyErrorCategory;
+export type ClosureMaterializationErrorCategory =
+  | "tarball.missing"
+  | "asset.mount.missing"
+  | "integrity.mismatch"
+  | "registry.fetch.failed"
+  | "registry.unknown"
+  | "registry.auth.failed"
+  | "tarball.extract.failed"
+  | "git.materialization.failed"
+  | "package.entry.invalid";
 
-  constructor(opts: { category: DeployApplyErrorCategory; message: string }) {
+/** A closure-materialization failure carrying its category. */
+export class ClosureMaterializationError extends Error {
+  readonly category: ClosureMaterializationErrorCategory;
+
+  constructor(opts: {
+    category: ClosureMaterializationErrorCategory;
+    message: string;
+  }) {
     super(opts.message);
     this.name = "ClosureMaterializationError";
     this.category = opts.category;
