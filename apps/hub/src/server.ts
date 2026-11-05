@@ -55,7 +55,6 @@ import {
   recoverSenderDeploy,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
   pushCredentialReconcile,
-  WORKSPACE_BUILTINS_REGISTRY,
   type SidecarLookups,
   type SidecarProvisioner,
   type SidecarProvisionerChooser,
@@ -404,10 +403,6 @@ export async function createHubServer({
     toolPackageRegistries: {
       httpRegistries,
       defaultRegistry: "npmjs",
-      // The `workspace-builtins` package-registry asset hosts the
-      // three in-tree tool packages (`@intx/tools-mail`,
-      // `@intx/tools-posix`, `@intx/tools-lsp`).
-      scopeRouting: [{ scope: "@intx", registry: WORKSPACE_BUILTINS_REGISTRY }],
     },
   });
 

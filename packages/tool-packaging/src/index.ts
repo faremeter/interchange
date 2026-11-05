@@ -11,7 +11,7 @@
 // Two surface areas:
 //
 //   - Hub-side (deploy assembly):
-//       createClosureResolver({ registries, scopeRouting? })
+//       createClosureResolver({ source })
 //         → resolveClosure(pins) → ToolPackageManifest
 //
 //   - Sidecar-side (deploy apply):
@@ -39,7 +39,6 @@ export {
   type PeerDependencyViolation,
   type RegistryConfig,
   type RegistrySource,
-  type ScopeRoute,
   AssetRegistrySource,
   HttpRegistrySource,
   ManifestInvalidError,

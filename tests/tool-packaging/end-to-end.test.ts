@@ -26,7 +26,6 @@ import {
   type Packument,
   type PackumentFetcher,
   type RegistryConfig,
-  type RegistrySource,
   AssetRegistrySource,
   HttpRegistrySource,
   createClosureResolver,
@@ -169,8 +168,7 @@ describe("hub→sidecar pipeline (happy path)", () => {
       fetchPackument,
     });
     const resolver = createClosureResolver({
-      registries: new Map([[source.name, source]]),
-      defaultRegistry: source.name,
+      source,
     });
     const pins: ToolPackagePin[] = [
       { name: fixture.name, version: fixture.version },
@@ -341,8 +339,7 @@ describe("hub→sidecar pipeline (failure paths)", () => {
       fetchPackument,
     });
     const resolver = createClosureResolver({
-      registries: new Map([[source.name, source]]),
-      defaultRegistry: source.name,
+      source,
     });
     let caught: unknown;
     try {
@@ -511,13 +508,7 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
       readBlob: fixture.readBlob,
       listBlobs: fixture.listBlobs,
     });
-    const registries = new Map<string, RegistrySource>([
-      [assetSource.name, assetSource],
-    ]);
-    const resolver = createClosureResolver({
-      registries,
-      defaultRegistry: assetSource.name,
-    });
+    const resolver = createClosureResolver({ source: assetSource });
     const pins: ToolPackagePin[] = [{ name: "asset-tool", version: "1.2.3" }];
     const manifest = await resolver.resolveClosure(pins);
     expect(manifest.entries).toHaveLength(1);

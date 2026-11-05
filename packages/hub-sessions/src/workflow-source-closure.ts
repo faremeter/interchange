@@ -473,10 +473,7 @@ async function resolveExternalClosure(
     config: registryConfig,
     ...(fetchPackument !== undefined ? { fetchPackument } : {}),
   });
-  const resolver = createClosureResolver({
-    registries: new Map([[registryName, registrySource]]),
-    defaultRegistry: registryName,
-  });
+  const resolver = createClosureResolver({ source: registrySource });
   const rootPins: ToolPackagePin[] = [...pins].map(([name, version]) => ({
     name,
     version,
