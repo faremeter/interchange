@@ -499,10 +499,10 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
     const fixture = await buildAssetRegistryFixture([
       { name: "asset-tool", version: "1.2.3", exportName: "main" },
     ]);
-    const assetId = "asset_workspace_builtins";
+    const assetId = "asset_tool_registry";
 
     const assetSource = new AssetRegistrySource({
-      name: "workspace-builtins",
+      name: "tool-registry",
       assetId,
       readBlob: fixture.readBlob,
       listBlobs: fixture.listBlobs,

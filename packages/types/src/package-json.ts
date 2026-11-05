@@ -1,13 +1,10 @@
 // Schema for the subset of `package.json` fields the asset substrate
-// and tool-package builders read, plus the credential declaration
-// `defineTool` takes, which is not a `package.json` field.
+// and closure tooling read, plus the credential declaration `defineTool`
+// takes, which is not a `package.json` field.
 //
 // Promoted here so the package-registry kind handler (in
-// `@intx/hub-sessions`) and the workspace builtin-packing script
-// (`bin/build-builtins.ts`) share one definition: the asset
-// substrate's validation of an uploaded tarball must match the field
-// set the build path emits, otherwise a freshly-packed builtin would
-// be rejected for shape reasons the build did not anticipate.
+// `@intx/hub-sessions`), closure materialization and the workflow child
+// share one definition of what a package's manifest must hold.
 
 import { type } from "arktype";
 
@@ -59,15 +56,15 @@ export type ToolCredentialDeclarationArray =
 
 /**
  * Required fields plus the `interchange` extensions used to identify
- * interchange packages: `tools` names the module the built-in packer bundles
- * and that plugin factories are imported from, `workflow` names the module
- * whose evaluation produces a workflow package's `WorkflowDefinition`,
- * `directors` names the module whose exports are the package's custom
- * `defineDirector` factories, `loops` names the module whose exports are the
- * package's `loop` `while`/`carry` functions, and `actions` names the module
- * whose exports are the package's `action` handlers. `loops` and `actions` refs
- * are resolved by export name at establish. `onUndeclaredKey("ignore")` lets the
- * arbitrary upstream npm fields pass through without listing them.
+ * interchange packages: `tools` names the module plugin factories are imported
+ * from, `workflow` names the module whose evaluation produces a workflow
+ * package's `WorkflowDefinition`, `directors` names the module whose exports are
+ * the package's custom `defineDirector` factories, `loops` names the module
+ * whose exports are the package's `loop` `while`/`carry` functions, and
+ * `actions` names the module whose exports are the package's `action` handlers.
+ * `loops` and `actions` refs are resolved by export name at establish.
+ * `onUndeclaredKey("ignore")` lets the arbitrary upstream npm fields pass
+ * through without listing them.
  */
 export const PackageJSON = type({
   name: "string",

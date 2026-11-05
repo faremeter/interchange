@@ -30,10 +30,7 @@ import {
 import { eq } from "drizzle-orm";
 import { createDB } from "@intx/db";
 import { asset } from "@intx/db/schema";
-import {
-  WORKSPACE_BUILTINS_REGISTRY,
-  ensureWorkflowDefinitionForAsset,
-} from "@intx/hub-sessions";
+import { ensureWorkflowDefinitionForAsset } from "@intx/hub-sessions";
 import { catalogModels, catalogProviders } from "@intx/inference-catalog";
 import { computeLiveDefinitionHash } from "@intx/workflow";
 
@@ -312,38 +309,6 @@ const widgetsTenantId = await ensureTenant(
   aliceCookies,
 );
 log(`  Widgets tenant ID: ${widgetsTenantId}`);
-
-// -- Ensure the workspace-builtins package-registry asset exists --
-//
-// Agent pins below reference `@intx/tools-*` packages, which the hub's
-// scope-routing config maps to the `workspace-builtins` registry. The
-// asset row must exist on the Acme tenant so the session-service
-// resolver can find it at launch time. `bin/publish-tool-packages.ts`
-// (run from `bin/dev.ts` before seed) populates the tarballs; this
-// step is a safety net for re-runs of seed against a hub that already
-// has the asset row created.
-
-log("Ensuring workspace-builtins package-registry asset...");
-
-const { status: regStatus, data: regData } = await api(
-  "POST",
-  `/api/tenants/${acmeTenantId}/assets`,
-  { kind: "package-registry", name: WORKSPACE_BUILTINS_REGISTRY },
-  aliceCookies,
-);
-if (regStatus === 201 || regStatus === 409) {
-  log(
-    regStatus === 201
-      ? "  Created workspace-builtins asset"
-      : "  workspace-builtins asset already exists",
-  );
-} else {
-  process.stderr.write(
-    `[seed] FAIL ensure workspace-builtins: expected 201 or 409, got ${String(regStatus)}\n`,
-  );
-  process.stderr.write(`[seed]   ${JSON.stringify(regData)}\n`);
-  process.exit(1);
-}
 
 // -- Invite Bob to Acme --
 

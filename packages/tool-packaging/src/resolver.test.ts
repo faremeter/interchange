@@ -785,8 +785,8 @@ describe("AssetRegistrySource", () => {
       { name: "tools-alpha", version: "1.0.0" },
     ]);
     const src = new AssetRegistrySource({
-      name: "workspace-builtins",
-      assetId: "asset_workspace_builtins",
+      name: "tool-registry",
+      assetId: "asset_tool_registry",
       readBlob: fixture.readBlob,
       listBlobs: fixture.listBlobs,
     });
@@ -800,7 +800,7 @@ describe("AssetRegistrySource", () => {
     const entry = manifest.entries[0];
     expect(entry?.source).toEqual({
       kind: "asset",
-      assetId: "asset_workspace_builtins",
+      assetId: "asset_tool_registry",
       package: {
         format: "tarball",
         path: `tarballs/${fixture.tarballNames[0]}`,

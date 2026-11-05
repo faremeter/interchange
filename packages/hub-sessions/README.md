@@ -82,8 +82,7 @@ for the authoritative type shapes.
 - Package registry: `packageRegistryKindHandler`,
   `packageRegistryAuthorize`, `asTarballEntry`,
   `validateTarballPackageJSON`, and the constants `TARBALLS_PREFIX`,
-  `TARBALL_FILENAME_PATTERN`, `REGISTRY_INDEX_PATH`,
-  `WORKSPACE_BUILTINS_REGISTRY`.
+  `TARBALL_FILENAME_PATTERN`, `REGISTRY_INDEX_PATH`.
 
 ### Workflow-run substrate
 

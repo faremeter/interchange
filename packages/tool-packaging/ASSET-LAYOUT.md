@@ -1,27 +1,25 @@
-# Tool-package asset layout
+# Package-registry asset layout
 
-Tool packages distributed through the asset substrate live in a
+Packages distributed through the asset substrate live in a
 `package-registry` asset. The asset row sits on a tenant; the asset's
 backing git repo holds one tarball per name+version under `tarballs/`.
 
 ```
 <asset-root>/
 └── tarballs/
-    ├── @intx-tools-mail-0.1.2.tgz
-    ├── @intx-tools-posix-0.1.2.tgz
-    └── @intx-tools-lsp-0.1.2.tgz
+    ├── @acme-workflow-1.0.0.tgz
+    └── @acme-tools-1.2.3.tgz
 ```
 
-Filenames for scoped packages flatten the scope with a `-` separator
-(`@scope/tail` → `@scope-tail`) so two scoped packages whose tails
-collide remain distinguishable on disk.
+A filename cannot hold a `/`, so a scoped package flattens its scope with
+a `-` by convention (`@scope/tail` → `@scope-tail`), which keeps two scoped
+packages whose tails collide distinguishable on disk.
 
 ## Asset shape
 
 - **Asset kind**: `package-registry`.
 - **Asset name**: lowercase-kebab, addressable by REST and resolvable
-  via the tenant-inheritance walker. Operators choose the name; the
-  workspace's built-ins ship under `workspace-builtins`.
+  via the tenant-inheritance walker. Operators choose the name.
 - **Contents**: `tarballs/<basename>-<version>.tgz` files at the root
   of the `tarballs/` directory. Filenames must match the
   `<basename>-<version>.tgz` pattern the `package-registry` kind
@@ -50,14 +48,14 @@ tarball entry looks like:
 
 ```json
 {
-  "name": "@intx/tools-mail",
-  "version": "0.1.2",
+  "name": "@acme/workflow",
+  "version": "1.0.0",
   "source": {
     "kind": "asset",
-    "assetId": "ast_workspace_builtins",
+    "assetId": "ast_tool_registry",
     "package": {
       "format": "tarball",
-      "path": "tarballs/@intx-tools-mail-0.1.2.tgz",
+      "path": "tarballs/@acme-workflow-1.0.0.tgz",
       "integrity": "sha512-..."
     }
   }
@@ -70,7 +68,7 @@ root on the sidecar to locate the bytes.
 ## Mount table
 
 Materialization takes a `Map<assetId, mountPath>`, for example
-`ast_workspace_builtins` to `source-assets/ast_workspace_builtins/`. It uses
+`ast_tool_registry` to `source-assets/ast_tool_registry/`. It uses
 the map to resolve every `kind: "asset"` entry — looking up the mount
 path by `source.assetId`, then joining it with `source.package.path`
 against the workspace's asset root.
@@ -110,15 +108,6 @@ for the apply.
   `source.package.integrity` field before extraction. That SRI hash, in the
   closure the hub froze, is what the sidecar trusts; the asset repo's commit
   signatures are not verified at runtime.
-- The workspace's bundled tarballs (`bin/build-builtins.ts`) emit a
-  packed `package.json` with `dependencies`, `devDependencies`,
-  `optionalDependencies`, and `exports` deleted: every workspace and
-  catalog dependency is inlined into a single bundled entry, and the
-  tarball carries no `exports` so a consumer attempting
-  `import "@intx/tools-mail"` would fail to resolve a public subpath. Operators publishing their own packages
-  through the asset substrate can preserve `exports` if they want
-  standalone consumability; the workspace builtins deliberately do
-  not.
 
 ## REST surface
 
@@ -128,9 +117,6 @@ for the apply.
 | Upload a tarball     | `PUT /api/tenants/:tid/assets/:assetId/tarballs/:filename` (`application/octet-stream`) |
 | List tarballs        | `GET /api/tenants/:tid/assets/:assetId/tarballs`                                        |
 | Delete a tarball     | `DELETE /api/tenants/:tid/assets/:assetId/tarballs/:filename`                           |
-
-`bin/publish-tool-packages.ts` is the reference REST client for this
-surface.
 
 ## Registry vs asset
 

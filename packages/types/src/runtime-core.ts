@@ -673,10 +673,9 @@ export class MessageTransportError extends Error {
 }
 
 /**
- * `instanceof` is not usable for this: a tool package is published as a bundle
- * whose workspace imports are inlined (`bin/build-builtins.ts`), so a consumer
- * loaded from a bundle holds its own copy of the class above and answers false
- * against an error the host's copy constructed.
+ * `instanceof` is not usable for this: a workflow bundle inlines its workspace
+ * imports, so a consumer loaded from one holds its own copy of the class above
+ * and answers false against an error the host's copy constructed.
  */
 export function isMessageTransportError(
   value: unknown,

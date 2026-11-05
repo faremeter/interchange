@@ -125,12 +125,6 @@ format: FORCE
 docs: FORCE
 	$(BUN) bin/gen-api-docs.ts
 
-builtins: FORCE
-	$(BUN) run bin/build-builtins.ts
-
-publish-builtins: builtins
-	$(BUN) bin/publish-tool-packages.ts --registry workspace-builtins --from dist/builtins
-
 clean:
 	rm -f .env-checked .eslintcache
 	find . -type f -name tsconfig.tsbuildinfo -a ! -path '*/node_modules/*' | xargs rm -f
@@ -142,5 +136,5 @@ clean:
 
 include .env-checked
 
-.PHONY: all build build-admin-ui lint test test-unit test-workflow test-core test-load test-e2e test-e2e-run test-storage-browser verify-tool-load format docs clean builtins publish-builtins
+.PHONY: all build build-admin-ui lint test test-unit test-workflow test-core test-load test-e2e test-e2e-run test-storage-browser verify-tool-load format docs clean
 FORCE:

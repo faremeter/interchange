@@ -226,7 +226,7 @@ describe("ToolPackageManifestEntry", () => {
     version: "1.2.3",
     source: {
       kind: "asset",
-      assetId: "asset_workspace_builtins",
+      assetId: "asset_tool_registry",
       package: {
         format: "tarball",
         path: "tarballs/intx-tools-posix-1.2.3.tgz",
@@ -265,7 +265,7 @@ describe("ToolPackageManifestEntry", () => {
       version: validEntry.version,
       source: {
         kind: "asset",
-        assetId: "asset_workspace_builtins",
+        assetId: "asset_tool_registry",
         package: {
           format: "tarball",
           path: "tarballs/intx-tools-posix-1.2.3.tgz",
@@ -294,7 +294,7 @@ describe("ToolPackageManifest", () => {
         version: "1.2.3",
         source: {
           kind: "asset",
-          assetId: "asset_workspace_builtins",
+          assetId: "asset_tool_registry",
           package: {
             format: "tarball",
             path: "tarballs/intx-tools-posix-1.2.3.tgz",
@@ -329,7 +329,7 @@ describe("ToolPackageManifest", () => {
           version: "1.0.0",
           source: {
             kind: "asset",
-            assetId: "asset_workspace_builtins",
+            assetId: "asset_tool_registry",
             package: {
               format: "tarball",
               path: "tarballs/tools-with-deps-1.0.0.tgz",

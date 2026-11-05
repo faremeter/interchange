@@ -60,9 +60,7 @@ Properties that fall out of this layout:
 - **Runtime-agnostic tarballs.** The layout does no Bun-specific
   resolution. A package whose entry is a `.js` file with no
   workspace-only deps loads identically on Node
-  and Bun. The workspace's built-in tool packages bundle their entries
-  through `bin/build-builtins.ts` precisely so the produced tarballs
-  satisfy this property.
+  and Bun.
 
 ## Optional-dependency semantics
 
