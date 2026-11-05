@@ -31,13 +31,13 @@ import type {
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import type { TarballCache } from "./cache";
-import {
-  createTarballFetcher,
-  type HostPlatform,
-  type TarballFetcher,
-} from "./loader";
 import type { RegistryConfig } from "./resolver";
-import { materializeClosure, storeEntryDir } from "./store-layout";
+import {
+  type HostPlatform,
+  materializeClosure,
+  storeEntryDir,
+} from "./store-layout";
+import { createTarballFetcher, type TarballFetcher } from "./tarball-fetcher";
 
 const logger = getLogger(["sidecar", "workflow-closure-materialization"]);
 
@@ -66,14 +66,14 @@ export interface WorkflowClosureMaterializerConfig {
    * before any pack is decoded.
    */
   readonly maxAssetPayloadBytes: number;
-  /** Registry identifier -> URL + credentials the loader resolves entries against. */
+  /** Registry identifier -> URL + credentials materialization resolves entries against. */
   readonly registries: ReadonlyMap<string, RegistryConfig>;
   /**
    * Root directory under which each probe's ephemeral closure scratch dir
    * is created (one per probe, removed by the returned `cleanup`).
    */
   readonly scratchRoot: string;
-  /** npm `os`/`cpu` pair the loader selects optional dependencies with. */
+  /** npm `os`/`cpu` pair materialization selects optional dependencies with. */
   readonly host: HostPlatform;
   /**
    * Materialize the frame's inline-delivered assets into `assetRoot` and
@@ -93,7 +93,6 @@ export interface WorkflowClosureMaterializerConfig {
   /**
    * Test seam for tarball fetching. Production omits it and gets
    * `createTarballFetcher`.
-   * Production omits it and the loader fetches from the configured registry.
    */
   readonly fetchTarball?: TarballFetcher;
 }
@@ -136,7 +135,7 @@ export function createWorkflowClosureMaterializer(
 
     // Boundary check on the definition's source. The `registry` arm surfaces a
     // missing source registry loudly before any I/O (the per-entry registry
-    // gates fire again inside the loader). An `asset` closure is materialized
+    // gates fire again inside materialization). An `asset` closure is materialized
     // from the `assets` the frame delivers -- tarball entries from a plain-file
     // mount, source entries from an indexed gitDir -- checked below. The
     // `never` default makes a future source kind a compile error rather than a
@@ -168,8 +167,8 @@ export function createWorkflowClosureMaterializer(
     try {
       // Materialize any inline-delivered assets under the probe scratch:
       // tarball entries as plain files under the workspace root, source entries
-      // as an indexed gitDir the loader checks subtrees out of. Registry-sourced
-      // closures deliver none; both maps stay empty and the loader fetches over
+      // as an indexed gitDir materialization checks subtrees out of. Registry-sourced
+      // closures deliver none; both maps stay empty and materialization fetches over
       // HTTP.
       const assetRoot = path.join(scratchDir, "workspace");
       const gitDirRoot = path.join(scratchDir, "gitdirs");

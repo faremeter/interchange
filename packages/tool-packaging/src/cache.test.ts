@@ -157,7 +157,7 @@ describe("LRU eviction when over cap", () => {
     // A single entry bigger than the cap would, without protection,
     // be the only candidate the LRU sweep finds: the just-written
     // tarball + just-extracted tree would be deleted before the
-    // loader could read it back, and the next apply would re-fetch
+    // materialization could read it back, and the next apply would re-fetch
     // and re-evict — perpetual churn. The just-written entry is
     // exempt from the sweep that its own extractTarball triggers.
     const big = await packFixtureTarball(scratch, {
@@ -596,8 +596,8 @@ describe("LRU eviction when over cap", () => {
     handle.release();
   });
 
-  test("extractTarball advances atime so loader-pattern hits beat the LRU sweep", async () => {
-    // The loader's hot path is `cache.has` + `cache.extractTarball` —
+  test("extractTarball advances atime so materialization-pattern hits beat the LRU sweep", async () => {
+    // Materialization's hot path is `cache.has` + `cache.extractTarball` —
     // `cache.get` is not in that flow. `cache.get` explicitly calls
     // `fs.utimes` so LRU ordering reflects access even on
     // noatime/relatime mounts; `extractTarball` must do the same or
@@ -626,8 +626,8 @@ describe("LRU eviction when over cap", () => {
     (await cache.extractTarball(b.integrity)).release();
     await new Promise((r) => setTimeout(r, 25));
 
-    // Touch `a` ONLY through the loader-shaped path (has + extract).
-    // This is the access pattern `materialize` uses on a cache hit;
+    // Touch `a` ONLY through the materialization-shaped path (has + extract).
+    // This is the access pattern `materializeClosure` uses on a cache hit;
     // it must advance `a`'s atime so the next cap sweep treats `a`
     // as the most-recently-used.
     expect(await cache.has(a.integrity)).toBe(true);

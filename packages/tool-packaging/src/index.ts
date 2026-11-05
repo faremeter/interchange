@@ -58,13 +58,17 @@ export {
   type HostPlatform,
   type MaterializeClosureArgs,
   type MaterializeClosureResult,
-  type TarballFetcher,
-  type TarballFetcherConfig,
-  ToolLoaderError,
-  createTarballFetcher,
   materializeClosure,
   storeEntryDir,
-} from "./loader";
+} from "./store-layout";
+
+export {
+  type TarballFetcher,
+  type TarballFetcherConfig,
+  createTarballFetcher,
+} from "./tarball-fetcher";
+
+export { ClosureMaterializationError } from "./materialization-internal";
 
 export {
   type ExtractPackageJSONOutcome,

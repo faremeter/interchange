@@ -62,8 +62,8 @@ import {
  * manifest `registry` references point at) is the slot it occupies
  * in the registry map: in the hub-side resolver, the key of the
  * `ReadonlyMap<string, RegistrySource>` passed to
- * `createClosureResolver`; in the sidecar-side loader, the key of
- * the `ReadonlyMap<string, RegistryConfig>` on `LoaderConfig`.
+ * `createClosureResolver`; in sidecar-side materialization, the key of
+ * the `ReadonlyMap<string, RegistryConfig>` passed to `materializeClosure`.
  * Keeping the name on the map slot rather than on the value
  * eliminates the (until-now uninforced) "the map key must equal the
  * config's name" invariant.
@@ -611,11 +611,10 @@ export function createClosureResolver(
       // but only after the round-trip; this catches them before.
       const requested = new Set<string>();
       // Track the resolved (concrete) version each top-level pin
-      // walked to, keyed by pin name. The sidecar's loader matches
-      // top-level entries by `${name}@${concrete-version}` to decide
-      // which packages contribute tool factories; emitting the pin's
-      // raw range here would cause every range-form pin to silently
-      // fail that lookup at apply time. Only the first arrival on
+      // walked to, keyed by pin name. The sidecar finds a top-level
+      // package in the store by `${name}@${concrete-version}`; emitting
+      // the pin's raw range here would make every range-form pin miss
+      // that lookup at apply time. Only the first arrival on
       // each pin name counts: a transitive dep that shares a
       // top-level name must not overwrite the top-level's resolved
       // version with its own.
@@ -1081,7 +1080,7 @@ export function parsePin(spec: string): ToolPackagePin {
   }
   // npm itself rejects uppercase in package names; packuments arrive
   // lowercased, so a mixed-case pin would self-resolve through
-  // `topLevelResolved` and then silently fail the sidecar loader's
+  // `topLevelResolved` and then silently fail the sidecar's
   // `${name}@${version}` lookup against the lowercase entry the
   // packument produced. Reject loudly at the boundary rather than
   // lowercasing the input — pin sets that mix cases are a bug in the

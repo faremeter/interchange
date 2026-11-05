@@ -7,7 +7,7 @@ import path from "node:path";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { createTarballCache, type TarballCache } from "./cache";
-import type { TarballFetcher } from "./loader";
+import type { TarballFetcher } from "./tarball-fetcher";
 import { hostPlatform } from "./materialization-config";
 import type { RegistryConfig } from "./resolver";
 import { applyFrozenWorkflowClosure } from "./workflow-closure-apply";
@@ -55,7 +55,7 @@ afterEach(async () => {
 
 /**
  * Pack the fixture workflow package into an npm-style tarball (with the
- * `package/` prefix the loader strips) and return its bytes plus the SRI
+ * `package/` prefix materialization strips) and return its bytes plus the SRI
  * integrity string the frozen manifest pins.
  */
 async function packWorkflowFixture(): Promise<{
@@ -250,7 +250,7 @@ describe("applyFrozenWorkflowClosure", () => {
     // This is the durable-store read path: the deploy checked the source asset
     // out at <assetRoot>/<mountPath>/, and both deploy and restore materialize
     // from there with no HTTP fetch. Stage the tarball as a plain file where the
-    // loader resolves a kind:"asset" entry, then apply.
+    // materialization resolves a kind:"asset" entry, then apply.
     const fixture = await packWorkflowFixture();
     const assetId = "asset_deploy";
     const mountPath = "source-assets/asset_deploy/";

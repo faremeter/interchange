@@ -30,7 +30,7 @@ collide remain distinguishable on disk.
   `PackageJSON` schema before the push is accepted.
 - **Mount path on the sidecar**: `source-assets/<assetId>/`
   (`workflowSourceAssetMountPath` in `@intx/types/workflow-sources`). Asset
-  packs land at `<assetRoot>/<mountPath>/`, so the sidecar's loader finds the
+  packs land at `<assetRoot>/<mountPath>/`, so the sidecar finds the
   tarballs at `<assetRoot>/source-assets/<assetId>/tarballs/`.
 
 ## Where the manifest lives
@@ -38,7 +38,7 @@ collide remain distinguishable on disk.
 The closure resolver walks a list of top-level packages, resolves
 transitive dependencies, and produces a `ToolPackageManifest` (validated
 by `@intx/types/tool-packages`). A deploy from source resolves its
-workflow's closure this way and hands the manifest to the loader.
+workflow's closure this way and hands the manifest to the sidecar.
 
 Manifest entries whose `source.kind` is `"asset"` carry the asset's id
 plus a `package` envelope. The envelope's `format` discriminates where
@@ -64,12 +64,12 @@ tarball entry looks like:
 }
 ```
 
-The loader joins `source.package.path` against the materialized asset
+The tarball fetcher joins `source.package.path` against the materialized asset
 root on the sidecar to locate the bytes.
 
 ## Mount table
 
-The loader takes a `Map<assetId, mountPath>`, for example
+Materialization takes a `Map<assetId, mountPath>`, for example
 `ast_workspace_builtins` to `source-assets/ast_workspace_builtins/`. It uses
 the map to resolve every `kind: "asset"` entry — looking up the mount
 path by `source.assetId`, then joining it with `source.package.path`
@@ -109,7 +109,7 @@ for the apply.
 
 - Bytes are exactly what an npm registry would serve: the package tree
   rooted under `package/`, gzipped tar.
-- Integrity is verified by the sidecar loader against the entry's
+- Integrity is verified by the sidecar against the entry's
   `source.package.integrity` field before extraction. That SRI hash, in the
   closure the hub froze, is what the sidecar trusts; the asset repo's commit
   signatures are not verified at runtime.
@@ -117,10 +117,8 @@ for the apply.
   packed `package.json` with `dependencies`, `devDependencies`,
   `optionalDependencies`, and `exports` deleted: every workspace and
   catalog dependency is inlined into a single bundled entry, and the
-  tarball carries no `exports` so it cannot be loaded by anything
-  other than the tool-package loader. A consumer attempting
-  `import "@intx/tools-mail"` from outside the loader would fail to
-  resolve a public subpath. Operators publishing their own packages
+  tarball carries no `exports` so a consumer attempting
+  `import "@intx/tools-mail"` would fail to resolve a public subpath. Operators publishing their own packages
   through the asset substrate can preserve `exports` if they want
   standalone consumability; the workspace builtins deliberately do
   not.

@@ -1,10 +1,8 @@
-// Registry HTTP fetch helpers for the tool-package loader: building the
+// Registry HTTP fetch helpers for closure materialization: building the
 // npm-registry-fetch options for a configured registry, deriving a default
-// tarball URL, and reading a response body under a byte cap. Extracted from
-// `loader.ts` so the fetch concern is isolated from author-code loading and
-// store layout.
+// tarball URL, and reading a response body under a byte cap.
 
-import { ToolLoaderError } from "./loader-internal";
+import { ClosureMaterializationError } from "./materialization-internal";
 import type { RegistryConfig } from "./resolver";
 
 export function buildRegistryFetchOpts(
@@ -118,7 +116,7 @@ export async function readResponseWithLimit(
   const declaredLengthRaw = res.headers.get("content-length");
   if (declaredLengthRaw !== null) {
     if (!/^\d+$/.test(declaredLengthRaw)) {
-      throw new ToolLoaderError({
+      throw new ClosureMaterializationError({
         category: "registry.fetch.failed",
         message: `registry "${ctx.registry}" returned non-digit Content-Length ${JSON.stringify(declaredLengthRaw)} for ${ctx.name}@${ctx.version}`,
         package: { name: ctx.name, version: ctx.version },
@@ -126,7 +124,7 @@ export async function readResponseWithLimit(
     }
     const declaredLength = Number(declaredLengthRaw);
     if (!Number.isFinite(declaredLength) || declaredLength > maxBytes) {
-      throw new ToolLoaderError({
+      throw new ClosureMaterializationError({
         category: "registry.fetch.failed",
         message: `tarball for ${ctx.name}@${ctx.version} declares Content-Length ${declaredLengthRaw} which exceeds the ${String(maxBytes)}-byte cap`,
         package: { name: ctx.name, version: ctx.version },
@@ -134,14 +132,14 @@ export async function readResponseWithLimit(
     }
   }
 
-  const timeoutError = (): ToolLoaderError =>
-    new ToolLoaderError({
+  const timeoutError = (): ClosureMaterializationError =>
+    new ClosureMaterializationError({
       category: "registry.fetch.failed",
       message: `tarball read for ${ctx.name}@${ctx.version} exceeded the registry fetch timeout`,
       package: { name: ctx.name, version: ctx.version },
     });
-  const capOverflowError = (): ToolLoaderError =>
-    new ToolLoaderError({
+  const capOverflowError = (): ClosureMaterializationError =>
+    new ClosureMaterializationError({
       category: "registry.fetch.failed",
       message: `tarball for ${ctx.name}@${ctx.version} streamed past the ${String(maxBytes)}-byte cap`,
       package: { name: ctx.name, version: ctx.version },
@@ -215,7 +213,7 @@ export async function readResponseWithLimit(
       for await (const chunk of body) {
         if (timedOut) throw timeoutError();
         if (!(chunk instanceof Uint8Array)) {
-          throw new ToolLoaderError({
+          throw new ClosureMaterializationError({
             category: "registry.fetch.failed",
             message: `registry "${ctx.registry}" streamed a non-binary chunk fetching ${ctx.name}@${ctx.version}`,
             package: { name: ctx.name, version: ctx.version },
@@ -230,13 +228,14 @@ export async function readResponseWithLimit(
       // race does not slip through as a successful read.
       if (timedOut) throw timeoutError();
     } catch (err) {
-      if (timedOut && !(err instanceof ToolLoaderError)) throw timeoutError();
+      if (timedOut && !(err instanceof ClosureMaterializationError))
+        throw timeoutError();
       throw err;
     } finally {
       signal?.removeEventListener("abort", onAbort);
     }
   } else {
-    throw new ToolLoaderError({
+    throw new ClosureMaterializationError({
       category: "registry.fetch.failed",
       message: `registry "${ctx.registry}" returned a response body of an unreadable shape for ${ctx.name}@${ctx.version}`,
       package: { name: ctx.name, version: ctx.version },

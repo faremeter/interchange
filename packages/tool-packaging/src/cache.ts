@@ -11,10 +11,10 @@
 // one entry (used after extraction discovers a corrupted file on disk).
 //
 // `maxBytes` covers both the tarball bytes and the size of the
-// extracted directory tree the loader copies from. The extraction
+// extracted directory tree materialization copies from. The extraction
 // tree dominates disk usage in practice (tarballs are gzip-compressed;
 // the unpacked tree is multiples larger), so the cap reflects the cost
-// of holding one cache entry but excludes the loader's per-instance
+// of holding one cache entry but excludes materialization's per-instance
 // copies.
 //
 // Integrity is verified on store and re-verified inside
@@ -25,7 +25,7 @@
 //
 // `extractTarball` is the second face of the same on-disk store: it
 // unpacks the tarball into a sibling `extracted/` directory keyed by
-// the same integrity, so the per-instance loader can copy from a
+// the same integrity, so per-instance materialization can copy from a
 // stable, deduplicated extraction without re-doing the tar work on
 // every apply. The unpack is gated by a per-integrity tmp-and-rename
 // dance with the same crash-safety properties as `put`.
@@ -387,7 +387,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
    *
    * ACCOUNTING vs. DISK USAGE: `maxBytes` bounds the sum reported by
    * this walker, not the actual disk consumption of the cache plus
-   * its downstream consumers. The loader's per-instance store dirs
+   * its downstream consumers. Materialization's per-instance store dirs
    * contain independent copies that are outside this cache tree, so
    * the cap is a steady-state ceiling on the cache's own accounting,
    * not a sidecar-wide disk-usage limit. Concurrent vanishes during
@@ -399,7 +399,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
    * Symlinks (both file- and directory-targeted) are NOT traversed:
    * `lstat` here returns the link itself rather than its target, and
    * `dirent.isSymbolicLink()` is the entry-walk equivalent. An npm
-   * tarball that ships symlinks is preserved verbatim by the loader's
+   * tarball that ships symlinks is preserved verbatim by materialization's
    * copy-tree pass; charging the link's own size (zero in our
    * accounting) avoids both symlink-loop divergence and double-counting
    * the target through whatever path also names it directly.
@@ -523,7 +523,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
       heldOverCap.clear();
     } else {
       // This warning may fire twice for the same integrity in one
-      // loader pass — once after `put` writes the bytes and once after
+      // materialization pass — once after `put` writes the bytes and once after
       // `extractTarball` unpacks them, since both invoke the sweep
       // with the same `justWritten` integrity. Operator log
       // aggregation should dedup on `integrity` if the noise becomes
@@ -678,7 +678,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
             if (released) return;
             released = true;
             // Fire-and-forget: deferred reclaim runs asynchronously,
-            // but release() returns synchronously so the loader's
+            // but release() returns synchronously so materialization's
             // walk-complete site does not need to await. Reclaim
             // failures are logged inside releaseExtraction.
             void releaseExtraction(integrity);
@@ -701,9 +701,9 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
         const stat = await fs.stat(finalDir);
         if (stat.isDirectory()) {
           // Touch the tarball's atime so the cap-driven LRU sweep
-          // sees this access. The loader's hot path is `cache.has` +
+          // sees this access. Materialization's hot path is `cache.has` +
           // `cache.extractTarball`; `cache.get` is the only other
-          // entry point that calls `utimes`, and the loader does not
+          // entry point that calls `utimes`, and materialization does not
           // use it. Without this, hot integrities accessed only
           // through this path stay LRU-stale at their put time and
           // become preferential eviction targets on noatime/relatime
@@ -729,7 +729,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
         // tar extraction. The bytes only land in the cache after
         // passing the upload-time cap (`HUB_MAX_TARBALL_BYTES` on the
         // hub edge) for asset-sourced tarballs, or the fetch-time cap
-        // (`maxRegistryTarballBytes` in the loader's HTTP fetcher)
+        // (`maxRegistryTarballBytes` in the HTTP tarball fetcher)
         // for registry-sourced tarballs — both default to 10 MiB. At
         // those caps and the small concurrent-extraction count the
         // memory footprint is bounded; a streaming path (pipe
@@ -752,7 +752,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
         // block can unpack to syntactically-valid but semantically-
         // wrong content that then surfaces as a far-removed dynamic-
         // import failure). Re-hashing here turns that failure into a
-        // structured TarballIntegrityMismatchError the loader can
+        // structured TarballIntegrityMismatchError materialization can
         // react to.
         const matched = ssri.checkData(bytes, integrity);
         if (matched === false) {

@@ -1,53 +1,27 @@
 // eslint-disable-next-line @typescript-eslint/triple-slash-reference -- npm-team packages ship no types; declarations.d.ts must be visible to downstream typecheckers that import from this package's source.
 /// <reference path="./declarations.d.ts" />
-// The production tarball fetcher for closure materialization, and the
-// argument types of `materializeClosure`.
-//
-// Errors are surfaced as `ToolLoaderError` with a `category` matching
-// one of the `DeployApplyErrorCategory` values.
+// The production tarball fetcher for closure materialization. Failures
+// surface as `ClosureMaterializationError` with a `category` matching one of
+// the `DeployApplyErrorCategory` values.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import npmRegistryFetch from "npm-registry-fetch";
 
-import type {
-  ToolPackageManifest,
-  ToolPackageManifestEntry,
-} from "@intx/types/tool-packages";
+import type { ToolPackageManifestEntry } from "@intx/types/tool-packages";
 
-import type { TarballCache } from "./cache";
 import {
   DEFAULT_MAX_REGISTRY_TARBALL_BYTES,
   DEFAULT_REGISTRY_FETCH_TIMEOUT_MS,
-  ToolLoaderError,
+  ClosureMaterializationError,
   describeError,
-} from "./loader-internal";
+} from "./materialization-internal";
 import {
   buildRegistryFetchOpts,
   defaultTarballUrl,
   readResponseWithLimit,
 } from "./registry-fetch";
 import type { RegistryConfig } from "./resolver";
-import { materializeClosure, storeEntryDir } from "./store-layout";
-
-// Re-export the members that moved to focused modules so existing `./loader`
-// and package-root consumers keep resolving them here: the public failure type
-// and fetch caps (now in `loader-internal`), the registry fetch helpers, and
-// the closure materialization + store-layout entry points.
-export {
-  ToolLoaderError,
-  DEFAULT_MAX_REGISTRY_TARBALL_BYTES,
-  DEFAULT_REGISTRY_FETCH_TIMEOUT_MS,
-  buildRegistryFetchOpts,
-  readResponseWithLimit,
-  materializeClosure,
-  storeEntryDir,
-};
-
-export interface HostPlatform {
-  readonly os: string;
-  readonly cpu: string;
-}
 
 export interface TarballFetcherConfig {
   /**
@@ -88,60 +62,6 @@ export type TarballFetcher = (
 ) => Promise<Uint8Array>;
 
 /**
- * Arguments for `materializeClosure`. Everything it needs is passed
- * explicitly: the closure's `cache`, `registries`, `host`, and resolved
- * `fetchTarball` are threaded in directly.
- */
-export interface MaterializeClosureArgs {
-  readonly manifest: ToolPackageManifest;
-  readonly instanceScratchDir: string;
-  /**
-   * Filesystem root that `assetMounts` paths are joined against. Mount
-   * paths are workspace-relative; the fetcher resolves them against
-   * `assetRoot` to get the absolute tarball location for `kind: "asset"`
-   * entries.
-   */
-  readonly assetRoot: string;
-  /**
-   * Maps a `source.assetId` from a manifest entry to a
-   * workspace-relative mount path. Empty map is valid when no entry
-   * sources from an asset.
-   */
-  readonly assetMounts: ReadonlyMap<string, string>;
-  /**
-   * Maps a source-format asset entry's `source.assetId` to an absolute
-   * indexed git directory whose object database holds the pinned commit and
-   * its trees. Empty map is valid when no entry sources from a git subtree.
-   */
-  readonly gitDirs: ReadonlyMap<string, string>;
-  readonly host: HostPlatform;
-  readonly cache: TarballCache;
-  /**
-   * Registry identifier → registry config. The key is the `registry`
-   * identifier manifest entries point at. Used both to gate
-   * `kind: "registry"` entries against the sidecar config and as the
-   * `registries` context handed to `fetchTarball`.
-   */
-  readonly registries: ReadonlyMap<string, RegistryConfig>;
-  /**
-   * Resolved tarball fetcher, normally from `createTarballFetcher`.
-   * `materializeClosure` does not construct one of its own.
-   */
-  readonly fetchTarball: TarballFetcher;
-}
-
-/**
- * Result of `materializeClosure`: the per-instance store directory the
- * closure was laid out under (`<instanceScratchDir>/store`), plus the exact
- * host-filtered entries that were laid out under it. A caller computes a
- * specific package's directory with `storeEntryDir`.
- */
-export interface MaterializeClosureResult {
-  readonly storeDir: string;
-  readonly entries: readonly ToolPackageManifestEntry[];
-}
-
-/**
  * Build the production tarball fetcher: asset entries read from their mount
  * under `assetRoot`, registry entries over HTTP through `npm-registry-fetch`.
  */
@@ -169,22 +89,22 @@ export function createTarballFetcher(
     if (entry.source.kind === "asset") {
       // A source-format asset is a git subtree materialized by checkout
       // in the store layout, never fetched as a tarball. Reaching the
-      // tarball fetcher with one is a loader bug; fail loud.
+      // tarball fetcher with one is a bug; fail loud.
       if (entry.source.package.format !== "tarball") {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "git.materialization.failed",
           message: `source-format asset entry ${entry.name}@${entry.version} reached the tarball fetcher`,
           package: { name: entry.name, version: entry.version },
         });
       }
       const tarballPath = entry.source.package.path;
-      // The mount lookup is guaranteed by `materialize`'s
+      // The mount lookup is guaranteed by `materializeClosure`'s
       // pre-fetch gate, but reassert here so the narrowing is
       // visible to readers — the caller of fetchTarball has no
       // structural guarantee it ran through that gate.
       const mount = ctx.assetMounts.get(entry.source.assetId);
       if (mount === undefined) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "asset.mount.missing",
           message: `default fetcher reached without a mount for assetId "${entry.source.assetId}"`,
           package: { name: entry.name, version: entry.version },
@@ -204,7 +124,7 @@ export function createTarballFetcher(
       // follows. Defense-in-depth for the (today-trusted) hub-side
       // mount producer.
       if (path.isAbsolute(mount)) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "package.entry.invalid",
           message: `assetMounts entry for ${entry.name}@${entry.version} is absolute (${JSON.stringify(mount)}); mounts must be assetRoot-relative`,
           package: { name: entry.name, version: entry.version },
@@ -216,7 +136,7 @@ export function createTarballFetcher(
         ? mountAbs
         : mountAbs + path.sep;
       if (absPath !== mountAbs && !absPath.startsWith(mountContainmentRoot)) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "package.entry.invalid",
           message: `source.package.path for ${entry.name}@${entry.version} resolves to ${JSON.stringify(absPath)} which escapes the declared mount ${JSON.stringify(mountAbs)} (cross-mount traversal)`,
           package: { name: entry.name, version: entry.version },
@@ -225,7 +145,7 @@ export function createTarballFetcher(
       try {
         return await fs.readFile(absPath);
       } catch (err) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "tarball.missing",
           message: `asset-stored tarball for ${entry.name}@${entry.version} not present at ${absPath}: ${describeError(err)}`,
           package: { name: entry.name, version: entry.version },
@@ -234,7 +154,7 @@ export function createTarballFetcher(
     }
     const registry = ctx.registries.get(entry.source.registry);
     if (registry === undefined) {
-      throw new ToolLoaderError({
+      throw new ClosureMaterializationError({
         category: "registry.unknown",
         message: `manifest references registry "${entry.source.registry}" which is not in the sidecar config`,
         package: { name: entry.name, version: entry.version },
@@ -258,14 +178,14 @@ export function createTarballFetcher(
         signal: controller.signal,
       });
       if (res.status === 401 || res.status === 403) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "registry.auth.failed",
           message: `registry "${entry.source.registry}" rejected credentials for ${entry.name}@${entry.version} (HTTP ${String(res.status)})`,
           package: { name: entry.name, version: entry.version },
         });
       }
       if (!res.ok) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "registry.fetch.failed",
           message: `registry "${entry.source.registry}" returned HTTP ${String(res.status)} fetching ${entry.name}@${entry.version}`,
           package: { name: entry.name, version: entry.version },
@@ -282,15 +202,15 @@ export function createTarballFetcher(
         controller.signal,
       );
     } catch (err) {
-      if (err instanceof ToolLoaderError) throw err;
+      if (err instanceof ClosureMaterializationError) throw err;
       if (controller.signal.aborted) {
-        throw new ToolLoaderError({
+        throw new ClosureMaterializationError({
           category: "registry.fetch.failed",
           message: `registry "${entry.source.registry}" fetch for ${entry.name}@${entry.version} exceeded the ${String(registryFetchTimeoutMs)}ms timeout`,
           package: { name: entry.name, version: entry.version },
         });
       }
-      throw new ToolLoaderError({
+      throw new ClosureMaterializationError({
         category: "registry.fetch.failed",
         message: `registry "${entry.source.registry}" fetch failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
         package: { name: entry.name, version: entry.version },

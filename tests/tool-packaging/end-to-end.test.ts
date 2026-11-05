@@ -199,8 +199,8 @@ describe("hub→sidecar pipeline (happy path)", () => {
     );
     expect(readBack).toEqual(manifest);
 
-    // Sidecar side: instantiate cache + loader against the same
-    // registries, fetch via a stub that hands back the fixture bytes.
+    // Sidecar side: materialize against the same registries, fetch via a
+    // stub that hands back the fixture bytes.
     const cache = createTarballCache({
       rootDir: cacheDir,
       maxBytes: 100_000_000,
@@ -424,8 +424,8 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
    * The fixture returns the bound `readBlob`/`listBlobs` pair the
    * resolver consumes, plus a writeMount helper that lays the same
    * tarball bytes onto disk at the mount path the mount map will
-   * point the loader at. End-to-end: the resolver picks an entry,
-   * the mount map records `(assetId, mount)`, the loader joins
+   * point materialization at. End-to-end: the resolver picks an entry,
+   * the mount map records `(assetId, mount)`, materialization joins
    * `assetRoot + mount + path` and reads the same bytes back.
    */
   async function buildAssetRegistryFixture(
@@ -540,7 +540,7 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
 
     const mountPath = `package-registries/${assetSource.name}/`;
 
-    // Materialize the asset tarballs onto disk at the mount. The loader's default tarball fetcher
+    // Materialize the asset tarballs onto disk at the mount. The default tarball fetcher
     // resolves `kind: "asset"` entries against `assetRoot + mount + path`.
     await fixture.writeMount(path.join(assetRoot, mountPath));
 

@@ -729,7 +729,7 @@ export type FrozenApprovalBundle = typeof FrozenApprovalBundle.infer;
  * materialize a closure entry whose bytes live in that asset. `pack` is the
  * base64-encoded git packfile the hub produced for the asset (`createPack`
  * output); the sidecar checks out `commitSha` from it as plain files under
- * `mountPath`, then the loader resolves each `kind:"asset"` closure entry
+ * `mountPath`, then materialization resolves each `kind:"asset"` closure entry
  * against that mount. `assetId` matches the `source.assetId` the closure
  * entries name.
  */
@@ -1096,8 +1096,7 @@ export type PackRejectFrame = typeof PackRejectFrame.infer;
  *   git.materialization.failed
  *                            — a git-sourced entry could not be
  *                              materialized from its checked-out
- *                              subtree, or reached a loader that does
- *                              not materialize git sources.
+ *                              subtree, or reached the tarball fetcher.
  *   package.entry.invalid    — a closure entry could not be laid out:
  *                              its package.json is malformed, a path
  *                              escapes its root, its dependencies
