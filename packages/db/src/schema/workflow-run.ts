@@ -94,7 +94,8 @@ export const workflowRun = pgTable(
     // inherits the deployment's grants at read time. Find a run's principal by
     // `refId`, not by this link. `onDelete: "set null"` is deliberate (unlike
     // agent_instance's principal, which uses the implicit default): deleting a
-    // run's principal nulls the column rather than wedging the run row.
+    // run's principal nulls the column rather than wedging the run row. The
+    // principals route refuses to delete it while the run exists.
     principalId: text("principal_id").references(() => principal.id, {
       onDelete: "set null",
     }),
