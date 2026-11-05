@@ -191,7 +191,7 @@ verify the environment before each build.
 make all            # lint + build + admin-ui bundle + test
 make build          # TypeScript type checking (tsc -b --noEmit --force)
 make build-admin-ui # admin-ui production bundle (vite build)
-make lint           # Prettier + ESLint + API docs freshness
+make lint           # Prettier + oxlint + API docs freshness
 make format         # Prettier auto-fix
 make test           # All tests
 make test-e2e       # Admin UI browser end-to-end suite (excluded from all)

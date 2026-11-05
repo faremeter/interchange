@@ -1,11 +1,11 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, spyOn } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { spawn } from "node:child_process";
 import { createPosixTools, type PosixTools } from "@intx/tools-posix";
 import { createLSPPlugin } from "./index";
-import type { ServerInfo } from "./server";
+import { Typescript, type ServerInfo } from "./server";
 import { createLSPManager, type LSPManager } from "./lsp";
 import { createLSPMiddleware } from "./middleware";
 import { makeLSPToolHandler } from "./tool";
@@ -250,5 +250,46 @@ describe("createLSPPlugin", () => {
     expect(plugin.tools?.[0]?.definition.name).toBe("lsp");
     expect(plugin.middleware).toBeDefined();
     expect(plugin.dispose).toBeDefined();
+  });
+
+  test("rejects a tsserverPath that does not exist", () => {
+    expect(() =>
+      createLSPPlugin({ cwd: tmpDir, tsserverPath: `${tmpDir}/missing.js` }),
+    ).toThrow("tsserverPath does not exist");
+  });
+
+  test("resolves tsserverPath before starting a server in another directory", async () => {
+    const tsserverPath = join(tmpDir, "tsserver.js");
+    await writeFile(tsserverPath, "");
+    const plugin = createLSPPlugin({
+      cwd: tmpDir,
+      tsserverPath: relative(process.cwd(), tsserverPath),
+    });
+    const tool = plugin.tools?.[0];
+    if (tool === undefined) throw new Error("expected an LSP tool");
+    const spawnServer = spyOn(Typescript, "spawn").mockResolvedValue(undefined);
+    try {
+      await tool.handler(
+        {
+          id: "relative-tsserver",
+          name: "lsp",
+          arguments: {
+            operation: "hover",
+            filePath: join(tmpDir, "relative-path.ts"),
+            line: 1,
+            character: 1,
+          },
+        },
+        neverAbort(),
+      );
+      expect(spawnServer).toHaveBeenCalledWith(tmpDir, {
+        directory: tmpDir,
+        worktree: tmpDir,
+        tsserverPath,
+      });
+    } finally {
+      spawnServer.mockRestore();
+      await plugin.dispose?.();
+    }
   });
 });
