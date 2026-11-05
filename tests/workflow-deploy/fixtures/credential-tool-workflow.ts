@@ -5,8 +5,7 @@
 // tenant-owned credential. The returned string is a `@intx/*`-importing entry
 // module that also imports the tool by absolute path; `bundleWorkflowEntry`
 // inlines both into a self-contained `.mjs` the sidecar evaluates in-child, so
-// the probe runs from the workflow's own source closure rather than a pinned
-// tarball.
+// the probe runs from the workflow's own source closure.
 //
 // The binding's `package` is the probe factory's `id` (`BUNDLE_ID`). The
 // source-ref arm keys a source tool's synthetic `StepToolFactory.packageName`

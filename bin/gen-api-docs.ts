@@ -18,7 +18,7 @@ const repoRoot = resolve(import.meta.dirname ?? ".", "..");
 // ---------------------------------------------------------------------------
 
 // Predicates appear in arktype schemas whenever a `.narrow` callback is
-// attached (e.g. ToolPackagePinArray's duplicate-name guard). Those rules
+// attached (e.g. CreateGrant's exactly-one-target guard). Those rules
 // are runtime invariants that have no JSON-Schema analogue, so the
 // generator falls back to the predicate's base shape and keeps the
 // OpenAPI document focused on the wire shape. Validation still runs at

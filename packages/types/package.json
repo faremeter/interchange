@@ -192,11 +192,7 @@
     }
   },
   "dependencies": {
-    "arktype": "catalog:",
-    "semver": "catalog:"
-  },
-  "devDependencies": {
-    "@types/semver": "catalog:"
+    "arktype": "catalog:"
   },
   "files": [
     "dist",

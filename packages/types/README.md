@@ -73,7 +73,7 @@ pull in the shapes they need:
   that round-trip through JSON.
 - `@intx/types/tool-packages` — schemas for the tool-package
   distribution path: pin shapes (`ToolPackagePin`,
-  `ToolPackagePinArray`, `ToolPackagePinName`), source variants
+  `ToolPackagePinName`), source variants
   (`ToolPackageRegistrySource`, `ToolPackageAssetSource`, and its
   `package` arms `ToolPackageAssetTarball` and
   `ToolPackageAssetSourceTree`, unioned as `ToolPackageSource`), the

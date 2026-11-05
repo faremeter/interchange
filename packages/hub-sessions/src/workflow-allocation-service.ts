@@ -36,7 +36,6 @@ import {
   type FrozenApprovalBundle,
 } from "@intx/types/sidecar";
 import type { HarnessConfig } from "@intx/types/runtime";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
   approvalItemsFromSet,
@@ -118,7 +117,6 @@ export type PrepareProvisionedWorkflowDeploymentArgs = {
   readonly sourceAuthorityPrincipalId: string;
   readonly sourceOfferingIds: readonly string[];
   readonly defaultSourceOfferingId: string;
-  readonly toolPackagePins?: readonly ToolPackagePin[];
   /**
    * State to start agent steps from, keyed by step id. Each key must name a
    * top-level agent step of the approved definition.
@@ -509,9 +507,6 @@ export function createWorkflowAllocationService({
           definitionArtifactId: approved.artifactId ?? null,
           sourceOfferingIds: [...request.sourceOfferingIds],
           defaultSourceOfferingId: request.defaultSourceOfferingId,
-          ...(request.toolPackagePins !== undefined
-            ? { toolPackagePins: [...request.toolPackagePins] }
-            : {}),
           createdAt,
         },
         tx,

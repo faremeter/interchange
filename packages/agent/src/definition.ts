@@ -12,8 +12,6 @@
 // the authorize callback, the audit sink, the directors registry)
 // lives in the env supplied at `createAgent` time.
 
-import type { ToolPackagePin } from "@intx/types/tool-packages";
-
 import type { AnnotatedToolFactory } from "./tool";
 import type { BaseEnv } from "./env";
 import type { DirectorRef } from "./director-types";
@@ -87,11 +85,6 @@ export interface AgentDefinition<EnvReq extends BaseEnv = BaseEnv> {
    * encoded JSON in a tag value.
    */
   readonly tags?: Readonly<Record<string, string>>;
-  /**
-   * Tool-package pins declared for this agent, carried on the definition so a
-   * folded workflow asset is self-contained.
-   */
-  readonly toolPackagePins?: readonly ToolPackagePin[];
 }
 
 // Type-level helper for computing the intersection of env requirements

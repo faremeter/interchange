@@ -38,7 +38,6 @@ import type {
   InferencePreference,
   ToolDeclaration,
 } from "@intx/agent";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { CredentialBinding, SidecarCapabilityPolicy } from "@intx/types";
 import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
 import type { MailAccept } from "@intx/types/mail-accept";
@@ -129,7 +128,6 @@ export interface InertAgent {
   readonly plugins?: readonly InertPlugin[];
   readonly modelSources: readonly InertModelSource[];
   readonly tags?: Readonly<Record<string, string>>;
-  readonly toolPackagePins?: readonly ToolPackagePin[];
 }
 
 export interface InertStepStep {
@@ -622,9 +620,6 @@ function projectAgent(
       : {}),
     modelSources: agent.inference.sources.map(projectModelSource),
     ...(agent.tags !== undefined ? { tags: { ...agent.tags } } : {}),
-    ...(agent.toolPackagePins !== undefined
-      ? { toolPackagePins: [...agent.toolPackagePins] }
-      : {}),
   };
 }
 

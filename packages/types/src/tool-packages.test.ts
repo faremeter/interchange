@@ -2,7 +2,6 @@ import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 import {
   ToolPackagePin,
-  ToolPackagePinArray,
   ToolPackageSource,
   ToolPackageManifestEntry,
   ToolPackageManifest,
@@ -55,46 +54,6 @@ describe("ToolPackagePin", () => {
 
   test("accepts a caret range at the pin level", () => {
     const result = ToolPackagePin({ name: "left-pad", version: "^1.2.3" });
-    expect(result instanceof type.errors).toBe(false);
-  });
-});
-
-describe("ToolPackagePinArray", () => {
-  test("accepts an array with distinct names", () => {
-    const result = ToolPackagePinArray([
-      { name: "@intx/tools-posix", version: "1.2.3" },
-      { name: "@intx/tools-mail", version: "1.2.3" },
-    ]);
-    expect(result instanceof type.errors).toBe(false);
-  });
-
-  test("accepts an empty array", () => {
-    const result = ToolPackagePinArray([]);
-    expect(result instanceof type.errors).toBe(false);
-  });
-
-  test("rejects an array with duplicate names", () => {
-    const result = ToolPackagePinArray([
-      { name: "@intx/tools-posix", version: "1.2.3" },
-      { name: "@intx/tools-posix", version: "1.3.0" },
-    ]);
-    expect(result instanceof type.errors).toBe(true);
-  });
-
-  test("rejects an array containing an invalid pin name", () => {
-    const result = ToolPackagePinArray([{ name: "BadName", version: "1.2.3" }]);
-    expect(result instanceof type.errors).toBe(true);
-  });
-
-  test("rejects an array containing an unparseable semver range", () => {
-    const result = ToolPackagePinArray([
-      { name: "left-pad", version: "not-a-range" },
-    ]);
-    expect(result instanceof type.errors).toBe(true);
-  });
-
-  test("accepts a star range", () => {
-    const result = ToolPackagePinArray([{ name: "left-pad", version: "*" }]);
     expect(result instanceof type.errors).toBe(false);
   });
 });
