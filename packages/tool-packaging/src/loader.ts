@@ -156,16 +156,7 @@ export interface HostPlatform {
   readonly cpu: string;
 }
 
-export interface LoaderConfig {
-  readonly cache: TarballCache;
-  /**
-   * Registry identifier → registry config. The key is the same
-   * `registry` identifier manifest entries point at and the resolver
-   * keyed its own registries map under. The loader resolves each
-   * `kind: "registry"` entry by looking up this map.
-   */
-  readonly registries: ReadonlyMap<string, RegistryConfig>;
-  readonly host: HostPlatform;
+export interface TarballFetcherConfig {
   /**
    * Hard cap on the byte length of a tarball fetched from an HTTP
    * registry. The default fetcher honors both the upstream
@@ -192,6 +183,18 @@ export interface LoaderConfig {
    * the local filesystem and are not subject to it.
    */
   readonly registryFetchTimeoutMs?: number;
+}
+
+export interface LoaderConfig extends TarballFetcherConfig {
+  readonly cache: TarballCache;
+  /**
+   * Registry identifier → registry config. The key is the same
+   * `registry` identifier manifest entries point at and the resolver
+   * keyed its own registries map under. The loader resolves each
+   * `kind: "registry"` entry by looking up this map.
+   */
+  readonly registries: ReadonlyMap<string, RegistryConfig>;
+  readonly host: HostPlatform;
   /**
    * Test seam for tarball fetching. Production omits this and the
    * loader uses npm-registry-fetch + filesystem reads.
@@ -277,10 +280,8 @@ export interface MaterializeClosureArgs {
    */
   readonly registries: ReadonlyMap<string, RegistryConfig>;
   /**
-   * Resolved tarball fetcher. `createToolLoader` builds the default
-   * (npm-registry-fetch + filesystem) fetcher or honors a test seam and
-   * threads the result here; `materializeClosure` does not construct one
-   * of its own.
+   * Resolved tarball fetcher, normally from `createTarballFetcher`.
+   * `materializeClosure` does not construct one of its own.
    */
   readonly fetchTarball: TarballFetcher;
 }
@@ -299,25 +300,16 @@ export interface MaterializeClosureResult {
 }
 
 export function createToolLoader(config: LoaderConfig): ToolLoader {
-  const registriesByName = config.registries;
-  const maxRegistryTarballBytes =
-    config.maxRegistryTarballBytes ?? DEFAULT_MAX_REGISTRY_TARBALL_BYTES;
-  if (
-    !Number.isFinite(maxRegistryTarballBytes) ||
-    maxRegistryTarballBytes <= 0
-  ) {
-    throw new Error(
-      `createToolLoader: maxRegistryTarballBytes must be a positive finite number; got ${String(maxRegistryTarballBytes)}`,
-    );
-  }
-  const registryFetchTimeoutMs =
-    config.registryFetchTimeoutMs ?? DEFAULT_REGISTRY_FETCH_TIMEOUT_MS;
-  if (!Number.isFinite(registryFetchTimeoutMs) || registryFetchTimeoutMs <= 0) {
-    throw new Error(
-      `createToolLoader: registryFetchTimeoutMs must be a positive finite number; got ${String(registryFetchTimeoutMs)}`,
-    );
-  }
-  const fetchTarball = config.fetchTarball ?? makeDefaultTarballFetcher();
+  const fetchTarball =
+    config.fetchTarball ??
+    createTarballFetcher({
+      ...(config.maxRegistryTarballBytes !== undefined
+        ? { maxRegistryTarballBytes: config.maxRegistryTarballBytes }
+        : {}),
+      ...(config.registryFetchTimeoutMs !== undefined
+        ? { registryFetchTimeoutMs: config.registryFetchTimeoutMs }
+        : {}),
+    });
   const importModule =
     config.importModule ?? ((u: string) => import(u) as Promise<unknown>);
 
@@ -641,143 +633,6 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       return loaded;
     },
   };
-
-  function makeDefaultTarballFetcher(): TarballFetcher {
-    return async (entry, ctx) => {
-      if (entry.source.kind === "asset") {
-        // A source-format asset is a git subtree materialized by checkout
-        // in the store layout, never fetched as a tarball. Reaching the
-        // tarball fetcher with one is a loader bug; fail loud.
-        if (entry.source.package.format !== "tarball") {
-          throw new ToolLoaderError({
-            category: "git.materialization.failed",
-            message: `source-format asset entry ${entry.name}@${entry.version} reached the tarball fetcher`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        const tarballPath = entry.source.package.path;
-        // The mount lookup is guaranteed by `materialize`'s
-        // pre-fetch gate, but reassert here so the narrowing is
-        // visible to readers — the caller of fetchTarball has no
-        // structural guarantee it ran through that gate.
-        const mount = ctx.assetMounts.get(entry.source.assetId);
-        if (mount === undefined) {
-          throw new ToolLoaderError({
-            category: "asset.mount.missing",
-            message: `default fetcher reached without a mount for assetId "${entry.source.assetId}"`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        // Both `mount` and `entry.source.package.path` originate from the
-        // hub and cross the trust boundary into the sidecar process. A `..`
-        // segment in either would let a malicious manifest read any
-        // file the sidecar can open. Resolve the join and assert the
-        // result still sits under `assetRoot` so a traversal attempt
-        // surfaces as a structured manifest rejection rather than a
-        // silent arbitrary read.
-        //
-        // Reject absolute mount paths up front: `path.resolve` would
-        // discard the assetRoot prefix when handed an absolute segment,
-        // letting an absolute mount escape the containment check that
-        // follows. Defense-in-depth for the (today-trusted) hub-side
-        // mount producer.
-        if (path.isAbsolute(mount)) {
-          throw new ToolLoaderError({
-            category: "package.entry.invalid",
-            message: `assetMounts entry for ${entry.name}@${entry.version} is absolute (${JSON.stringify(mount)}); mounts must be assetRoot-relative`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        const mountAbs = path.resolve(ctx.assetRoot, mount);
-        const absPath = path.resolve(mountAbs, tarballPath);
-        const mountContainmentRoot = mountAbs.endsWith(path.sep)
-          ? mountAbs
-          : mountAbs + path.sep;
-        if (absPath !== mountAbs && !absPath.startsWith(mountContainmentRoot)) {
-          throw new ToolLoaderError({
-            category: "package.entry.invalid",
-            message: `source.package.path for ${entry.name}@${entry.version} resolves to ${JSON.stringify(absPath)} which escapes the declared mount ${JSON.stringify(mountAbs)} (cross-mount traversal)`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        try {
-          return await fs.readFile(absPath);
-        } catch (err) {
-          throw new ToolLoaderError({
-            category: "tarball.missing",
-            message: `asset-stored tarball for ${entry.name}@${entry.version} not present at ${absPath}: ${describeError(err)}`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-      }
-      const registry = registriesByName.get(entry.source.registry);
-      if (registry === undefined) {
-        throw new ToolLoaderError({
-          category: "registry.unknown",
-          message: `manifest references registry "${entry.source.registry}" which is not in the sidecar config`,
-          package: { name: entry.name, version: entry.version },
-        });
-      }
-      const tarballUrl =
-        entry.tarballUrl ??
-        defaultTarballUrl(registry.url, entry.name, entry.version);
-      // Bound the whole fetch -- request and streamed body read -- so a
-      // stalled registry cannot block the awaiting deploy forever.
-      // npm-registry-fetch honors the signal for the request phase;
-      // readResponseWithLimit honors it for the manual body read. The
-      // timer spans both phases and is cleared only once the read settles.
-      const controller = new AbortController();
-      const timer = setTimeout(() => {
-        controller.abort();
-      }, registryFetchTimeoutMs);
-      try {
-        const res = await npmRegistryFetch(tarballUrl, {
-          ...buildRegistryFetchOpts(registry),
-          signal: controller.signal,
-        });
-        if (res.status === 401 || res.status === 403) {
-          throw new ToolLoaderError({
-            category: "registry.auth.failed",
-            message: `registry "${entry.source.registry}" rejected credentials for ${entry.name}@${entry.version} (HTTP ${String(res.status)})`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        if (!res.ok) {
-          throw new ToolLoaderError({
-            category: "registry.fetch.failed",
-            message: `registry "${entry.source.registry}" returned HTTP ${String(res.status)} fetching ${entry.name}@${entry.version}`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        return await readResponseWithLimit(
-          res,
-          maxRegistryTarballBytes,
-          {
-            registry: entry.source.registry,
-            name: entry.name,
-            version: entry.version,
-          },
-          controller.signal,
-        );
-      } catch (err) {
-        if (err instanceof ToolLoaderError) throw err;
-        if (controller.signal.aborted) {
-          throw new ToolLoaderError({
-            category: "registry.fetch.failed",
-            message: `registry "${entry.source.registry}" fetch for ${entry.name}@${entry.version} exceeded the ${String(registryFetchTimeoutMs)}ms timeout`,
-            package: { name: entry.name, version: entry.version },
-          });
-        }
-        throw new ToolLoaderError({
-          category: "registry.fetch.failed",
-          message: `registry "${entry.source.registry}" fetch failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
-          package: { name: entry.name, version: entry.version },
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-    };
-  }
 }
 
 function readPackageName(pkgJson: unknown): string | undefined {
@@ -1009,4 +864,164 @@ function isAnnotatedToolFactory(value: unknown): value is LoadedToolFactory {
   if (typeof id !== "string") return false;
   if (!Array.isArray(requires)) return false;
   return requires.every((r) => typeof r === "string");
+}
+
+/**
+ * Build the production tarball fetcher: asset entries read from their mount
+ * under `assetRoot`, registry entries over HTTP through `npm-registry-fetch`.
+ */
+export function createTarballFetcher(
+  config: TarballFetcherConfig = {},
+): TarballFetcher {
+  const maxRegistryTarballBytes =
+    config.maxRegistryTarballBytes ?? DEFAULT_MAX_REGISTRY_TARBALL_BYTES;
+  if (
+    !Number.isFinite(maxRegistryTarballBytes) ||
+    maxRegistryTarballBytes <= 0
+  ) {
+    throw new Error(
+      `createTarballFetcher: maxRegistryTarballBytes must be a positive finite number; got ${String(maxRegistryTarballBytes)}`,
+    );
+  }
+  const registryFetchTimeoutMs =
+    config.registryFetchTimeoutMs ?? DEFAULT_REGISTRY_FETCH_TIMEOUT_MS;
+  if (!Number.isFinite(registryFetchTimeoutMs) || registryFetchTimeoutMs <= 0) {
+    throw new Error(
+      `createTarballFetcher: registryFetchTimeoutMs must be a positive finite number; got ${String(registryFetchTimeoutMs)}`,
+    );
+  }
+  return async (entry, ctx) => {
+    if (entry.source.kind === "asset") {
+      // A source-format asset is a git subtree materialized by checkout
+      // in the store layout, never fetched as a tarball. Reaching the
+      // tarball fetcher with one is a loader bug; fail loud.
+      if (entry.source.package.format !== "tarball") {
+        throw new ToolLoaderError({
+          category: "git.materialization.failed",
+          message: `source-format asset entry ${entry.name}@${entry.version} reached the tarball fetcher`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+      const tarballPath = entry.source.package.path;
+      // The mount lookup is guaranteed by `materialize`'s
+      // pre-fetch gate, but reassert here so the narrowing is
+      // visible to readers — the caller of fetchTarball has no
+      // structural guarantee it ran through that gate.
+      const mount = ctx.assetMounts.get(entry.source.assetId);
+      if (mount === undefined) {
+        throw new ToolLoaderError({
+          category: "asset.mount.missing",
+          message: `default fetcher reached without a mount for assetId "${entry.source.assetId}"`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+      // Both `mount` and `entry.source.package.path` originate from the
+      // hub and cross the trust boundary into the sidecar process. A `..`
+      // segment in either would let a malicious manifest read any
+      // file the sidecar can open. Resolve the join and assert the
+      // result still sits under `assetRoot` so a traversal attempt
+      // surfaces as a structured manifest rejection rather than a
+      // silent arbitrary read.
+      //
+      // Reject absolute mount paths up front: `path.resolve` would
+      // discard the assetRoot prefix when handed an absolute segment,
+      // letting an absolute mount escape the containment check that
+      // follows. Defense-in-depth for the (today-trusted) hub-side
+      // mount producer.
+      if (path.isAbsolute(mount)) {
+        throw new ToolLoaderError({
+          category: "package.entry.invalid",
+          message: `assetMounts entry for ${entry.name}@${entry.version} is absolute (${JSON.stringify(mount)}); mounts must be assetRoot-relative`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+      const mountAbs = path.resolve(ctx.assetRoot, mount);
+      const absPath = path.resolve(mountAbs, tarballPath);
+      const mountContainmentRoot = mountAbs.endsWith(path.sep)
+        ? mountAbs
+        : mountAbs + path.sep;
+      if (absPath !== mountAbs && !absPath.startsWith(mountContainmentRoot)) {
+        throw new ToolLoaderError({
+          category: "package.entry.invalid",
+          message: `source.package.path for ${entry.name}@${entry.version} resolves to ${JSON.stringify(absPath)} which escapes the declared mount ${JSON.stringify(mountAbs)} (cross-mount traversal)`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+      try {
+        return await fs.readFile(absPath);
+      } catch (err) {
+        throw new ToolLoaderError({
+          category: "tarball.missing",
+          message: `asset-stored tarball for ${entry.name}@${entry.version} not present at ${absPath}: ${describeError(err)}`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+    }
+    const registry = ctx.registries.get(entry.source.registry);
+    if (registry === undefined) {
+      throw new ToolLoaderError({
+        category: "registry.unknown",
+        message: `manifest references registry "${entry.source.registry}" which is not in the sidecar config`,
+        package: { name: entry.name, version: entry.version },
+      });
+    }
+    const tarballUrl =
+      entry.tarballUrl ??
+      defaultTarballUrl(registry.url, entry.name, entry.version);
+    // Bound the whole fetch -- request and streamed body read -- so a
+    // stalled registry cannot block the awaiting deploy forever.
+    // npm-registry-fetch honors the signal for the request phase;
+    // readResponseWithLimit honors it for the manual body read. The
+    // timer spans both phases and is cleared only once the read settles.
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, registryFetchTimeoutMs);
+    try {
+      const res = await npmRegistryFetch(tarballUrl, {
+        ...buildRegistryFetchOpts(registry),
+        signal: controller.signal,
+      });
+      if (res.status === 401 || res.status === 403) {
+        throw new ToolLoaderError({
+          category: "registry.auth.failed",
+          message: `registry "${entry.source.registry}" rejected credentials for ${entry.name}@${entry.version} (HTTP ${String(res.status)})`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+      if (!res.ok) {
+        throw new ToolLoaderError({
+          category: "registry.fetch.failed",
+          message: `registry "${entry.source.registry}" returned HTTP ${String(res.status)} fetching ${entry.name}@${entry.version}`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+      return await readResponseWithLimit(
+        res,
+        maxRegistryTarballBytes,
+        {
+          registry: entry.source.registry,
+          name: entry.name,
+          version: entry.version,
+        },
+        controller.signal,
+      );
+    } catch (err) {
+      if (err instanceof ToolLoaderError) throw err;
+      if (controller.signal.aborted) {
+        throw new ToolLoaderError({
+          category: "registry.fetch.failed",
+          message: `registry "${entry.source.registry}" fetch for ${entry.name}@${entry.version} exceeded the ${String(registryFetchTimeoutMs)}ms timeout`,
+          package: { name: entry.name, version: entry.version },
+        });
+      }
+      throw new ToolLoaderError({
+        category: "registry.fetch.failed",
+        message: `registry "${entry.source.registry}" fetch failed for ${entry.name}@${entry.version}: ${describeError(err)}`,
+        package: { name: entry.name, version: entry.version },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 }

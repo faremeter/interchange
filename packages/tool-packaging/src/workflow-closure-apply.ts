@@ -8,41 +8,33 @@
 // pin against the registry at apply time.
 //
 // This is the durable deploy counterpart to the airlocked install-time
-// probe: it reuses the same apply machinery (`createTarballCache` /
-// `createToolLoader` / `applyAtomic`) that `tool-materialization.ts` uses
-// for a step's tool closure, so the fetch + SRI-verify + extract +
-// `node_modules` layout is not reimplemented here.
+// probe: both lay the closure out with `materializeClosure`, so the fetch +
+// SRI-verify + extract + `node_modules` layout is not reimplemented here.
 //
-// A workflow-definition package declares `interchange.workflow` (the module
-// whose evaluation produces the definition), NOT `interchange.tools`.
-// `applyAtomic`'s load phase imports each TOP-LEVEL package's
-// `interchange.tools` entry and rejects a package that has none
-// (`package.entry.missing`), so the layout manifest handed to `applyAtomic`
-// carries an EMPTY `topLevel`: every entry is still materialized and laid out
-// (the dependency layout walks `entries`, and each dependency resolves against
-// the frozen closure), but nothing is imported. The apply runs in the
-// long-lived sidecar process, which keeps every module it imports, so the
-// workflow child is the only process that evaluates the workflow entry.
+// The apply imports nothing. It runs in the long-lived sidecar process, which
+// keeps every module it imports, so the workflow child is the only process
+// that evaluates the workflow entry.
 //
 // `host` comes from the caller. This package must not import
 // `@intx/hub-agent` or `@intx/workflow-host`, and it does not read the
 // process: the sidecar process edge resolves the platform.
 
+import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { getLogger } from "@intx/log";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
-import { applyAtomic } from "./atomic-apply";
 import type { TarballCache } from "./cache";
 import {
-  createToolLoader,
+  createTarballFetcher,
   type HostPlatform,
   type TarballFetcher,
 } from "./loader";
+import { ToolLoaderError, describeError } from "./loader-internal";
 import type { RegistryConfig } from "./resolver";
-import { storeEntryDir } from "./store-layout";
+import { materializeClosure, storeEntryDir } from "./store-layout";
 
 const logger = getLogger(["sidecar", "workflow-closure-apply"]);
 
@@ -56,7 +48,8 @@ export interface ApplyFrozenWorkflowClosureArgs {
   readonly closure: ToolPackageManifest;
   /**
    * Durable per-deployment directory the closure is staged under
-   * (`<instanceDir>/packages/<deploy-id>/store/...`).
+   * (`<instanceDir>/packages/<deploy-id>/store/...`). Each apply stages under
+   * a fresh deploy id, so the caller reclaims this directory between applies.
    */
   readonly instanceDir: string;
   /**
@@ -86,8 +79,8 @@ export interface ApplyFrozenWorkflowClosureArgs {
    */
   readonly gitDirs?: ReadonlyMap<string, string>;
   /**
-   * Test seam for tarball fetching, forwarded to `createToolLoader`.
-   * Production omits it and the loader fetches from the configured registry.
+   * Test seam for tarball fetching. Production omits it and gets
+   * `createTarballFetcher`.
    */
   readonly fetchTarball?: TarballFetcher;
 }
@@ -153,50 +146,48 @@ export async function applyFrozenWorkflowClosure(
     }
   }
 
-  const loader = createToolLoader({
-    cache: args.cache,
-    registries: args.registries,
-    host: args.host,
-    maxRegistryTarballBytes: args.registryMaxTarballBytes,
-    ...(args.fetchTarball !== undefined
-      ? { fetchTarball: args.fetchTarball }
-      : {}),
-  });
+  const deployDir = path.join(
+    args.instanceDir,
+    "packages",
+    crypto.randomUUID(),
+  );
+  await fs.mkdir(deployDir, { recursive: true });
 
-  // Apply EXACTLY the frozen entries. `topLevel` is emptied so `applyAtomic`
-  // imports no `interchange.tools` module (a workflow-definition package has
-  // none); the full `entries` set is still materialized and laid out.
-  const layoutManifest: ToolPackageManifest = {
-    schemaVersion: args.closure.schemaVersion,
-    topLevel: [],
-    entries: args.closure.entries,
-  };
-
-  const result = await applyAtomic({
-    manifest: layoutManifest,
-    loader,
-    instanceDir: args.instanceDir,
-    assetRoot: args.assetRoot ?? path.join(args.instanceDir, "workspace"),
-    assetMounts: args.assetMounts ?? new Map(),
-    gitDirs: args.gitDirs ?? new Map(),
-    attemptId: crypto.randomUUID(),
-    // This apply stands alone per deployment: there is no prior deploy under
-    // `instanceDir` to retain, so the sentinel disables the retention window.
-    previousDeployId: "none",
-    newDeployId: crypto.randomUUID(),
-  });
-  if (result.status === "failed") {
+  let storeDir: string;
+  try {
+    ({ storeDir } = await materializeClosure({
+      manifest: args.closure,
+      instanceScratchDir: deployDir,
+      assetRoot: args.assetRoot ?? path.join(args.instanceDir, "workspace"),
+      assetMounts: args.assetMounts ?? new Map(),
+      gitDirs: args.gitDirs ?? new Map(),
+      host: args.host,
+      cache: args.cache,
+      registries: args.registries,
+      fetchTarball:
+        args.fetchTarball ??
+        createTarballFetcher({
+          maxRegistryTarballBytes: args.registryMaxTarballBytes,
+        }),
+    }));
+  } catch (cause) {
+    await fs.rm(deployDir, { recursive: true, force: true });
+    const detail =
+      cause instanceof ToolLoaderError
+        ? `${cause.category}: ${cause.message}`
+        : describeError(cause);
     throw new Error(
-      `sidecar workflow-closure apply: materializing the frozen closure for ${workflowPin.name}@${workflowPin.version} failed (${result.category}): ${result.message}`,
+      `sidecar workflow-closure apply: materializing the frozen closure for ${workflowPin.name}@${workflowPin.version} failed (${detail})`,
+      { cause },
     );
   }
 
   const packageDir = storeEntryDir(
-    path.join(result.deployDir, "store"),
+    storeDir,
     workflowPin.name,
     workflowPin.version,
   );
 
   logger.debug`applied frozen workflow closure ${workflowPin.name}@${workflowPin.version}`;
-  return { packageDir, deployDir: result.deployDir };
+  return { packageDir, deployDir };
 }
