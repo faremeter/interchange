@@ -1132,7 +1132,7 @@ export function createSidecarStepBuildEnv(
       address: deps.mailboxAddress,
       capabilities,
     };
-    // Carry the materialized tool runtime to the tool-bearing
+    // Carry the tool runtime to the tool-bearing
     // `agentFactory` via the env's symbol-keyed slot. The step-invoker
     // adapter spreads this env (`{ ...envBase, authorize }`) before
     // handing it to `agentFactory`; object spread preserves own
@@ -1140,8 +1140,8 @@ export function createSidecarStepBuildEnv(
     attachStepTools(env, materialization);
     // Attach the credential wiring so the `agentFactory` can assemble each
     // bundle's consumer-scoped `credentials` capability. Grants are wired as a
-    // THUNK, resolved only when a package actually needs a capability -- a
-    // step with no credential-consuming package never reads them, so a
+    // THUNK, resolved only when a factory actually needs a capability -- a
+    // step with no credential-consuming factory never reads them, so a
     // self-discovery resume that precedes the grants barrier does not fault on
     // a missing snapshot. Omitted when no credential context was
     // threaded, in which case a credential-consuming tool fails closed and loud
@@ -2080,8 +2080,7 @@ async function buildChildRunEnv(args: {
   // `sourcesRef`, the event funnel, and the credential context (so the step's
   // inference reads the run's live material). One invoker serves both the
   // childWorkflow path and the onTrigger body path: each runs a real
-  // tool-bearing agent through the source-tools arm against the same
-  // `sourcesRef`.
+  // tool-bearing agent against the same `sourcesRef`.
   const invokeStep: WorkflowRuntimeEnv["invokeStep"] = (req) =>
     deps.invokeStep(
       req,
@@ -2463,9 +2462,9 @@ export function createSidecarSubstrateFactory(
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
 
-    // The tool-bearing agent factory reads the materialized tool
+    // The tool-bearing agent factory reads the tool
     // runtime off the per-step env (set by `buildStepEnv` via
-    // `attachStepTools`), attaches the loaded tool factories to the
+    // `attachStepTools`), attaches the tool factories to the
     // step's `AgentDefinition`, builds the plugin chain on
     // `env.plugins`, and wraps `agent.close()` so every plugin (the LSP
     // subprocess included) and tool bundle is torn down with the agent
@@ -2494,10 +2493,10 @@ export function createSidecarSubstrateFactory(
 
     // Spawned-child step build env (INTR-310). Every spawned child's steps --
     // a childWorkflow child's and an onTrigger section body's alike -- run real,
-    // TOOL-BEARING agents through the same source-tools arm the top level uses:
+    // TOOL-BEARING agents through the same build the top level uses:
     // the child holds the live re-verified definition, so each step agent
     // carries live `toolFactories` fed from `req.agent.toolFactories`, and the
-    // source arm materializes declared plugins from the shared closure. Tools
+    // build materializes declared plugins from the shared closure. Tools
     // are available wherever inference runs, so a body agent gets the same
     // build a top-level step agent gets (see the tool-availability invariant in
     // `packages/workflow/README.md`).

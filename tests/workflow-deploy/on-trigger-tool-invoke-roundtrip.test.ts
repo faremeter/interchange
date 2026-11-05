@@ -12,7 +12,7 @@
 // deploy path: the capability walk collects its `tool:<name>` grant, the gate
 // rejects the deploy with `grants_not_approved` if the operator withholds it,
 // and the frozen projection carries it. At run time the body step invoker
-// builds its env with tool materialization skipped, so the provider is handed
+// builds its env without the step's tools, so the provider is handed
 // an EMPTY tool list. No step fails, no error is raised, and no log line is
 // emitted at any level -- the operator's approval decision simply has no
 // effect. A test asserting "no error occurred" would pass today and prove

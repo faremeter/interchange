@@ -668,7 +668,7 @@ If UIDVALIDITY has changed (mailbox was recreated), the transport signals a full
 
 ## Mail Tools
 
-The agent interacts with the message transport through tools provided by the `@intx/tools-mail` package, composed into the runtime by the sidecar alongside other tool packages. These tools are what the inference layer presents to the model. They map to the transport interface operations.
+The agent interacts with the message transport through tools provided by the `@intx/tools-mail` package, which a workflow agent lists in its `toolFactories` alongside other tool packages. These tools are what the inference layer presents to the model. They map to the transport interface operations.
 
 Every tool below returns `{ error: string, code: string }` on failure. The `MailToolErrorCode` union in `@intx/tools-mail` is the authoritative list of codes; the per-tool lists below name the subset each tool can produce. Two codes belong to the runner rather than to any one tool and are absent from those lists: `unknown_tool` for a call naming a tool the runner does not provide, and `internal_error` for a handler that throws instead of returning a result. `mail.wait` names `internal_error` in its own list because it also returns that code directly.
 

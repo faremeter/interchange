@@ -1,5 +1,5 @@
 // The consumer-gated `credentials` capability: the sub-registry a consumer (a
-// tool package or an action handler) queries by its declared handle to obtain a mediated credential. It is the runtime
+// tool factory or an action handler) queries by its declared handle to obtain a mediated credential. It is the runtime
 // gate that enforces the `{ tool }` condition on a materialized
 // `credential:{id}` / `use` grant -- the check the launch-time grant
 // materialization sets up but does not itself evaluate.
@@ -68,7 +68,7 @@ export function reconcileDeclaredCredentials(
 
 export interface CredentialCapabilityDeps {
   /**
-   * The consumer identity this capability serves (`tool:<package>` from
+   * The consumer identity this capability serves (`tool:<factory id>` from
    * `toolConsumer`, or `action:<handler>` from `actionConsumer`). Gate 2 checks each grant's
    * `{ tool }` condition against this value; an empty identity fails closed.
    */

@@ -34,8 +34,7 @@ export type AgentStepSpec = {
   /**
    * When set, the step agent carries the inline `mail_send` tool of this
    * variant, so the mock inference reply lists the tool name -- the proof that
-   * a childWorkflow step resolves its source-tools arm and runs a real
-   * tool-bearing agent, not a toolless one.
+   * a childWorkflow step runs a real tool-bearing agent, not a toolless one.
    */
   tool?: MailToolVariant;
 };

@@ -36,7 +36,7 @@ export type TenantEnv = Env & {
     tenant: TenantRow;
     principal: PrincipalRow;
     /**
-     * The workflow consumer (`tool:<package>` or `action:<handler>`) a run
+     * The workflow consumer (`tool:<factory id>` or `action:<handler>`) a run
      * token speaks for. Unset for sessions and git tokens, so a grant scoped
      * to a consumer by a `{tool}` condition never authorizes them.
      */

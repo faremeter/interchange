@@ -1098,65 +1098,13 @@ export type PackRejectFrame = typeof PackRejectFrame.infer;
  *                              materialized from its checked-out
  *                              subtree, or reached a loader that does
  *                              not materialize git sources.
- *   manifest.invalid         — the manifest itself did not validate
- *                              at the loader boundary (JSON.parse
- *                              failure or arktype schema failure).
- *                              Peer-dependency violations are caught
- *                              earlier by the hub's resolver and
- *                              surface as a launch failure rather
- *                              than this frame.
  *   package.entry.missing    — a top-level package's package.json had
  *                              no `interchange.tools` field.
  *   package.entry.invalid    — the resolved `interchange.tools` module
  *                              exported nothing that looked like an
  *                              AnnotatedToolFactory.
- *   factory.construct.failed — a factory invocation threw, or required
- *                              a capability key the env did not provide.
- *   tool.name.duplicate      — a tool name is registered more than
- *                              once in the apply's loaded set. The
- *                              cross-bundle case (two pinned packages
- *                              share a bundle id, producing colliding
- *                              prefixed tool names) is rejected at
- *                              apply time, before the caller commits.
- *                              The intra-bundle case (one package
- *                              exports two definitions sharing a raw
- *                              name) surfaces at first agent
- *                              construction with the same category
- *                              instead of apply rejection: the loader
- *                              cannot see `bundle.definitions` without
- *                              invoking the factory, and the `BaseEnv`
- *                              the factory needs is constructed by the
- *                              workflow child's step build env AFTER
- *                              the commit. Both paths carry the same
- *                              category so the operator-facing failure
- *                              shape is uniform regardless of which
- *                              check fired; only the channel
- *                              (apply.error frame vs runtime construct
- *                              failure) differs.
- *   apply.swap.failed        — DEPRECATED, no longer emitted. The apply
- *                              protocol stages each deploy into a stable
- *                              per-deploy-id directory and commits via a
- *                              single `active-deploy-id` file write, so
- *                              there is no filesystem rename that can
- *                              fail. The value is retained in the enum
- *                              for wire compatibility: during a rolling
- *                              upgrade an older sidecar can still emit
- *                              it, and dropping the member would make a
- *                              newer hub's frame validator reject that
- *                              frame.
- *   apply.previous-rotation.failed
- *                            — every loaded factory validated and the
- *                              new deploy was staged, but persisting the
- *                              instance's `active-deploy-id` file (the
- *                              commit) degraded: the id was written
- *                              through the no-fsync / dirty-marker
- *                              fallback ladder rather than durably
- *                              flushed. The new deploy is logically
- *                              live, so `previousDeployId` on this
- *                              failure carries the NEW deploy id rather
- *                              than the pre-apply one. The next boot
- *                              reconciles the recorded id from the dirty
- *                              marker.
+ *   tool.name.duplicate      — a package exports two tool definitions
+ *                              sharing a raw name.
  */
 export const DeployApplyErrorCategory = type.enumerated(
   "tarball.missing",
@@ -1167,13 +1115,9 @@ export const DeployApplyErrorCategory = type.enumerated(
   "registry.auth.failed",
   "tarball.extract.failed",
   "git.materialization.failed",
-  "manifest.invalid",
   "package.entry.missing",
   "package.entry.invalid",
-  "factory.construct.failed",
   "tool.name.duplicate",
-  "apply.swap.failed",
-  "apply.previous-rotation.failed",
 );
 export type DeployApplyErrorCategory = typeof DeployApplyErrorCategory.infer;
 

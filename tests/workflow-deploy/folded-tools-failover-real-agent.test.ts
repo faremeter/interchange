@@ -9,7 +9,7 @@
 // head (HTTP 500) followed by the healthy mock, both operator-approved. The
 // child's reactor fails over forward off the dead head to the healthy tail --
 // which drives the tool call -- so a single run proves (1) the agent's own
-// source-closure tool materialized and ran in-child, and (2) whole-workflow
+// source-closure tool was built and ran in-child, and (2) whole-workflow
 // failover is preserved for a single-step agent.
 
 import fs from "node:fs";
@@ -266,7 +266,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(headRequests).toBeGreaterThanOrEqual(1);
       expect(env.inference.requests.length).toBeGreaterThanOrEqual(2);
 
-      // The materialized tool reached inference -- proof the source closure
+      // The tool reached inference -- proof the source closure
       // evaluated in-child and the factory's definition reached inference.
       const firstServed = env.inference.requests[0];
       if (firstServed === undefined) {
@@ -332,7 +332,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ]);
 
       // A tool-less single-step agent: the negative control is about the
-      // inference-failure contract, not tool materialization.
+      // inference-failure contract, not tools.
       const entryModule = singleStepAgentEntry({
         stepId: STEP_ID,
         systemPrompt: "You are the folded failover negative-control agent.",

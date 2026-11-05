@@ -73,7 +73,7 @@ interface LocalToolEnv extends BaseEnv {
 
 const noArgs = { type: "object", properties: {} } as const;
 
-// One tool package with a plain tool and a credential tool. Each run records
+// One tool factory with a plain tool and a credential tool. Each run records
 // its calls so a test can tell an executed tool from a refused one.
 function localTools(calls: string[]) {
   return defineTool<LocalToolEnv>({

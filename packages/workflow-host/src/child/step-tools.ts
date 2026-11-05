@@ -30,7 +30,7 @@ import {
 const logger = getLogger(["sidecar", "workflow-child", "step-tools"]);
 
 /**
- * Materialized tool runtime for one step's agent. Carried from
+ * Tool runtime for one step's agent. Carried from
  * `buildEnv` (which knows the step's identity) to the `agentFactory`
  * (which knows the agent definition + env) via a symbol-keyed slot on
  * the per-step env so the two callbacks of `createWorkflowStepInvoker`
@@ -193,7 +193,7 @@ function requireCapabilitiesBag(env: BaseEnv): RuntimeCapabilities {
 }
 
 /**
- * Attach a step's materialized tool runtime to the per-step env so the
+ * Attach a step's tool runtime to the per-step env so the
  * tool-bearing `agentFactory` can consume it. Called by `buildEnv`
  * once it has assembled the step's factories.
  *
@@ -210,17 +210,17 @@ export function attachStepTools(
 }
 
 /**
- * Re-wrap a loaded tool factory so its bundle's `dispose` (when present)
- * is captured via `onDispose`, forwarding the loader's `id`, `requires`,
- * and `definitions` so the result is a real `AnnotatedToolFactory`, not a
+ * Re-wrap a tool factory so its bundle's `dispose` (when present) is
+ * captured via `onDispose`, forwarding its `id`, `requires`, `definitions`,
+ * and `credentials` so the result is a real `AnnotatedToolFactory`, not a
  * hand-shaped lookalike. The static `definitions` declaration is
  * forwarded verbatim: this wrapper does not rename tools, so the names
  * the deploy-time walk enumerates must survive the re-wrap unchanged.
  *
  * When `credentials` is supplied, the bundle's factory sees a per-bundle
- * capabilities bag: the step's base bag layered with THIS package's
+ * capabilities bag: the step's base bag layered with THIS factory's
  * consumer-scoped `credentials` capability, so the bundle resolves only the
- * handles its own package is authorized for. When it is absent (the package
+ * handles its own factory is authorized for. When it is absent (the factory
  * declares and binds no credential), the base bag is passed through unchanged.
  *
  * Exported so the definitions-preservation contract is testable in
@@ -273,16 +273,16 @@ function layerCredentialsOntoEnv(
 
 /**
  * Build the `agentFactory` the workflow step-invoker uses. The returned
- * factory reads the materialized tool runtime off the env (set by
+ * factory reads the tool runtime off the env (set by
  * `buildEnv` via `attachStepTools`), augments the step's
- * `AgentDefinition` with the loaded tool factories (wrapped to capture
+ * `AgentDefinition` with the tool factories (wrapped to capture
  * each bundle's disposer), constructs the plugin chain on `env.plugins`,
  * builds the agent, and wraps
  * `agent.close()` so every plugin instance and tool bundle is disposed
  * when the step's agent closes.
  *
- * When the env carries no materialized tools (the `buildEnv` did not
- * run materialization, e.g. a unit test using the bare factory), the
+ * When the env carries no tools (the `buildEnv` attached none, e.g. a
+ * unit test using the bare factory), the
  * factory falls back to `createAgent(def, env)` unchanged.
  */
 export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
@@ -298,10 +298,10 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
       return createAgent(def, env);
     }
 
-    // Assemble each package's consumer-scoped `credentials` capability once,
+    // Assemble each factory's consumer-scoped `credentials` capability once,
     // when the step carries credential wiring (a bare test build carries none,
-    // yielding an empty map). Every factory in a package shares the one
-    // capability; a package that declares a handle no binding resolves fails
+    // yielding an empty map). A factory that declares a handle no binding
+    // resolves fails
     // the launch here, loudly, rather than at the tool's first resolve. This
     // can throw (reconcile fail-closed, malformed delivery) before any handle
     // is shaped, so nothing is orphaned on that path.
@@ -314,10 +314,10 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
             credentialWiring,
           );
 
-    // Wrap each loaded tool factory so its bundle's `dispose` (when
+    // Wrap each tool factory so its bundle's `dispose` (when
     // present) is captured. Dedupe by closure identity: a factory whose
     // bundle returns the same `dispose` on every invocation must not be
-    // torn down once per push. Each package's credentials capability joins
+    // torn down once per push. Each factory's credentials capability joins
     // the same teardown set so its shaped handles are released with the agent.
     const capturedDisposers = new Set<() => unknown>();
     for (const capability of credentialCapabilities.values()) {
@@ -354,12 +354,9 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
       return failures;
     };
 
-    // Rebuild the def with the materialized tool factories. The
-    // serialized `def.toolFactories` carry only `{ id, requires }`
-    // metadata (the workflow projection strips closures on the wire),
-    // so the runnable factories come from materialization, not the
-    // incoming def. `defineAgent` owns the contravariance escape for
-    // the `BaseEnv`-typed loader factories (see its `EnvRequiredByAll`
+    // Rebuild the def with the wrapped factories, which capture disposers
+    // and layer credentials. `defineAgent` owns the contravariance escape
+    // for the `BaseEnv`-typed factories (see its `EnvRequiredByAll`
     // machinery).
     const toolDef = defineAgent({
       id: def.id,

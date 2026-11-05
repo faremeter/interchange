@@ -1,22 +1,19 @@
 // End-to-end integration of the tool-package pipeline.
 //
 // Exercises the gluing between the hub-side resolver and the sidecar-side
-// loader+atomic-apply. The test does
-// not spin up a subprocess sidecar — the same harness builder code
-// runs in-process here against synthetic fixtures, which is what the
-// production path runs against real ones.
+// closure materialization, in-process against synthetic fixtures.
 //
 // What the test demonstrates per scenario:
 //
-//   - happy path: resolver walks pins → loader materializes →
-//     applyAtomic swaps → loaded factories registered.
+//   - happy path: resolver walks pins → manifest round-trips through disk →
+//     materializeClosure lays the closure out.
 //
 //   - integrity.mismatch: bytes served by the mock registry do not
-//     match the resolver's pinned integrity → applyAtomic returns
-//     failed with the right category and previousDeployId.
+//     match the resolver's pinned integrity → materializeClosure rejects
+//     with the right category.
 //
 //   - registry.unknown: manifest references a registry the sidecar
-//     was not told about → loader rejects with registry.unknown.
+//     was not told about → materializeClosure rejects with registry.unknown.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { promises as fs } from "node:fs";
@@ -32,10 +29,11 @@ import {
   type RegistrySource,
   AssetRegistrySource,
   HttpRegistrySource,
-  applyAtomic,
   createClosureResolver,
   createTarballCache,
-  createToolLoader,
+  createTarballFetcher,
+  materializeClosure,
+  storeEntryDir,
 } from "@intx/tool-packaging";
 import type {
   ToolPackageManifest,
@@ -93,10 +91,7 @@ async function buildFixture(spec: {
       interchange: { tools: "./tools.js" },
     }),
   );
-  await fs.writeFile(
-    path.join(packageDir, "tools.js"),
-    "// stub; loader replaces import via importModule\n",
-  );
+  await fs.writeFile(path.join(packageDir, "tools.js"), "export {};\n");
 
   const tarballPath = path.join(stagingDir, "out.tgz");
   await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
@@ -132,20 +127,23 @@ function makePackumentFromFixtures(fixtures: readonly Fixture[]): Packument[] {
   }));
 }
 
-function fakeFactory(id: string) {
-  const fn = () => ({
-    definitions: [],
-    run: async () => ({ callId: "stub", content: "ok" }),
-  });
-  return Object.assign(fn, {
-    id,
-    requires: [] as readonly string[],
-    definitions: [],
-  });
+async function storedPackageJSON(
+  storeDir: string,
+  fixture: { name: string; version: string },
+): Promise<unknown> {
+  return JSON.parse(
+    await fs.readFile(
+      path.join(
+        storeEntryDir(storeDir, fixture.name, fixture.version),
+        "package.json",
+      ),
+      "utf8",
+    ),
+  );
 }
 
 describe("hub→sidecar pipeline (happy path)", () => {
-  test("resolved manifest round-trips through disk and loads cleanly", async () => {
+  test("resolved manifest round-trips through disk and lays out cleanly", async () => {
     const fixture = await buildFixture({
       name: "tools-fixture",
       version: "1.0.0",
@@ -207,30 +205,22 @@ describe("hub→sidecar pipeline (happy path)", () => {
       rootDir: cacheDir,
       maxBytes: 100_000_000,
     });
-    const loader = createToolLoader({
-      cache,
-      registries,
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-      importModule: async () => ({ main: fakeFactory("@vendor/fixture/main") }),
-    });
-
-    const result = await applyAtomic({
+    const { storeDir, entries } = await materializeClosure({
       manifest: readBack,
-      loader,
-      instanceDir,
+      instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map(),
       gitDirs: new Map(),
-      attemptId: "atp_happy",
-      previousDeployId: "none",
-      newDeployId: "dpl_1",
+      host: { os: "linux", cpu: "x64" },
+      cache,
+      registries,
+      fetchTarball: async () => fixture.bytes,
     });
-    expect(result.status).toBe("ok");
-    if (result.status !== "ok") return;
-    expect(result.activeDeployId).toBe("dpl_1");
-    expect(result.loaded).toHaveLength(1);
-    expect(result.loaded[0]?.factories[0]?.id).toBe("@vendor/fixture/main");
+    expect(entries).toHaveLength(1);
+    expect(await storedPackageJSON(storeDir, fixture)).toMatchObject({
+      name: fixture.name,
+      version: fixture.version,
+    });
   });
 });
 
@@ -264,30 +254,21 @@ describe("hub→sidecar pipeline (failure paths)", () => {
       rootDir: cacheDir,
       maxBytes: 100_000_000,
     });
-    const loader = createToolLoader({
-      cache,
-      registries,
-      host: { os: "linux", cpu: "x64" },
-      // Hand back bytes that do not match the pinned integrity.
-      fetchTarball: async () =>
-        new TextEncoder().encode("definitely the wrong bytes"),
-    });
-
-    const result = await applyAtomic({
-      manifest,
-      loader,
-      instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-      attemptId: "atp_mismatch",
-      previousDeployId: "dpl_prior",
-      newDeployId: "dpl_attempted",
-    });
-    expect(result.status).toBe("failed");
-    if (result.status !== "failed") return;
-    expect(result.category).toBe("integrity.mismatch");
-    expect(result.previousDeployId).toBe("dpl_prior");
+    await expect(
+      materializeClosure({
+        manifest,
+        instanceScratchDir: instanceDir,
+        assetRoot,
+        assetMounts: new Map(),
+        gitDirs: new Map(),
+        host: { os: "linux", cpu: "x64" },
+        cache,
+        registries,
+        // Hand back bytes that do not match the pinned integrity.
+        fetchTarball: async () =>
+          new TextEncoder().encode("definitely the wrong bytes"),
+      }),
+    ).rejects.toMatchObject({ category: "integrity.mismatch" });
   });
 
   test("registry.unknown when manifest names a registry not in the sidecar config", async () => {
@@ -316,34 +297,25 @@ describe("hub→sidecar pipeline (failure paths)", () => {
       rootDir: cacheDir,
       maxBytes: 100_000_000,
     });
-    const loader = createToolLoader({
-      cache,
-      // Sidecar only knows about a different registry.
-      registries: new Map([
-        ["fixture-registry", { url: "https://registry.test" }],
-      ]),
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => fixture.bytes,
-    });
-
-    const result = await applyAtomic({
-      manifest,
-      loader,
-      instanceDir,
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-      attemptId: "atp_unknown",
-      previousDeployId: "dpl_prior",
-      newDeployId: "dpl_attempted",
-    });
-    expect(result.status).toBe("failed");
-    if (result.status !== "failed") return;
-    expect(result.category).toBe("registry.unknown");
-    expect(result.previousDeployId).toBe("dpl_prior");
+    await expect(
+      materializeClosure({
+        manifest,
+        instanceScratchDir: instanceDir,
+        assetRoot,
+        assetMounts: new Map(),
+        gitDirs: new Map(),
+        host: { os: "linux", cpu: "x64" },
+        cache,
+        // Sidecar only knows about a different registry.
+        registries: new Map([
+          ["fixture-registry", { url: "https://registry.test" }],
+        ]),
+        fetchTarball: async () => fixture.bytes,
+      }),
+    ).rejects.toMatchObject({ category: "registry.unknown" });
   });
 
-  test("manifest.invalid when resolver detects unsatisfied peer deps", async () => {
+  test("ManifestInvalidError when resolver detects unsatisfied peer deps", async () => {
     const fetchPackument: PackumentFetcher = async (name) => {
       if (name === "needs-react") {
         return {
@@ -416,45 +388,28 @@ describe("hub→sidecar pipeline (cache behavior)", () => {
       maxBytes: 100_000_000,
     });
     let fetchCount = 0;
-    const loader = createToolLoader({
-      cache,
-      registries,
-      host: { os: "linux", cpu: "x64" },
-      fetchTarball: async () => {
-        fetchCount += 1;
-        return fixture.bytes;
-      },
-      importModule: async () => ({ main: fakeFactory("@vendor/cached/main") }),
-    });
+    const materialize = (instanceScratchDir: string) =>
+      materializeClosure({
+        manifest,
+        instanceScratchDir,
+        assetRoot,
+        assetMounts: new Map(),
+        gitDirs: new Map(),
+        host: { os: "linux", cpu: "x64" },
+        cache,
+        registries,
+        fetchTarball: async () => {
+          fetchCount += 1;
+          return fixture.bytes;
+        },
+      });
 
     // First apply: fetch happens.
-    const first = await applyAtomic({
-      manifest,
-      loader,
-      instanceDir: path.join(instanceDir, "first"),
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-      attemptId: "atp_first",
-      previousDeployId: "none",
-      newDeployId: "dpl_1",
-    });
-    expect(first.status).toBe("ok");
+    await materialize(path.join(instanceDir, "first"));
     expect(fetchCount).toBe(1);
 
     // Second apply against a fresh instance dir but the SAME cache.
-    const second = await applyAtomic({
-      manifest,
-      loader,
-      instanceDir: path.join(instanceDir, "second"),
-      assetRoot,
-      assetMounts: new Map(),
-      gitDirs: new Map(),
-      attemptId: "atp_second",
-      previousDeployId: "dpl_1",
-      newDeployId: "dpl_2",
-    });
-    expect(second.status).toBe("ok");
+    await materialize(path.join(instanceDir, "second"));
     // Cache hit; fetcher was not called again.
     expect(fetchCount).toBe(1);
   });
@@ -544,7 +499,7 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
     };
   }
 
-  test("resolver picks asset entries, loader reads them through the mount", async () => {
+  test("resolver picks asset entries, materialization reads them through the mount", async () => {
     const fixture = await buildAssetRegistryFixture([
       { name: "asset-tool", version: "1.2.3", exportName: "main" },
     ]);
@@ -593,28 +548,23 @@ describe("hub→sidecar pipeline (asset-backed registry)", () => {
       rootDir: cacheDir,
       maxBytes: 100_000_000,
     });
-    const loader = createToolLoader({
-      cache,
-      registries: new Map([["npmjs", { url: "https://r.test" }]]),
-      host: { os: "linux", cpu: "x64" },
-      importModule: async () => ({
-        main: fakeFactory("@asset-vendor/tool/main"),
-      }),
-    });
-    const result = await applyAtomic({
+    const { storeDir, entries } = await materializeClosure({
       manifest,
-      loader,
-      instanceDir,
+      instanceScratchDir: instanceDir,
       assetRoot,
       assetMounts: new Map([[assetId, mountPath]]),
       gitDirs: new Map(),
-      attemptId: "atp_asset",
-      previousDeployId: "none",
-      newDeployId: "dpl_asset",
+      host: { os: "linux", cpu: "x64" },
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      fetchTarball: createTarballFetcher(),
     });
-    expect(result.status).toBe("ok");
-    if (result.status !== "ok") return;
-    expect(result.loaded).toHaveLength(1);
-    expect(result.loaded[0]?.factories[0]?.id).toBe("@asset-vendor/tool/main");
+    expect(entries).toHaveLength(1);
+    expect(
+      await storedPackageJSON(storeDir, {
+        name: "asset-tool",
+        version: "1.2.3",
+      }),
+    ).toMatchObject({ name: "asset-tool", version: "1.2.3" });
   });
 });

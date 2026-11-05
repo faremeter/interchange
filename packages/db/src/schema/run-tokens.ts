@@ -4,7 +4,7 @@ import { bytea } from "./column-types";
 import { principal } from "./principals";
 
 // Bearer tokens a workflow run presents to the hub REST API as its run
-// principal, one for each consumer (a tool package `tool:<package>` or an
+// principal, one for each consumer (a tool factory `tool:<factory id>` or an
 // action handler `action:<handler>`). Opaque tokens of the form
 // `itx_run_<base64url>`.
 //

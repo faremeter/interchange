@@ -74,8 +74,7 @@ fetch — the whole subtree under that edge is dropped from the manifest
 silently. A hard dep of an optional dep is part of that optional
 subtree; a failure there drops the parent too, instead of leaving a
 parent in the closure whose own hard requirement is missing. Failures
-outside any optional subtree abort the walk and surface as a
-`manifest.invalid` deploy-apply error.
+outside any optional subtree abort the walk and fail the deploy.
 
 ## Asset modification race
 
@@ -88,15 +87,10 @@ deploy. The sidecar still verifies each tarball's SRI before it extracts it.
 Tool packages may resolve files relative to their own on-disk location
 at run time — `import.meta.url`, `require.resolve()`, or an
 `await import(new URL("./sibling.js", import.meta.url))` evaluated long
-after the module first loaded. The loader imports each top-level
-package's `interchange.tools` entry from a path under
-`<instanceDir>/packages/<deploy-id>/` that is never renamed, so a
-module's `import.meta.url` stays valid for the life of the deploy.
-
-The prior deploy's directory is retained across the next apply, so a
-session still draining against an older deploy keeps resolving its own
-files until a further apply supersedes it. See `ASSET-LAYOUT.md` for
-the on-disk layout and retention rules.
+after the module first loaded. A closure's packages run from a path
+under `<instanceDir>/packages/<deploy-id>/` that is never renamed, so a
+module's `import.meta.url` stays valid for the life of the deployment.
+See `ASSET-LAYOUT.md` for the on-disk layout and retention rules.
 
 ## Follow-up reference
 

@@ -9,7 +9,7 @@ import type { DeployApplyErrorCategory } from "@intx/types/sidecar";
 /**
  * Maximum bytes a single registry tarball fetch will read before aborting. The
  * cap bounds the memory a malicious or misconfigured registry can force a
- * deploy to buffer while the atomic-apply mirror replays it.
+ * deploy to buffer.
  */
 export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
 
@@ -18,7 +18,7 @@ export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
  * request and the streamed body read. `readResponseWithLimit` consumes the body
  * through a manual reader loop, so the byte cap bounds size but nothing bounds
  * time: a registry that accepts the connection and then stalls mid-stream would
- * block the fetch -- and the deploy's tool materialization awaiting it --
+ * block the fetch -- and the closure materialization awaiting it --
  * indefinitely. The deadline is generous so a legitimately large tarball on a
  * slow link still completes within it. Callers that need a different bound pass
  * `registryFetchTimeoutMs` to `createToolLoader`.
@@ -26,9 +26,8 @@ export const DEFAULT_MAX_REGISTRY_TARBALL_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_REGISTRY_FETCH_TIMEOUT_MS = 120 * 1000;
 
 /**
- * A tool-loader failure carrying the atomic-apply error category (and, when the
- * failure is attributable to a specific package, its name and version) so the
- * apply layer can map every loader failure onto a `DeployApplyErrorCategory`.
+ * A tool-loader failure carrying its `DeployApplyErrorCategory` (and, when the
+ * failure is attributable to a specific package, its name and version).
  */
 export class ToolLoaderError extends Error {
   readonly category: DeployApplyErrorCategory;

@@ -612,9 +612,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
       // rebuildable. A crash between write and rename leaves an orphaned
       // .tmp file that `sweepOrphans` clears on the next boot; a crash
       // after rename but before the data hits disk forces a re-fetch on
-      // the next miss, validated by SRI. The persistence requirement
-      // that earns an fsync is the apply pipeline's active-deploy-id,
-      // not cache entries.
+      // the next miss, validated by SRI.
       await fs.rename(tmp, file);
 
       // No cap sweep here. `put` only stages the tarball bytes; the

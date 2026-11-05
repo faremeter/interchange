@@ -205,18 +205,13 @@ export interface PeerDependencyViolation {
 /**
  * Thrown by `resolveClosure` when the resolved closure does not satisfy
  * one or more peer-dependency declarations, by the closure walker for
- * duplicate-name pins, and by the hub-side session-launch path when a
- * direct package-registry attachment overlaps a resolver-driven pin
- * for the same asset. The deploy-assembly path maps every shape to
- * the same `manifest.invalid` deploy-apply error category before the
- * deploy ships.
+ * duplicate-name pins, and by `extractPackageJSON` for a tarball it
+ * cannot read. It fails the deploy before anything ships.
  *
- * The category is intentionally broad: peer-dep violations and
+ * The one error type is intentionally broad: peer-dep violations and
  * duplicate-name pins are structurally distinct defects but both
  * indicate a closure the operator cannot ship without changing the
- * pin set. Adding a per-shape category would expand the wire
- * taxonomy for no operator-facing gain; readers parsing
- * deploy-apply errors should look at the message for the structural
+ * pin. Readers should look at the message for the structural
  * distinction.
  */
 export class ManifestInvalidError extends Error {

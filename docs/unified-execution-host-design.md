@@ -354,7 +354,7 @@ workflows.** Where it lives, when it tears down, how recycle/drain interact:
   space, owned by the run-loop, not in the supervisor.
 - **When it's built.** Lazily on the first `trigger.fired` for the address
   (or eagerly at spawn for a hot path; lazy is the default to avoid paying
-  tool materialization before any mail arrives).
+  tool construction before any mail arrives).
 - **When it's torn down.** On `agent.undeploy` (deployment teardown), on child
   `shutdown`, and on recycle. A long-lived agent is _not_ torn down between
   messages — that is the entire point of warm-keep.
@@ -1212,10 +1212,10 @@ buildEnv, agentFactory: createAgent })`. Tools empty for now.
 
 ### Phase 2 — Tool materialization in the child (RISKIEST PHASE)
 
-- **Changes.** Move `materializeToolPackages` logic + `@intx/tool-packaging`
-  loader + plugin/LSP chain into the sidecar's child-side wiring, injected via
-  the step-invoker's `buildEnv`/`agentFactory`. Root tarball cache + tool
-  instance dir per step/agent.
+- **Changes.** Build each step's tools from its agent's evaluated factories
+  (`sourceStepToolFactories`) and the plugin/LSP chain in the child-side wiring,
+  injected via the step-invoker's `buildEnv`/`agentFactory`. The sidecar applies
+  the frozen closure the child evaluates (`applyFrozenWorkflowClosure`).
 - **Verification.** Spawned-child integration test: an agent with a posix tool
   invokes it; the result lands in `{ turn }`. A second test with the LSP plugin
   confirms the subprocess spawns and tears down with the agent.
@@ -1866,6 +1866,6 @@ are explicitly **not** a go-live gate for INTR-209.
   (`resolveRoutableAddress`); sidecar reconnect identity and hosted bindings in
   `packages/hub-sessions/src/ws/sidecar-token-authenticator.ts`.
 - Transport interface: `packages/types/src/runtime-core.ts` (`MessageTransport`).
-- Tool packaging: `@intx/tool-packaging` (`createToolLoader`, `applyAtomic`,
-  `createTarballCache`).
+- Tool packaging: `@intx/tool-packaging` (`applyFrozenWorkflowClosure`,
+  `materializeClosure`, `createTarballCache`).
 - INTR-209 fixture: `tests/workflow-deploy/multistep-signal.test.ts`.

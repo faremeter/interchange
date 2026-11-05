@@ -352,13 +352,9 @@ async function buildStoreLayout(args: BuildStoreLayoutArgs): Promise<void> {
         if (!isEEXIST(err)) throw err;
         const existing = await fs.readlink(symlinkPath);
         if (existing !== relativeTarget) {
-          // A symlink collision inside the loader's per-package
-          // layout pass is a loader-layer invariant violation, not an
-          // unknown error shape — route it through the same structured
-          // envelope every other loader failure uses so atomic-apply
-          // surfaces it as `package.entry.invalid` instead of falling
-          // back to the unknown-shape catch-all (`factory.construct.
-          // failed`).
+          // A symlink collision inside the per-package layout pass is a
+          // layout invariant violation, not an unknown error shape, so it
+          // carries the same structured envelope as every other failure here.
           throw new ToolLoaderError({
             category: "package.entry.invalid",
             message: `symlink collision at ${symlinkPath}: existing target ${existing} differs from ${relativeTarget}`,

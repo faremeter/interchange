@@ -1472,7 +1472,7 @@ Source: packages/types/src/common.ts
 `{ action: string, resource: string, consumer?: string >= 1 }`
 Source: packages/types/src/grants.ts
 
-**consumer**: The workflow consumer to evaluate as, such as `action:<handler>` or `tool:<package>`. A grant scoped to a consumer by a `{ tool }` condition matches only that consumer; without it, such a grant matches nothing.
+**consumer**: The workflow consumer to evaluate as, such as `action:<handler>` or `tool:<factory id>`. A grant scoped to a consumer by a `{ tool }` condition matches only that consumer; without it, such a grant matches nothing.
 
 ### EvaluateResult
 `{ effect: "allow" | "ask" | "deny", matchingGrants: { action: string, effect: "allow" | "ask" | "deny", id: string, origin: "creator" | "invoker" | "role" | "system", resource: string, specificity?: number }[] }`

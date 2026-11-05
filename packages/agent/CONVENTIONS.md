@@ -112,8 +112,7 @@ reads at construction time, beyond `BaseEnv`'s core fields. The agent
 runtime's `validateEnv` (in `@intx/agent`'s `env-validation.ts`)
 asserts every declared key is present on the env before the factory
 is invoked. A missing key raises `AgentEnvError` at agent-construction
-time, which the loader's atomic-apply layer surfaces as a
-`factory.construct.failed` deploy-apply error.
+time.
 
 The keys may name either:
 

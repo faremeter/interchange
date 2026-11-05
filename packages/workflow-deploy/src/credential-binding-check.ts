@@ -216,7 +216,7 @@ export function checkCredentialBindings(
 /**
  * The consumers that declare the reserved hub handle anywhere in the workflow
  * -- the root and every nested body, which all run as the one run principal
- * -- as `tool:<package>` and `action:<handler>`, sorted and without repeats. Each
+ * -- as `tool:<factory id>` and `action:<handler>`, sorted and without repeats. Each
  * gets a run token for the hub REST API when the run principal is created.
  */
 export function collectHubConsumers(

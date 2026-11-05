@@ -6,7 +6,7 @@ latency of the workflow-run substrate. They are `*.bench.ts`, not
 them via this directory's tsconfig. Both drive one warm agent
 back-to-back with inference mocked -- message N+1 fires only after reply
 N (no pipelining) -- and discard the first (cold) message so agent
-build, tool materialization, and LSP spawn cost are excluded. The
+build, tool construction, and LSP spawn cost are excluded. The
 steady-state per-message round-trip is what they measure.
 
 ## Running

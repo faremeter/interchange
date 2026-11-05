@@ -590,10 +590,10 @@ the approved projection and its hash. Deploy refuses a declared handle that
 no root `credentialBindings` entry names for the tool, and a binding that
 names a handle the tool does not declare. The reserved hub handle
 `interchange.hub` needs no binding; the hub binds it itself. The check works
-per tool package: the factories that share a package id share one set of
-declarations, and every tool of the package can resolve every handle bound
-to it. A package whose factories declare nothing is not held to its
-bindings. A credential failure reaches the author in one of three ways:
+per factory id: the factories that share an id share one set of declarations,
+and every tool they provide can resolve every handle bound to that id. An id
+whose factories declare nothing is not held to its bindings. A credential
+failure reaches the author in one of three ways:
 
 - At install and approve, the probe gate refuses the definition with
   `credential_bindings_invalid` and names each problem.

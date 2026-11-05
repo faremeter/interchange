@@ -1,14 +1,14 @@
 // Per-consumer assembly of the runtime `credentials` capability for a step's
 // tool bundles.
 //
-// A step can carry tool factories from several packages, and each package is a
-// distinct credential consumer (`toolConsumer(packageName)`). Gate 2 -- the
-// `{ tool }` condition on a `credential:{id}` / `use` grant -- is baked into
-// each capability at construction, so a single capability shared across a
-// step's packages would be a confused-deputy hole (package A's grant would
-// authorize package B's resolve). This module therefore builds ONE capability
-// per package, keyed by package name, and the bundle-invocation site layers
-// each package's capability onto only that package's bundles.
+// A step can carry several tool factories, and each factory is a distinct
+// credential consumer (`toolConsumer(packageName)`). Gate 2 -- the `{ tool }`
+// condition on a `credential:{id}` / `use` grant -- is baked into each
+// capability at construction, so a single capability shared across a step's
+// factories would be a confused-deputy hole (factory A's grant would authorize
+// factory B's resolve). This module therefore builds ONE capability per factory,
+// keyed by factory id, and the bundle-invocation site layers each factory's
+// capability onto only that factory's bundles.
 //
 // Two invariants this module owns, both fail-closed:
 //   1. Material is read from the LIVE delivery cell on every use, never
@@ -19,8 +19,8 @@
 //      launch/first-resolve gate (Seam A memoizes it), so mid-deploy
 //      revocation takes effect here, at the material, not at the gate.
 //   2. The declared-vs-bound reconcile runs per consumer against that
-//      consumer's OWN bound set, so package A's declaration can never be
-//      satisfied by a handle bound for package B.
+//      consumer's OWN bound set, so factory A's declaration can never be
+//      satisfied by a handle bound for factory B.
 
 import { toolConsumer } from "@intx/authz";
 import type {
@@ -73,18 +73,17 @@ export interface StepCredentialWiring {
 
 /**
  * Build the credential capabilities for a step's tool factories, one per
- * distinct package, keyed by package name.
+ * distinct `packageName`, which is the factory's id.
  *
- * A package with neither a declared nor a bound credential gets no entry: its
+ * A factory with neither a declared nor a bound credential gets no entry: its
  * bundles keep the base capabilities bag untouched, so `resolve("credentials")`
  * fails closed as "not provided by host" rather than handing back an empty
  * sub-registry. Every returned capability owns a `dispose` the caller must run
  * on teardown.
  *
  * The factory list is structural. The body reads only `packageName` and
- * `declaredCredentials`. Importing `StepToolFactory` or `@intx/tool-packaging`
- * is rejected because `bin/check-deps.ts` counts `import type`, and that
- * dependency does not belong on this package.
+ * `declaredCredentials`, and the caller's factory type lives in
+ * `@intx/workflow-host`, which depends on this package.
  */
 export function buildCredentialCapabilities(
   factories: readonly {
@@ -95,8 +94,8 @@ export function buildCredentialCapabilities(
 ): Map<string, HostCredentialCapability> {
   const byPackage = new Map<string, HostCredentialCapability>();
   const seenPackages = new Set<string>();
-  // Resolve the step's grants at most once, and only if some package actually
-  // needs a capability -- a step with no credential-consuming package never
+  // Resolve the step's grants at most once, and only if some factory actually
+  // needs a capability -- a step with no credential-consuming factory never
   // reads them (see StepCredentialWiring.resolveGrants).
   let grants: readonly GrantRule[] | undefined;
   const stepWiring: StepCredentialWiring = {

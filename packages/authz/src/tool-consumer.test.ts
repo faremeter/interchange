@@ -89,7 +89,7 @@ describe("toolConsumerEvaluator", () => {
 describe("consumer identities", () => {
   const base = { handle: "gh", provider: "github", locator: "tenant" } as const;
 
-  test("a tool binding names its package's tool consumer", () => {
+  test("a tool binding names its factory's tool consumer", () => {
     expect(
       credentialBindingConsumer({ ...base, package: "@intx/tools-github" }),
     ).toBe("tool:@intx/tools-github");
@@ -101,7 +101,7 @@ describe("consumer identities", () => {
     );
   });
 
-  test("a tool package and an action handler with one name stay disjoint", () => {
+  test("a tool factory and an action handler with one name stay disjoint", () => {
     expect(actionConsumer("deploy")).not.toBe(toolConsumer("deploy"));
   });
 

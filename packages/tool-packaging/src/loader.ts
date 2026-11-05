@@ -34,8 +34,7 @@
 // `node_modules/` resolution at apply time.
 //
 // Errors are surfaced as `ToolLoaderError` with a `category` matching
-// one of the `DeployApplyErrorCategory` values. The atomic-apply layer
-// catches these and translates them into wire-level frames.
+// one of the `DeployApplyErrorCategory` values.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -177,7 +176,7 @@ export interface TarballFetcherConfig {
   /**
    * Deadline in milliseconds for a single HTTP-registry tarball fetch,
    * spanning the request and the streamed body read. A stalled registry
-   * cannot block the fetch -- and the deploy's tool materialization
+   * cannot block the fetch -- and the closure materialization
    * awaiting it -- past this bound. Defaults to
    * `DEFAULT_REGISTRY_FETCH_TIMEOUT_MS`. Asset-sourced tarballs read from
    * the local filesystem and are not subject to it.
@@ -780,12 +779,7 @@ function applyNamespacePrefix(
         // by the sidecar harness only after the apply commits. As a
         // consequence, an intra-bundle duplicate surfaces on the
         // runtime construct-failure channel rather than as an
-        // apply-error frame. The cross-bundle case (in atomic-apply.ts)
-        // catches the same category at apply time because it operates
-        // on `factory.id` metadata, which is available without invoking
-        // the factory. See the `tool.name.duplicate` category docstring
-        // on `DeployApplyErrorCategory` for the operator-facing
-        // contract this split honors.
+        // apply-error frame.
         const rawSeen = new Set<string>();
         for (const def of bundle.definitions) {
           if (rawSeen.has(def.name)) {
