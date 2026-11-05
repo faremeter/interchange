@@ -6,11 +6,11 @@ pipeline actually guarantees end-to-end; downstream code (the apply
 protocol, the session service, the deploy-flow integration tests) leans
 on it as written.
 
-## Loader resolution contract
+## Closure resolution contract
 
-A tool package's `interchange.tools` entry, and the JS body it pulls in
-transitively, may `import` (or `require`) any bare specifier the
-manifest's resolved closure satisfies. The loader builds a per-instance
+A closure package's body, and the JS it pulls in transitively, may
+`import` (or `require`) any bare specifier the manifest's resolved
+closure satisfies. The loader builds a per-instance
 nested `node_modules/` layout under the scratch directory so each
 package's direct dependencies are reachable through Node's standard
 ancestor walk; the layout composes recursively, so a transitive's own
@@ -41,9 +41,8 @@ Concretely the loader:
    `store/<dep>/<depVersion>/` chosen for that requirer. Symlinks at
    the `node_modules/` boundary let Node's realpath-based resolver walk
    to the dep's own layout dir (which has its own `node_modules/`).
-4. Dynamically imports each top-level entry's `interchange.tools`
-   module and collects the `AnnotatedToolFactory` /
-   `AnnotatedPluginFactory` values it exports.
+
+Nothing in the closure is imported here; the workflow child evaluates it.
 
 Properties that fall out of this layout:
 
@@ -58,9 +57,9 @@ Properties that fall out of this layout:
   store entry (one symlink target per `(name, version)`); divergent
   versions live as separate store entries and Node's ancestor walk
   picks the right one for each requirer.
-- **Runtime-agnostic tarballs.** The loader does no Bun-specific
-  resolution. A tool package whose `interchange.tools` entry is a
-  `.js` file with no workspace-only deps loads identically on Node
+- **Runtime-agnostic tarballs.** The layout does no Bun-specific
+  resolution. A package whose entry is a `.js` file with no
+  workspace-only deps loads identically on Node
   and Bun. The workspace's built-in tool packages bundle their entries
   through `bin/build-builtins.ts` precisely so the produced tarballs
   satisfy this property.

@@ -8,9 +8,8 @@
 // wire-charset-safe form and back.
 //
 // Invariant: `decodeToolName(encodeToolName(x, ...)) === x`. It is
-// load-bearing. Tool-call dispatch keys on the exact prefixed name in two
-// places (the agent's `byName` map and the tool-package loader's per-bundle
-// `nameMap`), so a name that does not round-trip lands as an `unknown tool`
+// load-bearing. Tool-call dispatch keys on the exact name in the agent's
+// `byName` map, so a name that does not round-trip lands as an `unknown tool`
 // with no error at the point of the fault. The `encode`/`decode` naming
 // advertises the invertibility on purpose: a `sanitize`-style name invites a
 // future lossy "cleanup" that would break dispatch.

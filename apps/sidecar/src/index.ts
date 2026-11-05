@@ -471,8 +471,8 @@ const buildHarness = createDefaultHarnessBuilder({ adapters });
 // lays out a probe frame's frozen closure under a per-probe scratch dir
 // (rooted here so it shares the sidecar data dir's lifecycle); the executor
 // spawns the one-shot child that evaluates the workflow entry against it.
-// The cache/registry caps are the same boot-edge-resolved values the tool
-// loader uses.
+// The cache/registry caps are the same boot-edge-resolved values the deploy
+// path's closure apply uses.
 // The probe delivers source assets inline in one frame (see
 // `WorkflowProbeRequestFrame`). A git-sourced asset that grows past the shared
 // inline-payload cap is the signal to move the probe's asset delivery to the

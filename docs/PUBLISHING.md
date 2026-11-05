@@ -130,9 +130,10 @@ unpublished `0.0.0`.
 ## Tool packages
 
 The `@intx/tools-*` packages double as loadable interchange tool packages:
-a sidecar configured with a public-npm tool registry pulls one and its
-`@intx/*` dependency closure and loads the compiled `dist/sidecar-bundle.js`
-it ships. They are ordinary compiled packages — the closure resolver
+a workflow package can depend on one: the Hub resolves it and its `@intx/*`
+closure from a public-npm registry, the sidecar lays the frozen closure out,
+and the workflow child imports the compiled `dist/sidecar-bundle.js` it ships.
+They are ordinary compiled packages — the closure resolver
 fetches the real dependency graph from npm — with no special bundling.
 `make verify-tool-load` proves a tool package and its packed closure
 install and load with the factories intact.

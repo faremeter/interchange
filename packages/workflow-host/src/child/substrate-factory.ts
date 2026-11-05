@@ -1057,13 +1057,13 @@ export function createSidecarStepBuildEnv(
     // factories. The child holds the live re-verified `WorkflowDefinition`, and
     // the runtime threads each step's live agent in as `req.agent`, so
     // `req.agent.toolFactories` are the real callable `AnnotatedToolFactory`s,
-    // bare-named because no namespacing loader runs. `packageName` is the
-    // factory's bundle `id` (the credential Gate-2 key), and its `defineTool`
-    // declaration feeds the declared-versus-bound check; a mail/plain tool
-    // declares no credentials, so it stays inert. Plugin factories -- which have
-    // no agent slot -- are materialized separately from the frozen closure the
-    // child already holds (`materializeSourcePluginFactories`), and the per-step
-    // plugin chain wires them onto `env.plugins`.
+    // bare-named. `packageName` is the factory's bundle `id` (the credential
+    // Gate-2 key), and its `defineTool` declaration feeds the declared-versus-
+    // bound check; a mail/plain tool declares no credentials, so it stays inert.
+    // Plugin factories -- which have no agent slot -- are materialized separately
+    // from the frozen closure the child already holds
+    // (`materializeSourcePluginFactories`), and the per-step plugin chain wires
+    // them onto `env.plugins`.
     const materialization: StepToolMaterialization = {
       factories: sourceStepToolFactories(req.agent.toolFactories),
       pluginFactories: await materializeSourcePluginFactories(deps, req),

@@ -1,8 +1,8 @@
 // A real, type-checked credential-consuming tool bundle for the single-step
 // credential-tool e2e. `credential-tool-workflow.ts` inlines THIS module into
 // the workflow's source closure via `bundleWorkflowEntry`, so the e2e drives
-// the production tool loader against a genuine bundle rather than a
-// hand-written string blob.
+// the production closure evaluation and `sourceStepToolFactories` against a
+// genuine bundle rather than a hand-written string blob.
 //
 // The tool resolves one credential handle from the host-assembled
 // `credentials` capability into an http mediated credential,
@@ -33,7 +33,7 @@ export const CREDENTIAL_HANDLE = "api-token";
  */
 export const BUNDLE_ID = "@intx/tools-credential-probe/sidecar-bundle";
 
-/** The probe definition's name; a source-ref tool keeps its bare name. */
+/** The name the probe tool is called by. */
 export const PROBE_DEFINITION_NAME = "probe";
 
 /**

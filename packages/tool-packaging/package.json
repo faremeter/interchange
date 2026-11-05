@@ -12,7 +12,6 @@
     }
   },
   "dependencies": {
-    "@intx/agent": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/storage-isogit": "workspace:*",
     "@intx/types": "workspace:*",

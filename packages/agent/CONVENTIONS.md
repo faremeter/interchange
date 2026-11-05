@@ -6,26 +6,9 @@ consumes anything that fits these shapes; this file fixes the shapes.
 
 ## Tool-package convention
 
-A package that contributes tools to an agent declares its tool entry in
-`package.json` via the `interchange.tools` field:
-
-```json
-{
-  "name": "@vendor/my-tools",
-  "version": "1.2.3",
-  "interchange": {
-    "tools": "./dist/tools.js"
-  }
-}
-```
-
-The path resolves against the package root. The module it names is the
-**tool entry module**.
-
-### Tool entry module shape
-
-The tool entry module's **named exports** are `AnnotatedToolFactory`
-values, built via `defineTool({ id, requires?, definitions, factory })`:
+A package that contributes tools exports `AnnotatedToolFactory` values,
+built via `defineTool({ id, requires?, definitions, factory })`. A workflow
+definition imports them and lists them in an agent's `toolFactories`:
 
 ```ts
 import { defineTool } from "@intx/agent";
@@ -58,10 +41,6 @@ A package may export one or many factories. Each factory's `id` must be
 package-namespaced (`@vendor/pkg/name` or `pkg/name`); `defineTool`
 enforces this via `validateNamespacedId`.
 
-The default export is not consumed. Any non-`AnnotatedToolFactory`
-named export is ignored by the loader. The loader rejects an entry
-module that has no `AnnotatedToolFactory` named exports.
-
 ### Per-instance isolation
 
 A factory is invoked **once per agent instance**, with an env scoped to
@@ -79,31 +58,10 @@ This means two agent instances on one sidecar can load the same
 the module graph itself is shared. The factory is the isolation
 boundary; the module is not.
 
-### Tool-name namespacing
+### Tool names
 
-The loader synthesizes the model-facing tool name as
-`<bundle.id>:<def.name>`. Package authors write bare tool names inside
-the `ToolDefinition` (e.g. `read_file`); the loader prefixes with the
-bundle's `id`.
-
-Grants in the existing authz system match the matching shape:
-`tool:<bundle.id>/<def.name>`. The grant evaluator does not need to
-know about packages.
-
-The model-facing form uses `:` and the grant form uses `/` on
-purpose: the model never sees the `tool:` resource prefix the grant
-evaluator works with, so reusing `:` in both would either force the
-model-facing form to also carry the `tool:` prefix (verbose, leaks
-authz internals) or have the grant form drop its `tool:` discriminator
-(loses the prefix that lets the evaluator route resources by kind).
-The two-character split keeps each form unambiguous within its own
-layer.
-
-### Audit provenance
-
-Every tool invocation is tagged with the providing bundle's `id`. The
-package does not need to participate; the loader records provenance
-against the bundle it dispatched to.
+A tool's model-facing name is the bare name in its `ToolDefinition`
+(e.g. `read_file`), and grants match it as `tool:<name>`.
 
 ## Env requirements
 
@@ -132,10 +90,23 @@ value.
 
 Some tool packages contribute extra capabilities to other tool packages
 (e.g. LSP's diagnostics middleware decorates posix's edit tools)
-rather than producing a self-contained `ToolBundle`. These export
-`AnnotatedPluginFactory` values, built via `definePlugin`. The loader
-collects them and surfaces their results to tool factories via
-`env.plugins` before any tool factory is invoked.
+rather than producing a self-contained `ToolBundle`. These declare an
+entry in `package.json` via the `interchange.tools` field, and its named
+exports are `AnnotatedPluginFactory` values, built via `definePlugin`:
+
+```json
+{
+  "name": "@vendor/my-plugin",
+  "version": "1.2.3",
+  "interchange": {
+    "tools": "./dist/tools.js"
+  }
+}
+```
+
+The workflow child imports the entry of each package an agent lists in
+`plugins` and surfaces the results to tool factories via `env.plugins`
+before any tool factory is invoked.
 
 Tool packages that consume plugins read `env.plugins` and filter by
 shape — the agent runtime does not interpret the plugin's return
@@ -149,9 +120,9 @@ plugin factories as opaque: it accepts whatever the host hands to
 via `env.plugins`. Hosts MAY invoke plugin factories one at a time
 and re-feed each factory the prior results on `env.plugins`,
 producing a chain in which each successive plugin sees its
-predecessors. The default sidecar harness in this repository does
-exactly that (`apps/sidecar/src/default-harness.ts`), so packages
-authored against the in-tree sidecar can assume the chained shape.
+predecessors. The workflow child in this repository does exactly that
+(`packages/workflow-host/src/child/step-tools.ts`), so packages authored
+against the in-tree sidecar can assume the chained shape.
 
 Package authors that intend to consume sibling plugin results must
 inspect `env.plugins` at construction and fail loudly with a clear
@@ -166,6 +137,5 @@ this convention.
 ## Versioning
 
 Changes to the entry-module shape (what `interchange.tools` may
-export) are breaking. A tool package's declared `interchange.tools`
-module must remain compatible with the loader version it ships
-against. The loader version is the `@intx/agent` major it depends on.
+export) are breaking. A package's declared `interchange.tools` module
+must remain compatible with the `@intx/agent` major it depends on.

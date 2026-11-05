@@ -1070,9 +1070,9 @@ export const PackRejectFrame = type({
 export type PackRejectFrame = typeof PackRejectFrame.infer;
 
 /**
- * Categories of deploy-apply failure surfaced by the sidecar's
- * tool-package loader. Each value maps one-to-one to a distinct point in
- * the apply pipeline; a single category fires per failed attempt.
+ * Categories of deploy-apply failure surfaced by the sidecar's closure
+ * materialization. Each value maps one-to-one to a distinct point in the
+ * pipeline; a single category fires per failed attempt.
  *
  *   tarball.missing          — a manifest entry's asset-sourced tarball
  *                              is not present at the recorded path.
@@ -1098,13 +1098,11 @@ export type PackRejectFrame = typeof PackRejectFrame.infer;
  *                              materialized from its checked-out
  *                              subtree, or reached a loader that does
  *                              not materialize git sources.
- *   package.entry.missing    — a top-level package's package.json had
- *                              no `interchange.tools` field.
- *   package.entry.invalid    — the resolved `interchange.tools` module
- *                              exported nothing that looked like an
- *                              AnnotatedToolFactory.
- *   tool.name.duplicate      — a package exports two tool definitions
- *                              sharing a raw name.
+ *   package.entry.invalid    — a closure entry could not be laid out:
+ *                              its package.json is malformed, a path
+ *                              escapes its root, its dependencies
+ *                              collide, or a hard dependency has no
+ *                              satisfying closure version.
  */
 export const DeployApplyErrorCategory = type.enumerated(
   "tarball.missing",
@@ -1115,9 +1113,7 @@ export const DeployApplyErrorCategory = type.enumerated(
   "registry.auth.failed",
   "tarball.extract.failed",
   "git.materialization.failed",
-  "package.entry.missing",
   "package.entry.invalid",
-  "tool.name.duplicate",
 );
 export type DeployApplyErrorCategory = typeof DeployApplyErrorCategory.infer;
 

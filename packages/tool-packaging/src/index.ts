@@ -17,8 +17,9 @@
 //   - Sidecar-side (deploy apply):
 //       createTarballCache({ rootDir, maxBytes }) — content-addressable
 //       store keyed by SRI integrity.
-//       createToolLoader({ cache, registries, host, … }) — fetches,
-//       extracts, and dynamic-imports each pinned package.
+//       materializeClosure({ manifest, cache, fetchTarball, … }) — fetches,
+//       extracts, and lays out a closure without importing any of it.
+//       createTarballFetcher({ … }) — the production fetcher it takes.
 //       parseToolRegistries(raw) and hostPlatform(os, cpu) are the
 //       registry-map and host-platform boundary that apply consumes.
 //       applyFrozenWorkflowClosure({ …, host }) — lays out a frozen
@@ -55,19 +56,12 @@ export {
 
 export {
   type HostPlatform,
-  type LoadManifestArgs,
-  type LoadedDirectorFactory,
-  type LoadedToolFactory,
-  type LoadedToolPackage,
-  type LoaderConfig,
   type MaterializeClosureArgs,
   type MaterializeClosureResult,
   type TarballFetcher,
   type TarballFetcherConfig,
-  type ToolLoader,
   ToolLoaderError,
   createTarballFetcher,
-  createToolLoader,
   materializeClosure,
   storeEntryDir,
 } from "./loader";

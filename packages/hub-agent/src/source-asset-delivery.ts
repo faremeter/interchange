@@ -6,7 +6,8 @@
 //     (`applyAssetPack`), keyed by an `assetId -> mountPath` map; and
 //   - a source-format entry checks a subtree out of the git objects, so the
 //     pack is indexed into a RETAINED `.git` (a "gitDir"), keyed by an
-//     `assetId -> gitDir` map the loader hands `materializeGitEntry`.
+//     `assetId -> gitDir` map the closure materializer hands
+//     `materializeGitEntry`.
 // One asset can be referenced both ways; a source-format workflow closure
 // references only source entries, so it produces only gitDirs.
 
@@ -151,7 +152,7 @@ export const MAX_INLINE_ASSET_PAYLOAD_BYTES = 32 * 1024 * 1024;
  * Materialize a workflow closure's delivered source assets: for each asset,
  * check out plain tarball files under `assetRoot` (if the closure has tarball
  * entries for it) and/or index the pack into a gitDir under `gitDirRoot` (if it
- * has source entries). Returns both maps for the loader.
+ * has source entries). Returns both maps for the closure materializer.
  */
 export async function materializeWorkflowAssets(args: {
   assets: readonly WorkflowSourceAssetMount[];

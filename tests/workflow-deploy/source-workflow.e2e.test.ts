@@ -425,8 +425,8 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
     // frame -- so the deployment becoming routable again is the load-bearing
     // restore assertion. Restore runs the full re-materialization
     // (`resolveDeploymentAssetMounts` asserts the durable git store is present,
-    // then the loader checks the pinned subtree out of it and re-verifies its
-    // tree oid) BEFORE it re-registers the address, so an absent or corrupt git
+    // then `materializeGitEntry` checks the pinned subtree out of it and
+    // re-verifies its tree oid) BEFORE it re-registers the address, so an absent or corrupt git
     // store fails the restore closed and the address never re-routes.
     //
     // Re-triggering the run is deliberately NOT asserted here: a mail-triggered

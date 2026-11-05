@@ -21,7 +21,6 @@ import * as tar from "tar";
 
 import type { Packument, PackumentFetcher } from "@intx/tool-packaging";
 import type { WorkflowDefinitionRegistrySource } from "@intx/types/workflow-sources";
-import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 
 import { resolveWorkflowClosure } from "./workflow-closure-resolution";
 import type { SourceTreeReads } from "./workflow-source-closure";
@@ -205,9 +204,6 @@ describe("resolveWorkflowClosure", () => {
     const topEntry = byName.get(top.name);
     if (topEntry === undefined) throw new Error("missing top-level entry");
     expect(topEntry.version).toBe(top.version);
-    expect(getToolPackageSourceContentIdentity(topEntry.source)).toBe(
-      top.integrity,
-    );
     expect(topEntry.source).toEqual({
       kind: "registry",
       registry: source.registry,
@@ -217,9 +213,6 @@ describe("resolveWorkflowClosure", () => {
     const depEntry = byName.get(dep.name);
     if (depEntry === undefined) throw new Error("missing transitive entry");
     expect(depEntry.version).toBe(dep.version);
-    expect(getToolPackageSourceContentIdentity(depEntry.source)).toBe(
-      dep.integrity,
-    );
     expect(depEntry.source).toEqual({
       kind: "registry",
       registry: source.registry,
@@ -254,9 +247,7 @@ describe("resolveWorkflowClosure", () => {
     const onlyEntry = manifest.entries[0];
     if (onlyEntry === undefined) throw new Error("missing entry");
     expect(onlyEntry.version).toBe(only.version);
-    expect(getToolPackageSourceContentIdentity(onlyEntry.source)).toBe(
-      only.integrity,
-    );
+    expect(onlyEntry.source).toMatchObject({ integrity: only.integrity });
   });
 
   test("resolves an asset-sourced workflow to a kind:asset entry", async () => {
@@ -284,9 +275,6 @@ describe("resolveWorkflowClosure", () => {
     const entry = manifest.entries[0];
     if (entry === undefined) throw new Error("missing entry");
     expect(entry.version).toBe(top.version);
-    expect(getToolPackageSourceContentIdentity(entry.source)).toBe(
-      top.integrity,
-    );
     expect(entry.source).toEqual({
       kind: "asset",
       assetId: "asset_top",
@@ -357,9 +345,10 @@ describe("resolveWorkflowClosure", () => {
     // The external dep is a registry entry with the tarball's SRI.
     const ext = byName.get(dep.name);
     expect(ext?.version).toBe(dep.version);
-    expect(ext?.source.kind).toBe("registry");
-    if (ext === undefined) throw new Error("missing external entry");
-    expect(getToolPackageSourceContentIdentity(ext.source)).toBe(dep.integrity);
+    expect(ext?.source).toMatchObject({
+      kind: "registry",
+      integrity: dep.integrity,
+    });
   });
 
   test("fails loud when the asset does not publish a declared dependency", async () => {

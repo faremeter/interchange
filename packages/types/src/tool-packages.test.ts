@@ -5,7 +5,6 @@ import {
   ToolPackageSource,
   ToolPackageManifestEntry,
   ToolPackageManifest,
-  getToolPackageSourceContentIdentity,
 } from "./tool-packages";
 
 describe("ToolPackagePin", () => {
@@ -218,47 +217,6 @@ describe("ToolPackageSource", () => {
   test("rejects a registry source missing integrity", () => {
     const result = ToolPackageSource({ kind: "registry", registry: "npmjs" });
     expect(result instanceof type.errors).toBe(true);
-  });
-});
-
-describe("getToolPackageSourceContentIdentity", () => {
-  test("returns the SRI for an asset tarball", () => {
-    expect(
-      getToolPackageSourceContentIdentity({
-        kind: "asset",
-        assetId: "asset_abc",
-        package: {
-          format: "tarball",
-          path: "tarballs/x.tgz",
-          integrity: "sha512-AAAA",
-        },
-      }),
-    ).toBe("sha512-AAAA");
-  });
-
-  test("returns the SRI for a registry source", () => {
-    expect(
-      getToolPackageSourceContentIdentity({
-        kind: "registry",
-        registry: "npmjs",
-        integrity: "sha512-BBBB",
-      }),
-    ).toBe("sha512-BBBB");
-  });
-
-  test("returns the tree oid for an asset source-package", () => {
-    expect(
-      getToolPackageSourceContentIdentity({
-        kind: "asset",
-        assetId: "asset_wf",
-        package: {
-          format: "source",
-          commitSha: "abc123",
-          packageDir: ".",
-          treeOid: "def456",
-        },
-      }),
-    ).toBe("def456");
   });
 });
 

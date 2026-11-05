@@ -39,7 +39,6 @@ import type {
   ToolPackageManifest,
   ToolPackagePin,
 } from "@intx/types/tool-packages";
-import { getToolPackageSourceContentIdentity } from "@intx/types/tool-packages";
 
 let scratch: string;
 let fixtureRoot: string;
@@ -180,9 +179,10 @@ describe("hub→sidecar pipeline (happy path)", () => {
     expect(manifest.entries).toHaveLength(1);
     const materializedEntry = manifest.entries[0];
     if (materializedEntry === undefined) throw new Error("missing entry");
-    expect(getToolPackageSourceContentIdentity(materializedEntry.source)).toBe(
-      fixture.integrity,
-    );
+    expect(materializedEntry.source).toMatchObject({
+      kind: "registry",
+      integrity: fixture.integrity,
+    });
 
     // Persist the manifest; round-trip it.
     const deployDir = path.join(instanceDir, "deploy");
