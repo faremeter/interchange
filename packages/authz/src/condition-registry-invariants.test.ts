@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
 import { HUB_CONDITION_REGISTRY } from "./hub-condition-registry";
+import { MAIL_SEND_CONDITION_REGISTRY } from "./mail-send-condition-registry";
 import { RUN_CHILD_CONDITION_REGISTRY } from "./run-child-condition-registry";
 import { CREDENTIAL_USE_CONDITIONS } from "./tool-consumer";
 import type { ConditionRegistry } from "./types";
@@ -9,6 +10,7 @@ const REGISTRIES: [string, Readonly<ConditionRegistry>][] = [
   ["HUB_CONDITION_REGISTRY", HUB_CONDITION_REGISTRY],
   ["CREDENTIAL_USE_CONDITIONS", CREDENTIAL_USE_CONDITIONS],
   ["RUN_CHILD_CONDITION_REGISTRY", RUN_CHILD_CONDITION_REGISTRY],
+  ["MAIL_SEND_CONDITION_REGISTRY", MAIL_SEND_CONDITION_REGISTRY],
 ];
 
 describe("condition registries", () => {
@@ -27,6 +29,16 @@ describe("condition registries", () => {
   test("the run child registry is a subset of the hub registry", () => {
     for (const [key, evaluator] of Object.entries(
       RUN_CHILD_CONDITION_REGISTRY,
+    )) {
+      expect(HUB_CONDITION_REGISTRY[key]).toBe(evaluator);
+    }
+  });
+
+  // The grants API checks a `mail.send` grant against both registries, so a
+  // condition the send check accepts must mean the same thing on the hub.
+  test("the mail send registry is a subset of the hub registry", () => {
+    for (const [key, evaluator] of Object.entries(
+      MAIL_SEND_CONDITION_REGISTRY,
     )) {
       expect(HUB_CONDITION_REGISTRY[key]).toBe(evaluator);
     }

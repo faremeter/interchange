@@ -35,6 +35,27 @@ describe("validateGrantConditions", () => {
     });
   });
 
+  // The mail send check has no consumer, so a `tool` condition never holds
+  // there, and a deny that carries one would refuse nothing.
+  describe("a mail.send grant on any holder", () => {
+    test("refuses a tool condition", () => {
+      expect(
+        problems("mail.send:domain:evil.com", "send", TOOL, false),
+      ).toEqual([
+        'a mail send cannot evaluate this grant: Unknown condition: "tool"',
+      ]);
+      expect(problems("mail.send:*", "*", TOOL, false)).toEqual([
+        'a mail send cannot evaluate this grant: Unknown condition: "tool"',
+      ]);
+    });
+
+    test("accepts a time window", () => {
+      expect(
+        problems("mail.send:domain:evil.com", "send", WINDOW, false),
+      ).toEqual([]);
+    });
+  });
+
   describe("a grant on a run principal", () => {
     test("accepts no conditions anywhere", () => {
       expect(problems("*", "*", null, true)).toEqual([]);

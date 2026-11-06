@@ -356,19 +356,20 @@ Spending limits and threshold-based escalation are planned conditions with no ev
 - `{ "max_spend_per_day": 100, "currency": "USD" }` -- spending limits (not yet available).
 - `{ "require_approval_above": 50 }` -- threshold-based escalation (not yet available).
 
-Every grant is evaluated on the hub with this registry. A grant that sits directly on a workflow run's principal is also evaluated where the run is, with narrower registries:
+Every grant is evaluated on the hub with this registry. A grant that sits directly on a workflow run's principal is also evaluated where the run is, and a `mail.send` grant on any holder is also evaluated by the hub's mail send check. Each has a narrower registry:
 
 | Where               | Evaluates                                                                                       | Registry           |
 | ------------------- | ----------------------------------------------------------------------------------------------- | ------------------ |
 | The run child       | a row whose resource pattern can match a resource outside `credential:`                         | `time_window` only |
 | The credential gate | a row whose resource pattern can match `credential:<id>` and whose action pattern matches `use` | `tool` only        |
+| The mail send check | a row in the `mail.send` namespace, on any holder                                               | `time_window` only |
 
 A role grant never reaches a run, because a run loads only the rows on its own principal. So a run-principal row may carry `time_window` on a non-credential resource and `tool` on credential use. A row whose patterns can reach both, such as resource `*` with an action pattern that matches `use`, may carry no condition, because neither key is evaluable in both places.
 
 The hub checks conditions against every registry that will evaluate the row before it stores the row:
 
 - The probe gate (`gateAndFreezeProbeResult`) checks a workflow definition's declared grant requirements, which become rows on the run principal, at install and approve. It refuses the definition with the reason `grant_requirement_conditions_invalid`, before the operator approval checks and before anything is frozen.
-- Grant create (`POST`) and update (`PATCH`) check `conditions` for the grant's target, resource, and action. An unregistered key, such as the planned conditions above, a body that does not match its evaluator's shape, or a key that a run cannot evaluate on a run-principal row, gives a 400 that names each problem, and the grant is not stored. A `PATCH` that omits `conditions` does not check or change the stored value.
+- Grant create (`POST`) and update (`PATCH`) check `conditions` for the grant's target, resource, and action. An unregistered key, such as the planned conditions above, a body that does not match its evaluator's shape, a key that a run cannot evaluate on a run-principal row, or a key that the mail send check cannot evaluate on a `mail.send` row, gives a 400 that names each problem, and the grant is not stored. A `PATCH` that omits `conditions` does not check or change the stored value.
 
 The authorization engine evaluates conditions at runtime: a grant whose registered condition is unmet is skipped. A stored grant that carries an unregistered key or a malformed body still throws and fails the authorization, to surface the misconfiguration. Such a row comes from a path that does not check conditions: a grant materialized (at launch, or when a change to the delegator's grants re-derives the run) from a declared grant requirement that was frozen before the probe gate checked conditions, a direct database write, or a row stored before the check existed.
 

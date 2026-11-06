@@ -39,6 +39,7 @@ export { validateGrantConditions } from "./grant-conditions";
 export type { GrantConditionTarget } from "./grant-conditions";
 export { HUB_CONDITION_REGISTRY } from "./hub-condition-registry";
 export { RUN_CHILD_CONDITION_REGISTRY } from "./run-child-condition-registry";
+export { MAIL_SEND_CONDITION_REGISTRY } from "./mail-send-condition-registry";
 export { timeWindowEvaluator } from "./time-window";
 export {
   actionConsumer,

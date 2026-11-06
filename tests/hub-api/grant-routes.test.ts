@@ -33,6 +33,10 @@ import { seedPrincipal, seedWorkflowRun } from "@intx/test-harness/seed";
 // Conditions: create and update check `conditions` against the hub condition
 // registry (unit-tested in packages/authz), so a grant that authorization
 // could not evaluate is a 400 naming the problem, and is never stored.
+//
+// Mail send resources: create refuses a `mail.send` resource that can match
+// no recipient coordinate (unit-tested in packages/authz), so a deny row the
+// send check would never apply is a 400, and is never stored.
 
 function mockGetSession(userId: string): GetSession {
   const now = new Date("2026-01-01");
@@ -255,6 +259,145 @@ describe.skipIf(!harnessDbEnvAvailable())(
         action: "read",
       });
     });
+
+    describe("mail.send resources", () => {
+      async function postSend(
+        slug: string,
+        resource: string,
+        effect: "allow" | "deny" = "deny",
+        action = "send",
+      ) {
+        const app = makeApp();
+        const { tenantId, roleId } = await bootstrapTenant(app, slug);
+        const before = (await h.db.query.grant.findMany()).length;
+        const res = await postGrant(app, tenantId, {
+          roleId,
+          resource,
+          action,
+          effect,
+          origin: "creator",
+        });
+        const stored = (await h.db.query.grant.findMany()).length - before;
+        return { res, stored };
+      }
+
+      test("POST rejects a domain deny that could never match and stores nothing", async () => {
+        const { res, stored } = await postSend(
+          "send-upper",
+          "mail.send:domain:Evil.COM",
+        );
+
+        expect(res.status).toBe(400);
+        const { error } = ErrorBody.assert(await res.json());
+        expect(error.code).toBe("bad_request");
+        expect(error.message).toContain("mail.send:domain:Evil.COM");
+        expect(stored).toBe(0);
+      });
+
+      test("POST rejects an allow of an unknown coord type", async () => {
+        const { res, stored } = await postSend(
+          "send-type",
+          "mail.send:domian:evil.com",
+          "allow",
+        );
+        expect(res.status).toBe(400);
+        const { error } = ErrorBody.assert(await res.json());
+        expect(error.code).toBe("bad_request");
+        expect(error.message).toContain("mail.send:domian:evil.com");
+        expect(stored).toBe(0);
+      });
+
+      test("POST rejects a deny whose action cannot match send", async () => {
+        const { res, stored } = await postSend(
+          "send-action",
+          "mail.send:domain:evil.com",
+          "deny",
+          "read",
+        );
+        expect(res.status).toBe(400);
+        const { error } = ErrorBody.assert(await res.json());
+        expect(error.code).toBe("bad_request");
+        expect(error.message).toContain('must match "send"');
+        expect(stored).toBe(0);
+      });
+
+      test("POST stores a send grant whose action is a pattern that matches send", async () => {
+        const { res, stored } = await postSend(
+          "send-action-glob",
+          "mail.send:domain:evil.com",
+          "deny",
+          "*",
+        );
+        expect(res.status).toBe(201);
+        expect(stored).toBe(1);
+      });
+
+      // The send check has no consumer, so a `tool` condition never holds
+      // there and such a deny would refuse nothing.
+      test("POST and PATCH refuse a tool condition on a send deny", async () => {
+        const app = makeApp();
+        const { tenantId, roleId } = await bootstrapTenant(app, "send-tool");
+        const body = {
+          roleId,
+          resource: "mail.send:domain:evil.com",
+          action: "send",
+          effect: "deny",
+          origin: "creator",
+        };
+
+        const conditioned = await postGrant(app, tenantId, {
+          ...body,
+          conditions: { tool: "tool:pkg" },
+        });
+        expect(conditioned.status).toBe(400);
+        expect(
+          ErrorBody.assert(await conditioned.json()).error.message,
+        ).toContain("a mail send cannot evaluate this grant");
+
+        const created = await postGrant(app, tenantId, body);
+        expect(created.status).toBe(201);
+        const { id } = type({ id: "string" }).assert(await created.json());
+        const patched = await patchGrant(app, tenantId, id, {
+          conditions: { tool: "tool:pkg" },
+        });
+        expect(patched.status).toBe(400);
+        expect(await storedConditions(id)).toBeNull();
+      });
+
+      test.each(["mail.send*:domain:evil.com", "mail.*:domain:evil.com"])(
+        "POST rejects the near miss %p, which never decides a send",
+        async (resource) => {
+          const { res, stored } = await postSend(
+            `send-near-${resource.length}`,
+            resource,
+          );
+          expect(res.status).toBe(400);
+          expect(stored).toBe(0);
+        },
+      );
+
+      test.each(["*", "mail.*"])(
+        "POST stores the broad deny %p",
+        async (resource) => {
+          const { res, stored } = await postSend(
+            `send-broad-${resource.length}`,
+            resource,
+          );
+          expect(res.status).toBe(201);
+          expect(stored).toBe(1);
+        },
+      );
+
+      test("POST stores a lower-case domain deny", async () => {
+        const { res, stored } = await postSend(
+          "send-ok",
+          "mail.send:domain:evil.com",
+        );
+        expect(res.status).toBe(201);
+        expect(stored).toBe(1);
+      });
+    });
+
     describe("conditions", () => {
       async function setup(slug: string) {
         const app = makeApp();

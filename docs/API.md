@@ -426,7 +426,7 @@ Creates a grant targeting either a role or a principal directly. Exactly one of 
 Body: CreateGrant
 
 201: GrantResponse -- Grant created
-400: ErrorResponse -- Validation error. A body that fails its schema gets the body validator's error envelope. A body whose `conditions` names an unregistered condition, holds a malformed condition body, or, on a workflow run's principal, holds a condition the run cannot evaluate gets an `ErrorResponse` whose message lists each problem as a JSON array.
+400: ErrorResponse -- Validation error. A body that fails its schema gets the body validator's error envelope. A body whose `conditions` names an unregistered condition, holds a malformed condition body, or, on a workflow run's principal, holds a condition the run cannot evaluate gets an `ErrorResponse` whose message lists each problem as a JSON array. A `mail.send` resource that can match no recipient coordinate, a domain pattern that is not in lower case, a `mail.send` grant whose action cannot match `send`, or a pattern outside the `mail.send` namespace that names part of a send resource, such as `mail.send*:domain:<id>`, gets an `ErrorResponse` that names the problem.
 
 ### GET /api/tenants/:tenantId/grants/:grantId
 Get grant details
