@@ -2,6 +2,7 @@ import { isNamespaceResource } from "@intx/types/authz";
 
 import type { ConditionRegistry, GrantRule, MatchedGrant } from "./types";
 import { EFFECT_PRIORITY, evaluateGrants } from "./evaluate";
+import { patternSpecificity } from "./specificity";
 import {
   coordResource,
   coordTypeTier,
@@ -25,8 +26,11 @@ import {
  *   and role grants form one set in `evaluateGrants`, and one grant wins. The
  *   order is: the coordinate tier the grant names (its position in
  *   `grammar.coordTypes`, with a grant that names no coord type such as
- *   `<namespace>:*` lowest), then pattern specificity, then effect priority
- *   (deny > ask > allow).
+ *   `<namespace>:*` lowest), then the specificity of the coordinate pattern,
+ *   then effect priority (deny > ask > allow). The action and the spelling of
+ *   a namespace-wide pattern do not count, so a deny that matches the
+ *   coordinate beats an allow of the same coordinate pattern whatever action
+ *   either spells.
  * - The tier comes from the literal type segment of the grant. A grant whose
  *   type segment holds a wildcard (`<namespace>:principal*`,
  *   `<namespace>:*`) names no coord type, so it ranks as namespace-wide,
@@ -98,6 +102,23 @@ function grantTier<T extends string>(
   return coordType === undefined ? 0 : coordTypeTier(grammar, coordType);
 }
 
+// The specificity of the coordinate a grant names: its resource without the
+// namespace prefix and the `:` separators. The action does not count: every
+// grant here already matches the grammar's one action, so how it spells that
+// action (`send` or `*`) says nothing about what it covers. The separators do
+// not count either, so `<namespace>:*` and `<namespace>:*:*` rank the same.
+function coordSpecificity<T extends string>(
+  grammar: CoordGrammar<T>,
+  resource: string,
+): number {
+  const coordPart = resource
+    .slice(grammar.namespace.length + 1)
+    .replaceAll(":", "");
+  // The bare namespace names no coordinate and matches none; it must not
+  // score as an exact match.
+  return coordPart === "" ? 0 : patternSpecificity(coordPart);
+}
+
 function outranks<T extends string>(
   grammar: CoordGrammar<T>,
   a: MatchedGrant,
@@ -106,7 +127,9 @@ function outranks<T extends string>(
   const tierDiff =
     grantTier(grammar, a.resource) - grantTier(grammar, b.resource);
   if (tierDiff !== 0) return tierDiff > 0;
-  const specDiff = a.specificity - b.specificity;
+  const specDiff =
+    coordSpecificity(grammar, a.resource) -
+    coordSpecificity(grammar, b.resource);
   if (specDiff !== 0) return specDiff > 0;
   return EFFECT_PRIORITY[a.effect] > EFFECT_PRIORITY[b.effect];
 }

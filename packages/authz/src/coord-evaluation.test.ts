@@ -2,7 +2,6 @@ import { describe, test, expect } from "bun:test";
 
 import { evaluateCoordinateGrants } from "./coord-evaluation";
 import { coordTypeTier, defineCoordGrammar, type Coordinate } from "./coord";
-import { grantSpecificity } from "./specificity";
 import type { GrantRule } from "./types";
 
 function grant(
@@ -78,11 +77,8 @@ describe("evaluateCoordinateGrants", () => {
   });
 
   test("ranks a wildcard type segment below a named type", async () => {
-    // Equal specificity: only the tier rule can pick the named-type grant.
-    expect(grantSpecificity("test.ns:high*", "use")).toBe(
-      grantSpecificity("test.ns:low:*", "use"),
-    );
-
+    // `high*` has the more specific coordinate pattern than `low*`, so only
+    // the tier rule can pick the named-type grant.
     const winner = await evaluateCoordinateGrants({
       grammar: LOW_HIGH,
       coordinates: COORDS,
@@ -91,6 +87,46 @@ describe("evaluateCoordinateGrants", () => {
     });
 
     expect(winner?.resource).toBe("test.ns:low:*");
+    expect(winner?.effect).toBe("allow");
+  });
+
+  async function winnerOf(grants: GrantRule[]) {
+    return evaluateCoordinateGrants({
+      grammar: LOW_HIGH,
+      coordinates: COORDS,
+      grants,
+      registry: undefined,
+    });
+  }
+
+  // A namespace-wide deny must narrow a namespace-wide allow however either
+  // spells its action or its pattern.
+  test.each([
+    { deny: ["test.ns:*", "*"], allow: ["test.ns:*:*", "use"] },
+    { deny: ["test.ns:*:*", "*"], allow: ["test.ns:*:*", "use"] },
+    { deny: ["test.ns:*", "use"], allow: ["test.ns:*:*", "use"] },
+  ] as const)("a deny $deny beats an allow $allow", async ({ deny, allow }) => {
+    const winner = await winnerOf([
+      grant(allow[0], "allow", allow[1]),
+      grant(deny[0], "deny", deny[1]),
+    ]);
+    expect(winner?.effect).toBe("deny");
+  });
+
+  test("a deny with action * beats an allow of the same coordinate", async () => {
+    const winner = await winnerOf([
+      grant("test.ns:high:hi", "allow", "use"),
+      grant("test.ns:high:hi", "deny", "*"),
+    ]);
+    expect(winner?.effect).toBe("deny");
+  });
+
+  test("a more specific coordinate pattern still wins inside a tier", async () => {
+    const winner = await winnerOf([
+      grant("test.ns:*:*", "deny", "*"),
+      grant("test.ns:*:hi", "allow", "use"),
+    ]);
+    expect(winner?.resource).toBe("test.ns:*:hi");
     expect(winner?.effect).toBe("allow");
   });
 });
