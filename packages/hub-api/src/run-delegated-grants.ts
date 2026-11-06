@@ -22,7 +22,6 @@ import {
   type GrantStoreFactory,
 } from "@intx/db";
 import type { GrantEffect, GrantOrigin } from "@intx/types";
-import { reservedGrantNamespace } from "@intx/types/reserved-namespaces";
 import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import type { GrantRule } from "@intx/types/authz";
 import { runtimeGrantRules } from "@intx/workflow-deploy/capabilities";
@@ -36,7 +35,7 @@ import {
 } from "./grant-materialization";
 import {
   approvalToolName,
-  bindSelfRunRequirements,
+  delegatedRunRequirements,
   collectCreatorGrants,
   loadActiveDeployerId,
   loadAssetCreatorPrincipalId,
@@ -407,7 +406,7 @@ async function rederiveRun(
     );
   }
   // The deployment's top-level run id is its anchor id.
-  const requirements = bindSelfRunRequirements(
+  const requirements = delegatedRunRequirements(
     snapshot.grantRequirements,
     anchorRunId,
   );
@@ -472,18 +471,7 @@ async function rederiveRun(
     // Two requirements that differ only in effect share a key. The first one
     // decides whether a row exists: after a lapse and a regain, a remaining
     // `deny` row stands for the key and the `allow` is not added again.
-    // A row in a reserved namespace never comes from a delegator (a
-    // `mail.accept` row comes from the snapshot's accept markers or from a
-    // correspondent the run mailed). The deploy gate refuses a requirement in
-    // such a namespace; this keeps a snapshot that carries one from deleting
-    // those rows.
-    if (
-      seen.has(key) ||
-      runtimeKeys.has(key) ||
-      reservedGrantNamespace(req.resource) !== null
-    ) {
-      continue;
-    }
+    if (seen.has(key) || runtimeKeys.has(key)) continue;
     seen.add(key);
     const ofKey = rows.filter(
       (row) =>
