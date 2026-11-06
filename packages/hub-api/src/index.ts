@@ -36,6 +36,10 @@ export {
   type CorrespondentGrantMinterDeps,
 } from "./run-grant-materialization";
 export {
+  createMailSendAuthorizer,
+  type MailSendAuthorizerDeps,
+} from "./mail-send-authorization";
+export {
   findDelegatedAnchorRunIds,
   rederiveRunDelegatedGrants,
   sweepLapsedDeployerGrants,

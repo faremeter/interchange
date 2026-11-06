@@ -175,3 +175,38 @@ function nearMailSendPattern(resource: string): boolean {
     resource.endsWith("*") && matchPattern(resource, `${MAIL_SEND_NAMESPACE}:`)
   );
 }
+
+/**
+ * Who sends: a deployment named by its run address (the relay path, where the
+ * sidecar connection already binds the address), or a principal the caller
+ * has already authenticated (the REST path).
+ */
+export type MailSendSender =
+  | { kind: "address"; address: string }
+  | { kind: "principal"; principalId: string; tenantId: string };
+
+/**
+ * The send decision for one recipient, keyed by the caller's string. A caller
+ * decides on `allowed` alone. An `evaluated` decision's `effect` and `grant`
+ * describe the winning grant for a log: `effect` is `null` when no grant
+ * matched, and an `ask` winner is not allowed although `grant` names it. An
+ * `unresolved` decision means the recipient's coordinates could not be
+ * resolved, a fault and not a grant decision; it is never allowed.
+ */
+export type MailSendDecision =
+  | ({ recipient: string; outcome: "evaluated" } & MailSendResult)
+  | { recipient: string; outcome: "unresolved"; allowed: false };
+
+export type MailSendAuthorization =
+  | { ok: true; decisions: MailSendDecision[] }
+  | { ok: false; reason: "sender_unresolved" };
+
+/**
+ * Decide, for each recipient of one mail, whether the sender may send it.
+ * The hub implements it against its database; a fault rejects the promise,
+ * and the caller then refuses every recipient.
+ */
+export type MailSendAuthorizer = (args: {
+  sender: MailSendSender;
+  recipients: readonly string[];
+}) => Promise<MailSendAuthorization>;

@@ -32,7 +32,13 @@ export {
   mailAddressDomain,
   mailSendResourceProblem,
 } from "./mail-send";
-export type { MailSendResult } from "./mail-send";
+export type {
+  MailSendAuthorization,
+  MailSendAuthorizer,
+  MailSendDecision,
+  MailSendResult,
+  MailSendSender,
+} from "./mail-send";
 export { createConditionEvaluator } from "./condition-evaluator";
 export { evaluateConditions, validateConditions } from "./conditions";
 export { validateGrantConditions } from "./grant-conditions";
