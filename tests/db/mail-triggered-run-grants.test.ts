@@ -1800,13 +1800,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
 
       function mint() {
-        return createCorrespondentGrantMinter({
-          db: h.db,
-          principalKeyStore: createPrincipalKeyStore({
-            db: h.db,
-            cipher: createTestCredentialCipher(),
-          }),
-        });
+        return createCorrespondentGrantMinter({ db: h.db });
       }
 
       async function correspondentRows() {
@@ -2023,6 +2017,48 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(rows[0]?.principalId).toBe(SENDER_PRINCIPAL);
       });
 
+      test("mints nothing for a keyed, linked recipient run that has ended", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        await seedRecipientRun();
+        await h.db
+          .update(workflowRun)
+          .set({ status: "completed" })
+          .where(eq(workflowRun.id, RECIPIENT_RUN_ID));
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(0);
+      });
+
+      test("mints for a user recipient that holds no signing key", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        await seedPrincipal(h.db, {
+          id: "prn_keyless",
+          tenantId: TENANT,
+          kind: "user",
+          refId: "usr_keyless",
+          status: "active",
+        });
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: ["usr_keyless@tnt.example.test"],
+        });
+
+        const rows = await h.db
+          .select()
+          .from(grant)
+          .where(
+            eq(grant.resource, mailAcceptResource("principal", "prn_keyless")),
+          );
+        expect(rows).toHaveLength(1);
+      });
+
       test("mints nothing when the recipient does not resolve to a principal", async () => {
         await seedFrozenSnapshot(correspondentSnapshot());
         await makeSenderRun("running");
@@ -2089,11 +2125,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("a recipient that fails to resolve does not cost a co-recipient its grant", async () => {
         await seedFrozenSnapshot(correspondentSnapshot());
         await makeSenderRun("running");
-        const keys = createPrincipalKeyStore({
-          db: h.db,
-          cipher: createTestCredentialCipher(),
-        });
-        // A resolvable user recipient with a signing key.
+        // A resolvable user recipient.
         await seedPrincipal(h.db, {
           id: "prn_bob",
           tenantId: TENANT,
@@ -2101,7 +2133,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           refId: "usr_bob",
           status: "active",
         });
-        await keys.generate("prn_bob");
         // An ambiguous user recipient: two case variants of one user id and
         // no canonical row, so its resolution throws.
         for (const [id, refId] of [
@@ -2115,13 +2146,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
             refId,
             status: "active",
           });
-          await keys.generate(id);
         }
 
-        await createCorrespondentGrantMinter({
-          db: h.db,
-          principalKeyStore: keys,
-        })({
+        await createCorrespondentGrantMinter({ db: h.db })({
           senderAddress: WORKFLOW_ADDRESS,
           recipientAddresses: [
             "usr_alice@tnt.example.test",
@@ -2142,10 +2169,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("a SQL fault on one recipient does not cost a co-recipient its grant", async () => {
         await seedFrozenSnapshot(correspondentSnapshot());
         await makeSenderRun("running");
-        const keys = createPrincipalKeyStore({
-          db: h.db,
-          cipher: createTestCredentialCipher(),
-        });
         for (const [id, refId] of [
           ["prn_carol", "usr_carol"],
           ["prn_bob", "usr_bob"],
@@ -2157,31 +2180,35 @@ describe.skipIf(!harnessDbEnvAvailable())(
             refId,
             status: "active",
           });
-          await keys.generate(id);
         }
         // A statement error inside the minter's transaction, unlike a throw
         // in application code, aborts that transaction in Postgres. Only a
-        // savepoint per recipient keeps the co-recipient's insert alive.
-        const faultingKeys: typeof keys = {
-          ...keys,
-          async getPublicKey(principalId, tx) {
-            if (principalId === "prn_carol") {
-              await (tx ?? h.db).execute(sql`select 1 / 0`);
-            }
-            return keys.getPublicKey(principalId, tx);
-          },
-        };
+        // savepoint per recipient keeps the co-recipient's insert alive. The
+        // trigger fails the insert of carol's grant row.
+        await h.db.execute(sql`
+          create function fail_carol_grant() returns trigger as $$
+          begin
+            if new.resource = 'mail.accept:principal:prn_carol' then
+              perform 1 / 0;
+            end if;
+            return new;
+          end $$ language plpgsql`);
+        await h.db.execute(sql`
+          create trigger fail_carol_grant before insert on "grant"
+          for each row execute function fail_carol_grant()`);
 
-        await createCorrespondentGrantMinter({
-          db: h.db,
-          principalKeyStore: faultingKeys,
-        })({
-          senderAddress: WORKFLOW_ADDRESS,
-          recipientAddresses: [
-            "usr_carol@tnt.example.test",
-            "usr_bob@tnt.example.test",
-          ],
-        });
+        try {
+          await createCorrespondentGrantMinter({ db: h.db })({
+            senderAddress: WORKFLOW_ADDRESS,
+            recipientAddresses: [
+              "usr_carol@tnt.example.test",
+              "usr_bob@tnt.example.test",
+            ],
+          });
+        } finally {
+          await h.db.execute(sql`drop trigger fail_carol_grant on "grant"`);
+          await h.db.execute(sql`drop function fail_carol_grant()`);
+        }
 
         const rows = await h.db
           .select({ resource: grant.resource })
@@ -2333,6 +2360,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
             mailAcceptResource("principal", fresh?.principalId ?? ""),
           ]);
           expect(reply.outcome).toBe("materialized");
+        });
+
+        test("mints for any spelling of the recipient address", async () => {
+          await seedFrozenSnapshot(correspondentSnapshot());
+          await makeSenderRun("running");
+          await seedFreshRecipient();
+
+          await mint()({
+            senderAddress: WORKFLOW_ADDRESS,
+            recipientAddresses: [`${FRESH_ADDRESS.toUpperCase()}.`],
+          });
+
+          expect(await senderAcceptRows()).toEqual([
+            mailAcceptResource(
+              "principal",
+              await deriveRunPrincipalId(TENANT, FRESH_RUN_ID),
+            ),
+          ]);
         });
 
         test("refuses the reply when the sender did not author correspondent", async () => {

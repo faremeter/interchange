@@ -22,11 +22,7 @@ import {
 
 import { and, eq, sql } from "drizzle-orm";
 
-import {
-  createGrantStore,
-  createPrincipalKeyStore,
-  createRunTokenStore,
-} from "@intx/db";
+import { createGrantStore, createRunTokenStore } from "@intx/db";
 import {
   grant,
   workflowDefinition,
@@ -746,13 +742,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       async function mintAndCount(): Promise<number> {
-        await createCorrespondentGrantMinter({
-          db: h.db,
-          principalKeyStore: createPrincipalKeyStore({
-            db: h.db,
-            cipher: createTestCredentialCipher(),
-          }),
-        })({
+        await createCorrespondentGrantMinter({ db: h.db })({
           senderAddress: SENDING_ADDRESS,
           recipientAddresses: [RECIPIENT_ADDRESS],
         });
