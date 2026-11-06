@@ -1,3 +1,4 @@
+import { permitAllMailSend } from "@intx/authz/testing";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { AgentDeployFrame, HostedIncarnation } from "@intx/types/sidecar";
 
@@ -129,6 +130,7 @@ export function createAllocatedRouter(
     ...config,
     lookups: {
       readWorkflowRunRefTips: async () => TEST_REF_TIPS,
+      authorizeMailSend: permitAllMailSend,
       ...config.lookups,
     },
   });

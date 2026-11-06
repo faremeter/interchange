@@ -4,6 +4,7 @@
 // table of agentAddress → sidecar connection, and dispatches frames between
 // sidecars and the hub's internal systems.
 
+import type { MailSendAuthorization } from "@intx/authz";
 import { getLogger } from "@intx/log";
 import {
   WorkflowRunNotExecutableError,
@@ -3456,6 +3457,74 @@ export function createSidecarRouter(
       }
     }
 
+    // The send check runs before anything holds or relays the mail: a parked
+    // message whose sender never initializes is reported undelivered with its
+    // recipients, and the host can relay that report. Both re-drives of a
+    // parked message enter here again, so a grant revoked while the message
+    // waited still refuses it.
+    const permitted = await permittedRecipients(
+      authenticatedSender,
+      recipients,
+    );
+    if (permitted.length === 0) return;
+    await routePermittedMail(
+      rawMessage,
+      authenticatedSender,
+      permitted,
+      recordedSenderKey,
+    );
+  }
+
+  // The recipients of a relayed mail that its sender may send to. A refused
+  // recipient is logged and dropped. With no authorizer wired, an unresolved
+  // sender, or an authorizer fault, every recipient is refused.
+  async function permittedRecipients(
+    authenticatedSender: string,
+    recipients: string[],
+  ): Promise<string[]> {
+    const authorize = lookups.authorizeMailSend;
+    if (authorize === undefined) {
+      logger.error`No mail send authorizer is wired; refused mail from ${authenticatedSender} to ${recipients.join(", ")}`;
+      return [];
+    }
+    let authorization: MailSendAuthorization;
+    try {
+      authorization = await authorize({
+        sender: { kind: "address", address: authenticatedSender },
+        recipients,
+      });
+    } catch (err) {
+      logger.error`Authorizing mail from ${authenticatedSender} failed; refused it to ${recipients.join(", ")}: ${err instanceof Error ? err.message : String(err)}`;
+      return [];
+    }
+    if (!authorization.ok) {
+      logger.error`Refused mail from ${authenticatedSender}: it names no deployment with a run principal`;
+      return [];
+    }
+    const permitted: string[] = [];
+    for (const decision of authorization.decisions) {
+      if (decision.allowed) {
+        permitted.push(decision.recipient);
+        continue;
+      }
+      const decidedBy =
+        decision.outcome === "unresolved"
+          ? "its coordinates could not be resolved"
+          : decision.grant === null
+            ? "no send grant allows it"
+            : `grant ${decision.grant.id} (${decision.grant.effect}) decides it`;
+      logger.info`Refused mail from ${authenticatedSender} to ${decision.recipient}: ${decidedBy}`;
+    }
+    return permitted;
+  }
+
+  // Route a relayed mail to the recipients its sender may send to.
+  async function routePermittedMail(
+    rawMessage: string,
+    authenticatedSender: string,
+    recipients: string[],
+    recordedSenderKey: string | null | undefined,
+  ): Promise<void> {
     // Resolve the sender's hub-held key ONCE for the whole message, ahead of the
     // recipient fan-out and any grant materialization, so every recipient in
     // this fan-out binds the same key snapshot. A run-address sender may be
@@ -3725,13 +3794,18 @@ export function createSidecarRouter(
     senderAddress: string,
     recipients: string[],
   ): Promise<void> {
+    // The audit copy stores the mail as delivered in each recipient's session
+    // and pushes it to that recipient's subscribers, so it is a delivery too
+    // and gets the same send check. The sender's own record stays when the
+    // check refuses every recipient.
+    const permitted = await permittedRecipients(senderAddress, recipients);
     let results: SidecarMailPersistedRow[];
     let raw: Uint8Array;
     try {
       raw = Uint8Array.from(atob(rawMessage), (c) => c.charCodeAt(0));
       results = await persist({
         senderAddress,
-        recipients,
+        recipients: permitted,
         raw,
       });
     } catch (err) {

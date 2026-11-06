@@ -9,6 +9,7 @@ import {
   type SidecarRouterConfig,
   type WsHandle,
 } from "@intx/hub-sessions";
+import { permitAllMailSend } from "@intx/authz/testing";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { base64Encode } from "@intx/types";
@@ -250,7 +251,10 @@ function startTestServer(): TestEnv {
     ...acceptAnySidecar,
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
-    lookups: { readWorkflowRunRefTips: async () => STOPPED_REF_TIPS },
+    lookups: {
+      readWorkflowRunRefTips: async () => STOPPED_REF_TIPS,
+      authorizeMailSend: permitAllMailSend,
+    },
   });
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
     agentEvents.push({ addr: agentAddress, sid: sessionId, event });
@@ -1547,6 +1551,7 @@ describe("sidecar↔hub integration", () => {
       validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
       lookups: {
+        authorizeMailSend: permitAllMailSend,
         async receiveWorkflowRunPack(_repoId, _pack, _ref, _commitSha) {
           receiveCount += 1;
           const isA = receiveCount === 1;

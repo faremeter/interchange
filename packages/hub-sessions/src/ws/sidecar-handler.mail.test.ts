@@ -1,4 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+
+import { configureSync, getConfig } from "@intx/log";
 
 import {
   connectAllocated,
@@ -17,6 +26,7 @@ import {
   createSidecarRouter,
   type SidecarAuthIdentity,
 } from "./sidecar-handler";
+import type { SidecarLookups } from "./sidecar-events";
 import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 
@@ -2429,5 +2439,490 @@ describe("SidecarRouter mail.outbound body cap", () => {
 
     expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
     expect(framesOfType(ws, "run.grants")).toHaveLength(0);
+  });
+});
+
+describe("SidecarRouter mail send check", () => {
+  const rawMessage = btoa(
+    "From: sender@example.test\r\nTo: someone@example.test\r\nMessage-ID: <send-check@example.test>\r\n\r\nbody",
+  );
+  const SENDER = TEST_IDENTITY.workflowRunAddress;
+  const ALLOWED = "allowed@example.test";
+  const REFUSED = "refused@example.test";
+
+  // The relay logs why it refused a recipient; a test checks the reason here.
+  const logLines: string[] = [];
+  let savedLogConfig: ReturnType<typeof getConfig>;
+
+  beforeAll(() => {
+    savedLogConfig = getConfig();
+    configureSync({
+      reset: true,
+      sinks: {
+        capture: (record) => {
+          logLines.push(record.message.join(""));
+        },
+      },
+      loggers: [
+        { category: [], lowestLevel: "debug", sinks: ["capture"] },
+        {
+          category: ["logtape", "meta"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+      ],
+    });
+  });
+
+  afterAll(() => {
+    if (!savedLogConfig) {
+      throw new Error(
+        "no logging configuration was captured before this suite replaced it",
+      );
+    }
+    configureSync({ reset: true, ...savedLogConfig });
+  });
+
+  beforeEach(() => {
+    logLines.length = 0;
+  });
+
+  function decide(
+    allowed: (recipient: string) => boolean,
+  ): NonNullable<SidecarLookups["authorizeMailSend"]> {
+    return async ({ recipients }) => ({
+      ok: true,
+      decisions: recipients.map((recipient) =>
+        allowed(recipient)
+          ? {
+              recipient,
+              outcome: "evaluated",
+              allowed: true,
+              effect: "allow",
+              grant: null,
+            }
+          : {
+              recipient,
+              outcome: "evaluated",
+              allowed: false,
+              effect: "deny",
+              grant: {
+                id: "grt_deny_refused",
+                resource: `mail.send:domain:example.test`,
+                action: "send",
+                effect: "deny",
+                origin: "role",
+                specificity: 0,
+              },
+            },
+      ),
+    });
+  }
+
+  function send(
+    router: AllocatedRouter,
+    ws: Parameters<AllocatedRouter["handleMessage"]>[0],
+    recipients: string[],
+  ): void {
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: SENDER,
+        generation: 1,
+        rawMessage,
+        recipients,
+      }),
+    );
+  }
+
+  // The router handles one socket's `mail.outbound` frames in order, so an
+  // audit copy sent after a mail is persisted only once the relay has finished
+  // with that mail. A test awaits the persist before it asserts what the relay
+  // did not do.
+  function persistBarrier(): {
+    persistMail: NonNullable<SidecarLookups["persistMail"]>;
+    persisted: Promise<undefined>;
+  } {
+    const persisted = Promise.withResolvers<undefined>();
+    return {
+      persisted: persisted.promise,
+      persistMail: async () => {
+        persisted.resolve(undefined);
+        return [];
+      },
+    };
+  }
+
+  function sendAuditCopy(
+    router: AllocatedRouter,
+    ws: Parameters<AllocatedRouter["handleMessage"]>[0],
+  ): void {
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: SENDER,
+        generation: 1,
+        rawMessage,
+        recipients: [ALLOWED],
+        delivered: true,
+      }),
+    );
+  }
+
+  test("routes, mints and materializes only the recipients it allows", async () => {
+    const calls: unknown[] = [];
+    const undelivered: string[][] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        authorizeMailSend: decide((recipient) => recipient === ALLOWED),
+        async materializeMailTriggeredRunGrants(args) {
+          calls.push({ materialize: args.agentAddress });
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async mintCorrespondentGrant(args) {
+          calls.push({ mint: args.recipientAddresses });
+        },
+      },
+    });
+    const done = Promise.withResolvers<undefined>();
+    router.events.on("mail.outbound.undelivered", ({ recipients }) => {
+      undelivered.push(recipients);
+      done.resolve(undefined);
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+
+    send(router, ws, [SENDER, ALLOWED, REFUSED]);
+    await done.promise;
+
+    expect(undelivered).toEqual([[ALLOWED]]);
+    expect(calls).toEqual([{ mint: [ALLOWED] }]);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(
+      logLines.filter((line) => line.startsWith("Refused mail from")),
+    ).toEqual([
+      `Refused mail from ${SENDER} to ${SENDER}: grant grt_deny_refused (deny) decides it`,
+      `Refused mail from ${SENDER} to ${REFUSED}: grant grt_deny_refused (deny) decides it`,
+    ]);
+  });
+
+  test("delivers to an allowed run recipient", async () => {
+    const router = createAllocatedRouter({
+      lookups: {
+        authorizeMailSend: decide(() => true),
+        async materializeMailTriggeredRunGrants() {
+          return { outcome: "materialized", stepGrants: [] };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+
+    send(router, ws, [SENDER]);
+    await ws.awaitSent((sent) =>
+      sent.some((raw) => raw.includes('"mail.inbound"')),
+    );
+
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+  });
+
+  test("refuses a recipient no grant allows", async () => {
+    const barrier = persistBarrier();
+    const calls: unknown[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async authorizeMailSend({ recipients }) {
+          return {
+            ok: true,
+            decisions: recipients.map((recipient) => ({
+              recipient,
+              outcome: "evaluated",
+              allowed: false,
+              effect: null,
+              grant: null,
+            })),
+          };
+        },
+        persistMail: barrier.persistMail,
+        async materializeMailTriggeredRunGrants(args) {
+          calls.push({ materialize: args.agentAddress });
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async mintCorrespondentGrant(args) {
+          calls.push({ mint: args.recipientAddresses });
+        },
+      },
+    });
+    const undelivered: unknown[] = [];
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+
+    send(router, ws, [SENDER, REFUSED]);
+    sendAuditCopy(router, ws);
+    await barrier.persisted;
+
+    expect(undelivered).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(logLines).toContain(
+      `Refused mail from ${SENDER} to ${REFUSED}: no send grant allows it`,
+    );
+  });
+
+  test.each([
+    {
+      name: "records only the recipients it allows in the audit copy",
+      allowed: (recipient: string) => recipient === ALLOWED,
+      stored: [ALLOWED],
+    },
+    {
+      name: "keeps only the sender's record of an audit copy it refuses in full",
+      allowed: () => false,
+      stored: [],
+    },
+  ])("$name", async ({ allowed, stored }) => {
+    const persisted = Promise.withResolvers<string[]>();
+    const router = createAllocatedRouter({
+      lookups: {
+        authorizeMailSend: decide(allowed),
+        async persistMail({ recipients }) {
+          persisted.resolve(recipients);
+          return [];
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: SENDER,
+        generation: 1,
+        rawMessage,
+        recipients: [ALLOWED, REFUSED],
+        delivered: true,
+      }),
+    );
+
+    expect(await persisted.promise).toEqual([...stored]);
+    expect(logLines).toContain(
+      `Refused mail from ${SENDER} to ${REFUSED}: grant grt_deny_refused (deny) decides it`,
+    );
+  });
+
+  test("refuses every recipient without an authorizer", async () => {
+    const barrier = persistBarrier();
+    const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, deliver) => deliver(),
+      ...sidecarAuth(() => [TEST_IDENTITY]),
+      validateSidecarIdentity: async () => true,
+      requestTimeoutMs: 500,
+      lookups: { persistMail: barrier.persistMail },
+    });
+    router.fenceAllocation(TEST_TARGET.allocationId, TEST_TARGET.generation);
+    const undelivered: unknown[] = [];
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+
+    send(router, ws, [ALLOWED]);
+    sendAuditCopy(router, ws);
+    await barrier.persisted;
+
+    expect(undelivered).toEqual([]);
+    expect(
+      logLines.some((line) =>
+        line.includes("No mail send authorizer is wired"),
+      ),
+    ).toBe(true);
+  });
+
+  test("refuses only a recipient whose coordinates could not be resolved", async () => {
+    const persisted = Promise.withResolvers<string[]>();
+    const router = createAllocatedRouter({
+      lookups: {
+        async authorizeMailSend({ recipients }) {
+          return {
+            ok: true,
+            decisions: recipients.map((recipient) =>
+              recipient === REFUSED
+                ? { recipient, outcome: "unresolved", allowed: false }
+                : {
+                    recipient,
+                    outcome: "evaluated",
+                    allowed: true,
+                    effect: "allow",
+                    grant: null,
+                  },
+            ),
+          };
+        },
+        async persistMail({ recipients }) {
+          persisted.resolve(recipients);
+          return [];
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: SENDER,
+        generation: 1,
+        rawMessage,
+        recipients: [ALLOWED, REFUSED],
+        delivered: true,
+      }),
+    );
+
+    expect(await persisted.promise).toEqual([ALLOWED]);
+    expect(logLines).toContain(
+      `Refused mail from ${SENDER} to ${REFUSED}: its coordinates could not be resolved`,
+    );
+  });
+
+  test("refuses every recipient of an unresolved sender or a fault", async () => {
+    const outcomes: (() => ReturnType<
+      NonNullable<SidecarLookups["authorizeMailSend"]>
+    >)[] = [
+      async () => ({ ok: false, reason: "sender_unresolved" }),
+      async () => {
+        throw new Error("grant store down");
+      },
+    ];
+    let call = 0;
+    const barrier = persistBarrier();
+    const router = createAllocatedRouter({
+      lookups: {
+        async authorizeMailSend() {
+          const outcome = outcomes[call];
+          call += 1;
+          if (outcome === undefined) throw new Error("unexpected call");
+          return outcome();
+        },
+        persistMail: barrier.persistMail,
+      },
+    });
+    const undelivered: unknown[] = [];
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+
+    send(router, ws, [ALLOWED]);
+    send(router, ws, [ALLOWED]);
+    sendAuditCopy(router, ws);
+    await barrier.persisted;
+
+    expect(undelivered).toEqual([]);
+    for (const reason of ["it names no deployment", "grant store down"]) {
+      expect(logLines.some((line) => line.includes(reason))).toBe(true);
+    }
+  });
+
+  test("a parked mail whose sender fails to deploy is reported without its refused recipients", async () => {
+    const parked = Promise.withResolvers<undefined>();
+    const router = createAllocatedRouter({
+      lookups: {
+        authorizeMailSend: decide((recipient) => recipient !== REFUSED),
+        async materializeMailTriggeredRunGrants() {
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        // The relay parks the mail before it resolves the key, so this call
+        // means the mail is parked.
+        async resolveSenderKey() {
+          parked.resolve(undefined);
+          return null;
+        },
+      },
+    });
+    const undelivered = Promise.withResolvers<string[]>();
+    router.events.on("mail.outbound.undelivered", ({ recipients }) => {
+      undelivered.resolve(recipients);
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+    const attempt = { ...TEST_TARGET, leaseId: "send-check-park" };
+    router.noteSenderDeployStarted(SENDER, attempt);
+
+    // The run recipient makes the mail park while the sender's key is
+    // unresolved; the refused external recipient is dropped before that.
+    send(router, ws, [SENDER, ALLOWED, REFUSED]);
+    await parked.promise;
+    router.noteSenderDeploySettled(attempt, { failed: "deploy timed out" });
+
+    expect(await undelivered.promise).toEqual([SENDER, ALLOWED]);
+  });
+
+  test("a grant revoked while the mail is parked refuses it on the re-drive", async () => {
+    let revoked = false;
+    const parked = Promise.withResolvers<undefined>();
+    const materialized: string[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        // The run recipient parks the mail and loses its grant while parked.
+        // The external recipient stays allowed, so its undelivered report
+        // marks the end of the re-drive.
+        authorizeMailSend: decide(
+          (recipient) => recipient === ALLOWED || !revoked,
+        ),
+        async materializeMailTriggeredRunGrants(args) {
+          materialized.push(args.agentAddress);
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderKey() {
+          parked.resolve(undefined);
+          return null;
+        },
+      },
+    });
+    const undelivered = Promise.withResolvers<string[]>();
+    router.events.on("mail.outbound.undelivered", ({ recipients }) => {
+      undelivered.resolve(recipients);
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+    const attempt = { ...TEST_TARGET, leaseId: "send-check-revoke" };
+    router.noteSenderDeployStarted(SENDER, attempt);
+
+    send(router, ws, [SENDER, ALLOWED]);
+    await parked.promise;
+    revoked = true;
+    router.noteSenderDeploySettled(attempt, { recorded: "ab".repeat(32) });
+
+    expect(await undelivered.promise).toEqual([ALLOWED]);
+    expect(materialized).toEqual([]);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+  });
+
+  test("a refused run recipient does not hold an allowed external recipient", async () => {
+    const router = createAllocatedRouter({
+      lookups: {
+        authorizeMailSend: decide((recipient) => recipient === ALLOWED),
+        async materializeMailTriggeredRunGrants() {
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderKey() {
+          return null;
+        },
+      },
+    });
+    const undelivered = Promise.withResolvers<string[]>();
+    router.events.on("mail.outbound.undelivered", ({ recipients }) => {
+      undelivered.resolve(recipients);
+    });
+    const ws = await connectAllocated(router, [SENDER]);
+    router.noteSenderDeployStarted(SENDER, {
+      ...TEST_TARGET,
+      leaseId: "send-check-no-park",
+    });
+
+    send(router, ws, [SENDER, ALLOWED]);
+
+    expect(await undelivered.promise).toEqual([ALLOWED]);
   });
 });

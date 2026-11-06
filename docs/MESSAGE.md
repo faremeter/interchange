@@ -701,6 +701,8 @@ Returns on error: `{ error: string, code: string }`. Error codes: `invalid_argum
 
 The send opens no correlation of its own, whatever `correlationId` it carries. To await a correlated response, call `mail.wait` after the send.
 
+The hub decides which recipients a run may send to from the run principal's `mail.send` grants (see `docs/AUTH.md`). The sidecar relays the mail without waiting for that decision, so a send to a recipient the hub refuses still returns `{ messageId }`. The hub drops the mail for that recipient, does not store its audit copy for that recipient, and logs it; no bounce reaches the agent. The same holds for `mail.reply` and for a warm agent's reply.
+
 The `correlationId`, the `subject`, the `inReplyTo` and each address in `to` become a header field body, which RFC 5322 § 2.2 allows no CR and no LF, so a value carrying either is rejected as `invalid_arguments` before the send. RFC 5322 § 3.6.4 gives `In-Reply-To` as `1*msg-id` and § 3.4 gives the `To` field body as an address list, so a blank `inReplyTo` and a blank recipient each name nothing and are rejected there too, as is an empty `to` array, which names no destination at all. Whether a recipient address resolves is the transport's to answer, not the tool's: an unresolvable one is a `send_failed`. The tool constrains nothing else about the correlation id: the correlation matches on the whole string.
 
 **mail.reply** — Reply to a specific message. Convenience wrapper around `mail.send` that automatically sets `inReplyTo` and extends the `References` chain from the parent message.

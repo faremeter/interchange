@@ -342,6 +342,7 @@
         "isomorphic-git": "catalog:",
       },
       "devDependencies": {
+        "@intx/authz": "workspace:*",
         "@intx/crypto": "workspace:*",
         "@intx/hub-sessions": "workspace:*",
         "hono": "catalog:",

@@ -107,6 +107,7 @@ export function createHubSessionLookups(
     SidecarLookups,
     | "materializeMailTriggeredRunGrants"
     | "mintCorrespondentGrant"
+    | "authorizeMailSend"
     | "resyncCredentials"
     | "loadRunCredentials"
     | "loadRunGrants"

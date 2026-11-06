@@ -18,6 +18,7 @@ import type {
   ConnectorThreadState,
 } from "@intx/types/runtime";
 import type { SignalKind } from "@intx/types";
+import type { MailSendAuthorizer } from "@intx/authz";
 import type { MailAcceptCoordinate, ResolvedSenderPrincipal } from "@intx/db";
 import { getLogger } from "@intx/log";
 
@@ -369,6 +370,14 @@ export type SidecarLookups = {
     senderAddress: string;
     recipientAddresses: string[];
   }) => Promise<void>;
+
+  /**
+   * Decides which recipients of a relayed mail its sender may send to, from
+   * the sender's `mail.send` grants. The relay routes, parks, relays and
+   * mints correspondent grants only for the recipients it allows. Without it
+   * the relay refuses every recipient.
+   */
+  authorizeMailSend?: MailSendAuthorizer;
 
   /** Ingests a received workflow-run pack and returns whether the wire
    * layer should ack or reject the pack to the sidecar. `source` is derived
