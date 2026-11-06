@@ -40,6 +40,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import type { Subprocess } from "bun";
 
+import { permitAllMailSend } from "@intx/authz/testing";
 import { AgentDeployAckFrame } from "@intx/types/sidecar";
 import {
   assembleSignedContent,
@@ -791,6 +792,12 @@ export type HubEnv = {
     recipients: string[];
     raw: Uint8Array;
   }[];
+  /**
+   * Relayed mail the hub routed to no local address, in arrival order. It
+   * holds only the recipients the relay's send check allowed. The hub checks
+   * the sidecar's audit copy in `outboundMail` apart from this relay.
+   */
+  undeliveredMail: { rawMessage: string; recipients: string[] }[];
   hubDataDir: string;
   /**
    * Every server-side `WsHandle` currently open against this hub. Added on
@@ -837,6 +844,7 @@ export async function startHub(
     materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
     loadRunCredentials?: SidecarLookups["loadRunCredentials"];
     loadRunGrants?: SidecarLookups["loadRunGrants"];
+    authorizeMailSend?: SidecarLookups["authorizeMailSend"];
     senderKeyResolution?: {
       db: DBExecutor;
       principalKeyStore: PrincipalKeyStore;
@@ -1017,6 +1025,11 @@ export async function startHub(
       ...(opts.loadRunGrants !== undefined
         ? { loadRunGrants: opts.loadRunGrants }
         : {}),
+      // The relay refuses every recipient without a send authorizer. Most of
+      // these tests run no database to hold send grants and are not about the
+      // send check, so they allow every recipient; a test about the check
+      // supplies its own authorizer.
+      authorizeMailSend: opts.authorizeMailSend ?? permitAllMailSend,
       // Resolve a signed mail sender's durable public key so the materializer
       // path co-delivers it on the recipient run's grants barrier, exactly as
       // production wires it (apps/hub/src/server.ts). Without this, the
@@ -1064,6 +1077,13 @@ export async function startHub(
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
     agentEvents.push({ addr: agentAddress, sid: sessionId, event });
   });
+  const undeliveredMail: HubEnv["undeliveredMail"] = [];
+  router.events.on(
+    "mail.outbound.undelivered",
+    ({ rawMessage, recipients }) => {
+      undeliveredMail.push({ rawMessage, recipients });
+    },
+  );
   // Record each deployment's key as its sidecar's deploy acknowledgement
   // reports it.
   function recordDeployAck(data: string): void {
@@ -1171,6 +1191,7 @@ export async function startHub(
     deployAcks,
     workflowRunPackReceiveFailures,
     outboundMail,
+    undeliveredMail,
     hubDataDir,
     liveHandles,
     workflowRunPackReceipts,
@@ -1579,6 +1600,11 @@ export type StartDeployFlowEnvOpts = {
    */
   loadRunGrants?: SidecarLookups["loadRunGrants"];
   /**
+   * The relay's send check, wired into the mock hub's sidecar router as the
+   * `authorizeMailSend` lookup. Unset, the hub allows every recipient.
+   */
+  authorizeMailSend?: SidecarLookups["authorizeMailSend"];
+  /**
    * A db + principal key store the mock hub uses to resolve a signed mail
    * sender's durable public key, wired into the sidecar router as the
    * `resolveSenderKey` / `resolveSenderKeyStrict` lookups exactly as production
@@ -1626,6 +1652,9 @@ export async function startDeployFlowEnv(
       : {}),
     ...(opts.loadRunGrants !== undefined
       ? { loadRunGrants: opts.loadRunGrants }
+      : {}),
+    ...(opts.authorizeMailSend !== undefined
+      ? { authorizeMailSend: opts.authorizeMailSend }
       : {}),
     ...(opts.senderKeyResolution !== undefined
       ? { senderKeyResolution: opts.senderKeyResolution }

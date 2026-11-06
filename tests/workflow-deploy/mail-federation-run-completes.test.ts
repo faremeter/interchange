@@ -60,10 +60,15 @@ import {
 } from "@intx/db";
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
+  grant as grantTable,
   tenant as tenantTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
-import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
+import {
+  createMailSendAuthorizer,
+  createMailTriggeredRunGrantsMaterializer,
+  deriveRunMailSendGrantRow,
+} from "@intx/hub-api";
 import { deriveRunPrincipalId } from "@intx/hub-common";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
@@ -197,6 +202,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         inferenceEchoUserMessage: true,
         materializeMailTriggeredRunGrants: materializer,
+        // The production send check, so the sender's mail reaches the
+        // receiver only through its run principal's send grant.
+        authorizeMailSend: createMailSendAuthorizer({
+          db: h.db,
+          grantStoreFor: createGrantStore,
+        }),
         // Co-deliver the sender's durable key on the receiver run's grants
         // barrier the way production does, so the sender (a local same-hub run
         // with a resolvable key) verifies `clean` rather than the cache-miss
@@ -414,6 +425,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .update(workflowRunTable)
         .set({ principalId: SENDER_RUN_PRINCIPAL_ID })
         .where(eq(workflowRunTable.id, SENDER_ID));
+      // The commit path would also stage the sender's send grant; give it the
+      // same row, so the relay's send check allows its mail to the receiver.
+      await h.db
+        .insert(grantTable)
+        .values(
+          deriveRunMailSendGrantRow(
+            SENDER_TENANT_ID,
+            SENDER_RUN_PRINCIPAL_ID,
+            new Date(),
+          ),
+        );
 
       // Wait for sidecar 1 (the receiver) to reconnect so the receiver is
       // routable again before the sender's mail can arrive, then trigger the

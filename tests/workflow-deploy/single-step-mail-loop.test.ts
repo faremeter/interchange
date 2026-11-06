@@ -29,6 +29,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
+import { permitAllMailSend } from "@intx/authz/testing";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
@@ -105,6 +106,7 @@ const DEFINITION_ASSET_ID = "ast_single_step_mail_loop_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
+const sendChecks: { sender: unknown; recipients: string[] }[] = [];
 
 beforeAll(async () => {
   if (!harnessDbEnvAvailable()) return;
@@ -138,6 +140,15 @@ beforeAll(async () => {
       toolName: "mail_search",
       input: {},
       resultPrefix: RESULT_PREFIX,
+    },
+    // Record the relay's send checks, so the test can show the warm reply,
+    // which no mail tool sends, passes through the check.
+    async authorizeMailSend(args) {
+      sendChecks.push({
+        sender: args.sender,
+        recipients: [...args.recipients],
+      });
+      return permitAllMailSend(args);
     },
   });
 });
@@ -281,6 +292,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
           m.recipients.includes(INBOUND_FROM),
       );
       expect(replyOut).toBeDefined();
+
+      // The hub checks the audit copy above apart from the relayed mail. The
+      // relay reports the reply as undelivered (no local address routes the
+      // external sender) only after its own send check allowed it, and the
+      // check saw the deployment send to the original sender.
+      await waitFor(
+        () =>
+          env.hub.undeliveredMail.some((m) =>
+            m.recipients.includes(INBOUND_FROM),
+          ),
+        { diagnostics: env.sidecarDiagnostics },
+      );
+      expect(sendChecks).toContainEqual({
+        sender: { kind: "address", address: deploymentMailAddress },
+        recipients: [INBOUND_FROM],
+      });
     });
   },
 );

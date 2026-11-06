@@ -315,6 +315,7 @@ Resources use a `type:identifier` format with glob support:
 - `api:stripe:*` -- all Stripe API operations
 - `federation:*` -- all federation trusts of the tenant
 - `federation:tnt_abc` -- the federation trust with tenant `tnt_abc` (keyed on the target tenant id, not the trust row id). Establishing a trust checks this resource with `create`, and revoking it checks `manage`. Listing the trusts checks `federation:*` / `read`.
+- `mail.send:domain:example.com` -- sending mail to recipients at `example.com` (see Mail send grants)
 - `*` -- everything
 
 Actions are operation verbs:
@@ -325,6 +326,7 @@ Actions are operation verbs:
 - `spend` -- financial operations
 - `manage` -- update/delete/configure
 - `recover` -- release a workflow run's capacity whose cleanup stopped, on the caller's word that its copy is gone; only the owner role holds it by default
+- `send` -- send mail to a recipient (only on `mail.send` resources)
 - `*` -- all actions
 
 ### Evaluation
@@ -380,6 +382,28 @@ Every check names how it treats a conditioned grant. A check on a request evalua
 The sidecar's step grant check evaluates `time_window` against the sidecar's clock, so a run's declared time-window grant applies inside its window, as on the hub. A grant with any other condition key fails the check closed, because that key needs request context the sidecar does not have.
 
 Specificity still decides between grants: a broad conditioned `deny` loses to a more specific unconditioned `allow`, as it would on a request where its condition holds.
+
+### Mail send grants
+
+A `mail.send` grant decides which recipients a principal may send mail to. Two gates apply to mail that a run sends through its sidecar. The sidecar's tool gate decides whether a step may send mail at all: a run's `tool:mail_send` and `tool:mail_reply` grants. The hub's send gate decides which recipients the sender may reach: its `mail.send` grants. The hub checks every send the sidecar relays, from a mail tool, a warm agent's reply, a plugin tool or a director.
+
+The resource is `mail.send:<coord type>:<id>` with the action `send`. A recipient has these coordinates:
+
+| Recipient                                | Coordinates                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------- |
+| A deployment's run address, fired or not | `domain`, `principal` (its run principal), `asset` (if any), `tenant` |
+| A user's address                         | `domain`, `principal`, `tenant`                                       |
+| Any other address                        | `domain`                                                              |
+
+The `domain` id is the part after the `@`, in lower case and without a trailing dot. An address whose domain is not a host name, such as an address literal, has no `domain` coordinate; if it is not a local party either, it matches no grant and is refused. A recipient's coordinates do not depend on its signing key or its run state.
+
+The hub evaluates the sender's direct and role grants in its own tenant. It reads only grants in the `mail.send` namespace, so a `*`, `mail.*` or `mail.send*` grant never decides a send. The grant that names the most specific coordinate wins: `principal`, then `asset`, then `tenant`, then `domain`, then a grant whose type segment is a pattern, such as `mail.send:*:*`. Inside one tier, the grant with the more specific coordinate pattern wins. The action and the spelling of a namespace-wide pattern do not count, so `mail.send:*` and `mail.send:*:*` rank the same, and so do the actions `send` and `*`. Effect (`deny` > `ask` > `allow`) breaks a tie. An `ask` that wins refuses the send. With no matching grant, the send is refused. The grants API refuses a `mail.send` resource that could never match a coordinate, such as a domain id in upper case or with a trailing dot, a `mail.send` grant whose action cannot match `send`, a `mail.send` grant whose conditions name a key other than `time_window`, and a pattern outside the namespace that names part of a send resource, such as `mail.send*:domain:<id>` or `mail.*:domain:<id>`. The send check has no consumer, so it evaluates only `time_window`.
+
+A run gets `mail.send:*:*` at its first trigger (see A run's send grant under Grant Revocation). The owner and admin system roles carry `mail.send:tenant:<tenant id>` (see Roles).
+
+On the relay, the hub checks a mail before it routes, holds or relays it. A mail it holds until the sender's key or a recipient's run is ready is checked again when the hub re-drives it. A mail already routed to a sidecar is not checked again when the hub redelivers it. It drops each refused recipient and logs it; the other recipients continue. A recipient whose coordinates the hub cannot resolve, such as an ambiguous user address, is refused on its own. It refuses every recipient when the sender address names no deployment with a run principal, or when the check fails. The check does not read the sender's run principal status, so mail that a run sent before it ended still goes. To stop a run's sends, deny or remove its send grant. A refused recipient gets no correspondent grant, and the sending agent gets no bounce. The sidecar also sends the hub an audit copy of each mail, which the hub stores in each recipient's session and shows to that recipient's subscribers. The hub checks the audit copy in the same way and stores it only for the recipients the check allows. The sender's own record of the mail stays.
+
+**State that predates the send gate**: A data migration (`0124_mail_send_backfill`) keeps the mail that existing deployments and users can send. It gives each deployment anchor whose run principal is linked the `mail.send:*:*` row that the first trigger stages. It gives each holder of a live `allow` grant that can match `workflow-run:` / `manage` a `mail.send:tenant:<tenant id>` row, with the holder, origin, conditions and expiry of the source grant. It skips `deny` and `ask` grants, grants held directly by a run principal, and grants with a condition other than `time_window`. Stop the old hub before the migration runs, and start the new hub after it. An anchor that the old hub links after the migration, or a tenant that it creates, gets no send rows, and the new hub refuses its sends.
 
 ## Grant Revocation
 

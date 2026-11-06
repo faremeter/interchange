@@ -30,6 +30,7 @@ export {
   createMailTriggeredRunGrantsMaterializer,
   createCorrespondentGrantMinter,
   createRunGrantsLoader,
+  deriveRunMailSendGrantRow,
   lockTenantRunDelegatedGrants,
   setRunToolGrantEffect,
   type MailTriggeredRunGrantsDeps,

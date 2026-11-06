@@ -21,6 +21,7 @@ import {
   type SidecarAuthIdentity,
   type WsHandle,
 } from "./sidecar-handler";
+import { permitAllMailSend } from "@intx/authz/testing";
 import type { SidecarLookups } from "./sidecar-events";
 import {
   deployReply,
@@ -1412,6 +1413,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       lookups: {
         resolveSenderKey,
         materializeMailTriggeredRunGrants,
+        authorizeMailSend: permitAllMailSend,
       },
     });
     router.fenceAllocation("alloc-sender", 1);

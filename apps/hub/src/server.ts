@@ -26,6 +26,7 @@ import {
   createApp,
   createAuth,
   createCorrespondentGrantMinter,
+  createMailSendAuthorizer,
   createMailTriggeredRunGrantsMaterializer,
   createRunGrantsLoader,
   sweepLapsedDeployerGrants,
@@ -296,7 +297,10 @@ export async function createHubServer({
   // the same authorization an externally-triggered run gets. Threaded into
   // the sidecar router as a lookup its `mail.outbound` handler invokes for
   // each workflow-deployment recipient.
-  const lookups: SidecarLookups = {
+  // The relay refuses every recipient without a send authorizer, so the
+  // type requires one here.
+  const lookups: SidecarLookups &
+    Required<Pick<SidecarLookups, "authorizeMailSend">> = {
     ...createHubSessionLookups({
       db,
       agentRepoStore,
@@ -335,6 +339,13 @@ export async function createHubServer({
     // party's reply is admitted. Gated on the sending definition having
     // authored the `correspondent` relation; best-effort, never breaks a send.
     mintCorrespondentGrant: createCorrespondentGrantMinter({ db }),
+    // Decides which recipients a relayed mail's sender may send to, from its
+    // `mail.send` grants. It evaluates conditions with its own narrower
+    // registry, not the one createHubApp uses.
+    authorizeMailSend: createMailSendAuthorizer({
+      db,
+      grantStoreFor: createGrantStore,
+    }),
   };
 
   const sidecarCredentials = createSidecarCredentialResolver({ db });
