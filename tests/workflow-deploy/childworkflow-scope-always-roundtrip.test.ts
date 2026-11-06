@@ -287,6 +287,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         origin: "system",
         principalId: OPERATOR_PRINCIPAL_ID,
       });
+      // The mail that starts the run also needs a send grant, as the
+      // caller of a tenant made through the route holds by its role.
+      await seedGrant(h.db, {
+        id: "grant-operator-manage-send",
+        tenantId: TENANT_ID,
+        resource: `mail.send:tenant:${TENANT_ID}`,
+        action: "send",
+        effect: "allow",
+        origin: "system",
+        principalId: OPERATOR_PRINCIPAL_ID,
+      });
       await seedGrant(h.db, {
         id: "grant-operator-resolve",
         tenantId: TENANT_ID,

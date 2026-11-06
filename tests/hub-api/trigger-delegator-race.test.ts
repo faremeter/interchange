@@ -162,7 +162,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         body: JSON.stringify({ name: "Acme", slug: "acme" }),
       });
       expect(res.status).toBe(201);
-      const { id: tenantId } = type({ id: "string" }).assert(await res.json());
+      const { id: tenantId, domain } = type({
+        id: "string",
+        domain: "string",
+      }).assert(await res.json());
 
       for (const id of [CREATOR, DEPLOYER]) {
         await seedPrincipal(h.db, {
@@ -190,7 +193,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId,
         anchorRunId: ANCHOR,
         definitionId: "wfd_first",
-        address: `${ANCHOR}@acme.example`,
+        // A deployment's address is on its tenant's domain, as deploy sets it.
+        address: `${ANCHOR}@${domain}`,
         status: "deployed",
       });
       const runPrincipalId = await deriveRunPrincipalId(tenantId, ANCHOR);
@@ -375,6 +379,34 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(workflowRun)
         .where(eq(workflowRun.id, ANCHOR));
       expect(anchor?.principalId).toBeNull();
+    });
+
+    // The owner role's tenant send grant lets the owner mail the run (every
+    // other test here). Without it the trigger refuses before it links the
+    // run principal or commits a grant.
+    test("an owner without a send grant is refused before the first trigger links the run", async () => {
+      const { app, tenantId, runPrincipalId } = await setup([]);
+      await h.db
+        .delete(grant)
+        .where(and(eq(grant.tenantId, tenantId), eq(grant.action, "send")));
+
+      const res = await trigger(app, tenantId);
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: { code: "mail_send_denied" },
+      });
+      const [anchor] = await h.db
+        .select({ principalId: workflowRun.principalId })
+        .from(workflowRun)
+        .where(eq(workflowRun.id, ANCHOR));
+      expect(anchor?.principalId).toBeNull();
+      expect(
+        await h.db
+          .select()
+          .from(grant)
+          .where(eq(grant.principalId, runPrincipalId)),
+      ).toEqual([]);
     });
   },
 );

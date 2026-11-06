@@ -38,12 +38,19 @@ import {
 } from "bun:test";
 import { type } from "arktype";
 
+import { eq } from "drizzle-orm";
+
 import { createGrantStore } from "@intx/db";
 import {
+  grant as grantTable,
   tenant as tenantTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
-import { createApp, type GetSession } from "@intx/hub-api";
+import {
+  createApp,
+  createMailSendAuthorizer,
+  type GetSession,
+} from "@intx/hub-api";
 import {
   createAssetService,
   type EventCollectorRegistry,
@@ -148,8 +155,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeAll(async () => {
       h = await createTestDb();
       // Echo inference so the single agent step produces a reply and the
-      // run terminates on its own once its grants barrier is satisfied.
-      env = await startDeployFlowEnv({ inferenceEchoUserMessage: true });
+      // run terminates on its own once its grants barrier is satisfied. The
+      // relay checks that reply with the production authorizer, so only the
+      // send grant the trigger commits can let it through.
+      env = await startDeployFlowEnv({
+        inferenceEchoUserMessage: true,
+        authorizeMailSend: createMailSendAuthorizer({
+          db: h.db,
+          grantStoreFor: createGrantStore,
+        }),
+      });
     });
 
     afterAll(async () => {
@@ -211,6 +226,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT_ID,
         resource: `workflow-run:${DEPLOYMENT_ID}`,
         action: "manage",
+        effect: "allow",
+        origin: "system",
+        principalId: CALLER_PRINCIPAL_ID,
+      });
+      // The mail that starts the run also needs a send grant, as the
+      // caller of a tenant made through the route holds by its role.
+      await seedGrant(h.db, {
+        id: "grant-caller-manage-send",
+        tenantId: TENANT_ID,
+        resource: `mail.send:tenant:${TENANT_ID}`,
+        action: "send",
         effect: "allow",
         origin: "system",
         principalId: CALLER_PRINCIPAL_ID,
@@ -315,6 +341,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
       expect(terminal.type).toBe("RunCompleted");
+
+      // The run's first trigger commits its `mail.send:*:*` row, and the
+      // relay's send check reads it for the run's reply. The hub stores the
+      // audit copy of a send only for the recipients that check allows.
+      const runSendGrants = await h.db
+        .select({ resource: grantTable.resource, origin: grantTable.origin })
+        .from(grantTable)
+        .where(eq(grantTable.action, "send"));
+      expect(runSendGrants).toContainEqual({
+        resource: "mail.send:*:*",
+        origin: "creator",
+      });
+      await waitFor(
+        () =>
+          env.hub.outboundMail.some(
+            (m) => m.senderAddress === deploymentMailAddress,
+          ),
+        { diagnostics: env.sidecarDiagnostics },
+      );
+      const reply = env.hub.outboundMail.find(
+        (m) => m.senderAddress === deploymentMailAddress,
+      );
+      expect(reply?.recipients).toEqual([
+        `${CALLER_USER_ID}@${DEPLOYMENT_DOMAIN}`,
+      ]);
 
       // The collapse: the trigger reconciles onto the deployment's single
       // self-anchored run rather than minting a second routable row. After the
