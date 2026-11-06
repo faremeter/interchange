@@ -318,6 +318,29 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await runGrants(run)).toHaveLength(1);
     });
 
+    // The requirement has the same key as the run's staged send row, and the
+    // creator holds no send authority, so only the namespace skip keeps the
+    // row from being adopted and deleted.
+    test("a requirement in the mail.send namespace leaves the run's send row alone", async () => {
+      const run = await seedDeployment({
+        anchorRunId: "run_m",
+        requirements: [
+          { resource: "mail.send:*:*", action: "send", source: "creator" },
+        ],
+      });
+      await seedGrant(h.db, {
+        id: "grt_run_send",
+        tenantId: TENANT,
+        principalId: run,
+        resource: "mail.send:*:*",
+        action: "send",
+        origin: "creator",
+      });
+
+      expect(await rederive([CREATOR])).toEqual([]);
+      expect((await runGrants(run)).map((r) => r.id)).toEqual(["grt_run_send"]);
+    });
+
     const SELF_READ: GrantRequirement = {
       resource: "workflow-run:self",
       action: "read",

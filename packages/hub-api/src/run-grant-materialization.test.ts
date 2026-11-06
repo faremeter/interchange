@@ -422,6 +422,25 @@ describe("stageRunGrantsFromSnapshot with the run's own resource", () => {
     expect(staged.grantRows.map((g) => g.resource)).toEqual(["mail.send:*:*"]);
   });
 
+  // A delegated `mail.send` row would never lapse with its delegator, and a
+  // narrow allow would outrank an operator deny of `mail.send:*:*`.
+  test("stages only the run's own send grant for a mail.send requirement", async () => {
+    const staged = await stage(
+      [{ ...creatorGrant(), resource: "*", action: "*" }],
+      [
+        {
+          resource: "mail.send:domain:evil.example",
+          action: "send",
+          source: "creator",
+        },
+      ],
+    );
+    if (!staged.ok) throw new Error("expected staging to succeed");
+    expect(
+      staged.grantRows.map((g) => ({ resource: g.resource, origin: g.origin })),
+    ).toEqual([{ resource: "mail.send:*:*", origin: "creator" }]);
+  });
+
   test("binds the placeholder to the run's own id", async () => {
     const staged = await stage([delegator("workflow-run:*")]);
     if (!staged.ok) throw new Error("expected the requirement to resolve");

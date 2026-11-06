@@ -672,6 +672,32 @@ describe("mailAccept", () => {
       { resource: "*", action: "*", source: "creator" },
     ]);
   });
+
+  test.each(["mail.send", "mail.send:*:*", "mail.send:domain:example.com"])(
+    "rejects a grant requirement on %p in the mail.send namespace",
+    (resource) => {
+      expect(() =>
+        defineWorkflow({
+          id: "w",
+          trigger: { type: "mail", to: "s@x.example" },
+          steps: { a: step({ agent: makeAgent("a") }) },
+          grantRequirements: [{ resource, action: "send", source: "creator" }],
+        }),
+      ).toThrow(/send grants come only from the hub at a run's first trigger/);
+    },
+  );
+
+  test("keeps a mail.* grant requirement, which lies in no reserved namespace", () => {
+    const def = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: makeAgent("a") }) },
+      grantRequirements: [
+        { resource: "mail.*", action: "*", source: "creator" },
+      ],
+    });
+    expect(def.grantRequirements).toHaveLength(1);
+  });
 });
 
 describe("acyclicity validation", () => {

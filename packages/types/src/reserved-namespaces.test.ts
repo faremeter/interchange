@@ -10,6 +10,10 @@ describe("reservedGrantNamespace", () => {
     expect(reservedGrantNamespace("mail.accept:*:*")?.namespace).toBe(
       "mail.accept",
     );
+    expect(reservedGrantNamespace("mail.send")?.namespace).toBe("mail.send");
+    expect(reservedGrantNamespace("mail.send:*:*")?.namespace).toBe(
+      "mail.send",
+    );
   });
 
   test("returns null for a resource outside every reserved namespace", () => {
@@ -17,6 +21,8 @@ describe("reservedGrantNamespace", () => {
     expect(reservedGrantNamespace("mail.*")).toBeNull();
     expect(reservedGrantNamespace("mail.acceptor:x")).toBeNull();
     expect(reservedGrantNamespace("mail.accept*")).toBeNull();
+    expect(reservedGrantNamespace("mail.send*")).toBeNull();
+    expect(reservedGrantNamespace("mail.sender:x")).toBeNull();
     expect(reservedGrantNamespace("tool:mail_send")).toBeNull();
   });
 });

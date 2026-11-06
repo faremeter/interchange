@@ -102,6 +102,21 @@ describe("describeProbeGateRefusal", () => {
     [
       {
         ok: false,
+        reason: "reserved_namespace_grant_requirements",
+        reservedNamespaceGrantRequirements: [
+          { resource: "mail.send:*:*", action: "send", source: "creator" },
+          { resource: "mail.accept:*", action: "accept", source: "creator" },
+        ],
+      },
+      "reserved_namespace_grant_requirements: accept-rules are declared " +
+        "only through mailAccept; declared: accept on mail.accept:* " +
+        "(creator); send grants come only from the hub at a run's first " +
+        "trigger and from operator grants; declared: send on " +
+        "mail.send:*:* (creator)",
+    ],
+    [
+      {
+        ok: false,
         reason: "mail_accept_markers_undeclared",
         undeclaredMailAcceptMarkers: ["mail.accept:*", "mail.accept:tenant"],
       },

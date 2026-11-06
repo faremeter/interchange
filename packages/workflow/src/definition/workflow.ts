@@ -233,9 +233,9 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     }
   }
 
-  // A reserved namespace has one source of rows (for `mail.accept`, the
-  // `mailAccept` relations the operator approves at deploy). A grant
-  // requirement inside it would materialize a grant outside that source (a
+  // A reserved namespace gets rows only from fixed sources (for `mail.accept`,
+  // the `mailAccept` relations the operator approves at deploy). A grant
+  // requirement inside it would materialize a grant outside those sources (a
   // creator holding `*` satisfies `mail.accept:*`, which admits every sender),
   // so reject it here rather than let it widen authority.
   for (const requirement of config.grantRequirements ?? []) {
