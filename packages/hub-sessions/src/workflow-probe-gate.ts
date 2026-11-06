@@ -16,10 +16,10 @@
 //      implement, so a deployment that could only ever sit inert never gets
 //      approved.
 //   5. Reject a grant requirement inside a reserved grant namespace (such
-//      as `mail.accept`), so that namespace keeps its one source of rows,
-//      and a `mail.accept` walk marker the projection's `mailAccept` does
-//      not produce, so the accept surface comes only from the hashed
-//      `mailAccept`.
+//      as `mail.accept`), so that namespace gets rows only from its fixed
+//      sources, and a `mail.accept` walk marker the projection's
+//      `mailAccept` does not produce, so the accept surface comes only from
+//      the hashed `mailAccept`.
 //   6. Reject a declared grant requirement whose conditions a run cannot
 //      evaluate, so the frozen requirements only mint grant rows that
 //      authorization can evaluate.
@@ -650,13 +650,14 @@ export async function gateAndFreezeProbeResult(
   }
 
   // Refuse a grant requirement inside a reserved namespace. Such a namespace
-  // has one source of rows (for `mail.accept`, the approved `mailAccept`
-  // relations); a requirement would materialize a grant outside it (a creator
-  // holding `*` satisfies `mail.accept:*`, which admits every sender). Like
-  // the trigger check this is an author-definition error an operator cannot
-  // approve away, and it runs here because `defineWorkflow`'s own check rides
-  // the pinned closure, which a stale or untrusted sidecar can skip. It reads
-  // only the grant requirements, not the per-step grants or approvals.
+  // gets rows only from fixed sources (for `mail.accept`, the approved
+  // `mailAccept` relations); a requirement would materialize a grant outside
+  // them (a creator holding `*` satisfies `mail.accept:*`, which admits every
+  // sender). Like the trigger check this is an author-definition error an
+  // operator cannot approve away, and it runs here because `defineWorkflow`'s
+  // own check rides the pinned closure, which a stale or untrusted sidecar
+  // can skip. It reads only the grant requirements, not the per-step grants
+  // or approvals.
   const reservedNamespaceGrantRequirements =
     probeResult.grantWalkSnapshot.grantRequirements.filter(
       (requirement) => reservedGrantNamespace(requirement.resource) !== null,

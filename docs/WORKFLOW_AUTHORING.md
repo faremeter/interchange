@@ -424,9 +424,12 @@ reserved, not implemented), and rejects an `inboundMailPolicy` on a workflow
 with no mail trigger. A `mailAccept` needs no mail trigger: every run has an
 address, so a workflow of any trigger may declare who it accepts mail from.
 `defineWorkflow` also rejects a grant requirement in the `mail.accept`
-namespace, so `mailAccept` is the only way to author an accept-rule. Every
-key of `inboundMailPolicy` defaults to REJECT, so a workflow declaring none
-receives only mail the signature gate found nothing to complain about.
+namespace, so `mailAccept` is the only way to author an accept-rule. It
+rejects a grant requirement in the `mail.send` namespace too. A run gets its
+send grant from the hub at its first trigger, and other send grants come
+only from operators. Every key of `inboundMailPolicy` defaults to REJECT, so
+a workflow declaring none receives only mail the signature gate found nothing
+to complain about.
 Before that gate, the hub refuses hub-relayed mail from a sender that no
 `mailAccept` rule and no operator grant admits. A workflow declaring no
 `mailAccept` receives hub-relayed mail only when an operator grant on the run
