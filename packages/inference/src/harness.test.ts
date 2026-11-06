@@ -7,6 +7,7 @@ import {
   type Dependencies,
   type InferenceHarnessOptions,
 } from "./harness";
+import { ProtocolMismatchError } from "./errors";
 import {
   createBuiltinRegistry,
   createDefaultDependencies,
@@ -909,5 +910,69 @@ describe("runInference — non-streaming JSON responses", () => {
     if (errorEvent === undefined) throw new Error("missing inference.error");
     expect(errorEvent.data.error.category).toBe("protocol_mismatch");
     expect(errorEvent.data.error.message).toContain("text/plain");
+  });
+});
+
+describe("runInference — response body release", () => {
+  const RELEASE_SOURCE: InferenceSource = {
+    id: "test-release:model-x",
+    provider: "test-release",
+    baseURL: "https://example.test",
+    credentialId: "test",
+    model: "model-x",
+  };
+
+  test("cancels a held-open body when parseResponse throws", async () => {
+    let cancelled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: boom\n\n"));
+        // Never closed: the server holds the connection open past the
+        // terminal failure envelope, the case that pins the socket when
+        // the body is never released.
+      },
+      cancel() {
+        cancelled += 1;
+      },
+    });
+    const throwingFactory: AdapterFactory = () => ({
+      buildRequest: () => ({
+        url: "https://example.test/v1/stream",
+        headers: {},
+        body: "{}",
+      }),
+      parseResponse: () => {
+        // ProtocolMismatchError, like the real failure-envelope throws,
+        // is never retried: single attempt, deterministic test.
+        throw new ProtocolMismatchError("test-release: failure envelope", {
+          type: "response.failed",
+        });
+      },
+      parseJSONResponse: () => [],
+    });
+    const deps: Dependencies = {
+      fetch: () =>
+        Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        ),
+      scheduler: createDefaultScheduler(),
+      adapters: createAdapterRegistry({ "test-release": throwingFactory }),
+    };
+
+    let seq = 0;
+    const events = await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: RELEASE_SOURCE,
+        nextSeq: () => ++seq,
+        deps,
+      }),
+    );
+
+    expect(events.some((e) => e.type === "inference.error")).toBe(true);
+    expect(cancelled).toBeGreaterThanOrEqual(1);
   });
 });

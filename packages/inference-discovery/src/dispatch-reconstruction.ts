@@ -87,6 +87,42 @@ function requireMessages(body: Record<string, unknown>): unknown[] {
   return messages;
 }
 
+function requireResponsesInput(body: Record<string, unknown>): unknown[] {
+  const input = body.input;
+  if (!Array.isArray(input)) {
+    throw new Error("dispatch reconstruction: request body has no input array");
+  }
+  return input;
+}
+
+function extractResponsesDispatches(
+  body: Record<string, unknown>,
+): ReconstructedDispatch[] {
+  const calls: { id: string; name: string; args: unknown }[] = [];
+  const results = new Map<string, unknown>();
+  for (const item of requireResponsesInput(body)) {
+    if (!isRecord(item)) continue;
+    if (item.type === "function_call") {
+      calls.push({
+        id: String(item.call_id),
+        name: String(item.name),
+        args: JSON.parse(String(item.arguments)),
+      });
+    } else if (item.type === "function_call_output") {
+      const id = String(item.call_id);
+      if (results.has(id)) {
+        throw new Error(
+          `dispatch reconstruction: Responses duplicate tool result for ${JSON.stringify(id)}`,
+        );
+      }
+      // The output is the verbatim string the client fed back; storing it
+      // unparsed reproduces it exactly when the adapter re-emits it.
+      results.set(id, item.output);
+    }
+  }
+  return pairById(calls, results, "openai-responses");
+}
+
 function extractAnthropicDispatches(
   body: Record<string, unknown>,
 ): ReconstructedDispatch[] {
@@ -211,7 +247,8 @@ function extractGoogleDispatches(
 // `adapterProvider` is the adapter-registry key the replay harness drives
 // runInference against, so the extractor keys off the same name. The catalog
 // providers `openai` and `opencode-zen` both speak the OpenAI protocol and
-// resolve to the one `openai-compatible` adapter.
+// resolve to the one `openai-compatible` adapter, while `openai-responses`
+// speaks the Responses protocol and resolves to `openai-responses`.
 export function extractDispatches(
   adapterProvider: string,
   body: Record<string, unknown>,
@@ -221,6 +258,8 @@ export function extractDispatches(
       return extractAnthropicDispatches(body);
     case "openai-compatible":
       return extractOpenAIDispatches(body);
+    case "openai-responses":
+      return extractResponsesDispatches(body);
     case "google-genai":
       return extractGoogleDispatches(body);
     default:

@@ -1,0 +1,101 @@
+{
+  "id": "resp_077ce3c0e54951ad006ae42cd10ca087d0bc79270f5b98d01f",
+  "object": "response",
+  "created_at": 1793338577,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793338580,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5-mini-2025-08-07",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_077ce3c0e54951ad006ae42cd186c887d0957d061c00f191c5",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5CzU0-pA6O6NMFDNyULRHSPdVlfebmU8gafE6L-Amfyb8WELznWJOmGgQhScp-oAFWgl2ggxCU3uGWPr38us9C8XTxsLjTGeZQBpxMEZfWvOX0vVJjIYwV4mysWed4BNx9a7ymD39uGS5uKZNM8Eya7xO3nhwyB3VIAJtaCiVSs9jMy7KAsbWDkxECsW8mADl6u8m5YTcchBqIZKnGnP08oq92-w-gylhKsulww4E_Kx4GO3OOGofr8JjXDBVzp-mdkyo8DdgB4e21oTm2dFluBypbGQ2-ux6pXPn-E6v-HfIwgGxNmu9zhLrZ6ApjS3Om4PpAyToDt9rt6FUgBsUPLGfn9UsP0c7_84lQDJR6fWn4iCpbzvWL4RSyvBoA1cxIiWXOqQ2uMX-OxRCVO2V12I_gh3iJjizPkQ2NK-GwICxuRDSgXS3WrddKAXOoHH4ECv82nnHc_vgZ6rsYUeYdMdfvuyT5n5tMA2wx3TJ07--kUJICC7yDM0IXiTPRi0wDKvVhnDXquF-RsTCndRvuVfxpb-fsX9RoBEOTrhmmKrbYp1acWTQ0DU5idq2HYY6D-VENgrTxoiKnNmQJTriqy7qIKCETjz4-62idnhoupUOOhTn01DefFkFbSUZFKY8vcc-kimsZ9HHbbbmZP32m5ZNzXJr5QhTUkCFMeSrI9--rXCsRNb8xVIBxmh_zqoIx27rGtVgUjGI_6fxZJ1HZ4A4HQQgiSYW-fs7I8QgDpnO9XrHLVkwt80F4Zjn_5yvaYm36Lkazr98E1u7JZl4vAq6mp0iKAZg2XpXLvGIDyoRk4oFa1QTH0nNQ19j9j4wFAuSOvGD9dPYLS91ZfqpLM2hmKgo9LvrO6YavGEYuCv0oMKZ4NfvWshr0Dd2aSZXQ3EqdsiaY5cimhB38PJXxJHUwX68ZtwTg_3SH_ESaWJ4ldAAx5FqK7GnGIOHW0HlnyOUOr0_I4DN3TWzl-U1JE69r4ATlGGx_kjDhyjKFcgMH5pRY2zewr3R6QbnfBu_NNNgIJhNCzIAYCDSg-xPJVyxhYaV0KFZKi3YVR_I1OzN6t0Vi2IAkEn04iu9c1ZbxWxI7-P_NHbQYcdD-vlzPms1Bm7QLXgPeWeBVbIncmoyOv1hhie5eXPIPz0xNHggV3-gjqt-xgHOPZGOeBzqdVU4tUxOPUlio4dEwXdAP7HkfPn6CEv9Gr42yDR8FdaPNs-DMgN9M-GwNb-o36uikIV86aslbLXUf_pca2aElT5LmVgwduZekWwWrYmU9zIHdtRsO-pHImWum-bJskfzu1Az1O2635Z0iIMRwpjRCWAFXo8ZoqoUSWGPwxTxklQij51Hclpt0NlaklwB6tvI091a4SGKUj3fSDYqbHVHLO1_77ZHTwWuo_KE5F8GNmcPDUXYqh17sNgRDeNwf5w3MyPdMh4BhC7XLCuhlS_cAgn1IWtybck7Z_8ZGV7DZnSBUZAWzfrNGV7FKzc4wqpA7AwYdpoTlI99UDY3VuLI9zTXLZGJhTIj82-lv1oBM9JtAa1Yg1eT0OnsURbYU3w6Ki9EYp9ksv92JI7ggc6NSAvjEfFjQcanVb7S5x4aWUrPa_MBMtCbkN11lUJd5viRjpIWGwkRGTnwDRatacaIuP8-Q4fIifErtDdi0wACD6rRHzUuxQkCaVmAJ_jj2J8awDl_T2DzYewPn5ZVb4CagGIK_gN6GnX3ZM4N_FcBJpCIL3Cr-HfWoNtLYlzb0yBqLqMZfjH08aDijQXFIxsaYi3-3MaHf_3OSGiQm_J8PXHgWrfRY2zbclVIc7T_eogGazNoAXeL8GVrZ-uU8AlkMafcDtYDUkZ85CgCkI0RNdgKP4STPgyBxf3kFbwzMkHja_f0ThJA7Gx7zH90jJHEOZipup6ZxA7KyWubT17Ge-2YLlCIveSsrvFZtGp8NG3hVTchwuQV_A0uVCURHZ1pZyxb2RTIoRY-t472nfeb6ar_qMeIS54mighXBDeT5eNcOEX5-keIEriu6k1ml-kRuQ0WGMJtWX_REU6SflW7CEszE2016of5hqNM_ifrheRhmpfejMIQYrHKpHMbQDY8n5LAez252XZuPpvSGe9yLQ69YxmNyUZ3X_wFLqpDauUBTCjHs0UCW76PL5Rh9mz68gjxRp7PpkZF3Vugib3Ttrgt9WmKsROrRTVPAxcj1HRh7LNjOUL0Yr3lDFhMzs-xrOr-W2-8roxFpuWjxos9BpmRZLlCV-sY1Q0mkD71OSy2xkXzquMR2JVc1bqX2Ilqdwm0tlYZMAUz_5Kb8-42OEc4ItvtY9jcdIXmW-Zl3kzAD8x0F0t_MLU4xir4PQw_iNuq01XDaRywjjtWswhT6od2lCu5RV43kMjlHOkwL5M71Q1L521v7WmHs9QSaLpbBQ_RL-1V2sguQDBjC9YL49a9HjG6AnnaJULss86RIHrAt09s3pRPLZOcQqQXA5XRU0Wk0MXSHgeB8QabuD-jNMQ7x71Oyl-ONOmzp448wk8vb7CYIfjT5dultzMoh4ba13nUN8XTgekX99xfvcdZTdU3CBZXoWz3jP3nujvvkvQ9MenJj-uGaO-fpaG9Op8FjxjbjXR8a2U_hvTZr7tpQp9KDMD7qZGMTMZ5i5mnuq4KZcf6UtIftq0Yfqyc0EWNaq-AJVbqTSfiswmyMCtZNyFLQ2kZ89OEQYUnWl-l-r48JFEw5Vs3LeQ_ToMwqNmmJGO1usMtJ2DGEBNpONI39qClUXXQT4kd_8Jh63cgJcwNjnSUpJaJMOVv3kAas2HdbeJT_UvsgrdUZ7b_r123PkU-AzDbG3vwwoiG9FwZmtQe1gd_smuIcUzveyzvpQ5djX9PQCWVoCtytjYdlLnO-8gGBE348NDvIHKa96wDaWstHlTNnc7Ei6E4R9ftyHrwsAsrCtNSv1gfxaZ9BCOk9H0W1nbg11dZBXrx7lRR8mbe-8Po4_khaLKAoL00XoQPZlDJidYkjfFviE4U0NDT2TIeF1bgFqjDzFgaEJG4czf564HfCimJ4W44USpw5__3uRKPc6lML1LS6xra3HsAAQmZlxUjXuEYTQGwEofrcwBorM5kA1o9XviaqDfiumgr-4ee3cCOK1mW83DD_uGzarTGbd1Z-K2pcImpXUxRdK_xpWD-1ujX899qWilaJKT0DPm0r2IETA8JktDVbOBazpxgtYd3TIcCcz-ugrh1P20eD_183MW8iUXGB1ZcEgu-kWM-EKWYg43Rj_gVDfoGBPi16CofD7oZh0E_9gPBze8OEVuhHksWBveWi3lbgAFv2st2eVhwForOHgxsmDzbn49f3xrlCCTf7Nk_Om62gAkokz0J-JsxJbEqwvbLp7AmEltTn-_jknSE66J0XuDiR3oQzrCge1XoIEMSQmJZk7ryTah4UGG-lQLNoZyHVMqQ-4z09hrUOwF3rEULEJEVpfveMKfD2oM2pZVnaF-E-SwZ27WmwBnouF5UevBvL4qtGGmXCpddMcjf3H0jLMEte8d66qr6OgwyZg2wA9UY-QmLVs7DVM11UkWMT26mrkzNNbxqCmIwy6V6XT7POoNQlZCQv22V74hmM672q1TkFy_t0R81860uX_pB_fOew1f1tt1E14RF5vqMmkG0zIelPO3vsbPjlaTl3qX9Y1M5_ccHW1K5re0zyjoXIg0D32P5nsmlvU50SuJQfjB5CZzK9oz4iRijqhbe2tYnAEjG2QutMqu8Sajv7pAi138SNxy2qMgcBgjBIXxk3Y4A_1srSO7NILey7oLs_IfkJLHj_JaEAT3-ND2nUbcqehtu5tgud5a1WrZ_IfxXkx7o_xlrkVWRqYCBiEAS_-8nIX6w_MW5XO72T4GMBas4ueLDRC8ArXGizbrW8OpIFb__RvVEd4xn3GFEDT3xfSH941FGq69JBFN5g==",
+      "summary": []
+    },
+    {
+      "id": "msg_077ce3c0e54951ad006ae42cd4205087d08c358de3aa2f12d5",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "The document is the table of contents for Mark Twain's The Adventures of Tom Sawyer, listing chapter titles that outline Tom\u2019s mischievous antics, moral struggles, friendships and adventures\u2014such as school and church scenes, forming a pirate gang, and confrontations with Injun Joe and Muff Potter\u2014across the novel."
+        }
+      ],
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "in_memory",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 1.0,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 355,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 253,
+    "output_tokens_details": {
+      "reasoning_tokens": 128
+    },
+    "total_tokens": 608
+  },
+  "user": null,
+  "metadata": {}
+}

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "2",
+  "source": {
+    "provider": "openai-responses",
+    "model": "gpt-6-luna",
+    "baseURL": "https://api.openai.com/v1"
+  },
+  "origin": "live",
+  "capturedAt": "2026-10-30T05:40:46.100Z",
+  "capability": "plain-text"
+}

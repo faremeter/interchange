@@ -28,6 +28,25 @@ export const OPENAI_FIRSTPARTY_MAX_QUIRKS: Record<string, unknown> = {
   maxEffort: "max",
 };
 
+// Responses-wire counterparts of the maxEffort quirks above: the Responses
+// adapter reads the value from `reasoning.maxEffort`, not the top level, and
+// rejects the Chat keys. The values are carried from the Chat entries for
+// the same models — no Responses-side capture has yet sent `xhigh` or `max`
+// on this wire (INTR-720 tracks per-capture rig options to prove them).
+// Every Responses offering also requests a `detailed` reasoning summary:
+// the fixtures prove the server returns summary text when asked, and the
+// adapter only forwards `summary` when this quirk is set — without it,
+// `reasoning-content` calls would yield empty thinking blocks.
+export const OPENAI_RESPONSES_REASONING_QUIRKS: Record<string, unknown> = {
+  reasoning: { summary: "detailed" },
+};
+export const OPENAI_RESPONSES_XHIGH_QUIRKS: Record<string, unknown> = {
+  reasoning: { maxEffort: "xhigh", summary: "detailed" },
+};
+export const OPENAI_RESPONSES_MAX_QUIRKS: Record<string, unknown> = {
+  reasoning: { maxEffort: "max", summary: "detailed" },
+};
+
 // The reasoning-bearing opencode-zen relay offerings — the kimi models plus
 // qwen, deepseek, glm, and mimo — advertise reasoning_content on the wire. The
 // OpenAI adapter no longer forces reasoning content by default, so
