@@ -20,6 +20,8 @@ import { commitBuffered, dropChain, reloadState } from "@intx/workflow/runtime";
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowHostSignalChannel } from "./signal-channel";
 
+const noWake = (): void => undefined;
+
 const tempDirs: string[] = [];
 
 async function makeTempDir(prefix: string): Promise<string> {
@@ -116,7 +118,7 @@ describe("workflow-host signal channel", () => {
         clock: () => new Date(),
       });
       try {
-        const received = channel.awaitNext("approve");
+        const received = channel.awaitNext("approve", noWake);
         // Give the subscription a moment to install before the commit
         // lands so the `from: "head"` watcher sees the post-subscribe
         // ref-update.
@@ -169,7 +171,12 @@ describe("workflow-host signal channel", () => {
         clock: () => new Date(),
       });
       try {
-        const out = await channel.awaitNext("approve");
+        let woken = 0;
+        const out = await channel.awaitNext("approve", () => {
+          woken += 1;
+        });
+        // The caller counts as working again before it continues.
+        expect(woken).toBe(1);
         expect(out.signalId).toBe("sig-queued");
         expect(out.payload).toEqual({ resumed: true });
       } finally {
@@ -206,7 +213,7 @@ describe("workflow-host signal channel", () => {
       });
       try {
         const ac = new AbortController();
-        const pending = channel.awaitNext("approve", ac.signal);
+        const pending = channel.awaitNext("approve", noWake, ac.signal);
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 25);
         });
@@ -215,7 +222,7 @@ describe("workflow-host signal channel", () => {
 
         // After the abort, a deliver for that name must not crash the
         // channel and a fresh awaiter must still resolve normally.
-        const second = channel.awaitNext("approve");
+        const second = channel.awaitNext("approve", noWake);
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 50);
         });
@@ -261,8 +268,8 @@ describe("workflow-host signal channel", () => {
         clock: () => new Date(),
       });
       try {
-        const a = channel.awaitNext("approve");
-        const b = channel.awaitNext("reject");
+        const a = channel.awaitNext("approve", noWake);
+        const b = channel.awaitNext("reject", noWake);
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 50);
         });
@@ -308,7 +315,7 @@ describe("workflow-host signal channel", () => {
         clock: () => new Date(),
       });
       try {
-        const first = channel.awaitNext("approve");
+        const first = channel.awaitNext("approve", noWake);
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 50);
         });
@@ -330,7 +337,7 @@ describe("workflow-host signal channel", () => {
         // path leaks the per-name entry in the subscriptions Map,
         // this awaitNext joins the awaiter queue against a dead
         // subscribeKind loop and the deliver below never wakes it.
-        const second = channel.awaitNext("approve");
+        const second = channel.awaitNext("approve", noWake);
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 50);
         });
@@ -384,8 +391,8 @@ describe("workflow-host signal channel", () => {
         clock: () => new Date(),
       });
       try {
-        const first = channel.awaitNext("approve");
-        const second = channel.awaitNext("approve");
+        const first = channel.awaitNext("approve", noWake);
+        const second = channel.awaitNext("approve", noWake);
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 50);
         });
@@ -547,7 +554,7 @@ describe("workflow-host signal channel", () => {
       clock: () => new Date(),
     });
     try {
-      const received = channel.awaitNext("approve");
+      const received = channel.awaitNext("approve", noWake);
       await channel.deliver("approve", { ok: true }, "sig-empty");
       expect(await received).toEqual({
         signalId: "sig-empty",
@@ -605,6 +612,60 @@ describe("workflow-host signal channel", () => {
     }
   });
 
+  test("land says a log that ended took no signal, and a repeated one is held", async () => {
+    const dataDir = await makeTempDir("sigchan-land-");
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { skill: permissiveHandler("workflow-runs-land") },
+      authorize: allowAll,
+    });
+    const repoId: RepoId = { kind: "skill", id: "deployment-land" };
+    const runId = "r-land";
+    const box = makeStateBox(runId);
+    const runtimeStore = runtimeStoreFor(store, repoId);
+    const at = "2026-01-01T00:00:00.000Z";
+    const channel = createWorkflowHostSignalChannel({
+      repoStore: store,
+      runtimeStore,
+      principal,
+      repoId,
+      ref: REF,
+      runId,
+      readState: () => box.state,
+      newId: makeIdGen("sig"),
+      clock: () => new Date(at),
+    });
+    try {
+      expect(await channel.land("approve", { ok: true }, "sig-early")).toBe(
+        true,
+      );
+      expect(await channel.land("approve", { ok: true }, "sig-early")).toBe(
+        true,
+      );
+      await runtimeStore.append(runId, {
+        kind: "RunFailed",
+        seq: 1,
+        at,
+        error: { message: "already failed" },
+      });
+      expect(await channel.land("approve", { ok: true }, "sig-late")).toBe(
+        false,
+      );
+      expect(await channel.land("approve", { ok: true }, "sig-early")).toBe(
+        true,
+      );
+      const events = await runtimeStore.read(runId);
+      expect(events.map((event) => event.kind)).toEqual([
+        "SignalReceived",
+        "RunFailed",
+      ]);
+    } finally {
+      await channel.stop();
+      dropChain(runId);
+    }
+  });
+
   test("peek reads the name queue and the matching correlation separately", async () => {
     const dataDir = await makeTempDir("sigchan-peek-");
     const store = createRepoStore({
@@ -646,11 +707,16 @@ describe("workflow-host signal channel", () => {
       clock: () => new Date(),
     });
     try {
-      const named = await channel.awaitNext("go");
+      const named = await channel.awaitNext("go", noWake);
       expect(named).toEqual({ payload: { n: true }, signalId: "sig-name" });
       expect(named).not.toHaveProperty("correlationId");
 
-      const correlated = await channel.awaitNext("go", undefined, "corr-1");
+      const correlated = await channel.awaitNext(
+        "go",
+        noWake,
+        undefined,
+        "corr-1",
+      );
       expect(correlated).toEqual({
         payload: { c: true },
         signalId: "sig-c",
@@ -659,6 +725,7 @@ describe("workflow-host signal channel", () => {
 
       const otherName = await channel.awaitNext(
         "stop",
+        noWake,
         undefined,
         "corr-other",
       );
@@ -666,7 +733,12 @@ describe("workflow-host signal channel", () => {
 
       // The non-matching name stayed at the head of corr-1. Peek
       // reads past it instead of handing it to the "go" awaiter.
-      const skipped = await channel.awaitNext("stop", undefined, "corr-1");
+      const skipped = await channel.awaitNext(
+        "stop",
+        noWake,
+        undefined,
+        "corr-1",
+      );
       expect(skipped.signalId).toBe("sig-stop");
     } finally {
       await channel.stop();
@@ -692,7 +764,7 @@ describe("workflow-host signal channel", () => {
     });
     try {
       let nameStole = false;
-      const pending = isolated.awaitNext("go").then(
+      const pending = isolated.awaitNext("go", noWake).then(
         () => {
           nameStole = true;
         },
@@ -700,7 +772,12 @@ describe("workflow-host signal channel", () => {
           // stop() rejects the name awaiter that peek did not satisfy.
         },
       );
-      const correlatedHit = await isolated.awaitNext("go", undefined, "corr-1");
+      const correlatedHit = await isolated.awaitNext(
+        "go",
+        noWake,
+        undefined,
+        "corr-1",
+      );
       expect(correlatedHit.signalId).toBe("sig-c2");
       expect(nameStole).toBe(false);
       void pending;
@@ -732,8 +809,8 @@ describe("workflow-host signal channel", () => {
       clock: () => new Date(),
     });
     try {
-      const named = channel.awaitNext("go");
-      const correlated = channel.awaitNext("go", undefined, "corr-1");
+      const named = channel.awaitNext("go", noWake);
+      const correlated = channel.awaitNext("go", noWake, undefined, "corr-1");
 
       await channel.deliver("go", { c: true }, "sig-c", "corr-1");
       expect(await correlated).toEqual({
@@ -782,8 +859,8 @@ describe("workflow-host signal channel", () => {
       clock: () => new Date(),
     });
     try {
-      const correlated = channel.awaitNext("go", undefined, "corr-1");
-      const named = channel.awaitNext("go");
+      const correlated = channel.awaitNext("go", noWake, undefined, "corr-1");
+      const named = channel.awaitNext("go", noWake);
 
       await channel.deliver("go", { n: true }, "sig-name");
       const namedResult = await named;

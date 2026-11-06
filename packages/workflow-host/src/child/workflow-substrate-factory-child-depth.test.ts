@@ -57,6 +57,8 @@ import {
   type SidecarChildStepInvoker,
 } from "./substrate-factory";
 
+const noWake = (): void => undefined;
+
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-child-depth";
 const WORKFLOW_RUN_REPO_ID: RepoId = {
@@ -294,7 +296,7 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
 
     // The top run settled failed: the deep spawn was rejected and the failure
     // propagated up every rung's spawn step.
-    const event = await result.next();
+    const event = await result.next(noWake);
     expect(event.kind).toBe("terminal");
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("failed");
@@ -385,7 +387,7 @@ describe("createSidecarRunChild root grants at depth", () => {
         parentGrants: createSnapshotGrantsReader(rootGrants, "test root"),
       },
     );
-    return result.next();
+    return result.next(noWake);
   }
 
   beforeAll(async () => {
@@ -523,7 +525,7 @@ describe("createSidecarRunChild per-rung cap", () => {
         parentGrants: createSnapshotGrantsReader(rootGrants, "test root"),
       },
     );
-    const event = await handle.next();
+    const event = await handle.next(noWake);
     expect(event.kind).toBe("terminal");
     expect(decisions).toEqual([null]);
   });

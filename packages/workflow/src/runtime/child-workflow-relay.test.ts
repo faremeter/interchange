@@ -47,9 +47,11 @@ import {
   type SpawnChildWorkflow,
   type SignalChannel,
   type StepInvoker,
+  type SuspendableChildHandle,
   type WorkflowAuthorizeFn,
   type WorkflowDefinition,
   type WorkflowEvent,
+  type LoadParkedApproval,
   type WorkflowPark,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
@@ -197,10 +199,12 @@ function startRelayed(args: {
   holdUntilChildAwaits?: readonly string[];
   signalChannel?: SignalChannel;
   spawnChild?: SpawnChildWorkflow;
+  wrapChild?: (handle: SuspendableChildHandle) => SuspendableChildHandle;
   repoStore?: RepoStore;
   resumeFromEvents?: readonly WorkflowEvent[];
   hasUpstreamSignalResolver?: boolean;
   clock?: () => Date;
+  loadParkedApproval?: LoadParkedApproval;
   onSignalPark?: (park: {
     runId: string;
     name: string;
@@ -228,7 +232,7 @@ function startRelayed(args: {
   const signalChannel =
     args.signalChannel ??
     createInMemorySignalChannel({ newId: () => newId("sig") });
-  const spawnChild =
+  const baseSpawnChild =
     args.spawnChild ??
     (args.holdUntilChildAwaits !== undefined
       ? holdSpawnUntilChildAwaits(
@@ -246,6 +250,11 @@ function startRelayed(args: {
           },
           repoStore,
         ));
+  const { wrapChild } = args;
+  const spawnChild: SpawnChildWorkflow =
+    wrapChild === undefined
+      ? baseSpawnChild
+      : async (input) => wrapChild(await baseSpawnChild(input));
   const env: WorkflowRuntimeEnv = {
     repoStore,
     scheduler: createInMemoryScheduler({ repoStore, clock }),
@@ -264,6 +273,9 @@ function startRelayed(args: {
       ? { onSignalPark: args.onSignalPark }
       : {}),
     ...(args.loopFns !== undefined ? { loopFns: args.loopFns } : {}),
+    ...(args.loadParkedApproval !== undefined
+      ? { loadParkedApproval: args.loadParkedApproval }
+      : {}),
   };
   env.spawnLoopIteration = createSpawnLoopIteration(env, loopBodies);
   return {
@@ -370,7 +382,7 @@ describe("childWorkflow signal relay", () => {
       repoStore,
       signalChannel: {
         deliver: () => Promise.reject(new Error("deliver is not used")),
-        awaitNext: (name, signal) => {
+        awaitNext: (name, _onWake, signal) => {
           if (!injected && name === "go") {
             injected = true;
             const last = parentTip;
@@ -1236,6 +1248,71 @@ describe("childWorkflow signal relay", () => {
 // again, or a release during that read is in neither place and the
 // parent waits forever.
 describe("park-release watch", () => {
+  test("a cancel during the relay's log read leaves no unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const parent = defineWorkflow({
+        id: "abort-read-parent",
+        trigger: { type: "manual" },
+        steps: {
+          spawn: childWorkflow({ definition: gatedChild("abort-read-child") }),
+        },
+      });
+      const runId = "run-abort-read";
+      const inner = createInMemoryRepoStore();
+      const readHeld = Promise.withResolvers<undefined>();
+      const releaseRead = Promise.withResolvers<undefined>();
+      let holdNextRead = false;
+      let channelWait: Promise<unknown> | undefined;
+      const repoStore: RepoStore = {
+        read: async (id) => {
+          if (holdNextRead && id === runId) {
+            holdNextRead = false;
+            readHeld.resolve(undefined);
+            await releaseRead.promise;
+          }
+          return inner.read(id);
+        },
+        append: (id, event) => inner.append(id, event),
+        appendBatch: (id, events) => inner.appendBatch(id, events),
+        subscribe: (id, opts) => inner.subscribe(id, opts),
+      };
+      const { run } = startRelayed({
+        definition: parent,
+        runId,
+        invokeStep: async () => ({ output: null }),
+        repoStore,
+        signalChannel: {
+          deliver: () => Promise.reject(new Error("deliver is not used")),
+          awaitNext: (name, _onWake, signal) => {
+            // The relay reads the parent's log right after it starts this wait.
+            const wait = pendingSignal(signal);
+            if (name === "go") {
+              holdNextRead = true;
+              channelWait = wait.catch(() => undefined);
+            }
+            return wait;
+          },
+        },
+      });
+      await readHeld.promise;
+      await run.cancel("supervisor-operator", "stop");
+      // The waits reject while the read is still open, and the runtime reports
+      // an unhandled rejection before the next turn of the event loop.
+      await channelWait;
+      await new Promise((resolve) => setImmediate(resolve));
+      releaseRead.resolve(undefined);
+      await run.complete.catch(() => undefined);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("a release that lands during the read still resolves the watch", async () => {
     const childRunId = "child-watch-gap";
     const inner = createInMemoryRepoStore();
@@ -1342,6 +1419,7 @@ describe("park-release watch", () => {
     const watch = handle.waitForParkRelease?.(
       "go",
       new AbortController().signal,
+      () => undefined,
     );
     if (watch === undefined) {
       throw new Error("handle does not watch a park release");
@@ -1462,7 +1540,7 @@ async function raceLoggedSignalAgainstRelease(
     repoStore,
     signalChannel: {
       deliver: () => Promise.reject(new Error("deliver is not used")),
-      awaitNext: (_name, signal) => pendingSignal(signal),
+      awaitNext: (_name, _onWake, signal) => pendingSignal(signal),
     },
     spawnChild: () =>
       Promise.resolve({
@@ -1688,6 +1766,153 @@ describe("a parked childWorkflow survives a process restart", () => {
     expect(resumed).toEqual({ outcome: "approved" });
     expect(countEvents(result.events, "ChildSpawned")).toBe(1);
     expect(spawnOutput(result.outputs.spawn).childRunId).toBe(childId);
+  });
+
+  test("fails the spawn step when the child left the approval the parent awaits", async () => {
+    const parent = defineWorkflow({
+      id: "resume-left-approval-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-left-approval-child",
+            trigger: { type: "manual" },
+            steps: { hold: step({ agent }) },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-left-approval";
+    const suspending: StepInvoker = async () => ({
+      suspend: {
+        correlationId: "corr-body",
+        kind: "approval",
+        approvalSnapshot: snapshot,
+      },
+    });
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: suspending,
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.parkKind === "approval",
+    );
+    const parentLog = (await copyLog(first.repoStore, runId)).map((event) =>
+      event.kind === "SignalAwaited" && event.stepId === "spawn"
+        ? { ...event, signalName: signalName("corr-left") }
+        : event,
+    );
+    const childId = spawnedChildId(parentLog, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: suspending,
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("failed");
+    const failed = result.events.find((event) => event.kind === "StepFailed");
+    expect(failed?.kind === "StepFailed" ? failed.error.message : "").toContain(
+      "cannot be retired",
+    );
+  });
+
+  test("hands a decision to a resuming child only once it parks again", async () => {
+    const parent = defineWorkflow({
+      id: "resume-rearm-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-rearm-child",
+            trigger: { type: "manual" },
+            steps: { hold: step({ agent }) },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-rearm";
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        if (req.resume !== undefined) return { output: null };
+        return {
+          suspend: {
+            correlationId: "corr-rearm",
+            kind: "approval",
+            approvalSnapshot: snapshot,
+          },
+        };
+      },
+    });
+    void first.run.complete.catch(() => undefined);
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.parkKind === "approval",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    const childLog = await copyLog(first.repoStore, childId);
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const askedForRearm = Promise.withResolvers<undefined>();
+    const childRearmed = Promise.withResolvers<undefined>();
+    let handedDown = 0;
+    let resumed: unknown;
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        resumed = req.resume?.decision;
+        return { output: null };
+      },
+      wrapChild: (handle) => ({
+        ...handle,
+        resume: (correlationId, decision) => {
+          handedDown += 1;
+          return handle.resume(correlationId, decision);
+        },
+        whenSignalAwaiter: async (name, onWake) => {
+          askedForRearm.resolve(undefined);
+          await childRearmed.promise;
+          await handle.whenSignalAwaiter?.(name, onWake);
+        },
+      }),
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    await run.signal(
+      signalName("corr-rearm"),
+      { outcome: "approved" },
+      "sig-rearm",
+    );
+    await askedForRearm.promise;
+    expect(handedDown).toBe(0);
+
+    childRearmed.resolve(undefined);
+    const result = await run.complete;
+    expect(result.terminalStatus).toBe("completed");
+    expect(handedDown).toBe(1);
+    expect(resumed).toEqual({ outcome: "approved" });
   });
 
   test("reestablishes an input park and delivers the next turn", async () => {
@@ -1980,11 +2205,12 @@ describe("a parked childWorkflow survives a process restart", () => {
     // open keeps that crash window: the parent log names a child run whose
     // own log was never written. Letting the child start would share this
     // process's commit chain with the resume.
+    const spawner = Promise.withResolvers<never>();
     const first = startRelayed({
       definition: parent,
       runId,
       invokeStep: async () => ({ output: null }),
-      spawnChild: () => new Promise<never>(() => undefined),
+      spawnChild: () => spawner.promise,
     });
     void first.run.complete;
     await waitForEvent(
@@ -2015,11 +2241,132 @@ describe("a parked childWorkflow survives a process restart", () => {
     });
     await run.signal("go", { done: true }, "sig-keep");
     const result = await run.complete;
+    // The first run would otherwise keep working for the rest of the
+    // process, and other test files share it.
+    spawner.reject(new Error("the crash window is over"));
+    await first.run.complete.catch(() => undefined);
 
     expect(result.terminalStatus).toBe("completed");
     expect(seen).toEqual([{ token: "keep" }]);
     expect(countEvents(result.events, "ChildSpawned")).toBe(1);
     expect(spawnOutput(result.outputs.spawn).childRunId).toBe(childId);
+  });
+
+  test("relays an approval the parent had not reached from the snapshot its step stored", async () => {
+    const parent = defineWorkflow({
+      id: "resume-queued-approval-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "resume-queued-approval-child",
+            trigger: { type: "manual" },
+            steps: { alpha: step({ agent }), beta: step({ agent }) },
+          }),
+        }),
+      },
+    });
+    const runId = "run-resume-queued-approval";
+    // What each suspended step durably stored, as the host's step store does.
+    const stored = new Map<string, ApprovalSnapshot>();
+    const key = (args: {
+      runId?: string;
+      stepId?: string;
+      attempt?: number;
+      correlationId: string;
+    }): string =>
+      `${String(args.runId)}/${String(args.stepId)}/${String(args.attempt)}/${args.correlationId}`;
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async (req) => {
+        if (req.resume !== undefined) return { output: null };
+        const correlationId = `corr-${String(req.authzContext.stepId)}`;
+        const approvalSnapshot: ApprovalSnapshot = {
+          ...snapshot,
+          arguments: { step: req.authzContext.stepId },
+        };
+        stored.set(
+          key({ ...req.authzContext, correlationId }),
+          approvalSnapshot,
+        );
+        return {
+          suspend: { correlationId, kind: "approval", approvalSnapshot },
+        };
+      },
+    });
+    void first.run.complete.catch(() => undefined);
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.parkKind === "approval",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    for (const stepId of ["alpha", "beta"]) {
+      await waitForEvent(
+        first.repoStore,
+        childId,
+        (event) =>
+          event.kind === "SignalAwaited" &&
+          event.signalName === signalName(`corr-${stepId}`),
+      );
+    }
+    const childLog = await copyLog(first.repoStore, childId);
+    // The parent relays one park at a time, so the other is still queued.
+    const shown = parentLog.flatMap((event) =>
+      event.kind === "SignalAwaited" && event.parkKind === "approval"
+        ? [correlationIdFromSignalName(event.signalName)]
+        : [],
+    );
+    expect(shown).toHaveLength(1);
+    const queued = shown[0] === "corr-alpha" ? "corr-beta" : "corr-alpha";
+
+    const parks = parkSink();
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, childId, childLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: async () => ({ output: null }),
+      onPark: parks.onPark,
+      repoStore,
+      resumeFromEvents: parentLog,
+      loadParkedApproval: async (args) => stored.get(key(args)),
+    });
+    // A run that ends instead of relaying says why.
+    const ended = run.complete.then((result) => {
+      const failed = result.events.find((event) => event.kind === "StepFailed");
+      throw new Error(
+        `the run ended ${result.terminalStatus}: ${failed?.kind === "StepFailed" ? failed.error.message : "no step failed"}`,
+      );
+    });
+    void ended.catch(() => undefined);
+    await run.signal(
+      signalName(String(shown[0])),
+      { outcome: "approved" },
+      "sig-shown",
+    );
+    const relayedPark = await Promise.race([parks.next(), ended]);
+    expect(relayedPark.correlationId).toBe(queued);
+    expect(relayedPark.approvalSnapshot).toEqual(
+      stored.get(
+        key({
+          runId: childId,
+          stepId: queued.slice("corr-".length),
+          attempt: 1,
+          correlationId: queued,
+        }),
+      ),
+    );
+    await run.signal(signalName(queued), { outcome: "approved" }, "sig-queued");
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
   });
 
   test("an unproxied approval fails before spawn and writes no await", async () => {

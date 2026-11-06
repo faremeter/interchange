@@ -215,7 +215,10 @@ container's signal path and delivery resumes the iteration, the same way an
 onTrigger section body parks. A parked iteration also survives a crash -- a
 restart re-drives the loop, re-establishes the container's signal relay, and
 resumes the iteration on the next delivery -- so an `awaitSignal` loop body is a
-durable human-in-the-loop pause, not just an in-process one.
+durable human-in-the-loop pause, not just an in-process one. A restart relays
+the parks of a body with several at once that the container had not reached
+yet, one at a time, the same way as for a `childWorkflow`; an approval among
+them takes its snapshot from the parked step's stored state.
 
 A loop body may also spawn a `childWorkflow` grandchild: the child is lifted to
 a ref and runs as its own child run, depth-counted against the tree-wide spawn
@@ -233,7 +236,10 @@ down. A queued park whose gate has already moved on is not given a signal
 that arrived while it waited.
 
 A parked child survives a process restart. Resume reattaches the same
-child run from its log and reestablishes the relay on the spawn step. The
+child run from its log and reestablishes the relay on the spawn step. A
+park still queued at the restart is relayed then too; for an approval, the
+snapshot comes from the parked step's stored state, through the env's
+`loadParkedApproval`, and a resume without one fails the spawn step. The
 child stays unaddressable; the parent is the resume root.
 
 On drain, the relay sits on the spawn step. That step defaults to

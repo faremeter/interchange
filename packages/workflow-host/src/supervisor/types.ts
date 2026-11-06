@@ -29,6 +29,9 @@ import type {
 import type { RunCancelled, RunCompleted, RunFailed } from "@intx/workflow";
 
 import type { FrameReader, NdjsonReader, NdjsonWriter } from "../ipc/index";
+import type { RecordedStandby } from "./recorded-standby";
+
+export type { RecordedStandby };
 
 /**
  * Terminal workflow-run event the supervisor's drain accumulators
@@ -200,7 +203,7 @@ export type SubprocessSpawner = (args: {
  * Inbox claim-check primitives the supervisor's mail-arrival path
  * and dispatch loop reach into. Production wires this against the
  * concrete `enqueueInbox` / `dequeueToProcessing` / `markConsumed`
- * / `replayProcessingToInbox` functions exported from
+ * / `replayProcessingToInbox` / `hasInboxEntries` functions exported from
  * `@intx/hub-sessions`; tests inject a deterministic in-memory
  * stub so the supervisor's dispatch loop is observable without a
  * real git substrate.
@@ -235,6 +238,12 @@ export interface InboxPrimitives {
     address: string,
     opts?: ReplayProcessingToInboxOpts,
   ): Promise<ReplayProcessingToInboxResult>;
+  hasInboxEntries(
+    store: SubstrateRepoStore,
+    principal: Principal,
+    repoId: RepoId,
+    address: string,
+  ): Promise<boolean>;
 }
 
 /**
@@ -319,6 +328,51 @@ export interface WorkflowSupervisorBindings {
     phase: "stopped" | "crash-looping";
     reason: string;
   }) => void;
+  /**
+   * Fired once a supervisor in standby has a running child again, whatever woke
+   * it: mail, a signal, a cancellation, its earliest pending timer, or
+   * `wake`. `requested` is true only when `wake()` started the respawn.
+   */
+  onWake?: (info: { reason: string; requested: boolean }) => void;
+  /**
+   * Called once a standby attempt has stopped the child and before anything can
+   * wake it, so a wake's record of the child running lands after it. A
+   * rejection runs the child again and refuses the standby attempt. What it
+   * records is what `restoreInStandby` takes after a restart.
+   */
+  recordStandby?: (standby: RecordedStandby) => Promise<void>;
+  /**
+   * Test seam, unset in production. Called each time a standby attempt makes
+   * something wait: `input` when mail or a signal waits out the final quiet
+   * check, `standby` when the standby attempt waits for work the supervisor
+   * still drives for the child, `attempt` when a wake waits for a standby
+   * attempt to finish stopping the child, `cancellation` when a wake waits
+   * for a cancellation being committed.
+   */
+  onStandbyWait?: (
+    waiting: "input" | "standby" | "attempt" | "cancellation",
+  ) => void;
+  /**
+   * Test seam, unset in production. Called each time a shutdown waits for
+   * work it owns before it resolves: `cancellation` for a drain deadline's
+   * cancellation, `attempt` for a standby attempt it called off, `replay` for
+   * a respawn's replay of `processing/`, `writes` for repository writes
+   * started off the control pump.
+   */
+  onShutdownWait?: (
+    waiting: "cancellation" | "attempt" | "replay" | "writes",
+  ) => void;
+  /**
+   * Test seam, unset in production. Called each time a respawn, before it
+   * scans `runs/`, waits for the boot replay (`replay`) or for repository
+   * writes started off the control pump (`writes`).
+   */
+  onRespawnWait?: (waiting: "replay" | "writes") => void;
+  /**
+   * Test seam, unset in production. Called when the dispatch holds mail for a
+   * live run until the run shows its input, parks or ends.
+   */
+  onDispatchWait?: (runId: string) => void;
   /**
    * Per-run grants source. The dispatch loop consults it before it forwards a
    * `trigger.fire`, and every new child (spawn, crash-respawn, recycle) gets
@@ -432,15 +486,17 @@ export interface WorkflowSupervisorBindings {
    */
   drainTimeoutAccumulatorFactory?: import("./drain-timeout").DrainTimeoutAccumulatorFactory;
   /**
-   * Clock the supervisor threads into the drainTimeout accumulator.
-   * Production wires `() => Date.now()`; tests inject a deterministic
-   * fake clock. Defaults to `Date.now` when omitted.
+   * Clock the supervisor threads into the drainTimeout accumulator, and
+   * that times the standby wake timer against the earliest timer the
+   * child reported. Production wires `() => Date.now()`; tests inject a
+   * deterministic fake clock. Defaults to `Date.now` when omitted.
    */
   now?: () => number;
   /**
    * General scheduling primitive the supervisor threads into its timed
    * waits: the drainTimeout accumulator, the spawn ready-handshake
-   * timeout, and that timeout's SIGTERM->SIGKILL kill escalation.
+   * timeout and its SIGTERM->SIGKILL kill escalation, and standby's wake
+   * timer, quiet-check watchdog and stop deadline.
    * Production wires `(cb, ms) => setTimeout(cb, ms)`; tests inject a
    * deterministic timer host. Defaults to `setTimeout` when omitted.
    */

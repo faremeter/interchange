@@ -63,10 +63,11 @@ export function createLoopIterationHandle(
     cleanup?: () => void | Promise<void>;
   },
 ): SuspendableChildHandle {
-  // `onPark`/`onSignalPark` are destructured out (and left unread) so the
-  // inherited env carries neither: the shared handle owns those sinks, and the
-  // body's parks must feed its queue, not the parent's supervisor-facing onPark.
-  const { onPark, onSignalPark, ...inherited } = baseEnv;
+  // `onPark`/`onSignalPark`/`onSignalAwaiter` are destructured out (and left
+  // unread) so the inherited env carries none: the shared handle owns those
+  // sinks, and the body's parks must feed its queue, not the parent's
+  // supervisor-facing onPark.
+  const { onPark, onSignalPark, onSignalAwaiter, ...inherited } = baseEnv;
   const childEnv: WorkflowRuntimeEnv = {
     ...inherited,
     signalChannel: args.signalChannel,

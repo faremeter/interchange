@@ -21,6 +21,7 @@ import {
   type SessionErrorFrame,
   type AgentUndeployFrame,
   type DeploymentStoppedFrame,
+  type DeploymentWokenFrame,
   type DeploymentRetention,
   type WorkflowControlFrame,
   type WorkflowRunRefTips,
@@ -349,15 +350,27 @@ export interface DeployRouter {
    * routers can omit the implementation; the link then deletes the directory.
    */
   undeploy?: (frame: AgentUndeployFrame) => Promise<void>;
-  /** Cancel, stop, or request durable retention of a workflow's local inspection state. */
-  control?: (frame: WorkflowControlFrame) => Promise<WorkflowControlOutcome>;
+  /**
+   * Cancel, stop, put in standby, or wake a workflow deployment, or request durable
+   * retention of its local inspection state. `signal` aborts once the
+   * connection that carried the frame closes.
+   */
+  control?: (
+    frame: WorkflowControlFrame,
+    opts: { signal: AbortSignal },
+  ) => Promise<WorkflowControlOutcome>;
 }
 
 /** What a handled workflow control reports back to the Hub. */
 export type WorkflowControlOutcome = {
   retention?: DeploymentRetention;
-  /** Final history for a live stop, which the Hub must confirm receiving. */
+  /**
+   * Final history for a live stop or a standby request, which the Hub must
+   * confirm receiving.
+   */
   refTips?: WorkflowRunRefTips;
+  /** The earliest pending timer of the child in standby. */
+  wakeAt?: string;
 };
 
 /**
@@ -801,6 +814,12 @@ export type HubLink = {
    * again after each `welcome`.
    */
   sendDeploymentStopped: (report: Omit<DeploymentStoppedFrame, "type">) => void;
+  /**
+   * Report that an input woke a deployment in standby. Held while the link
+   * is not welcomed, the latest per incarnation, and sent on the next
+   * `welcome`.
+   */
+  sendDeploymentWoken: (report: Omit<DeploymentWokenFrame, "type">) => void;
 };
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -980,6 +999,25 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     );
   }
 
+  // Wake reports owed while the link is not welcomed, one per incarnation:
+  // the next `hello` can predate the wake. Kept out of the queue, so they never
+  // crowd out mail, and bounded by the deployments the sidecar holds.
+  const pendingWakes = new Map<string, Omit<DeploymentWokenFrame, "type">>();
+
+  function sendPendingWakes(socket: WebSocket): void {
+    const held = new Set(
+      getIncarnations().map(
+        (incarnation) =>
+          `${incarnation.address}\n${String(incarnation.generation)}`,
+      ),
+    );
+    for (const [key, woken] of pendingWakes) {
+      if (held.has(key))
+        socket.send(JSON.stringify({ type: "deployment.woken", ...woken }));
+    }
+    pendingWakes.clear();
+  }
+
   function welcomedSocket(): WebSocket | null {
     return ws !== null && welcomed && ws.readyState === WebSocket.OPEN
       ? ws
@@ -1046,6 +1084,19 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   // is dropped rather than sent on a newer connection, where it could match an
   // unrelated request.
   type Reply = (frame: SidecarFrame) => void;
+
+  // Aborts once the connection closes, for work that only matters while the
+  // Hub that asked for it can hear the answer.
+  const connectionsClosed = new WeakMap<WebSocket, AbortController>();
+  function closedSignalOf(connection: WebSocket): AbortSignal {
+    let closed = connectionsClosed.get(connection);
+    if (closed === undefined) {
+      closed = new AbortController();
+      if (connection.readyState === WebSocket.CLOSED) closed.abort();
+      connectionsClosed.set(connection, closed);
+    }
+    return closed.signal;
+  }
 
   function replyOn(connection: WebSocket): Reply {
     return (frame) => {
@@ -1878,16 +1929,22 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   async function handleWorkflowControl(
     frame: WorkflowControlFrame,
     reply: Reply,
+    signal: AbortSignal,
   ): Promise<void> {
     let error: string | undefined;
     let refTips: WorkflowRunRefTips | undefined;
     let retention: DeploymentRetention | undefined;
+    let wakeAt: string | undefined;
     try {
       if (deployRouter.control === undefined)
         throw new Error("Workflow control is not supported by this sidecar");
-      ({ refTips, retention } = await deployRouter.control(frame));
+      ({ refTips, retention, wakeAt } = await deployRouter.control(frame, {
+        signal,
+      }));
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = fitDeploymentError(
+        cause instanceof Error ? cause.message : String(cause),
+      );
     }
     reply({
       type: "workflow.control.ack",
@@ -1895,6 +1952,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       ...(error !== undefined ? { error } : {}),
       ...(refTips !== undefined ? { refTips } : {}),
       ...(retention !== undefined ? { retention } : {}),
+      ...(wakeAt !== undefined ? { wakeAt } : {}),
     });
   }
 
@@ -1918,6 +1976,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     if (ws !== connection || welcomed) return;
     welcomed = true;
     stopWelcomeTimer();
+    const socket = welcomedSocket();
+    if (socket !== null) sendPendingWakes(socket);
     flush();
     if (onWorkflowAddressesRoutable === undefined) return;
     const held = new Map(
@@ -2030,10 +2090,14 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       }
       case "workflow.control":
         // Start in the address's order, but leave its lane free for a forced
-        // stop and the deployment's undeploy while cooperative cancellation
-        // waits for the child.
+        // stop and the deployment's undeploy while cooperative cancellation or
+        // a standby request waits for the child.
         onLanes(frame.type, [frame.agentAddress], async () => {
-          void handleWorkflowControl(frame, reply).catch((cause: unknown) => {
+          void handleWorkflowControl(
+            frame,
+            reply,
+            closedSignalOf(connection),
+          ).catch((cause: unknown) => {
             logger.warn`Workflow control reply failed: ${cause instanceof Error ? cause.message : String(cause)}`;
           });
         });
@@ -2207,6 +2271,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     });
 
     connection.addEventListener("close", () => {
+      connectionsClosed.get(connection)?.abort();
       // A late close from a superseded attempt must not null or reschedule the
       // active socket. Normal reconnects also pass this fence: the next socket
       // is not created until this handler schedules it.
@@ -2314,6 +2379,18 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     );
   };
 
+  const sendDeploymentWoken: HubLink["sendDeploymentWoken"] = (woken) => {
+    const socket = welcomedSocket();
+    if (socket !== null) {
+      socket.send(JSON.stringify({ type: "deployment.woken", ...woken }));
+      return;
+    }
+    pendingWakes.set(
+      `${woken.agentAddress}\n${String(woken.generation)}`,
+      woken,
+    );
+  };
+
   return {
     connect,
     close,
@@ -2321,5 +2398,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     sendSignalCorrelationRegister,
     pushWorkflowRunPack,
     sendDeploymentStopped,
+    sendDeploymentWoken,
   };
 }

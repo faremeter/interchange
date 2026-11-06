@@ -263,7 +263,7 @@ The sidecar WebSocket protocol includes frames for agent deployment and reconnec
 
 Agent deployment stages through the workflow-run substrate rather than a separate provision-then-start handshake. The hub sends `agent.deploy`; the sidecar's deploy router spawns the supervised workflow-process child, then acks with `agent.deploy.ack` carrying the public key. The workflow-process child starts inference itself once spawned -- there is no separate `session.start` step.
 
-A deployment on a sidecar is an incarnation: its address plus the allocation generation it was deployed for. `agent.deploy` and `agent.undeploy` carry a `requestId` and the `generation` they act on, and every reply echoes both, so a reply settles only the request it answers and a late reply to a request the Hub already gave up on matches nothing. The sidecar handles the frames for one address one at a time, in the order it received them. Two kinds of frame do not hold the address's turn: the Hub's answers to its own pack transfers and correlation registrations, which only settle the request they answer, and a `workflow.control`, which starts in order but frees the turn while a cooperative cancellation waits for the child. Frames for different addresses, probe requests, and heartbeat pongs do not wait on each other, so one deployment's slow deploy or undeploy delays neither another deployment nor the link's liveness. It answers each request only on the connection that carried it; a request whose connection closed before its turn is dropped, and the Hub has already failed it. An undeploy is the exception: it still runs and only its answer is dropped, because the Hub sends it for a generation it will not route again and may close the socket right behind it.
+A deployment on a sidecar is an incarnation: its address plus the allocation generation it was deployed for. `agent.deploy` and `agent.undeploy` carry a `requestId` and the `generation` they act on, and every reply echoes both, so a reply settles only the request it answers and a late reply to a request the Hub already gave up on matches nothing. The sidecar handles the frames for one address one at a time, in the order it received them. Two kinds of frame do not hold the address's turn: the Hub's answers to its own pack transfers and correlation registrations, which only settle the request they answer, and a `workflow.control`, which starts in order but frees the turn while a cooperative cancellation or a standby request waits for the child. Frames for different addresses, probe requests, and heartbeat pongs do not wait on each other, so one deployment's slow deploy or undeploy delays neither another deployment nor the link's liveness. It answers each request only on the connection that carried it; a request whose connection closed before its turn is dropped, and the Hub has already failed it. An undeploy is the exception: it still runs and only its answer is dropped, because the Hub sends it for a generation it will not route again and may close the socket right behind it.
 
 A sidecar holds at most one incarnation of an address, and an address is deployed once: a deploy of an address the sidecar holds is refused with `agent.deploy.error`, and a Hub pack for it with `conflict`.
 
@@ -271,17 +271,18 @@ Undeploy is an acknowledged operation. The sidecar shuts the named generation's 
 
 **Reconnection:**
 
-| Direction     | Frame                | Purpose                                                         |
-| ------------- | -------------------- | --------------------------------------------------------------- |
-| Sidecar → Hub | `hello`              | Authenticate and report every incarnation the sidecar holds     |
-| Hub → Sidecar | `welcome`            | Name the incarnations the Hub routes after reconciling `hello`  |
-| Sidecar → Hub | `deployment.stopped` | Report a deployment that stopped though the Hub did not stop it |
+| Direction     | Frame                | Purpose                                                                  |
+| ------------- | -------------------- | ------------------------------------------------------------------------ |
+| Sidecar → Hub | `hello`              | Authenticate and report every incarnation the sidecar holds              |
+| Hub → Sidecar | `welcome`            | Name the incarnations the Hub routes after reconciling `hello`           |
+| Sidecar → Hub | `deployment.stopped` | Report a deployment that stopped though the Hub did not stop it          |
+| Sidecar → Hub | `deployment.woken`   | Report what woke a deployment in standby when the Hub did not ask for it |
 
 **Grant management:**
 
 The live `grants.update` wire path has been retired. The hub sends the run's committed grants in a `run.grants` frame ahead of each signal delivery and each trigger, and to each deployment that it routes again when a sidecar reconnects, so a standing approval decision reaches a running deployment. The sidecar keeps them in the run's grants file, and the supervisor passes them to the child over its IPC credentials snapshot at spawn and recycle. When a change to a delegator's grants re-derives a run's rows, the hub sends the run its grants on their own after the change commits (see AUTH.md, _Grant Revocation_).
 
-Every connection opens with a `hello` that reports each incarnation the sidecar holds and whether it is `deploying`, `live`, `stopped`, or `tearing-down`. A `stopped` incarnation no longer runs and keeps its local state for inspection until the Hub undeploys it. One the Hub did not stop carries the error that ended it: its workflow child ended itself, or the sidecar could not restore it. The Hub then fails the deployment's live runs with that error and keeps its capacity for the retention its policy sets for failed runs, so the stopped copy can be inspected. The sidecar also marks either state in the run record, so a restart reports the incarnation instead of spawning it, and reports such a stop in a `deployment.stopped` frame once that write settles, and again after each `welcome` until retention is durably decided, with the tips of the deployment's history branches. It does not wait for its pushes of that history: a push that fails is retried on every reconnect, so that wait would have no bound. The Hub fails the deployment once it holds those tips, or a minute after it first heard of the stop, and the failure then names the history it never received. A reconnect does not restart that minute, and a sidecar that disconnects instead and stays away past its disconnect limit fails the deployment with the reason it reported. The Hub holds a reported stop only in memory until it fails the deployment: a Hub restart starts that minute again from the sidecar's next report, and if the sidecar does not come back, the deployment fails without that reason. The Hub accepts the frame when the bearer token resolves to a sidecar that is not retired or still hosts a probe, allocation generation, or cleanup binding. It restores a reported incarnation's route when the incarnation is live, its generation is the current, initialized generation of a routable allocation the sidecar hosts, and its run has not ended, keeps a stopped one of the current generation of an allocation the sidecar hosts unrouted, initialized or not, and an initialized live one whose run is terminal until lifecycle retention stops it, leaves incarnations covered by cleanup bindings to the reconciler, and sends `agent.undeploy` naming the generation of every other reported incarnation rather than rejecting the connection, so one stale deployment cannot disconnect the others. It then answers `welcome` listing the incarnations it routes, as soon as routing is settled. A hello is never left unanswered: the Hub closes the socket when the hello is invalid or its registration fails before the welcome, and the sidecar reconnects when no `welcome` arrives within 30 seconds (`welcomeTimeoutMs`). A failure after the welcome is logged, since registering again would meet it again. A sidecar whose token is valid but that hosts neither current work nor cleanup obligations is welcomed with nothing routed, after the Hub sends `agent.undeploy` for everything it reports, and stays connected, idle, for its provisioner to reuse. Until `welcome` the sidecar sends nothing the Hub must receive: it queues outbound mail and signal correlation registrations, drops best-effort events, and holds back the workflow-run pack pushes of every incarnation it holds; a push no connection could carry stays due instead of failing the deployment's next write. The queue holds 1024 frames for all the sidecar's deployments together: an outage that outlasts it drops queued correlation registrations first, which the next `welcome` re-sends, then the audit copies the Hub records sent mail from, and then fails a deployment's send rather than drop mail it has not yet routed. On `welcome` it sends the queue, re-drives its routed incarnations' pending packs and parked correlations, and reports stopped deployments whose retention is undecided.
+Every connection opens with a `hello` that reports each incarnation the sidecar holds and whether it is `deploying`, `live`, `stopped`, or `tearing-down`. A `live` incarnation whose workflow child is in standby also carries `inStandby`. A `workflow.control` with `action: standby` stops the child once every run waits and answers with the history tips read after it stopped and the earliest pending timer, and is refused while mail waits for the child, in the deployment's inbox or taken but not committed; the Hub confirms the standby request once it holds those tips, and the incarnation keeps its route. The sidecar abandons the standby request if the connection that asked for it closes before the standby attempt settles, and runs the child again if the attempt already stopped it. It records the standby in the run record before anything can wake the child: the correlations the child was parked on, its earliest timer, the tip of the run's history read before the child reported them, and the definition the child verified. A restart that finds that tip unchanged, and that definition still hashing to the approved one, restores the standby without the child and reports it in standby; one that finds history written since, by a child that ran again or a cancellation committed while it was stopped, or cannot read the tip, starts the child, clears the record and sends `deployment.woken`. Every answer, a repeated one too, reads the tips again, since the supervisor can write history while the child is stopped, and pushes what the Hub still lacks of it; a child that ran again before the answer refuses the standby request instead. Mail, a signal, a cancellation, or the timer wakes a child in standby; the sidecar clears the mark and sends `deployment.woken`, held until the next `welcome` if the link is down. The Hub takes up that report and the answers to its standby and wake commands in the order they arrive on the connection, so the report never ends a standby request the sidecar answered after it. `action: wake` abandons a standby request in progress or wakes the child. A `stopped` incarnation no longer runs and keeps its local state for inspection until the Hub undeploys it. One the Hub did not stop carries the error that ended it: its workflow child ended itself, or the sidecar could not restore it. The Hub then fails the deployment's live runs with that error and keeps its capacity for the retention its policy sets for failed runs, so the stopped copy can be inspected. The sidecar also marks either state in the run record, so a restart reports the incarnation instead of spawning it, and reports such a stop in a `deployment.stopped` frame once that write settles, and again after each `welcome` until retention is durably decided, with the tips of the deployment's history branches. It does not wait for its pushes of that history: a push that fails is retried on every reconnect, so that wait would have no bound. The Hub fails the deployment once it holds those tips, or a minute after it first heard of the stop, and the failure then names the history it never received. A reconnect does not restart that minute, and a sidecar that disconnects instead and stays away past its disconnect limit fails the deployment with the reason it reported. The Hub holds a reported stop only in memory until it fails the deployment: a Hub restart starts that minute again from the sidecar's next report, and if the sidecar does not come back, the deployment fails without that reason. The Hub accepts the frame when the bearer token resolves to a sidecar that is not retired or still hosts a probe, allocation generation, or cleanup binding. It restores a reported incarnation's route when the incarnation is live, its generation is the current, initialized generation of a routable allocation the sidecar hosts, and its run has not ended, keeps a stopped one of the current generation of an allocation the sidecar hosts unrouted, initialized or not, and an initialized live one whose run is terminal until lifecycle retention stops it, leaves incarnations covered by cleanup bindings to the reconciler, and sends `agent.undeploy` naming the generation of every other reported incarnation rather than rejecting the connection, so one stale deployment cannot disconnect the others. It then answers `welcome` listing the incarnations it routes, as soon as routing is settled. A hello is never left unanswered: the Hub closes the socket when the hello is invalid or its registration fails before the welcome, and the sidecar reconnects when no `welcome` arrives within 30 seconds (`welcomeTimeoutMs`). A failure after the welcome is logged, since registering again would meet it again. A sidecar whose token is valid but that hosts neither current work nor cleanup obligations is welcomed with nothing routed, after the Hub sends `agent.undeploy` for everything it reports, and stays connected, idle, for its provisioner to reuse. Until `welcome` the sidecar sends nothing the Hub must receive: it queues outbound mail and signal correlation registrations, keeps the latest wake report of each deployment, drops best-effort events, and holds back the workflow-run pack pushes of every incarnation it holds; a push no connection could carry stays due instead of failing the deployment's next write. The queue holds 1024 frames for all the sidecar's deployments together: an outage that outlasts it drops queued correlation registrations first, which the next `welcome` re-sends, then the audit copies the Hub records sent mail from, and then fails a deployment's send rather than drop mail it has not yet routed. On `welcome` it sends the wake reports and then the queue, re-drives its routed incarnations' pending packs and parked correlations, and reports stopped deployments whose retention is undecided.
 
 ### Debug and Telemetry Streams
 
@@ -488,7 +489,7 @@ The workflow-process runs code the operator deploys but the sidecar does not ful
 
 Each deployment gets two channels:
 
-- **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries the child's first `authority.set`, trigger fires, signal deliveries, drain, shutdown, grants-updated, credentials-updated, sources-updated, and back from the child its `definition` report and its `ready` signal. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
+- **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries the child's first `authority.set`, trigger fires, signal deliveries, drain, quiet checks, shutdown, grants-updated, credentials-updated, sources-updated, and back from the child its `definition` report and its `ready` signal. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
 - **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-message `message.run.started` / `message.run.ended` brackets). High rate. Sending lives in `packages/workflow-host/src/ipc/event-sender.ts`; receiving and payload validation live in `event-channel.ts`.
 
 Each side signs control frames with its own private key and verifies incoming frames against its peer's public key, so the child cannot forge supervisor commands. Symmetric HMAC authenticates the event stream at reactor cadence — Ed25519 per frame at that rate would dominate runtime cost. The control receiver validates each payload against its message kind's schema. Those schemas and the `InferenceEvent` schema applied by `parseInferenceEvent` accept disjoint payload shapes: control schemas reject inference-event shapes, and the event schema rejects control-plane shapes, so a confused-deputy attack that smuggles a `drain` or `recycle` over the event channel fails at validation.
@@ -573,7 +574,7 @@ Implementation lives in
 `packages/workflow-host/src/supervisor/supervisor.ts`. The recycle
 sequence is library code in
 `packages/workflow-host/src/supervisor/recycle.ts`; see the Recycle
-subsection below for the six-step contract and the three trigger
+subsection below for the six-step contract and the five trigger
 origins.
 
 ### Workflow-Process Child
@@ -655,6 +656,24 @@ ChannelSender` writes against; the event channel is the
    - `grants-updated` -> swap the active credentialsSnapshot.
    - `credentials-updated` -> merge into the material cell.
    - `drain` -> flip the drain controller's signal.
+   - `signal.deliver` -> commit the signal as `SignalReceived`. A frame
+     with a `requestId`, like a `trigger.fire` with one, is answered with
+     `input.taken` once the commit settles, saying whether it committed,
+     so a standby request waits for it. A log that already ended takes no
+     signal, and the answer says so. The dispatch that delivered a mail
+     consumes it only once that answer says committed; a declined mail is
+     rejected if the committed log shows its run ended, and otherwise fails
+     the dispatch and stays in `processing/` until a respawn replays it. A signal for a park a
+     resumed run holds waits until the run parks on it again, the run ends, or the
+     process goes quiet: landing during the resume would move a step the
+     run has just read as parked.
+   - `quiet.request` -> make every buffered event durable and answer
+     whether every run only waits on input from outside, with the
+     earliest timer the scheduler has queued; with `wait`, answer once
+     that holds. A run that has ended answers `ended`, and a check that
+     fails answers with its error; either refuses the standby request.
+     A check still waiting when the next one arrives is dropped
+     unanswered, since the supervisor gave up on it.
    - `shutdown` -> stop accepting new triggers and exit the loop.
 
 #### Trust Anchors
@@ -713,9 +732,9 @@ grants until the next send, and it can ask again.
 
 - **Control channel.** Supervisor -> child. Carries every
   `ControlPayload` variant (`authority.set`, `trigger.fire`,
-  `signal.deliver`, `drain`, `shutdown`, `grants-updated`,
-  `credentials-updated`, `sources-updated`) plus the child's upstream
-  `ready` ride. Every
+  `signal.deliver`, `drain`, `quiet.request`, `shutdown`,
+  `grants-updated`, `credentials-updated`, `sources-updated`) plus the
+  child's upstream `ready` ride. Every
   inbound frame is verified against `HOST_PUBKEY`; the receiver
   iterator crashes the loop on any signature/channelId/seq
   violation.
@@ -855,13 +874,12 @@ wall-clock time only while the supervisor believes at least one
 step transitions to `"wait"` behavior and resumes when cancel-mode
 work reappears. Time spent paused does not consume the deadline.
 
-On `drainTimeout` expiry the accumulator invokes the supervisor's
-injected `signAsPrincipal("supervisor", ...)` callback to mint a
-signature over a canonical `CancelRequested{origin:
-"supervisor-drain"}` event and commits it through the supervisor's
-substrate handle. The runtime body observes the commit through its
-existing cancel-cascade path; no special drain-aware cancel branch
-is needed in `run.ts`.
+On `drainTimeout` expiry the accumulator hands a
+`CancelRequested{origin: "supervisor-drain"}` event to the
+supervisor's injected `commitCancel`, which signs it and commits it
+as the supervisor's own cancellation. The runtime body observes the
+commit through its existing cancel-cascade path; no special
+drain-aware cancel branch is needed in `run.ts`.
 
 The canonical observable sequence at the in-process layer (asserted
 in this package's tests via `subscribeKind` against a fake
@@ -933,7 +951,10 @@ A timed gate is exempt. Its scheduler timer resolves it in process, so
 it needs nothing upstream.
 
 A parked child survives a process restart. Resume reattaches the same
-child run from its log and reestablishes the relay on the spawn step. The
+child run from its log and reestablishes the relay on the spawn step. A
+park still queued at the restart is relayed then too; for an approval, the
+snapshot comes from the parked step's stored state, through the env's
+`loadParkedApproval`, and a resume without one fails the spawn step. The
 child stays unaddressable; the parent is the resume root.
 
 #### Recycle
@@ -1010,7 +1031,7 @@ to the channelId's lifetime; the rotation is what defends against
 frame replay across the recycle boundary that monotonic seq alone
 cannot defend against.
 
-**Three trigger origins funnel through `triggerRecycle(reason)`:**
+**Five trigger origins funnel through `triggerRecycle(reason)`:**
 
 - **Operator command.** The host receives a `recycle` request via
   its caller-facing API and routes it to the supervisor's
@@ -1022,7 +1043,9 @@ cannot defend against.
   `maxGrantsAgeMs`. Defaults are unlimited (the bound is disabled
   unless the operator sets a threshold). On a threshold trip the
   policy calls `triggerRecycle` with origin `policy` and a reason
-  naming the tripped bound.
+  naming the tripped bound. Each child gets its own check, armed
+  when it starts, so `maxUptimeMs` measures the running child; a
+  deployment in standby has no child and no check.
 - **Workflow-process self-initiated.** The child sends a
   `recycle.request` payload over control IPC when its own self-
   check decides it needs to be recycled (an internal consistency
@@ -1032,9 +1055,17 @@ cannot defend against.
   IPC payload union extension is the only contract change recycle
   introduces; the envelope, signature, and channelId/seq rules are
   unchanged.
+- **Crash respawn.** A child that exits unexpectedly is respawned
+  with origin `crash` once the respawn backoff has elapsed.
+- **Wake.** A child in standby is respawned with origin `wake` for
+  mail, a signal, a cancellation, its earliest pending timer, or
+  `wake()`.
 
-All three origins land in the same code path. The reason string is
-the only origin-specific data the path carries forward.
+All five origins land in the same code path. The origin tag and the
+reason string are the only origin-specific data it carries forward. A
+crash respawn and a wake drain nothing, since their child is already
+gone, and the first wake of a deployment restored in standby has no
+child to stop and skips the replay its boot already made.
 
 #### Placeholders And Future Work
 

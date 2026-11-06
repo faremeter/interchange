@@ -99,6 +99,8 @@ function createStubRepoStore(
       writeRecorder?.record(args.preservePrefix);
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
+    // Its writes land nowhere, so it holds no history.
+    openCommittedReads: async () => null,
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy
   return new Proxy(stub as RepoStore, {
@@ -325,6 +327,9 @@ function createMemoryInboxPrimitives(): InboxPrimitives & {
         prunedMessageIds: [],
       };
     },
+    async hasInboxEntries(_store, _principal, _repoId, address) {
+      return getOrCreate(address).inbox.size > 0;
+    },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {
       replayCalls += 1;
       replayChanges.notify();
@@ -335,7 +340,7 @@ function createMemoryInboxPrimitives(): InboxPrimitives & {
         replayedKeys.push(k);
       }
       s.processing.clear();
-      return { commitSha: "memory", replayedKeys };
+      return { commitSha: "memory", replayedKeys, retainedMessageIds: [] };
     },
     replayCalls() {
       return replayCalls;

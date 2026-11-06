@@ -569,6 +569,8 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         actionCredentials: () => unavailableActionCredentials,
         spawnChild: async () => createTerminalChildHandle("completed"),
         scheduler: { scheduleIn: () => () => undefined },
+        earliestQueuedTimer: () => undefined,
+        stopScheduler: async () => undefined,
         evaluateGrants: async () => ({
           effect: "allow" as const,
           matchingGrants: [],

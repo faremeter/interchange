@@ -87,6 +87,7 @@ import {
   walkWorkflowSteps,
   LOOP_BODY_DESCENT,
   type ActionHandler,
+  type LoadParkedApproval,
   type LoopFnRegistry,
   type ParkedApprovalOp,
   type PersistRecoveredPark,
@@ -145,7 +146,6 @@ import {
 import type { SubstrateFactory, SubstrateFactoryEnv } from "./from-process-env";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
-import type { LoadParkedApproval } from "./parked-correlations";
 import { createProxyWorkflowRunRepoStore } from "./proxy-repo-store";
 import {
   createCredentialsBackedAuthorize,
@@ -776,6 +776,71 @@ export function toParkedApprovalOps(
     }));
 }
 
+export interface ParkedApprovalHooks {
+  loadParkedApproval: LoadParkedApproval;
+  readParkedApprovalOps: ReadParkedApprovalOps;
+  persistRecoveredPark: PersistRecoveredPark;
+}
+
+/**
+ * The durable park reads, and the recovered-park write, for every run of a
+ * deployment. Each run's steps are stored by the invoker that ran them. A
+ * warm-kept deployment's warm invoker runs its top-level run, `warmRunId`, and
+ * files each step under it by step id. The cold invoker runs every spawned
+ * run, a `childWorkflow` child or an onTrigger body, and stores each step per
+ * attempt. No loop iteration, which would inherit the top-level env, runs
+ * warm: a loop names another step at its level to run once exhausted, so a
+ * warm-kept deployment's one step is never a loop.
+ */
+export function createParkedApprovalHooks(args: {
+  dataDir: string;
+  substrate: RepoStore;
+  workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  principal: Principal;
+  signer: (payload: string) => Promise<string>;
+  warmRunId?: string;
+}): ParkedApprovalHooks {
+  const { warmRunId, signer, ...store } = args;
+  const cold: ParkedApprovalHooks = {
+    loadParkedApproval: (park) =>
+      readColdParkedApprovalSnapshot({ ...store, ...park }),
+    readParkedApprovalOps: async (step) =>
+      toParkedApprovalOps(
+        await readColdParkedPendingOperations({ ...store, ...step }),
+      ),
+    persistRecoveredPark: (park) =>
+      persistColdRecoveredPark({ ...store, signer, ...park }),
+  };
+  if (warmRunId === undefined) return cold;
+  return {
+    loadParkedApproval: (park) =>
+      park.runId === warmRunId
+        ? readWarmParkedApprovalSnapshot({
+            ...store,
+            runId: warmRunId,
+            stepId: park.stepId,
+            correlationId: park.correlationId,
+          })
+        : cold.loadParkedApproval(park),
+    readParkedApprovalOps: async (step) =>
+      step.runId === warmRunId
+        ? toParkedApprovalOps(
+            await readWarmParkedPendingOperations({
+              ...store,
+              runId: warmRunId,
+              stepId: step.stepId,
+            }),
+          )
+        : cold.readParkedApprovalOps(step),
+    // A warm read answers only from committed state, so a warm park never
+    // needs committing before the runtime records it.
+    persistRecoveredPark: async (park) => {
+      if (park.runId !== warmRunId) await cold.persistRecoveredPark(park);
+    },
+  };
+}
+
 export interface SidecarStepBuildEnvDeps {
   dataDir: string;
   workflowRunRepoId: RepoId;
@@ -1233,6 +1298,18 @@ export type SidecarChildStepInvoker = (
 interface SidecarRunChildDeps {
   /** Wrapped workflow-run substrate (the factory's `substrate`). */
   substrate: RepoStore;
+  /**
+   * The step store's approval snapshot read, so a nested run's resume can
+   * relay an approval its own body parked and it never relayed.
+   */
+  loadParkedApproval?: LoadParkedApproval;
+  /**
+   * The step store's pending approval read and recovered-park write, so a
+   * nested run's step that crashed after it stored its approval park
+   * re-commits that park on resume, as a top-level step does.
+   */
+  readParkedApprovalOps?: ReadParkedApprovalOps;
+  persistRecoveredPark?: PersistRecoveredPark;
   /** Workflow-run repo identifying the parent's deployment. */
   workflowRunRepoId: RepoId;
   /** Workflow-run ref the child reads/writes against. */
@@ -2123,6 +2200,15 @@ async function buildChildRunEnv(args: {
     ...(effects !== undefined && invokeAction !== undefined
       ? { effects, invokeAction }
       : {}),
+    ...(args.deps.loadParkedApproval !== undefined
+      ? { loadParkedApproval: args.deps.loadParkedApproval }
+      : {}),
+    ...(args.deps.readParkedApprovalOps !== undefined
+      ? { readParkedApprovalOps: args.deps.readParkedApprovalOps }
+      : {}),
+    ...(args.deps.persistRecoveredPark !== undefined
+      ? { persistRecoveredPark: args.deps.persistRecoveredPark }
+      : {}),
   };
   // Wire loop-iteration spawning for a `loop` nested in this body. Assigned
   // AFTER the env literal because the iteration host closes over `env`: a loop
@@ -2687,6 +2773,21 @@ export function createSidecarSubstrateFactory(
 
     const evaluateGrantsAdapter: GrantEvaluator = createGrantEvaluator();
 
+    // Recover a parked correlation's approval snapshot, for the child's
+    // re-registration enumeration and for a resume that relays a body's
+    // approval its container never did, and recover a crashed step's park.
+    // One set serves every env, since a container reads its bodies' parks
+    // through its own.
+    const parkHooks = createParkedApprovalHooks({
+      dataDir: validated.SIDECAR_DATA_DIR,
+      substrate,
+      workflowRunRepoId,
+      workflowRunRef: validated.WORKFLOW_RUN_REF,
+      principal,
+      signer: conversationSigner,
+      ...(warmRunId !== undefined ? { warmRunId } : {}),
+    });
+
     const childRunDeps: SidecarRunChildDeps = {
       substrate,
       workflowRunRepoId,
@@ -2712,6 +2813,7 @@ export function createSidecarSubstrateFactory(
       // A spawned child's steps resolve `director` refs against the same
       // closure-composed registry the parent's steps use.
       directors: stepDirectors,
+      ...parkHooks,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory
     // resolver from this plus the lifted-body map it extracts after loading
@@ -2751,95 +2853,6 @@ export function createSidecarSubstrateFactory(
       };
     }
 
-    // Recover a parked correlation's approval snapshot for the child's
-    // re-registration enumeration. Wired unconditionally (unlike
-    // `cleanupRunStorage`, which is cold-only): a warm agent parks on approval
-    // just as a cold one does, and the branch on `warmKeep` selects the durable
-    // read -- cold reads the attempt's local store while it is current and its
-    // committed step state otherwise, warm reconstructs the agent's durable
-    // conversation state from the substrate.
-    const loadParkedApproval: LoadParkedApproval = ({
-      runId,
-      stepId,
-      attempt,
-      correlationId,
-    }) =>
-      warmRunId !== undefined
-        ? readWarmParkedApprovalSnapshot({
-            substrate,
-            workflowRunRepoId,
-            workflowRunRef: validated.WORKFLOW_RUN_REF,
-            principal,
-            runId: warmRunId,
-            stepId,
-            correlationId,
-          })
-        : readColdParkedApprovalSnapshot({
-            dataDir: validated.SIDECAR_DATA_DIR,
-            substrate,
-            workflowRunRepoId,
-            workflowRunRef: validated.WORKFLOW_RUN_REF,
-            principal,
-            runId,
-            stepId,
-            attempt,
-            correlationId,
-          });
-
-    // Enumerate a crashed step's durable pending approval operations for the
-    // resume classifier, off the same cold/warm durable read as
-    // `loadParkedApproval`. Where that binding is a lookup by a known
-    // correlationId (answering the supervisor's re-registration), this is the
-    // enumeration the classifier needs when the correlationId never reached the
-    // log -- the crash-across-park case: read the pending operations, project
-    // to the minimal approval records the runtime reconstructs `SignalAwaited`
-    // from.
-    const readParkedApprovalOps: ReadParkedApprovalOps = async ({
-      runId,
-      stepId,
-      attempt,
-    }) =>
-      toParkedApprovalOps(
-        warmRunId !== undefined
-          ? await readWarmParkedPendingOperations({
-              substrate,
-              workflowRunRepoId,
-              workflowRunRef: validated.WORKFLOW_RUN_REF,
-              principal,
-              runId: warmRunId,
-              stepId,
-            })
-          : await readColdParkedPendingOperations({
-              dataDir: validated.SIDECAR_DATA_DIR,
-              substrate,
-              workflowRunRepoId,
-              workflowRunRef: validated.WORKFLOW_RUN_REF,
-              principal,
-              runId,
-              stepId,
-              attempt,
-            }),
-      );
-
-    // A warm read answers only from committed state, so only a cold park can
-    // need committing before the runtime records it.
-    const persistRecoveredPark: PersistRecoveredPark | undefined =
-      warmRunId !== undefined
-        ? undefined
-        : ({ runId, stepId, attempt, correlationId }) =>
-            persistColdRecoveredPark({
-              dataDir: validated.SIDECAR_DATA_DIR,
-              substrate,
-              workflowRunRepoId,
-              workflowRunRef: validated.WORKFLOW_RUN_REF,
-              principal,
-              signer: conversationSigner,
-              runId,
-              stepId,
-              attempt,
-              correlationId,
-            });
-
     const bindings: RunWorkflowChildBindings = {
       substrate,
       workflowRunRepoId,
@@ -2869,10 +2882,10 @@ export function createSidecarSubstrateFactory(
         });
       },
       scheduler,
+      earliestQueuedTimer: () => hostScheduler.earliestQueuedTimer(),
+      stopScheduler: () => hostScheduler.stop(),
       evaluateGrants: evaluateGrantsAdapter,
-      loadParkedApproval,
-      readParkedApprovalOps,
-      ...(persistRecoveredPark !== undefined ? { persistRecoveredPark } : {}),
+      ...parkHooks,
       // The same registry the warm agent's transport registers `watch`
       // callbacks into; `runWorkflowChild` routes each `mailbox.notify` to it.
       mailboxWatchRegistry,

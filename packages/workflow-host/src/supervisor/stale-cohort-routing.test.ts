@@ -69,6 +69,8 @@ function createStubRepoStore(baseDir: string): RepoStore {
     async writeTreePreservingPrefix() {
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
+    // Its writes land nowhere, so it holds no history.
+    openCommittedReads: async () => null,
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy
   return new Proxy(stub as RepoStore, {
@@ -181,13 +183,16 @@ function createMemoryInbox(): InboxPrimitives & {
       }
       throw new Error("processing not found");
     },
+    async hasInboxEntries(_s, _p, _r, address) {
+      return get(address).inbox.size > 0;
+    },
     async replayProcessingToInbox(_s, _p, _r, address) {
       const s = get(address);
       for (const [key, value] of s.processing) {
         s.inbox.set(key, value);
       }
       s.processing.clear();
-      return { commitSha: "memory", replayedKeys: [] };
+      return { commitSha: "memory", replayedKeys: [], retainedMessageIds: [] };
     },
     seedProcessing(address, messageId, receivedAt) {
       const s = get(address);

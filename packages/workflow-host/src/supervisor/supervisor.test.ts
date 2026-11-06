@@ -95,6 +95,29 @@ function parseControlFrameTypes(lines: readonly string[]): string[] {
  * Parse every `signal.deliver` frame in the supervisor-to-child stream,
  * returning the `{ signalName, signalId }` for each.
  */
+// The child's answer that it committed the `count`th `signal.deliver` it got.
+async function confirmDelivery(
+  wired: {
+    supervisorToChild: Parameters<typeof waitForUpstreamPayloads>[0];
+    childSender: ReturnType<typeof createControlChannelSender>;
+  },
+  count: number,
+): Promise<void> {
+  const deliveries = await waitForUpstreamPayloads(
+    wired.supervisorToChild,
+    "signal.deliver",
+    count,
+  );
+  const requestId = deliveries[count - 1]?.data.requestId;
+  if (requestId === undefined) {
+    throw new Error("the delivery asked for no confirmation");
+  }
+  await wired.childSender.send({
+    type: "input.taken",
+    data: { requestId, committed: true },
+  });
+}
+
 function parseSignalDelivers(
   lines: readonly string[],
 ): { signalName: string; signalId: string; payload: unknown }[] {
@@ -465,10 +488,19 @@ function readCancelRequestedBlob(
   return validated;
 }
 
+const tempDirs: string[] = [];
+
 async function makeTempDir(prefix: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
   return dir;
 }
+
+afterAll(async () => {
+  for (const dir of tempDirs.splice(0)) {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
 
 // A mail bus that exposes the durable settlement of a delivery via `settle`
 // (the subscribed handler's returned promise), so the ack/withhold mapping can
@@ -576,6 +608,12 @@ function createStubRepoStore(opts: {
    * tests that assert per-call shape from racing across calls.
    */
   statefulWrites?: boolean;
+  /** History the repo already holds, as a restart finds it. */
+  committedFiles?: {
+    repoId: RepoId;
+    ref: string;
+    files: Record<string, string>;
+  };
 }): RepoStore {
   const committed = new Map<string, Map<string, Uint8Array>>();
   // Tracks the latest commit sha per (repoId, ref) so `resolveRef` answers the
@@ -589,6 +627,18 @@ function createStubRepoStore(opts: {
   }
   function keyFor(repoId: RepoId, ref: string, preservePrefix: string): string {
     return `${repoId.kind}/${repoId.id}\x00${ref}\x00${preservePrefix}`;
+  }
+  if (opts.committedFiles !== undefined) {
+    const { repoId, ref, files } = opts.committedFiles;
+    committed.set(
+      keyFor(repoId, ref, ""),
+      new Map(
+        Object.entries(files).map(([filePath, content]) => [
+          filePath,
+          new TextEncoder().encode(content),
+        ]),
+      ),
+    );
   }
   // Merge every committed submap for a (repoId, ref) across preserve-prefixes
   // into one repo-root-relative path -> bytes map, the coherent tree snapshot
@@ -925,6 +975,9 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
         prunedMessageIds: [],
       };
     },
+    async hasInboxEntries(_store, _principal, _repoId, address) {
+      return getOrCreate(address).inbox.size > 0;
+    },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {
       const state = getOrCreate(address);
       const replayedKeys: string[] = [];
@@ -946,7 +999,11 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       // await landing in between would not strand a waiter on `processing`
       // emptying.
       changes.notify();
-      return { commitSha: "memory-inbox", replayedKeys };
+      return {
+        commitSha: "memory-inbox",
+        replayedKeys,
+        retainedMessageIds: [],
+      };
     },
   };
 }
@@ -969,6 +1026,8 @@ async function buildBindings(opts: {
     message: string;
   }) => void | Promise<void>;
   statefulWrites?: boolean;
+  // Committed files of the deployment's workflow-run repo.
+  committedRunFiles?: Record<string, string>;
   inboxPrimitives?: InboxPrimitives;
 }): Promise<WorkflowSupervisorBindings> {
   const repoStore = createStubRepoStore({
@@ -978,6 +1037,15 @@ async function buildBindings(opts: {
       ? { beforeWrite: opts.beforeWrite }
       : {}),
     ...(opts.statefulWrites === true ? { statefulWrites: true } : {}),
+    ...(opts.committedRunFiles !== undefined
+      ? {
+          committedFiles: {
+            repoId: { kind: "workflow-run", id: "run_deployment-x" },
+            ref: "refs/heads/main",
+            files: opts.committedRunFiles,
+          },
+        }
+      : {}),
   });
   return {
     repoStore,
@@ -1208,6 +1276,7 @@ describe("createWorkflowSupervisor", () => {
     inboxPrimitives?: MemoryInboxPrimitives;
     mailBus?: ReturnType<typeof createMockMailBus>;
     statefulWrites?: boolean;
+    committedRunFiles?: Record<string, string>;
     failControlWrite?: () => boolean;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -1264,6 +1333,9 @@ describe("createWorkflowSupervisor", () => {
         ? { beforeWrite: opts.beforeWrite }
         : {}),
       ...(opts.statefulWrites === true ? { statefulWrites: true } : {}),
+      ...(opts.committedRunFiles !== undefined
+        ? { committedRunFiles: opts.committedRunFiles }
+        : {}),
     });
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
@@ -3409,12 +3481,7 @@ describe("createWorkflowSupervisor", () => {
     for (const stub of stubs) {
       expect(stub.__startCount).toBe(1);
       expect(stub.__stopCount).toBe(0);
-      expect(stub.__opts.anchorRunId).toBe("run_deployment-x");
-      expect(stub.__opts.repoId).toEqual({
-        kind: "workflow-run",
-        id: "run_deployment-x",
-      });
-      expect(stub.__opts.ref).toBe("refs/heads/main");
+      expect(typeof stub.__opts.commitCancel).toBe("function");
       expect(stub.__opts.drainTimeoutMs).toBe(7_500);
       expect(typeof stub.__opts.runId).toBe("string");
       expect(stub.__opts.runId.length).toBeGreaterThan(0);
@@ -4616,6 +4683,7 @@ describe("createWorkflowSupervisor", () => {
     // resumed run: markConsumed for a signal now holds until the child has
     // durably taken it up (re-parks or terminates), mirroring trigger.fire.
     await waitForUpstreamPayload(wired.supervisorToChild, "signal.deliver");
+    await confirmDelivery(wired, 1);
     // The signal is sent but the run has not taken it up, so msg-2's
     // markConsumed is held until it re-parks or terminates. Only msg-1 is
     // consumed.
@@ -4722,6 +4790,7 @@ describe("createWorkflowSupervisor", () => {
     const firstSignal = signals[0];
     if (firstSignal === undefined) throw new Error("unreachable");
     expect(firstSignal.signalName).toBe(signalName("corr-input-1"));
+    await confirmDelivery(wired, 1);
 
     // msg-1 is consumed off its park, but msg-2's signal is not yet taken up
     // by the run, so its markConsumed is still held.
@@ -5054,26 +5123,18 @@ describe("createWorkflowSupervisor", () => {
       { resource: "thing", action: "read" },
     ]);
 
-    const runEventsDir = path.join(
-      baseDir,
-      "workflow-run",
-      "run_deployment-x",
-      "runs",
-      "run_deployment-x",
-      "events",
-    );
-    await fs.mkdir(runEventsDir, { recursive: true });
-    await fs.writeFile(
-      path.join(runEventsDir, "0.json"),
-      JSON.stringify({ type: "RunStarted", seq: 0 }),
-    );
-    await fs.writeFile(
-      path.join(runEventsDir, "1.json"),
-      JSON.stringify({ type: "RunCompleted", seq: 1 }),
-    );
-
     const wired = await spawnWithRunStart({
       baseDir,
+      committedRunFiles: {
+        "runs/run_deployment-x/events/0.json": JSON.stringify({
+          type: "RunStarted",
+          seq: 0,
+        }),
+        "runs/run_deployment-x/events/1.json": JSON.stringify({
+          type: "RunCompleted",
+          seq: 1,
+        }),
+      },
       onRunStart: async () => {
         return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
@@ -5095,6 +5156,39 @@ describe("createWorkflowSupervisor", () => {
         (entry) => entry.rejection?.code === "workflow_run_terminal",
       ),
     ).toBe(true);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("a run whose start only the checkout holds is fired, not waited on", async () => {
+    const baseDir = await makeTempDir("supervisor-uncommitted-start-");
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
+    // A write that failed before it committed left the start in the checkout.
+    const runEventsDir = path.join(
+      baseDir,
+      "workflow-run",
+      "run_deployment-x",
+      "runs",
+      "run_deployment-x",
+      "events",
+    );
+    await fs.mkdir(runEventsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(runEventsDir, "0.json"),
+      JSON.stringify({ type: "RunStarted", seq: 0 }),
+    );
+
+    const wired = await spawnWithRunStart({ baseDir });
+
+    wired.mailBus.deliver(
+      "run_deployment-x@example.com",
+      new TextEncoder().encode("msg-1"),
+    );
+    expect(await waitForTriggerFireRunIds(wired.supervisorToChild, 1)).toEqual([
+      "run_deployment-x",
+    ]);
 
     await wired.supervisor.shutdown();
   });
@@ -5196,6 +5290,7 @@ describe("createWorkflowSupervisor", () => {
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-3"));
 
     await waitSignals(1);
+    await confirmDelivery(wired, 1);
     await wired.childSender.send({
       type: "park.notify",
       data: {
@@ -5207,6 +5302,7 @@ describe("createWorkflowSupervisor", () => {
     await waitConsumed(2);
 
     await waitSignals(2);
+    await confirmDelivery(wired, 2);
     await wired.childSender.send({
       type: "terminal.event",
       data: {

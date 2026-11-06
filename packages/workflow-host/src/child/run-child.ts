@@ -32,6 +32,8 @@
 //        - `authority.set` -> replace the snapshot and the material.
 //        - `grants-updated` -> replace the credentialsSnapshot.
 //        - `drain` -> forward to the drain controller (no-op here).
+//        - `quiet.request` -> answer whether every run only waits on
+//          input from outside, and the earliest queued timer.
 //        - `shutdown` -> stop accepting new triggers and exit the
 //          loop.
 //
@@ -72,6 +74,7 @@ import {
 import type {
   ActionCredentialsFactory,
   ActionHandler,
+  LoadParkedApproval,
   RunResult,
   RuntimeWorkflowRun,
   Scheduler,
@@ -93,8 +96,18 @@ import {
   createInMemoryEffectLedger,
   createLoopIterationHandle,
   emptyState,
+  isTerminalRunPhase,
+  resumeFromLog,
   runtimeRun,
 } from "@intx/workflow";
+import {
+  activityStarts,
+  beginDelivery,
+  flushAllBuffers,
+  isQuiet,
+  whenDelivered,
+  whenQuiet,
+} from "@intx/workflow/runtime";
 
 import {
   createWorkflowHostDrainController,
@@ -105,6 +118,11 @@ import type { InferenceSource, MailPartReader } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
+import {
+  createResumeDeliveryHold,
+  parkedSignalNames,
+  type ResumeDeliveryHold,
+} from "./resume-delivery-hold";
 import { createCancellationBarrier } from "./cancellation-barrier";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
 import type {
@@ -148,10 +166,7 @@ import {
   loadWorkflowLoopFnsFromClosure,
 } from "../workflow-definition-loader";
 import { discoverInFlightRuns } from "./self-discovery";
-import {
-  collectParkedApprovalCorrelations,
-  type LoadParkedApproval,
-} from "./parked-correlations";
+import { collectParkedApprovalCorrelations } from "./parked-correlations";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
 import { createSupervisorBackedMailPartReader } from "./supervisor-backed-mail-part-reader";
@@ -343,6 +358,13 @@ export interface RunWorkflowChildBindings {
   }) => Promise<void>;
   /** Host-process scheduler singleton. The child consumes the same instance. */
   scheduler: Scheduler;
+  /**
+   * The earliest timer the host scheduler has queued, which a stopped child
+   * must be woken for.
+   */
+  earliestQueuedTimer: () => Date | undefined;
+  /** Cancels the host scheduler's timers, which would keep the process open. */
+  stopScheduler: () => Promise<void>;
   /** Grant evaluator wired against the host's grant-rule grammar. */
   evaluateGrants: GrantEvaluator;
   /**
@@ -362,17 +384,17 @@ export interface RunWorkflowChildBindings {
   cleanupRunStorage?: (runId: string) => Promise<void>;
   /**
    * Recover the durable approval snapshot for a parked control-plane
-   * correlation, so the child can answer a supervisor
-   * `parked-correlations.request` (the supervisor's re-registration path
-   * after a re-establishment). The child owns enumeration -- it walks its
-   * own reduced run state for `awaiting-signal` steps on control-plane
-   * channels -- but the snapshot lives in per-step durable storage whose
-   * on-disk layout (cold vs warm) the host owns, so the read is a host
-   * binding next to `cleanupRunStorage`. Optional so tests inject a stub and
-   * the recursive child-workflow adapter (which roots no per-step approval
-   * storage) can omit it; a production child that enumerates a parked
-   * control-plane step with no binding wired throws rather than silently
-   * dropping the correlation the hub is waiting to register.
+   * correlation. The child answers a supervisor
+   * `parked-correlations.request` with it (the supervisor's re-registration
+   * path after a re-establishment), and a resumed container relays from it a
+   * body's approval the container never relayed. The child owns enumeration
+   * -- it walks its own reduced run state for `awaiting-signal` steps on
+   * control-plane channels -- but the snapshot lives in per-step durable
+   * storage whose on-disk layout (cold vs warm) the host owns, so the read is
+   * a host binding next to `cleanupRunStorage`. Optional so tests inject a
+   * stub; a production child that enumerates a parked control-plane step with
+   * no binding wired throws rather than silently dropping the correlation the
+   * hub is waiting to register.
    */
   loadParkedApproval?: LoadParkedApproval;
   /**
@@ -893,6 +915,7 @@ export async function runWorkflowChild(
   // TransitionError into its fire-and-forget continuation. Each site
   // removes its entry when the run reaches terminal.
   const runsInFlight = new Map<string, RuntimeWorkflowRun>();
+  const resumeDeliveryHold = createResumeDeliveryHold();
   const cancellationBarrier = createCancellationBarrier(
     runtimeRepoStore,
     upstreamSender,
@@ -926,7 +949,11 @@ export async function runWorkflowChild(
         });
       },
       upstreamSender,
+      onSignalAwaiter: (park) => {
+        resumeDeliveryHold.reparked(park.runId, park.name);
+      },
     });
+    resumeDeliveryHold.hold(run.runId, parkedSignalNames(run.resumedState));
     const handle = runtimeRun(definition, env, {
       runId: run.runId,
       resumeFromEvents: run.seedEvents,
@@ -945,10 +972,12 @@ export async function runWorkflowChild(
           runId: run.runId,
         });
         runsInFlight.delete(run.runId);
+        resumeDeliveryHold.runEnded(run.runId);
         return emitTerminalEvent(upstreamSender, result);
       })
       .catch((cause) => {
         runsInFlight.delete(run.runId);
+        resumeDeliveryHold.runEnded(run.runId);
         logger.error`resumed run ${run.runId} failed: ${String(cause)}`;
       });
     resumedRunIds.push(run.runId);
@@ -985,6 +1014,7 @@ export async function runWorkflowChild(
   upstreamSender.open();
 
   const triggeredRunIds: string[] = [];
+  const quietCheck: { current: AbortController | null } = { current: null };
 
   // Resolve the mailbox watch registry the control loop routes `mailbox.notify`
   // frames to. Production wires it on the bindings (the substrate factory builds
@@ -1018,7 +1048,9 @@ export async function runWorkflowChild(
           drainController,
           triggeredRunIds,
           runsInFlight,
+          resumeDeliveryHold,
           cancellationBarrier,
+          quietCheck,
           warmCache,
           sourcesRef,
           credentialMaterialRef,
@@ -1048,6 +1080,8 @@ export async function runWorkflowChild(
   };
 
   const cleanupControlLoop = async (): Promise<void> => {
+    stopHostScheduler(opts.bindings);
+    resumeDeliveryHold.close();
     cancellationBarrier.close("workflow-child control loop exited");
     // Any exit path -- clean (iterator end), dirty (thrown error),
     // shutdown (already cancelled, repeat is a no-op on an empty map)
@@ -1108,6 +1142,82 @@ export async function runWorkflowChild(
   };
 }
 
+function stopHostScheduler(bindings: RunWorkflowChildBindings): void {
+  void bindings.stopScheduler().catch((cause: unknown) => {
+    logger.warn`stopping the host scheduler failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+  });
+}
+
+// Whether every run only waits on input from outside, for a supervisor that
+// stops the child once it is. Buffered events are made durable and input on
+// its way to a run is delivered first, so the answer holds for the log the
+// stopped child would leave. A check that fails is reported, not retried:
+// the supervisor refuses the standby attempt with it.
+async function answerQuiet(
+  ctx: {
+    bindings: RunWorkflowChildBindings;
+    runtimeRepoStore: ReturnType<typeof createWorkflowRunRepoStore>;
+    upstreamSender: ControlChannelSender;
+    quietCheck: { current: AbortController | null };
+  },
+  data: Extract<ControlPayload, { type: "quiet.request" }>["data"],
+): Promise<void> {
+  // The supervisor runs one standby attempt at a time, so a check still
+  // waiting when the next arrives belongs to one it gave up on.
+  ctx.quietCheck.current?.abort();
+  const superseded = new AbortController();
+  ctx.quietCheck.current = superseded;
+  let quiet = false;
+  let ended = false;
+  let wakeAt: Date | undefined;
+  let error: string | undefined;
+  try {
+    const runEnded = async (): Promise<boolean> =>
+      isTerminalRunPhase(
+        resumeFromLog(data.runId, await ctx.runtimeRepoStore.read(data.runId))
+          .phase,
+      );
+    ended = await runEnded();
+    while (!ended) {
+      if (data.wait) await whenQuiet(superseded.signal);
+      // Taken before the flush: work that starts and ends during these waits
+      // can leave an event buffered that the flush did not see.
+      const startsAtDecision = activityStarts();
+      await flushAllBuffers();
+      await whenDelivered();
+      quiet = isQuiet();
+      // Read with `quiet`: a timer that leaves the queue after the decision
+      // is still reported, and wakes the deployment at once.
+      wakeAt = ctx.bindings.earliestQueuedTimer();
+      // The run can end while the check waits or makes its events durable.
+      ended = await runEnded();
+      // Work that started meanwhile, such as a step a timer began, may
+      // already have written history, so the decision no longer holds.
+      if (activityStarts() !== startsAtDecision) quiet = false;
+      if (quiet || !data.wait) break;
+    }
+  } catch (cause) {
+    if (superseded.signal.aborted) return;
+    error = cause instanceof Error ? cause.message : String(cause);
+    logger.warn`workflow-child quiet check failed: ${error}`;
+    quiet = false;
+  } finally {
+    if (ctx.quietCheck.current === superseded) ctx.quietCheck.current = null;
+  }
+  if (superseded.signal.aborted) return;
+  await ctx.upstreamSender.send({
+    type: "quiet.response",
+    data: ended
+      ? { requestId: data.requestId, ended: true }
+      : {
+          requestId: data.requestId,
+          quiet,
+          ...(wakeAt !== undefined ? { wakeAt: wakeAt.toISOString() } : {}),
+          ...(error !== undefined ? { error } : {}),
+        },
+  });
+}
+
 /**
  * Handle a single control-channel payload. Returns `true` when the
  * payload signals shutdown so the caller exits the loop; otherwise
@@ -1135,7 +1245,9 @@ async function handleControlPayload(
     drainController: DrainController;
     triggeredRunIds: string[];
     runsInFlight: Map<string, RuntimeWorkflowRun>;
+    resumeDeliveryHold: ResumeDeliveryHold;
     cancellationBarrier: ReturnType<typeof createCancellationBarrier>;
+    quietCheck: { current: AbortController | null };
     warmCache: WarmAgentCache | undefined;
     sourcesRef: SourcesSnapshotRef;
     credentialMaterialRef: CredentialMaterialRef;
@@ -1166,6 +1278,12 @@ async function handleControlPayload(
       // (that would block the control loop).
       if (ctx.runsInFlight.has(payload.data.runId)) {
         ctx.triggeredRunIds.push(payload.data.runId);
+        void answerInputTaken(
+          ctx.upstreamSender,
+          payload.data.requestId,
+          payload.data.runId,
+          false,
+        );
         return false;
       }
       // The supervisor resolved the inbound mail to the run's input (the
@@ -1212,6 +1330,14 @@ async function handleControlPayload(
         triggerPayload,
       });
       ctx.runsInFlight.set(payload.data.runId, handle);
+      void handle.started.then((committed) =>
+        answerInputTaken(
+          ctx.upstreamSender,
+          payload.data.requestId,
+          payload.data.runId,
+          committed,
+        ),
+      );
       // Fan the run's terminal status back to the supervisor over the
       // upstream control channel. The supervisor's dispatch loop and
       // any armed drainTimeout accumulator subscribe through the
@@ -1293,62 +1419,99 @@ async function handleControlPayload(
       // re-discovered -- must not commit an orphan `SignalReceived` to a log no
       // awaiter is tailing. `runsInFlight` is the one-driver authority on which
       // runs this child drives.
+      const acknowledge = (committed: boolean) =>
+        answerInputTaken(
+          ctx.upstreamSender,
+          payload.data.requestId,
+          payload.data.runId,
+          committed,
+        );
       if (!ctx.runsInFlight.has(payload.data.runId)) {
         logger.warn`signal.deliver for run ${payload.data.runId} which is not in flight; dropping (signalName=${payload.data.signalName})`;
+        void acknowledge(false);
         return false;
       }
-      // Land the signal as a `SignalReceived` commit on the run's
-      // event log. The signal-channel substrate's `subscribeKind`
-      // peer (the per-run signal channel installed at run start) is
-      // what resolves any pending `awaitNext` awaiter -- the
-      // control-loop's job is just to commit. Constructing an
-      // ad-hoc signal channel scoped to this runId keeps the
-      // control-loop free of per-run signal-channel bookkeeping
-      // while still routing through the canonical writer path.
-      //
-      // The deliver path writes through `writeTreePreservingPrefix`,
-      // which the sidecar's substrate factory wraps with a pack-push
-      // hook. The hook emits a `pack.push.request` on the upstream
-      // control channel and awaits the supervisor's matching
-      // `pack.push.response` on the same downstream stream this
-      // iterator pulls from. Awaiting the deliver inline blocks the
-      // iterator from pulling the response that resolves the deliver
-      // -- a deadlock observed end-to-end with the workflow-run
-      // pack-pushing wrapper. Fire the deliver off the loop so the
-      // iterator continues pumping `pack.push.response` (and any other
-      // downstream payload) while the deliver settles in the
-      // background. A commit failure surfaces via the logger; the
-      // runtime body's `signalChannel.awaitNext` peer either resolves
-      // (deliver landed) or remains pending until a subsequent
-      // delivery.
-      const transientSignalChannel = createWorkflowHostSignalChannel({
-        repoStore: ctx.bindings.substrate,
-        runtimeStore: ctx.runtimeRepoStore,
-        principal: ctx.bindings.principal,
-        repoId: ctx.bindings.workflowRunRepoId,
-        ref: ctx.bindings.workflowRunRef,
-        runId: payload.data.runId,
-        readState: () => emptyState(payload.data.runId),
-        newId: () => ctx.newId("sig"),
-        clock: ctx.clock,
-      });
-      void (async () => {
-        try {
-          await transientSignalChannel.deliver(
-            payload.data.signalName,
-            payload.data.payload,
-            payload.data.signalId,
-            ...(payload.data.correlationId !== undefined
-              ? [payload.data.correlationId]
-              : []),
-          );
-        } catch (cause) {
-          const reason = cause instanceof Error ? cause.message : String(cause);
-          logger.warn`signal.deliver commit failed runId=${payload.data.runId} signalName=${payload.data.signalName}: ${reason}`;
-        } finally {
-          await transientSignalChannel.stop();
+      const deliver = (): void => {
+        // Land the signal as a `SignalReceived` commit on the run's
+        // event log. The signal-channel substrate's `subscribeKind`
+        // peer (the per-run signal channel installed at run start) is
+        // what resolves any pending `awaitNext` awaiter -- the
+        // control-loop's job is just to commit. Constructing an
+        // ad-hoc signal channel scoped to this runId keeps the
+        // control-loop free of per-run signal-channel bookkeeping
+        // while still routing through the canonical writer path.
+        //
+        // The deliver path writes through `writeTreePreservingPrefix`,
+        // which the sidecar's substrate factory wraps with a pack-push
+        // hook. The hook emits a `pack.push.request` on the upstream
+        // control channel and awaits the supervisor's matching
+        // `pack.push.response` on the same downstream stream this
+        // iterator pulls from. Awaiting the deliver inline blocks the
+        // iterator from pulling the response that resolves the deliver
+        // -- a deadlock observed end-to-end with the workflow-run
+        // pack-pushing wrapper. Fire the deliver off the loop so the
+        // iterator continues pumping `pack.push.response` (and any other
+        // downstream payload) while the deliver settles in the
+        // background. A commit failure surfaces via the logger; the
+        // runtime body's `signalChannel.awaitNext` peer either resolves
+        // (deliver landed) or remains pending until a subsequent
+        // delivery.
+        const endDelivery = beginDelivery();
+        const transientSignalChannel = createWorkflowHostSignalChannel({
+          repoStore: ctx.bindings.substrate,
+          runtimeStore: ctx.runtimeRepoStore,
+          principal: ctx.bindings.principal,
+          repoId: ctx.bindings.workflowRunRepoId,
+          ref: ctx.bindings.workflowRunRef,
+          runId: payload.data.runId,
+          readState: () => emptyState(payload.data.runId),
+          newId: () => ctx.newId("sig"),
+          clock: ctx.clock,
+        });
+        void (async () => {
+          let committed = false;
+          try {
+            committed = await transientSignalChannel.land(
+              payload.data.signalName,
+              payload.data.payload,
+              payload.data.signalId,
+              ...(payload.data.correlationId !== undefined
+                ? [payload.data.correlationId]
+                : []),
+            );
+            if (!committed) {
+              logger.warn`signal.deliver for run ${payload.data.runId} whose log already ended; refusing it (signalName=${payload.data.signalName})`;
+            }
+          } catch (cause) {
+            const reason =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.warn`signal.deliver commit failed runId=${payload.data.runId} signalName=${payload.data.signalName}: ${reason}`;
+          } finally {
+            await transientSignalChannel.stop();
+            await acknowledge(committed);
+            endDelivery();
+          }
+        })();
+      };
+      // A held signal is not counted as a delivery: it would keep the process
+      // from going quiet, which is what ends a hold no re-park ends. The
+      // supervisor still waits for the answer before it stops the child.
+      const held = ctx.resumeDeliveryHold.until(
+        payload.data.runId,
+        payload.data.signalName,
+      );
+      if (held === undefined) {
+        deliver();
+        return false;
+      }
+      void held.then((canLand) => {
+        if (canLand && ctx.runsInFlight.has(payload.data.runId)) {
+          deliver();
+        } else {
+          logger.warn`signal.deliver held for run ${payload.data.runId} signalName=${payload.data.signalName} can no longer land; refusing it`;
+          void acknowledge(false);
         }
-      })();
+      });
       return false;
     }
     case "cancel.prepare": {
@@ -1372,6 +1535,9 @@ async function handleControlPayload(
     case "cancel.prepared": {
       throw new Error("workflow-child received an upstream cancellation reply");
     }
+    case "input.taken": {
+      throw new Error("workflow-child received an upstream input reply");
+    }
     case "drain": {
       // The supervisor's `drain` control mail flips the controller's
       // signal. The runtime body's four observation points read the
@@ -1386,6 +1552,9 @@ async function handleControlPayload(
     }
     case "shutdown": {
       logger.info`workflow-child shutdown requested (${payload.data.reason})`;
+      // Before the writes are cancelled, so the scheduler takes a commit this
+      // cancels for the stop it is, not a failure.
+      stopHostScheduler(ctx.bindings);
       if (ctx.substrateWriteBridge !== undefined) {
         ctx.substrateWriteBridge.cancelAll("workflow-child shutdown requested");
       }
@@ -1589,6 +1758,19 @@ async function handleControlPayload(
       ctx.substrateWriteBridge.handleWriteResponse(payload.data);
       return false;
     }
+    case "quiet.request": {
+      // Answered off the loop: a wait for quiet can outlast many frames, and
+      // the flush it starts with needs the write responses this loop takes.
+      void answerQuiet(ctx, payload.data).catch((cause: unknown) => {
+        logger.error`workflow-child quiet.response send failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      });
+      return false;
+    }
+    case "quiet.response": {
+      throw new Error(
+        "workflow-child received a `quiet.response` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
     case "parked-correlations.request": {
       // Answer the supervisor's re-registration enumeration from durable
       // state. Awaiting inline is safe -- unlike `signal.deliver`, this
@@ -1605,6 +1787,9 @@ async function handleControlPayload(
         runtimeRepoStore: ctx.runtimeRepoStore,
         ...(ctx.bindings.loadParkedApproval !== undefined
           ? { loadParkedApproval: ctx.bindings.loadParkedApproval }
+          : {}),
+        ...(ctx.bindings.readParkedApprovalOps !== undefined
+          ? { readParkedApprovalOps: ctx.bindings.readParkedApprovalOps }
           : {}),
       });
       await ctx.upstreamSender.send({
@@ -1701,6 +1886,7 @@ function buildRuntimeEnv(args: {
   mailboxCallBridge?: ChildMailboxCallBridge;
   onEvent: (event: EventPayload) => void;
   upstreamSender: ControlChannelSender;
+  onSignalAwaiter?: (park: { runId: string; name: string }) => void;
 }): WorkflowRuntimeEnv {
   const signalChannel = createWorkflowHostSignalChannel({
     repoStore: args.bindings.substrate,
@@ -1807,6 +1993,9 @@ function buildRuntimeEnv(args: {
     onPark: (park) => {
       void emitParkNotify(args.upstreamSender, park);
     },
+    ...(args.onSignalAwaiter !== undefined
+      ? { onSignalAwaiter: args.onSignalAwaiter }
+      : {}),
     // Let the resume classifier recover a step that crashed across the park
     // boundary. Absent (tests, the recursive child-workflow adapter) leaves a
     // crashed invocation a terminal failure.
@@ -1815,6 +2004,10 @@ function buildRuntimeEnv(args: {
       : {}),
     ...(args.bindings.persistRecoveredPark !== undefined
       ? { persistRecoveredPark: args.bindings.persistRecoveredPark }
+      : {}),
+    // Let a resume relay a body's approval its container never did.
+    ...(args.bindings.loadParkedApproval !== undefined
+      ? { loadParkedApproval: args.bindings.loadParkedApproval }
       : {}),
   };
   // The suspendable-loop executor runs each iteration's body under THIS run's
@@ -1904,6 +2097,28 @@ function buildRuntimeEnv(args: {
     args.bindings.actionCredentials(args.credentialWiring),
   );
   return env;
+}
+
+/**
+ * Tell the supervisor whether the input a `trigger.fire` or `signal.deliver`
+ * carried is committed, when the frame asked. Best-effort like the other
+ * upstream sends: a reply is lost only with the control channel, and until the
+ * child is replaced every standby attempt of this deployment waits for it,
+ * which `wake` abandons.
+ */
+async function answerInputTaken(
+  upstreamSender: ControlChannelSender,
+  requestId: string | undefined,
+  runId: string,
+  committed: boolean,
+): Promise<void> {
+  if (requestId === undefined) return;
+  await upstreamSender
+    .send({ type: "input.taken", data: { requestId, committed } })
+    .catch((cause: unknown) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.warn`input.taken reply failed runId=${runId}: ${message}`;
+    });
 }
 
 /**

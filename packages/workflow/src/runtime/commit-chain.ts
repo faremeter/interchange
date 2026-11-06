@@ -59,6 +59,9 @@ const commitChains = new Map<string, Promise<unknown>>();
  * share one buffer, serialized through that runId's chain.
  */
 const pendingBuffers = new Map<string, WorkflowEvent[]>();
+// The env each run last buffered through, so a host that stops the process
+// can make every run's buffer durable first.
+const bufferEnvs = new Map<string, CommitEnv>();
 
 export type CommitEnv = {
   repoStore: RepoStore;
@@ -174,15 +177,56 @@ export function flushFailureCause(runId: string): unknown {
  * Resolves when this run's buffer flush throws. Already resolved when
  * the failure was recorded before the caller started waiting. A parked
  * step never rejects, so the drive loop races this with its step
- * promises.
+ * promises. `onFail` runs as the failure is recorded, before the flush
+ * that threw rejects to its writer.
  */
-export function whenRunFlushFails(runId: string): Promise<void> {
-  if (failedFlushes.has(runId)) return Promise.resolve();
+export function whenRunFlushFails(
+  runId: string,
+  onFail: () => void,
+): Promise<void> {
+  if (failedFlushes.has(runId)) {
+    onFail();
+    return Promise.resolve();
+  }
   return new Promise((resolve) => {
     const list = flushWaiters.get(runId) ?? [];
-    list.push(resolve);
+    list.push(() => {
+      onFail();
+      resolve();
+    });
     flushWaiters.set(runId, list);
   });
+}
+
+// The highest seq this process has written durably for a run, and who waits
+// for one, behind `whenRunDurable`.
+const durableSeqs = new Map<string, number>();
+const durableWaiters = new Map<
+  string,
+  { seq: number; resolve: () => void }[]
+>();
+
+/** Resolves once this run's events up to `seq` are durable. */
+export function whenRunDurable(runId: string, seq: number): Promise<void> {
+  if ((durableSeqs.get(runId) ?? -1) >= seq) return Promise.resolve();
+  return new Promise((resolve) => {
+    const list = durableWaiters.get(runId) ?? [];
+    list.push({ seq, resolve });
+    durableWaiters.set(runId, list);
+  });
+}
+
+function noteDurable(runId: string, seq: number): void {
+  durableSeqs.set(runId, Math.max(durableSeqs.get(runId) ?? -1, seq));
+  const list = durableWaiters.get(runId);
+  if (list === undefined) return;
+  const waiting = list.filter((waiter) => {
+    if (waiter.seq > seq) return true;
+    waiter.resolve();
+    return false;
+  });
+  if (waiting.length === 0) durableWaiters.delete(runId);
+  else durableWaiters.set(runId, waiting);
 }
 
 function throwIfFlushFailed(runId: string): void {
@@ -231,6 +275,8 @@ async function flushBuffer(env: CommitEnv, runId: string): Promise<void> {
     }
     throw cause;
   }
+  const last = events.at(-1);
+  if (last !== undefined) noteDurable(runId, last.seq);
 }
 
 /**
@@ -300,6 +346,7 @@ export async function commitBufferedFrom(
     const { state, events } = applyBuilt(fresh, build);
     if (events.length === 0) return state;
     getBuffer(runId).push(...events);
+    bufferEnvs.set(runId, env);
     wake(bufferWaiters, runId);
     return state;
   });
@@ -430,7 +477,22 @@ export async function reloadState(
 export function dropChain(runId: string): void {
   commitChains.delete(runId);
   pendingBuffers.delete(runId);
+  bufferEnvs.delete(runId);
   failedFlushes.delete(runId);
   flushWaiters.delete(runId);
   bufferWaiters.delete(runId);
+  durableSeqs.delete(runId);
+  durableWaiters.delete(runId);
+}
+
+/** Make every run's buffered events durable. */
+export async function flushAllBuffers(): Promise<void> {
+  await Promise.all(
+    [...pendingBuffers].flatMap(([runId, buffer]) => {
+      const env = bufferEnvs.get(runId);
+      return buffer.length === 0 || env === undefined
+        ? []
+        : [flushChain(env, runId)];
+    }),
+  );
 }

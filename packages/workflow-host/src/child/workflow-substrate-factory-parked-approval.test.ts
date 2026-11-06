@@ -32,13 +32,37 @@ import {
   type RepoStore,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
+import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import { createIsogitStore } from "@intx/storage-isogit/node";
+import { signalName } from "@intx/types/signals";
+import {
+  childWorkflow,
+  createInMemoryBlobSubstrate,
+  createInMemoryRepoStore,
+  createInMemoryScheduler,
+  createInMemorySignalChannel,
+  createNoopDrainController,
+  createSuspendableChildHandle,
+  defineWorkflow,
+  loop,
+  loopBodyRunId,
+  rewriteInlineChildWorkflowBodies,
+  runtimeRun,
+  sectionBodyRunId,
+  step,
+  type RepoStore as RuntimeRepoStore,
+  type StepInvoker,
+  type WorkflowDefinition,
+  type WorkflowEvent,
+  type WorkflowRuntimeEnv,
+} from "@intx/workflow";
 import {
   createDurableConversationStore,
   readStepState,
 } from "@intx/workflow-host";
 
 import {
+  createParkedApprovalHooks,
   persistColdRecoveredPark,
   readColdParkedApprovalSnapshot,
   readColdParkedPendingOperations,
@@ -696,6 +720,254 @@ describe("readWarmParkedPendingOperations", () => {
       stepId: "never-ran",
     });
     expect(got).toEqual([]);
+  });
+});
+
+// A warm-kept deployment's warm invoker runs its top-level run, and the cold
+// invoker every run it spawns.
+describe("createParkedApprovalHooks", () => {
+  const agent = defineAgent({
+    id: "a",
+    systemPrompt: "s",
+    tools: [],
+    capabilities: [],
+    inference: { sources: [{ provider: "anthropic", model: "m" }] },
+  });
+  const agentBody = (id: string): WorkflowDefinition =>
+    defineWorkflow({
+      id,
+      trigger: { type: "manual" },
+      steps: { s: step({ agent }) },
+    });
+
+  // A warm deployment whose agent of step "s" is parked on `corr-warm`.
+  async function warmDeployment(): Promise<{
+    substrate: RepoStore;
+    hooks: ReturnType<typeof createParkedApprovalHooks>;
+  }> {
+    const dataDir = await makeTempDir();
+    const substrate = await createSubstrate(dataDir);
+    const store = await createDurableConversationStore({
+      localStoreDir: await makeTempDir(),
+      signer: testSigner,
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: RUN_ID,
+      stepId: "s",
+      lifetime: { kind: "deployment" },
+    });
+    await store.storage.writeMetadata({
+      pendingOperations: [pendingApproval("corr-warm", snapshot)],
+      tokenUsage: EMPTY_USAGE,
+    });
+    await store.mirrorToSubstrate();
+    const hooks = createParkedApprovalHooks({
+      dataDir,
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
+      signer: testSigner,
+      warmRunId: RUN_ID,
+    });
+    return { substrate, hooks };
+  }
+
+  test("the top-level run reads its parks from the warm store", async () => {
+    const { hooks } = await warmDeployment();
+    const at = { runId: RUN_ID, stepId: "s", attempt: 1 };
+
+    expect(
+      await hooks.loadParkedApproval({ ...at, correlationId: "corr-warm" }),
+    ).toEqual(snapshot);
+    expect(await hooks.readParkedApprovalOps(at)).toEqual([
+      { correlationId: "corr-warm" },
+    ]);
+  });
+
+  test.each([
+    ["a childWorkflow child", "run-child"],
+    ["an onTrigger body", sectionBodyRunId(RUN_ID, "section", 0)],
+    ["a loop iteration inside a child", loopBodyRunId("run-child", "loop", 0)],
+  ])("%s reads its parks from its cold step state", async (_name, runId) => {
+    const { substrate, hooks } = await warmDeployment();
+    await parkColdStep(substrate, runId, 1, [
+      pendingApproval("corr-cold", snapshot),
+    ]);
+    const at = { runId, stepId: "s", attempt: 1 };
+
+    expect(
+      await hooks.loadParkedApproval({ ...at, correlationId: "corr-cold" }),
+    ).toEqual(snapshot);
+    expect(await hooks.readParkedApprovalOps(at)).toEqual([
+      { correlationId: "corr-cold" },
+    ]);
+  });
+
+  // The top-level run's park is read from committed state, so it has nothing
+  // to commit; any other run's goes to its cold step state, which here holds
+  // no park to commit.
+  test("only a run other than the top-level one commits a recovered park", async () => {
+    const { hooks } = await warmDeployment();
+    const park = { stepId: "s", attempt: 1, correlationId: "corr-lost" };
+
+    await hooks.persistRecoveredPark({ runId: RUN_ID, ...park });
+    await expect(
+      hooks.persistRecoveredPark({ runId: "run-child", ...park }),
+    ).rejects.toThrow(
+      "neither the committed step state nor a current local store holds its pending operation",
+    );
+  });
+
+  // The hooks read only the top-level run warm, since a loop iteration would
+  // inherit its env.
+  test.each(["loop", "done"])(
+    "a deployment's one step cannot be a loop, whose onExhausted names %s",
+    (onExhausted) => {
+      expect(() =>
+        defineWorkflow({
+          id: "looped",
+          trigger: { type: "manual" },
+          steps: {
+            loop: loop({
+              body: agentBody("loop-body"),
+              while: "cont",
+              carry: "next",
+              input: { literal: 0 },
+              maxIterations: 3,
+              onExhausted,
+            }),
+          },
+        }),
+      ).toThrow("onExhausted");
+    },
+  );
+
+  // The container plans its relays from the body's parks, read through its
+  // own env, while the body recovers its park through the body's.
+  test("a warm-kept deployment's resume relays an approval its spawned body stored but never logged", async () => {
+    const dataDir = await makeTempDir();
+    const substrate = await createSubstrate(dataDir);
+    const childRunId = "run-body";
+    const outer = defineWorkflow({
+      id: "outer",
+      trigger: { type: "manual" },
+      steps: { spawn: childWorkflow({ definition: agentBody("body") }) },
+    });
+    const { workflow: rewritten, bodies } =
+      rewriteInlineChildWorkflowBodies(outer);
+    const body = bodies[0]?.definition;
+    if (body === undefined) throw new Error("the inline body was not lifted");
+    const hooks = createParkedApprovalHooks({
+      dataDir,
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
+      signer: testSigner,
+      warmRunId: RUN_ID,
+    });
+    const invokeStep: StepInvoker = async (req) =>
+      req.resume !== undefined
+        ? { output: null }
+        : {
+            suspend: {
+              correlationId: "corr-1",
+              kind: "approval",
+              approvalSnapshot: snapshot,
+            },
+          };
+    const envFor = (
+      repoStore: RuntimeRepoStore,
+      run: WorkflowDefinition,
+      extra: Partial<WorkflowRuntimeEnv>,
+    ): WorkflowRuntimeEnv => {
+      const clock = (): Date => new Date();
+      let ids = 0;
+      return {
+        repoStore,
+        scheduler: createInMemoryScheduler({ repoStore, clock }),
+        signalChannel: createInMemorySignalChannel(),
+        blobs: createInMemoryBlobSubstrate(),
+        directors: createDefaultDirectorRegistry(),
+        authorize: async () => ({
+          effect: "allow",
+          matchingGrants: [],
+          resolvedBy: null,
+        }),
+        invokeStep,
+        spawnChild: () => Promise.reject(new Error("the body spawns nothing")),
+        clock,
+        newId: (prefix) =>
+          prefix === "run" ? childRunId : `${prefix}-${String((ids += 1))}`,
+        drain: createNoopDrainController(run),
+        hasUpstreamSignalResolver: true,
+        ...extra,
+      };
+    };
+    const outerEnv = (
+      repoStore: RuntimeRepoStore,
+      parkHooks: Partial<typeof hooks>,
+      onPark: () => void,
+    ): WorkflowRuntimeEnv =>
+      envFor(repoStore, rewritten, {
+        ...parkHooks,
+        onPark,
+        spawnChild: async (spawn) =>
+          createSuspendableChildHandle(envFor(repoStore, body, parkHooks), {
+            definition: body,
+            childRunId: spawn.childRunId,
+            input: spawn.input,
+            depth: spawn.depth,
+            maxChildSpawnDepth: spawn.maxChildSpawnDepth,
+            signal: spawn.signal,
+            ...(spawn.resumeFromEvents !== undefined
+              ? { resumeFromEvents: spawn.resumeFromEvents }
+              : {}),
+            surfaceInputPark: true,
+          }),
+      });
+
+    // Run to the relayed park for the logs, then drop both from the body's
+    // park on: the body stored its approval but crashed before logging it.
+    const firstRepo = createInMemoryRepoStore();
+    const relayedFirst = Promise.withResolvers<undefined>();
+    const stop = new AbortController();
+    const first = runtimeRun(
+      rewritten,
+      outerEnv(firstRepo, {}, () => relayedFirst.resolve(undefined)),
+      { runId: RUN_ID, localAbort: stop.signal },
+    );
+    await relayedFirst.promise;
+    const beforePark = async (runId: string): Promise<WorkflowEvent[]> => {
+      const log = [...(await firstRepo.read(runId))];
+      const parked = log.findIndex((event) => event.kind === "SignalAwaited");
+      expect(parked).toBeGreaterThan(0);
+      return log.slice(0, parked);
+    };
+    const outerLog = await beforePark(RUN_ID);
+    const bodyLog = await beforePark(childRunId);
+    stop.abort();
+    await first.complete;
+    await parkColdStep(substrate, childRunId, 1, [
+      pendingApproval("corr-1", snapshot),
+    ]);
+
+    const repo = createInMemoryRepoStore();
+    await repo.appendBatch(childRunId, bodyLog);
+    const relayed = Promise.withResolvers<undefined>();
+    const resumed = runtimeRun(
+      rewritten,
+      outerEnv(repo, hooks, () => relayed.resolve(undefined)),
+      { runId: RUN_ID, resumeFromEvents: outerLog },
+    );
+    await relayed.promise;
+    await resumed.signal(
+      signalName("corr-1"),
+      { outcome: "approved" },
+      "approval-decision",
+    );
+    expect((await resumed.complete).terminalStatus).toBe("completed");
   });
 });
 

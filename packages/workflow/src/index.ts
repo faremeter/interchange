@@ -44,7 +44,6 @@ export {
 } from "./live-inert-projector";
 export {
   runtimeRun,
-  bodyParkedSignals,
   loopIterationCursor,
   loopOccurrenceReattach,
   onTriggerOccurrenceReattach,
@@ -52,6 +51,8 @@ export {
   createSuspendableChildHandle,
   createTerminalChildHandle,
   createLoopIterationHandle,
+  findParkedApprovalSnapshot,
+  bodyLogForRelays,
   MAX_CHILD_SPAWN_DEPTH,
   ChildSpawnDepthExceededError,
   resolveMaxChildSpawnDepth,
@@ -74,6 +75,7 @@ export {
   type EffectContext,
   type EffectContextConfig,
   type EffectLedger,
+  type LoadParkedApproval,
   type LoopFn,
   type LoopFnRegistry,
   type ParkedApprovalOp,

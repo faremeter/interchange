@@ -146,10 +146,13 @@ export interface SignalChannel {
    * delivery resolves. Resolves with the payload and the assigned
    * `signalId`. Rejects on `signal.abort()` if `signal` is supplied.
    * Must see every signal delivered after the call, since the runtime
-   * only checks the log for ones delivered before it.
+   * only checks the log for ones delivered before it. A channel whose
+   * process answers a quiet check calls `onWake` before it settles the
+   * wait, while whatever woke it still counts as delivery.
    */
   awaitNext(
     name: string,
+    onWake: () => void,
     signal?: AbortSignal,
     correlationId?: string,
   ): Promise<{ payload: unknown; signalId: string; correlationId?: string }>;
@@ -441,9 +444,15 @@ export type SuspendableChildPark = {
  * signal at a time reads `readParkRelease` before it accepts a signal that
  * is already waiting, and uses `waitForParkRelease` to learn that the open
  * park ended without consuming a sibling.
+ *
+ * Each wait takes an `onWake`, called before the wait settles while
+ * whatever settles it still counts as work, so a caller that waits idle
+ * counts again first.
  */
 export type SuspendableChildHandle = {
-  next(): Promise<
+  next(
+    onWake: () => void,
+  ): Promise<
     | { kind: "park"; park: SuspendableChildPark }
     | { kind: "signal-park"; name: string; timeout?: number }
     | { kind: "input-park"; correlationId: string }
@@ -484,13 +493,14 @@ export type SuspendableChildHandle = {
    * or the child run has reached a terminal. A sibling park does not
    * resolve it and is left queued for a later `next`. Abort rejects.
    *
-   * Present on a handle whose caller can have several parks live at once.
-   * A loop iteration and an onTrigger body are driven one step at a time,
-   * so their callers keep racing `next` and do not need this.
+   * Present on a handle whose caller can have several parks live at once:
+   * a childWorkflow, and a loop iteration or onTrigger body on resume, where
+   * the parks already in the body's log are relayed one at a time.
    */
   waitForParkRelease?(
     name: string,
     abort: AbortSignal,
+    onWake: () => void,
   ): Promise<
     | { kind: "released" }
     | {
@@ -507,7 +517,7 @@ export type SuspendableChildHandle = {
    * Present on the live suspendable handle. A terminal handle has no
    * channel and omits it.
    */
-  whenSignalAwaiter?(name: string): Promise<void>;
+  whenSignalAwaiter?(name: string, onWake: () => void): Promise<void>;
 };
 
 /**
@@ -628,7 +638,8 @@ export type WorkflowSignalPark = {
  * `SignalAwaited`. Deliberately narrow: the runtime reconstructs the missing
  * `SignalAwaited` from the correlationId (and optional timeout) alone and must
  * not learn the reactor's pending-operation internals (`gateId`,
- * `suspendedCall`, the snapshot), which stay the host's concern.
+ * `suspendedCall`), which stay the host's concern. A relay that needs the
+ * snapshot reads it through `LoadParkedApproval`.
  */
 export type ParkedApprovalOp = {
   correlationId: string;
@@ -650,6 +661,17 @@ export type ReadParkedApprovalOps = (args: {
   stepId: string;
   attempt: number;
 }) => Promise<ParkedApprovalOp[]>;
+
+/**
+ * Read the approval snapshot a parked step stored with its pending operation.
+ * See `WorkflowRuntimeEnv.loadParkedApproval`.
+ */
+export type LoadParkedApproval = (args: {
+  runId: string;
+  stepId: string;
+  attempt: number;
+  correlationId: string;
+}) => Promise<ApprovalSnapshot | undefined>;
 
 /**
  * Recovery hook the resume classifier awaits before it commits the
@@ -829,6 +851,14 @@ export interface WorkflowRuntimeEnv {
    * A host whose read answers only from durable state leaves it unset.
    */
   persistRecoveredPark?: PersistRecoveredPark;
+  /**
+   * Optional read of the approval snapshot a parked step stored with its
+   * pending operation. A restart can find a container's body parked on an
+   * approval the container never relayed; resume relays it from this
+   * snapshot. Production wires it to the sidecar's step store. Without it,
+   * such a resume fails the container step.
+   */
+  loadParkedApproval?: LoadParkedApproval;
 }
 
 /**
@@ -849,6 +879,13 @@ export interface WorkflowRun {
  * the runtime act on it.
  */
 export interface RuntimeWorkflowRun extends WorkflowRun {
+  /**
+   * Resolves `true` once the run's `RunStarted` is durable, at once for a live
+   * run whose log already holds one, and `false` when the run settles without
+   * one or resumes from a log that has already ended. A host uses it to tell
+   * when the trigger it delivered can no longer be lost.
+   */
+  started: Promise<boolean>;
   /**
    * Stop the run for a `CancelRequested` its log already holds. The request
    * is durable, so the run aborts even if the child cancellation cascade

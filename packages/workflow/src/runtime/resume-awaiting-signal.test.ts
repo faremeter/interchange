@@ -106,6 +106,22 @@ const twoGatesSameName = ((): WorkflowDefinition => {
   return def;
 })();
 
+const sequentialGates = defineWorkflow({
+  id: "wait-resume-sequential-gates",
+  trigger: { type: "manual" },
+  steps: {
+    first: awaitSignal({ name: "go" }),
+    w: awaitSignal({
+      name: "go",
+      timeout: 60_000,
+      onTimeout: "recover",
+      after: ["first"],
+    }),
+    recover: step({ agent: resumeAgent("recover"), after: ["w"] }),
+    normal: step({ agent: resumeAgent("normal"), after: ["w"] }),
+  },
+});
+
 const gateThenStep = defineWorkflow({
   id: "wait-resume-gate-then-step",
   trigger: { type: "manual" },
@@ -209,6 +225,57 @@ describe("resume awaiting signal", () => {
     expect(types.filter((t) => t === "SignalReceived").length).toBe(1);
     expect(types.filter((t) => t === "StepCompleted").length).toBe(1);
     expect(types).toContain("RunCompleted");
+  });
+
+  test("a resumed run's steps read the trigger payload its RunStarted recorded", async () => {
+    const runId = "run-resumed-trigger";
+    const def = defineWorkflow({
+      id: "wait-resume-trigger-input",
+      trigger: { type: "manual" },
+      steps: {
+        gate: awaitSignal({ name: "go" }),
+        after: step({
+          agent: resumeAgent("after"),
+          after: ["gate"],
+          input: { from: "trigger.payload" },
+        }),
+      },
+    });
+    const inputs: unknown[] = [];
+    const channel = createObservedSignalChannel();
+    const env = buildEnv(def, {
+      signalChannel: channel,
+      invokeStep: async (req) => {
+        inputs.push(req.input);
+        return { output: null };
+      },
+    });
+    const seed: WorkflowEvent[] = [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId,
+        definitionHash: "x",
+        trigger: { type: "manual", payload: { text: "first mail" } },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "gate",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      { kind: "SignalAwaited", seq: 3, at, stepId: "gate", signalName: "go" },
+    ];
+
+    const handle = runtimeRun(def, env, { runId, resumeFromEvents: seed });
+    await channel.awaitAwaitedCount("go", 1);
+    await channel.deliver("go", { resumed: true }, "sig-live");
+
+    expect((await handle.complete).terminalStatus).toBe("completed");
+    expect(inputs).toEqual([{ text: "first mail" }]);
   });
 
   test("resumes a seed that already carries the SignalReceived (gate in-flight), completing it without a live deliver", async () => {
@@ -469,6 +536,146 @@ describe("resume awaiting signal", () => {
         "another awaitSignal gate for go awaited the signal on a different step",
       );
     }
+  });
+
+  describe("a timed gate after a completed gate of the same name", () => {
+    const signal = (seq: number, signalId: string): WorkflowEvent => ({
+      kind: "SignalReceived",
+      seq,
+      at,
+      signalName: "go",
+      signalId,
+      payload: { signalId },
+    });
+    const firstGate = (runId: string): WorkflowEvent[] => [
+      runStartedSeed(runId),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "first",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      { kind: "SignalAwaited", seq: 3, at, stepId: "first", signalName: "go" },
+      signal(4, "sig-first"),
+      {
+        kind: "StepCompleted",
+        seq: 5,
+        at,
+        stepId: "first",
+        attempt: 1,
+        output: { ref: "inline:null" },
+      },
+    ];
+    const started = (seq: number): WorkflowEvent => ({
+      kind: "StepStarted",
+      seq,
+      at,
+      stepId: "w",
+      attempt: 1,
+      input: { ref: "inline:null" },
+    });
+    const awaited = (seq: number): WorkflowEvent => ({
+      kind: "SignalAwaited",
+      seq,
+      at,
+      stepId: "w",
+      signalName: "go",
+      timeoutAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const timerSet = (seq: number): WorkflowEvent => ({
+      kind: "TimerSet",
+      seq,
+      at,
+      timerId: "timer-1",
+      fireAt: new Date(Date.now() + 60_000).toISOString(),
+      stepId: "w",
+    });
+    const timerFired = (seq: number): WorkflowEvent => ({
+      kind: "TimerFired",
+      seq,
+      at,
+      timerId: "timer-1",
+    });
+
+    test("routes to its handler when its own timer moved it", async () => {
+      const runId = "run-sequential-timeout";
+      const invoked: string[] = [];
+      const env = buildEnv(sequentialGates, {
+        invokeStep: async (req) => {
+          invoked.push(req.agent.id);
+          return { output: null };
+        },
+      });
+      const result = await runtimeRun(sequentialGates, env, {
+        runId,
+        resumeFromEvents: [
+          ...firstGate(runId),
+          started(6),
+          awaited(7),
+          timerSet(8),
+          timerFired(9),
+        ],
+      }).complete;
+
+      expect(result.terminalStatus).toBe("completed");
+      expect(invoked).toEqual(["recover"]);
+      const completed = result.events.find(
+        (e) => e.kind === "StepCompleted" && e.stepId === "w",
+      );
+      if (completed?.kind !== "StepCompleted")
+        throw new Error("gate not completed");
+      expect(await env.blobs.resolveRef(completed.output.ref)).toEqual({
+        timedOut: true,
+      });
+    });
+
+    test.each([
+      [
+        "a signal moved it before the timer fired",
+        [
+          started(6),
+          awaited(7),
+          timerSet(8),
+          signal(9, "sig-w"),
+          timerFired(10),
+        ],
+      ],
+      [
+        "it drained a queued signal and the timer fired after",
+        [
+          signal(6, "sig-w"),
+          started(7),
+          awaited(8),
+          timerSet(9),
+          timerFired(10),
+        ],
+      ],
+    ])("is refused when %s", async (_name, tail) => {
+      const runId = "run-sequential-signal";
+      const invoked: string[] = [];
+      const env = buildEnv(sequentialGates, {
+        invokeStep: async (req) => {
+          invoked.push(req.agent.id);
+          return { output: null };
+        },
+      });
+      const result = await runtimeRun(sequentialGates, env, {
+        runId,
+        resumeFromEvents: [...firstGate(runId), ...tail],
+      }).complete;
+
+      expect(result.terminalStatus).toBe("failed");
+      expect(invoked).toEqual([]);
+      const failed = result.events.find(
+        (e) => e.kind === "StepFailed" && e.stepId === "w",
+      );
+      if (failed?.kind !== "StepFailed") throw new Error("gate did not fail");
+      expect(failed.error.message).toContain(
+        "another awaitSignal gate for go awaited the signal on a different step",
+      );
+    });
   });
 
   test("a timed gate resumes on the signal branch when the signal arrived first", async () => {
@@ -764,6 +971,117 @@ describe("resume awaiting signal", () => {
   });
 });
 
+describe("timer fired while a timed gate re-parks", () => {
+  function timedGateSeed(runId: string): WorkflowEvent[] {
+    const fireAt = new Date(Date.now() + 60_000).toISOString();
+    return [
+      runStartedSeed(runId),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "w",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 3,
+        at,
+        stepId: "w",
+        signalName: "go",
+        timeoutAt: fireAt,
+      },
+      { kind: "TimerSet", seq: 4, at, timerId: "timer-1", fireAt, stepId: "w" },
+    ];
+  }
+
+  test("the gate times out once wherever the TimerFired lands", async () => {
+    // Lands the commit after each read the resumed run makes in turn, and last
+    // once the gate has armed its timer.
+    let parkedFirst = false;
+    for (let landAfterRead = 1; !parkedFirst; landAfterRead += 1) {
+      if (landAfterRead > 50) throw new Error("the gate never armed its timer");
+      const runId = `run-timer-window-${String(landAfterRead)}`;
+      const invoked: string[] = [];
+      const base = buildEnv(timedGateWithHandler, {
+        invokeStep: async (req) => {
+          invoked.push(req.agent.id);
+          return { output: null };
+        },
+      });
+      let reads = 0;
+      let landed: Promise<void> | undefined;
+      const land = (tip: number): Promise<void> =>
+        (landed ??= base.repoStore.append(runId, {
+          kind: "TimerFired",
+          seq: tip + 1,
+          at,
+          timerId: "timer-1",
+        }));
+      const env: WorkflowRuntimeEnv = {
+        ...base,
+        repoStore: {
+          ...base.repoStore,
+          read: async (id) => {
+            const log = [...(await base.repoStore.read(id))];
+            const tip = log.at(-1);
+            if (id === runId && tip !== undefined) {
+              reads += 1;
+              if (reads === landAfterRead) await land(tip.seq);
+            }
+            return log;
+          },
+        },
+        scheduler: {
+          scheduleIn: (id, timerId, fireAt) => {
+            if (landed === undefined) {
+              parkedFirst = true;
+              void land(4);
+            }
+            return base.scheduler.scheduleIn(id, timerId, fireAt);
+          },
+        },
+      };
+
+      const result = await runtimeRun(timedGateWithHandler, env, {
+        runId,
+        resumeFromEvents: timedGateSeed(runId),
+      }).complete;
+
+      expect(result.terminalStatus).toBe("completed");
+      expect(invoked).toEqual(["recover"]);
+      expect(result.events.filter((e) => e.kind === "TimerSet")).toHaveLength(
+        1,
+      );
+    }
+  });
+
+  test("a gate whose timer watch fails fails the run instead of waiting", async () => {
+    const runId = "run-timer-watch-fails";
+    const base = buildEnv(timedGateWithHandler);
+    const env: WorkflowRuntimeEnv = {
+      ...base,
+      repoStore: {
+        ...base.repoStore,
+        subscribe: () => ({
+          [Symbol.asyncIterator]() {
+            return this;
+          },
+          next: () => Promise.reject(new Error("the log could not be read")),
+        }),
+      },
+    };
+
+    const result = await runtimeRun(timedGateWithHandler, env, {
+      runId,
+      resumeFromEvents: timedGateSeed(runId),
+    }).complete;
+
+    expect(result.terminalStatus).toBe("failed");
+  });
+});
+
 describe("signal committed before the wait starts", () => {
   test("a re-parked gate takes a signal committed between reading the gate and starting its wait", async () => {
     const runId = "run-gap";
@@ -777,7 +1095,7 @@ describe("signal committed before the wait starts", () => {
     const channel: SignalChannel = {
       deliver: (name, payload, signalId) =>
         inner.deliver(name, payload, signalId),
-      awaitNext: (name, signal) => {
+      awaitNext: (name, onWake, signal) => {
         waits += 1;
         landed ??= base.repoStore.append(runId, {
           kind: "SignalReceived",
@@ -787,7 +1105,7 @@ describe("signal committed before the wait starts", () => {
           signalId: "sig-gap",
           payload: { gap: true },
         });
-        return inner.awaitNext(name, signal);
+        return inner.awaitNext(name, onWake, signal);
       },
     };
     const env = { ...base, signalChannel: channel };

@@ -24,6 +24,7 @@ import type {
 } from "./env";
 import { resumeFromLog, type WorkflowEvent } from "../state-machine/index";
 import { bridgeAbort } from "./abort-bridge";
+import { beginDelivery } from "./activity";
 import { runtimeRun } from "./run";
 
 /**
@@ -44,7 +45,10 @@ export function createTerminalChildHandle(
       new Error(`child handle has already settled ${terminalStatus}`),
     );
   return {
-    next: () => Promise.resolve(terminal),
+    next: (onWake) => {
+      onWake();
+      return Promise.resolve(terminal);
+    },
     resume: () => rejectSettled(),
     deliverSignal: () => rejectSettled(),
   };
@@ -118,13 +122,13 @@ export function createSuspendableChildHandle(
     | { kind: "input-park"; correlationId: string }
     | { kind: "error"; error: Error };
   const events: BodyEvent[] = [];
-  let wake: (() => void) | null = null;
+  let nextWaiter: { resolve: () => void; resume: () => void } | null = null;
   const notify = (): void => {
-    if (wake !== null) {
-      const resolve = wake;
-      wake = null;
-      resolve();
-    }
+    if (nextWaiter === null) return;
+    const waiter = nextWaiter;
+    nextWaiter = null;
+    waiter.resume();
+    waiter.resolve();
   };
 
   // Names whose re-park has entered `awaitNext`. A host channel does not
@@ -134,21 +138,35 @@ export function createSuspendableChildHandle(
   const awaiterReady = new Set<string>();
   const awaiterWaiters = new Map<
     string,
-    { resolve: () => void; reject: (error: Error) => void }[]
+    {
+      resolve: () => void;
+      reject: (error: Error) => void;
+      resume: () => void;
+    }[]
   >();
   const resolveAwaiter = (name: string): void => {
     awaiterReady.add(name);
     const waiters = awaiterWaiters.get(name);
     if (waiters === undefined) return;
     awaiterWaiters.delete(name);
-    for (const waiter of waiters) waiter.resolve();
+    for (const waiter of waiters) {
+      waiter.resume();
+      waiter.resolve();
+    }
   };
   const rejectAwaiterWaiters = (error: Error): void => {
     for (const waiters of awaiterWaiters.values()) {
-      for (const waiter of waiters) waiter.reject(error);
+      for (const waiter of waiters) {
+        waiter.resume();
+        waiter.reject(error);
+      }
     }
     awaiterWaiters.clear();
   };
+  let watchResume: (() => void) | null = null;
+  // The body has stopped counting as work; `settled` follows a few
+  // microtasks later. A wait that starts in between counts at once.
+  let bodyEnded = false;
 
   const runEnv: WorkflowRuntimeEnv = {
     ...env,
@@ -215,22 +233,36 @@ export function createSuspendableChildHandle(
 
   // On resume, drive the run from its durable log; the body step re-parks
   // silently (a re-park does not re-fire onPark), and the caller relays the
-  // grant via resume on the correlation it recovered from its own log. On a
-  // fresh spawn, seed the run with the event's trigger payload.
-  const baseOptions =
-    resumeFromEvents !== undefined
-      ? { runId: childRunId, resumeFromEvents, depth, maxChildSpawnDepth }
-      : { runId: childRunId, triggerPayload: input, depth, maxChildSpawnDepth };
+  // grant via resume on the correlation it recovered from its own log. Either
+  // way the run is seeded with the event's trigger payload: a log's RunStarted
+  // overrides it, and a body whose log is gone starts over with it.
+  const baseOptions = {
+    runId: childRunId,
+    triggerPayload: input,
+    ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
+    depth,
+    maxChildSpawnDepth,
+  };
   const handle = runtimeRun(definition, runEnv, {
     ...baseOptions,
     localAbort: localTeardown.signal,
+    // The body's settle reaches its waiters only after the body has stopped
+    // counting as work, so they count again first.
+    onSettle: () => {
+      bodyEnded = true;
+      nextWaiter?.resume();
+      watchResume?.();
+      for (const waiters of awaiterWaiters.values()) {
+        for (const waiter of waiters) waiter.resume();
+      }
+    },
   });
 
   let settled: {
     terminalStatus: "completed" | "failed" | "cancelled";
   } | null = null;
   let failure: Error | null = null;
-  // Separate from `wake`. `next` has one consumer; a park-release watch is
+  // Separate from `nextWaiter`. `next` has one consumer; a park-release watch is
   // the other, and it must not take the event-queue slot.
   const releaseWaiters = new Set<() => void>();
   const notifyReleaseWaiters = (): void => {
@@ -323,10 +355,12 @@ export function createSuspendableChildHandle(
   // attaches its tail on the first pull, not when `subscribe` returns, so
   // the pull happens before the second read. That read sees a release
   // that landed while the previous snapshot was taken. A release that
-  // lands during that read wakes the tail.
+  // lands during that read wakes the tail. The caller waits idle on this
+  // watch, so its reads count as delivery: one can find the release.
   const waitForParkRelease = async (
     name: string,
     abort: AbortSignal,
+    onWake: () => void,
   ): Promise<
     | { kind: "released" }
     | {
@@ -335,12 +369,15 @@ export function createSuspendableChildHandle(
       }
   > => {
     if (openParkWatch !== null) {
+      onWake();
       throw new Error(
         `child ${childRunId} already watches ${openParkWatch} for release; ` +
           `a drive relays one park at a time`,
       );
     }
     openParkWatch = name;
+    watchResume = onWake;
+    let endRead: (() => void) | undefined = beginDelivery();
     try {
       if (abort.aborted) throw new Error("aborted");
       for (;;) {
@@ -350,6 +387,7 @@ export function createSuspendableChildHandle(
         const fromSeq = read.lastSeq + 1;
         const poke = new AbortController();
         const detachPoke = bridgeAbort(abort, () => {
+          onWake();
           poke.abort();
         });
         const onSettle = (): void => {
@@ -384,7 +422,11 @@ export function createSuspendableChildHandle(
           // does not replay `from` would wait forever on the old cursor.
           if (again.lastSeq !== read.lastSeq) continue;
           let sawEvent = false;
+          // The store counts what reaches the pull from here on.
+          endRead?.();
+          endRead = undefined;
           const first = await pending;
+          endRead = beginDelivery();
           pending = undefined;
           if (first.done !== true) sawEvent = true;
           if (abort.aborted) throw new Error("aborted");
@@ -412,46 +454,56 @@ export function createSuspendableChildHandle(
         }
       }
     } finally {
+      onWake();
+      endRead?.();
+      watchResume = null;
       openParkWatch = null;
     }
   };
 
   return {
-    next: async () => {
-      for (;;) {
-        const event = events.shift();
-        if (event !== undefined) {
-          if (event.kind === "error") {
-            // The body re-armed an input park nothing will resolve. Tear the
-            // child down locally so its terminal (and the channel teardown tied
-            // to it) fires, then surface the error: the throw lands the
-            // container run's terminal via `runPrimitiveSafe`. Local teardown,
-            // not `handle.cancel`, because an in-process body cannot sign a
-            // control-plane cancel (see the `localTeardown` note above).
-            localTeardown.abort();
-            throw event.error;
+    next: async (onWake) => {
+      try {
+        for (;;) {
+          const event = events.shift();
+          if (event !== undefined) {
+            if (event.kind === "error") {
+              // The body re-armed an input park nothing will resolve. Tear the
+              // child down locally so its terminal (and the channel teardown
+              // tied to it) fires, then surface the error: the throw lands the
+              // container run's terminal via `runPrimitiveSafe`. Local
+              // teardown, not `handle.cancel`, because an in-process body
+              // cannot sign a control-plane cancel (see the `localTeardown`
+              // note above).
+              localTeardown.abort();
+              throw event.error;
+            }
+            if (event.kind === "signal-park") {
+              return {
+                kind: "signal-park",
+                name: event.name,
+                ...(event.timeout !== undefined
+                  ? { timeout: event.timeout }
+                  : {}),
+              };
+            }
+            if (event.kind === "input-park") {
+              return { kind: "input-park", correlationId: event.correlationId };
+            }
+            return { kind: "park", park: event.park };
           }
-          if (event.kind === "signal-park") {
-            return {
-              kind: "signal-park",
-              name: event.name,
-              ...(event.timeout !== undefined
-                ? { timeout: event.timeout }
-                : {}),
-            };
+          if (failure !== null) throw failure;
+          if (settled !== null) {
+            return { kind: "terminal", terminalStatus: settled.terminalStatus };
           }
-          if (event.kind === "input-park") {
-            return { kind: "input-park", correlationId: event.correlationId };
-          }
-          return { kind: "park", park: event.park };
+          if (bodyEnded) onWake();
+          await new Promise<void>((resolve) => {
+            nextWaiter = { resolve, resume: onWake };
+          });
         }
-        if (failure !== null) throw failure;
-        if (settled !== null) {
-          return { kind: "terminal", terminalStatus: settled.terminalStatus };
-        }
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-        });
+      } finally {
+        // Covers an event that was already queued, where nothing woke this.
+        onWake();
       }
     },
     resume: async (correlationId, decision) => {
@@ -462,7 +514,15 @@ export function createSuspendableChildHandle(
     },
     readParkRelease,
     waitForParkRelease,
-    whenSignalAwaiter: (name) => {
+    whenSignalAwaiter: (name, onWake) => {
+      if (
+        awaiterReady.has(name) ||
+        failure !== null ||
+        settled !== null ||
+        bodyEnded
+      ) {
+        onWake();
+      }
       if (awaiterReady.has(name)) return Promise.resolve();
       if (failure !== null) return Promise.reject(failure);
       if (settled !== null) {
@@ -471,12 +531,13 @@ export function createSuspendableChildHandle(
         );
       }
       return new Promise<void>((resolve, reject) => {
+        const waiter = { resolve, reject, resume: onWake };
         const waiters = awaiterWaiters.get(name);
         if (waiters !== undefined) {
-          waiters.push({ resolve, reject });
+          waiters.push(waiter);
           return;
         }
-        awaiterWaiters.set(name, [{ resolve, reject }]);
+        awaiterWaiters.set(name, [waiter]);
       });
     },
   };

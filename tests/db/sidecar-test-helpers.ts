@@ -29,3 +29,11 @@ export function createMockWs(): WsHandle & {
     },
   };
 }
+
+// For a lifecycle service whose test asks for no standby: it holds no binding,
+// so the service never sends a command.
+export const NO_STANDBY_ROUTER = {
+  holdsAllocatedBinding: () => false,
+  putAllocationInStandby: () => Promise.reject(new Error("no standby here")),
+  wakeAllocation: () => Promise.reject(new Error("no standby here")),
+};

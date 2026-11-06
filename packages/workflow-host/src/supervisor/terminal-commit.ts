@@ -27,7 +27,7 @@ import type {
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions/substrate";
 
-import { workflowEventToOnDisk } from "../adapters/repo-store";
+import { workflowEventToOnDisk } from "../adapters/on-disk-event";
 
 const logger = getLogger(["workflow-host", "supervisor", "terminal-commit"]);
 
