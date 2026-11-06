@@ -80,6 +80,11 @@
       "types": "./dist/mail-accept.d.ts",
       "default": "./dist/mail-accept.js"
     },
+    "./reserved-namespaces": {
+      "intx-src": "./src/reserved-namespaces.ts",
+      "types": "./dist/reserved-namespaces.d.ts",
+      "default": "./dist/reserved-namespaces.js"
+    },
     "./mail-send": {
       "intx-src": "./src/mail-send.ts",
       "types": "./dist/mail-send.d.ts",
