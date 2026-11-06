@@ -200,17 +200,19 @@ mail that fires a run is checked against the run's staged grants before the run
 exists. Later mail is checked against the grants that `collectGrants` returns
 for the run principal: its direct grants and the grants of its roles in the
 run's tenant. An operator can therefore refuse a sender with a `deny` on the
-run principal or one of its roles. The deny must use the action `accept`, the
-action of the launch and `correspondent` grants. Specificity counts the action,
-so a `deny` with the action `*` ranks below an `accept` allow at the same
-coordinate and does not override it.
+run principal or one of its roles. The deny's action must match `accept`, the
+action of the launch and `correspondent` grants. The action does not change the
+rank, so a `deny` with the action `*` overrides an `accept` allow at the same
+coordinate.
 
 The grants that match any of the sender's coordinates form one set, and one
 grant wins. The order is:
 
 1. The coordinate the grant names: `principal`, then `asset`, then `tenant`,
    then a namespace-wide grant such as `mail.accept:*`.
-2. Pattern specificity.
+2. The specificity of the coordinate pattern. The action and the `:`
+   separators do not count, so `mail.accept:*` and `mail.accept:*:*` rank the
+   same.
 3. Effect: `deny`, then `ask`, then `allow`.
 
 The coordinate type ranks first, before pattern specificity. An
@@ -226,8 +228,8 @@ admits mail.
 
 A namespace-wide grant ranks below every coordinate, so a `deny mail.accept:*`
 does not close a run to mail: each launch grant names a coordinate and outranks
-it. An exact `deny` with the action `accept` on a coordinate that the run's
-grants name refuses that coordinate, for example
+it. An exact `deny` on a coordinate that the run's grants name refuses that
+coordinate, for example
 `deny mail.accept:principal:<id>` for the invoker and
 `deny mail.accept:tenant:<id>` for the tenant rule.
 
@@ -236,8 +238,8 @@ A run with the `correspondent` rule gets a new exact
 outranks every broader deny: `deny mail.accept:*`,
 `deny mail.accept:tenant:<id>` and `deny mail.accept:principal:*`. So a broad
 deny does not close the run to the parties it mails later. An exact
-`deny mail.accept:principal:<party>` with the action `accept` refuses that
-party, whether the operator writes it before or after the run mails the party.
+`deny mail.accept:principal:<party>` refuses that party, whether the operator
+writes it before or after the run mails the party.
 To close the run to every party, end the run.
 
 ### State that predates the sender gate

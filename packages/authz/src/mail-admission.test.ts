@@ -358,9 +358,9 @@ describe("evaluateMailAdmission", () => {
     expect(result.effect).toBe("deny");
   });
 
-  test("a deny overrides an accept allow only with the accept action", async () => {
-    // Specificity counts the action, so a deny with action `*` ranks below
-    // the `accept` allow at the same coordinate and does not override it.
+  test("a deny overrides an accept allow whatever its action", async () => {
+    // The action does not rank a grant, so a deny with action `*` ties the
+    // `accept` allow at the same coordinate and its effect wins.
     const exactDeny = await evaluateMailAdmission({
       senderCoordinates: [PRINCIPAL],
       recipientGrants: [
@@ -378,8 +378,21 @@ describe("evaluateMailAdmission", () => {
 
     expect(exactDeny.admit).toBe(false);
     expect(exactDeny.effect).toBe("deny");
-    expect(wildcardActionDeny.admit).toBe(true);
-    expect(wildcardActionDeny.effect).toBe("allow");
+    expect(wildcardActionDeny.admit).toBe(false);
+    expect(wildcardActionDeny.effect).toBe("deny");
+  });
+
+  test("a namespace-wide deny refuses past a namespace-wide allow of any spelling", async () => {
+    const result = await evaluateMailAdmission({
+      senderCoordinates: [PRINCIPAL],
+      recipientGrants: [
+        { ...acceptGrant(PRINCIPAL, "allow"), resource: "mail.accept:*" },
+        { ...acceptGrant(PRINCIPAL, "deny"), resource: "mail.accept:*:*" },
+      ],
+    });
+
+    expect(result.admit).toBe(false);
+    expect(result.effect).toBe("deny");
   });
 
   test("an exact principal allow outranks every broader deny", async () => {

@@ -39,7 +39,10 @@ export type MailAdmissionResult = {
  *   and a `deny mail.accept:tenant:<id>` refuses that tenant past an
  *   `allow mail.accept:*`. A wildcard id does not lower the tier: an
  *   `allow mail.accept:principal:*` outranks an exact
- *   `deny mail.accept:tenant:<id>`.
+ *   `deny mail.accept:tenant:<id>`. Inside one tier the more specific
+ *   coordinate pattern wins, and effect breaks a tie. The action does not
+ *   count, so a `deny` with action `*` refuses past an `accept` allow of the
+ *   same coordinate.
  *
  * Conditioned `mail.accept` grants require a condition `registry`. Without
  * one, any conditioned grant in the namespace makes this helper THROW rather
