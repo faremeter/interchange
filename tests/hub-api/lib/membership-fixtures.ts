@@ -82,3 +82,30 @@ export async function addMembership(
     await sql.end();
   }
 }
+
+export type RoleGrantRow = {
+  roleName: string;
+  resource: string;
+  action: string;
+  effect: string;
+  origin: string;
+};
+
+// Lists the grants every role of a tenant holds, for a test that checks the
+// defaults tenant creation gives its system roles.
+export async function listRoleGrants(
+  schema: string,
+  tenantId: string,
+): Promise<RoleGrantRow[]> {
+  const sql = connect(schema);
+  try {
+    const rows = await sql<RoleGrantRow[]>`
+      select r.name as "roleName", g.resource, g.action, g.effect, g.origin
+      from "grant" g join role r on r.id = g.role_id
+      where r.tenant_id = ${tenantId}
+      order by r.name, g.resource, g.action`;
+    return [...rows];
+  } finally {
+    await sql.end();
+  }
+}

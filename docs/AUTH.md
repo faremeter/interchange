@@ -129,7 +129,15 @@ role
   UNIQUE(tenant_id, name)
 ```
 
-System roles (owner, admin, member) are created automatically when a tenant is created. They cannot be deleted or renamed. Tenant admins can define additional custom roles.
+System roles (owner, admin, member) are created automatically when a tenant is created. They cannot be deleted or renamed. Tenant admins can define additional custom roles. Tenant creation gives the system roles these grants, each an `allow` with origin `system`:
+
+| Role   | Grants                                                                       |
+| ------ | ---------------------------------------------------------------------------- |
+| owner  | `*` / `*`; `mail.send:tenant:<tenant id>` / `send`                           |
+| admin  | `*` / `read`, `create` and `manage`; `mail.send:tenant:<tenant id>` / `send` |
+| member | `*` / `read`                                                                 |
+
+A `mail.send` check ignores a `*` grant, so the owner needs its own send row.
 
 ```
 principal_role
@@ -502,7 +510,7 @@ On user registration:
 1. Create a tenant whose slug is derived from the user's email address and reduced to a single DNS label. The address itself is not a legal slug, because `TenantSlug` and `tenant_slug_dns_label_check` both reject `@` and `.` (see Tenant Schema).
 2. Create a principal for the user in that tenant (`kind = 'user'`).
 3. Assign the system `owner` role.
-4. The owner role includes a broad default grant: `resource = "*", action = "*", effect = "allow"`.
+4. The owner role includes the default owner grants listed under Roles: a broad grant (`resource = "*", action = "*", effect = "allow"`) and the tenant send grant.
 
 The personal tenant has the same authorization machinery as any other tenant. When the user creates workflows there, those runs get principals and grants through the same system. The onboarding UX is simple, but the underlying model is uniform.
 
