@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
+import { permitAllMailSend } from "@intx/authz/testing";
 import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
 
 import {
@@ -62,6 +63,7 @@ function makeTrigger() {
     principalKeyStore: unusedDep("principalKeyStore"),
     runTokenStore: unusedDep("runTokenStore"),
     grantStoreFor: unusedDep("grantStoreFor"),
+    authorizeMailSend: unusedDep("authorizeMailSend"),
     sidecarRouter: unusedDep("sidecarRouter"),
     repoStore: unusedDep("repoStore"),
   });
@@ -170,6 +172,7 @@ describe("triggerWorkflowRun definition asset lookup", () => {
       principalKeyStore: unusedDep("principalKeyStore"),
       runTokenStore: unusedDep("runTokenStore"),
       grantStoreFor: unusedDep("grantStoreFor"),
+      authorizeMailSend: permitAllMailSend,
       sidecarRouter: unusedDep("sidecarRouter"),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- this branch only opens committed reads and treats a null result as an absent lifecycle
       repoStore: repoStore as unknown as TriggerWorkflowRunDeps["repoStore"],
@@ -310,6 +313,7 @@ describe("triggerWorkflowRun first-trigger staging", () => {
       } as unknown as TriggerWorkflowRunDeps["principalKeyStore"],
       runTokenStore: unusedDep("runTokenStore"),
       grantStoreFor: opts.grantStoreFor,
+      authorizeMailSend: permitAllMailSend,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the direct path only routes the trigger mail
       sidecarRouter: {
         routeMail: opts.routeMail ?? (async () => true),

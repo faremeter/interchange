@@ -15,6 +15,7 @@ import { and, eq, isNotNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { type } from "arktype";
 
+import type { MailSendAuthorizer } from "@intx/authz";
 import {
   asset,
   hubConsumersOf,
@@ -97,11 +98,16 @@ export const WorkflowRunTriggerResponse = type({
   messageId: "string",
 });
 
+/** The error code of a run mail the caller's `mail.send` grants refuse. */
+export const MAIL_SEND_DENIED_CODE = "mail_send_denied";
+
 export type TriggerWorkflowRunDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
   runTokenStore: RunTokenStore;
   grantStoreFor: GrantStoreFactory;
+  // Decides whether the caller may send the mail that starts the run.
+  authorizeMailSend: MailSendAuthorizer;
   sidecarRouter: SidecarRouter;
   workflowDispatchService?: WorkflowDispatchService;
   repoStore: RepoStore;
@@ -167,6 +173,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     principalKeyStore,
     runTokenStore,
     grantStoreFor,
+    authorizeMailSend,
     sidecarRouter,
     workflowDispatchService,
     repoStore,
@@ -276,6 +283,44 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           error: {
             code: "not_found",
             message: "Workflow deployment not found",
+          },
+        },
+      };
+    }
+    // The caller's `mail.send` grants decide whether it may mail this run.
+    // The check runs before the trigger links the run principal, commits
+    // grants or dispatches, so a refused first mail leaves the deployment as
+    // it was. The route's `manage` check decides who may start a run; this
+    // one decides what the caller may send.
+    const sendAuthorization = await authorizeMailSend({
+      sender: {
+        kind: "principal",
+        principalId: principal.id,
+        tenantId: tenant.id,
+      },
+      recipients: [address],
+    });
+    // A fault while resolving the run's coordinates is not a refusal: it
+    // fails the request as a fault while resolving the sender does.
+    if (
+      sendAuthorization.ok &&
+      sendAuthorization.decisions[0]?.outcome === "unresolved"
+    ) {
+      throw new Error(
+        `the send check could not resolve the coordinates of ${address}`,
+      );
+    }
+    if (
+      !sendAuthorization.ok ||
+      sendAuthorization.decisions[0]?.allowed !== true
+    ) {
+      return {
+        ok: false,
+        status: 403,
+        body: {
+          error: {
+            code: MAIL_SEND_DENIED_CODE,
+            message: "No mail.send grant allows mail to this workflow run",
           },
         },
       };

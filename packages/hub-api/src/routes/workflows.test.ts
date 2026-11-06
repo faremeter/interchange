@@ -9,7 +9,9 @@ import {
   createInMemoryGrantStore,
   evaluateGrants,
   toolConsumer,
+  type MailSendAuthorizer,
 } from "@intx/authz";
+import { permitAllMailSend } from "@intx/authz/testing";
 import {
   TenantConfigInvalidError,
   WorkflowRunDispatchPayloadConflictError,
@@ -892,6 +894,9 @@ type TestAppOpts = {
   tenantConfig?: unknown;
   repoDirById?: Map<string, string>;
   runLifecycle?: WorkflowRunLifecycle | (() => WorkflowRunLifecycle);
+  // The trigger's send check. Unset, it allows every recipient; the
+  // database-backed authorizer is tested against a real database.
+  authorizeMailSend?: MailSendAuthorizer;
 };
 
 // Project a workflow envelope into the deploy-approved grant-walk snapshot the
@@ -939,6 +944,7 @@ function createTestApp(opts: TestAppOpts = {}) {
     principalKeyStore: opts.principalKeyStore ?? createMockPrincipalKeyStore(),
     grantStore,
     grantStoreFor: () => grantStore,
+    authorizeMailSend: opts.authorizeMailSend ?? permitAllMailSend,
     sidecarRouter: createMockSidecarRouter(
       opts.signalCalls ?? [],
       opts.routeMailCalls ?? [],
@@ -3202,6 +3208,121 @@ describe("POST /workflows/:anchorRunId/mail", () => {
 
     expect(res.status).toBe(404);
     expect(routeMailCalls).toHaveLength(0);
+  });
+
+  describe("the send check", () => {
+    function refusing(
+      effect: "deny" | null,
+      checks: Parameters<MailSendAuthorizer>[0][],
+    ): MailSendAuthorizer {
+      return async (args) => {
+        checks.push(args);
+        return {
+          ok: true,
+          decisions: args.recipients.map((recipient) => ({
+            recipient,
+            outcome: "evaluated",
+            allowed: false,
+            effect,
+            grant: null,
+          })),
+        };
+      };
+    }
+
+    test.each([
+      ["a deny", "deny" as const],
+      ["no grant", null],
+    ])(
+      "%s refuses a first mail before anything is written or sent",
+      async (_label, effect) => {
+        const checks: Parameters<MailSendAuthorizer>[0][] = [];
+        const runGrantsCalls: RunGrantsCall[] = [];
+        const routeMailCalls: RouteMailCall[] = [];
+        const inserts: InsertRecord[] = [];
+        const app = createTestApp({
+          grants: [manageGrant()],
+          runGrantsCalls,
+          routeMailCalls,
+          db: { deploymentRow, assetRow: workflowAssetRow, inserts },
+          workflowJson: WORKFLOW_JSON_WITH_TOOLS,
+          authorizeMailSend: refusing(effect, checks),
+        });
+
+        const res = await app.fetch(
+          authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, {
+            content: "kick off",
+          }),
+        );
+
+        expect(res.status).toBe(403);
+        expect(await errorCode(res)).toBe("mail_send_denied");
+        expect(checks).toEqual([
+          {
+            sender: {
+              kind: "principal",
+              // The caller's grants decide, not the deployer's or the run's.
+              principalId: PRINCIPAL_ID,
+              tenantId: TENANT_ID,
+            },
+            recipients: [`${DEPLOYMENT_ID}@${DOMAIN}`],
+          },
+        ]);
+        // No run principal is linked, no grant is committed, nothing is sent.
+        expect(inserts).toEqual([]);
+        expect(runGrantsCalls).toEqual([]);
+        expect(routeMailCalls).toEqual([]);
+      },
+    );
+
+    // A fault while resolving the run's coordinates is not a refusal, so the
+    // caller sees a server error it may retry, not `mail_send_denied`.
+    test("an unresolved run address fails the request before anything is written", async () => {
+      const runGrantsCalls: RunGrantsCall[] = [];
+      const routeMailCalls: RouteMailCall[] = [];
+      const inserts: InsertRecord[] = [];
+      const app = createTestApp({
+        grants: [manageGrant()],
+        runGrantsCalls,
+        routeMailCalls,
+        db: { deploymentRow, assetRow: workflowAssetRow, inserts },
+        workflowJson: WORKFLOW_JSON_WITH_TOOLS,
+        authorizeMailSend: async ({ recipients }) => ({
+          ok: true,
+          decisions: recipients.map((recipient) => ({
+            recipient,
+            outcome: "unresolved",
+            allowed: false,
+          })),
+        }),
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+      );
+
+      expect(res.status).toBe(500);
+      expect(inserts).toEqual([]);
+      expect(runGrantsCalls).toEqual([]);
+      expect(routeMailCalls).toEqual([]);
+    });
+
+    test("an allow lets the mail through", async () => {
+      const routeMailCalls: RouteMailCall[] = [];
+      const app = createTestApp({
+        grants: [manageGrant()],
+        routeMailCalls,
+        db: { deploymentRow, assetRow: workflowAssetRow, inserts: [] },
+        workflowJson: WORKFLOW_JSON_WITH_TOOLS,
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+      );
+
+      expect(res.status).toBe(202);
+      expect(routeMailCalls).toHaveLength(1);
+    });
   });
 
   test("mints a run principal, anchors the run, and sends run.grants before the mail", async () => {

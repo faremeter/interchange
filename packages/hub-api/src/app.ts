@@ -2,7 +2,7 @@ import type { Handler, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { openAPIRouteHandler } from "hono-openapi";
 
-import { HUB_CONDITION_REGISTRY } from "@intx/authz";
+import { HUB_CONDITION_REGISTRY, type MailSendAuthorizer } from "@intx/authz";
 import { honoLogger, type HonoContext } from "@intx/log/hono";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import { getLogger } from "@intx/log";
@@ -48,6 +48,7 @@ import { createPrincipalRoutes, createInviteRoutes } from "./routes/principals";
 import { createRoleRoutes, createRoleAssignRoutes } from "./routes/roles";
 import { createGrantRoutes, createEvaluateRoutes } from "./routes/grants";
 import { createRunRoutes } from "./routes/runs";
+import { createMailSendAuthorizer } from "./mail-send-authorization";
 import { createWorkflowRoutes } from "./routes/workflows";
 import { createWorkflowDefinitionRoutes } from "./routes/workflow-definitions";
 import {
@@ -168,6 +169,13 @@ export type MountHubRoutesDeps = {
    */
   grantStoreFor?: GrantStoreFactory;
   conditionRegistry?: ConditionRegistry;
+  /**
+   * Decides whether the caller may send the mail that starts a run. Optional:
+   * when omitted, the database-backed authorizer over `grantStoreFor` is
+   * used. It evaluates conditions with its own narrower registry, not
+   * `conditionRegistry`. A database-free test supplies its own.
+   */
+  authorizeMailSend?: MailSendAuthorizer;
   approvalStore?: ApprovalStore;
   signalCorrelationStore?: SignalCorrelationStore;
   readRunLifecycles?: ReadRunLifecycles;
@@ -242,6 +250,12 @@ export function mountHubRoutes(
     grantStore,
     conditionRegistry,
   });
+  const authorizeMailSend =
+    opts.authorizeMailSend ??
+    createMailSendAuthorizer({
+      db,
+      grantStoreFor,
+    });
   const approvalStore = opts.approvalStore ?? createApprovalStore(db);
   const signalCorrelationStore =
     opts.signalCorrelationStore ?? createSignalCorrelationStore(db);
@@ -366,6 +380,7 @@ export function mountHubRoutes(
         : {}),
       grantStore,
       grantStoreFor,
+      authorizeMailSend,
       conditionRegistry,
       requireGrant,
       approvalStore,
@@ -407,6 +422,7 @@ export function mountHubRoutes(
         sidecarRouter,
         repoStore,
         grantStoreFor,
+        authorizeMailSend,
         authorizeGrant,
         requireGrant,
       }),
@@ -568,6 +584,8 @@ export type CreateAppOpts = {
   principalKeyStore?: PrincipalKeyStore;
   grantStore?: GrantStore;
   grantStoreFor?: GrantStoreFactory;
+  /** See `authorizeMailSend` on the route mount options. */
+  authorizeMailSend?: MailSendAuthorizer;
   approvalStore?: ApprovalStore;
   signalCorrelationStore?: SignalCorrelationStore;
   readRunLifecycles?: ReadRunLifecycles;
@@ -596,6 +614,7 @@ export function createApp({
   principalKeyStore,
   grantStore,
   grantStoreFor,
+  authorizeMailSend,
   approvalStore,
   signalCorrelationStore,
   readRunLifecycles,
@@ -638,6 +657,7 @@ export function createApp({
     maxTarballBytes,
     ...(grantStore ? { grantStore } : {}),
     ...(grantStoreFor ? { grantStoreFor } : {}),
+    ...(authorizeMailSend ? { authorizeMailSend } : {}),
     ...(approvalStore ? { approvalStore } : {}),
     ...(signalCorrelationStore ? { signalCorrelationStore } : {}),
     ...(readRunLifecycles ? { readRunLifecycles } : {}),

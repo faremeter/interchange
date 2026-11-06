@@ -310,6 +310,9 @@ export async function startHubAccessEnv(args: {
       // for its own, so a run that reads another run would show the
       // requirement copied the creator's grant instead of binding `self`.
       await grantCaller("workflow-run:*", "read");
+      // The mail that starts a run needs a send grant, as the caller of a
+      // tenant made through the route holds by its role.
+      await grantCaller(`mail.send:tenant:${tenantId}`, "send");
     },
 
     async deploy(deployArgs) {

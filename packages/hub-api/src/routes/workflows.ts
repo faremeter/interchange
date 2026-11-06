@@ -21,6 +21,7 @@ import {
   type PrincipalKeyStore,
   type RunTokenStore,
 } from "@intx/db";
+import type { MailSendAuthorizer } from "@intx/authz";
 import {
   correlationIdFromSignalName,
   ErrorResponse,
@@ -236,6 +237,8 @@ export type CreateWorkflowRoutesDeps = {
   // Builds a grant store that reads through the given executor; the trigger
   // reads delegator grants with it.
   grantStoreFor: GrantStoreFactory;
+  // Decides whether the caller may send the mail that starts a run.
+  authorizeMailSend: MailSendAuthorizer;
   authorizeGrant: AuthorizeGrant;
   requireGrant: RequireGrant;
 };
@@ -249,6 +252,7 @@ export function createWorkflowRoutes({
   sidecarRouter,
   repoStore,
   grantStoreFor,
+  authorizeMailSend,
   authorizeGrant,
   requireGrant,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
@@ -259,6 +263,7 @@ export function createWorkflowRoutes({
     principalKeyStore,
     runTokenStore,
     grantStoreFor,
+    authorizeMailSend,
     sidecarRouter,
     ...(workflowDispatchService !== undefined
       ? { workflowDispatchService }
@@ -816,6 +821,10 @@ export function createWorkflowRoutes({
         ),
         400: jsonResponse(
           "Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
+          ErrorResponse,
+        ),
+        403: jsonResponse(
+          "The caller lacks `manage` on the deployment, (`insufficient_grants`) a delegator lacks a grant the definition requires, or (`mail_send_denied`) no `mail.send` grant of the caller allows mail to the deployment",
           ErrorResponse,
         ),
         404: jsonResponse("Workflow deployment not found", ErrorResponse),

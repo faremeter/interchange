@@ -18,6 +18,7 @@ import type {
 } from "@intx/db";
 import { runPrincipalActiveKeySql } from "@intx/db";
 import { getLogger } from "@intx/log";
+import type { MailSendAuthorizer } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { extractPartByPath } from "@intx/mime";
 
@@ -178,6 +179,8 @@ export type CreateRunRoutesDeps = {
   // Builds a grant store that reads through the given executor; the mail-send
   // trigger reads delegator grants with it.
   grantStoreFor: GrantStoreFactory;
+  // Decides whether the caller may send the mail that starts a run.
+  authorizeMailSend: MailSendAuthorizer;
   conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
   // The run approvals-list route reads the run's approval decisions here.
@@ -195,6 +198,7 @@ export function createRunRoutes({
   workflowLifecycleService,
   grantStore,
   grantStoreFor,
+  authorizeMailSend,
   conditionRegistry,
   requireGrant,
   approvalStore,
@@ -222,6 +226,7 @@ export function createRunRoutes({
           principalKeyStore,
           runTokenStore,
           grantStoreFor,
+          authorizeMailSend,
           sidecarRouter,
           ...(workflowDispatchService !== undefined
             ? { workflowDispatchService }
@@ -909,6 +914,10 @@ export function createRunRoutes({
         ),
         400: jsonResponse(
           "Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
+          ErrorResponse,
+        ),
+        403: jsonResponse(
+          "The caller lacks `manage` on the run, (`insufficient_grants`) a delegator lacks a grant the definition requires, or (`mail_send_denied`) no `mail.send` grant of the caller allows mail to the run",
           ErrorResponse,
         ),
         404: jsonResponse("Run not found", ErrorResponse),
