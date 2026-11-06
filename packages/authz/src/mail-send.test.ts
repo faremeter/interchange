@@ -11,6 +11,7 @@ import {
   type MailSendCoordinate,
 } from "./coord";
 import { HUB_CONDITION_REGISTRY } from "./hub-condition-registry";
+import { MAIL_SEND_CONDITION_REGISTRY } from "./mail-send-condition-registry";
 import type { GrantRule } from "./types";
 
 function grant(
@@ -234,6 +235,57 @@ describe("an operator deny under a run's send grant", () => {
       ],
     );
     expect(result.allowed).toBe(false);
+  });
+});
+
+// The send check evaluates only `time_window`. A UTC window around the
+// current hour holds now; the one two hours later does not. Windows that
+// cross midnight are supported, so both hold their meaning at any hour.
+describe("a conditioned send grant under the send check's registry", () => {
+  function window(holds: boolean) {
+    const hour = new Date().getUTCHours() + (holds ? 0 : 2);
+    const at = (h: number) => `${String(h % 24).padStart(2, "0")}:00`;
+    return {
+      time_window: { after: at(hour), before: at(hour + 1), timezone: "UTC" },
+    };
+  }
+
+  function check(senderGrants: GrantRule[]) {
+    return evaluateMailSend({
+      recipientCoordinates: [DOMAIN],
+      senderGrants,
+      registry: MAIL_SEND_CONDITION_REGISTRY,
+    });
+  }
+
+  const domain = mailSendResource("domain", DOMAIN.id);
+
+  test("an allow inside its window allows the send", async () => {
+    const result = await check([
+      { ...grant(domain, "allow"), conditions: window(true) },
+    ]);
+    expect(result.allowed).toBe(true);
+  });
+
+  test("an allow outside its window does not", async () => {
+    const result = await check([
+      { ...grant(domain, "allow"), conditions: window(false) },
+    ]);
+    expect(result.allowed).toBe(false);
+  });
+
+  test("a deny outside its window does not refuse the run's send", async () => {
+    const result = await check([
+      grant("mail.send:*:*", "allow"),
+      { ...grant(domain, "deny"), conditions: window(false) },
+    ]);
+    expect(result.allowed).toBe(true);
+  });
+
+  test("a tool condition fails the check closed", async () => {
+    await expect(
+      check([{ ...grant(domain, "deny"), conditions: { tool: "tool:pkg" } }]),
+    ).rejects.toThrow();
   });
 });
 

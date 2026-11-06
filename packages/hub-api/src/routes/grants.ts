@@ -2,7 +2,14 @@ import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
 
-import { authorize, validateGrantConditions } from "@intx/authz";
+import {
+  authorize,
+  MAIL_SEND_ACTION,
+  mailSendResourceProblem,
+  matchPattern,
+  validateGrantConditions,
+} from "@intx/authz";
+import { isMailSendNamespaceResource } from "@intx/types/mail-send";
 import { grant, principal, workflowRun } from "@intx/db/schema";
 import { parseGrantRow } from "@intx/db";
 import type { DB, DBExecutor, GrantStoreFactory } from "@intx/db";
@@ -278,7 +285,10 @@ export function createGrantRoutes({
         "Creates a grant targeting either a role or a principal directly. Exactly one of roleId or principalId must be provided.",
       responses: {
         201: jsonResponse("Grant created", GrantResponse),
-        400: jsonResponse(CONDITIONS_400_DESCRIPTION, ErrorResponse),
+        400: jsonResponse(
+          `${CONDITIONS_400_DESCRIPTION} A \`mail.send\` resource that can match no recipient coordinate, a domain pattern that is not in lower case, a \`mail.send\` grant whose action cannot match \`send\`, or a pattern outside the \`mail.send\` namespace that names part of a send resource, such as \`mail.send*:domain:<id>\`, gets an \`ErrorResponse\` that names the problem.`,
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", CreateGrant),
@@ -288,6 +298,25 @@ export function createGrantRoutes({
       // -- roleId or principalId, not both and not neither -- so a malformed
       // request is a 400 before this handler runs.
       const body = c.req.valid("json");
+
+      // A `mail.send` row that can match no coordinate, or whose action cannot
+      // match `send`, would never decide a send, so a deny of that shape would
+      // block nothing. The update route cannot change a resource or an
+      // action, so only creation checks them.
+      const resourceProblem = mailSendResourceProblem(body.resource);
+      if (resourceProblem !== null) {
+        return errorResponse(c, "bad_request", resourceProblem);
+      }
+      if (
+        isMailSendNamespaceResource(body.resource) &&
+        !matchPattern(body.action, MAIL_SEND_ACTION)
+      ) {
+        return errorResponse(
+          c,
+          "bad_request",
+          `a ${JSON.stringify(body.resource)} grant decides only sends, so its action must match "${MAIL_SEND_ACTION}"`,
+        );
+      }
 
       const problems = validateGrantConditions(
         {

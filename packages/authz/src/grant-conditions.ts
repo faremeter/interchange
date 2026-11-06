@@ -1,4 +1,7 @@
+import { isMailSendNamespaceResource } from "@intx/types/mail-send";
+
 import { validateConditions } from "./conditions";
+import { MAIL_SEND_CONDITION_REGISTRY } from "./mail-send-condition-registry";
 import { matchPattern } from "./patterns";
 import { RUN_CHILD_CONDITION_REGISTRY } from "./run-child-condition-registry";
 import { CREDENTIAL_USE_CONDITIONS } from "./tool-consumer";
@@ -42,11 +45,12 @@ function canMatchNonCredential(resource: string): boolean {
 /**
  * Check a grant's conditions against every registry that will evaluate the
  * grant, not only the hub's. The hub evaluates every grant, with
- * `hubRegistry`. A row on a
- * workflow run's principal is also evaluated by the run child, for any
- * resource its pattern can match outside `credential:`, and by the
- * credential gate, for `credential:<id>` / `use`. Each of those has a
- * narrower registry, and a condition outside it throws there.
+ * `hubRegistry`. The hub's mail send check evaluates a `mail.send` grant on
+ * any holder with a narrower registry. A row on a workflow run's principal
+ * is also evaluated by the run child, for any resource its pattern can match
+ * outside `credential:`, and by the credential gate, for `credential:<id>` /
+ * `use`. Each of those has a narrower registry, and a condition outside it
+ * throws there.
  *
  * Returns one problem per bad entry. A problem only a narrower registry
  * reports names the place that rejects it.
@@ -56,17 +60,21 @@ export function validateGrantConditions(
   hubRegistry: Readonly<ConditionRegistry>,
 ): string[] {
   const problems = validateConditions(target.conditions, hubRegistry);
-  if (!target.onRunPrincipal) return problems;
 
   const narrower: [string, Readonly<ConditionRegistry>][] = [];
-  if (canMatchNonCredential(target.resource)) {
-    narrower.push(["a workflow run", RUN_CHILD_CONDITION_REGISTRY]);
+  if (isMailSendNamespaceResource(target.resource)) {
+    narrower.push(["a mail send", MAIL_SEND_CONDITION_REGISTRY]);
   }
-  if (
-    canMatchCredential(target.resource) &&
-    matchPattern(target.action, "use")
-  ) {
-    narrower.push(["credential use", CREDENTIAL_USE_CONDITIONS]);
+  if (target.onRunPrincipal) {
+    if (canMatchNonCredential(target.resource)) {
+      narrower.push(["a workflow run", RUN_CHILD_CONDITION_REGISTRY]);
+    }
+    if (
+      canMatchCredential(target.resource) &&
+      matchPattern(target.action, "use")
+    ) {
+      narrower.push(["credential use", CREDENTIAL_USE_CONDITIONS]);
+    }
   }
 
   for (const [place, registry] of narrower) {
