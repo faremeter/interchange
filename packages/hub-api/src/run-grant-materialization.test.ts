@@ -24,7 +24,7 @@ import {
   workflowRun as workflowRunTable,
   workflowRunLaunchSpec as workflowRunLaunchSpecTable,
 } from "@intx/db/schema";
-import type { PrincipalKeyStore, RunTokenStore } from "@intx/db";
+import type { RunTokenStore } from "@intx/db";
 
 import { makeGrantRow } from "./grant-materialization";
 import {
@@ -1888,14 +1888,6 @@ describe("stageRunGrantsFromSnapshot for an HTTP launch", () => {
 });
 
 describe("createCorrespondentGrantMinter", () => {
-  // The minter resolves correspondents through the key store; these cases
-  // mint nothing, so a no-op stub suffices.
-  const stubPrincipalKeyStore: PrincipalKeyStore = {
-    generate: async () => "pky_stub",
-    sign: async () => new Uint8Array(64),
-    getPublicKey: async () => "pky_stub_public",
-  };
-
   // A DB stand-in for the minter's unlocked rule check. It serves the sending
   // anchor and the frozen snapshot of its definition, and counts the
   // transactions the minter opens. The locked path itself is covered by the DB
@@ -1937,10 +1929,7 @@ describe("createCorrespondentGrantMinter", () => {
   function mintFrom(
     db: Parameters<typeof createCorrespondentGrantMinter>[0]["db"],
   ) {
-    return createCorrespondentGrantMinter({
-      db,
-      principalKeyStore: stubPrincipalKeyStore,
-    })({
+    return createCorrespondentGrantMinter({ db })({
       senderAddress: WORKFLOW_ADDRESS,
       recipientAddresses: ["vendor@partner.example"],
     });

@@ -1,10 +1,10 @@
-import { and, eq, isNotNull, or, sql } from "drizzle-orm";
+import { and, eq, isNotNull, or } from "drizzle-orm";
 
-import { parseAddress } from "@intx/types";
 import type { MailAcceptCoordinate } from "@intx/authz";
 import { getLogger } from "@intx/log";
 
 import type { DBExecutor } from "./client";
+import { resolveLocalMailParty } from "./local-mail-party";
 import type { PrincipalKeyStore } from "./principal-key-store";
 import {
   loadRunPrincipalActiveKey,
@@ -12,10 +12,7 @@ import {
 } from "./run-principal-key";
 import { principal } from "./schema/principals";
 import { tenant } from "./schema/tenants";
-import { workflowDefinition } from "./schema/workflow-definitions";
 import { workflowRun } from "./schema/workflow-run";
-
-const RUN_PREFIX = "run_";
 
 const logger = getLogger(["db", "sender-key-resolver"]);
 
@@ -118,9 +115,10 @@ export function senderCoordinates(
  * coordinate set. A keyless USER principal is different: it is an invariant
  * break, so `getPublicKey` throws rather than defaulting (see below).
  *
- * Addresses are matched case-insensitively. Inbound `From` addresses are
- * lowercased when parsed (see `@intx/mime` `extractAddrSpec`), so the address is
- * normalized here and stored values are compared under `lower(...)`. Tenant
+ * The address names its sender through `resolveLocalMailParty`. Addresses are
+ * matched case-insensitively and without a trailing root dot. Inbound `From`
+ * addresses are lowercased when parsed (see `@intx/mime` `extractAddrSpec`), so
+ * the address is normalized and stored values are compared in lower case. Tenant
  * domains are `lower(domain)`-unique (`tenant_domain_lower_idx`), so a
  * normalized domain matches at most one tenant. A user `refId` is a
  * case-sensitively-unique betterAuth id that can carry uppercase; lowercasing it
@@ -136,72 +134,51 @@ export async function resolveSenderKey(
   principalKeyStore: PrincipalKeyStore,
   address: string,
 ): Promise<SenderKeyResolution | null> {
-  const normalized = address.toLowerCase();
-  const parsed = parseAddress(normalized);
-  if (parsed === null) return null;
-  const { localPart, domain } = parsed;
+  const party = await resolveLocalMailParty(db, address);
+  if (party === null) return null;
 
-  if (localPart.startsWith(RUN_PREFIX)) {
+  if (party.kind === "run") {
     // A run sender resolves to the sidecar-minted key the hub recorded as the
     // active key of the run's principal when the deployment's initialization
-    // completed. `workflow_run.address` is unique among the runs that set it,
-    // so there is at most one row. A run whose principal holds no active key
-    // has not finished initializing, or its sidecar was replaced and the
-    // replacement has not recorded a key yet -- an expected state -- so it
-    // resolves to nothing rather than erroring, unlike the keyless-principal
-    // invariant break below. A retired key no longer resolves, so the hub
-    // vouches for no key for mail its replaced sidecar signed. The principal's
-    // status is not read: a terminal run's in-flight mail still verifies.
-    const [row] = await db
-      .select({
-        id: workflowRun.id,
-        principalId: workflowRun.principalId,
-        assetId: workflowDefinition.assetId,
-        tenantId: workflowRun.tenantId,
-      })
-      .from(workflowRun)
-      .innerJoin(
-        workflowDefinition,
-        eq(workflowRun.definitionId, workflowDefinition.id),
-      )
-      .where(eq(sql`lower(${workflowRun.address})`, normalized))
-      .limit(1);
-    if (row === undefined) return null;
-    const publicKey = await loadRunPrincipalActiveKey(db, row.tenantId, row.id);
+    // completed. A run whose principal holds no active key has not finished
+    // initializing, or its sidecar was replaced and the replacement has not
+    // recorded a key yet -- an expected state -- so it resolves to nothing
+    // rather than erroring, unlike the keyless-principal invariant break
+    // below. A retired key no longer resolves, so the hub vouches for no key
+    // for mail its replaced sidecar signed. The principal's status is not
+    // read: a terminal run's in-flight mail still verifies.
+    const publicKey = await loadRunPrincipalActiveKey(
+      db,
+      party.tenantId,
+      party.anchorRunId,
+    );
     if (publicKey === null) return null;
     // `principalId` may be null: an acked anchor holds a signing key before its
     // first trigger links its run principal, so it CAN sign yet has no linked
     // principal. The key still resolves (the send path is unaffected);
     // `senderCoordinates` fails closed on the null principal for admission.
-    // `tenantId` is a non-null column. `assetId` is null when the definition
-    // has no asset.
+    // `assetId` is null when the definition has no asset.
     return {
       source: "run",
       publicKey,
-      principalId: row.principalId,
-      assetId: row.assetId,
-      tenantId: row.tenantId,
+      principalId: party.linkedPrincipalId,
+      assetId: party.assetId,
+      tenantId: party.tenantId,
     };
   }
 
   // A user sender resolves to its hub-custodied principal key, keyed by the
-  // `(tenant domain, user refId)` its address carries.
-  const resolved = await resolveUserPrincipal(db, domain, localPart);
-  if (resolved === null) return null;
-  // The principal exists; a user principal with no active key violates the
-  // invariant that every user principal is minted with one, so `getPublicKey`
-  // throws rather than defaulting. Do not soften that to null -- unlike the
-  // pre-ack run key above, a keyless principal is a real breakage that must
-  // surface.
-  const publicKey = await principalKeyStore.getPublicKey(
-    resolved.principalId,
-    db,
-  );
+  // `(tenant domain, user refId)` its address carries. The principal exists; a
+  // user principal with no active key violates the invariant that every user
+  // principal is minted with one, so `getPublicKey` throws rather than
+  // defaulting. Do not soften that to null -- unlike the pre-ack run key
+  // above, a keyless principal is a real breakage that must surface.
+  const publicKey = await principalKeyStore.getPublicKey(party.principalId, db);
   return {
     source: "user",
     publicKey,
-    principalId: resolved.principalId,
-    tenantId: resolved.tenantId,
+    principalId: party.principalId,
+    tenantId: party.tenantId,
   };
 }
 
@@ -281,65 +258,6 @@ export async function resolveFrameSenderKey(
     logger.error`Degraded to a null frame sender key for ${address}: resolving its public key failed (a fault, not an unresolvable sender): ${cause instanceof Error ? cause.message : String(cause)}`;
     return null;
   }
-}
-
-/**
- * Resolve the user principal a normalized `<localPart>@<domain>` address names,
- * or `null` when none matches. `lower(domain)` is unique, so the domain selects
- * at most one tenant; within it, prefer the principal whose `refId` is exactly
- * the normalized localPart (the canonical lowercase refId). The domain is
- * matched case-insensitively in both queries because an existing tenant's stored
- * domain may be mixed-case (creation lowercases new ones, but legacy rows are
- * left as stored). Only when no exact refId exists does it fall back to a
- * case-insensitive refId match, which finds a mixed-case-stored refId. A
- * non-unique case-insensitive match with no exact row means two principals in
- * the tenant hold case-variant refIds; that is genuinely ambiguous, so it throws
- * rather than return an arbitrary one and attribute the sender to the wrong
- * principal.
- */
-async function resolveUserPrincipal(
-  db: DBExecutor,
-  domain: string,
-  localPart: string,
-): Promise<{ principalId: string; tenantId: string } | null> {
-  const columns = { principalId: principal.id, tenantId: principal.tenantId };
-
-  const [exact] = await db
-    .select(columns)
-    .from(principal)
-    .innerJoin(tenant, eq(principal.tenantId, tenant.id))
-    .where(
-      and(
-        eq(sql`lower(${tenant.domain})`, domain),
-        eq(principal.kind, "user"),
-        eq(principal.refId, localPart),
-      ),
-    )
-    .limit(1);
-  if (exact !== undefined) return exact;
-
-  const caseInsensitive = await db
-    .select(columns)
-    .from(principal)
-    .innerJoin(tenant, eq(principal.tenantId, tenant.id))
-    .where(
-      and(
-        eq(sql`lower(${tenant.domain})`, domain),
-        eq(principal.kind, "user"),
-        eq(sql`lower(${principal.refId})`, localPart),
-      ),
-    )
-    .limit(2);
-  if (caseInsensitive.length === 0) return null;
-  if (caseInsensitive.length > 1) {
-    throw new Error(
-      `resolveSenderKey: user sender ${localPart}@${domain} is ambiguous; it ` +
-        `matches multiple principals with case-variant refIds and no canonical ` +
-        `row -- the colliding principal refIds must be reconciled`,
-    );
-  }
-  const [only] = caseInsensitive;
-  return only === undefined ? null : only;
 }
 
 /**

@@ -59,6 +59,7 @@ export {
   type RunTokenStore,
 } from "./run-token-store";
 export { lookupLocalPrincipalSigner } from "./signer-identity";
+export { resolveLocalMailParty, type LocalMailParty } from "./local-mail-party";
 export {
   resolveSenderKey,
   resolveFrameSenderKey,

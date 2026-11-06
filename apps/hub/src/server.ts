@@ -334,10 +334,7 @@ export async function createHubServer({
     // the sending run gains a `mail.accept:principal:<recipient>` grant so that
     // party's reply is admitted. Gated on the sending definition having
     // authored the `correspondent` relation; best-effort, never breaks a send.
-    mintCorrespondentGrant: createCorrespondentGrantMinter({
-      db,
-      principalKeyStore,
-    }),
+    mintCorrespondentGrant: createCorrespondentGrantMinter({ db }),
   };
 
   const sidecarCredentials = createSidecarCredentialResolver({ db });

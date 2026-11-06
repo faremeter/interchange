@@ -39,7 +39,6 @@ import type {
   DB,
   DBExecutor,
   GrantStoreFactory,
-  PrincipalKeyStore,
   RunTokenStore,
 } from "@intx/db";
 import {
@@ -48,7 +47,7 @@ import {
   loadRunPrincipalActiveKey,
   workflowRunExecutability,
   loadDeploymentGrantSnapshot,
-  resolveSenderPrincipal,
+  resolveLocalMailParty,
 } from "@intx/db";
 import { getLogger } from "@intx/log";
 import type {
@@ -58,7 +57,6 @@ import type {
 } from "@intx/types/authz";
 import { hubCredentialId } from "@intx/types/credential-delivery";
 import {
-  deriveWorkflowRunId,
   isSidecarAllocationDispatchable,
   SELF_RUN_RESOURCE,
   type GrantRequirement,
@@ -1667,18 +1665,13 @@ export function createMailTriggeredRunGrantsMaterializer(
 const correspondentLogger = getLogger(["hub-api", "correspondent-grant"]);
 
 /**
- * Resolve the principal a correspondent's reply will present. A party with a
- * durable identity resolves through the same `resolveSenderPrincipal` the reply
- * resolves through. A local deployment that `resolveSenderPrincipal` cannot
- * resolve -- one that has not fired yet (the first fire links its principal to
- * the anchor), or one whose signing key is retired while its sidecar is
- * replaced -- resolves from its anchor row instead: the linked principal when
- * there is one, else `deriveRunPrincipalId(tenantId, runId)` with the runId
- * taken from the deployment address. Deploy creates the run principal with
- * that same derived id, and the mail seam and the trigger route derive it the
- * same way, so a first fire that commits concurrently cannot make the two
- * disagree. The anchor is matched on its exact stored address, as the mail
- * materializer matches it.
+ * Resolve the principal a correspondent's reply will present, through
+ * `resolveLocalMailParty`, which reads no signing key. A user resolves to its
+ * principal. A local deployment resolves to its run principal: the linked
+ * principal when there is one, else `deriveRunPrincipalId(tenantId, runId)`.
+ * Deploy creates the run principal with that same derived id, and the mail
+ * seam and the trigger route derive it the same way, so a first fire that
+ * commits concurrently cannot make the two disagree.
  *
  * Only an executable anchor qualifies: a stopping or terminal deployment never
  * fires or replies, so a row for it would be dead weight. An anchor without a
@@ -1687,37 +1680,29 @@ const correspondentLogger = getLogger(["hub-api", "correspondent-grant"]);
  */
 async function resolveCorrespondentPrincipalId(
   tx: DBExecutor,
-  principalKeyStore: PrincipalKeyStore,
   address: string,
   now: Date,
 ): Promise<string | null> {
-  const resolved = await resolveSenderPrincipal(tx, principalKeyStore, address);
-  if (resolved !== null) return resolved.principalId;
+  const party = await resolveLocalMailParty(tx, address);
+  if (party === null) return null;
+  if (party.kind === "user") return party.principalId;
 
   const [anchor] = await tx
     .select({
-      id: workflowRun.id,
-      anchorRunId: workflowRun.anchorRunId,
-      tenantId: workflowRun.tenantId,
-      principalId: workflowRun.principalId,
       status: workflowRun.status,
       expiresAt: workflowRun.expiresAt,
       cancellationRequestedAt: workflowRun.cancellationRequestedAt,
     })
     .from(workflowRun)
-    .where(eq(workflowRun.address, address))
+    .where(eq(workflowRun.id, party.anchorRunId))
     .limit(1);
   if (
     anchor === undefined ||
-    anchor.anchorRunId !== anchor.id ||
     workflowRunExecutability(anchor, now) !== "executable"
   ) {
     return null;
   }
-  return (
-    anchor.principalId ??
-    deriveRunPrincipalId(anchor.tenantId, deriveWorkflowRunId(address))
-  );
+  return party.principalId;
 }
 
 /**
@@ -1748,7 +1733,6 @@ async function holdsCorrespondentRule(
 
 export type CorrespondentGrantMinterDeps = {
   db: DB["db"];
-  principalKeyStore: PrincipalKeyStore;
 };
 
 /**
@@ -1850,15 +1834,14 @@ export function createCorrespondentGrantMinter(
 
         for (const recipientAddress of args.recipientAddresses) {
           // Each recipient runs in its own savepoint. A recipient that fails to
-          // resolve or insert (an ambiguous user address, a keyless principal,
-          // a query fault) rolls back only its own work, so it never costs a
+          // resolve or insert (an ambiguous user address, a query fault) rolls
+          // back only its own work, so it never costs a
           // co-recipient of the same mail its grant.
           try {
             await tx.transaction(async (sp) => {
               const recipientPrincipalId =
                 await resolveCorrespondentPrincipalId(
                   sp,
-                  deps.principalKeyStore,
                   recipientAddress,
                   now,
                 );
