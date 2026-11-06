@@ -318,6 +318,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const resources = grants.map((g) => `${g.resource}/${g.action}`).sort();
       expect(resources).toContain("tool:read_file/invoke");
       expect(resources).toContain("secret:vault/use");
+      // Every run principal gets one send grant for every recipient, whatever
+      // tools its snapshot holds.
+      const sendRows = grants.filter((g) => g.resource === "mail.send:*:*");
+      expect(sendRows).toHaveLength(1);
+      expect(sendRows[0]).toMatchObject({
+        action: "send",
+        effect: "allow",
+        origin: "creator",
+        conditions: null,
+        expiresAt: null,
+      });
     });
 
     test("a creator requirement row takes the creator grant's expiry", async () => {
@@ -604,6 +615,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const grants = await h.db.select().from(grant);
       expect(grants.length).toBe(firstGrantCount);
+      expect(grants.filter((g) => g.resource === "mail.send:*:*")).toHaveLength(
+        1,
+      );
     });
 
     // A run that deploys a workflow through its run token is the deployment's

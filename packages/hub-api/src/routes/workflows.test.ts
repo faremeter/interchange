@@ -3233,8 +3233,8 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(sendOrder.map((s) => s.kind)).toEqual(["run.grants", "mail"]);
 
     // The run.grants frame carries the run id (the local part of the
-    // deployment's mail address) and the definition-pure tool grants the
-    // capability walk lifted.
+    // deployment's mail address), the definition-pure tool grants the
+    // capability walk lifted, and the run's send grant.
     expect(runGrantsCalls).toHaveLength(1);
     const grantsCall = runGrantsCalls[0];
     if (grantsCall === undefined) throw new Error("missing run.grants call");
@@ -3245,10 +3245,13 @@ describe("POST /workflows/:anchorRunId/mail", () => {
       grantsCall.stepGrants.map((g) => [g.resource, g]),
     );
     expect([...byResource.keys()].sort()).toEqual([
+      "mail.send:*:*",
       "tool:read_file",
       "tool:run_shell",
     ]);
+    expect(byResource.get("mail.send:*:*")?.action).toBe("send");
     for (const g of grantsCall.stepGrants) {
+      if (g.resource === "mail.send:*:*") continue;
       expect(g.action).toBe("invoke");
       expect(g.origin).toBe("creator");
       expect(g.principalId).not.toBeNull();
@@ -3286,8 +3289,9 @@ describe("POST /workflows/:anchorRunId/mail", () => {
       status: "running",
     });
 
+    // Two tool grants and the run's send grant.
     const grantInserts = inserts.filter((i) => i.table === grantTable);
-    expect(grantInserts).toHaveLength(2);
+    expect(grantInserts).toHaveLength(3);
     // The committed grant principal matches the minted run principal.
     for (const gi of grantInserts) {
       const grantRow = assertBody(GrantInsert, gi.values);

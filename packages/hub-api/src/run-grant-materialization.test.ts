@@ -1,7 +1,15 @@
 import { describe, test, expect } from "bun:test";
 
-import { createInMemoryGrantStore, toolConsumer } from "@intx/authz";
+import {
+  createInMemoryGrantStore,
+  evaluateGrants,
+  evaluateMailAdmission,
+  evaluateMailSend,
+  HUB_CONDITION_REGISTRY,
+  toolConsumer,
+} from "@intx/authz";
 import type { MailAcceptCoordinate } from "@intx/authz";
+import { filterGrantsToDeclaredResources } from "@intx/workflow-deploy";
 import type { GrantRule } from "@intx/types/authz";
 import {
   SELF_RUN_RESOURCE,
@@ -26,6 +34,7 @@ import {
   credentialResolutionUnrecorded,
   deriveCredentialUseGrantRows,
   deriveMailAcceptGrantRows,
+  deriveRunMailSendGrantRow,
   grantRowsWithLockedCredentialResolution,
   stageRunGrantsFromSnapshot,
   type CommittedRunGrants,
@@ -410,13 +419,14 @@ describe("stageRunGrantsFromSnapshot with the run's own resource", () => {
       ],
     );
     if (!staged.ok) throw new Error("expected staging to succeed");
-    expect(staged.grantRows.map((g) => g.resource)).toEqual([]);
+    expect(staged.grantRows.map((g) => g.resource)).toEqual(["mail.send:*:*"]);
   });
 
   test("binds the placeholder to the run's own id", async () => {
     const staged = await stage([delegator("workflow-run:*")]);
     if (!staged.ok) throw new Error("expected the requirement to resolve");
     expect(staged.grantRows.map((g) => g.resource)).toEqual([
+      "mail.send:*:*",
       `workflow-run:${STAGED_RUN_ID}`,
     ]);
   });
@@ -898,11 +908,13 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     const resources = result.stepGrants
       .map((g) => `${g.resource}/${g.action}`)
       .sort();
-    // The tool grant, the invoker requirement, and the resolved accept rows
-    // all materialize; `mail.accept:invoker` names the deployer.
+    // The tool grant, the invoker requirement, the resolved accept rows and
+    // the run's send grant all materialize; `mail.accept:invoker` names the
+    // deployer.
     expect(resources).toEqual([
       `mail.accept:principal:${DEPLOYER_PRINCIPAL_ID}/accept`,
       `mail.accept:tenant:${TENANT_ID}/accept`,
+      "mail.send:*:*/send",
       "secret:other/use",
       "tool:read_file/invoke",
     ]);
@@ -1530,6 +1542,89 @@ describe("createMailTriggeredRunGrantsMaterializer admission gate", () => {
   });
 });
 
+// The run's send grant rides the same rows as its tool grants, so it must
+// decide only `mail.send` checks: never a tool, effect, credential or
+// admission check, and never past a child's grant cap.
+describe("deriveRunMailSendGrantRow", () => {
+  const row = deriveRunMailSendGrantRow(
+    "tnt_send",
+    "prn_run_send",
+    new Date("2026-01-01T00:00:00.000Z"),
+  );
+  const rule: GrantRule = { ...row, roleId: null };
+
+  test("is one creator allow on every recipient", () => {
+    expect(row).toMatchObject({
+      tenantId: "tnt_send",
+      principalId: "prn_run_send",
+      resource: "mail.send:*:*",
+      action: "send",
+      effect: "allow",
+      origin: "creator",
+      conditions: null,
+      expiresAt: null,
+    });
+  });
+
+  test("allows no tool, effect or credential request", async () => {
+    for (const [resource, action] of [
+      ["tool:mail_send", "invoke"],
+      ["tool:mail_reply", "invoke"],
+      ["effect:push", "invoke"],
+      ["credential:crd_1", "use"],
+      ["workflow-run:run_1", "manage"],
+    ] as const) {
+      const result = await evaluateGrants([rule], resource, action, {
+        conditions: "pessimistic",
+      });
+      expect(result.effect).not.toBe("allow");
+    }
+  });
+
+  test("admits no inbound mail", async () => {
+    const admission = await evaluateMailAdmission({
+      senderCoordinates: [{ coordType: "tenant", id: "tnt_send" }],
+      recipientGrants: [rule],
+    });
+    expect(admission.admit).toBe(false);
+  });
+
+  test("does not pass a child's grant cap", () => {
+    expect(
+      filterGrantsToDeclaredResources(
+        [rule],
+        new Set(["tool:mail_send", "tool:mail_reply"]),
+        new Set(["mail_send"]),
+      ),
+    ).toEqual([]);
+  });
+
+  test("a deny row narrows it and a narrower allow row does not", async () => {
+    const other = [{ coordType: "domain" as const, id: "other.example" }];
+    const decide = (extra: GrantRule) =>
+      evaluateMailSend({
+        recipientCoordinates: other,
+        senderGrants: [rule, extra],
+        registry: HUB_CONDITION_REGISTRY,
+      });
+
+    const narrowerAllow = await decide({
+      ...rule,
+      id: "grt_allow_domain",
+      resource: "mail.send:domain:example.com",
+    });
+    const deny = await decide({
+      ...rule,
+      id: "grt_deny_domain",
+      resource: "mail.send:domain:other.example",
+      effect: "deny",
+    });
+
+    expect(narrowerAllow.allowed).toBe(true);
+    expect(deny.allowed).toBe(false);
+  });
+});
+
 describe("deriveMailAcceptGrantRows", () => {
   const CTX: MailAcceptGrantContext = {
     invokerPrincipalId: "prn_invoker",
@@ -1767,6 +1862,7 @@ describe("stageRunGrantsFromSnapshot for an HTTP launch", () => {
       staged.stepGrants.map((g) => `${g.resource}/${g.action}`).sort(),
     ).toEqual([
       `mail.accept:principal:${DEPLOYER_PRINCIPAL_ID}/accept`,
+      "mail.send:*:*/send",
       "tool:mail_send/invoke",
     ]);
   });
