@@ -17,10 +17,8 @@ import type {
   SidecarCapabilityPolicy,
 } from "@intx/types";
 import type { InboundMailPolicy } from "@intx/types/inbound-mail-policy";
-import {
-  isMailAcceptNamespaceResource,
-  MailAccept,
-} from "@intx/types/mail-accept";
+import { MailAccept } from "@intx/types/mail-accept";
+import { reservedGrantNamespace } from "@intx/types/reserved-namespaces";
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {
@@ -235,17 +233,17 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     }
   }
 
-  // `mailAccept` is the only source of accept-rules: its relations are what the
-  // operator approves at deploy. A grant requirement inside the `mail.accept`
-  // namespace would materialize an accept-grant outside that surface (a creator
-  // holding `*` satisfies `mail.accept:*`, which admits every sender), so reject
-  // it here rather than let it widen admission.
+  // A reserved namespace has one source of rows (for `mail.accept`, the
+  // `mailAccept` relations the operator approves at deploy). A grant
+  // requirement inside it would materialize a grant outside that source (a
+  // creator holding `*` satisfies `mail.accept:*`, which admits every sender),
+  // so reject it here rather than let it widen authority.
   for (const requirement of config.grantRequirements ?? []) {
-    if (isMailAcceptNamespaceResource(requirement.resource)) {
+    const reserved = reservedGrantNamespace(requirement.resource);
+    if (reserved !== null) {
       throw new Error(
         `defineWorkflow ${config.id} declares a grant requirement on ` +
-          `${JSON.stringify(requirement.resource)}; accept-rules are declared ` +
-          `only through mailAccept`,
+          `${JSON.stringify(requirement.resource)}; ${reserved.source}`,
       );
     }
   }

@@ -73,8 +73,8 @@ describe("gateAndFreezeProbeResult mail.accept grant requirements", () => {
 
     expect(result).toEqual({
       ok: false,
-      reason: "mail_accept_grant_requirements",
-      mailAcceptGrantRequirements: [requirement],
+      reason: "reserved_namespace_grant_requirements",
+      reservedNamespaceGrantRequirements: [requirement],
     });
   });
 

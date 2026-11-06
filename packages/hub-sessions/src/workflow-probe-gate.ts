@@ -15,9 +15,11 @@
 //   4. Reject a projection declaring a trigger type the runtime does not
 //      implement, so a deployment that could only ever sit inert never gets
 //      approved.
-//   5. Reject a grant requirement inside the `mail.accept` namespace, and a
-//      `mail.accept` walk marker the projection's `mailAccept` does not
-//      produce, so the accept surface comes only from the hashed `mailAccept`.
+//   5. Reject a grant requirement inside a reserved grant namespace (such
+//      as `mail.accept`), so that namespace keeps its one source of rows,
+//      and a `mail.accept` walk marker the projection's `mailAccept` does
+//      not produce, so the accept surface comes only from the hashed
+//      `mailAccept`.
 //   6. Reject a declared grant requirement whose conditions a run cannot
 //      evaluate, so the frozen requirements only mint grant rows that
 //      authorization can evaluate.
@@ -54,6 +56,10 @@ import type { PackumentFetcher, RegistryConfig } from "@intx/tool-packaging";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { isMailAcceptNamespaceResource } from "@intx/types/mail-accept";
+import {
+  RESERVED_GRANT_NAMESPACES,
+  reservedGrantNamespace,
+} from "@intx/types/reserved-namespaces";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type {
   WorkflowDefinitionAssetSource,
@@ -137,7 +143,7 @@ export type PersistFrozenApprovalFn = (
  * tarball, a shipped hash that does not match the hub recompute
  * (tamper-evidence), advisory grants the operator did not approve, declared
  * grant requirements the operator did not approve, a trigger type the runtime
- * does not implement, a grant requirement inside the `mail.accept` namespace, a
+ * does not implement, a grant requirement inside a reserved namespace, a
  * `mail.accept` walk marker the projection's `mailAccept` does not produce,
  * credential bindings that cannot be delivered, a declared grant requirement
  * whose conditions a run cannot evaluate, and an executable step the grant
@@ -191,9 +197,9 @@ export type ProbeGateResult =
     }
   | {
       readonly ok: false;
-      readonly reason: "mail_accept_grant_requirements";
-      /** The declared requirements inside the `mail.accept` namespace. */
-      readonly mailAcceptGrantRequirements: readonly GrantRequirement[];
+      readonly reason: "reserved_namespace_grant_requirements";
+      /** The declared requirements inside a reserved grant namespace. */
+      readonly reservedNamespaceGrantRequirements: readonly GrantRequirement[];
     }
   | {
       readonly ok: false;
@@ -283,6 +289,24 @@ function describeGrantRequirement(requirement: GrantRequirement): string {
   return `${requirement.action} on ${requirement.resource} (${requirement.source})`;
 }
 
+// One clause for each reserved namespace the requirements fall in: the
+// namespace's source of rows, then the requirements declared inside it.
+function describeReservedGrantRequirements(
+  requirements: readonly GrantRequirement[],
+): string {
+  return RESERVED_GRANT_NAMESPACES.flatMap((reserved) => {
+    const declared = requirements.filter(
+      (requirement) =>
+        reservedGrantNamespace(requirement.resource) === reserved,
+    );
+    return declared.length === 0
+      ? []
+      : [
+          `${reserved.source}; declared: ${declared.map(describeGrantRequirement).join(", ")}`,
+        ];
+  }).join("; ");
+}
+
 /**
  * Name why the gate refused a definition and what it refused, for the error
  * the deploy caller receives. Every refusal starts with its reason code.
@@ -299,8 +323,8 @@ export function describeProbeGateRefusal(refusal: ProbeGateRefusal): string {
       return `creator_requirements_unsupported_for_package_registry_tarball: a workflow from a package-registry tarball cannot declare creator-sourced grant requirements, because the hub does not know who published the package; declared: ${refusal.creatorGrantRequirements.map(describeGrantRequirement).join("; ")}`;
     case "unimplemented_trigger":
       return `unimplemented_trigger: ${refusal.unimplementedTriggerTypes.join(", ")}`;
-    case "mail_accept_grant_requirements":
-      return `mail_accept_grant_requirements: accept-rules are declared only through mailAccept; declared: ${refusal.mailAcceptGrantRequirements.map(describeGrantRequirement).join("; ")}`;
+    case "reserved_namespace_grant_requirements":
+      return `reserved_namespace_grant_requirements: ${describeReservedGrantRequirements(refusal.reservedNamespaceGrantRequirements)}`;
     case "mail_accept_markers_undeclared":
       return `mail_accept_markers_undeclared: the projection's mailAccept does not produce ${refusal.undeclaredMailAcceptMarkers.join(", ")}`;
     case "credential_bindings_invalid":
@@ -625,22 +649,23 @@ export async function gateAndFreezeProbeResult(
     };
   }
 
-  // Refuse a grant requirement inside the `mail.accept` namespace. `mailAccept`
-  // is the only source of accept-rules; such a requirement would materialize
-  // an accept-grant outside the approved accept surface (a creator holding `*`
-  // satisfies `mail.accept:*`, which admits every sender). Like the trigger
-  // check this is an author-definition error an operator cannot approve away,
-  // and it runs here because `defineWorkflow`'s own check rides the pinned
-  // closure, which a stale or untrusted sidecar can skip.
-  const mailAcceptGrantRequirements =
-    probeResult.grantWalkSnapshot.grantRequirements.filter((requirement) =>
-      isMailAcceptNamespaceResource(requirement.resource),
+  // Refuse a grant requirement inside a reserved namespace. Such a namespace
+  // has one source of rows (for `mail.accept`, the approved `mailAccept`
+  // relations); a requirement would materialize a grant outside it (a creator
+  // holding `*` satisfies `mail.accept:*`, which admits every sender). Like
+  // the trigger check this is an author-definition error an operator cannot
+  // approve away, and it runs here because `defineWorkflow`'s own check rides
+  // the pinned closure, which a stale or untrusted sidecar can skip. It reads
+  // only the grant requirements, not the per-step grants or approvals.
+  const reservedNamespaceGrantRequirements =
+    probeResult.grantWalkSnapshot.grantRequirements.filter(
+      (requirement) => reservedGrantNamespace(requirement.resource) !== null,
     );
-  if (mailAcceptGrantRequirements.length > 0) {
+  if (reservedNamespaceGrantRequirements.length > 0) {
     return {
       ok: false,
-      reason: "mail_accept_grant_requirements",
-      mailAcceptGrantRequirements,
+      reason: "reserved_namespace_grant_requirements",
+      reservedNamespaceGrantRequirements,
     };
   }
 
