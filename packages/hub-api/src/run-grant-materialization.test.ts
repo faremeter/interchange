@@ -3,7 +3,11 @@ import { describe, test, expect } from "bun:test";
 import { createInMemoryGrantStore, toolConsumer } from "@intx/authz";
 import type { MailAcceptCoordinate } from "@intx/authz";
 import type { GrantRule } from "@intx/types/authz";
-import { SELF_RUN_RESOURCE, type GrantWalkSnapshot } from "@intx/types";
+import {
+  SELF_RUN_RESOURCE,
+  type GrantRequirement,
+  type GrantWalkSnapshot,
+} from "@intx/types";
 import {
   grant as grantTable,
   principal as principalTable,
@@ -16,8 +20,8 @@ import type { PrincipalKeyStore, RunTokenStore } from "@intx/db";
 
 import { makeGrantRow } from "./grant-materialization";
 import {
-  bindSelfRunRequirements,
   createCorrespondentGrantMinter,
+  delegatedRunRequirements,
   createMailTriggeredRunGrantsMaterializer,
   credentialResolutionUnrecorded,
   deriveCredentialUseGrantRows,
@@ -328,9 +332,24 @@ function creatorGrant(): GrantRule {
   };
 }
 
-describe("bindSelfRunRequirements", () => {
+describe("delegatedRunRequirements", () => {
+  test("drops a requirement in a reserved namespace", () => {
+    const delegated = delegatedRunRequirements(
+      [
+        {
+          resource: "mail.accept:tenant:t1",
+          action: "accept",
+          source: "creator",
+        },
+        { resource: "wallet:w1", action: "spend", source: "creator" },
+      ],
+      "run_abc",
+    );
+    expect(delegated.map((r) => r.resource)).toEqual(["wallet:w1"]);
+  });
+
   test("binds only the placeholder resource to the run id", () => {
-    const bound = bindSelfRunRequirements(
+    const bound = delegatedRunRequirements(
       [
         { resource: SELF_RUN_RESOURCE, action: "read", source: "creator" },
         { resource: "workflow-run:*", action: "read", source: "invoker" },
@@ -354,7 +373,12 @@ describe("stageRunGrantsFromSnapshot with the run's own resource", () => {
     return { ...creatorGrant(), resource, action: "read" };
   }
 
-  function stage(creatorGrants: GrantRule[]) {
+  function stage(
+    creatorGrants: GrantRule[],
+    grantRequirements: GrantRequirement[] = [
+      { resource: SELF_RUN_RESOURCE, action: "read", source: "creator" },
+    ],
+  ) {
     return stageRunGrantsFromSnapshot({
       snapshot: { perStep: [], grantRequirements: [] },
       tenantId: TENANT_ID,
@@ -367,12 +391,27 @@ describe("stageRunGrantsFromSnapshot with the run's own resource", () => {
       legacyMailAccept: null,
       invokerGrants: [],
       creatorGrants,
-      grantRequirements: [
-        { resource: SELF_RUN_RESOURCE, action: "read", source: "creator" },
-      ],
+      grantRequirements,
       credentialBindings: [],
     });
   }
+
+  // The deploy gate refuses such a requirement, but a snapshot stored before
+  // its namespace was reserved can carry one.
+  test("stages no delegated row for a reserved-namespace requirement", async () => {
+    const staged = await stage(
+      [{ ...creatorGrant(), resource: "*", action: "*" }],
+      [
+        {
+          resource: `mail.accept:tenant:${TENANT_ID}`,
+          action: "accept",
+          source: "creator",
+        },
+      ],
+    );
+    if (!staged.ok) throw new Error("expected staging to succeed");
+    expect(staged.grantRows.map((g) => g.resource)).toEqual([]);
+  });
 
   test("binds the placeholder to the run's own id", async () => {
     const staged = await stage([delegator("workflow-run:*")]);

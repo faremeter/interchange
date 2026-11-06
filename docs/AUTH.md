@@ -182,7 +182,7 @@ When a workflow run is launched, the control plane processes each grant requirem
 4. Create a `grant` row on the run's new principal with the appropriate `origin` value
 5. Ship the effective grant set to the harness in the deploy frame
 
-The `grantRequirements` field on a workflow definition is a grant requirements manifest — it specifies `GrantRequirement` entries with source annotations, not live grants. Each launch resolves these requirements against the current state of creator, tenant, and invoker authority.
+The `grantRequirements` field on a workflow definition is a grant requirements manifest — it specifies `GrantRequirement` entries with source annotations, not live grants. Each launch resolves these requirements against the current state of creator, tenant, and invoker authority. The deploy gate refuses a requirement in a reserved namespace (`mail.accept`), whose rows come from one source only. A snapshot stored before its namespace was reserved can still carry such a requirement: the first trigger and re-derivation skip it and log a warning.
 
 ## Definition Approval and Re-Verification
 

@@ -65,6 +65,7 @@ import {
   type GrantWalkSnapshot,
 } from "@intx/types";
 import { isMailAcceptNamespaceResource } from "@intx/types/mail-accept";
+import { reservedGrantNamespace } from "@intx/types/reserved-namespaces";
 import { RunGrantsFrame } from "@intx/types/sidecar";
 import { ToolDefinition } from "@intx/types/runtime";
 import {
@@ -92,6 +93,8 @@ import {
   type GrantMaterializationRejection,
   type MaterializedGrantRow,
 } from "./grant-materialization";
+
+const log = getLogger(["hub-api", "run-grant-materialization"]);
 
 export const TOOL_GRANT_PREFIX = "tool:";
 
@@ -442,19 +445,35 @@ export function runGrantToWire(
 }
 
 /**
- * Bind each requirement on the literal `SELF_RUN_RESOURCE` placeholder to
- * `workflow-run:<runId>`. The operator approved the placeholder; binding it
- * before the authority check makes the delegator cover the concrete run id.
+ * The requirements a run's delegated rows come from, for both first-trigger
+ * staging and re-derivation. Each requirement on the literal
+ * `SELF_RUN_RESOURCE` placeholder binds to `workflow-run:<runId>`: the
+ * operator approved the placeholder, and binding it before the authority
+ * check makes the delegator cover the concrete run id.
+ *
+ * A requirement in a reserved namespace is dropped. Rows in such a namespace
+ * never come from a delegator, and re-derivation could never lapse one. The
+ * deploy gate refuses such a requirement, but a snapshot stored before the
+ * namespace was reserved can still carry one.
  */
-export function bindSelfRunRequirements(
+export function delegatedRunRequirements(
   grantRequirements: readonly GrantRequirement[],
   runId: string,
 ): GrantRequirement[] {
-  return grantRequirements.map((req) =>
-    req.resource === SELF_RUN_RESOURCE
-      ? { ...req, resource: `workflow-run:${runId}` }
-      : req,
-  );
+  const delegated: GrantRequirement[] = [];
+  for (const req of grantRequirements) {
+    const namespace = reservedGrantNamespace(req.resource);
+    if (namespace !== null) {
+      log.warn`Run ${runId} skips its grant requirement ${req.resource} / ${req.action}: ${namespace.namespace} is a reserved namespace`;
+      continue;
+    }
+    delegated.push(
+      req.resource === SELF_RUN_RESOURCE
+        ? { ...req, resource: `workflow-run:${runId}` }
+        : req,
+    );
+  }
+  return delegated;
 }
 
 export type StageRunGrantsFromSnapshotArgs = {
@@ -560,7 +579,7 @@ export async function stageRunGrantsFromSnapshot(
   const materialization = await resolveGrantMaterialization({
     tenantId: args.tenantId,
     targetPrincipalId: args.runPrincipalId,
-    grantRequirements: bindSelfRunRequirements(
+    grantRequirements: delegatedRunRequirements(
       args.grantRequirements,
       args.runId,
     ),
