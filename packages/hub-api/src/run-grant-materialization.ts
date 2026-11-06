@@ -65,6 +65,7 @@ import {
   type GrantWalkSnapshot,
 } from "@intx/types";
 import { isMailAcceptNamespaceResource } from "@intx/types/mail-accept";
+import { MAIL_SEND_NAMESPACE } from "@intx/types/mail-send";
 import { reservedGrantNamespace } from "@intx/types/reserved-namespaces";
 import { RunGrantsFrame } from "@intx/types/sidecar";
 import { ToolDefinition } from "@intx/types/runtime";
@@ -80,6 +81,7 @@ import { deriveRunPrincipalId } from "@intx/hub-common";
 import {
   evaluateMailAdmission,
   MAIL_ACCEPT_ACTION,
+  MAIL_SEND_ACTION,
   mailAcceptRelationToken,
   mailAcceptResource,
   parseMailAcceptResource,
@@ -412,6 +414,39 @@ export function deriveMailAcceptGrantRows(
   );
 }
 
+/** The resource of a run principal's send grant: every recipient. */
+export const RUN_MAIL_SEND_RESOURCE = `${MAIL_SEND_NAMESPACE}:*:*`;
+
+/**
+ * The run principal's send grant: one creator-origin `mail.send:*:*` /
+ * `send` / `allow` row, staged for every deployment at first trigger. It
+ * allows sends to every recipient that has a coordinate: a local party, or an
+ * address whose domain is a host name. It does not decide whether a step may
+ * send mail at all; the sidecar's `tool:mail_send` and `tool:mail_reply`
+ * grants do.
+ * A `deny` row narrows it. A narrower `allow` row does not, because this row
+ * still allows every recipient that the narrower row does not name. To allow
+ * only some recipients, an operator removes this row and adds narrower
+ * `allow` rows.
+ */
+export function deriveRunMailSendGrantRow(
+  tenantId: string,
+  runPrincipalId: string,
+  now: Date,
+): MaterializedGrantRow {
+  return makeGrantRow({
+    tenantId,
+    principalId: runPrincipalId,
+    resource: RUN_MAIL_SEND_RESOURCE,
+    action: MAIL_SEND_ACTION,
+    effect: "allow",
+    conditions: null,
+    origin: "creator",
+    expiresAt: null,
+    now,
+  });
+}
+
 /**
  * Whether the frozen grant-walk snapshot belongs to a definition with a mail
  * trigger. The capability walk emits a `mail.address:<address>` grant for each
@@ -544,9 +579,11 @@ export type StageRunGrantsResult =
  * Stage a run's grant rows from the deploy-approved grant-walk snapshot, the
  * resolved declared requirements, and the anchor's resolved credential
  * bindings. The snapshot's per-step grants project the run's runtime
- * `tool:`/`effect:` rows. Each distinct credential and consumer becomes one
- * system-origin `credential:{id}` / `use` row. The mail-triggered
- * materializer and the external trigger route both drive this one tail.
+ * `tool:`/`effect:` rows and its `mail.accept` rows. Every run gets one
+ * `mail.send:*:*` / `send` row (`deriveRunMailSendGrantRow`). Each distinct
+ * credential and consumer becomes one system-origin `credential:{id}` / `use`
+ * row. The mail-triggered materializer and the external trigger route both
+ * drive this one tail.
  * Returns the staged rows and their wire projection, or a rejection when a
  * declared requirement's authority is insufficient. No database write happens
  * here -- `commitRunGrants` performs it once the caller has accepted delivery.
@@ -602,6 +639,7 @@ export async function stageRunGrantsFromSnapshot(
   const grantRows = [
     ...runtimeGrantRows,
     ...mailAcceptGrantRows,
+    deriveRunMailSendGrantRow(args.tenantId, args.runPrincipalId, args.now),
     ...materialization.grantRows,
     ...credentialGrantRows,
   ];
