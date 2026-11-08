@@ -7,6 +7,7 @@ export type {
   RemoteSendHandler,
   MessageSentHandler,
   MessageSentContext,
+  SignedMessageBytes,
 } from "./send";
 
 /**

@@ -7,8 +7,10 @@ import {
   createDetachedSignatureFromProvider,
   createInboundMessage,
   generateMessageId,
+  parseHeaderSection,
   type MessageHeaders,
 } from "@intx/mime";
+import { verifyMimeSignature } from "@intx/mailbox";
 import { createInMemoryTransport } from "./index";
 import type {
   CryptoProvider,
@@ -1035,6 +1037,62 @@ describe("signature round-trip", () => {
     const refs = await betaTransport.search("INBOX", {});
     const msg = await betaTransport.fetchFull(refs[0]!);
     expect(msg.signatureStatus).toBe("valid");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composeSigned() — sign without sending
+// ---------------------------------------------------------------------------
+
+describe("composeSigned", () => {
+  test("signs as the registered address and delivers nothing", async () => {
+    const { transport, betaTransport } = await createTestTransport();
+    const keyPair = await generateKeyPair();
+    transport.register("gamma@test.interchange", createEd25519Crypto(keyPair));
+    const gammaTransport = transport.getTransportFor("gamma@test.interchange");
+    const remoteSends: string[][] = [];
+    transport.setRemoteSendHandler(async (_raw, recipients) => {
+      remoteSends.push(recipients);
+    });
+    let sentHandlerCalls = 0;
+    transport.addMessageSentHandler(async () => {
+      sentHandlerCalls += 1;
+    });
+
+    const { messageId, rawBytes } = await transport.composeSigned(
+      "gamma@test.interchange",
+      {
+        to: "beta@test.interchange",
+        type: "conversation.message",
+        content: "composed, not sent",
+      },
+    );
+
+    expect(await verifyMimeSignature(rawBytes, keyPair.publicKey)).toBe(
+      "valid",
+    );
+    const { headers } = parseHeaderSection(rawBytes);
+    expect(headers.get("from")).toBe("gamma@test.interchange");
+    expect(headers.get("to")).toBe("beta@test.interchange");
+    expect(headers.get("message-id")).toBe(messageId);
+    expect(headers.get("interchange-type")).toBe("conversation.message");
+
+    expect(await betaTransport.search("INBOX", {})).toEqual([]);
+    expect(await gammaTransport.search("Sent", {})).toEqual([]);
+    expect(remoteSends).toEqual([]);
+    expect(sentHandlerCalls).toBe(0);
+  });
+
+  test("throws for an unregistered address", async () => {
+    const { transport } = await createTestTransport();
+
+    await expect(
+      transport.composeSigned("delta@test.interchange", {
+        to: "beta@test.interchange",
+        type: "conversation.message",
+        content: "no key",
+      }),
+    ).rejects.toThrow(/not registered/);
   });
 });
 

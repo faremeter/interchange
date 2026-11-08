@@ -3,7 +3,7 @@ import type {
   SendReceipt,
   MailboxEvent,
 } from "@intx/types/runtime";
-import { composeOutbound } from "@intx/mailbox";
+import { composeOutbound, type ComposedMessage } from "@intx/mailbox";
 import { buildMessageHeaders, parseHeaderSection } from "@intx/mime";
 import type { AddressEntry } from "./mailbox";
 
@@ -47,6 +47,32 @@ export type MessageSentContext = {
 export type MessageSentHandler = (ctx: MessageSentContext) => Promise<void>;
 
 /**
+ * A signed RFC 2822 message and the Message-ID stamped into it, composed
+ * for a registered address but not sent.
+ */
+export type SignedMessageBytes = Pick<
+  ComposedMessage,
+  "messageId" | "rawBytes"
+>;
+
+/**
+ * The entry whose key signs mail from `senderAddress`. Throws if the address
+ * is not registered, so no path emits unsigned mail.
+ */
+export function requireSender(
+  senderAddress: string,
+  entries: Map<string, AddressEntry>,
+): AddressEntry {
+  const senderEntry = entries.get(senderAddress);
+  if (senderEntry === undefined) {
+    throw new Error(
+      `Sender "${senderAddress}" is not registered with this transport`,
+    );
+  }
+  return senderEntry;
+}
+
+/**
  * Execute the send() flow:
  * 1. Validate sender registration
  * 2. Compose the signed message
@@ -73,18 +99,16 @@ export async function executeSend(
   onRemoteSend?: RemoteSendHandler,
   onMessageSent?: MessageSentHandler,
 ): Promise<SendReceipt> {
-  const senderEntry = entries.get(senderAddress);
-  if (senderEntry === undefined) {
-    throw new Error(
-      `Sender "${senderAddress}" is not registered with this transport`,
-    );
-  }
-  const senderCrypto = senderEntry.crypto;
+  const senderEntry = requireSender(senderAddress, entries);
 
   // Local recipients are classified before signing yields, so one
   // unregistered meanwhile fails the send instead of being routed as remote.
   const registeredBeforeSigning = new Set(entries.keys());
-  const composed = await composeOutbound(senderAddress, message, senderCrypto);
+  const composed = await composeOutbound(
+    senderAddress,
+    message,
+    senderEntry.crypto,
+  );
   const { messageId, rawBytes, envelope } = composed;
   const recipients = composed.to;
   const ccAddressList = composed.cc;
