@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
-import { extractAttachments } from "@intx/mime";
+import { extractAttachments, verifyMimeSignature } from "@intx/mime";
 
 import { composeOutbound } from "./compose";
-import { verifyMimeSignature } from "./verify-signature";
 
 async function senderCrypto() {
   return createEd25519Crypto(await generateKeyPair());

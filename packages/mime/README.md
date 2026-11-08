@@ -28,4 +28,5 @@ For outbound mail the builder layer is the entry point:
 `assembleSignedContent` canonicalises the signed body, and
 `assembleMessage` joins the signed content with a detached
 signature from `createDetachedSignatureFromProvider` into wire
-bytes.
+bytes. `verifyMimeSignature` checks a received multipart/signed message
+against the sender's public key.

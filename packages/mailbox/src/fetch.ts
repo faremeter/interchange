@@ -26,9 +26,9 @@ import {
   isRecognizedTransferEncoding,
   reportedContentType,
   transferEncodingMechanism,
+  verifyMimeSignature,
 } from "@intx/mime";
 import type { ParsedMimePart } from "@intx/mime";
-import { verifyMimeSignature } from "./verify-signature";
 
 const logger = getLogger(["interchange", "mailbox", "fetch"]);
 

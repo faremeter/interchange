@@ -3,10 +3,10 @@ import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
   assembleSignedContent,
   assembleMessage,
-  createDetachedSignatureFromProvider,
   generateMessageId,
   type MessageHeaders,
-} from "@intx/mime";
+} from "./mime";
+import { createDetachedSignatureFromProvider } from "./pgp-sign";
 import { verifyMimeSignature } from "./verify-signature";
 
 function conversationHeaders(): MessageHeaders {

@@ -1,11 +1,12 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- MIME multipart parsing with bounds checks */
+import { importPublicKeyBytes, verifyDetachedSignature } from "@intx/crypto";
+
 import {
   parseHeaderSection,
   parseMimePart,
   extractBoundary,
   parseMultipart,
-} from "@intx/mime";
-import { importPublicKeyBytes, verifyDetachedSignature } from "@intx/crypto";
+} from "./mime";
 
 /**
  * Verify a PGP/MIME `multipart/signed` message against a public key.
