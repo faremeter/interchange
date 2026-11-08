@@ -64,6 +64,8 @@ import {
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions/substrate";
+import { validateAttachments } from "@intx/types/attachment-validation";
+import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
 import { base64Decode, base64Encode } from "@intx/types/base64";
 import { deriveMessageId } from "@intx/types/message-id";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
@@ -184,6 +186,14 @@ const MAILBOX_FLAG_PROCESSED = "$Processed";
  * sweeps every entry carrying it out of the live INBOX.
  */
 const MAILBOX_FLAG_DELETED = "\\Deleted";
+
+/**
+ * The longest composed message, in base64 characters, that run code can post.
+ * The hub caps a mail request body at the outbound mail limit, and the body
+ * carries the base64 message inside a small JSON object; the margin is room
+ * for that object.
+ */
+const MAX_COMPOSED_MAIL_BASE64_LENGTH = MAX_MAIL_OUTBOUND_BODY_BYTES - 1024;
 
 /**
  * Default crash-loop bound: the supervisor stops respawning and latches
@@ -1782,6 +1792,17 @@ export function createWorkflowSupervisor(
         });
         continue;
       }
+      if (payload.type === "mail.compose.request") {
+        // Run code asked for a signed message to post to the hub itself.
+        // Run it off the iterator's loop like a send; the handler owns the
+        // `mail.compose.response` reply.
+        void handleMailCompose(payload.data).catch((cause) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`mail.compose.request handler crashed: ${message}`;
+        });
+        continue;
+      }
       if (payload.type === "mailbox.mutate.request") {
         // INBOUND half of mailbox ownership (§3b). The child asked the
         // supervisor -- the sole mailbox writer -- to apply a flag write or
@@ -2265,6 +2286,115 @@ export function createWorkflowSupervisor(
           result: { ok: false, reason },
         },
       });
+    }
+  }
+
+  // A compose holds the attachments and the signed message in memory, each
+  // up to the mail size limit. One at a time per child bounds that. The child
+  // bridge queues its own requests, so only a child that ignores the protocol
+  // sees the refusal. The guard is keyed by the child's control sender, so a
+  // child spawned while its predecessor's compose finishes is not refused.
+  const composingChildren = new Set<ControlChannelSender>();
+
+  /**
+   * Sign a conversation message for the child without sending it. The
+   * signer is always the deployment's mail address, and the attachments
+   * pass the same checks as the hub's REST mail route. The message must also
+   * fit a REST mail request, which carries it base64-encoded: a larger one is
+   * refused here rather than by the hub after it is signed.
+   */
+  async function handleMailCompose(
+    data: Extract<ControlPayload, { type: "mail.compose.request" }>["data"],
+  ): Promise<void> {
+    const controlSender = activeControlSender();
+    if (controlSender === null) {
+      logger.warn`mail.compose.request received outside running phase; requestId=${data.requestId} dropped (child awaiter will fail on pipe close)`;
+      return;
+    }
+    if (composingChildren.has(controlSender)) {
+      await controlSender.send({
+        type: "mail.compose.response",
+        data: {
+          requestId: data.requestId,
+          result: {
+            ok: false,
+            reason: "another mail compose is in flight for this child",
+          },
+        },
+      });
+      return;
+    }
+    composingChildren.add(controlSender);
+    try {
+      const attachments = validateAttachments(
+        (data.message.attachments ?? []).map((a) => ({
+          mimeType: a.contentType,
+          data: a.dataBase64,
+          ...(a.name !== undefined ? { name: a.name } : {}),
+        })),
+      );
+      if (!attachments.ok) {
+        await controlSender.send({
+          type: "mail.compose.response",
+          data: {
+            requestId: data.requestId,
+            result: {
+              ok: false,
+              reason: attachments.error.message,
+              attachmentError: attachments.error,
+            },
+          },
+        });
+        return;
+      }
+      const message: OutboundMessage = {
+        to: data.message.to,
+        type: "conversation.message",
+        content: data.message.content,
+      };
+      if (attachments.attachments.length > 0) {
+        message.attachments = attachments.attachments;
+      }
+      const composed = await bindings.mailBus.composeSigned(
+        bindings.deploymentMailAddress,
+        message,
+      );
+      const rawMessageBase64 = bytesToBase64(composed.rawBytes);
+      if (rawMessageBase64.length > MAX_COMPOSED_MAIL_BASE64_LENGTH) {
+        await controlSender.send({
+          type: "mail.compose.response",
+          data: {
+            requestId: data.requestId,
+            result: {
+              ok: false,
+              reason: `the composed message is ${String(rawMessageBase64.length)} characters of base64, over the ${String(MAX_COMPOSED_MAIL_BASE64_LENGTH)}-character limit of a mail request`,
+            },
+          },
+        });
+        return;
+      }
+      await controlSender.send({
+        type: "mail.compose.response",
+        data: {
+          requestId: data.requestId,
+          result: {
+            ok: true,
+            messageId: composed.messageId,
+            rawMessageBase64,
+          },
+        },
+      });
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      await controlSender.send({
+        type: "mail.compose.response",
+        data: {
+          requestId: data.requestId,
+          result: { ok: false, reason },
+        },
+      });
+    } finally {
+      composingChildren.delete(controlSender);
     }
   }
 

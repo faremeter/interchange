@@ -665,14 +665,18 @@ describe("createClosableMailBus", () => {
     content: "hello",
   };
 
-  // A transport bus whose sends stay pending until the test releases them,
-  // so a test can close the bus while a send is in flight.
+  // A transport bus whose sends and composes stay pending until the test
+  // releases them, so a test can close the bus while each is in flight.
   function createHeldBus() {
     const transport = createInMemoryTransport();
     const base = wrapHubTransportAsMailBus(transport);
     let releaseSend: () => void = () => undefined;
+    let releaseCompose: () => void = () => undefined;
     const sendHeld = new Promise<void>((resolve) => {
       releaseSend = resolve;
+    });
+    const composeHeld = new Promise<void>((resolve) => {
+      releaseCompose = resolve;
     });
     const bus = {
       ...base,
@@ -680,11 +684,15 @@ describe("createClosableMailBus", () => {
         await sendHeld;
         return { messageId: "<sent@example.com>", status: "queued" as const };
       },
+      async composeSigned() {
+        await composeHeld;
+        return { messageId: "<c@example.com>", rawBytes: new Uint8Array() };
+      },
     };
-    return { bus, releaseSend };
+    return { bus, releaseSend, releaseCompose };
   }
 
-  test("refuses sends after close", async () => {
+  test("refuses sends and composes after close", async () => {
     const { bus } = createHeldBus();
     const { mailBus, closeOutbound } = createClosableMailBus(bus, ADDRESS);
 
@@ -693,18 +701,25 @@ describe("createClosableMailBus", () => {
     await expect(mailBus.sendOutbound(ADDRESS, MESSAGE)).rejects.toThrow(
       `${ADDRESS} is being undeployed; refusing to send mail as it`,
     );
+    await expect(mailBus.composeSigned(ADDRESS, MESSAGE)).rejects.toThrow(
+      `${ADDRESS} is being undeployed; refusing to sign mail as it`,
+    );
   });
 
-  test("close waits for a send in flight", async () => {
-    const { bus, releaseSend } = createHeldBus();
+  test("close waits for a send in flight and not for a compose", async () => {
+    const { bus, releaseSend, releaseCompose } = createHeldBus();
     const { mailBus, closeOutbound } = createClosableMailBus(bus, ADDRESS);
 
     const send = mailBus.sendOutbound(ADDRESS, MESSAGE);
+    const compose = mailBus.composeSigned(ADDRESS, MESSAGE);
     let closed = false;
     const close = closeOutbound().then(() => {
       closed = true;
     });
-    await Promise.resolve();
+
+    // The held compose does not keep the close open; the held send does.
+    releaseCompose();
+    await compose;
     expect(closed).toBe(false);
 
     releaseSend();

@@ -8,6 +8,7 @@ import {
   SignatureStatus,
 } from "@intx/types/runtime-core";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
+import { AttachmentError } from "@intx/types/sessions";
 
 /**
  * Wire-shape of one per-step credentials entry the supervisor pushes
@@ -79,6 +80,17 @@ export const OutboundAttachmentPayload = type({
   contentType: "string",
   dataBase64: "string",
 });
+
+/**
+ * An attachment on a `mail.compose.request`. The name is optional, as on
+ * the hub's REST mail route: the supervisor validates it with the same
+ * rules, which name an unnamed attachment by its position.
+ */
+export const ComposeAttachmentPayload = OutboundAttachmentPayload.omit(
+  "name",
+).merge({ "name?": "string" });
+
+export type ComposeAttachmentPayload = typeof ComposeAttachmentPayload.infer;
 
 /**
  * Wire projection of `@intx/types/runtime`'s `OutboundMessage`. Mirrors
@@ -858,6 +870,50 @@ const controlPayloadFactories = defineControlPayloadFactories({
           {
             ok: "false",
             reason: "string > 0",
+          },
+        ),
+      },
+    }),
+  "mail.compose.request": () =>
+    type({
+      // Child-initiated request for a conversation message signed with the
+      // deployment key but not sent. Run code posts the bytes to the hub
+      // REST API itself, and the hub verifies them against the run
+      // principal's key. The request names no sender: the supervisor signs
+      // only as its deployment's mail address. It carries only what the
+      // hub's run mail route accepts, so the type is fixed to
+      // `conversation.message` and there is one recipient.
+      type: "'mail.compose.request'",
+      data: {
+        requestId: "string > 0",
+        message: {
+          to: "string > 0",
+          content: "string",
+          "attachments?": ComposeAttachmentPayload.array(),
+        },
+      },
+    }),
+  "mail.compose.response": () =>
+    type({
+      // Supervisor's reply to `mail.compose.request`. A success carries the
+      // signed RFC 2822 message base64-encoded and the Message-ID stamped
+      // into it. A refused attachment carries the structured
+      // `attachmentError` the hub's REST mail route reports for the same
+      // input, so the caller can act on its `code`.
+      type: "'mail.compose.response'",
+      data: {
+        requestId: "string > 0",
+        result: type(
+          {
+            ok: "true",
+            messageId: "string > 0",
+            rawMessageBase64: "string > 0",
+          },
+          "|",
+          {
+            ok: "false",
+            reason: "string > 0",
+            "attachmentError?": AttachmentError,
           },
         ),
       },

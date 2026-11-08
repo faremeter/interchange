@@ -9,6 +9,7 @@ export type ControlPayload = typeof ControlPayload.infer;
 
 export {
   SourcesUpdatedData,
+  ComposeAttachmentPayload,
   OutboundAttachmentPayload,
   OutboundMessagePayload,
   MailboxNotifyHeaders,

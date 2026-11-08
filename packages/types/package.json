@@ -140,6 +140,16 @@
       "types": "./dist/attachments.d.ts",
       "default": "./dist/attachments.js"
     },
+    "./attachment-validation": {
+      "intx-src": "./src/attachment-validation.ts",
+      "types": "./dist/attachment-validation.d.ts",
+      "default": "./dist/attachment-validation.js"
+    },
+    "./sessions": {
+      "intx-src": "./src/sessions.ts",
+      "types": "./dist/sessions.d.ts",
+      "default": "./dist/sessions.js"
+    },
     "./base64": {
       "intx-src": "./src/base64.ts",
       "types": "./dist/base64.d.ts",

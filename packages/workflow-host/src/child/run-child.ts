@@ -153,6 +153,7 @@ import {
   type LoadParkedApproval,
 } from "./parked-correlations";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
+import type { ChildMailComposeBridge } from "./mail-compose-bridge";
 import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
 import { createSupervisorBackedMailPartReader } from "./supervisor-backed-mail-part-reader";
 import type { ChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
@@ -504,6 +505,14 @@ export interface RunWorkflowChildOpts {
    * but no agent on the child side asked for an outbound send.
    */
   outboundMailBridge?: ChildOutboundMailBridge;
+  /**
+   * Optional mail-compose bridge. Run code asks the supervisor for a
+   * message signed with the deployment key through it. The control loop
+   * routes the downstream `mail.compose.response` frame to the bridge's
+   * `handleResult` and invokes `cancelAll` on any exit path. When omitted,
+   * inbound `mail.compose.response` frames are logged and dropped.
+   */
+  mailComposeBridge?: ChildMailComposeBridge;
   /**
    * Optional mailbox-mutation bridge (INBOUND half of mailbox ownership,
    * §3b). The step agent's mail tools mutate the INBOX -- flag writes and
@@ -1029,6 +1038,9 @@ export async function runWorkflowChild(
           ...(opts.outboundMailBridge !== undefined
             ? { outboundMailBridge: opts.outboundMailBridge }
             : {}),
+          ...(opts.mailComposeBridge !== undefined
+            ? { mailComposeBridge: opts.mailComposeBridge }
+            : {}),
           ...(opts.mailboxMutationBridge !== undefined
             ? { mailboxMutationBridge: opts.mailboxMutationBridge }
             : {}),
@@ -1064,6 +1076,9 @@ export async function runWorkflowChild(
     // than hang on a torn-down channel.
     if (opts.outboundMailBridge !== undefined) {
       opts.outboundMailBridge.cancelAll("workflow-child control loop exited");
+    }
+    if (opts.mailComposeBridge !== undefined) {
+      opts.mailComposeBridge.cancelAll("workflow-child control loop exited");
     }
     // Same contract for mailbox mutations: a step agent's flag or
     // `expunge` still awaiting the supervisor's `mailbox.mutate.response`
@@ -1142,6 +1157,7 @@ async function handleControlPayload(
     credentialWiring: CredentialWiring;
     substrateWriteBridge?: SubstrateWriteResponseSink;
     outboundMailBridge?: ChildOutboundMailBridge;
+    mailComposeBridge?: ChildMailComposeBridge;
     mailboxMutationBridge?: ChildMailboxMutationBridge;
     mailboxCallBridge?: ChildMailboxCallBridge;
     mailboxWatchRegistry?: MailboxWatchRegistry;
@@ -1504,6 +1520,24 @@ async function handleControlPayload(
         return false;
       }
       ctx.outboundMailBridge.handleResult(payload.data);
+      return false;
+    }
+    case "mail.compose.request": {
+      // `mail.compose.request` is the child->supervisor compose request;
+      // receiving one on the child's downstream side is a protocol
+      // violation in the same shape as a downstream `outbound.message`.
+      throw new Error(
+        "workflow-child received a `mail.compose.request` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
+    case "mail.compose.response": {
+      // A response without a bridge is a stale frame no awaiter wants;
+      // log and drop (mirrors the `outbound.result` arm).
+      if (ctx.mailComposeBridge === undefined) {
+        logger.warn`workflow-child mail.compose.response received without a bridge wired; requestId=${payload.data.requestId} dropped`;
+        return false;
+      }
+      ctx.mailComposeBridge.handleResult(payload.data);
       return false;
     }
     case "mailbox.notify": {

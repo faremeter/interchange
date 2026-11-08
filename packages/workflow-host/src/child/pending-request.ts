@@ -1,5 +1,6 @@
 // Generic pending-request core shared by the child-side control-IPC
-// bridges (substrate-write, outbound-mail, mailbox-mutation, mailbox-call).
+// bridges (substrate-write, outbound-mail, mailbox-mutation, mailbox-call,
+// mail-compose).
 //
 // Every bridge runs the same request/response round-trip over the control
 // channel: `submit` mints a `requestId`, registers a pending awaiter keyed

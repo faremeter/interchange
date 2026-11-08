@@ -45,6 +45,7 @@ import {
   createChildMailboxCallBridge,
   type ChildMailboxCallBridge,
 } from "./mailbox-call-bridge";
+import { createChildMailComposeBridge } from "./mail-compose-bridge";
 import {
   createControlChannelSender,
   holdControlChannelSender,
@@ -283,6 +284,9 @@ export async function runWorkflowChildFromProcessEnv(
   const mailboxCallBridge = createChildMailboxCallBridge({
     upstreamSender,
   });
+  const mailComposeBridge = createChildMailComposeBridge({
+    upstreamSender,
+  });
   const bindings = await factory({
     spawn,
     definition,
@@ -304,6 +308,7 @@ export async function runWorkflowChildFromProcessEnv(
     outboundMailBridge,
     mailboxMutationBridge,
     mailboxCallBridge,
+    mailComposeBridge,
   });
 }
 

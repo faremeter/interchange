@@ -37,6 +37,7 @@ import {
   createChangeNotifier,
   createLogCapture,
   sendDefinition,
+  waitForUpstreamPayload,
   TEST_DEFINITION_HASH,
 } from "@intx/workflow-host/testing";
 
@@ -463,9 +464,9 @@ async function spawnSupervisor(opts: {
   await opts.tracker.awaitChildren(1);
   const first = opts.tracker.children[0];
   if (first === undefined) throw new Error("tracker.children[0] missing");
-  await driveReady(first, opts.ipcKeypair);
+  const firstChildSender = await driveReady(first, opts.ipcKeypair);
   await spawnPromise;
-  return { supervisor };
+  return { supervisor, firstChildSender };
 }
 
 // A deterministic timer registry used to drive the crash-loop stable-run
@@ -579,6 +580,77 @@ describe("supervisor crash-respawn: unexpected exit", () => {
     // The mail-bus registration is held across the respawn (never
     // unregistered then re-registered).
     expect(mailBus.registered()).toContain("run_deployment-x@example.com");
+
+    await supervisor.shutdown();
+  });
+
+  test("a respawned child composes while its predecessor's compose is in flight", async () => {
+    const baseDir = await makeTempDir("crash-respawn-compose-");
+    const ipcKeypair = await generateKeyPair();
+    let openGate: () => void = () => undefined;
+    const composeGate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    // Resolves each time a compose reaches the mail bus, in call order.
+    const composeStarts = [
+      Promise.withResolvers<undefined>(),
+      Promise.withResolvers<undefined>(),
+    ];
+    let composeCalls = 0;
+    // Every compose waits at the gate, so the first child's compose is
+    // still in flight when its successor sends one.
+    const mailBus = {
+      ...createMockMailBus(),
+      async composeSigned() {
+        composeStarts[composeCalls]?.resolve(undefined);
+        composeCalls += 1;
+        await composeGate;
+        return {
+          messageId: "<composed@run_deployment-x.example.com>",
+          rawBytes: new TextEncoder().encode("signed"),
+        };
+      },
+    };
+    const tracker = createSpawnTracker();
+    const { supervisor, firstChildSender } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: createMemoryInboxPrimitives(),
+      respawnBackoffInitialMs: 1,
+    });
+    const firstChild = tracker.children[0];
+    if (firstChild === undefined) throw new Error("first child missing");
+
+    const message = { to: "run_other@example.com", content: "hello" };
+    await firstChildSender.send({
+      type: "mail.compose.request",
+      data: { requestId: "mcp-first-child", message },
+    });
+    await composeStarts[0]?.promise;
+    firstChild.crash();
+
+    await waitForChildren(tracker, 2);
+    const secondChild = tracker.children[1];
+    if (secondChild === undefined) throw new Error("second child missing");
+    const secondChildSender = await driveReady(secondChild, ipcKeypair);
+    await secondChildSender.send({
+      type: "mail.compose.request",
+      data: { requestId: "mcp-second-child", message },
+    });
+
+    const secondResponse = waitForUpstreamPayload(
+      secondChild.supervisorToChild,
+      "mail.compose.response",
+      (payload) => payload.data.requestId === "mcp-second-child",
+    );
+    // Hold the gate until the second compose reaches the mail bus or is
+    // answered, so the first compose is still in flight when the
+    // supervisor admits or refuses the second.
+    await Promise.race([composeStarts[1]?.promise, secondResponse]);
+    openGate();
+    expect((await secondResponse).data.result.ok).toBe(true);
 
     await supervisor.shutdown();
   });
