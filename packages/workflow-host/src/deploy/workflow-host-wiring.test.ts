@@ -52,8 +52,10 @@ import {
   sendDefinition,
   waitForUpstreamPayload,
 } from "@intx/workflow-host/testing";
+import { wrapHubTransportAsMailBus } from "../mail-bus/index";
 import {
   assembleRunCredentialsSnapshot,
+  createClosableMailBus,
   createSidecarDeployRouter,
   createSidecarWorkflowSupervisor,
   STEP_INFERENCE_SOURCES_ENV_KEY,
@@ -654,6 +656,63 @@ function defaultMultistepSources(): WorkflowProjection["sources"] {
     "step-2": [makeInferenceSource("step-2")],
   };
 }
+
+describe("createClosableMailBus", () => {
+  const ADDRESS = "run_closable@example.com";
+  const MESSAGE = {
+    to: "recipient@example.com",
+    type: "conversation.message" as const,
+    content: "hello",
+  };
+
+  // A transport bus whose sends stay pending until the test releases them,
+  // so a test can close the bus while a send is in flight.
+  function createHeldBus() {
+    const transport = createInMemoryTransport();
+    const base = wrapHubTransportAsMailBus(transport);
+    let releaseSend: () => void = () => undefined;
+    const sendHeld = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const bus = {
+      ...base,
+      async sendOutbound() {
+        await sendHeld;
+        return { messageId: "<sent@example.com>", status: "queued" as const };
+      },
+    };
+    return { bus, releaseSend };
+  }
+
+  test("refuses sends after close", async () => {
+    const { bus } = createHeldBus();
+    const { mailBus, closeOutbound } = createClosableMailBus(bus, ADDRESS);
+
+    await closeOutbound();
+
+    await expect(mailBus.sendOutbound(ADDRESS, MESSAGE)).rejects.toThrow(
+      `${ADDRESS} is being undeployed; refusing to send mail as it`,
+    );
+  });
+
+  test("close waits for a send in flight", async () => {
+    const { bus, releaseSend } = createHeldBus();
+    const { mailBus, closeOutbound } = createClosableMailBus(bus, ADDRESS);
+
+    const send = mailBus.sendOutbound(ADDRESS, MESSAGE);
+    let closed = false;
+    const close = closeOutbound().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    releaseSend();
+    await send;
+    await close;
+    expect(closed).toBe(true);
+  });
+});
 
 describe("validateWorkflowProjection", () => {
   test("rejects an empty stepOrder", () => {
