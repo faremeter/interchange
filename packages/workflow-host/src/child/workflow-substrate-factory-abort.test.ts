@@ -45,6 +45,7 @@ import {
   step,
   type WorkflowDefinition,
   type WorkflowEvent,
+  unavailableMailSigner,
 } from "@intx/workflow";
 import { waitForEvent } from "@intx/workflow/testing";
 
@@ -240,6 +241,7 @@ function sharedDeps(
       parentGrants,
     closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
+    mailSigner: unavailableMailSigner,
   };
 }
 

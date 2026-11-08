@@ -4,6 +4,7 @@ export {
   createInMemoryEffectLedger,
   unavailableActionCredentials,
   unavailableCredentialCapability,
+  unavailableMailSigner,
   createSpawnLoopIteration,
   type RunLocalOptions,
 } from "./run-local";

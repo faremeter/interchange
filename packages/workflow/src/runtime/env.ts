@@ -11,6 +11,7 @@ import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
 import type {
   CredentialCapability,
   HostCredentialCapability,
+  MailSigner,
 } from "@intx/types";
 import type {
   ApprovalSnapshot,
@@ -324,6 +325,13 @@ export interface EffectContext {
  */
 export interface PerformScope {
   readonly credentials: CredentialCapability;
+  /**
+   * Composes conversation messages signed with the deployment's mail key,
+   * for the handler to post to the hub itself. It sends nothing. It closes
+   * with the scope: each compose stamps a fresh Message-ID, so it belongs in
+   * the same recorded unit as the post that uses it.
+   */
+  readonly mailSigner: MailSigner;
 }
 
 /**

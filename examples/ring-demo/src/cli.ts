@@ -25,6 +25,7 @@ import {
   type MailEnv,
 } from "@intx/harness";
 import type { InferenceSource } from "@intx/types/runtime";
+import type { MailSigner } from "@intx/types/mail-signer";
 
 await setup({ dev: true });
 
@@ -353,6 +354,17 @@ After the tool call succeeds, stop immediately. Do not write any reply text.`;
 // Harnesses
 // ---------------------------------------------------------------------------
 
+// The demo's agents talk over an in-process transport, with no hub and no
+// deployment key, so a tool that asks for a hub-bound signed message is
+// refused.
+const noMailSigner: MailSigner = {
+  compose() {
+    return Promise.reject(
+      new Error("this demo runs no hub, so its tools cannot compose hub mail"),
+    );
+  },
+};
+
 for (const [i, name] of AGENT_NAMES.entries()) {
   const transport = transports[i];
   const crypto = cryptoInstances[i];
@@ -366,7 +378,10 @@ for (const [i, name] of AGENT_NAMES.entries()) {
   }
   // Keep per-package references so shutdown can dispose each runner.
   const mail = createMailTools({
-    capabilities: createHarnessRuntimeCapabilities({ transport }),
+    capabilities: createHarnessRuntimeCapabilities({
+      transport,
+      signer: noMailSigner,
+    }),
   });
   const posix = createPosixTools({ cwd: process.cwd() });
   toolRunners.push({ mail, posix });

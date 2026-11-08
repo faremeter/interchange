@@ -19,6 +19,7 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
+import type { MailSigner } from "@intx/types/mail-signer";
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import { actionConsumer, evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
@@ -44,6 +45,7 @@ import {
   createInMemoryScheduler,
   createInMemoryRepoStore,
   defineWorkflow,
+  unavailableMailSigner,
   type WorkflowDefinition,
   type WorkflowEvent,
 } from "@intx/workflow";
@@ -80,6 +82,7 @@ const OTHER_RESOURCE = `effect:${OTHER_CAPABILITY}`;
 const ALLOW_BODY_ID = "body-allow";
 const DENY_BODY_ID = "body-deny";
 const CHILD_BODY_ID = "child-allow";
+const MAIL_BODY_ID = "body-mail";
 const CREDENTIAL_BODY_ID = "body-credential";
 const CREDENTIAL_LOOP_BODY_ID = "body-credential-loop";
 const CREDENTIAL_LOOP_ITERATION_ID = "body-credential-loop-iteration";
@@ -123,6 +126,26 @@ export async function resolveToken(input, ctx) {
       const handle = await credentials.resolve("api-token");
       await writeFile(marker, handle.kind);
       return { kind: handle.kind };
+    },
+  });
+}
+
+export async function notify(input, ctx) {
+  const marker = input.marker;
+  const capability = input.capability;
+  if (typeof marker !== "string" || typeof capability !== "string") {
+    throw new Error("notify input needs marker and capability strings");
+  }
+  return ctx.perform({
+    effectId: "notify-once",
+    capability,
+    run: async ({ mailSigner }) => {
+      const composed = await mailSigner.compose({
+        to: "run_target@example.com",
+        content: "from a body action",
+      });
+      await writeFile(marker, composed.rawMessage);
+      return { messageId: composed.messageId };
     },
   });
 }
@@ -202,13 +225,14 @@ function grant(resource: string): GrantRule {
 function actionBody(
   id: string,
   requires: readonly string[],
+  handler = "ship",
 ): WorkflowDefinition {
   return defineWorkflow({
     id,
     trigger: { type: "manual" },
     steps: {
       ship: action({
-        handler: "ship",
+        handler,
         input: { from: "trigger.payload" },
         effect: { requires },
       }),
@@ -274,6 +298,7 @@ const refuseStep: SidecarChildStepInvoker = () => {
 function makeDeps(
   substrate: ReturnType<typeof createRepoStore>,
   packageDir: string,
+  mailSigner: MailSigner = unavailableMailSigner,
 ): Parameters<typeof createSidecarRunChild>[0] {
   return {
     substrate,
@@ -291,6 +316,7 @@ function makeDeps(
       [ALLOW_BODY_ID]: {},
       [DENY_BODY_ID]: {},
       [CHILD_BODY_ID]: {},
+      [MAIL_BODY_ID]: {},
       [CREDENTIAL_BODY_ID]: {},
       [CREDENTIAL_LOOP_BODY_ID]: {},
       [CREDENTIAL_LOOP_ITERATION_ID]: {},
@@ -307,6 +333,7 @@ function makeDeps(
         keepInheritedGrant(grantRule, declared),
       ),
     directors: createDefaultDirectorRegistry(),
+    mailSigner,
   };
 }
 
@@ -430,6 +457,45 @@ describe("spawned body action steps", () => {
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("completed");
     expect(await fs.promises.readFile(marker, "utf8")).toBe("shipped");
+  });
+
+  test("a body action composes mail through the deployment's signer", async () => {
+    const substrate = await makeSubstrate("child-action-mail-");
+    const parentRunId = "run-parent-mail";
+    await seedRunGrants(substrate, parentRunId, [grant(SHIP_RESOURCE)]);
+    const marker = await markerPath();
+    const composed: string[] = [];
+    const mailSigner: MailSigner = {
+      async compose(message) {
+        composed.push(`${message.to}: ${message.content}`);
+        return { messageId: "<body@example.com>", rawMessage: "c2lnbmVk" };
+      },
+    };
+    const spawn = createSidecarSpawnSuspendableChild(
+      makeDeps(substrate, closurePackageDir, mailSigner),
+    );
+
+    const handle = await spawn(
+      {
+        definition: actionBody(MAIL_BODY_ID, [SHIP_CAPABILITY], "notify"),
+        definitionRef: REF,
+        childRunId: "run-body-mail",
+        input: { marker, capability: SHIP_CAPABILITY },
+        parentRunId,
+        parentStepId: "section",
+        signal: new AbortController().signal,
+        depth: 0,
+        maxChildSpawnDepth: 32,
+      },
+      () => undefined,
+    );
+
+    const terminal = await handle.next();
+    expect(terminal.kind).toBe("terminal");
+    if (terminal.kind !== "terminal") throw new Error("expected a terminal");
+    expect(terminal.terminalStatus).toBe("completed");
+    expect(composed).toEqual(["run_target@example.com: from a body action"]);
+    expect(await fs.promises.readFile(marker, "utf8")).toBe("c2lnbmVk");
   });
 });
 

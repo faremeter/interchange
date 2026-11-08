@@ -22,6 +22,7 @@ import {
   createDefaultActionInvoker,
   createInMemoryEffectLedger,
   unavailableActionCredentials,
+  unavailableMailSigner,
 } from "./run-local";
 import {
   abortOnDurableEvent,
@@ -61,6 +62,7 @@ describe("the default action invoker", () => {
         };
       },
       countingCredentials,
+      unavailableMailSigner,
     );
 
     const ctrl = new AbortController();
@@ -100,6 +102,7 @@ describe("the default action invoker", () => {
         return null;
       },
       unavailableActionCredentials,
+      unavailableMailSigner,
     );
 
     const run = runtimeRun(oneAction, env, {

@@ -45,6 +45,7 @@ import {
   step,
   type WorkflowDefinition,
   type WorkflowEvent,
+  unavailableMailSigner,
 } from "@intx/workflow";
 
 import { createWorkflowRunRepoStore, runGrantsPath } from "@intx/workflow-host";
@@ -242,6 +243,7 @@ function makeSpawner(
       parentGrants,
     closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
+    mailSigner: unavailableMailSigner,
   });
 }
 

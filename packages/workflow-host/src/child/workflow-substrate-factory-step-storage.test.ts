@@ -36,6 +36,8 @@ import type {
   PendingOperation,
   ToolCall,
 } from "@intx/types/runtime";
+import type { MailSigner } from "@intx/types/mail-signer";
+import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 import { generateKeyPair } from "@intx/crypto";
 import {
   createRepoStore,
@@ -55,7 +57,11 @@ import {
   type SourcesSnapshotRef,
   type StepEnvBase,
 } from "@intx/workflow-host";
-import { scopedStepId, type StepInvokeRequest } from "@intx/workflow";
+import {
+  scopedStepId,
+  type StepInvokeRequest,
+  unavailableMailSigner,
+} from "@intx/workflow";
 
 import {
   createSidecarStepBuildEnv,
@@ -141,6 +147,7 @@ function buildDeps(opts: {
   dataDir: string;
   substrate: RepoStore;
   durableConversation?: DurableConversationRegistry;
+  mailSigner?: MailSigner;
 }): SidecarStepBuildEnvDeps {
   return {
     dataDir: opts.dataDir,
@@ -154,6 +161,7 @@ function buildDeps(opts: {
     adapters: createBuiltinRegistry(),
     closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
+    mailSigner: opts.mailSigner ?? unavailableMailSigner,
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }
       : {}),
@@ -428,6 +436,42 @@ function approvalResumeRequest(
     signal: new AbortController().signal,
   };
 }
+
+function isRuntimeCapabilities(value: unknown): value is RuntimeCapabilities {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "resolve" in value &&
+    typeof value.resolve === "function"
+  );
+}
+
+describe("createSidecarStepBuildEnv capabilities", () => {
+  test("a step tool resolves the child's mail signer as mail.signer", async () => {
+    const dataDir = await makeTempDir();
+    const mailSigner: MailSigner = {
+      compose: () => Promise.reject(new Error("not composed in this test")),
+    };
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({
+        dataDir,
+        substrate: await createSubstrate(dataDir),
+        durableConversation: stubDurableConversationRegistry(),
+        mailSigner,
+      }),
+    );
+
+    const env = await buildEnv(requestForRun("run-1"), sourcesRefFor());
+
+    // A tool reads `capabilities` from its own env type; StepEnvBase does
+    // not declare it, so narrow it here.
+    const capabilities = "capabilities" in env ? env.capabilities : undefined;
+    if (!isRuntimeCapabilities(capabilities)) {
+      throw new Error("the step env carries no capabilities");
+    }
+    expect(capabilities.resolve("mail.signer")).toBe(mailSigner);
+  });
+});
 
 describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
   test("rejects a resume whose matching pending op carries no suspendedCall", async () => {

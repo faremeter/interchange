@@ -281,6 +281,11 @@ a provider registry, the same builder the deployed host uses. A
 together with a custom `invokeAction`, because a custom action-runner does
 not use it.
 
+`runLocal` holds no deployment mail key, so by default an action's
+`mailSigner.compose` (item 33) fails. Pass `mailSigner` to supply a signer,
+for example a fake in a test. A `childWorkflow` child inherits it, and
+`runLocal` refuses it together with a custom `invokeAction`.
+
 Where it lives today: `createDefaultStepInvoker` and `RunLocalOptions`,
 `packages/workflow/src/runlocal/run-local.ts`; the local entry,
 `packages/workflow-host/src/local.ts` (exercised by
@@ -638,3 +643,36 @@ relative paths such as `/api/tenants/<tenantId>/workflows/runs/<runId>`.
 
 Where it lives today: "Workflow run tokens" in `docs/AUTH.md`;
 `RUN_TOKEN_ROUTES`, `packages/hub-api/src/middleware/run-token-auth.ts`.
+
+**33.** Run code composes conversation messages signed with its deployment's
+mail key. The key stays in the sidecar: the sidecar composes and signs the
+message, and the run code gets the result. The signer sends nothing.
+
+- An action gets the signer inside `perform`'s `run`, as
+  `run: async ({ mailSigner }) => ...`. It closes when `run` settles, like
+  the scope's `credentials`.
+- A tool resolves it from its capabilities as `mail.signer`.
+- `compose({ to, content, attachments })` resolves with
+  `{ messageId, rawMessage }`. `rawMessage` is the signed RFC 2822 message,
+  base64-encoded. The From address is always the deployment's own address.
+  The type is always `conversation.message`, and there is one recipient.
+- Attachments take the shape of the hub's REST mail body
+  (`{ mimeType, data, name? }`, `data` base64) and pass the same checks. The
+  sidecar also refuses a message whose base64 form is longer than a mail
+  request may be, so one message carries at most about 24 MiB of
+  attachments.
+- When the sidecar refuses to compose, the error passes
+  `isMailComposeError` from `@intx/types`. Its `attachmentError` carries the
+  structured attachment error when an attachment fails the checks. Do not
+  use `instanceof`: a workflow bundle inlines its own copy of the class.
+- Every other failure rejects with a plain `Error`. Examples are a host with
+  no signer (the `runLocal` default), a signer used after its window closes,
+  and a compose cut off by the child's shutdown.
+- Each `compose` stamps a new Message-ID. Compose a message in the same
+  `perform` as the work that uses it. A crash or a retry after that work and
+  before the record composes a new message with a new Message-ID, and the
+  ledger does not stop it.
+
+Where it lives today: `MailSigner`, `packages/types/src/mail-signer.ts`;
+`PerformScope`, `packages/workflow/src/runtime/env.ts`; the child bridge,
+`packages/workflow-host/src/child/mail-compose-bridge.ts`.

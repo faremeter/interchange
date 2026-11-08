@@ -10,13 +10,18 @@ import {
   type RuntimeCapabilities,
 } from "@intx/types/runtime-capabilities";
 import type { MessageTransport } from "@intx/types/runtime";
+import type { MailSigner } from "@intx/types/mail-signer";
 
 export interface HarnessRuntimeCapabilitiesOptions {
   transport: MessageTransport;
+  signer: MailSigner;
 }
 
 export function createHarnessRuntimeCapabilities(
   opts: HarnessRuntimeCapabilitiesOptions,
 ): RuntimeCapabilities {
-  return createRuntimeCapabilities({ "mail.transport": opts.transport });
+  return createRuntimeCapabilities({
+    "mail.transport": opts.transport,
+    "mail.signer": opts.signer,
+  });
 }

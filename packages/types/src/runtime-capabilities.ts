@@ -11,6 +11,7 @@
 
 import type { MessageTransport } from "./runtime";
 import type { CredentialCapability } from "./mediated-credential";
+import type { MailSigner } from "./mail-signer";
 
 /**
  * Registry of capability keys to the value types they resolve to. Keys are
@@ -26,6 +27,12 @@ export interface RuntimeCapabilityMap {
    * for sending and receiving mail.
    */
   "mail.transport": MessageTransport;
+
+  /**
+   * Composes conversation messages signed with the deployment's mail key,
+   * for a tool to post to the hub REST API itself. It sends nothing.
+   */
+  "mail.signer": MailSigner;
 
   /**
    * Provider-backed credentials the agent's tools resolve by their declared

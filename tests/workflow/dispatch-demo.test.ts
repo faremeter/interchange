@@ -53,6 +53,7 @@ import {
   type WorkflowAuthorizeFn,
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
+  unavailableMailSigner,
 } from "@intx/workflow";
 
 function agent(id: string): AgentDefinition<BaseEnv> {
@@ -207,6 +208,7 @@ function buildEnv(opts: {
     authzContext,
   }) => {
     const ctx = createEffectContext({
+      mailSigner: unavailableMailSigner,
       handler,
       authorize,
       effects,

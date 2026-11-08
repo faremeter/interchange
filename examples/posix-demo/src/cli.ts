@@ -24,6 +24,7 @@ import {
   type MailEnv,
 } from "@intx/harness";
 import type { InferenceSource } from "@intx/types/runtime";
+import type { MailSigner } from "@intx/types/mail-signer";
 
 await setup({ dev: true });
 
@@ -173,6 +174,17 @@ const [storageAlpha, storageBeta] = await Promise.all([
 // Tools
 // ---------------------------------------------------------------------------
 
+// The demo's agents talk over an in-process transport, with no hub and no
+// deployment key, so a tool that asks for a hub-bound signed message is
+// refused.
+const noMailSigner: MailSigner = {
+  compose() {
+    return Promise.reject(
+      new Error("this demo runs no hub, so its tools cannot compose hub mail"),
+    );
+  },
+};
+
 // Keep per-package references so the shutdown path can dispose each mail
 // runner. Each per-agent createMailTools() is constructed against that
 // agent's transport; the harness wraps it as a defineTool bundle factory
@@ -180,12 +192,14 @@ const [storageAlpha, storageBeta] = await Promise.all([
 const toolsAlphaMail = createMailTools({
   capabilities: createHarnessRuntimeCapabilities({
     transport: transportAlpha,
+    signer: noMailSigner,
   }),
 });
 
 const toolsBetaMail = createMailTools({
   capabilities: createHarnessRuntimeCapabilities({
     transport: transportBeta,
+    signer: noMailSigner,
   }),
 });
 

@@ -99,6 +99,7 @@ import {
   type WorkflowAuthorizeFn,
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
+  unavailableMailSigner,
 } from "@intx/workflow";
 
 // The amendment and fix loop caps, and the Phase-5 verification cap. `loop()`
@@ -994,6 +995,7 @@ describe("dispatch orchestrator with real agents", () => {
         throw new Error(`action ${handler} declared no effect capability`);
       }
       const ctx = createEffectContext({
+        mailSigner: unavailableMailSigner,
         handler,
         authorize: workflowAuthorize,
         effects,

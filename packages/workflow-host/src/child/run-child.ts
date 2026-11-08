@@ -94,7 +94,9 @@ import {
   createLoopIterationHandle,
   emptyState,
   runtimeRun,
+  unavailableMailSigner,
 } from "@intx/workflow";
+import type { MailSigner } from "@intx/types/mail-signer";
 
 import {
   createWorkflowHostDrainController,
@@ -630,6 +632,10 @@ export async function runWorkflowChild(
     materialRef: credentialMaterialRef,
     resolveStepGrants,
   };
+  // A child built without a compose bridge has no path to the deployment's
+  // key, so its actions' `compose` fails.
+  const mailSigner: MailSigner =
+    opts.mailComposeBridge ?? unavailableMailSigner;
   const clock = opts.bindings.clock ?? defaultClock;
   const newId = opts.bindings.newId ?? defaultNewId;
 
@@ -926,6 +932,7 @@ export async function runWorkflowChild(
       sourcesRef,
       credentialWiring,
       credentialsRef,
+      mailSigner,
       ...(opts.mailboxCallBridge !== undefined
         ? { mailboxCallBridge: opts.mailboxCallBridge }
         : {}),
@@ -1020,6 +1027,7 @@ export async function runWorkflowChild(
           spawnChild,
           loopFns,
           actionResolver,
+          mailSigner,
           clock,
           newId,
           eventSender,
@@ -1158,6 +1166,7 @@ async function handleControlPayload(
     substrateWriteBridge?: SubstrateWriteResponseSink;
     outboundMailBridge?: ChildOutboundMailBridge;
     mailComposeBridge?: ChildMailComposeBridge;
+    mailSigner: MailSigner;
     mailboxMutationBridge?: ChildMailboxMutationBridge;
     mailboxCallBridge?: ChildMailboxCallBridge;
     mailboxWatchRegistry?: MailboxWatchRegistry;
@@ -1212,6 +1221,7 @@ async function handleControlPayload(
         sourcesRef: ctx.sourcesRef,
         credentialWiring: ctx.credentialWiring,
         credentialsRef: ctx.credentialsRef,
+        mailSigner: ctx.mailSigner,
         ...(ctx.mailboxCallBridge !== undefined
           ? { mailboxCallBridge: ctx.mailboxCallBridge }
           : {}),
@@ -1732,6 +1742,7 @@ function buildRuntimeEnv(args: {
   sourcesRef: SourcesSnapshotRef;
   credentialWiring: CredentialWiring;
   credentialsRef: CredentialsSnapshotRef;
+  mailSigner: MailSigner;
   mailboxCallBridge?: ChildMailboxCallBridge;
   onEvent: (event: EventPayload) => void;
   upstreamSender: ControlChannelSender;
@@ -1936,6 +1947,7 @@ function buildRuntimeEnv(args: {
     effects,
     args.actionResolver,
     args.bindings.actionCredentials(args.credentialWiring),
+    args.mailSigner,
   );
   return env;
 }
