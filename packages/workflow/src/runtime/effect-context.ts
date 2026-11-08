@@ -13,13 +13,14 @@
 // the ledger would dedup distinct effects against each other.
 
 import { canonicalizeForHash } from "@intx/agent";
-import type { CredentialCapability } from "@intx/types";
+import type { CredentialCapability, MailSigner } from "@intx/types";
 
 import type {
   AuthorizeContext,
   WorkflowAuthorizeFn,
 } from "../authorize-context";
 import { guardCredentialCapability } from "./credential-guard";
+import { guardMailSigner } from "./mail-signer-guard";
 import type { EffectContext, EffectLedger } from "./env";
 
 export interface EffectContextConfig {
@@ -32,6 +33,8 @@ export interface EffectContextConfig {
   input: unknown;
   /** The invocation's credentials, handed to each `run` through its scope. */
   credentials: CredentialCapability;
+  /** The invocation's mail signer, handed to each `run` through its scope. */
+  mailSigner: MailSigner;
 }
 
 export function createEffectContext(
@@ -45,6 +48,7 @@ export function createEffectContext(
     authzContext,
     input,
     credentials,
+    mailSigner,
   } = config;
   const allowed = new Set(requires);
   const { runId, stepId } = authzContext;
@@ -91,6 +95,12 @@ export function createEffectContext(
           () => open,
           (handle, verb) =>
             `action ${handler} cannot ${verb} credential handle "${handle}" outside the run of its effect ${effectId}`,
+        ),
+        mailSigner: guardMailSigner(
+          mailSigner,
+          () => open,
+          () =>
+            `action ${handler} cannot compose mail outside the run of its effect ${effectId}`,
         ),
       };
       let output: unknown;

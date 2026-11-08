@@ -13,6 +13,7 @@ import {
   type ActionInvoker,
   type EffectLedger,
   type WorkflowAuthorizeFn,
+  unavailableMailSigner,
 } from "@intx/workflow";
 
 function allowAll(): WorkflowAuthorizeFn {
@@ -42,6 +43,7 @@ function invokerFor(
 ): ActionInvoker {
   return async ({ input, requires, authzContext, signal }) => {
     const ctx = createEffectContext({
+      mailSigner: unavailableMailSigner,
       handler: "test-action",
       authorize,
       effects,

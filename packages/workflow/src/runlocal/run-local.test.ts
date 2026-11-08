@@ -24,7 +24,7 @@ import { describe, test, expect } from "bun:test";
 
 import { defineAgent } from "@intx/agent";
 
-import type { MediatedCredential } from "@intx/types";
+import type { MailSigner, MediatedCredential } from "@intx/types";
 import {
   action,
   childWorkflow,
@@ -32,6 +32,7 @@ import {
   loop,
   runLocal,
   step,
+  unavailableMailSigner,
   type ActionCredentialsFactory,
   type ActionHandler,
   type ActionInvoker,
@@ -289,5 +290,84 @@ describe("runLocal action credentials", () => {
     ).toThrow(
       "runLocal: actionCredentials applies only to the default action-runner",
     );
+  });
+});
+
+describe("runLocal mail signer", () => {
+  const composing: ActionHandler = (_input, ctx) =>
+    ctx.perform({
+      effectId: "notify",
+      capability: "call",
+      run: ({ mailSigner }) =>
+        mailSigner.compose({ to: "run_t@example.com", content: "hello" }),
+    });
+
+  const composer = () =>
+    action({ handler: "compose", effect: { requires: ["call"] } });
+
+  const tree = defineWorkflow({
+    id: "local-mail-signer-tree",
+    trigger: { type: "manual" },
+    steps: {
+      top: composer(),
+      spawn: childWorkflow({
+        definition: defineWorkflow({
+          id: "local-mail-signer-child",
+          trigger: { type: "manual" },
+          steps: { inChild: composer() },
+        }),
+      }),
+    },
+  });
+
+  const options = {
+    authorize: allow,
+    hasUpstreamSignalResolver: true,
+    actionResolver: (): ActionHandler => composing,
+  };
+
+  test("top-level and child actions compose through the signer", async () => {
+    const composed: string[] = [];
+    const mailSigner: MailSigner = {
+      async compose(message) {
+        composed.push(message.to);
+        return { messageId: "<m@example.com>", rawMessage: "cmF3" };
+      },
+    };
+    const result = await runLocal(tree, { ...options, mailSigner }).complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(composed).toEqual(["run_t@example.com", "run_t@example.com"]);
+  });
+
+  test("without a signer, an action that composes fails", async () => {
+    const result = await runLocal(
+      defineWorkflow({
+        id: "local-mail-signer-none",
+        trigger: { type: "manual" },
+        steps: { top: composer() },
+      }),
+      options,
+    ).complete;
+
+    expect(result.terminalStatus).toBe("failed");
+    const failure = result.events.find((event) => event.kind === "StepFailed");
+    if (failure === undefined || failure.kind !== "StepFailed") {
+      throw new Error("expected the top step to fail");
+    }
+    expect(failure.error.message).toContain(
+      "no deployment mail key is configured for action handlers",
+    );
+  });
+
+  test("a signer together with a custom action-runner is refused", () => {
+    const invokeAction: ActionInvoker = async () => ({ output: null });
+    expect(() =>
+      runLocal(tree, {
+        ...options,
+        invokeAction,
+        mailSigner: unavailableMailSigner,
+      }),
+    ).toThrow("runLocal: mailSigner applies only to the default action-runner");
   });
 });

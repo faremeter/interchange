@@ -145,6 +145,11 @@
       "types": "./dist/attachment-validation.d.ts",
       "default": "./dist/attachment-validation.js"
     },
+    "./mail-signer": {
+      "intx-src": "./src/mail-signer.ts",
+      "types": "./dist/mail-signer.d.ts",
+      "default": "./dist/mail-signer.js"
+    },
     "./sessions": {
       "intx-src": "./src/sessions.ts",
       "types": "./dist/sessions.d.ts",

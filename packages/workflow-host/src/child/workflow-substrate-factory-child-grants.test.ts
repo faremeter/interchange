@@ -43,6 +43,7 @@ import {
   step,
   type StepInvokeResult,
   type WorkflowDefinition,
+  unavailableMailSigner,
 } from "@intx/workflow";
 import {
   createWorkflowRunRepoStore,
@@ -271,6 +272,7 @@ function makeRunChild(
     filterGrantsToDeclaredResources: grantCap.filterGrantsToDeclaredResources,
     closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
+    mailSigner: unavailableMailSigner,
   });
 }
 

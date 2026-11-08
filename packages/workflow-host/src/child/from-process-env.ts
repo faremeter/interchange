@@ -21,6 +21,7 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types/hex";
+import type { MailSigner } from "@intx/types/mail-signer";
 import type { WorkflowDefinition } from "@intx/workflow";
 
 import { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
@@ -125,6 +126,12 @@ export interface SubstrateFactoryEnv {
    * agent's signature without the child ever holding the agent's key.
    */
   readonly outboundMailBridge: ChildOutboundMailBridge;
+  /**
+   * Composes mail signed with the deployment key over the
+   * `mail.compose.request` IPC. Action handlers get it on their
+   * `perform` scope and tools get it as the `mail.signer` capability.
+   */
+  readonly mailSigner: MailSigner;
   /**
    * Child-side IPC bridge over the upstream control channel for the
    * INBOUND half of mailbox ownership (§3b). The substrate factory uses
@@ -293,6 +300,7 @@ export async function runWorkflowChildFromProcessEnv(
     substrateConfig,
     substrateWriteBridge,
     outboundMailBridge,
+    mailSigner: mailComposeBridge,
     mailboxMutationBridge,
     mailboxCallBridge,
   });

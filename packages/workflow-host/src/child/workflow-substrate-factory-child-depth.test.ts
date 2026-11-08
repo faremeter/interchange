@@ -49,6 +49,7 @@ import {
   step,
   type WorkflowDefinition,
   type WorkflowEvent,
+  unavailableMailSigner,
 } from "@intx/workflow";
 
 import { createSnapshotGrantsReader } from "./credentials-backed-authorize";
@@ -273,6 +274,7 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
         parentGrants,
       closurePackageDir: "/unused-closure",
       directors: createDefaultDirectorRegistry(),
+      mailSigner: unavailableMailSigner,
     });
 
     // Run the top of the chain at depth 0 with the ceiling lowered to 2.
@@ -358,6 +360,7 @@ describe("createSidecarRunChild root grants at depth", () => {
         parentGrants,
       closurePackageDir: "/unused-closure",
       directors: createDefaultDirectorRegistry(),
+      mailSigner: unavailableMailSigner,
     });
   }
 
@@ -499,6 +502,7 @@ describe("createSidecarRunChild per-rung cap", () => {
         ),
       closurePackageDir: "/unused-closure",
       directors: createDefaultDirectorRegistry(),
+      mailSigner: unavailableMailSigner,
     });
     const rootGrants = {
       current: {

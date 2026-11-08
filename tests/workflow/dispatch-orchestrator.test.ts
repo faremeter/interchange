@@ -51,6 +51,7 @@ import {
   type WorkflowAuthorizeFn,
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
+  unavailableMailSigner,
 } from "@intx/workflow";
 
 function agent(id: string): AgentDefinition<BaseEnv> {
@@ -677,6 +678,7 @@ function buildEnv(opts: {
       throw new Error(`action ${handler} declared no effect capability`);
     }
     const ctx = createEffectContext({
+      mailSigner: unavailableMailSigner,
       handler,
       authorize,
       effects,

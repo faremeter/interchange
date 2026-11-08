@@ -25,6 +25,7 @@ import {
   createInMemoryRepoStore,
   createInMemoryScheduler,
   createInMemorySignalChannel,
+  unavailableMailSigner,
 } from "../runlocal/index";
 import type { BlobSubstrate, WorkflowRuntimeEnv } from "./env";
 import { createNoopDrainController } from "./drain";
@@ -64,6 +65,7 @@ function buildEnv(
       createInMemoryEffectLedger(),
       actionResolver,
       unavailableActionCredentials,
+      unavailableMailSigner,
     ),
     effects: createInMemoryEffectLedger(),
     spawnChild: async () => createTerminalChildHandle("completed"),

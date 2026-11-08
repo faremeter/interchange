@@ -19,6 +19,7 @@ import {
   type ActionCredentialsFactory,
   type ActionInvokeRequest,
   type WorkflowAuthorizeFn,
+  unavailableMailSigner,
 } from "@intx/workflow";
 
 import {
@@ -200,6 +201,7 @@ describe("action credentials through the default invoker", () => {
           },
         }),
       factory,
+      unavailableMailSigner,
     );
     const invocation: ActionInvokeRequest = {
       handler: "push",

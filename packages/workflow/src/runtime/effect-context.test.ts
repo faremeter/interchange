@@ -6,11 +6,14 @@ import { describe, test, expect } from "bun:test";
 import type {
   CredentialCapability,
   HttpMediatedCredential,
+  MailComposeInput,
+  MailSigner,
   MediatedCredential,
 } from "@intx/types";
 import {
   createEffectContext,
   unavailableCredentialCapability,
+  unavailableMailSigner,
   type EffectLedger,
   type WorkflowAuthorizeFn,
 } from "@intx/workflow";
@@ -46,6 +49,7 @@ describe("createEffectContext per-effect keying", () => {
     let cloneRuns = 0;
     let buildRuns = 0;
     const ctx = createEffectContext({
+      mailSigner: unavailableMailSigner,
       handler: "test-action",
       authorize: allowAll(),
       effects: ledger,
@@ -87,6 +91,7 @@ describe("createEffectContext per-effect keying", () => {
 
     const runHandler = async () => {
       const ctx = createEffectContext({
+        mailSigner: unavailableMailSigner,
         handler: "test-action",
         authorize: allowAll(),
         effects: shared.ledger,
@@ -129,6 +134,7 @@ describe("createEffectContext per-effect keying", () => {
     const { ledger, keys } = inMemoryLedger();
     const mk = (input: unknown) =>
       createEffectContext({
+        mailSigner: unavailableMailSigner,
         handler: "test-action",
         authorize: allowAll(),
         effects: ledger,
@@ -161,6 +167,7 @@ describe("createEffectContext fail-closed enforcement", () => {
       return { effect: "allow", matchingGrants: [], resolvedBy: null };
     };
     const ctx = createEffectContext({
+      mailSigner: unavailableMailSigner,
       handler: "test-action",
       authorize,
       effects: inMemoryLedger().ledger,
@@ -191,6 +198,7 @@ describe("createEffectContext fail-closed enforcement", () => {
         resolvedBy: null,
       });
       const ctx = createEffectContext({
+        mailSigner: unavailableMailSigner,
         handler: "test-action",
         authorize,
         effects: inMemoryLedger().ledger,
@@ -253,9 +261,14 @@ function recordingCapability(): {
 
 function contextWith(
   credentials: CredentialCapability,
-  opts: { ledger?: EffectLedger; authorize?: WorkflowAuthorizeFn } = {},
+  opts: {
+    ledger?: EffectLedger;
+    authorize?: WorkflowAuthorizeFn;
+    mailSigner?: MailSigner;
+  } = {},
 ) {
   return createEffectContext({
+    mailSigner: opts.mailSigner ?? unavailableMailSigner,
     handler: "push",
     authorize: opts.authorize ?? allowAll(),
     effects: opts.ledger ?? inMemoryLedger().ledger,
@@ -527,5 +540,59 @@ describe("createEffectContext credentials scope", () => {
     ).rejects.toThrow("was not authorized");
     expect(runs).toBe(0);
     expect(rec.resolves).toEqual([]);
+  });
+});
+
+describe("createEffectContext mail signer scope", () => {
+  function recordingSigner(): { signer: MailSigner; composed: string[] } {
+    const composed: string[] = [];
+    return {
+      composed,
+      signer: {
+        async compose(message: MailComposeInput) {
+          composed.push(message.content);
+          return { messageId: "<m@example.com>", rawMessage: "cmF3" };
+        },
+      },
+    };
+  }
+
+  test("run composes through the scope's signer", async () => {
+    const rec = recordingSigner();
+    const output = await contextWith(unavailableCredentialCapability("push"), {
+      mailSigner: rec.signer,
+    }).perform({
+      effectId: "notify",
+      capability: "github.release",
+      run: ({ mailSigner }) =>
+        mailSigner.compose({ to: "run_t@example.com", content: "hi" }),
+    });
+    expect(output).toEqual({
+      messageId: "<m@example.com>",
+      rawMessage: "cmF3",
+    });
+    expect(rec.composed).toEqual(["hi"]);
+  });
+
+  test("the signer refuses once run settles", async () => {
+    const rec = recordingSigner();
+    let kept: MailSigner | undefined;
+    await contextWith(unavailableCredentialCapability("push"), {
+      mailSigner: rec.signer,
+    }).perform({
+      effectId: "notify",
+      capability: "github.release",
+      run: async ({ mailSigner }) => {
+        kept = mailSigner;
+        return null;
+      },
+    });
+    if (kept === undefined) throw new Error("run did not keep its signer");
+    await expect(
+      kept.compose({ to: "run_t@example.com", content: "late" }),
+    ).rejects.toThrow(
+      "action push cannot compose mail outside the run of its effect notify",
+    );
+    expect(rec.composed).toEqual([]);
   });
 });

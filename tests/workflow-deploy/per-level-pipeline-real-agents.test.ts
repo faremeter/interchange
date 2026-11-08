@@ -109,6 +109,7 @@ import {
   type WorkflowAuthorizeFn,
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
+  unavailableMailSigner,
 } from "@intx/workflow";
 
 // The amendment loop cap. `loop()` throws on a non-positive/non-integer
@@ -926,6 +927,7 @@ describe("per-level pipeline with real agents", () => {
         throw new Error(`action ${handler} declared no effect capability`);
       }
       const ctx = createEffectContext({
+        mailSigner: unavailableMailSigner,
         handler,
         authorize: workflowAuthorize,
         effects,

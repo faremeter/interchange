@@ -8,6 +8,7 @@ import { describe, test, expect } from "bun:test";
 import type {
   CredentialCapability,
   HostCredentialCapability,
+  MailSigner,
   MediatedCredential,
 } from "@intx/types";
 
@@ -22,6 +23,7 @@ import type {
 import {
   createDefaultActionInvoker,
   unavailableActionCredentials,
+  unavailableMailSigner,
 } from "./run-local";
 
 const allow: WorkflowAuthorizeFn = async () => ({
@@ -120,7 +122,13 @@ function invokerFor(
   factory: ActionCredentialsFactory,
   ledger: EffectLedger = trackingLedger().ledger,
 ) {
-  return createDefaultActionInvoker(allow, ledger, () => handler, factory);
+  return createDefaultActionInvoker(
+    allow,
+    ledger,
+    () => handler,
+    factory,
+    unavailableMailSigner,
+  );
 }
 
 describe("action credentials in the default invoker", () => {
@@ -310,9 +318,53 @@ describe("action credentials in the default invoker", () => {
         throw new Error("no handler named push");
       },
       factory,
+      unavailableMailSigner,
     );
     await expect(invoke(request())).rejects.toThrow("no handler named push");
     expect(requests).toEqual([]);
+  });
+});
+
+describe("the mail signer in the default invoker", () => {
+  test("a perform the handler leaves pending cannot compose after the invocation", async () => {
+    const composed: string[] = [];
+    const signer: MailSigner = {
+      async compose(message) {
+        composed.push(message.content);
+        return { messageId: "<m@example.com>", rawMessage: "cmF3" };
+      },
+    };
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let pending: Promise<unknown> | undefined;
+    const invoke = createDefaultActionInvoker(
+      allow,
+      trackingLedger().ledger,
+      () => async (_input, ctx) => {
+        pending = ctx.perform({
+          effectId: "notify",
+          capability: "github.release",
+          run: async ({ mailSigner }) => {
+            await gate;
+            return mailSigner.compose({
+              to: "run_t@example.com",
+              content: "x",
+            });
+          },
+        });
+        return "done";
+      },
+      recordingFactory().factory,
+      signer,
+    );
+    await invoke(request());
+    release();
+    await expect(pending).rejects.toThrow(
+      "action push cannot compose mail: its invocation has settled",
+    );
+    expect(composed).toEqual([]);
   });
 });
 

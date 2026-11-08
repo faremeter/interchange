@@ -40,6 +40,7 @@ import type {
   PendingOperation,
 } from "@intx/types/runtime-core";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
+import type { MailSigner } from "@intx/types/mail-signer";
 import {
   type AdapterManifest,
   parseAdapterManifestEnv,
@@ -808,6 +809,12 @@ export interface SidecarStepBuildEnvDeps {
    */
   outboundMailBridge: ChildOutboundMailBridge;
   /**
+   * Composes mail signed as `mailboxAddress`, offered to the step's
+   * tools as the `mail.signer` capability. A warm single-step agent is
+   * a deployment with a run principal too, so its tools get it as well.
+   */
+  mailSigner: MailSigner;
+  /**
    * Inbound surface for the step agent's supervisor-backed transport
    * (INBOUND half of mailbox ownership, §3b). Bundles the shared mailbox
    * watch registry (the same instance the child's control loop fires
@@ -1088,11 +1095,15 @@ export function createSidecarStepBuildEnv(
     );
 
     // The host owns capability assembly: it builds the RuntimeCapabilities
-    // bag here (currently `mail.transport`) and puts it on `env.capabilities`,
+    // bag here (`mail.transport` and `mail.signer`) and puts it on
+    // `env.capabilities`,
     // so a bundle consumes the assembled bag rather than re-wrapping a raw
     // env key of its own. `@intx/tools-mail`'s sidecar bundle (`requires:
     // ["capabilities", "address"]`) resolves `mail.transport` from it.
-    const capabilities = createHarnessRuntimeCapabilities({ transport });
+    const capabilities = createHarnessRuntimeCapabilities({
+      transport,
+      signer: deps.mailSigner,
+    });
 
     // The step env carries `toolCwd`, `transport`, `address`, and the
     // assembled `capabilities` beyond `BaseEnv`. `toolCwd` is the working
@@ -1299,6 +1310,8 @@ interface SidecarRunChildDeps {
   credentialProviders: CredentialProviderRegistry;
   /** Director registry the child runtime uses. Required; tests pass `createDefaultDirectorRegistry()` explicitly. */
   directors: DirectorRegistry;
+  /** The signer behind each body action's `perform` scope `mailSigner`. */
+  mailSigner: MailSigner;
   /**
    * Sidecar-local directory of the materialized workflow-definition closure
    * (`env.spawn.closurePackageDir`), the source-ref lineage's only closure.
@@ -2104,6 +2117,7 @@ async function buildChildRunEnv(args: {
       childCredentialContext === undefined
         ? unavailableActionCredentials
         : createSidecarActionCredentialsFactory(childCredentialContext),
+      deps.mailSigner,
     );
   }
   const env: WorkflowRuntimeEnv = {
@@ -2450,6 +2464,7 @@ export function createSidecarSubstrateFactory(
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
       outboundMailBridge: env.outboundMailBridge,
+      mailSigner: env.mailSigner,
       adapters: childAdapterRegistry,
       // The materialized closure dir the invoker materializes each step
       // agent's declared plugin packages from.
@@ -2518,6 +2533,7 @@ export function createSidecarSubstrateFactory(
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
       outboundMailBridge: env.outboundMailBridge,
+      mailSigner: env.mailSigner,
       adapters: childAdapterRegistry,
       closurePackageDir: env.spawn.closurePackageDir,
       directors: stepDirectors,
@@ -2712,6 +2728,7 @@ export function createSidecarSubstrateFactory(
       // A spawned child's steps resolve `director` refs against the same
       // closure-composed registry the parent's steps use.
       directors: stepDirectors,
+      mailSigner: env.mailSigner,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory
     // resolver from this plus the lifted-body map it extracts after loading

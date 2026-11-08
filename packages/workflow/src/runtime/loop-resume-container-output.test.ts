@@ -35,6 +35,7 @@ import {
   type WorkflowAuthorizeFn,
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
+  unavailableMailSigner,
 } from "@intx/workflow";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
 
@@ -138,6 +139,7 @@ function buildEnv(
   }) => {
     if (handler !== "echo") return { output: `ran:${handler}` };
     const ctx = createEffectContext({
+      mailSigner: unavailableMailSigner,
       handler,
       authorize,
       effects,

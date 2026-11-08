@@ -15,7 +15,12 @@ import { getLogger } from "@intx/log";
 
 import { base64Encode } from "@intx/types/base64";
 import type { AttachmentInput } from "@intx/types/attachment-validation";
-import type { AttachmentError } from "@intx/types/sessions";
+import {
+  MailComposeError,
+  type ComposedMail,
+  type MailComposeInput,
+  type MailSigner,
+} from "@intx/types/mail-signer";
 
 import type {
   ComposeAttachmentPayload,
@@ -33,49 +38,12 @@ type MailComposeResponse = Extract<
 >["data"];
 
 /**
- * A conversation message to compose. The attachments take the shape the
- * hub's REST mail route accepts, so a caller can pass the same input to
- * either.
- */
-export type MailComposeInput = {
-  to: string;
-  content: string;
-  attachments?: readonly AttachmentInput[];
-};
-
-/**
- * A signed RFC 2822 message and the Message-ID stamped into it. The message
- * stays base64-encoded: the hub's REST mail route takes it in that form, and
- * a string survives the JSON of an action's recorded output.
- */
-export type ComposedMail = {
-  messageId: string;
-  rawMessage: string;
-};
-
-/**
- * The supervisor refused to compose the message. `attachmentError` is set
- * when an attachment failed validation, with the same structured error the
- * hub's REST mail route reports for that input.
- */
-export class MailComposeError extends Error {
-  readonly attachmentError: AttachmentError | undefined;
-
-  constructor(message: string, attachmentError?: AttachmentError) {
-    super(message);
-    this.name = "MailComposeError";
-    this.attachmentError = attachmentError;
-  }
-}
-
-/**
  * Bridge surface for run code. `compose` resolves with the signed message.
  * `handleResult` is what the control loop calls when
  * `mail.compose.response` arrives. `cancelAll` rejects every pending and
  * queued compose when the control loop exits.
  */
-export interface ChildMailComposeBridge {
-  compose(input: MailComposeInput): Promise<ComposedMail>;
+export interface ChildMailComposeBridge extends MailSigner {
   handleResult(data: MailComposeResponse): void;
   cancelAll(reason: string): void;
   readonly pendingCount: number;

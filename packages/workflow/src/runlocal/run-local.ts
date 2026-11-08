@@ -12,7 +12,7 @@ import {
   createDefaultDirectorRegistry,
   type DirectorRegistry,
 } from "@intx/agent";
-import type { HostCredentialCapability } from "@intx/types";
+import type { HostCredentialCapability, MailSigner } from "@intx/types";
 
 import type {
   AuthorizeContext,
@@ -26,6 +26,7 @@ import {
 import { runtimeRun, type RuntimeRunOptions } from "../runtime/run";
 import { createNoopDrainController } from "../runtime/drain";
 import { guardCredentialCapability } from "../runtime/credential-guard";
+import { guardMailSigner } from "../runtime/mail-signer-guard";
 import { createEffectContext } from "../runtime/effect-context";
 import { createLoopIterationHandle } from "../runtime/loop-iteration-handle";
 import { createSuspendableChildHandle } from "../runtime/suspendable-child-handle";
@@ -74,6 +75,14 @@ export interface RunLocalOptions extends RuntimeRunOptions {
    * refused.
    */
   actionCredentials?: ActionCredentialsFactory;
+  /**
+   * The signer behind each action `perform` scope's `mailSigner`. The default
+   * is `unavailableMailSigner`: a local run holds no deployment key, so its
+   * `compose` fails. A test passes a fake to exercise a handler that posts
+   * mail. A `childWorkflow` child inherits it. It applies only to the default
+   * action-runner, so passing it with `invokeAction` is refused.
+   */
+  mailSigner?: MailSigner;
   /** Resolve an action `handler` ref to a handler function. */
   actionResolver?: (ref: string) => ActionHandler;
   /** Resolve a loop's `while`/`carry` refs to pure functions. */
@@ -148,6 +157,11 @@ function assembleRunLocalEnv(
       "runLocal: actionCredentials applies only to the default action-runner; a custom invokeAction must build its own credentials",
     );
   }
+  if (options.invokeAction !== undefined && options.mailSigner !== undefined) {
+    throw new Error(
+      "runLocal: mailSigner applies only to the default action-runner; a custom invokeAction must build its own signer",
+    );
+  }
   const effects = createInMemoryEffectLedger();
   const invokeAction: ActionInvoker =
     options.invokeAction ??
@@ -156,6 +170,7 @@ function assembleRunLocalEnv(
       effects,
       options.actionResolver,
       options.actionCredentials ?? unavailableActionCredentials,
+      options.mailSigner ?? unavailableMailSigner,
     );
   const clock = options.clock ?? defaultClock;
   const newId = options.newId ?? defaultNewId;
@@ -260,6 +275,7 @@ type InheritedChildOptions = Pick<
   | "invokeStep"
   | "invokeAction"
   | "actionCredentials"
+  | "mailSigner"
   | "actionResolver"
   | "loopFns"
   | "directors"
@@ -278,6 +294,9 @@ function inheritChildOptions(options: RunLocalOptions): InheritedChildOptions {
       : {}),
     ...(options.actionCredentials !== undefined
       ? { actionCredentials: options.actionCredentials }
+      : {}),
+    ...(options.mailSigner !== undefined
+      ? { mailSigner: options.mailSigner }
       : {}),
     ...(options.actionResolver !== undefined
       ? { actionResolver: options.actionResolver }
@@ -340,6 +359,7 @@ export function createDefaultActionInvoker(
   effects: EffectLedger,
   resolver: ((ref: string) => ActionHandler) | undefined,
   credentialsFactory: ActionCredentialsFactory,
+  mailSigner: MailSigner,
 ): ActionInvoker {
   return async ({
     handler,
@@ -391,6 +411,12 @@ export function createDefaultActionInvoker(
           () => !disposed,
           (h, verb) =>
             `action ${handler} cannot ${verb} credential handle "${h}": its credentials capability is disposed`,
+        ),
+        mailSigner: guardMailSigner(
+          mailSigner,
+          () => !disposed,
+          () =>
+            `action ${handler} cannot compose mail: its invocation has settled`,
         ),
       });
       output = await fn(input, ctx, signal);
@@ -447,6 +473,17 @@ export const unavailableActionCredentials: ActionCredentialsFactory = ({
     );
   }
   return unavailableCredentialCapability(handler);
+};
+
+/**
+ * The mail signer for a host with no deployment key: every `compose` fails.
+ */
+export const unavailableMailSigner: MailSigner = {
+  compose() {
+    return Promise.reject(
+      new Error("no deployment mail key is configured for action handlers"),
+    );
+  },
 };
 
 export function createInMemoryEffectLedger(): EffectLedger {

@@ -53,6 +53,7 @@ import {
   receiveControlChannel,
 } from "../ipc/index";
 import { createSidecarActionCredentialsFactory } from "./action-credentials";
+import type { ChildMailComposeBridge } from "./mail-compose-bridge";
 import {
   parseSpawnTimeEnv,
   runWorkflowChild,
@@ -459,6 +460,89 @@ function credentialedActionAuthority(consumer: string) {
         },
       ],
     },
+  };
+}
+
+// A closure whose one top-level action composes mail inside its effect and
+// writes the composed message to `marker`.
+async function writeMailActionClosure(
+  marker: string,
+): Promise<{ packageDir: string; approvedHash: string }> {
+  const packageDir = await makeTempDir("srcref-action-mail-pkg-");
+  const definition = {
+    id: "srcref-action-mail",
+    triggers: [{ type: "manual" }],
+    steps: {
+      notify: {
+        kind: "action",
+        id: "notify",
+        handler: "notify",
+        drainBehavior: "cancel",
+        input: { literal: { marker } },
+        effect: { requires: ["notify"] },
+      },
+    },
+    stepOrder: ["notify"],
+  };
+  await fsp.writeFile(
+    path.join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "@fixture/srcref-action-mail",
+      version: "1.0.0",
+      interchange: { workflow: "workflow.mjs", actions: "workflow.mjs" },
+    }),
+    "utf8",
+  );
+  await fsp.writeFile(
+    path.join(packageDir, "workflow.mjs"),
+    `import { writeFile } from "node:fs/promises";
+export const workflow = ${JSON.stringify(definition)};
+export async function notify(input, ctx) {
+  return ctx.perform({
+    effectId: "notify-once",
+    capability: "notify",
+    run: async ({ mailSigner }) => {
+      const composed = await mailSigner.compose({
+        to: "run_target@example.com",
+        content: "from a top-level action",
+      });
+      await writeFile(input.marker, composed.rawMessage);
+      return composed.messageId;
+    },
+  });
+}
+`,
+    "utf8",
+  );
+  const live = await loadWorkflowDefinitionFromClosure({ packageDir });
+  return { packageDir, approvedHash: await computeLiveDefinitionHash(live) };
+}
+
+// The authority that lets the mail action invoke its `notify` effect.
+function mailActionAuthority() {
+  return {
+    snapshot: {
+      steps: [
+        {
+          stepId: "notify",
+          grants: [
+            {
+              id: "grant-effect",
+              resource: "effect:notify",
+              action: "invoke",
+              effect: "allow",
+              origin: "creator",
+              conditions: null,
+              expiresAt: null,
+              roleId: null,
+              principalId: null,
+            },
+          ],
+          contentHash: "deadbeef",
+        },
+      ],
+    },
+    delivery: { bindings: [], materials: [] },
   };
 }
 
@@ -1007,6 +1091,100 @@ describe("source-ref run child", () => {
     }
 
     expect(await fsp.readFile(marker, "utf8")).toBe("http");
+
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+  }, 30000);
+
+  test("a top-level action composes mail through the child's compose bridge", async () => {
+    const baseDir = await makeTempDir("srcref-action-mail-base-");
+    const runId = `srcref-action-mail-run-${generateChannelId()}`;
+    const markerDir = await makeTempDir("srcref-action-mail-marker-");
+    const marker = path.join(markerDir, "marker");
+    const { packageDir, approvedHash } = await writeMailActionClosure(marker);
+
+    const supervisorKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSourceRefEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash: approvedHash,
+        closurePackageDir: packageDir,
+      }),
+    );
+    const { definition } = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir: env.closurePackageDir,
+      approvedHash: env.definitionHash,
+    });
+    const composed: string[] = [];
+    const mailComposeBridge: ChildMailComposeBridge = {
+      async compose(message) {
+        composed.push(`${message.to}: ${message.content}`);
+        return { messageId: "<top@example.com>", rawMessage: "dG9w" };
+      },
+      handleResult() {
+        /* the fake answers compose directly */
+      },
+      cancelAll() {
+        /* nothing pending */
+      },
+      pendingCount: 0,
+    };
+
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+
+    await sendAuthoritySet(supervisorSender, mailActionAuthority());
+    const runPromise = runWorkflowChild({
+      env,
+      definition,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings: buildBindings(baseDir),
+      mailComposeBridge,
+    });
+    const recvIter = receiveControlChannel({
+      publicKey: CHILD_KEY_PAIR.publicKey,
+      channelId,
+      reader: childToSupervisor.reader,
+      onCrash: (reason) => {
+        throw new Error(`unexpected control channel crash: ${reason}`);
+      },
+    });
+
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: {
+        runId,
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: { content: "run the action", attachments: [] },
+      },
+    });
+    for await (const payload of recvIter) {
+      if (payload.type === "terminal.event" && payload.data.runId === runId) {
+        break;
+      }
+    }
+
+    expect(composed).toEqual([
+      "run_target@example.com: from a top-level action",
+    ]);
+    expect(await fsp.readFile(marker, "utf8")).toBe("dG9w");
 
     await supervisorSender.send({
       type: "shutdown",

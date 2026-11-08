@@ -3,10 +3,9 @@ import { describe, test, expect } from "bun:test";
 import { base64Encode } from "@intx/types/base64";
 import { waitUntil } from "@intx/types/testing";
 
-import {
-  createChildMailComposeBridge,
-  MailComposeError,
-} from "./mail-compose-bridge";
+import { MailComposeError } from "@intx/types/mail-signer";
+
+import { createChildMailComposeBridge } from "./mail-compose-bridge";
 import type {
   ControlChannelSender,
   ControlPayload,

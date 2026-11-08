@@ -107,6 +107,7 @@ export {
   createInMemoryEffectLedger,
   unavailableActionCredentials,
   unavailableCredentialCapability,
+  unavailableMailSigner,
   createSpawnLoopIteration,
   createInMemoryRepoStore,
   createInMemoryScheduler,
