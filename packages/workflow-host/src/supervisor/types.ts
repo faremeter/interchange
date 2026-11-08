@@ -20,6 +20,7 @@ import type {
   ReplayProcessingToInboxOpts,
   ReplayProcessingToInboxResult,
 } from "@intx/hub-sessions/substrate";
+import type { SignedMessageBytes } from "@intx/mail-memory";
 import type { SignalKind } from "@intx/types";
 import type {
   ApprovalSnapshot,
@@ -144,6 +145,15 @@ export interface MailBusBindings {
     senderAddress: string,
     message: OutboundMessage,
   ): Promise<SendReceipt>;
+  /**
+   * Sign `message` as `senderAddress` the way `sendOutbound` does, but
+   * return the bytes instead of sending them. Run code posts them to the
+   * hub REST API itself.
+   */
+  composeSigned(
+    senderAddress: string,
+    message: OutboundMessage,
+  ): Promise<SignedMessageBytes>;
 }
 
 /**

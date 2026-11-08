@@ -2844,7 +2844,10 @@ export function createSidecarDeployRouter<
  * Wrap the deployment's mail bus so its teardown can close it. The link
  * stamps outbound mail with the incarnation it holds for the sender
  * address, so a send must not outlive its deployment's teardown:
- * `closeOutbound` refuses new sends and waits for the ones in flight.
+ * `closeOutbound` refuses new sends and waits for the ones in flight. A
+ * compose emits no frame, so `closeOutbound` does not wait for one. It is
+ * refused after close all the same: the deployment is going away, and
+ * nothing should be signed as it.
  */
 export function createClosableMailBus(
   transportBus: HubTransportMailBusAdapter,
@@ -2872,6 +2875,16 @@ export function createClosableMailBus(
       };
       send.then(settle, settle);
       return send;
+    },
+    composeSigned(senderAddress, message) {
+      if (outboundClosed) {
+        return Promise.reject(
+          new Error(
+            `${deploymentMailAddress} is being undeployed; refusing to sign mail as it`,
+          ),
+        );
+      }
+      return transportBus.composeSigned(senderAddress, message);
     },
   };
   return {

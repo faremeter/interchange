@@ -25,6 +25,9 @@ import path from "node:path";
 
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
+import { base64Decode, base64Encode } from "@intx/types/base64";
+import { verifyMimeSignature } from "@intx/mailbox";
+import { parseHeaderSection } from "@intx/mime";
 import {
   createInMemoryTransport,
   type InMemoryTransport,
@@ -47,6 +50,7 @@ import {
   type ControlChannelSender,
 } from "../ipc/index";
 import { noGrantsOnRunStart } from "./step-grants.test-helpers";
+import { createChildMailComposeBridge } from "../child/mail-compose-bridge";
 
 const AGENT_ADDRESS = "run_outbound-agent@integration.example";
 const RECIPIENT_ADDRESS = "recipient@integration.example";
@@ -78,12 +82,15 @@ function createNoopInboxPrimitives(): InboxPrimitives {
 
 type OutboundHarness = {
   hostTransport: InMemoryTransport;
+  agentPublicKey: Uint8Array;
   childSender: ControlChannelSender;
   supervisorToChild: MemoryNdjsonStream;
   shutdown(): Promise<void>;
 };
 
-async function startOutboundHarness(): Promise<OutboundHarness> {
+async function startOutboundHarness(
+  opts: { composeGate?: Promise<void> } = {},
+): Promise<OutboundHarness> {
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "p4-3-outbound-"));
 
   // Host transport: the real in-memory transport the sidecar owns. The
@@ -103,7 +110,22 @@ async function startOutboundHarness(): Promise<OutboundHarness> {
     createEd25519Crypto(recipientKeyPair),
   );
 
-  const mailBus = wrapHubTransportAsMailBus(hostTransport);
+  const transportBus = wrapHubTransportAsMailBus(hostTransport);
+  // `composeGate` holds every compose until it resolves, so a test can
+  // send a second request while the first is still in flight.
+  const composeGate = opts.composeGate;
+  const mailBus =
+    composeGate === undefined
+      ? transportBus
+      : {
+          ...transportBus,
+          async composeSigned(
+            ...args: Parameters<typeof transportBus.composeSigned>
+          ) {
+            await composeGate;
+            return transportBus.composeSigned(...args);
+          },
+        };
 
   const supervisorIpcKeyPair = await generateKeyPair();
   const childIpcKeyPair = await generateKeyPair();
@@ -188,6 +210,7 @@ async function startOutboundHarness(): Promise<OutboundHarness> {
 
   return {
     hostTransport,
+    agentPublicKey: agentKeyPair.publicKey,
     childSender,
     supervisorToChild,
     async shutdown() {
@@ -306,4 +329,193 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
 
     await shutdown();
   });
+});
+
+describe("supervisor mail compose", () => {
+  test("a compose request returns a message signed as the deployment and sends nothing", async () => {
+    const {
+      hostTransport,
+      agentPublicKey,
+      childSender,
+      supervisorToChild,
+      shutdown,
+    } = await startOutboundHarness();
+    const bridge = createChildMailComposeBridge({
+      upstreamSender: childSender,
+      allocateRequestId: () => "mcp-test-1",
+    });
+
+    const composed = bridge.compose({
+      to: RECIPIENT_ADDRESS,
+      content: "Posted to the hub by run code.",
+      attachments: [
+        {
+          mimeType: "text/plain",
+          data: base64Encode(new TextEncoder().encode("notes")),
+          name: "notes.txt",
+        },
+      ],
+    });
+    const response = await waitForUpstreamPayload(
+      supervisorToChild,
+      "mail.compose.response",
+      (payload) => payload.data.requestId === "mcp-test-1",
+    );
+    bridge.handleResult(response.data);
+    const composedMail = await composed;
+    const { messageId } = composedMail;
+    const rawMessage = base64Decode(composedMail.rawMessage);
+
+    expect(await verifyMimeSignature(rawMessage, agentPublicKey)).toBe("valid");
+    const { headers } = parseHeaderSection(rawMessage);
+    expect(headers.get("from")).toBe(AGENT_ADDRESS);
+    expect(headers.get("to")).toBe(RECIPIENT_ADDRESS);
+    expect(headers.get("message-id")).toBe(messageId);
+    expect(headers.get("interchange-type")).toBe("conversation.message");
+    expect(
+      await hostTransport
+        .getTransportFor(RECIPIENT_ADDRESS)
+        .search("INBOX", {}),
+    ).toEqual([]);
+
+    await shutdown();
+  });
+
+  test("a disallowed attachment is refused with the structured attachment error", async () => {
+    const { childSender, supervisorToChild, shutdown } =
+      await startOutboundHarness();
+
+    await childSender.send({
+      type: "mail.compose.request",
+      data: {
+        requestId: "mcp-test-mime",
+        message: {
+          to: RECIPIENT_ADDRESS,
+          content: "with a binary",
+          attachments: [
+            {
+              contentType: "application/x-msdownload",
+              dataBase64: base64Encode(new Uint8Array([1, 2, 3])),
+            },
+          ],
+        },
+      },
+    });
+    const { result } = (
+      await waitForUpstreamPayload(
+        supervisorToChild,
+        "mail.compose.response",
+        (payload) => payload.data.requestId === "mcp-test-mime",
+      )
+    ).data;
+    if (result.ok) throw new Error("compose unexpectedly succeeded");
+    expect(result.attachmentError?.code).toBe("disallowed_mime_type");
+
+    await shutdown();
+  });
+
+  test("a compose the transport refuses is answered rather than dropped", async () => {
+    const { hostTransport, childSender, supervisorToChild, shutdown } =
+      await startOutboundHarness();
+    hostTransport.unregister(AGENT_ADDRESS);
+
+    await childSender.send({
+      type: "mail.compose.request",
+      data: {
+        requestId: "mcp-test-unregistered",
+        message: { to: RECIPIENT_ADDRESS, content: "no key" },
+      },
+    });
+    const { result } = (
+      await waitForUpstreamPayload(
+        supervisorToChild,
+        "mail.compose.response",
+        (payload) => payload.data.requestId === "mcp-test-unregistered",
+      )
+    ).data;
+    expect(result).toEqual({
+      ok: false,
+      reason: `Sender "${AGENT_ADDRESS}" is not registered with this transport`,
+    });
+
+    await shutdown();
+  });
+
+  test("a second compose while one is in flight is refused", async () => {
+    let openGate: () => void = () => undefined;
+    const composeGate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const { childSender, supervisorToChild, shutdown } =
+      await startOutboundHarness({ composeGate });
+
+    for (const requestId of ["mcp-test-first", "mcp-test-second"]) {
+      await childSender.send({
+        type: "mail.compose.request",
+        data: {
+          requestId,
+          message: { to: RECIPIENT_ADDRESS, content: requestId },
+        },
+      });
+    }
+    const second = (
+      await waitForUpstreamPayload(
+        supervisorToChild,
+        "mail.compose.response",
+        (payload) => payload.data.requestId === "mcp-test-second",
+      )
+    ).data;
+    expect(second.result).toEqual({
+      ok: false,
+      reason: "another mail compose is in flight for this child",
+    });
+
+    openGate();
+    const first = (
+      await waitForUpstreamPayload(
+        supervisorToChild,
+        "mail.compose.response",
+        (payload) => payload.data.requestId === "mcp-test-first",
+      )
+    ).data;
+    expect(first.result.ok).toBe(true);
+
+    await shutdown();
+  });
+
+  test("a message too large for a mail request is refused, though its attachments pass", async () => {
+    const { childSender, supervisorToChild, shutdown } =
+      await startOutboundHarness();
+    // 27 MiB of attachments is under the attachment limit, but the signed
+    // message, base64-encoded for the request, is over the mail limit.
+    const nineMiB = base64Encode(new Uint8Array(9 * 1024 * 1024));
+
+    await childSender.send({
+      type: "mail.compose.request",
+      data: {
+        requestId: "mcp-test-oversized",
+        message: {
+          to: RECIPIENT_ADDRESS,
+          content: "large",
+          attachments: [0, 1, 2].map((index) => ({
+            contentType: "application/pdf",
+            dataBase64: nineMiB,
+            name: `part-${String(index)}.pdf`,
+          })),
+        },
+      },
+    });
+    const { result } = (
+      await waitForUpstreamPayload(
+        supervisorToChild,
+        "mail.compose.response",
+        (payload) => payload.data.requestId === "mcp-test-oversized",
+      )
+    ).data;
+    if (result.ok) throw new Error("compose unexpectedly succeeded");
+    expect(result.reason).toContain("over the");
+    expect(result.attachmentError).toBeUndefined();
+
+    await shutdown();
+  }, 60000);
 });

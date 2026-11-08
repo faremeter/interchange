@@ -83,6 +83,9 @@ export function createMockMailBus(): MockMailBus {
     sendOutbound() {
       throw new Error("sendOutbound not exercised in this test");
     },
+    composeSigned() {
+      throw new Error("composeSigned not exercised in this test");
+    },
     registered: () => registered.slice(),
     registrationHistory: () => history.slice(),
     deliver(address: string, message: Uint8Array) {

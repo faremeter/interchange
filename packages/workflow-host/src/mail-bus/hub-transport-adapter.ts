@@ -16,7 +16,7 @@
 
 import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
 
-import type { HubTransport } from "@intx/mail-memory";
+import type { HubTransport, SignedMessageBytes } from "@intx/mail-memory";
 
 import type { MailBusBindings } from "../supervisor/types";
 
@@ -120,6 +120,12 @@ export function wrapHubTransportAsMailBus(
       // unsigned mail.
       const scoped = transport.getTransportFor(senderAddress);
       return scoped.send(message);
+    },
+    composeSigned(
+      senderAddress: string,
+      message: OutboundMessage,
+    ): Promise<SignedMessageBytes> {
+      return transport.composeSigned(senderAddress, message);
     },
   };
 }
