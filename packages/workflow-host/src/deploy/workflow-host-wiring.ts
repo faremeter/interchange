@@ -2841,18 +2841,18 @@ export function createSidecarDeployRouter<
 }
 
 /**
- * Construct a per-deployment supervisor with the sidecar's bindings
- * pre-wired. The router calls this once per multi-step `agent.deploy`
- * frame to stand up the workflow-process child that hosts the
- * deployment.
+ * Wrap the deployment's mail bus so its teardown can close it. The link
+ * stamps outbound mail with the incarnation it holds for the sender
+ * address, so a send must not outlive its deployment's teardown:
+ * `closeOutbound` refuses new sends and waits for the ones in flight.
  */
-export function createSidecarWorkflowSupervisor(
-  opts: CreateSidecarWorkflowSupervisorOpts,
-): SidecarWorkflowSupervisor {
-  // The link stamps outbound mail with the incarnation it holds for the
-  // sender address, so a send must not outlive its deployment's teardown:
-  // `closeOutbound` refuses new sends and waits for the ones in flight.
-  const transportBus = wrapHubTransportAsMailBus(opts.transport);
+export function createClosableMailBus(
+  transportBus: HubTransportMailBusAdapter,
+  deploymentMailAddress: string,
+): {
+  mailBus: HubTransportMailBusAdapter;
+  closeOutbound(): Promise<void>;
+} {
   const sendsInFlight = new Set<Promise<SendReceipt>>();
   let outboundClosed = false;
   const mailBus: HubTransportMailBusAdapter = {
@@ -2861,7 +2861,7 @@ export function createSidecarWorkflowSupervisor(
       if (outboundClosed) {
         return Promise.reject(
           new Error(
-            `${opts.deploymentMailAddress} is being undeployed; refusing to send mail as it`,
+            `${deploymentMailAddress} is being undeployed; refusing to send mail as it`,
           ),
         );
       }
@@ -2874,6 +2874,28 @@ export function createSidecarWorkflowSupervisor(
       return send;
     },
   };
+  return {
+    mailBus,
+    async closeOutbound() {
+      outboundClosed = true;
+      await Promise.allSettled([...sendsInFlight]);
+    },
+  };
+}
+
+/**
+ * Construct a per-deployment supervisor with the sidecar's bindings
+ * pre-wired. The router calls this once per multi-step `agent.deploy`
+ * frame to stand up the workflow-process child that hosts the
+ * deployment.
+ */
+export function createSidecarWorkflowSupervisor(
+  opts: CreateSidecarWorkflowSupervisorOpts,
+): SidecarWorkflowSupervisor {
+  const { mailBus, closeOutbound } = createClosableMailBus(
+    wrapHubTransportAsMailBus(opts.transport),
+    opts.deploymentMailAddress,
+  );
   // Per-run grants source. The supervisor pushes its snapshot to the
   // child before the run's `trigger.fire`, where a null or a throw fails
   // the run rather than firing the trigger against absent grants, and in
@@ -2949,9 +2971,6 @@ export function createSidecarWorkflowSupervisor(
       return mailBus.routeInbound(opts.deploymentMailAddress, message);
     },
     onRunStart,
-    async closeOutbound() {
-      outboundClosed = true;
-      await Promise.allSettled([...sendsInFlight]);
-    },
+    closeOutbound,
   };
 }
