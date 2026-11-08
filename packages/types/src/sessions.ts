@@ -49,6 +49,26 @@ export const SendMessage = type({
     .array(),
 });
 
+// A message the caller composed and signed with its own key. A workflow run
+// must send this form: its key stays in its sidecar, so the hub cannot sign
+// for it. The hub checks the routing headers and the signature, then relays
+// the bytes it verified.
+export const SignedSendMessage = type({
+  rawMessage: type("string > 0").describe(
+    "A complete RFC 2822 conversation message, signed by the caller's own key and base64-encoded. From must be the caller's address and To the target run's address.",
+  ),
+  "content?": "never",
+  "attachments?": "never",
+});
+
+// The body of a REST mail route: a message for the hub to sign, or one the
+// caller signed. Each branch forbids the other branch's key, as
+// `CredentialBinding` does, so a body that names both fails validation.
+export const SendMailRequest = SendMessage.merge({
+  "rawMessage?": "never",
+}).or(SignedSendMessage);
+export type SendMailRequest = typeof SendMailRequest.infer;
+
 export const MailResponse = type({
   id: "string",
   sessionId: type("string").describe(

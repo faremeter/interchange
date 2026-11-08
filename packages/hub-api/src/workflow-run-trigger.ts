@@ -34,6 +34,7 @@ import type {
 import {
   loadDeploymentGrantSnapshot,
   resolveFrameSenderKey,
+  WorkflowRunDispatchPayloadConflictError,
   WorkflowRunNotExecutableError,
 } from "@intx/db";
 import {
@@ -46,11 +47,12 @@ import {
   base64Encode,
   deriveWorkflowRunId,
   isSidecarAllocationDispatchable,
-  SendMessage,
+  SendMailRequest,
   validateAttachments,
   type AttachmentError,
   type GrantWalkSnapshot,
 } from "@intx/types";
+import type { MessageAttachment } from "@intx/types/runtime";
 import type { RunGrantsFrame } from "@intx/types/sidecar";
 import type {
   RepoStore,
@@ -60,6 +62,11 @@ import type {
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 
+import {
+  admitCallerSignedMail,
+  type AdmittedCallerSignedMail,
+  type CallerSignedMailRejection,
+} from "./caller-signed-mail";
 import type { PrincipalRow, TenantRow } from "./context";
 import {
   commitRunGrants,
@@ -118,7 +125,7 @@ export type TriggerWorkflowRunArgs = {
   principal: PrincipalRow;
   userName: string | null;
   anchorRunId: string;
-  message: typeof SendMessage.infer;
+  message: SendMailRequest;
 };
 
 type TriggerErrorBody =
@@ -131,7 +138,26 @@ export type TriggerWorkflowRunResult =
       status: 202;
       body: { runId: string; address: string; messageId: string };
     }
-  | { ok: false; status: 400 | 403 | 404 | 409 | 503; body: TriggerErrorBody };
+  | {
+      ok: false;
+      status: 400 | 403 | 404 | 409 | 503;
+      body: TriggerErrorBody;
+      headers?: Record<string, string>;
+    };
+
+function callerSignedRejection(
+  rejection: CallerSignedMailRejection,
+): TriggerWorkflowRunResult {
+  const { status, code, message, retryAfterSeconds } = rejection;
+  return {
+    ok: false,
+    status,
+    body: { error: { code, message } },
+    ...(retryAfterSeconds !== undefined
+      ? { headers: { "Retry-After": String(retryAfterSeconds) } }
+      : {}),
+  };
+}
 
 function runUnavailable(
   runId: string,
@@ -196,45 +222,59 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
   ): Promise<TriggerWorkflowRunResult> {
     const { tenant, principal, anchorRunId, message: body } = args;
 
-    // The outbound mail is signed with the caller's durable hub principal key,
-    // and its From address (`${principal.refId}@${tenant.domain}`) must resolve
-    // back to that same key when the signature is verified. Only a user
-    // principal's address resolves to its hub principal key; a run principal's
-    // address resolves to the sidecar-minted key the hub holds only the public
-    // half of, and an agent principal's address has no resolution surface, so
-    // signing here as a non-user principal would guarantee a verification
-    // mismatch. The route layer only ever admits user principals to this path,
-    // so this is an
-    // invariant assertion, not a client-facing rejection: fail loud if a wiring
-    // change ever lets another kind through, rather than silently emitting mail
-    // that verification cannot resolve. Revisit this fence if the resolver
-    // learns to resolve agent addresses.
-    if (principal.kind !== "user") {
-      throw new Error(
-        `triggerWorkflowRun: signing principal ${principal.id} has kind ` +
-          `${principal.kind}; only a user principal may originate hub-signed mail`,
-      );
-    }
-
     const address = deriveRunAddress({
       runId: anchorRunId,
       domain: tenant.domain,
     });
     const runId = deriveWorkflowRunId(address);
     const topLevelRun = alias(workflowRun, "mail_top_level_run");
+    // The address the caller's mail is signed and stamped under.
+    const fromAddr = `${principal.refId}@${tenant.domain}`;
 
-    // Decode and validate attachments at the boundary, emitting
-    // ordered, per-index structured errors, exactly as the agent mail
-    // route does.
-    const attachmentResult = validateAttachments(body.attachments ?? []);
-    if (!attachmentResult.ok) {
-      return {
-        ok: false,
-        status: 400,
-        body: { error: attachmentResult.error },
-      };
+    // Custody of the signing key decides the form. The hub signs a
+    // structured message only with a key it holds: a user principal's. Any
+    // other caller -- a workflow run, whose key stays in its sidecar -- posts
+    // a message it signed itself.
+    let callerSigned: AdmittedCallerSignedMail | null = null;
+    let messageAttachments: MessageAttachment[] = [];
+    let content = "";
+    if (typeof body.rawMessage === "string") {
+      const admitted = await admitCallerSignedMail(db, principalKeyStore, {
+        rawMessageBase64: body.rawMessage,
+        callerAddress: fromAddr,
+        targetAddress: address,
+        tenantId: tenant.id,
+      });
+      if ("status" in admitted) return callerSignedRejection(admitted);
+      callerSigned = admitted;
+    } else {
+      if (principal.kind !== "user") {
+        return {
+          ok: false,
+          status: 400,
+          body: {
+            error: {
+              code: "signed_mail_required",
+              message:
+                "This principal signs its own mail; post a signed message as rawMessage",
+            },
+          },
+        };
+      }
+      // Decode and validate attachments at the boundary, emitting
+      // ordered, per-index structured errors, exactly as the agent mail
+      // route does.
+      const attachmentResult = validateAttachments(body.attachments ?? []);
+      if (!attachmentResult.ok) {
+        return {
+          ok: false,
+          status: 400,
+          body: { error: attachmentResult.error },
+        };
+      }
+      messageAttachments = attachmentResult.attachments;
+      content = body.content;
     }
-    const messageAttachments = attachmentResult.attachments;
 
     // Resolve the deployment's anchor run and, through its definition, the
     // definition asset the trigger's grants derive from. The inner join to
@@ -373,9 +413,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       };
     }
 
-    const messageId = `<${generateId("sessionMail")}@${tenant.domain}>`;
-    const fromAddr = `${principal.refId}@${tenant.domain}`;
-    const from = args.userName ? `"${args.userName}" <${fromAddr}>` : fromAddr;
+    const messageId =
+      callerSigned?.messageId ??
+      `<${generateId("sessionMail")}@${tenant.domain}>`;
 
     const now = new Date();
     let runPrincipalId: string;
@@ -432,44 +472,55 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       firstTriggerSnapshot = snapshot;
     }
 
-    // A trigger occurrence is threading-less at the mail boundary, so no
-    // inReplyTo or references are stamped, and it carries no agent session, so
-    // the interchangeSessionId/agentId headers are left unset. The supervisor
-    // decides whether this first-fires the absent top-level log or resumes a
-    // live onTrigger input. This is the same fresh-signed-message shape the
-    // deploy-flow fixture's mail trigger assembles.
-    const headers: MessageHeaders = {
-      from,
-      to: [address],
-      cc: undefined,
-      date: new Date(),
-      messageId,
-      subject: undefined,
-      inReplyTo: undefined,
-      references: undefined,
-      mimeVersion: "1.0",
-      interchangeType: "conversation.message",
-      interchangeCorrelationId: undefined,
-      interchangeTenantId: tenant.id,
-      interchangeAgentId: undefined,
-      interchangeSessionId: undefined,
-      interchangeOfferingId: undefined,
-      interchangeSchemaVersion: undefined,
-      traceparent: undefined,
-      tracestate: undefined,
-    };
-    const signedContent = assembleSignedContent({
-      kind: "conversation",
-      text: body.content,
-      ...(messageAttachments.length > 0
-        ? { attachments: messageAttachments }
-        : {}),
-    });
-    const signature = await createDetachedSignatureWithSigner(
-      signedContent,
-      (input) => principalKeyStore.sign(principal.id, input),
-    );
-    const rawMessage = assembleMessage(headers, signedContent, signature);
+    // A caller-signed message is relayed as the bytes the hub verified. A
+    // structured one is assembled here and signed with the caller's
+    // hub-held key.
+    let rawMessage: Uint8Array;
+    if (callerSigned !== null) {
+      rawMessage = callerSigned.rawMessage;
+    } else {
+      const from = args.userName
+        ? `"${args.userName}" <${fromAddr}>`
+        : fromAddr;
+      // A trigger occurrence is threading-less at the mail boundary, so no
+      // inReplyTo or references are stamped, and it carries no agent session, so
+      // the interchangeSessionId/agentId headers are left unset. The supervisor
+      // decides whether this first-fires the absent top-level log or resumes a
+      // live onTrigger input. This is the same fresh-signed-message shape the
+      // deploy-flow fixture's mail trigger assembles.
+      const headers: MessageHeaders = {
+        from,
+        to: [address],
+        cc: undefined,
+        date: new Date(),
+        messageId,
+        subject: undefined,
+        inReplyTo: undefined,
+        references: undefined,
+        mimeVersion: "1.0",
+        interchangeType: "conversation.message",
+        interchangeCorrelationId: undefined,
+        interchangeTenantId: tenant.id,
+        interchangeAgentId: undefined,
+        interchangeSessionId: undefined,
+        interchangeOfferingId: undefined,
+        interchangeSchemaVersion: undefined,
+        traceparent: undefined,
+        tracestate: undefined,
+      };
+      const signedContent = assembleSignedContent({
+        kind: "conversation",
+        text: content,
+        ...(messageAttachments.length > 0
+          ? { attachments: messageAttachments }
+          : {}),
+      });
+      const signature = await createDetachedSignatureWithSigner(
+        signedContent,
+        (input) => principalKeyStore.sign(principal.id, input),
+      );
+      rawMessage = assembleMessage(headers, signedContent, signature);
+    }
     const base64 = base64Encode(rawMessage);
 
     // Called with the anchor row locked. A first commit stages the run's rows
@@ -573,48 +624,70 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           },
         };
       }
-      const committed = await db.transaction(async (tx) => {
-        if (firstTriggerSnapshot !== null) {
-          await lockTenantRunDelegatedGrants(tx, tenant.id);
+      let committed;
+      try {
+        committed = await db.transaction(async (tx) => {
+          if (firstTriggerSnapshot !== null) {
+            await lockTenantRunDelegatedGrants(tx, tenant.id);
+          }
+          if (
+            !(await lockDispatchableAllocation(tx, allocationId, anchorRunId))
+          ) {
+            return "allocation-unavailable" as const;
+          }
+          // The allocation lock serializes this read with authoritative pack
+          // advancement: a receive moves the Git ref only while it holds this
+          // lock. An absent run is still valid for its first mail.
+          if (
+            (await readRunLifecycle(anchorRunId, tenant.domain, runId)) ===
+            "terminal"
+          ) {
+            return "run-terminal" as const;
+          }
+          const anchorState = await lockWorkflowRunState(
+            tx,
+            anchorRunId,
+            anchorRunId,
+          );
+          if (anchorState === "stopping") return "run-stopping" as const;
+          if (anchorState !== "running") return "run-terminal" as const;
+          const canonicalStepGrants = await commitFirstOrCanonical(tx);
+          if (canonicalStepGrants === "not-ready") return "not-ready" as const;
+          if (!Array.isArray(canonicalStepGrants)) return canonicalStepGrants;
+          await workflowDispatchService.enqueue(
+            {
+              id: `dispatch:${anchorRunId}:${messageId}`,
+              anchorRunId: anchorRunId,
+              messageId,
+              senderAddress: fromAddr,
+              rawMessage,
+              stepGrants: canonicalStepGrants,
+              now,
+            },
+            tx,
+          );
+          return "committed" as const;
+        });
+      } catch (error) {
+        // A caller chooses the Message-ID of the mail it signs. The store
+        // keys a run's queued mail by Message-ID: the same id with the same
+        // payload enqueues once, and the same id with another payload -- other
+        // bytes, or step grants the run's committed grants changed since -- is
+        // refused.
+        if (error instanceof WorkflowRunDispatchPayloadConflictError) {
+          return {
+            ok: false,
+            status: 409,
+            body: {
+              error: {
+                code: "message_id_conflict",
+                message: `Message-ID ${messageId} is already queued for this run with a different payload: other bytes, or the run's grants changed since it was queued`,
+              },
+            },
+          };
         }
-        if (
-          !(await lockDispatchableAllocation(tx, allocationId, anchorRunId))
-        ) {
-          return "allocation-unavailable" as const;
-        }
-        // The allocation lock serializes this read with authoritative pack
-        // advancement: a receive moves the Git ref only while it holds this
-        // lock. An absent run is still valid for its first mail.
-        if (
-          (await readRunLifecycle(anchorRunId, tenant.domain, runId)) ===
-          "terminal"
-        ) {
-          return "run-terminal" as const;
-        }
-        const anchorState = await lockWorkflowRunState(
-          tx,
-          anchorRunId,
-          anchorRunId,
-        );
-        if (anchorState === "stopping") return "run-stopping" as const;
-        if (anchorState !== "running") return "run-terminal" as const;
-        const canonicalStepGrants = await commitFirstOrCanonical(tx);
-        if (canonicalStepGrants === "not-ready") return "not-ready" as const;
-        if (!Array.isArray(canonicalStepGrants)) return canonicalStepGrants;
-        await workflowDispatchService.enqueue(
-          {
-            id: `dispatch:${anchorRunId}:${messageId}`,
-            anchorRunId: anchorRunId,
-            messageId,
-            senderAddress: fromAddr,
-            rawMessage,
-            stepGrants: canonicalStepGrants,
-            now,
-          },
-          tx,
-        );
-        return "committed" as const;
-      });
+        throw error;
+      }
       if (typeof committed === "object") {
         return grantRejectionResponse(committed.rejected);
       }
@@ -698,11 +771,11 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     // fault degrades to a null key (logged) rather than blocking the trigger.
     // A null key is omitted from the co-delivery, so the recipient resolves the
     // sender to `unknown`, which its admission policy rejects by default.
-    const authenticatedSenderPublicKey = await resolveFrameSenderKey(
-      db,
-      principalKeyStore,
-      fromAddr,
-    );
+    // A caller-signed message co-delivers the key its signature was checked
+    // against, so the recipient verifies with the same key the hub did.
+    const authenticatedSenderPublicKey =
+      callerSigned?.publicKey ??
+      (await resolveFrameSenderKey(db, principalKeyStore, fromAddr));
     const senderIdentities =
       authenticatedSenderPublicKey !== null
         ? [{ address: fromAddr, publicKey: authenticatedSenderPublicKey }]

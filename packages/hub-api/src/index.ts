@@ -21,6 +21,7 @@ export {
 } from "./middleware/tenant";
 export type { AppEnv, TenantEnv, TenantRow, PrincipalRow } from "./context";
 export type { GetSession, SessionInfo, SessionUser } from "./session";
+export { admitCallerSignedMail } from "./caller-signed-mail";
 export {
   resolveWorkflowPrincipalNames,
   resolveWorkflowPrincipalLabels,

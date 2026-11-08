@@ -578,17 +578,17 @@ Returns the run's committed, seq-ordered event log (RunStarted, StepStarted, Ste
 ### POST /api/tenants/:tenantId/workflows/runs/:runId/mail
 Send mail to a run
 
-Delivers a fresh signed conversation message to the run, firing it through the run's workflow-native Trigger path. The first accepted message fires the run; while it remains live, later messages may resume its onTrigger input. A terminal run cannot be fired again. The returned messageId identifies this trigger occurrence.
+Delivers a fresh signed conversation message to the run, firing it through the run's workflow-native Trigger path. The first accepted message fires the run; while it remains live, later messages may resume its onTrigger input. A terminal run cannot be fired again. The returned messageId identifies this trigger occurrence. The body is either a message for the hub to sign with the caller's hub-held key (`content`, `attachments`), or a complete message the caller signed with its own key (`rawMessage`, base64). A caller whose key the hub does not hold, such as a workflow run, must send `rawMessage`: the hub checks its routing headers (From, To, Cc, Bcc, Message-ID, Interchange-Type and Interchange-Tenant-ID) and its signature against the caller's recorded key, then relays the bytes it verified.
 
-Body: SendMessage
+Body: SendMailRequest
 
 202: unknown -- Trigger accepted for delivery
-400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
+400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A caller-signed message is refused with `malformed_raw_message`, `mail_header_invalid` (From, To, Cc, Bcc, Message-ID, Interchange-Type or Interchange-Tenant-ID) or `mail_signature_invalid`; a structured body from a caller whose key the hub does not hold is refused with `signed_mail_required`. A malformed request body that fails SendMailRequest validation returns the generic error shape instead.
 403: ErrorResponse -- The caller lacks `manage` on the run, (`insufficient_grants`) a delegator lacks a grant the definition requires, or (`mail_send_denied`) no `mail.send` grant of the caller allows mail to the run
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run address is not routable, its allocation is no longer active, the run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, or (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated
+409: ErrorResponse -- Run address is not routable, its allocation is no longer active, the run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) a caller-signed message's Message-ID is already queued for the run with a different payload
 413: ErrorResponse -- Request body exceeds the maximum allowed size
-503: ErrorResponse -- Run trigger substrate unavailable
+503: ErrorResponse -- Run trigger substrate unavailable, or (`sender_key_unavailable`, with `Retry-After`) no signing key is recorded for the caller of a caller-signed message, as while a run's sidecar is replaced
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/mail
 List mail for a run
@@ -706,17 +706,17 @@ Body: unknown
 ### POST /api/tenants/:tenantId/workflows/:runId/mail
 Trigger a workflow run
 
-Delivers a fresh signed conversation message to the deployment's stable top-level run. The first accepted message fires that run; while it remains live, later messages may resume its onTrigger input. A terminal deployment run cannot be fired again. The returned messageId identifies this trigger occurrence.
+Delivers a fresh signed conversation message to the deployment's stable top-level run. The first accepted message fires that run; while it remains live, later messages may resume its onTrigger input. A terminal deployment run cannot be fired again. The returned messageId identifies this trigger occurrence. The body is either a message for the hub to sign with the caller's hub-held key (`content`, `attachments`), or a complete message the caller signed with its own key (`rawMessage`, base64). For `rawMessage`, the hub checks its routing headers (From, To, Cc, Bcc, Message-ID, Interchange-Type and Interchange-Tenant-ID) and its signature against the caller's recorded key, then relays the bytes it verified. A workflow run's token cannot reach this route.
 
-Body: SendMessage
+Body: SendMailRequest
 
 202: unknown -- Trigger accepted for delivery
-400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
+400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A caller-signed message is refused with `malformed_raw_message`, `mail_header_invalid` (From, To, Cc, Bcc, Message-ID, Interchange-Type or Interchange-Tenant-ID) or `mail_signature_invalid`. A malformed request body that fails SendMailRequest validation returns the generic error shape instead.
 403: ErrorResponse -- The caller lacks `manage` on the deployment, (`insufficient_grants`) a delegator lacks a grant the definition requires, or (`mail_send_denied`) no `mail.send` grant of the caller allows mail to the deployment
 404: ErrorResponse -- Workflow deployment not found
-409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, its top-level run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, or (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated
+409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, its top-level run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) a caller-signed message's Message-ID is already queued for the run with a different payload
 413: ErrorResponse -- Request body exceeds the maximum allowed size
-503: ErrorResponse -- Durable workflow dispatch unavailable
+503: ErrorResponse -- Durable workflow dispatch unavailable, or (`sender_key_unavailable`, with `Retry-After`) no signing key is recorded for the caller of a caller-signed message, as while a run's sidecar is replaced
 
 ### GET /api/tenants/:tenantId/workflows/:runId/runs
 List workflow runs
@@ -1612,8 +1612,8 @@ Source: packages/types/src/instances.ts
 
 **grants**: The run's effective authorization floor: each capability the run's principal holds with its resolved effect. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets 'allow', reject-always sets 'deny'), so a standing-resolved tool reads that effect directly. An approve-always on a tool the run's delegator no longer allows removes the grant instead, so the tool is not listed. Read straight from the run's committed grants; complete for the source-ref deploy lineage (the shipping pipeline), whose committed grants carry every tool's effect. A pinned-tool deploy's ask floor is injected sidecar-side and is not reflected here.
 
-### SendMessage
-`{ content: string, attachments?: { data: string, mimeType: string, name?: string, + (undeclared): reject }[] }`
+### SendMailRequest
+`{ content: string, attachments?: { data: string, mimeType: string, name?: string, + (undeclared): reject }[], rawMessage?: never } | { rawMessage: string >= 1, attachments?: never, content?: never }`
 Source: packages/types/src/sessions.ts
 
 ### SessionSummary
