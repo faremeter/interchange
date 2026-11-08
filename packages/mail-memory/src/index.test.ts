@@ -1075,6 +1075,7 @@ describe("composeSigned", () => {
     expect(headers.get("from")).toBe("gamma@test.interchange");
     expect(headers.get("to")).toBe("beta@test.interchange");
     expect(headers.get("message-id")).toBe(messageId);
+    expect(messageId).toMatch(/@gamma\.test\.interchange>$/);
     expect(headers.get("interchange-type")).toBe("conversation.message");
 
     expect(await betaTransport.search("INBOX", {})).toEqual([]);

@@ -132,6 +132,49 @@ export function generateMessageId(address?: string): string {
   return `<${uuid}@${domain}>`;
 }
 
+// RFC 5322 atext. An atom carries no dot, so `<local>.<domain>` names one
+// local part and one domain: `a.b@c.test` and `a@b.c.test` cannot share it.
+const ATOM_RE = /^[A-Za-z0-9!#$%&'*+\-/=?^_`{|}~]+$/;
+
+/**
+ * Whether `value` is RFC 5322 dot-atom-text: atoms of atext joined by single
+ * dots. The id-left of a message identifier takes this form; it excludes
+ * control characters, spaces, and non-ASCII text.
+ */
+export function isDotAtomText(value: string): boolean {
+  return value.split(".").every((atom) => ATOM_RE.test(atom));
+}
+
+/**
+ * The id-right of the Message-IDs a sender composes: `<local>.<domain>` of its
+ * address, in lower case. RFC 5322 recommends an id-right that names the scope
+ * in which the generator guarantees the id-left unique; this one names the
+ * sender, so two senders never mint the same Message-ID.
+ *
+ * Throws for an address that is not `<local>@<domain>` with an atom local part.
+ */
+export function senderMessageIdScope(address: string): string {
+  const at = address.indexOf("@");
+  const local = address.slice(0, at);
+  const domain = address.slice(at + 1);
+  if (
+    at <= 0 ||
+    domain === "" ||
+    domain.includes("@") ||
+    !ATOM_RE.test(local)
+  ) {
+    throw new Error(
+      `senderMessageIdScope: ${JSON.stringify(address)} is not an address with an atom local part`,
+    );
+  }
+  return `${local}.${domain}`.toLowerCase();
+}
+
+/** A fresh Message-ID in the sender's own scope (see `senderMessageIdScope`). */
+export function generateSenderScopedMessageId(address: string): string {
+  return `<${crypto.randomUUID()}@${senderMessageIdScope(address)}>`;
+}
+
 // ---------------------------------------------------------------------------
 // Address normalization
 // ---------------------------------------------------------------------------
