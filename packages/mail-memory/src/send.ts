@@ -4,7 +4,11 @@ import type {
   MailboxEvent,
 } from "@intx/types/runtime";
 import { composeOutbound, type ComposedMessage } from "@intx/mailbox";
-import { buildMessageHeaders, parseHeaderSection } from "@intx/mime";
+import {
+  buildMessageHeaders,
+  generateMessageId,
+  parseHeaderSection,
+} from "@intx/mime";
 import type { AddressEntry } from "./mailbox";
 
 /**
@@ -108,6 +112,7 @@ export async function executeSend(
     senderAddress,
     message,
     senderEntry.crypto,
+    generateMessageId(senderAddress),
   );
   const { messageId, rawBytes, envelope } = composed;
   const recipients = composed.to;

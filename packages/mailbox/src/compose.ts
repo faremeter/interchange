@@ -13,7 +13,6 @@ import {
   assembleMessage,
   assembleSignedContent,
   createDetachedSignatureFromProvider,
-  generateMessageId,
   isMessageId,
   type ConversationContent,
   type MessageHeaders as MimeMessageHeaders,
@@ -84,11 +83,15 @@ function addressList(field: string | string[] | undefined): string[] {
  * a blank `inReplyTo`, or no recipient at all. These are the conditions that
  * make the message unsendable whatever the transport, so they are refused here
  * rather than once per transport.
+ *
+ * The caller chooses the Message-ID, because which form it takes depends on
+ * where the message goes.
  */
 export async function composeOutbound(
   senderAddress: string,
   message: OutboundMessage,
   senderCrypto: CryptoProvider,
+  messageId: string,
 ): Promise<ComposedMessage> {
   const to = addressList(message.to);
   if (to.length === 0) {
@@ -121,7 +124,6 @@ export async function composeOutbound(
     );
   }
 
-  const messageId = generateMessageId(senderAddress);
   const now = new Date();
 
   let content: ConversationContent | StructuredContent;

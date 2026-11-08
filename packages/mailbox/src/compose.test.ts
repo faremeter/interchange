@@ -8,6 +8,8 @@ async function senderCrypto() {
   return createEd25519Crypto(await generateKeyPair());
 }
 
+const MESSAGE_ID = "<compose-test@test.interchange>";
+
 describe("composeOutbound", () => {
   test("a conversation attachment is base64 inside the signed part", async () => {
     const crypto = await senderCrypto();
@@ -21,6 +23,7 @@ describe("composeOutbound", () => {
         attachments: [{ name: "shot.png", contentType: "image/png", data }],
       },
       crypto,
+      MESSAGE_ID,
     );
 
     const wire = new TextDecoder().decode(composed.rawBytes);
@@ -35,6 +38,7 @@ describe("composeOutbound", () => {
     expect(
       await verifyMimeSignature(composed.rawBytes, crypto.getPublicKey()),
     ).toBe("valid");
+    expect(composed.messageId).toBe(MESSAGE_ID);
 
     // The signature covers the encoded attachment. One flipped octet in that
     // base64 is a different signed part.
@@ -65,6 +69,7 @@ describe("composeOutbound", () => {
           ],
         },
         crypto,
+        MESSAGE_ID,
       ),
     ).rejects.toThrow("Structured messages must not carry attachments");
   });
