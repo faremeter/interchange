@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
-import { SendMessage, AttachmentError } from "./sessions";
+import { SendMailRequest, SendMessage, AttachmentError } from "./sessions";
 import { base64Encode } from "./base64";
 
 const okData = base64Encode(new TextEncoder().encode("hello world"));
@@ -59,6 +59,27 @@ describe("SendMessage attachments schema", () => {
       attachments: [{ mimeType: "image/png", data: okData, type: "image" }],
     });
     expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("SendMailRequest", () => {
+  const accepts = (body: unknown) =>
+    !(SendMailRequest(body) instanceof type.errors);
+
+  test("accepts each body form alone", () => {
+    expect(accepts({ content: "hi" })).toBe(true);
+    expect(accepts({ content: "hi", attachments: [] })).toBe(true);
+    expect(accepts({ rawMessage: "QQ==" })).toBe(true);
+  });
+
+  test("refuses a body that names both forms", () => {
+    expect(accepts({ content: "hi", rawMessage: "QQ==" })).toBe(false);
+    expect(accepts({ rawMessage: "QQ==", attachments: [] })).toBe(false);
+  });
+
+  test("refuses an empty rawMessage and an empty body", () => {
+    expect(accepts({ rawMessage: "" })).toBe(false);
+    expect(accepts({})).toBe(false);
   });
 });
 

@@ -166,7 +166,7 @@ As with the other groups, the exhaustive per-endpoint request and response shape
 
 Mail is the first-class communication primitive. The hub stores raw MIME bytes at routing time and serves parsed views following the JMAP Email object model (RFC 8621).
 
-`POST .../workflows/runs/:runId/mail` persists the user's message as a mail record and dispatches it to the running agent. The agent's response does not come back in the HTTP response. Instead, it streams over the agent's channel (WebSocket or SSE).
+`POST .../workflows/runs/:runId/mail` delivers a signed conversation message to the run through the same trigger as `POST .../workflows/:runId/mail`. The hub signs a user's `content` with the user's hub-held key, or verifies and relays a message the caller signed itself (`rawMessage`); see Mail send grants in AUTH.md. The agent's response does not come back in the HTTP response. Instead, it streams over the agent's channel (WebSocket or SSE).
 
 `GET .../workflows/runs/:runId/mail` returns cursor-paginated JMAP Email objects for the run, in reverse chronological order.
 

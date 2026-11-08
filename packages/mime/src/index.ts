@@ -6,6 +6,7 @@ export {
   generateMessageId,
   generateSenderScopedMessageId,
   isDotAtomText,
+  parseHeaderFields,
   senderMessageIdScope,
   parseHeaderSection,
   parseMimePart,

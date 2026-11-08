@@ -31,7 +31,7 @@ import {
   RunAuthorizationResponse,
   RunApprovalsResponse,
   OfferingDetail,
-  SendMessage,
+  SendMailRequest,
   MailResponse,
   RecoverWorkflowCapacityRequest,
   paginatedSchema,
@@ -906,14 +906,14 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "Send mail to a run",
       description:
-        "Delivers a fresh signed conversation message to the run, firing it through the run's workflow-native Trigger path. The first accepted message fires the run; while it remains live, later messages may resume its onTrigger input. A terminal run cannot be fired again. The returned messageId identifies this trigger occurrence.",
+        "Delivers a fresh signed conversation message to the run, firing it through the run's workflow-native Trigger path. The first accepted message fires the run; while it remains live, later messages may resume its onTrigger input. A terminal run cannot be fired again. The returned messageId identifies this trigger occurrence. The body is either a message for the hub to sign with the caller's hub-held key (`content`, `attachments`), or a complete message the caller signed with its own key (`rawMessage`, base64). A caller whose key the hub does not hold, such as a workflow run, must send `rawMessage`: the hub checks its routing headers (From, To, Cc, Bcc, Message-ID, Interchange-Type and Interchange-Tenant-ID) and its signature against the caller's recorded key, then relays the bytes it verified.",
       responses: {
         202: jsonResponse(
           "Trigger accepted for delivery",
           WorkflowRunTriggerResponse,
         ),
         400: jsonResponse(
-          "Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
+          "Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A caller-signed message is refused with `malformed_raw_message`, `mail_header_invalid` (From, To, Cc, Bcc, Message-ID, Interchange-Type or Interchange-Tenant-ID) or `mail_signature_invalid`; a structured body from a caller whose key the hub does not hold is refused with `signed_mail_required`. A malformed request body that fails SendMailRequest validation returns the generic error shape instead.",
           ErrorResponse,
         ),
         403: jsonResponse(
@@ -922,14 +922,17 @@ export function createRunRoutes({
         ),
         404: jsonResponse("Run not found", ErrorResponse),
         409: jsonResponse(
-          "Run address is not routable, its allocation is no longer active, the run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, or (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated",
+          "Run address is not routable, its allocation is no longer active, the run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) a caller-signed message's Message-ID is already queued for the run with a different payload",
           ErrorResponse,
         ),
         413: jsonResponse(
           "Request body exceeds the maximum allowed size",
           ErrorResponse,
         ),
-        503: jsonResponse("Run trigger substrate unavailable", ErrorResponse),
+        503: jsonResponse(
+          "Run trigger substrate unavailable, or (`sender_key_unavailable`, with `Retry-After`) no signing key is recorded for the caller of a caller-signed message, as while a run's sidecar is replaced",
+          ErrorResponse,
+        ),
       },
     }),
     bodyLimit({
@@ -941,7 +944,7 @@ export function createRunRoutes({
           "Request body exceeds the maximum allowed size",
         ),
     }),
-    validator("json", SendMessage),
+    validator("json", SendMailRequest),
     async (c) => {
       const tenantCtx = c.get("tenant");
       const runId = c.req.param("runId");
@@ -972,7 +975,11 @@ export function createRunRoutes({
         anchorRunId: runId,
         message: c.req.valid("json"),
       });
-      return c.json(result.body, result.status);
+      return c.json(
+        result.body,
+        result.status,
+        result.ok ? {} : result.headers,
+      );
     },
   );
 

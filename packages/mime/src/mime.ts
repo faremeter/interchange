@@ -2067,6 +2067,18 @@ export function buildMessageHeaders(
 }
 
 /**
+ * Every value of every top-level header field, keyed by lowercase name, in
+ * the order the message carries them. A check that must see a repeated field
+ * reads this: `parseHeaderSection` keeps only the first value of each.
+ *
+ * Throws where `parseHeaderSection` throws.
+ */
+export function parseHeaderFields(raw: Uint8Array): Record<string, string[]> {
+  const { headerEnd } = parseHeaderSection(raw);
+  return parseRawHeaders(raw, headerEnd);
+}
+
+/**
  * Parse every header line in the message's header section into a raw,
  * lossless map of lowercased name to its ordered values. Repeated headers
  * (e.g. `Received`) keep all occurrences; folded continuation lines are

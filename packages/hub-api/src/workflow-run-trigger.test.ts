@@ -1,6 +1,8 @@
 import { describe, test, expect } from "bun:test";
 
 import { permitAllMailSend } from "@intx/authz/testing";
+import { WorkflowRunDispatchPayloadConflictError } from "@intx/db";
+import { base64Encode } from "@intx/types";
 import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
 
 import {
@@ -10,7 +12,7 @@ import {
 } from "./workflow-run-trigger";
 import type { PrincipalRow, TenantRow } from "./context";
 
-// The signing guard runs before any dependency is touched, so each dep is a
+// The body-form checks run before any dependency is touched, so each dep is a
 // proxy that throws if execution ever reaches it. The deps object itself is a
 // real literal -- the factory destructures it, which reads the proxy VALUES
 // without accessing anything ON them; a trap only fires when the trigger later
@@ -69,41 +71,43 @@ function makeTrigger() {
   });
 }
 
-describe("triggerWorkflowRun signing-principal guard", () => {
-  test("rejects a workflow-kind principal before any signing", async () => {
-    const trigger = makeTrigger();
-    await expect(
-      trigger({
-        tenant: makeTenant(),
-        principal: makePrincipal("workflow"),
-        userName: null,
-        anchorRunId: "run_guard",
-        message: { content: "hi" },
-      }),
-    ).rejects.toThrow(/only a user principal may originate hub-signed mail/);
+describe("triggerWorkflowRun body form", () => {
+  test("refuses a structured body from a workflow principal before any signing", async () => {
+    const result = await makeTrigger()({
+      tenant: makeTenant(),
+      principal: makePrincipal("workflow"),
+      userName: null,
+      anchorRunId: "run_guard",
+      message: { content: "hi" },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      status: 400,
+      body: { error: { code: "signed_mail_required" } },
+    });
   });
 
-  test("rejects an agent-kind principal before any signing", async () => {
-    const trigger = makeTrigger();
-    await expect(
-      trigger({
-        tenant: makeTenant(),
-        principal: makePrincipal("agent"),
-        userName: null,
-        anchorRunId: "run_guard",
-        message: { content: "hi" },
-      }),
-    ).rejects.toThrow(/only a user principal may originate hub-signed mail/);
+  test("refuses a structured body from an agent principal before any signing", async () => {
+    const result = await makeTrigger()({
+      tenant: makeTenant(),
+      principal: makePrincipal("agent"),
+      userName: null,
+      anchorRunId: "run_guard",
+      message: { content: "hi" },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      status: 400,
+      body: { error: { code: "signed_mail_required" } },
+    });
   });
 
-  test("lets a user-kind principal past the guard into dependency use", async () => {
-    const trigger = makeTrigger();
-    // A user principal clears the guard and proceeds until it touches a dep;
-    // the first touch is the db read, which the proxy rejects. Asserting on the
-    // dep-use error (not the guard error) proves the guard gates ONLY non-user
-    // principals rather than rejecting every caller.
+  test("lets a user principal's structured body into dependency use", async () => {
+    // A user principal clears the form check and proceeds until it touches a
+    // dep; the first touch is the db read, which the proxy rejects. Asserting
+    // on the dep-use error proves the check refuses only non-user principals.
     await expect(
-      trigger({
+      makeTrigger()({
         tenant: makeTenant(),
         principal: makePrincipal("user"),
         userName: null,
@@ -111,6 +115,24 @@ describe("triggerWorkflowRun signing-principal guard", () => {
         message: { content: "hi" },
       }),
     ).rejects.toThrow(/db must not be used/);
+  });
+
+  test("refuses a caller-signed body with bad routing headers before any key lookup", async () => {
+    const raw = new TextEncoder().encode(
+      "From: someone@else.test\r\nTo: run_guard@guard.interchange\r\n\r\nhi",
+    );
+    const result = await makeTrigger()({
+      tenant: makeTenant(),
+      principal: makePrincipal("workflow"),
+      userName: null,
+      anchorRunId: "run_guard",
+      message: { rawMessage: base64Encode(raw) },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      status: 400,
+      body: { error: { code: "mail_header_invalid" } },
+    });
   });
 });
 
@@ -235,6 +257,11 @@ describe("triggerWorkflowRun first-trigger staging", () => {
     txRows: unknown[][];
     grantStoreFor: TriggerWorkflowRunDeps["grantStoreFor"];
     routeMail?: (...args: unknown[]) => Promise<boolean>;
+    // A provisioned deployment takes the durable path through this service.
+    allocationId?: string;
+    workflowDispatchService?: TriggerWorkflowRunDeps["workflowDispatchService"];
+    // Replaces the durable transaction, to drive how its failure maps.
+    transactionError?: Error;
   }) {
     let inTransaction = false;
     const refuseInTransaction = () => {
@@ -260,8 +287,9 @@ describe("triggerWorkflowRun first-trigger staging", () => {
             {
               definitionId: "wfd_staging",
               definitionAssetId: ASSET_ID,
-              allocationId: null,
-              allocationStatus: null,
+              allocationId: opts.allocationId ?? null,
+              allocationStatus:
+                opts.allocationId === undefined ? null : "allocated",
               anchorStatus: "running",
               runStatus: null,
               credentialRefs: null,
@@ -296,6 +324,7 @@ describe("triggerWorkflowRun first-trigger staging", () => {
         },
       },
       transaction: async (fn: (handle: typeof tx) => Promise<unknown>) => {
+        if (opts.transactionError !== undefined) throw opts.transactionError;
         inTransaction = true;
         try {
           return await fn(tx);
@@ -322,6 +351,9 @@ describe("triggerWorkflowRun first-trigger staging", () => {
       repoStore: {
         openCommittedReads: async () => null,
       } as unknown as TriggerWorkflowRunDeps["repoStore"],
+      ...(opts.workflowDispatchService !== undefined
+        ? { workflowDispatchService: opts.workflowDispatchService }
+        : {}),
     });
     return { trigger, tx };
   }
@@ -333,6 +365,29 @@ describe("triggerWorkflowRun first-trigger staging", () => {
     anchorRunId: "run_staging",
     message: { content: "hi" },
   };
+
+  test("a Message-ID reused with other bytes on the durable path is a 409", async () => {
+    const { trigger } = makeTrigger({
+      txRows: [],
+      grantStoreFor: unusedDep("grantStoreFor"),
+      allocationId: "alc_durable",
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the transaction fails before the service is used
+      workflowDispatchService: {} as unknown as NonNullable<
+        TriggerWorkflowRunDeps["workflowDispatchService"]
+      >,
+      transactionError: new WorkflowRunDispatchPayloadConflictError(
+        "<reused@guard.interchange>",
+        "message",
+        "enqueue",
+      ),
+    });
+
+    expect(await trigger(triggerArgs)).toMatchObject({
+      ok: false,
+      status: 409,
+      body: { error: { code: "message_id_conflict" } },
+    });
+  });
 
   test("stages under the anchor lock with reads on the transaction", async () => {
     const executors: unknown[] = [];
