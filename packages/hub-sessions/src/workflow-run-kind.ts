@@ -2321,8 +2321,9 @@ function makeListingOidResolver(
 /**
  * Parsed results that one validation scope shares across its
  * validatePush calls (see `validationScope` on the KindHandler). A pack
- * receive validates each commit against the whole run, so without the
- * cache each commit parses every event of the run again. Keys come from
+ * receive validates its commits in order, so the event one commit adds
+ * is the parent's last event that the next commit parses, and an entry a
+ * queue or mailbox carries is checked by every commit. Keys come from
  * `parseCacheKey`.
  *
  * `events` holds the summary of each valid event blob. `queueEntries`
@@ -3203,8 +3204,7 @@ export const workflowRunKindHandler: KindHandler = {
           };
         }
       }
-      let terminalSeq: number | null = null;
-      let terminalType: string | null = null;
+      const retained: boolean[] = [];
       for (const entry of entries) {
         const priorCheck = await checkRetainedBlobUnchanged(
           entry.blobPath,
@@ -3216,6 +3216,23 @@ export const workflowRunKindHandler: KindHandler = {
         if (!priorCheck.ok) {
           logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${priorCheck.reason}`;
           return priorCheck;
+        }
+        retained.push(!(await blobIsNewlyAdded(entry.blobPath, priorListing)));
+      }
+      let terminalSeq: number | null = null;
+      let terminalType: string | null = null;
+      const afterTerminal = (entry: RunEventBlob): ValidatePushResult => ({
+        ok: false,
+        reason: `run ${runId} has event at seq ${String(entry.filenameSeq)} after terminal ${String(terminalType)} at seq ${String(terminalSeq)}`,
+      });
+      for (const [i, entry] of entries.entries()) {
+        const newlyAdded = retained[i] !== true;
+        // The parent passed these checks, and the blob OID fixes the
+        // bytes, so an event the parent holds needs no parse unless it is
+        // the parent's last event, whose type the terminal lock reads.
+        if (!newlyAdded && retained[i + 1] === true) {
+          if (terminalSeq !== null) return afterTerminal(entry);
+          continue;
         }
         const parsed = await parseEventBlobCached(
           entry,
@@ -3249,7 +3266,7 @@ export const workflowRunKindHandler: KindHandler = {
           // checkRetainedBlobUnchanged rejects it first. Mirrors the
           // newly-terminal gate below, which likewise acts only on a blob
           // absent from the prior tree.
-          if (await blobIsNewlyAdded(entry.blobPath, priorListing)) {
+          if (newlyAdded) {
             const principalCheck = checkCancelOriginPrincipal(
               entry.blobPath,
               origin,
@@ -3261,12 +3278,7 @@ export const workflowRunKindHandler: KindHandler = {
             }
           }
         }
-        if (terminalSeq !== null) {
-          return {
-            ok: false,
-            reason: `run ${runId} has event at seq ${String(entry.filenameSeq)} after terminal ${terminalType} at seq ${String(terminalSeq)}`,
-          };
-        }
+        if (terminalSeq !== null) return afterTerminal(entry);
         const classified = classifyTerminalEvent(parsed.event.type);
         if (classified.terminal) {
           terminalSeq = entry.filenameSeq;
@@ -3279,7 +3291,7 @@ export const workflowRunKindHandler: KindHandler = {
           // terminal blob already present in the prior tree and emits no
           // signal, so a downstream consumer keyed on the signal does
           // not double-fire.
-          if (await blobIsNewlyAdded(entry.blobPath, priorListing)) {
+          if (newlyAdded) {
             const terminalBytes = await readBlob(entry.blobPath);
             newlyTerminalRuns.push({
               runId,
