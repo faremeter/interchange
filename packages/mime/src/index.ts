@@ -36,6 +36,7 @@ export type {
 } from "./mime";
 
 export { createDetachedSignatureFromProvider } from "./pgp-sign";
+export { verifyMimeSignature } from "./verify-signature";
 
 export {
   createInboundMessage,

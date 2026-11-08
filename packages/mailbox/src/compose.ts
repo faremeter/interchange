@@ -5,8 +5,9 @@
 // signed content, the header set, and the References chain. The caller keeps
 // delivery.
 //
-// It sits beside `verifyMimeSignature` deliberately: composing a signed
-// message and verifying one are peers over the same byte contract.
+// Composing a signed message and verifying one are peers over the same byte
+// contract; the verifier, `verifyMimeSignature`, is in `@intx/mime` beside the
+// signing helpers this module calls.
 
 import {
   assembleMessage,

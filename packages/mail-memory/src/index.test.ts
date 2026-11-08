@@ -8,9 +8,9 @@ import {
   createInboundMessage,
   generateMessageId,
   parseHeaderSection,
+  verifyMimeSignature,
   type MessageHeaders,
 } from "@intx/mime";
-import { verifyMimeSignature } from "@intx/mailbox";
 import { createInMemoryTransport } from "./index";
 import type {
   CryptoProvider,

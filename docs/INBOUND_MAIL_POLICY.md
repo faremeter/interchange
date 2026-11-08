@@ -306,7 +306,7 @@ approved `mailAccept` alone, so with no `mailAccept` it admits no sender.
   The decision tables in `inbound-signature.test.ts` beside them are the
   authoritative statement of the behaviour.
 - The signature check itself: `verifyMimeSignature`,
-  `packages/mailbox/src/verify-signature.ts`
+  `packages/mime/src/verify-signature.ts`
 - The keyring the check verifies against, and its load-fault handling:
   `createSenderKeyCache`, `packages/hub-agent/src/sender-key-cache.ts`
 - The fully-closed default: `FULLY_CLOSED_INBOUND_MAIL_POLICY` and

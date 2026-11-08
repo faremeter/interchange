@@ -26,8 +26,7 @@ import path from "node:path";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import { base64Decode, base64Encode } from "@intx/types/base64";
-import { verifyMimeSignature } from "@intx/mailbox";
-import { parseHeaderSection } from "@intx/mime";
+import { parseHeaderSection, verifyMimeSignature } from "@intx/mime";
 import {
   createInMemoryTransport,
   type InMemoryTransport,

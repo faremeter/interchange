@@ -5,8 +5,11 @@ import type {
   InboundMailOutcome,
   InboundMailPolicy,
 } from "@intx/types/inbound-mail-policy";
-import { verifyMimeSignature } from "@intx/mailbox";
-import { parseHeaderSection, extractAddrSpec } from "@intx/mime";
+import {
+  extractAddrSpec,
+  parseHeaderSection,
+  verifyMimeSignature,
+} from "@intx/mime";
 
 import { isUsableSenderKey } from "../sender-key-cache";
 
