@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { type } from "arktype";
 import { eq } from "drizzle-orm";
 
 import { createInMemoryGrantStore } from "@intx/authz";
@@ -27,7 +28,14 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
-import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+  tenantSlugFromId,
+} from "@intx/test-harness/seed";
+import { base64Encode } from "@intx/types";
 
 // A workflow run token authenticates as its run principal on the tenant
 // routes, carries its consumer into authorization, and reaches only the
@@ -143,13 +151,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       grants: GrantRule[],
       sessionUser: string | null = null,
       workflowAllocationService?: WorkflowAllocationService,
+      opts: { triggerStores?: boolean } = {},
     ) {
       return createApp({
-        // The deploy route mounts only with the stores. A stub allocation
-        // service never reaches them.
-        ...(workflowAllocationService !== undefined
+        // The deploy route and the run mail trigger mount only with the
+        // stores. A stub allocation service never reaches them, and a mail
+        // request these tests send is refused before the trigger uses them.
+        ...(workflowAllocationService !== undefined ||
+        opts.triggerStores === true
           ? {
-              workflowAllocationService,
+              ...(workflowAllocationService !== undefined
+                ? { workflowAllocationService }
+                : {}),
               // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused by the stubbed deploy
               assetService: {} as AssetService,
               // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused by the stubbed deploy
@@ -180,7 +193,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     ) {
       return app.request(path, {
         ...init,
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...init.headers, authorization: `Bearer ${token}` },
       });
     }
 
@@ -310,7 +323,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ["GET", `/api/tenants/${TENANT_ID}/grants`],
         ["GET", `/api/tenants/${TENANT_ID}/approvals`],
         ["POST", `/api/tenants/${TENANT_ID}/federation`],
-        ["POST", `${RUNS}/run_x/mail`],
+        ["POST", `/api/tenants/${TENANT_ID}/workflows/run_x/mail`],
         ["HEAD", RUNS],
         ["GET", `/api/tenants/${TENANT_ID}`],
         ["PATCH", `/api/tenants/${TENANT_ID}`],
@@ -323,6 +336,93 @@ describe.skipIf(!harnessDbEnvAvailable())(
           status: 403,
         });
       }
+    });
+
+    describe("the run mail route", () => {
+      const TARGET = "run_mail_target";
+      const TARGET_ADDRESS = `${TARGET}@${tenantSlugFromId(TENANT_ID).toLowerCase()}.example.test`;
+      const MANAGE_TARGET = grant(
+        "grt_run_manage",
+        RUN_PRINCIPAL_ID,
+        `workflow-run:${TARGET}`,
+        "manage",
+      );
+
+      beforeEach(async () => {
+        // A routable run is its own anchor and has an address.
+        await seedWorkflowRun(h.db, {
+          id: TARGET,
+          tenantId: TENANT_ID,
+          anchorRunId: TARGET,
+          address: TARGET_ADDRESS,
+        });
+      });
+
+      function postMail(grants: GrantRule[], body: unknown) {
+        const app = makeApp(grants, null, undefined, { triggerStores: true });
+        return asRun(app, `${RUNS}/${TARGET}/mail`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+
+      test("a run token with manage on the target reaches it and must sign its own mail", async () => {
+        const res = await postMail([MANAGE_TARGET], { content: "hi" });
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({
+          error: { code: "signed_mail_required" },
+        });
+      });
+
+      test("a caller-signed message from another sender is refused", async () => {
+        // Every routing header is right except From, so only the From check
+        // refuses it.
+        const raw = new TextEncoder().encode(
+          [
+            "From: someone@else.test",
+            `To: ${TARGET_ADDRESS}`,
+            "Message-ID: <m1@else.test>",
+            "Interchange-Type: conversation.message",
+            "",
+            "hi",
+          ].join("\r\n"),
+        );
+        const res = await postMail([MANAGE_TARGET], {
+          rawMessage: base64Encode(raw),
+        });
+        expect(res.status).toBe(400);
+        const body = type({
+          error: { code: "string", message: "string" },
+        }).assert(await res.json());
+        expect(body.error.code).toBe("mail_header_invalid");
+        expect(body.error.message).toContain(
+          "From must be the caller's address",
+        );
+      });
+
+      test("a run token without manage on the target is refused by its grants, not the allow-list", async () => {
+        const res = await postMail(
+          [
+            grant(
+              "grt_run_read",
+              RUN_PRINCIPAL_ID,
+              `workflow-run:${TARGET}`,
+              "read",
+            ),
+          ],
+          { content: "hi" },
+        );
+        expect(res.status).toBe(403);
+        const body = type({ error: { message: "string" } }).assert(
+          await res.json(),
+        );
+        // The grant check's refusal, not the allow-list's: both answer 403
+        // `forbidden`, so the message tells them apart.
+        expect(body.error.message).toBe(
+          "You do not have permission to perform this action",
+        );
+      });
     });
 
     test("the allow-list matches the decoded path the router routes on", async () => {

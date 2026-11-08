@@ -31,7 +31,7 @@ describe("isRunTokenRoute", () => {
   });
 
   test("refuses a listed path with another method", () => {
-    expect(isRunTokenRoute("POST", `${RUN}/run_1/mail`)).toBe(false);
+    expect(isRunTokenRoute("DELETE", `${RUN}/run_1/mail`)).toBe(false);
     expect(isRunTokenRoute("HEAD", RUN)).toBe(false);
   });
 

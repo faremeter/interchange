@@ -668,6 +668,20 @@ message, and the run code gets the result. The signer sends nothing.
 - Every other failure rejects with a plain `Error`. Examples are a host with
   no signer (the `runLocal` default), a signer used after its window closes,
   and a compose cut off by the child's shutdown.
+- Address the message to the target run's own address,
+  `<targetRunId>@<tenant domain>`; the hub refuses any other `To`. Keep the
+  `Message-ID` that `compose` stamps: it names the run, and the hub refuses
+  an ID that does not. To send
+  it, post `{ rawMessage }` to
+  `/api/tenants/<tenantId>/workflows/runs/<targetRunId>/mail` through the
+  `interchange.hub` credential (item 32). The hub checks the headers and the
+  signature, then relays the message as the run's own mail. The run needs
+  `manage` on the target run and a `mail.send` grant for it; every run holds
+  `mail.send:*:*` from its first trigger. To mail itself, a run declares a
+  `workflow-run:self` `manage` requirement (item 32). That grant also opens
+  the other `manage` routes on the run, such as stopping it. The mail tools'
+  `tool:mail_send` grant does not apply to this path. No API gives run code
+  its tenant id, so the caller passes it to the run as input.
 - Each `compose` stamps a new Message-ID. Compose a message in the same
   `perform` as the work that uses it. A crash or a retry after that work and
   before the record composes a new message with a new Message-ID, and the
@@ -675,4 +689,5 @@ message, and the run code gets the result. The signer sends nothing.
 
 Where it lives today: `MailSigner`, `packages/types/src/mail-signer.ts`;
 `PerformScope`, `packages/workflow/src/runtime/env.ts`; the child bridge,
-`packages/workflow-host/src/child/mail-compose-bridge.ts`.
+`packages/workflow-host/src/child/mail-compose-bridge.ts`; the hub's checks,
+"Mail send grants" in `docs/AUTH.md`.
