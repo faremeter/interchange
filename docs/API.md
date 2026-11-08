@@ -706,7 +706,7 @@ Body: unknown
 ### POST /api/tenants/:tenantId/workflows/:runId/mail
 Trigger a workflow run
 
-Delivers a fresh signed conversation message to the deployment's stable top-level run. The first accepted message fires that run; while it remains live, later messages may resume its onTrigger input. A terminal deployment run cannot be fired again. The returned messageId identifies this trigger occurrence. The body is either a message for the hub to sign with the caller's hub-held key (`content`, `attachments`), or a complete message the caller signed with its own key (`rawMessage`, base64). For `rawMessage`, the hub checks its routing headers (From, To, Cc, Bcc, Message-ID, Interchange-Type and Interchange-Tenant-ID) and its signature against the caller's recorded key, then relays the bytes it verified. A workflow run's token cannot reach this route.
+Delivers a fresh signed conversation message to the deployment's stable top-level run. The first accepted message fires that run; while it remains live, later messages may resume its onTrigger input. A terminal deployment run cannot be fired again. The returned messageId identifies this trigger occurrence. The body is either a message for the hub to sign with the caller's hub-held key (`content`, `attachments`), or a complete message the caller signed with its own key (`rawMessage`, base64). For `rawMessage`, the hub checks its routing headers (From, To, Cc, Bcc, Message-ID, Interchange-Type and Interchange-Tenant-ID) and its signature against the caller's recorded key, then relays the bytes it verified. A workflow run's token cannot reach this route; a run sends mail through `POST /workflows/runs/:runId/mail`.
 
 Body: SendMailRequest
 

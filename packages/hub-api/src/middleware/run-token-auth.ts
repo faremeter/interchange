@@ -54,6 +54,7 @@ export const RUN_TOKEN_ROUTES: readonly RunTokenRoute[] = [
     path: "/api/tenants/:tenantId/workflows/runs/:runId/turns",
   },
   { method: "GET", path: "/api/tenants/:tenantId/workflows/runs/:runId/mail" },
+  { method: "POST", path: "/api/tenants/:tenantId/workflows/runs/:runId/mail" },
   { method: "GET", path: "/api/tenants/:tenantId/workflows/deployments" },
   { method: "POST", path: "/api/tenants/:tenantId/workflows/deployments" },
   { method: "POST", path: "/api/tenants/:tenantId/workflows/:runId/signals" },

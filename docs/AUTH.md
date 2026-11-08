@@ -111,7 +111,7 @@ Every path that deactivates a run principal -- run termination, a stop or cancel
 
 The token's consumer goes into authorization. A grant with a `{ "tool": "<consumer>" }` condition, allow or deny, applies only to requests from that consumer. A session or git token has no consumer, so such a grant never matches it. `POST /api/tenants/:tenantId/principals/:principalId/evaluate` accepts an optional `consumer` to show the decision a consumer's token gets.
 
-The allow-list (`RUN_TOKEN_ROUTES` in `@intx/hub-api`) limits a run token to reading runs, deployments, definitions and assets, deploying, signaling and stopping runs. Every other route refuses a run token whatever grants the run holds. A run therefore cannot resolve approvals, change grants, roles, principals, credentials, OAuth clients, tokens or federation trusts, send REST mail, or manage the tenant.
+The allow-list (`RUN_TOKEN_ROUTES` in `@intx/hub-api`) limits a run token to reading runs, deployments, definitions and assets, deploying, signaling and stopping runs, and sending mail to a run through `POST .../workflows/runs/:runId/mail`. Every other route refuses a run token whatever grants the run holds. A run therefore cannot resolve approvals, change grants, roles, principals, credentials, OAuth clients, tokens or federation trusts, mail a deployment through `POST .../workflows/:runId/mail`, or manage the tenant.
 
 ## Roles
 
@@ -403,10 +403,12 @@ A run gets `mail.send:*:*` at its first trigger (see A run's send grant under Gr
 
 A principal starts a run with the REST mail routes (`POST /:runId/mail` under `/workflows` and under `/workflows/runs`). The routes keep the `workflow-run:<runId>` `manage` check: `manage` decides who may start a run with the deployer's delegated grants. The trigger then checks the caller's `mail.send` grants against the deployment's run address, with the same authorizer the relay uses. A fault while the check resolves the run's coordinates fails the request with `500`, not `403`. A refused mail gets `403` with the code `mail_send_denied`, before the trigger links the run principal, commits a grant or sends anything. No sidecar tool gate applies on this path.
 
+A run sends REST mail with its run token through `POST .../workflows/runs/:runId/mail`. Three controls decide it: the run's approved `interchange.hub` credential (a consumer declares it, and deploy approval shows it), `manage` on the target run, and the run's `mail.send` grants. The `tool:mail_send` and `tool:mail_reply` grants that gate the mail tools do not apply on this path. Of the three, only `manage` can be narrowed to one consumer, with a `{ tool }` condition; the `mail.send` check has no consumer.
+
 Custody of the signing key decides the body of a REST mail request, not the principal kind:
 
 - **Hub-signed.** `{ content, attachments }`. The hub assembles the message and signs it with the caller's hub-held key, so only a user principal can send this form. The hub refuses it from any other caller with `400` and the code `signed_mail_required`.
-- **Caller-signed.** `{ rawMessage }`, a complete RFC 2822 message, base64-encoded, that the caller signed with its own key.
+- **Caller-signed.** `{ rawMessage }`, a complete RFC 2822 message, base64-encoded, that the caller signed with its own key. A workflow run sends this form: its key stays in its sidecar, and run code gets a signed message from the sidecar (see item 33 in WORKFLOW_AUTHORING.md).
 
 For a caller-signed message, the hub checks these items before the `mail.send` check, then relays the bytes it verified, decoded once and re-encoded. The request body is limited to the same number of bytes as a `rawMessage` the sidecar relays, so a run's REST mail is no larger than its relayed mail; a longer request answers `413`.
 
