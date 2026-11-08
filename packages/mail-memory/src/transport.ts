@@ -29,13 +29,16 @@ import {
   fetchPart as doFetchPart,
   fetchFull as doFetchFull,
   requireMessage,
+  composeOutbound,
   type StoredEnvelope,
 } from "@intx/mailbox";
 import { createAddressEntry, type AddressEntry } from "./mailbox";
 import {
   executeSend,
+  requireSender,
   type RemoteSendHandler,
   type MessageSentHandler,
+  type SignedMessageBytes,
 } from "./send";
 
 /**
@@ -57,6 +60,14 @@ export interface HubTransport {
    * inbox. Used by the wire layer (HubLink) for inbound mail frames.
    */
   deliver(address: string, message: Uint8Array): void;
+  /**
+   * Compose and sign `message` as a registered address without sending it.
+   * The caller takes the bytes elsewhere, such as to the hub REST API.
+   */
+  composeSigned(
+    senderAddress: string,
+    message: OutboundMessage,
+  ): Promise<SignedMessageBytes>;
 }
 
 /**
@@ -136,6 +147,23 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     throw new Error(
       "Use createInMemoryTransport().getTransportFor(address) to send messages",
     );
+  }
+
+  /**
+   * Nothing is stored and no message-sent handler fires. Those handlers
+   * report a delivered send to the hub, and a composed message is not sent:
+   * its holder may never post it, and the hub records it when it arrives.
+   */
+  async composeSigned(
+    senderAddress: string,
+    message: OutboundMessage,
+  ): Promise<SignedMessageBytes> {
+    const { messageId, rawBytes } = await composeOutbound(
+      senderAddress,
+      message,
+      requireSender(senderAddress, this.#entries).crypto,
+    );
+    return { messageId, rawBytes };
   }
 
   async append(

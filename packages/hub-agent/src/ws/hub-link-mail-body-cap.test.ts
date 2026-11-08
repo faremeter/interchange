@@ -51,6 +51,9 @@ function createCapturingTransport(): {
       throw new Error("getTransportFor is not used in this test");
     },
     deliver: () => undefined,
+    composeSigned: () => {
+      throw new Error("composeSigned is not used in this test");
+    },
     setRemoteSendHandler: (handler) => {
       remoteSend = handler;
     },
