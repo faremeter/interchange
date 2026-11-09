@@ -124,7 +124,8 @@ async function readCommittedMailboxUidNext(
     : parseMailboxIndex(raw, `mailbox index ${indexPath}`).uidNext;
 }
 
-async function readCommittedFile(
+/** Read a file of a committed tree as text, or `null` when it has none. */
+export async function readCommittedFile(
   reads: CommittedReads,
   filePath: string,
 ): Promise<string | null> {

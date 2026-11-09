@@ -49,6 +49,7 @@ import {
   createMemoryNdjsonStream,
   createSpawnObserver,
   createChangeNotifier,
+  createStubRepoStore,
   sendDefinition,
   waitForUpstreamPayload,
   inboundDelivery,
@@ -440,8 +441,15 @@ function downstreamPayloadType(line: string): string | undefined {
  * Build a stub RepoStore whose `getRepoDir` resolves under the supplied
  * tempBase.
  */
-function createSpawnTestRepoStore(tempBase: string): RepoStore {
+function createSpawnTestRepoStore(
+  tempBase: string,
+  treeWrites: string[],
+): RepoStore {
+  // The stub keeps no history, so a committed read sees what `writeTree` wrote.
+  const written = createStubRepoStore(tempBase);
   const stub: Partial<RepoStore> = {
+    openCommittedReads: (principal, repoId, ref) =>
+      written.openCommittedReads(principal, repoId, ref),
     getRepoDir(repoId: RepoId): string {
       return path.join(tempBase, repoId.kind, repoId.id);
     },
@@ -466,6 +474,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
         const full = path.join(dir, relPath);
         await fs.mkdir(path.dirname(full), { recursive: true });
         await fs.writeFile(full, contents);
+        treeWrites.push(relPath);
       }
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
@@ -923,7 +932,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const transport = opts.transport ?? createInMemoryTransport();
     const keyPair = await generateKeyPair();
     const tempBase = await createTempBaseDir("sidecar-multistep-");
-    const repoStore = createSpawnTestRepoStore(tempBase);
+    const treeWrites: string[] = [];
+    const repoStore = createSpawnTestRepoStore(tempBase, treeWrites);
     // The deploy router's source-ref branch materializes the pinned closure
     // under `${SIDECAR_DATA_DIR}/workflow-definition-closures/<id>/` before
     // invoking the spawner. The test fixture defaults the data dir to a
@@ -1031,6 +1041,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     return {
       router,
       tempBase,
+      treeWrites,
       keyPair,
       substrateEnv: mergedSubstrateEnv,
       transport,
@@ -1622,6 +1633,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     agentAddress: string;
     anchorRunId: string;
     tempBase: string;
+    treeWrites: string[];
   }> {
     const childIpcKeyPair = await generateKeyPair();
     const {
@@ -1653,7 +1665,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
 
     const grantsRouter = createMultistepGrantsRouter();
-    const { router, tempBase } = await buildMultistepFixture({
+    const { router, tempBase, treeWrites } = await buildMultistepFixture({
       spawner,
       multistepGrantsRouter: grantsRouter,
     });
@@ -1697,8 +1709,43 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       agentAddress: frame.agentAddress,
       anchorRunId: deriveWorkflowRunRepoId(frame.agentAddress),
       tempBase,
+      treeWrites,
     };
   }
+
+  test("a run.grants frame carrying the grants the run already has writes nothing", async () => {
+    const { grantsRouter, agentAddress, treeWrites } =
+      await deployMultistepForGrants("wf-grants-unchanged");
+
+    const runId = "run-unchanged";
+    const frame: Parameters<MultistepGrantsRouter["tryRoute"]>[0] = {
+      type: "run.grants",
+      agentAddress,
+      runId,
+      stepGrants: [
+        {
+          id: "grant-1",
+          resource: "tool:send-mail",
+          action: "invoke",
+          effect: "allow",
+          origin: "creator",
+          conditions: null,
+          expiresAt: null,
+          roleId: null,
+          principalId: "prn_deployment",
+        },
+      ],
+    };
+    const grantsWrites = () =>
+      treeWrites.filter((file) => file === `runs/${runId}/grants.json`);
+
+    await grantsRouter.tryRoute(frame, true);
+    await grantsRouter.tryRoute(frame, true);
+    expect(grantsWrites()).toHaveLength(1);
+
+    await grantsRouter.tryRoute({ ...frame, stepGrants: [] }, true);
+    expect(grantsWrites()).toHaveLength(2);
+  });
 
   test("fails the run's grants when a sender key they carry did not land", async () => {
     // The link reports a sender key it could not cache. The run must not
