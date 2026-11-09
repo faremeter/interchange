@@ -101,8 +101,11 @@ export type HubAccessEnv = {
   hubOrigin: string;
   tenantId: string;
   callerPrincipalId: string;
-  /** The `/api/tenants/:tenantId/workflows/runs` path of the tenant. */
-  runsPath: string;
+  /**
+   * The runs path a run uses for its own tenant,
+   * `/api/tenants/self/workflows/runs`, so no run needs the tenant id.
+   */
+  selfRunsPath: string;
   received: ReceivedRequest[];
   /** A request from the caller's session, not from a run. */
   asCaller(path: string, init?: RequestInit): Promise<Response>;
@@ -282,7 +285,7 @@ export async function startHubAccessEnv(args: {
     hubOrigin: hub.url.origin,
     tenantId,
     callerPrincipalId,
-    runsPath: `/api/tenants/${tenantId}/workflows/runs`,
+    selfRunsPath: "/api/tenants/self/workflows/runs",
     received,
     asCaller,
     grantCaller,

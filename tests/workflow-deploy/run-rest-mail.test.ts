@@ -100,7 +100,7 @@ async function deployAndTrigger(anchorRunId: string, postTampered: boolean) {
       runRestMailWorkflowEntry({
         address,
         workflowId: `wf_${anchorRunId.replaceAll("-", "_")}`,
-        mailPath: `${t.runsPath}/${anchorRunId}/mail`,
+        mailPath: `${t.selfRunsPath}/${anchorRunId}/mail`,
         postTampered,
       }),
   });
@@ -169,8 +169,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // token.
       const fromRun = t.received.slice(fromRunsBefore);
       expect(fromRun.map((call) => [call.path, call.status])).toEqual([
-        [`${t.runsPath}/${SELF_RUN}/mail`, 400],
-        [`${t.runsPath}/${SELF_RUN}/mail`, 202],
+        [`${t.selfRunsPath}/${SELF_RUN}/mail`, 400],
+        [`${t.selfRunsPath}/${SELF_RUN}/mail`, 202],
       ]);
       for (const call of fromRun) {
         expect(
@@ -206,7 +206,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // routes anything.
       const fromRun = t.received.slice(fromRunsBefore);
       expect(fromRun.map((call) => [call.path, call.status])).toEqual([
-        [`${t.runsPath}/${DENIED_RUN}/mail`, 403],
+        [`${t.selfRunsPath}/${DENIED_RUN}/mail`, 403],
       ]);
     });
   },
