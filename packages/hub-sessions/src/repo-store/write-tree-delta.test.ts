@@ -264,3 +264,31 @@ test("writeTreeDelta rejects a delta path outside changedPathPrefixes", async ()
     }),
   ).rejects.toThrow(/delta_out_of_scope/);
 });
+
+test("writeTreeDelta rejects a scope that is not a directory prefix", async () => {
+  const store = await freshStore("wtd-scope-shape-");
+  await store.initRepo(repoId);
+  for (const scope of [
+    "",
+    "a",
+    "addresses",
+    "addresses/a",
+    "/",
+    "/addresses/a/",
+    "addresses/../",
+    "addresses//",
+  ]) {
+    let computed = false;
+    await expect(
+      store.writeTreeDelta(principal, repoId, REF, {
+        changedPathPrefixes: new Set([SCOPE, scope]),
+        message: "bad scope",
+        computeDelta: async () => {
+          computed = true;
+          return { puts: { [`${SCOPE}inbox/x.json`]: "v" }, deletes: [] };
+        },
+      }),
+    ).rejects.toThrow(`delta_scope_invalid: ${JSON.stringify(scope)}`);
+    expect(computed).toBe(false);
+  }
+});
