@@ -12,20 +12,13 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { createInMemoryGrantStore } from "@intx/authz";
-import { createSSHSignature, generateKeyPair } from "@intx/crypto";
+import { generateKeyPair } from "@intx/crypto";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
   createAssetService,
-  createRepoStore,
   createSidecarEmitter,
-  packageRegistryAuthorize,
-  packageRegistryKindHandler,
-  skillAuthorize,
-  skillKindHandler,
   type AssetService,
-  type AuthorizeFn,
   type EventCollectorRegistry,
-  type RepoStore,
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
@@ -37,6 +30,8 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal, seedTenants } from "@intx/test-harness/seed";
+
+import { createTestRepoStore } from "./lib/repo-store";
 
 // These route tests exercise the inherited-asset GET endpoints and the
 // package-registry tarball endpoints against a real database. The asset
@@ -57,7 +52,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Filesystem fixtures and signer
+// Filesystem fixtures and signing key
 // ---------------------------------------------------------------------------
 
 const tempDirs: string[] = [];
@@ -71,37 +66,8 @@ async function makeTempDir(prefix: string): Promise<string> {
 let signingKey: KeyPair;
 
 // ---------------------------------------------------------------------------
-// Substrate (real RepoStore, real signer) and in-process app mocks
+// In-process app mocks
 // ---------------------------------------------------------------------------
-
-async function createWiredSubstrate(): Promise<{
-  dataDir: string;
-  repoStore: RepoStore;
-}> {
-  const dataDir = await makeTempDir("asset-routes-");
-  const signer = async (payload: string) =>
-    createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey);
-  const authorize: AuthorizeFn = (principal, repoId, ref, action) => {
-    if (repoId.kind === "skill") {
-      return skillAuthorize(principal, repoId, ref, action);
-    }
-    if (repoId.kind === "package-registry") {
-      return packageRegistryAuthorize(principal, repoId, ref, action);
-    }
-    return { allowed: false, reason: `no authorize for ${repoId.kind}` };
-  };
-  const repoStore = createRepoStore({
-    dataDir,
-    signingKey,
-    handlers: {
-      skill: skillKindHandler,
-      "package-registry": packageRegistryKindHandler,
-    },
-    authorize,
-    signingCallback: () => signer,
-  });
-  return { dataDir, repoStore };
-}
 
 function createMockGetSession(userId: string): GetSession {
   const now = new Date("2025-01-01");
@@ -256,7 +222,10 @@ async function setupMultiTenant(opts: {
     await seedAsset(h.db, a);
   }
 
-  const { repoStore } = await createWiredSubstrate();
+  const repoStore = createTestRepoStore({
+    dataDir: await makeTempDir("asset-routes-"),
+    signingKey,
+  });
   const assetService = createAssetService({ db: h.db, repoStore });
   const grants = opts.grants ?? [
     readGrant(ROOT_PRINCIPAL_ID),
