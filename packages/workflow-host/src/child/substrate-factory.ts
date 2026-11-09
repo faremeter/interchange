@@ -16,11 +16,11 @@
 // `createAgentRepoStore` against the shared on-disk data dir for
 // read-only operations (`getRepoDir`, `subscribe`, `resolveRef`,
 // etc.) and exposes a proxy `RepoStore` whose
-// `writeTreePreservingPrefix` forwards every write over the control
-// IPC into the supervisor's substrate. The supervisor's substrate is
-// wrapped with the boot-edge pack-push facade, so the hub push fires
-// as part of the supervisor's normal write path -- the child does
-// not open its own pack-push pipeline.
+// `writeTreePreservingPrefix` and `writeTreeDelta` forward every write
+// over the control IPC into the supervisor's substrate. The supervisor's
+// substrate is wrapped with the boot-edge pack-push facade, so the hub
+// push fires as part of the supervisor's normal write path -- the child
+// does not open its own pack-push pipeline.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -181,8 +181,8 @@ import {
 // contract; the supervisor's substrate is wrapped at the sidecar's
 // boot edge with the pack-pushing facade so any successful workflow-
 // run write fires the hub push automatically. The child's proxy
-// `RepoStore` forwards `writeTreePreservingPrefix` over IPC into the
-// supervisor's wrapped substrate.
+// `RepoStore` forwards `writeTreePreservingPrefix` and `writeTreeDelta`
+// over IPC into the supervisor's wrapped substrate.
 
 /**
  * Required substrate-config keys the sidecar's binary forwards into
@@ -1359,15 +1359,15 @@ interface SidecarRunChildDeps {
  * `runs/<childRunId>/grants.json` in the deployment's workflow-run repo.
  *
  * The write goes through the child proxy substrate's
- * `writeTreePreservingPrefix` -- the only write path the proxy forwards
- * to the supervisor. It names the shallow `runs/<childRunId>/` prefix, whose
- * merge input is only that level's flat blobs (the prefix read does not
- * recurse), so the write rebuilds the level with just `grants.json`. This is
- * safe ONLY because the sole caller (`capAndPersistChildGrants`) is write-once:
- * it invokes this only when no grants file exists yet, i.e. at the run's birth
- * before the runtime appends any event, so the `runs/<childRunId>/` subtree is
- * empty and nothing is dropped. Invoking it over a populated run would delete
- * that run's committed `events/`/`blobs/` subtrees. A later event append names
+ * `writeTreePreservingPrefix`. It names the shallow `runs/<childRunId>/`
+ * prefix, whose merge input is only that level's flat blobs (the prefix
+ * read does not recurse), so the write rebuilds the level with just
+ * `grants.json`. This is safe ONLY because the sole caller
+ * (`capAndPersistChildGrants`) is write-once: it invokes this only when no
+ * grants file exists yet, i.e. at the run's birth before the runtime appends
+ * any event, so the `runs/<childRunId>/` subtree is empty and nothing is
+ * dropped. Invoking it over a populated run would delete that run's committed
+ * `events/`/`blobs/` subtrees. A later event append names
  * the nested `runs/<childRunId>/events/` prefix, so its own subtree-delete does
  * not reach `grants.json` one level up -- the sibling survives.
  */
@@ -2290,12 +2290,12 @@ function defaultNewId(prefix: string): string {
  *      child's read-only operations against the workflow-run repo;
  *      the on-disk repo is shared with the supervisor's substrate so
  *      reads see whatever the supervisor has committed.
- *   3. Construct a proxy `RepoStore` whose
- *      `writeTreePreservingPrefix` forwards over the upstream control
- *      channel via the substrate-write bridge. The supervisor's
- *      handler runs its own substrate's `writeTreePreservingPrefix`
- *      (wrapped at the boot edge with the pack-push facade) under the
- *      per-repo lock and replies with the resulting `commitSha`.
+ *   3. Construct a proxy `RepoStore` whose `writeTreePreservingPrefix`
+ *      and `writeTreeDelta` forward over the upstream control channel
+ *      via the substrate-write bridge. The supervisor's handler runs
+ *      the same write on its own substrate (wrapped at the boot edge
+ *      with the pack-push facade) under the per-repo lock and replies
+ *      with the resulting `commitSha`.
  *   4. Start the host-process scheduler singleton against the proxy
  *      substrate, then adapt it to the runtime's `Scheduler` shape.
  *   5. Construct the production `invokeStep` and `spawnChild`

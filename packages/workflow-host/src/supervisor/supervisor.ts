@@ -977,8 +977,9 @@ export function createWorkflowSupervisor(
   }
 
   /**
-   * Classify a child-proxied `substrate.write.request` into the D2 leg it
-   * represents, plus the messageId the per-message OLS fit groups on.
+   * Classify a child-proxied write into the D2 leg it represents, by the
+   * prefixes it changes, plus the messageId the per-message OLS fit groups
+   * on.
    * `runs/<runId>/events/` is the run-event bracket commit and
    * `runs/<runId>/steps/...` is the D1 conversation WAL append; neither
    * prefix carries the message identity (the run-event prefix names only the
@@ -989,15 +990,17 @@ export function createWorkflowSupervisor(
    * message is in flight to attribute it to.
    */
   function classifyProxiedWriteLeg(
-    preservePrefix: string,
+    changedPrefixes: readonly string[],
   ): { leg: DispatchSubstrateLeg; messageId: string } | null {
     if (bindings.onDispatchTiming === undefined) return null;
     if (currentDispatchMessageId === null) return null;
-    if (/^runs\/[^/]+\/events\/$/.test(preservePrefix)) {
-      return { leg: "runevent", messageId: currentDispatchMessageId };
-    }
-    if (/^runs\/[^/]+\/steps\//.test(preservePrefix)) {
-      return { leg: "wal", messageId: currentDispatchMessageId };
+    for (const prefix of changedPrefixes) {
+      if (/^runs\/[^/]+\/events\/$/.test(prefix)) {
+        return { leg: "runevent", messageId: currentDispatchMessageId };
+      }
+      if (/^runs\/[^/]+\/steps\//.test(prefix)) {
+        return { leg: "wal", messageId: currentDispatchMessageId };
+      }
     }
     return null;
   }
@@ -1762,7 +1765,10 @@ export function createWorkflowSupervisor(
         // merge response could not be consumed and the write would
         // deadlock).
         ownDetachedWrite(
-          handleSubstrateWriteRequest(payload.data).catch((cause) => {
+          handleSubstrateWriteRequest({
+            kind: "prefix",
+            data: payload.data,
+          }).catch((cause) => {
             const message =
               cause instanceof Error ? cause.message : String(cause);
             logger.error`substrate.write.request handler crashed: ${message}`;
@@ -1770,11 +1776,29 @@ export function createWorkflowSupervisor(
         );
         continue;
       }
-      if (payload.type === "substrate.merge.response") {
-        // Resume the pending merge round-trip with the child's
-        // response. The handler resolves a per-write awaiter inside
-        // the substrate write handler's merge callback.
-        resolveMergeResponse(payload.data);
+      if (payload.type === "substrate.write-delta.request") {
+        // Off the iterator's loop for the same reason as
+        // `substrate.write.request`: the delta response must still drain.
+        ownDetachedWrite(
+          handleSubstrateWriteRequest({
+            kind: "delta",
+            data: payload.data,
+          }).catch((cause) => {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.error`substrate.write-delta.request handler crashed: ${message}`;
+          }),
+        );
+        continue;
+      }
+      if (
+        payload.type === "substrate.merge.response" ||
+        payload.type === "substrate.delta.response"
+      ) {
+        // Resume the pending round-trip with the child's response. The
+        // handler resolves a per-write awaiter inside the substrate write
+        // handler's merge or delta callback.
+        resolveChildWriteResponse(payload);
         continue;
       }
       if (payload.type === "outbound.message") {
@@ -1936,18 +1960,22 @@ export function createWorkflowSupervisor(
     }
   }
 
-  // Pending merge round-trips keyed by the child's `requestId`. The
-  // substrate-write handler installs an entry under each `requestId`
-  // before emitting `substrate.merge.request` upstream; the matching
-  // `substrate.merge.response` resolves the awaiter so the supervisor's
-  // merge callback continues. The entry stays alive only across one
-  // merge round-trip; the substrate may invoke the callback multiple
-  // times per write (per-repo lock retry semantics), so a fresh
+  // Pending merge and delta round-trips keyed by the child's `requestId`.
+  // The substrate-write handler installs an entry under each `requestId`
+  // before emitting `substrate.merge.request` or `substrate.delta.request`
+  // upstream; the matching response resolves the awaiter so the
+  // supervisor's merge or delta callback continues. The entry stays alive
+  // only across one round-trip; the substrate may invoke the callback
+  // multiple times per write (per-repo lock retry semantics), so a fresh
   // requestId-scoped allocator-per-merge-call is used.
+  type ChildWriteContent = {
+    files: Record<string, string | Uint8Array>;
+    deletes: readonly string[];
+  };
   type PendingMerge = {
     resolve: (
       result:
-        | { ok: true; files: Record<string, string | Uint8Array> }
+        | ({ ok: true } & ChildWriteContent)
         | { ok: false; reason: string },
     ) => void;
   };
@@ -2011,40 +2039,47 @@ export function createWorkflowSupervisor(
     }
   }
 
-  function resolveMergeResponse(
-    data: Extract<ControlPayload, { type: "substrate.merge.response" }>["data"],
+  function resolveChildWriteResponse(
+    payload: Extract<
+      ControlPayload,
+      { type: "substrate.merge.response" | "substrate.delta.response" }
+    >,
   ): void {
+    const { data } = payload;
     const entry = pendingMerges.get(data.requestId);
     if (entry === undefined) {
-      logger.warn`substrate.merge.response landed with no pending entry; requestId=${data.requestId} dropped`;
+      logger.warn`${payload.type} landed with no pending entry; requestId=${data.requestId} dropped`;
       return;
     }
     pendingMerges.delete(data.requestId);
-    if (data.result.ok) {
-      const files: Record<string, string | Uint8Array> = {};
-      try {
-        for (const file of data.result.files) {
-          files[file.path] = base64ToBytes(file.contentBase64);
-        }
-      } catch (cause) {
-        // `base64ToBytes` throws loudly on malformed child-supplied
-        // content. This runs synchronously from `pumpUpstreamControl`'s
-        // `for await`, so an escaping throw would tear the pump down and
-        // stop draining every other upstream control frame for the
-        // cohort. Mirror the child-side `decodeMergeRequest` hardening:
-        // resolve the pending merge as a failure so the write handler
-        // surfaces it as a structured substrate.write.response.
-        const reason = cause instanceof Error ? cause.message : String(cause);
-        entry.resolve({
-          ok: false,
-          reason: `supervisor substrate.merge.response: decode failed: ${reason}`,
-        });
-        return;
-      }
-      entry.resolve({ ok: true, files });
+    if (!data.result.ok) {
+      entry.resolve({ ok: false, reason: data.result.reason });
       return;
     }
-    entry.resolve({ ok: false, reason: data.result.reason });
+    const wireFiles =
+      "files" in data.result ? data.result.files : data.result.puts;
+    const deletes = "deletes" in data.result ? data.result.deletes : [];
+    const files: Record<string, string | Uint8Array> = {};
+    try {
+      for (const file of wireFiles) {
+        files[file.path] = base64ToBytes(file.contentBase64);
+      }
+    } catch (cause) {
+      // `base64ToBytes` throws loudly on malformed child-supplied
+      // content. This runs synchronously from `pumpUpstreamControl`'s
+      // `for await`, so an escaping throw would tear the pump down and
+      // stop draining every other upstream control frame for the
+      // cohort. Mirror the child-side `decodeMergeRequest` hardening:
+      // resolve the pending round-trip as a failure so the write handler
+      // surfaces it as a structured substrate.write.response.
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      entry.resolve({
+        ok: false,
+        reason: `supervisor ${payload.type}: decode failed: ${reason}`,
+      });
+      return;
+    }
+    entry.resolve({ ok: true, files, deletes });
   }
 
   // Stamp the deployment identity the supervisor owns onto a child-supplied
@@ -2737,9 +2772,63 @@ export function createWorkflowSupervisor(
     }
   }
 
+  type ProxiedWriteRequest =
+    | {
+        kind: "prefix";
+        data: Extract<
+          ControlPayload,
+          { type: "substrate.write.request" }
+        >["data"];
+      }
+    | {
+        kind: "delta";
+        data: Extract<
+          ControlPayload,
+          { type: "substrate.write-delta.request" }
+        >["data"];
+      };
+
+  // One round-trip to the child inside a proxied write: send `frame` and
+  // wait for the child's matching merge or delta response.
+  async function childRoundTrip(
+    requestId: string,
+    frame: ControlPayload,
+  ): Promise<ChildWriteContent> {
+    const sender = activeControlSender();
+    if (sender === null) {
+      throw new Error(
+        `supervisor ${frame.type}: control channel unavailable for the round-trip`,
+      );
+    }
+    const result = await new Promise<
+      ({ ok: true } & ChildWriteContent) | { ok: false; reason: string }
+    >((resolve) => {
+      pendingMerges.set(requestId, { resolve });
+      void sender.send(frame).catch((cause) => {
+        pendingMerges.delete(requestId);
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        resolve({
+          ok: false,
+          reason: `supervisor ${frame.type} send failed: ${reason}`,
+        });
+      });
+    });
+    if (!result.ok) {
+      throw new Error(
+        `supervisor ${frame.type}: child failed: ${result.reason}`,
+      );
+    }
+    return { files: result.files, deletes: result.deletes };
+  }
+
   async function handleSubstrateWriteRequest(
-    data: Extract<ControlPayload, { type: "substrate.write.request" }>["data"],
+    request: ProxiedWriteRequest,
   ): Promise<void> {
+    const { data } = request;
+    const frameType =
+      request.kind === "prefix"
+        ? "substrate.write.request"
+        : "substrate.write-delta.request";
     const controlSender = activeControlSender();
     if (controlSender === null) {
       // The request arrived after `activeControlSender()` was
@@ -2753,13 +2842,13 @@ export function createWorkflowSupervisor(
       // to whatever next-cohort sender exists would deliver it to
       // the wrong child. Logged loudly so persistent occurrences
       // surface in operator logs.
-      logger.warn`substrate.write.request received outside running phase; requestId=${data.requestId} dropped (child waiter will fail on pipe close)`;
+      logger.warn`${frameType} received outside running phase; requestId=${data.requestId} dropped (child waiter will fail on pipe close)`;
       return;
     }
     const validatedRepoId = RepoId(data.repoId);
     if (validatedRepoId instanceof type.errors) {
       onChildCrash(
-        `substrate.write.request repoId failed validation: ${validatedRepoId.summary}`,
+        `${frameType} repoId failed validation: ${validatedRepoId.summary}`,
       );
       return;
     }
@@ -2773,7 +2862,7 @@ export function createWorkflowSupervisor(
           requestId: data.requestId,
           result: {
             ok: false,
-            reason: `supervisor substrate.write.request: repoId.kind must be "workflow-run", got ${JSON.stringify(validatedRepoId.kind)}`,
+            reason: `supervisor ${frameType}: repoId.kind must be "workflow-run", got ${JSON.stringify(validatedRepoId.kind)}`,
           },
         },
       });
@@ -2807,7 +2896,7 @@ export function createWorkflowSupervisor(
     // boundary).
     // D2 leg classification (measurement-only). The child proxies two
     // distinct substrate commits through this one handler, discriminated
-    // by the write's `preservePrefix`:
+    // by the prefix the write changes:
     //   - `runs/<runId>/events/`   -> the run-event bracket commit
     //     (RunStarted/StepStarted/StepCompleted/RunCompleted; one message
     //     may produce several, each a separate write -- the D2
@@ -2818,68 +2907,65 @@ export function createWorkflowSupervisor(
     // Any other prefix is a non-attributed proxied write (cancel/drain
     // audit) and is left unmarked. The runId join key matches the leg the
     // benchmark's per-message OLS fit groups on.
-    const legClassification = classifyProxiedWriteLeg(data.preservePrefix);
+    const legClassification = classifyProxiedWriteLeg(
+      request.kind === "prefix"
+        ? [request.data.preservePrefix]
+        : (request.data.changedPathPrefixes ?? []),
+    );
     if (legClassification !== null) {
       legMarkStart(legClassification.messageId, legClassification.leg);
     }
     try {
       const { commitSha, newlyTerminalRuns } =
-        await bindings.repoStore.writeTreePreservingPrefix(
-          writePrincipal,
-          validatedRepoId,
-          data.ref,
-          {
-            preservePrefix: data.preservePrefix,
-            message: data.message,
-            merge: async (existing) => {
-              const sender = activeControlSender();
-              if (sender === null) {
-                throw new Error(
-                  "supervisor substrate.write.request: control channel unavailable for merge round-trip",
-                );
-              }
-              const result = await new Promise<
-                | { ok: true; files: Record<string, string | Uint8Array> }
-                | { ok: false; reason: string }
-              >((resolve) => {
-                pendingMerges.set(data.requestId, { resolve });
-                const wireExisting: {
-                  path: string;
-                  contentBase64: string;
-                }[] = [];
-                for (const [path, bytes] of existing) {
-                  wireExisting.push({
-                    path,
-                    contentBase64: bytesToBase64(bytes),
-                  });
-                }
-                void sender
-                  .send({
-                    type: "substrate.merge.request",
-                    data: {
-                      requestId: data.requestId,
-                      existing: wireExisting,
-                    },
-                  })
-                  .catch((cause) => {
-                    pendingMerges.delete(data.requestId);
-                    const reason =
-                      cause instanceof Error ? cause.message : String(cause);
-                    resolve({
-                      ok: false,
-                      reason: `supervisor substrate.merge.request send failed: ${reason}`,
+        request.kind === "prefix"
+          ? await bindings.repoStore.writeTreePreservingPrefix(
+              writePrincipal,
+              validatedRepoId,
+              request.data.ref,
+              {
+                preservePrefix: request.data.preservePrefix,
+                message: request.data.message,
+                merge: async (existing) => {
+                  const wireExisting: {
+                    path: string;
+                    contentBase64: string;
+                  }[] = [];
+                  for (const [path, bytes] of existing) {
+                    wireExisting.push({
+                      path,
+                      contentBase64: bytesToBase64(bytes),
                     });
+                  }
+                  const { files } = await childRoundTrip(data.requestId, {
+                    type: "substrate.merge.request",
+                    data: { requestId: data.requestId, existing: wireExisting },
                   });
-              });
-              if (!result.ok) {
-                throw new Error(
-                  `supervisor substrate.write.request: child merge failed: ${result.reason}`,
-                );
-              }
-              return result.files;
-            },
-          },
-        );
+                  return files;
+                },
+              },
+            )
+          : await bindings.repoStore.writeTreeDelta(
+              writePrincipal,
+              validatedRepoId,
+              request.data.ref,
+              {
+                changedPathPrefixes:
+                  request.data.changedPathPrefixes === null
+                    ? undefined
+                    : new Set(request.data.changedPathPrefixes),
+                message: request.data.message,
+                computeDelta: async (parentCommitSha) => {
+                  const { files, deletes } = await childRoundTrip(
+                    data.requestId,
+                    {
+                      type: "substrate.delta.request",
+                      data: { requestId: data.requestId, parentCommitSha },
+                    },
+                  );
+                  return { puts: files, deletes };
+                },
+              },
+            );
       // D2 leg end: the substrate commit (hash objects, write tree,
       // advance ref under the per-repo lock) just resolved. Stamped here,
       // before the response, so the run-event/wal leg measures only its own
@@ -2919,12 +3005,12 @@ export function createWorkflowSupervisor(
         );
       }
     } catch (cause) {
-      // Clean up any merge awaiter that the substrate may not have
-      // reached (e.g. the write threw before invoking the merge
+      // Clean up any round-trip awaiter that the substrate may not have
+      // reached (e.g. the write threw before invoking the merge or delta
       // callback at all, leaving the map empty -- safe), and the
-      // common case where the write reached merge but then threw
-      // downstream (the awaiter is already resolved by the merge
-      // reply path, so the delete here is a no-op).
+      // common case where the write reached the callback but then threw
+      // downstream (the awaiter is already resolved by the reply path,
+      // so the delete here is a no-op).
       pendingMerges.delete(data.requestId);
       const reason = cause instanceof Error ? cause.message : String(cause);
       await controlSender.send({

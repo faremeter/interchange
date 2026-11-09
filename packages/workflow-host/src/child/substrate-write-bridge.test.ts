@@ -242,3 +242,49 @@ describe("ChildSubstrateWriteBridge: malformed substrate.merge.response", () => 
     expect(bridge.pendingCount).toBe(0);
   });
 });
+
+describe("ChildSubstrateWriteBridge: delta round-trip", () => {
+  test("a substrate.delta.request for a prefix-preserving write replies with a structured failure", async () => {
+    const mock = createMockSender();
+    const bridge = createChildSubstrateWriteBridge({
+      upstreamSender: mock.sender,
+      allocateRequestId: () => "rid-prefix",
+    });
+    let merged = false;
+    const submitPromise = bridge.submit({
+      repoId: { kind: "workflow-run", id: "deployment-x" },
+      ref: "refs/heads/main",
+      preservePrefix: "runs/r-4/events/",
+      message: "test write",
+      merge: async () => {
+        merged = true;
+        return {};
+      },
+    });
+    await Promise.resolve();
+
+    bridge.handleDeltaRequest({
+      requestId: "rid-prefix",
+      parentCommitSha: null,
+    });
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    expect(merged).toBe(false);
+    const response = mock.sent.find(
+      (s) => s.type === "substrate.delta.response",
+    );
+    const validated = MergeResponseFailureShape(response?.data);
+    if (validated instanceof type.errors) {
+      throw new Error(
+        `delta.response payload failed shape check: ${validated.summary}`,
+      );
+    }
+    expect(validated.result.reason).toMatch(/prefix-preserving write/);
+
+    bridge.handleWriteResponse({
+      requestId: "rid-prefix",
+      result: { ok: true, commitSha: "deadbeef" },
+    });
+    await submitPromise;
+  });
+});

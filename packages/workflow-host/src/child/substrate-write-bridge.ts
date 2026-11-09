@@ -33,6 +33,13 @@
 // in the child's address space, so the merge invocation always runs
 // here. The IPC carries the bytes the closure consumes and the bytes
 // the closure produces, both base64-encoded.
+//
+// A proxied `writeTreeDelta` runs the same lifecycle with
+// `substrate.write-delta.request` and a `substrate.delta.request` /
+// `substrate.delta.response` pair in place of the merge pair. The
+// supervisor sends only the parent commit it pinned; the child reads
+// that commit from its own store and returns only the files it writes
+// and the paths it deletes, so an append moves only what it adds.
 
 import { getLogger } from "@intx/log";
 import { base64Decode, base64Encode } from "@intx/types/base64";
@@ -70,12 +77,34 @@ export interface SubstrateWriteRequest {
 }
 
 /**
+ * Arguments the bridge takes per `writeTreeDelta` call. `computeDelta`
+ * receives the parent commit the supervisor pinned under its repo lock
+ * and returns the files to write and the paths to delete; the caller
+ * reads the parent tree itself, so no tree content crosses the IPC.
+ */
+export interface SubstrateDeltaWriteRequest {
+  repoId: { kind: string; id: string };
+  ref: string;
+  changedPathPrefixes: ReadonlySet<string> | undefined;
+  message: string;
+  computeDelta: (parentCommitSha: string | null) => Promise<{
+    puts: Record<string, string | Uint8Array>;
+    deletes: readonly string[];
+  }>;
+}
+
+type PendingWrite =
+  | { kind: "prefix"; request: SubstrateWriteRequest }
+  | { kind: "delta"; request: SubstrateDeltaWriteRequest };
+
+/**
  * Bridge surface the child's substrate proxy reaches into. `submit`
- * sends a `substrate.write.request` upstream and resolves once the
+ * sends a `substrate.write.request` and `submitDelta` a
+ * `substrate.write-delta.request` upstream; each resolves once the
  * supervisor's matching `substrate.write.response` lands. The
- * `handleMergeRequest` and `handleWriteResponse` hooks are the
- * receiver-side entry points the child's control loop invokes when
- * the corresponding downstream frames arrive.
+ * `handleMergeRequest`, `handleDeltaRequest` and `handleWriteResponse`
+ * hooks are the receiver-side entry points the child's control loop
+ * invokes when the corresponding downstream frames arrive.
  *
  * `cancelAll` is the cleanup hook the control loop invokes on any
  * exit path so a pending write does not leak an awaiter when the
@@ -83,8 +112,12 @@ export interface SubstrateWriteRequest {
  */
 export interface ChildSubstrateWriteBridge {
   submit(req: SubstrateWriteRequest): Promise<{ commitSha: string }>;
+  submitDelta(req: SubstrateDeltaWriteRequest): Promise<{ commitSha: string }>;
   handleMergeRequest(
     data: Extract<ControlPayload, { type: "substrate.merge.request" }>["data"],
+  ): void;
+  handleDeltaRequest(
+    data: Extract<ControlPayload, { type: "substrate.delta.request" }>["data"],
   ): void;
   handleWriteResponse(
     data: Extract<ControlPayload, { type: "substrate.write.response" }>["data"],
@@ -110,103 +143,145 @@ export interface CreateChildSubstrateWriteBridgeOpts {
  * bridge resolves the awaiter when the supervisor's matching
  * `substrate.write.response` lands.
  *
- * The supervisor may emit zero or more `substrate.merge.request`
- * frames per pending write (the supervisor's merge callback may run
- * once per attempt; the substrate retries on conflict). The bridge
- * resolves each merge request synchronously through the pending
- * entry's `merge` closure and emits `substrate.merge.response`. The
- * pending entry stays alive until the terminal write response lands.
+ * The supervisor may emit zero or more `substrate.merge.request` (or,
+ * for a delta write, `substrate.delta.request`) frames per pending
+ * write. The bridge answers each through the pending entry's closure.
+ * The pending entry stays alive until the terminal write response lands.
  */
 export function createChildSubstrateWriteBridge(
   opts: CreateChildSubstrateWriteBridgeOpts,
 ): ChildSubstrateWriteBridge {
-  const pending = createPendingRequestCore<
-    { commitSha: string },
-    SubstrateWriteRequest
-  >({
-    label: "workflow-child substrate write",
-    allocatorPrefix: "sw",
-    allocateRequestId: opts.allocateRequestId,
-  });
+  const pending = createPendingRequestCore<{ commitSha: string }, PendingWrite>(
+    {
+      label: "workflow-child substrate write",
+      allocatorPrefix: "sw",
+      allocateRequestId: opts.allocateRequestId,
+    },
+  );
+
+  async function sendRequest(
+    write: PendingWrite,
+    frame: (requestId: string) => ControlPayload,
+  ): Promise<{ commitSha: string }> {
+    const { requestId, promise } = pending.register(write);
+    try {
+      await opts.upstreamSender.send(frame(requestId));
+    } catch (cause) {
+      pending.discard(requestId);
+      throw pending.sendFailedError(requestId, cause);
+    }
+    return promise;
+  }
+
+  // Answer a supervisor round-trip with the frame `frame` builds, or
+  // with a structured failure so the supervisor's callback does not
+  // wedge waiting on a response that will never come.
+  function reply<Ok>(
+    requestId: string,
+    label: string,
+    compute: (write: PendingWrite) => Promise<Ok>,
+    frame: (
+      result: ({ ok: true } & Ok) | { ok: false; reason: string },
+    ) => ControlPayload,
+  ): void {
+    void (async () => {
+      let result: ({ ok: true } & Ok) | { ok: false; reason: string };
+      const entry = pending.get(requestId);
+      if (entry === undefined) {
+        logger.warn`${label} landed with no pending entry; requestId=${requestId} dropped`;
+        result = {
+          ok: false,
+          reason: pending.noPendingError(requestId).message,
+        };
+      } else {
+        try {
+          result = { ok: true, ...(await compute(entry.meta)) };
+        } catch (cause) {
+          result = {
+            ok: false,
+            reason: cause instanceof Error ? cause.message : String(cause),
+          };
+        }
+      }
+      try {
+        await opts.upstreamSender.send(frame(result));
+      } catch (cause) {
+        const msg = cause instanceof Error ? cause.message : String(cause);
+        logger.error`reply to ${label} upstream send failed: ${msg}`;
+      }
+    })();
+  }
 
   return {
     get pendingCount() {
       return pending.pendingCount;
     },
-    async submit(req: SubstrateWriteRequest): Promise<{ commitSha: string }> {
-      const { requestId, promise } = pending.register(req);
-      try {
-        await opts.upstreamSender.send({
-          type: "substrate.write.request",
-          data: {
-            requestId,
-            repoId: { kind: req.repoId.kind, id: req.repoId.id },
-            ref: req.ref,
-            preservePrefix: req.preservePrefix,
-            message: req.message,
-          },
-        });
-      } catch (cause) {
-        pending.discard(requestId);
-        throw pending.sendFailedError(requestId, cause);
-      }
-      return promise;
+    submit(req) {
+      return sendRequest({ kind: "prefix", request: req }, (requestId) => ({
+        type: "substrate.write.request",
+        data: {
+          requestId,
+          repoId: { kind: req.repoId.kind, id: req.repoId.id },
+          ref: req.ref,
+          preservePrefix: req.preservePrefix,
+          message: req.message,
+        },
+      }));
+    },
+    submitDelta(req) {
+      return sendRequest({ kind: "delta", request: req }, (requestId) => ({
+        type: "substrate.write-delta.request",
+        data: {
+          requestId,
+          repoId: { kind: req.repoId.kind, id: req.repoId.id },
+          ref: req.ref,
+          changedPathPrefixes:
+            req.changedPathPrefixes === undefined
+              ? null
+              : [...req.changedPathPrefixes],
+          message: req.message,
+        },
+      }));
     },
     handleMergeRequest(data) {
-      const entry = pending.get(data.requestId);
-      if (entry === undefined) {
-        logger.warn`substrate.merge.request landed with no pending entry; requestId=${data.requestId} dropped`;
-        // Reply with a structured failure so the supervisor's merge
-        // callback can short-circuit rather than wedge waiting on a
-        // response that will never come.
-        void opts.upstreamSender
-          .send({
-            type: "substrate.merge.response",
-            data: {
-              requestId: data.requestId,
-              result: {
-                ok: false,
-                reason: pending.noPendingError(data.requestId).message,
-              },
-            },
-          })
-          .catch((cause) => {
-            const msg = cause instanceof Error ? cause.message : String(cause);
-            logger.error`substrate.merge.response upstream send (no-pending) failed: ${msg}`;
-          });
-        return;
-      }
-      void (async () => {
-        try {
-          const existing = decodeMergeRequest(data.existing);
-          const merged = await entry.meta.merge(existing);
-          const files = encodeFiles(merged);
-          await opts.upstreamSender.send({
-            type: "substrate.merge.response",
-            data: {
-              requestId: data.requestId,
-              result: { ok: true, files },
-            },
-          });
-        } catch (cause) {
-          const reason = cause instanceof Error ? cause.message : String(cause);
-          try {
-            await opts.upstreamSender.send({
-              type: "substrate.merge.response",
-              data: {
-                requestId: data.requestId,
-                result: { ok: false, reason },
-              },
-            });
-          } catch (sendCause) {
-            const msg =
-              sendCause instanceof Error
-                ? sendCause.message
-                : String(sendCause);
-            logger.error`substrate.merge.response upstream send (failure path) failed: ${msg}`;
+      reply(
+        data.requestId,
+        "substrate.merge.request",
+        async (write) => {
+          if (write.kind !== "prefix") {
+            throw new Error(
+              `substrate.merge.request for requestId ${data.requestId}, which is a delta write`,
+            );
           }
-        }
-      })();
+          const merged = await write.request.merge(
+            decodeMergeRequest(data.existing),
+          );
+          return { files: encodeFiles(merged) };
+        },
+        (result) => ({
+          type: "substrate.merge.response",
+          data: { requestId: data.requestId, result },
+        }),
+      );
+    },
+    handleDeltaRequest(data) {
+      reply(
+        data.requestId,
+        "substrate.delta.request",
+        async (write) => {
+          if (write.kind !== "delta") {
+            throw new Error(
+              `substrate.delta.request for requestId ${data.requestId}, which is a prefix-preserving write`,
+            );
+          }
+          const delta = await write.request.computeDelta(data.parentCommitSha);
+          return { puts: encodeFiles(delta.puts), deletes: [...delta.deletes] };
+        },
+        (result) => ({
+          type: "substrate.delta.response",
+          data: { requestId: data.requestId, result },
+        }),
+      );
     },
     handleWriteResponse(data) {
       const entry = pending.settle(data.requestId);

@@ -1,6 +1,6 @@
 // Supervisor-level coverage for the substrate.write IPC layer.
 //
-// Four review concerns are pinned here:
+// Five review concerns are pinned here:
 //
 //   1. The terminal-write watchdog timeout. The supervisor holds the
 //      `substrate.write.response` back to the child until the
@@ -33,6 +33,10 @@
 //      pre-ready handshake reaches it in a non-running phase. Both log
 //      the reason, and both are pinned here because this file already
 //      owns the harness that drives a child through the IPC.
+//
+//   5. The delta round-trip of a proxied `writeTreeDelta`: the child gets
+//      only the parent commit, and the supervisor commits only the delta
+//      the child returns.
 
 import {
   describe,
@@ -83,6 +87,16 @@ type WriteCapture = {
   preservePrefix: string;
   message: string;
 };
+
+type DeltaCapture = {
+  principal: { kind: string; anchorRunId?: string };
+  changedPathPrefixes: ReadonlySet<string> | undefined;
+  puts: Record<string, string | Uint8Array>;
+  deletes: readonly string[];
+};
+
+// The parent commit the stub substrate pins for a delta write.
+const STUB_PARENT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
 // Mirror the workflow-run kind handler's terminal detection for the stub
 // substrate: a run is newly terminal when the merge produced a terminal
@@ -144,6 +158,8 @@ function createStubRepoStore(opts: {
   invokeMerge?: boolean;
   /** Runs after the merge and before the write resolves, standing in for the commit. */
   commit?: () => Promise<void>;
+  /** Receives each delta write's computed delta and scope. */
+  onDelta?: (cap: DeltaCapture) => void;
 }): RepoStore {
   const stub: Partial<RepoStore> = {
     getRepoDir(repoId: RepoId): string {
@@ -167,6 +183,25 @@ function createStubRepoStore(opts: {
       }
       await opts.commit?.();
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns };
+    },
+    async writeTreeDelta(principal, _repoId, _ref, args) {
+      const delta = await args.computeDelta(STUB_PARENT_COMMIT, {
+        listDirOids: async () => [],
+        readBlobByOid: async (oid) => {
+          throw new Error(`stub RepoStore holds no blob ${oid}`);
+        },
+      });
+      opts.onDelta?.({
+        principal: principal as { kind: string; anchorRunId?: string },
+        changedPathPrefixes: args.changedPathPrefixes,
+        puts: delta.puts,
+        deletes: delta.deletes,
+      });
+      await opts.commit?.();
+      return {
+        commitSha: "deadbeefcafef00d",
+        newlyTerminalRuns: deriveNewlyTerminalRuns(delta.puts),
+      };
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy
@@ -338,6 +373,7 @@ type BootSupervisorOpts = {
    */
   invokeMerge?: boolean;
   commit?: () => Promise<void>;
+  onDelta?: (cap: DeltaCapture) => void;
   onSelfTerminate?: (info: {
     phase: "stopped" | "crash-looping";
     reason: string;
@@ -406,6 +442,7 @@ async function bootSupervisorToReady(
       ? { invokeMerge: opts.invokeMerge }
       : {}),
     ...(opts.commit !== undefined ? { commit: opts.commit } : {}),
+    ...(opts.onDelta !== undefined ? { onDelta: opts.onDelta } : {}),
   });
 
   const bindings: WorkflowSupervisorBindings = {
@@ -609,6 +646,121 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
     expect(rejection.result.ok).toBe(false);
     expect(rejection.result.reason).toMatch(/workflow-run/);
     expect(writes.length).toBe(0);
+
+    await harness.supervisor.shutdown();
+  });
+});
+
+describe("substrate-write delta round-trip", () => {
+  test("a delta write sends the child its parent commit and commits only the delta the child returns", async () => {
+    const captured = Promise.withResolvers<DeltaCapture>();
+    const harness = await bootSupervisor({
+      prefix: "delta-round-trip-",
+      onDelta: (cap) => captured.resolve(cap),
+    });
+
+    const requestId = "delta-req-1";
+    await harness.childSender.send({
+      type: "substrate.write-delta.request",
+      data: {
+        requestId,
+        repoId: { kind: "workflow-run", id: "deployment-x" },
+        ref: "refs/heads/main",
+        changedPathPrefixes: ["runs/r-1/events/"],
+        message: "child delta write",
+      },
+    });
+    const request = await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.delta.request",
+      (m) => m.data.requestId === requestId,
+    );
+    expect(request.data.parentCommitSha).toBe(STUB_PARENT_COMMIT);
+
+    const event = JSON.stringify({ seq: 4, type: "StepCompleted" });
+    await harness.childSender.send({
+      type: "substrate.delta.response",
+      data: {
+        requestId,
+        result: {
+          ok: true,
+          puts: [
+            {
+              path: "runs/r-1/events/4.json",
+              contentBase64: Buffer.from(event).toString("base64"),
+            },
+          ],
+          deletes: ["runs/r-1/events/stale.json"],
+        },
+      },
+    });
+    const response = await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.write.response",
+      (r) => r.data.requestId === requestId,
+    );
+    expect(response.data.result).toEqual({
+      ok: true,
+      commitSha: "deadbeefcafef00d",
+    });
+
+    const cap = await captured.promise;
+    expect(cap.principal).toEqual({
+      kind: "workflow-process",
+      anchorRunId: "deployment-x",
+    });
+    expect(cap.changedPathPrefixes).toEqual(new Set(["runs/r-1/events/"]));
+    expect(cap.deletes).toEqual(["runs/r-1/events/stale.json"]);
+    expect(Object.keys(cap.puts)).toEqual(["runs/r-1/events/4.json"]);
+    const put = cap.puts["runs/r-1/events/4.json"];
+    expect(typeof put === "string" ? put : new TextDecoder().decode(put)).toBe(
+      event,
+    );
+
+    await harness.supervisor.shutdown();
+  });
+
+  test("a child that fails its delta fails the write without committing", async () => {
+    let committed = false;
+    const harness = await bootSupervisor({
+      prefix: "delta-child-fail-",
+      onDelta: () => {
+        committed = true;
+      },
+    });
+
+    const requestId = "delta-req-2";
+    await harness.childSender.send({
+      type: "substrate.write-delta.request",
+      data: {
+        requestId,
+        repoId: { kind: "workflow-run", id: "deployment-x" },
+        ref: "refs/heads/main",
+        changedPathPrefixes: null,
+        message: "child delta write",
+      },
+    });
+    await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.delta.request",
+      (m) => m.data.requestId === requestId,
+    );
+    await harness.childSender.send({
+      type: "substrate.delta.response",
+      data: {
+        requestId,
+        result: { ok: false, reason: "seq conflict in the child" },
+      },
+    });
+    const response = await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.write.response",
+      (r) => r.data.requestId === requestId,
+    );
+    expect(response.data.result.ok).toBe(false);
+    if (response.data.result.ok) throw new Error("unreachable");
+    expect(response.data.result.reason).toContain("seq conflict in the child");
+    expect(committed).toBe(false);
 
     await harness.supervisor.shutdown();
   });

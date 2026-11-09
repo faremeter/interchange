@@ -102,16 +102,16 @@ export interface SubstrateFactoryEnv {
    * Child-side IPC bridge over the upstream control channel for the
    * workflow-run substrate-write surface. The substrate factory uses
    * this to construct its proxy `RepoStore`, whose
-   * `writeTreePreservingPrefix` forwards over IPC into the
-   * supervisor's substrate. The bridge's `submit` sends a
-   * `substrate.write.request` upstream control frame; the supervisor
-   * runs its own underlying `writeTreePreservingPrefix` (which fires
+   * `writeTreePreservingPrefix` and `writeTreeDelta` forward over IPC
+   * into the supervisor's substrate. The bridge's `submit` sends a
+   * `substrate.write.request` (and `submitDelta` a
+   * `substrate.write-delta.request`) upstream control frame; the
+   * supervisor runs the same write on its own substrate (which fires
    * the boot-edge pack-push wrap on success) and replies with a
    * matching `substrate.write.response` the bridge resolves the
-   * awaiter against. The supervisor's merge callback runs as a
-   * `substrate.merge.request` / `substrate.merge.response` pair so
-   * the child's per-write merge closure stays in the child's address
-   * space.
+   * awaiter against. The supervisor's merge or delta callback runs as a
+   * request / response pair so the child's per-write closure stays in
+   * the child's address space.
    */
   readonly substrateWriteBridge: ChildSubstrateWriteBridge;
   /**
