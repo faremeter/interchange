@@ -23,6 +23,7 @@ import {
 } from "@intx/db";
 import {
   gitToken,
+  grant as grantTable,
   principal,
   signalCorrelation,
   workflowDefinition,
@@ -574,6 +575,68 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expect(delivered).toEqual([]);
         },
       );
+    });
+
+    describe("grant creation", () => {
+      // The run gives itself a grant, the widening that docs/AUTH.md warns an
+      // operator about.
+      function createGrant(grants: GrantRule[]) {
+        return asRun(makeApp(grants), `/api/tenants/${TENANT_ID}/grants`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            principalId: RUN_PRINCIPAL_ID,
+            resource: "workflow-run:*",
+            action: "manage",
+            effect: "allow",
+            origin: "system",
+          }),
+        });
+      }
+
+      async function storedGrants() {
+        return await h.db
+          .select({
+            principalId: grantTable.principalId,
+            resource: grantTable.resource,
+            action: grantTable.action,
+          })
+          .from(grantTable)
+          .where(eq(grantTable.tenantId, TENANT_ID));
+      }
+
+      test("a run with create on grants gives itself a grant", async () => {
+        const res = await createGrant([
+          grant("grt_run_grant", RUN_PRINCIPAL_ID, "grant:*", "create"),
+        ]);
+        expect(res.status).toBe(201);
+        expect(await res.json()).toMatchObject({
+          principalId: RUN_PRINCIPAL_ID,
+          resource: "workflow-run:*",
+          action: "manage",
+        });
+        expect(await storedGrants()).toEqual([
+          {
+            principalId: RUN_PRINCIPAL_ID,
+            resource: "workflow-run:*",
+            action: "manage",
+          },
+        ]);
+      });
+
+      test("a run without create on grants cannot create one", async () => {
+        const res = await createGrant([
+          grant("grt_run_grant", RUN_PRINCIPAL_ID, "grant:*", "read"),
+        ]);
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({
+          error: {
+            code: "forbidden",
+            message: "You do not have permission to perform this action",
+          },
+        });
+        expect(await storedGrants()).toEqual([]);
+      });
     });
 
     describe("the run mail route", () => {
