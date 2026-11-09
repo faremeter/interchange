@@ -2,11 +2,11 @@
 //
 // Wraps a bare read-only substrate handle (the child constructs one
 // against the shared on-disk data dir for `getRepoDir` + other read
-// paths) and intercepts `writeTreePreservingPrefix` so the write is
-// proxied over the control IPC into the supervisor's substrate. The
-// supervisor is the sole writer of the workflow-run repo's ref; the
-// child has no write authority and would race the supervisor's
-// claim-check writes if it opened its own.
+// paths) and intercepts `writeTreePreservingPrefix` and `writeTreeDelta`
+// so each write is proxied over the control IPC into the supervisor's
+// substrate. The supervisor is the sole writer of the workflow-run
+// repo's ref; the child has no write authority and would race the
+// supervisor's claim-check writes if it opened its own.
 //
 // Subscription fan-out: `RepoStore.subscribe` is a local-process
 // in-memory subscriber pattern; the bare-store's `subscribe` only
@@ -20,12 +20,12 @@
 // up with a tree read (via `subscribeKind`'s `getRepoDir` +
 // `readBlobAtCommit` path) see the prospective tree's bytes.
 //
-// Methods that mutate state via paths other than
-// `writeTreePreservingPrefix` (`initRepo`, `writeTree`, `receivePack`)
-// throw on call. The workflow-host runtime body and adapters do not
-// invoke these against the workflow-run repo proxy today; a future
-// caller that tries to surfaces a structured failure rather than a
-// silent disk write that would corrupt the single-writer invariant.
+// Methods that mutate state via other paths (`initRepo`, `writeTree`,
+// `receivePack`) throw on call. The workflow-host runtime body and
+// adapters do not invoke these against the workflow-run repo proxy
+// today; a future caller that tries to surfaces a structured failure
+// rather than a silent disk write that would corrupt the single-writer
+// invariant.
 
 import type {
   InitRepoOpts,
@@ -43,6 +43,7 @@ type WriteTreePreservingPrefixArgs = Parameters<
   RepoStore["writeTreePreservingPrefix"]
 >[3];
 type WriteTreeDeltaArgs = Parameters<RepoStore["writeTreeDelta"]>[3];
+type PriorDeltaReads = Parameters<WriteTreeDeltaArgs["computeDelta"]>[1];
 
 type SubscribeOpts = Parameters<RepoStore["subscribe"]>[3];
 
@@ -53,9 +54,9 @@ export interface CreateProxyWorkflowRunRepoStoreOpts {
    * substrate's local state -- `getRepoDir` (path computation, no
    * I/O), `resolveRef`, `listRefs`, `resolveHead`, `openCommittedReads`,
    * `openCommittedReadsAtCommit`, `createPack`. The bare store is never
-   * used as a writer here; its
-   * `writeTreePreservingPrefix` / `writeTree` / `receivePack` are not
-   * reachable through this proxy.
+   * used as a writer here; its write methods are not reachable through
+   * this proxy. A proxied `writeTreeDelta` reads its parent commit
+   * through it.
    */
   bareStore: RepoStore;
   /**
@@ -141,6 +142,68 @@ export function createProxyWorkflowRunRepoStore(
 
   const lastRefSeq = new Map<string, number>();
 
+  async function proxiedWrite(
+    principal: Principal,
+    repoId: RepoId,
+    ref: string,
+    method: string,
+    submit: () => Promise<{ commitSha: string }>,
+  ): Promise<WriteResult> {
+    if (
+      repoId.kind !== workflowRunRepoId.kind ||
+      repoId.id !== workflowRunRepoId.id
+    ) {
+      throw new Error(
+        `workflow-child proxy substrate: ${method} targeting ${repoId.kind}/${repoId.id} is not supported (proxy services ${workflowRunRepoId.kind}/${workflowRunRepoId.id})`,
+      );
+    }
+    const key = refKey(repoId, ref);
+    const priorSha = lastSha.has(key)
+      ? (lastSha.get(key) ?? null)
+      : await bareStore.resolveRef(principal, repoId, ref);
+    const result = await submit();
+    lastSha.set(key, result.commitSha);
+    notifyRefUpdate(repoId, ref, priorSha, result.commitSha);
+    // The terminal signal is consumed supervisor-side (where the real
+    // substrate write happens); the child-proxied result carries only
+    // the commit, so report no terminal runs to the runtime body.
+    return { commitSha: result.commitSha, newlyTerminalRuns: [] };
+  }
+
+  // The supervisor holds its repo lock at `parentCommitSha` while the
+  // child computes a delta, and a committed tree never changes, so the
+  // child reads it from its own store.
+  async function priorReadsAt(
+    principal: Principal,
+    repoId: RepoId,
+    parentCommitSha: string | null,
+  ): Promise<PriorDeltaReads> {
+    if (parentCommitSha === null) {
+      return {
+        listDirOids: async () => [],
+        readBlobByOid: async (oid) => {
+          throw new Error(
+            `workflow-child proxy substrate: no parent commit holds blob ${oid}`,
+          );
+        },
+      };
+    }
+    const reads = await bareStore.openCommittedReadsAtCommit(
+      principal,
+      repoId,
+      parentCommitSha,
+    );
+    if (reads === null) {
+      throw new Error(
+        `workflow-child proxy substrate: parent commit ${parentCommitSha} of ${repoId.kind}/${repoId.id} is not in the child's store`,
+      );
+    }
+    return {
+      listDirOids: (relPath) => reads.listDir(relPath),
+      readBlobByOid: (oid) => reads.readBlobByOid(oid),
+    };
+  }
+
   return {
     initRepo: (_repoId: RepoId, _initOpts?: InitRepoOpts): Promise<void> => {
       throw new Error(
@@ -169,47 +232,46 @@ export function createProxyWorkflowRunRepoStore(
         "workflow-child proxy substrate: receivePack is not supported (writes are proxied to the supervisor)",
       );
     },
-    writeTreeDelta: (
-      _principal: Principal,
-      _repoId: RepoId,
-      _ref: string,
-      _args: WriteTreeDeltaArgs,
-    ): Promise<WriteResult> => {
-      throw new Error(
-        "workflow-child proxy substrate: writeTreeDelta is not supported (claim-check writes run supervisor-side)",
+    writeTreeDelta(
+      principal: Principal,
+      repoId: RepoId,
+      ref: string,
+      args: WriteTreeDeltaArgs,
+    ): Promise<WriteResult> {
+      return proxiedWrite(principal, repoId, ref, "writeTreeDelta", () =>
+        bridge.submitDelta({
+          repoId: { kind: repoId.kind, id: repoId.id },
+          ref,
+          changedPathPrefixes: args.changedPathPrefixes,
+          message: args.message,
+          computeDelta: async (parentCommitSha) =>
+            args.computeDelta(
+              parentCommitSha,
+              await priorReadsAt(principal, repoId, parentCommitSha),
+            ),
+        }),
       );
     },
-    async writeTreePreservingPrefix(
-      _principal: Principal,
+    writeTreePreservingPrefix(
+      principal: Principal,
       repoId: RepoId,
       ref: string,
       args: WriteTreePreservingPrefixArgs,
     ): Promise<WriteResult> {
-      if (
-        repoId.kind !== workflowRunRepoId.kind ||
-        repoId.id !== workflowRunRepoId.id
-      ) {
-        throw new Error(
-          `workflow-child proxy substrate: writeTreePreservingPrefix targeting ${repoId.kind}/${repoId.id} is not supported (proxy services ${workflowRunRepoId.kind}/${workflowRunRepoId.id})`,
-        );
-      }
-      const key = refKey(repoId, ref);
-      const priorSha = lastSha.has(key)
-        ? (lastSha.get(key) ?? null)
-        : await bareStore.resolveRef(_principal, repoId, ref);
-      const result = await bridge.submit({
-        repoId: { kind: repoId.kind, id: repoId.id },
+      return proxiedWrite(
+        principal,
+        repoId,
         ref,
-        preservePrefix: args.preservePrefix,
-        message: args.message,
-        merge: args.merge,
-      });
-      lastSha.set(key, result.commitSha);
-      notifyRefUpdate(repoId, ref, priorSha, result.commitSha);
-      // The terminal signal is consumed supervisor-side (where the real
-      // substrate write happens); the child-proxied result carries only
-      // the commit, so report no terminal runs to the runtime body.
-      return { commitSha: result.commitSha, newlyTerminalRuns: [] };
+        "writeTreePreservingPrefix",
+        () =>
+          bridge.submit({
+            repoId: { kind: repoId.kind, id: repoId.id },
+            ref,
+            preservePrefix: args.preservePrefix,
+            message: args.message,
+            merge: args.merge,
+          }),
+      );
     },
     createPack: bareStore.createPack.bind(bareStore),
     commitPackedTip: bareStore.commitPackedTip.bind(bareStore),

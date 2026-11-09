@@ -479,10 +479,11 @@ export interface RunWorkflowChildOpts {
    */
   upstreamSender?: HeldControlChannelSender;
   /**
-   * Optional substrate-write bridge whose `handleMergeRequest` and
-   * `handleWriteResponse` the child's control loop invokes when the
-   * matching downstream frames land. When omitted, inbound
-   * `substrate.merge.request` / `substrate.write.response` frames are
+   * Optional substrate-write bridge whose `handleMergeRequest`,
+   * `handleDeltaRequest` and `handleWriteResponse` the child's control
+   * loop invokes when the matching downstream frames land. When omitted,
+   * inbound `substrate.merge.request` / `substrate.delta.request` /
+   * `substrate.write.response` frames are
    * logged at warn-level and dropped -- the wire shapes are
    * well-formed but nobody on the child side asked for them. The
    * pre-built bridge is the path the process-shaped wrapper takes so
@@ -551,6 +552,9 @@ export interface RunWorkflowChildOpts {
 export interface SubstrateWriteResponseSink {
   handleMergeRequest(
     data: Extract<ControlPayload, { type: "substrate.merge.request" }>["data"],
+  ): void;
+  handleDeltaRequest(
+    data: Extract<ControlPayload, { type: "substrate.delta.request" }>["data"],
   ): void;
   handleWriteResponse(
     data: Extract<ControlPayload, { type: "substrate.write.response" }>["data"],
@@ -1306,8 +1310,8 @@ async function handleControlPayload(
       // control-loop free of per-run signal-channel bookkeeping
       // while still routing through the canonical writer path.
       //
-      // The deliver path writes through `writeTreePreservingPrefix`,
-      // which the sidecar's substrate factory wraps with a pack-push
+      // The deliver path writes through the proxy substrate, which the
+      // sidecar's substrate factory wraps with a pack-push
       // hook. The hook emits a `pack.push.request` on the upstream
       // control channel and awaits the supervisor's matching
       // `pack.push.response` on the same downstream stream this
@@ -1467,6 +1471,13 @@ async function handleControlPayload(
         "workflow-child received a `substrate.merge.response` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
+    case "substrate.write-delta.request":
+    case "substrate.delta.response": {
+      // The child->supervisor half of a proxied delta write.
+      throw new Error(
+        `workflow-child received a \`${payload.type}\` frame on its inbound control channel; this is a child-only upstream payload`,
+      );
+    }
     case "terminal.event": {
       // `terminal.event` is the child->supervisor terminal-run
       // notification frame; receiving one on the child's downstream
@@ -1575,6 +1586,15 @@ async function handleControlPayload(
         return false;
       }
       ctx.substrateWriteBridge.handleMergeRequest(payload.data);
+      return false;
+    }
+    case "substrate.delta.request": {
+      // Same routing as `substrate.merge.request`, for a delta write.
+      if (ctx.substrateWriteBridge === undefined) {
+        logger.warn`workflow-child substrate.delta.request received without a bridge wired; requestId=${payload.data.requestId} dropped`;
+        return false;
+      }
+      ctx.substrateWriteBridge.handleDeltaRequest(payload.data);
       return false;
     }
     case "substrate.write.response": {

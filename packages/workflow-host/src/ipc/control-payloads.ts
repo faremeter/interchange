@@ -775,6 +775,63 @@ const controlPayloadFactories = defineControlPayloadFactories({
         ),
       },
     }),
+  "substrate.write-delta.request": () =>
+    type({
+      // Child-initiated `writeTreeDelta` request, the delta-shaped
+      // sibling of `substrate.write.request`. The supervisor runs its own
+      // `writeTreeDelta` and asks the child for the delta with
+      // `substrate.delta.request`. `changedPathPrefixes` is the write's
+      // validation scope; null validates the whole tree. The supervisor
+      // resolves the child's awaiter with `substrate.write.response`.
+      type: "'substrate.write-delta.request'",
+      data: {
+        requestId: "string > 0",
+        repoId: {
+          kind: "string",
+          id: "string > 0",
+        },
+        ref: "string > 0",
+        changedPathPrefixes: type("string > 0").array().or("null"),
+        message: "string > 0",
+      },
+    }),
+  "substrate.delta.request": () =>
+    type({
+      // Supervisor-initiated request for the child's delta, fired from
+      // inside the supervisor's `writeTreeDelta` while the per-repo lock
+      // holds the ref at `parentCommitSha` (null when the ref does not
+      // exist yet). The child reads that commit from its own read-only
+      // store, so the frame carries no tree content.
+      type: "'substrate.delta.request'",
+      data: {
+        requestId: "string > 0",
+        parentCommitSha: "string > 0 | null",
+      },
+    }),
+  "substrate.delta.response": () =>
+    type({
+      // Child's delta: the files to write and the paths to delete. The
+      // substrate carries every other entry forward by its object id.
+      type: "'substrate.delta.response'",
+      data: {
+        requestId: "string > 0",
+        result: type(
+          {
+            ok: "true",
+            puts: type({
+              path: "string > 0",
+              contentBase64: "string",
+            }).array(),
+            deletes: type("string > 0").array(),
+          },
+          "|",
+          {
+            ok: "false",
+            reason: "string > 0",
+          },
+        ),
+      },
+    }),
   "substrate.write.response": () =>
     type({
       // Supervisor's terminal reply to a child's `substrate.write.request`.

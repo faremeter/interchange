@@ -627,7 +627,7 @@ must hold no matter how deep the nesting:
 
 - **In-process recursion (today, the default):** every rung shares the rung-0
   child's proxy `RepoStore` (the proxy whose `writeTreePreservingPrefix`
-  forwards over the control IPC to the rung-0 supervisor). A grandchild's writes
+  and `writeTreeDelta` forward over the control IPC to the rung-0 supervisor). A grandchild's writes
   land under `runs/<grandchildRunId>/...` of the _same_ rung-0 workflow-run repo,
   sibling to its ancestors' subtrees (sub-namespacing in
   `packages/workflow-host/src/child/substrate-factory.ts`). There is one writer and one
