@@ -14,10 +14,11 @@ import { signEd25519 } from "@intx/crypto";
 import { getLogger } from "@intx/log";
 import { syncRemovedPathDurable } from "@intx/storage-isogit/node";
 import type { HubTransport } from "@intx/mail-memory";
-import type {
-  Principal,
-  RepoId,
-  RepoStore,
+import {
+  readCommittedFile,
+  type Principal,
+  type RepoId,
+  type RepoStore,
 } from "@intx/hub-sessions/substrate";
 import { hexEncode } from "@intx/types/hex";
 import type { InboundDelivery } from "@intx/types/message-id";
@@ -276,6 +277,10 @@ const RUN_GRANTS_REF = "refs/heads/main";
  * `runs/<runId>/grants.json`, sibling to that run's `runs/<runId>/events/`
  * subtree, as the canonical `{ grants: WireGrantRule[] }` envelope -- the shape
  * the child's grants resolver parses as `GrantRule[]`.
+ *
+ * Grants the run already has committed are not written again. The Hub sends
+ * them on every reconnect, and a write that changes nothing still moves the
+ * ref, which a restart reads as history written after a standby began.
  */
 async function writeRunGrants(args: {
   repoStore: RepoStore;
@@ -283,18 +288,26 @@ async function writeRunGrants(args: {
   runId: string;
   grants: readonly unknown[];
 }): Promise<void> {
+  const repoId: RepoId = { kind: "workflow-run", id: args.anchorRunId };
+  const grantsPath = runGrantsPath(args.runId);
+  const contents = JSON.stringify({ grants: args.grants }, null, 2);
+  const committed = await args.repoStore.openCommittedReads(
+    GRANTS_WRITE_PRINCIPAL,
+    repoId,
+    RUN_GRANTS_REF,
+  );
+  if (
+    committed !== null &&
+    (await readCommittedFile(committed, grantsPath)) === contents
+  ) {
+    return;
+  }
   await args.repoStore.writeTree(
     GRANTS_WRITE_PRINCIPAL,
-    { kind: "workflow-run", id: args.anchorRunId },
+    repoId,
     RUN_GRANTS_REF,
     {
-      files: {
-        [runGrantsPath(args.runId)]: JSON.stringify(
-          { grants: args.grants },
-          null,
-          2,
-        ),
-      },
+      files: { [grantsPath]: contents },
       message: `Write run grants for ${args.runId}`,
     },
   );

@@ -246,6 +246,7 @@ export {
   type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
 export {
+  readCommittedFile,
   readCommittedStepStateSeed,
   readStepStateSnapshot,
 } from "./step-state-snapshot";

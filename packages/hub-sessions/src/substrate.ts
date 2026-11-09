@@ -76,7 +76,10 @@ export type {
   StepStateMetadata,
   StepStateReader,
 } from "./step-state";
-export { readCommittedStepStateSeed } from "./step-state-snapshot";
+export {
+  readCommittedFile,
+  readCommittedStepStateSeed,
+} from "./step-state-snapshot";
 
 export {
   MAILBOX_INDEX_VERSION,
