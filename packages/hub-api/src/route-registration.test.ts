@@ -15,6 +15,7 @@ import {
 import { createApp } from "./app";
 import type { TenantEnv } from "./context";
 import { createRequireGrant, isGrantCheck } from "./middleware/grant";
+import { SMART_HTTP_REPO_SEGMENT } from "./routes/assets";
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
 const mockDb = {} as unknown as DB["db"];
@@ -73,6 +74,11 @@ type SampleVerdict = "checked" | "unchecked" | { fault: string };
 // cover a route with a parameter in the same place.
 const SAMPLE_SEGMENT = "__sample__";
 
+// The value for a parameter constrained by a pattern, keyed by the pattern.
+const PATTERN_SAMPLES: Record<string, string> = {
+  "[^/]+\\.git": `${SAMPLE_SEGMENT}.git`,
+};
+
 const GRANT_EXEMPTIONS: GrantExemption[] = [
   {
     method: "GET",
@@ -106,19 +112,19 @@ const GRANT_EXEMPTIONS: GrantExemption[] = [
   },
   {
     method: "GET",
-    path: "/assets/:kind/:nameDotGit/info/refs",
+    path: `/assets/:kind/${SMART_HTTP_REPO_SEGMENT}/info/refs`,
     reason:
       "resolveSmartHttp (assets): git token, asset:<id> verdict after the asset lookup",
   },
   {
     method: "POST",
-    path: "/assets/:kind/:nameDotGit/git-upload-pack",
+    path: `/assets/:kind/${SMART_HTTP_REPO_SEGMENT}/git-upload-pack`,
     reason:
       "resolveSmartHttp (assets): git token, asset:<id> verdict after the asset lookup",
   },
   {
     method: "POST",
-    path: "/assets/:kind/:nameDotGit/git-receive-pack",
+    path: `/assets/:kind/${SMART_HTTP_REPO_SEGMENT}/git-receive-pack`,
     reason:
       "resolveSmartHttp (assets): git token, asset:<id> verdict after the asset lookup",
   },
@@ -195,13 +201,23 @@ function findGrantViolations<E extends Env>(
 
   for (const [key, r] of routes) {
     if (!isTenantPath(r.path)) continue;
-    if (r.path.includes("{")) {
+    const unsampled: string[] = [];
+    const stem = r.path.replace(
+      /:\w+(?:\{([^}]+)\})?/g,
+      (param, pattern?: string) => {
+        if (pattern === undefined) return SAMPLE_SEGMENT;
+        const sample = PATTERN_SAMPLES[pattern];
+        if (sample !== undefined) return sample;
+        unsampled.push(param);
+        return param;
+      },
+    );
+    if (unsampled.length > 0) {
       violations.push(`${key}: no sample value for a regex parameter`);
       continue;
     }
     // A `/*` route also answers its bare prefix, so it gets a sample of each,
     // unless the bare prefix has its own route, which the check covers.
-    const stem = r.path.replace(/:\w+/g, SAMPLE_SEGMENT);
     const bare = `${r.method} ${r.path.slice(0, -2)}`;
     const filled = stem.replace(/\*$/, SAMPLE_SEGMENT);
     const samples =
