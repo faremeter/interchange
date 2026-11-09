@@ -25,7 +25,7 @@ import {
 import { unauthorizedResponse, type AppEnv, type TenantEnv } from "../context";
 import { errorResponse, tenantConfigErrorResponse } from "../error-response";
 import {
-  idResource,
+  requestTenantResource,
   type AuthorizeGrant,
   type RequireGrant,
 } from "../middleware/grant";
@@ -335,7 +335,7 @@ export function createTenantRoutes({
       },
     }),
     resolveTenant,
-    requireGrant(idResource("tenant", "tenantId"), "read"),
+    requireGrant(requestTenantResource, "read"),
     async (c) => {
       const tenantRow = c.get("tenant");
       try {
@@ -369,7 +369,7 @@ export function createTenantRoutes({
       },
     }),
     resolveTenant,
-    requireGrant(idResource("tenant", "tenantId"), "manage"),
+    requireGrant(requestTenantResource, "manage"),
     validator("json", UpdateTenant),
     async (c) => {
       const tenantId = c.get("tenant").id;
