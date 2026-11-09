@@ -98,7 +98,6 @@ Request to /api/tenants/:tenantId/... with Authorization: Bearer itx_run_...
   -> hash the bearer, look up the run_token row; unknown -> 401
   -> resolve the token's principal in the URL tenant; not there -> 403
   -> if the principal is not active (the run ended), or is not a workflow principal: 401
-  -> if the route is not on the run-token allow-list: 403
   -> set principal, tenant and the token's consumer, and clear the session user; resolveTenant skips the session
   -> evaluate the run principal's grants against the requested operation
 ```
@@ -111,7 +110,23 @@ Every path that deactivates a run principal -- run termination, a stop or cancel
 
 The token's consumer goes into authorization. A grant with a `{ "tool": "<consumer>" }` condition, allow or deny, applies only to requests from that consumer. A session or git token has no consumer, so such a grant never matches it. `POST /api/tenants/:tenantId/principals/:principalId/evaluate` accepts an optional `consumer` to show the decision a consumer's token gets.
 
-The allow-list (`RUN_TOKEN_ROUTES` in `@intx/hub-api`) limits a run token to reading runs, deployments, definitions and assets, deploying, signaling and stopping runs, and sending mail to a run through `POST .../workflows/runs/:runId/mail`. Every other route refuses a run token whatever grants the run holds. A run therefore cannot resolve approvals, change grants, roles, principals, credentials, OAuth clients, tokens or federation trusts, mail a deployment through `POST .../workflows/:runId/mail`, or manage the tenant.
+A run token reaches every tenant route, and the route's grant check decides what the run may do there. Three kinds of route also refuse a run for a reason that no grant changes:
+
+- The smart-HTTP git routes (`.../assets/:kind/:name.git/...`) take only a git token, so they answer a run token with 401.
+- The tenant git-token mint (`POST .../git-tokens`) refuses every principal that is not a user with 403, because a git token belongs to the user who can revoke it.
+- The REST mail routes refuse a hub-signed (`content`) body from a run with 400 `signed_mail_required`, because a run signs its own mail (see "Mail send grants").
+
+The hub honors every grant that an operator gives a run, including grants on approvals, grants, roles and principals. Some of these grants give a run more authority than their names suggest:
+
+- A run that holds `grant:*` `create` or `role:*` `manage` has the authority of a tenant administrator. It can give any principal in the tenant, itself included, any grant or role. The hub does not limit it to the grants its delegator holds.
+- A run that holds `grant:*` `manage` can change the effect, conditions and expiry of any grant in the tenant. It can change its own `ask` or `deny` rows to `allow`, which removes its approval gates.
+- A run that holds `principal:*` `create` can invite any hub user into the tenant with any tenant role, the owner role included. With `principal:*` `manage` as well, it can set that invited principal active before the user accepts.
+- Re-derivation removes only a row that matches one of the run's grant requirements by origin, resource, action and conditions. Every other grant or role assignment that a run writes stays when the delegator loses a grant, and a grant that a run writes on another principal stays after the run ends.
+- `approval:*` `resolve` includes the run's own approvals, so the run can approve its own `ask` tool calls.
+- A grant without a `{ "tool": "<consumer>" }` condition applies to every consumer in the run that declares `interchange.hub`.
+- A wider pattern that matches a grant above gives the same authority, for example `grant:*` `*`, `*` `create` or `*` `*`. A run that holds `*` `*` has every authority in this list, so read the resource and action patterns of a requirement, not only its literal names.
+
+A route outside `/api/tenants/:tenantId` does not authenticate a run token.
 
 ## Roles
 
@@ -403,7 +418,7 @@ A run gets `mail.send:*:*` at its first trigger (see A run's send grant under Gr
 
 A principal starts a run with the REST mail routes (`POST /:runId/mail` under `/workflows` and under `/workflows/runs`). The routes keep the `workflow-run:<runId>` `manage` check: `manage` decides who may start a run with the deployer's delegated grants. The trigger then checks the caller's `mail.send` grants against the deployment's run address, with the same authorizer the relay uses. A fault while the check resolves the run's coordinates fails the request with `500`, not `403`. A refused mail gets `403` with the code `mail_send_denied`, before the trigger links the run principal, commits a grant or sends anything. No sidecar tool gate applies on this path.
 
-A run sends REST mail with its run token through `POST .../workflows/runs/:runId/mail`. Three controls decide it: the run's approved `interchange.hub` credential (a consumer declares it, and deploy approval shows it), `manage` on the target run, and the run's `mail.send` grants. The `tool:mail_send` and `tool:mail_reply` grants that gate the mail tools do not apply on this path. Of the three, only `manage` can be narrowed to one consumer, with a `{ tool }` condition; the `mail.send` check has no consumer.
+A run sends REST mail with its run token through either route. Three controls decide it: the run's approved `interchange.hub` credential (a consumer declares it, and deploy approval shows it), `manage` on the target run, and the run's `mail.send` grants. The `tool:mail_send` and `tool:mail_reply` grants that gate the mail tools do not apply on this path. Of the three, only `manage` can be narrowed to one consumer, with a `{ tool }` condition; the `mail.send` check has no consumer.
 
 Custody of the signing key decides the body of a REST mail request, not the principal kind:
 

@@ -297,8 +297,8 @@ export function mountHubRoutes(
   }
 
   // A workflow run token authenticates as its run principal. It mounts ahead
-  // of resolveTenant, which then skips the session lookup, and it refuses
-  // every route outside its allow-list. Any other request passes through.
+  // of resolveTenant, which then skips the session lookup. Any other request
+  // passes through.
   app.use(
     "/api/tenants/:tenantId/*",
     createRunTokenAuth({

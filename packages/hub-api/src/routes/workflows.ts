@@ -813,14 +813,14 @@ export function createWorkflowRoutes({
       tags: ["Workflows"],
       summary: "Trigger a workflow run",
       description:
-        "Delivers a fresh signed conversation message to the deployment's stable top-level run. The first accepted message fires that run; while it remains live, later messages may resume its onTrigger input. A terminal deployment run cannot be fired again. The returned messageId identifies this trigger occurrence. The body is either a message for the hub to sign with the caller's hub-held key (`content`, `attachments`), or a complete message the caller signed with its own key (`rawMessage`, base64). For `rawMessage`, the hub checks its routing headers (From, To, Cc, Bcc, Message-ID, Interchange-Type and Interchange-Tenant-ID) and its signature against the caller's recorded key, then relays the bytes it verified. A workflow run's token cannot reach this route; a run sends mail through `POST /workflows/runs/:runId/mail`.",
+        "Delivers a fresh signed conversation message to the deployment's stable top-level run. The first accepted message fires that run; while it remains live, later messages may resume its onTrigger input. A terminal deployment run cannot be fired again. The returned messageId identifies this trigger occurrence. The body is either a message for the hub to sign with the caller's hub-held key (`content`, `attachments`), or a complete message the caller signed with its own key (`rawMessage`, base64). For `rawMessage`, the hub checks its routing headers (From, To, Cc, Bcc, Message-ID, Interchange-Type and Interchange-Tenant-ID) and its signature against the caller's recorded key, then relays the bytes it verified. A workflow run calls this route with its run token and posts a `rawMessage` it signed; it gets 400 `signed_mail_required` for a `content` body.",
       responses: {
         202: jsonResponse(
           "Trigger accepted for delivery",
           WorkflowRunTriggerResponse,
         ),
         400: jsonResponse(
-          "Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A caller-signed message is refused with `malformed_raw_message`, `mail_header_invalid` (From, To, Cc, Bcc, Message-ID, Interchange-Type or Interchange-Tenant-ID) or `mail_signature_invalid`. A malformed request body that fails SendMailRequest validation returns the generic error shape instead.",
+          "Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A caller-signed message is refused with `malformed_raw_message`, `mail_header_invalid` (From, To, Cc, Bcc, Message-ID, Interchange-Type or Interchange-Tenant-ID) or `mail_signature_invalid`; a structured body from a caller whose key the hub does not hold is refused with `signed_mail_required`. A malformed request body that fails SendMailRequest validation returns the generic error shape instead.",
           ErrorResponse,
         ),
         403: jsonResponse(
