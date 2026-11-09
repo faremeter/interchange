@@ -11,7 +11,8 @@
 //     but holds no grant to read even its own run.
 //   - Deployment A requires `workflow-run:self/read` from its creator. Its run
 //     reads its own run, and only its own run: another run of the same tenant,
-//     a route off the run-token allow-list, and another tenant all refuse it.
+//     a tenant route its grants do not cover, and another tenant all refuse
+//     it.
 //
 // The test then deactivates A's run principal through the principals route and
 // shows that the deactivation deletes A's token and that the bearer A's action
@@ -33,7 +34,6 @@ import {
 import {
   hubCallOutcomes,
   NO_GRANT,
-  OFF_LIST,
   SELF_READ,
   WRONG_TENANT,
   startHubAccessEnv,
@@ -110,14 +110,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         calls: {
           ownRun: `${runs}/${RUN_A}`,
           otherRun: `${runs}/${RUN_B}`,
-          offList: `/api/tenants/${TENANT_ID}/grants`,
+          grants: `/api/tenants/${TENANT_ID}/grants`,
           otherTenant: `/api/tenants/${OTHER_TENANT_ID}/workflows/runs`,
         },
       });
       const expected: Record<string, HubCallOutcome> = {
         ownRun: { status: 200, id: RUN_A, message: null },
         otherRun: { status: 403, id: null, message: NO_GRANT },
-        offList: { status: 403, id: null, message: OFF_LIST },
+        grants: { status: 403, id: null, message: NO_GRANT },
         otherTenant: { status: 403, id: null, message: WRONG_TENANT },
       };
       expect(a.outcomes).toEqual(expected);

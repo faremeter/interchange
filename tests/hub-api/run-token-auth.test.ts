@@ -11,7 +11,12 @@ import { eq } from "drizzle-orm";
 
 import { createInMemoryGrantStore } from "@intx/authz";
 import { createRunTokenStore } from "@intx/db";
-import { principal, workflowDefinition, workflowRun } from "@intx/db/schema";
+import {
+  gitToken,
+  principal,
+  workflowDefinition,
+  workflowRun,
+} from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
   createEventCollectorRegistry,
@@ -38,8 +43,9 @@ import {
 import { base64Encode } from "@intx/types";
 
 // A workflow run token authenticates as its run principal on the tenant
-// routes, carries its consumer into authorization, and reaches only the
-// allow-listed routes. A request without one keeps the session flow.
+// routes, carries its consumer into authorization, and reaches every tenant
+// route, where the route's grant check decides. A request without one keeps
+// the session flow.
 
 const TENANT_ID = "tnt_runtoken";
 const OTHER_TENANT_ID = "tnt_runtoken_other";
@@ -209,6 +215,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect((await asRun(app, RUNS)).status).toBe(200);
     });
 
+    test("a run token with a session cookie cannot mint a git token", async () => {
+      const app = makeApp([RUN_EVERYTHING], USER_ID, undefined, {
+        triggerStores: true,
+      });
+      const res = await asRun(app, `/api/tenants/${TENANT_ID}/git-tokens`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "ci",
+          resource: "asset:ast_any",
+          refPattern: "**",
+          actions: ["can_push"],
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({
+        error: {
+          code: "forbidden",
+          message: "Only a user principal can mint a git token",
+        },
+      });
+      expect(await h.db.select().from(gitToken)).toEqual([]);
+    });
+
     test("a run token without a grant is refused", async () => {
       expect((await asRun(makeApp([]), RUNS)).status).toBe(403);
     });
@@ -317,25 +348,99 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ]);
     });
 
-    test("a run token cannot reach a route off the allow-list, whatever its grants", async () => {
-      const app = makeApp([RUN_EVERYTHING]);
-      const refused: [string, string][] = [
-        ["GET", `/api/tenants/${TENANT_ID}/grants`],
-        ["GET", `/api/tenants/${TENANT_ID}/approvals`],
-        ["POST", `/api/tenants/${TENANT_ID}/federation`],
-        ["POST", `/api/tenants/${TENANT_ID}/workflows/run_x/mail`],
-        ["HEAD", RUNS],
-        ["GET", `/api/tenants/${TENANT_ID}`],
-        ["PATCH", `/api/tenants/${TENANT_ID}`],
+    describe("the route's grant check decides", () => {
+      const json = (body: unknown): RequestInit => ({
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const routes: {
+        method: string;
+        path: string;
+        init?: RequestInit;
+        granted: number;
+      }[] = [
+        {
+          method: "GET",
+          path: `/api/tenants/${TENANT_ID}/grants`,
+          granted: 200,
+        },
+        {
+          method: "GET",
+          path: `/api/tenants/${TENANT_ID}/approvals`,
+          granted: 200,
+        },
+        {
+          method: "POST",
+          path: `/api/tenants/${TENANT_ID}/federation`,
+          init: json({
+            targetTenantId: OTHER_TENANT_ID,
+            direction: "outbound",
+          }),
+          granted: 201,
+        },
+        {
+          method: "POST",
+          path: `/api/tenants/${TENANT_ID}/workflows/run_x/mail`,
+          // A run signs its own mail, so the route refuses a hub-signed body
+          // with `signed_mail_required`.
+          init: json({ content: "hi" }),
+          granted: 400,
+        },
+        { method: "HEAD", path: RUNS, granted: 200 },
+        { method: "GET", path: `/api/tenants/${TENANT_ID}`, granted: 200 },
+        {
+          method: "PATCH",
+          path: `/api/tenants/${TENANT_ID}`,
+          init: json({ config: {} }),
+          granted: 200,
+        },
       ];
-      for (const [method, path] of refused) {
-        const res = await asRun(app, path, { method });
-        expect({ method, path, status: res.status }).toEqual({
-          method,
-          path,
-          status: 403,
-        });
+
+      async function statuses(grants: GrantRule[]) {
+        const app = makeApp(grants, null, undefined, { triggerStores: true });
+        const seen: {
+          method: string;
+          path: string;
+          status: number;
+          refusal: string | null;
+        }[] = [];
+        for (const { method, path, init } of routes) {
+          const res = await asRun(app, path, { ...init, method });
+          // A HEAD response has no body to carry the refusal.
+          const refusal =
+            res.status === 403 && method !== "HEAD"
+              ? type({ error: { message: "string" } }).assert(await res.json())
+                  .error.message
+              : null;
+          seen.push({ method, path, status: res.status, refusal });
+        }
+        return seen;
       }
+
+      test("a run with the grant reaches each route", async () => {
+        expect(await statuses([RUN_EVERYTHING])).toEqual(
+          routes.map(({ method, path, granted }) => ({
+            method,
+            path,
+            status: granted,
+            refusal: null,
+          })),
+        );
+      });
+
+      test("a run without the grant is refused by each route's grant check", async () => {
+        expect(await statuses([])).toEqual(
+          routes.map(({ method, path }) => ({
+            method,
+            path,
+            status: 403,
+            refusal:
+              method === "HEAD"
+                ? null
+                : "You do not have permission to perform this action",
+          })),
+        );
+      });
     });
 
     describe("the run mail route", () => {
@@ -401,7 +506,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       });
 
-      test("a run token without manage on the target is refused by its grants, not the allow-list", async () => {
+      test("a run token without manage on the target is refused", async () => {
         const res = await postMail(
           [
             grant(
@@ -417,22 +522,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const body = type({ error: { message: "string" } }).assert(
           await res.json(),
         );
-        // The grant check's refusal, not the allow-list's: both answer 403
-        // `forbidden`, so the message tells them apart.
         expect(body.error.message).toBe(
           "You do not have permission to perform this action",
         );
       });
-    });
-
-    test("the allow-list matches the decoded path the router routes on", async () => {
-      // `%73` decodes to `s`, so the guard and the router both see `runs`.
-      const app = makeApp([RUN_EVERYTHING]);
-      const res = await asRun(
-        app,
-        `/api/tenants/${TENANT_ID}/workflows/run%73`,
-      );
-      expect(res.status).toBe(200);
     });
 
     test("a grant scoped to another consumer does not authorize the token", async () => {

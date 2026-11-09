@@ -79,7 +79,6 @@ export const SELF_READ: GrantRequirement = {
 
 // The refusal each check gives, so a 403 shows which check refused a call.
 export const NO_GRANT = "You do not have permission to perform this action";
-export const OFF_LIST = "A workflow run token cannot use this route";
 export const WRONG_TENANT = "Token is not valid for this tenant";
 
 // The test's own requests carry this header. A request without it has no

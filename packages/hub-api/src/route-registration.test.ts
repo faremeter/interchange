@@ -15,7 +15,6 @@ import {
 import { createApp } from "./app";
 import type { TenantEnv } from "./context";
 import { createRequireGrant, isGrantCheck } from "./middleware/grant";
-import { RUN_TOKEN_ROUTES } from "./middleware/run-token-auth";
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
 const mockDb = {} as unknown as DB["db"];
@@ -49,61 +48,6 @@ function createRegistrationApp() {
     maxTarballBytes: 10_000_000,
   });
 }
-
-describe("run-token allow-list", () => {
-  test("every allow-listed route is a registered tenant route", () => {
-    const app = createRegistrationApp();
-    const shape = (path: string) => path.replace(/:[^/]+/g, ":");
-    const registered = new Set(
-      app.routes.map((r) => `${r.method} ${shape(r.path)}`),
-    );
-    const unregistered = RUN_TOKEN_ROUTES.filter(
-      (route) => !registered.has(`${route.method} ${shape(route.path)}`),
-    );
-    expect(unregistered).toEqual([]);
-
-    // The guard admits paths, not handlers. Where a listed pattern and an
-    // off-list route can match the same path, the router must send that
-    // path to the listed route, so the listed route must be registered
-    // first.
-    const handlers = app.routes.filter((r) => r.method !== "ALL");
-    const isListed = (r: { method: string; path: string }) =>
-      RUN_TOKEN_ROUTES.some(
-        (l) => l.method === r.method && shape(l.path) === shape(r.path),
-      );
-    const overlap = (a: string, b: string) => {
-      const x = a.split("/");
-      const y = b.split("/");
-      return (
-        x.length === y.length &&
-        x.every((segment, i) => {
-          const other = y[i] ?? "";
-          return (
-            segment.startsWith(":") ||
-            other.startsWith(":") ||
-            segment === other
-          );
-        })
-      );
-    };
-    const shadowing: string[] = [];
-    handlers.forEach((offList, offIndex) => {
-      if (isListed(offList)) return;
-      for (const listed of RUN_TOKEN_ROUTES) {
-        if (listed.method !== offList.method) continue;
-        if (!overlap(listed.path, offList.path)) continue;
-        const listedIndex = handlers.findIndex(
-          (r) =>
-            r.method === listed.method && shape(r.path) === shape(listed.path),
-        );
-        if (listedIndex > offIndex) {
-          shadowing.push(`${offList.method} ${offList.path}`);
-        }
-      }
-    });
-    expect(shadowing).toEqual([]);
-  });
-});
 
 const TENANT_PREFIX = "/api/tenants/:tenantId";
 

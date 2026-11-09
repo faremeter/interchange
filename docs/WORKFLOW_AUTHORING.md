@@ -631,10 +631,17 @@ relative paths such as `/api/tenants/<tenantId>/workflows/runs/<runId>`.
 - The run holds only the grants its definition's grant requirements
   delegate to it. Name the run itself as `workflow-run:self`; see "Grant
   Requirements on Definitions" in AUTH.md.
-- A run token reaches only the tenant routes on the run-token allow-list.
-  Every other tenant route refuses it with 403, whatever the run's grants. A
-  route outside `/api/tenants/:tenantId` does not authenticate a run token,
-  so such a route that requires authentication answers 401.
+- A run token reaches every tenant route, and the route's grant check
+  decides what the run may do there. A few routes also refuse a run for a
+  reason that no grant changes, such as the smart-HTTP git routes, which
+  take only a git token; "Workflow run tokens" in AUTH.md lists them. A
+  requirement for an administrative action, such as `grant:*` `create` or
+  `approval:*` `resolve`, gives the run that authority, and so does a wider
+  pattern that matches it, such as `*` `*`; see the same section. To limit
+  a requirement to one consumer, give it a `{ "tool": "<consumer>" }`
+  condition. A route outside `/api/tenants/:tenantId` does not
+  authenticate a run token, so such a route that requires authentication
+  answers 401.
 - A `childWorkflow` body and a loop body share the top-level run's
   principal, so their calls act as the top-level run.
 - The token stops working when the run principal is deactivated, for
@@ -642,7 +649,7 @@ relative paths such as `/api/tenants/<tenantId>/workflows/runs/<runId>`.
   not log or return the request headers.
 
 Where it lives today: "Workflow run tokens" in `docs/AUTH.md`;
-`RUN_TOKEN_ROUTES`, `packages/hub-api/src/middleware/run-token-auth.ts`.
+`createRunTokenAuth`, `packages/hub-api/src/middleware/run-token-auth.ts`.
 
 **33.** Run code composes conversation messages signed with its deployment's
 mail key. The key stays in the sidecar: the sidecar composes and signs the
