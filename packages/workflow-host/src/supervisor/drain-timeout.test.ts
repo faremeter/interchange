@@ -10,8 +10,8 @@
 // These tests exercise the accumulator semantics directly (pause /
 // resume / stop / accumulatedMs / escalation commit) and the
 // canonical observable sequence on the supervisor's substrate write
-// side. The attachment point is the `RepoStore.
-// writeTreePreservingPrefix` interceptor on a stub substrate -- the
+// side. The attachment point is the `RepoStore.writeTreeDelta`
+// interceptor on a stub substrate -- the
 // fake captures every commit's principal/files/ref so the test
 // asserts directly on the CancelRequested blob the accumulator
 // writes, instead of round-tripping through a `subscribeKind`
@@ -60,6 +60,16 @@ function createStubRepoStore(opts: {
       const existing = new Map<string, Uint8Array>();
       const files = await args.merge(existing);
       opts.onWrite?.({ principal, repoId, ref, files });
+      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
+    },
+    async writeTreeDelta(principal, repoId, ref, args) {
+      const { puts } = await args.computeDelta(null, {
+        listDirOids: async () => [],
+        readBlobByOid: async (oid) => {
+          throw new Error(`stub RepoStore holds no blob ${oid}`);
+        },
+      });
+      opts.onWrite?.({ principal, repoId, ref, files: puts });
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
   };

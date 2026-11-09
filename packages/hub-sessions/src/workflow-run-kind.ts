@@ -3257,12 +3257,12 @@ export const workflowRunKindHandler: KindHandler = {
           // authorization: it belongs to the commit that authors the event. A
           // later commit that merely carries the event forward -- e.g. the
           // run's own workflow-process cascade write of CancelPropagated /
-          // RunCancelled, which re-lists the whole events prefix -- must not be
-          // rejected because the carried-forward cancel was authored under a
-          // different (supervisor) signer. Re-checking it protects nothing: the
-          // blob OID check above already proves a carried-forward blob is
-          // unchanged, and the deletion-direction check proves it cannot be
-          // dropped. A tampered (byte-diverged) blob never reaches here --
+          // RunCancelled -- must not be rejected because the carried-forward
+          // cancel was authored under a different (supervisor) signer.
+          // Re-checking it protects nothing: the blob OID check above already
+          // proves a carried-forward blob is unchanged, and the
+          // deletion-direction check proves it cannot be dropped. A tampered
+          // (byte-diverged) blob never reaches here --
           // checkRetainedBlobUnchanged rejects it first. Mirrors the
           // newly-terminal gate below, which likewise acts only on a blob
           // absent from the prior tree.

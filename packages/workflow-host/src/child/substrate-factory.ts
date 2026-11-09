@@ -1367,9 +1367,9 @@ interface SidecarRunChildDeps {
  * grants file exists yet, i.e. at the run's birth before the runtime appends
  * any event, so the `runs/<childRunId>/` subtree is empty and nothing is
  * dropped. Invoking it over a populated run would delete that run's committed
- * `events/`/`blobs/` subtrees. A later event append names
- * the nested `runs/<childRunId>/events/` prefix, so its own subtree-delete does
- * not reach `grants.json` one level up -- the sibling survives.
+ * `events/`/`blobs/` subtrees. A later event append writes only its new
+ * files under `runs/<childRunId>/events/`, so `grants.json` one level up is
+ * carried forward untouched.
  */
 async function writeChildRunGrants(args: {
   substrate: RepoStore;

@@ -3,12 +3,12 @@
 // `commitRunFailed` writes a `RunFailed` into a run's event log under the
 // supervisor principal so the deployment's `workflow_run.status` flips to
 // `failed` when the crash-loop guard latches. It computes the next seq
-// inside the substrate merge, bases the first event at seq 1, and no-ops
+// inside the substrate append, bases the first event at seq 1, and no-ops
 // when the run is already terminal (respecting push-validation's
 // terminal-lock).
 //
-// The substrate is a minimal in-memory `writeTreePreservingPrefix` that
-// actually runs the caller's merge against a file map, so the seq and
+// The substrate is a minimal in-memory `writeTreeDelta` that actually
+// runs the caller's delta against a file map, so the seq and
 // terminal-lock logic is exercised end to end.
 
 import { describe, test, expect } from "bun:test";
@@ -25,24 +25,29 @@ function createInMemorySubstrate() {
   const files = new Map<string, Uint8Array>();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  // A blob's path stands in for its object id.
   const store: Partial<RepoStore> = {
-    async writeTreePreservingPrefix(_principal, _repoId, _ref, args) {
-      const existing = new Map<string, Uint8Array>();
-      for (const [k, v] of files) {
-        if (k.startsWith(args.preservePrefix)) existing.set(k, v);
-      }
-      const result = await args.merge(existing);
-      for (const k of [...files.keys()]) {
-        if (k.startsWith(args.preservePrefix)) files.delete(k);
-      }
-      for (const [k, v] of Object.entries(result)) {
+    async writeTreeDelta(_principal, _repoId, _ref, args) {
+      const { puts, deletes } = await args.computeDelta(null, {
+        listDirOids: async (dir) =>
+          [...files.keys()]
+            .filter((k) => k.startsWith(`${dir}/`))
+            .map((k) => ({ name: k.slice(dir.length + 1), oid: k })),
+        readBlobByOid: async (oid) => {
+          const bytes = files.get(oid);
+          if (bytes === undefined) throw new Error(`no blob ${oid}`);
+          return bytes;
+        },
+      });
+      for (const d of deletes) files.delete(d);
+      for (const [k, v] of Object.entries(puts)) {
         files.set(k, typeof v === "string" ? encoder.encode(v) : v);
       }
       return { commitSha: "memory", newlyTerminalRuns: [] };
     },
   };
   return {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only writeTreePreservingPrefix is exercised, any other method surfaces as undefined-not-a-function
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only writeTreeDelta is exercised, any other method surfaces as undefined-not-a-function
     store: store as RepoStore,
     seedEvent(path: string, obj: Record<string, unknown>) {
       files.set(path, encoder.encode(JSON.stringify(obj)));

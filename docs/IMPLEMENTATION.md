@@ -1144,7 +1144,8 @@ no asymmetric keypair of its own. The implementation lives in
   which returns a `SignedPayload` carrying the raw 64-byte
   Ed25519 signature plus the principal kind.
 - The supervisor attaches the signature to the on-disk blob and
-  commits via `RepoStore.writeTreePreservingPrefix` under a
+  appends it to the run's event log via `RepoStore.writeTreeDelta`,
+  writing only the new event file, under a
   `WorkflowRunSupervisorPrincipal`. The workflow-run kind handler
   enforces the Q3 principal-vs-origin map at push validation;
   routing every supervisor-signed origin through the same

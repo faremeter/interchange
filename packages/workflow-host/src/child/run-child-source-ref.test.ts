@@ -227,6 +227,42 @@ function createStubRepoStore(baseDir: string): RepoStore {
       }
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
+    async writeTreeDelta(_principal, repoId, _ref, args) {
+      // Back the delta's parent reads with the working tree, a blob's
+      // repo-relative path standing in for its object id.
+      const repoDir = path.join(baseDir, repoId.kind, repoId.id);
+      const { puts, deletes } = await args.computeDelta(null, {
+        async listDirOids(relPath) {
+          let names: string[];
+          try {
+            names = await fsp.readdir(path.join(repoDir, relPath));
+          } catch (cause) {
+            if (
+              cause instanceof Error &&
+              "code" in cause &&
+              cause.code === "ENOENT"
+            ) {
+              return [];
+            }
+            throw cause;
+          }
+          return names.map((name) => ({ name, oid: `${relPath}/${name}` }));
+        },
+        readBlobByOid: (oid) => fsp.readFile(path.join(repoDir, oid)),
+      });
+      for (const relPath of deletes) {
+        await fsp.rm(path.join(repoDir, relPath), {
+          recursive: true,
+          force: true,
+        });
+      }
+      for (const [relPath, content] of Object.entries(puts)) {
+        const full = path.join(repoDir, relPath);
+        await fsp.mkdir(path.dirname(full), { recursive: true });
+        await fsp.writeFile(full, content);
+      }
+      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
+    },
     async openCommittedReads(_principal, repoId, _ref) {
       const repoDir = path.join(baseDir, repoId.kind, repoId.id);
       return {

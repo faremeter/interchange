@@ -769,8 +769,8 @@ export function createSidecarDeployRouter<
    * Symmetric removal hook for `registerDeployment`. Fires from the
    * link's `agent.undeploy` path so the boot edge's
    * `DeploymentAddressRegistry` drops the mapping when the deployment
-   * is torn down. A subsequent stale `writeTreePreservingPrefix`
-   * against the dead deployment's workflow-run ref surfaces
+   * is torn down. A subsequent stale write against the dead
+   * deployment's workflow-run ref surfaces
    * structurally (`registry.resolve` returns `null`) rather than
    * silently resolving to the prior address. Tests that do not
    * exercise the pack push path may pass a no-op.
