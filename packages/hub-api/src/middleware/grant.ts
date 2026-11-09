@@ -12,13 +12,15 @@ const log = getLogger(["hub", "middleware", "grant"]);
 
 type ResourceFn = (c: {
   param: (name: string) => string | undefined;
+  tenantId: string;
 }) => string;
 
 /**
  * Closure-bound grant-check middleware factory returned by
  * `createRequireGrant`. Returns a Hono middleware that authorizes the
  * current principal against the given resource and action. The function
- * form of `resource` is intended to be built with `idResource(...)`.
+ * form of `resource` is intended to be `idResource(...)` or
+ * `requestTenantResource`.
  */
 export type RequireGrant = (
   resource: string | ResourceFn,
@@ -105,7 +107,10 @@ export function createRequireGrant(deps: CreateRequireGrantDeps): RequireGrant {
     const middleware = createMiddleware<TenantEnv>(async (c, next) => {
       const resolvedResource =
         typeof resource === "function"
-          ? resource({ param: (name) => c.req.param(name) })
+          ? resource({
+              param: (name) => c.req.param(name),
+              tenantId: c.get("tenant").id,
+            })
           : resource;
 
       const allowed = await authorizeGrant({
@@ -157,6 +162,14 @@ export function idResource(
     return id ? `${resourceType}:${id}` : `${resourceType}:*`;
   };
 }
+
+/**
+ * Resource for the request's own tenant, `tenant:<id>`. The id is the tenant
+ * that authentication resolved, the same tenant the grant lookup uses, not
+ * the URL segment, so the check names the tenant the request acts in.
+ */
+export const requestTenantResource: ResourceFn = ({ tenantId }) =>
+  `tenant:${tenantId}`;
 
 /**
  * In-handler grant check for a resource named in a request body. `idResource`

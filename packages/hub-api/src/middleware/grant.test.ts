@@ -20,6 +20,8 @@ import {
   createRequireGrant,
   idResource,
   isGrantCheck,
+  requestTenantResource,
+  type RequireGrant,
 } from "./grant";
 
 const PRINCIPAL_ID = "prn_caller";
@@ -160,7 +162,11 @@ describe("createRequireGrant", () => {
     updatedAt: NOW,
   };
 
-  function appWith(grants: GrantRule[]) {
+  function appWith(
+    grants: GrantRule[],
+    path = "/",
+    resource: Parameters<RequireGrant>[0] = "widget:*",
+  ) {
     const requireGrant = createRequireGrant({
       grantStore: createInMemoryGrantStore(grants),
       conditionRegistry: {},
@@ -171,7 +177,7 @@ describe("createRequireGrant", () => {
       c.set("principal", principal);
       await next();
     });
-    app.get("/", requireGrant("widget:*", "read"), (c) => c.text("ok"));
+    app.get(path, requireGrant(resource, "read"), (c) => c.text("ok"));
     return app;
   }
 
@@ -187,6 +193,30 @@ describe("createRequireGrant", () => {
         code: "forbidden",
         message: "You do not have permission to perform this action",
       },
+    });
+  });
+
+  describe("requestTenantResource", () => {
+    function tenantGrant(tenantId: string): GrantRule {
+      return { ...grant("allow"), resource: `tenant:${tenantId}` };
+    }
+
+    test("checks the grant on the request tenant", async () => {
+      const res = await appWith(
+        [tenantGrant(TENANT_ID)],
+        "/:tenantId",
+        requestTenantResource,
+      ).request("/tnt_other");
+      expect(res.status).toBe(200);
+    });
+
+    test("does not check the grant on the URL segment", async () => {
+      const res = await appWith(
+        [tenantGrant("tnt_other")],
+        "/:tenantId",
+        requestTenantResource,
+      ).request("/tnt_other");
+      expect(res.status).toBe(403);
     });
   });
 });
