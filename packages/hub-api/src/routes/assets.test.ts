@@ -576,6 +576,22 @@ describe("smart-HTTP asset routes", () => {
     const res = await h.app.request(url, { method: "POST" });
     expect(res.status).toBe(401);
   });
+
+  // The bearer middleware guards only names that end in `.git`, so no other
+  // name may reach a smart-HTTP handler, whoever the caller is.
+  test.each([
+    ["GET", "info/refs?service=git-upload-pack"],
+    ["POST", "git-upload-pack"],
+    ["POST", "git-receive-pack"],
+  ])(
+    "%s %s for a name without .git is not a smart-HTTP route",
+    async (method, endpoint) => {
+      const h = await setup();
+      const url = `/api/tenants/${TENANT_ID}/assets/skill/missing/${endpoint}`;
+      const res = await h.app.request(url, { method });
+      expect(res.status).toBe(404);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

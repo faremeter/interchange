@@ -76,6 +76,7 @@ import {
 import {
   ASSET_OPENAPI_EXCLUDE_GLOBS,
   createAssetRoutes,
+  SMART_HTTP_REPO_SEGMENT,
 } from "./routes/assets";
 import { createGitTokenAuth } from "./middleware/git-token-auth";
 import { createRunTokenAuth } from "./middleware/run-token-auth";
@@ -291,7 +292,7 @@ export function mountHubRoutes(
     // middleware does not capture the REST tarball routes that share
     // the `/api/tenants/:tenantId/assets/...` prefix.
     app.use(
-      "/api/tenants/:tenantId/assets/:kind/:nameDotGit{[^/]+\\.git}/*",
+      `/api/tenants/:tenantId/assets/:kind/${SMART_HTTP_REPO_SEGMENT}/*`,
       createGitTokenAuth({ db }),
     );
   }

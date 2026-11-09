@@ -144,11 +144,6 @@ function parseKind(raw: string): RepoKind | null {
   return null;
 }
 
-function stripGitSuffix(raw: string): string | null {
-  if (!raw.endsWith(".git")) return null;
-  return raw.slice(0, -".git".length);
-}
-
 // User-principal construction helpers live in ./git-user-principal.
 
 type AssetLookup = {
@@ -808,15 +803,8 @@ export function createAssetRoutes({
         message: `unknown asset kind: ${kindRaw}`,
       };
     }
-    const name = stripGitSuffix(nameRaw);
-    if (name === null) {
-      return {
-        ok: false,
-        status: 400,
-        code: "bad_request",
-        message: `URL :name must end in .git, got ${nameRaw}`,
-      };
-    }
+    // SMART_HTTP_REPO_SEGMENT routes only names that end in `.git`.
+    const name = nameRaw.slice(0, -".git".length);
     if (!ASSET_NAME_URL_PATTERN.test(name)) {
       return {
         ok: false,
@@ -966,7 +954,7 @@ export function createAssetRoutes({
   // ahead of this route surface, so the variable is statically present.
   const smartHttp = new Hono<TenantGitTokenEnv>();
 
-  smartHttp.get("/:kind/:nameDotGit/info/refs", async (c) => {
+  smartHttp.get(`/:kind/${SMART_HTTP_REPO_SEGMENT}/info/refs`, async (c) => {
     const service = c.req.query("service");
     if (service !== "git-upload-pack" && service !== "git-receive-pack") {
       return errorResponse(
@@ -1004,36 +992,55 @@ export function createAssetRoutes({
     });
   });
 
-  smartHttp.post("/:kind/:nameDotGit/git-upload-pack", async (c) => {
-    const r = await resolveSmartHttp(c, "createPack");
-    if (!r.ok) {
-      return c.json({ error: { code: r.code, message: r.message } }, r.status);
-    }
-    return handleUploadPack(
-      makeUploadPackStore(repoStore, r.resolved.principal),
-      r.resolved.principal,
-      r.resolved.repoId,
-      c.req.raw,
-    );
-  });
+  smartHttp.post(
+    `/:kind/${SMART_HTTP_REPO_SEGMENT}/git-upload-pack`,
+    async (c) => {
+      const r = await resolveSmartHttp(c, "createPack");
+      if (!r.ok) {
+        return c.json(
+          { error: { code: r.code, message: r.message } },
+          r.status,
+        );
+      }
+      return handleUploadPack(
+        makeUploadPackStore(repoStore, r.resolved.principal),
+        r.resolved.principal,
+        r.resolved.repoId,
+        c.req.raw,
+      );
+    },
+  );
 
-  smartHttp.post("/:kind/:nameDotGit/git-receive-pack", async (c) => {
-    const r = await resolveSmartHttp(c, "receivePack");
-    if (!r.ok) {
-      return c.json({ error: { code: r.code, message: r.message } }, r.status);
-    }
-    return handleReceivePack(
-      repoStore,
-      r.resolved.principal,
-      r.resolved.repoId,
-      c.req.raw,
-    );
-  });
+  smartHttp.post(
+    `/:kind/${SMART_HTTP_REPO_SEGMENT}/git-receive-pack`,
+    async (c) => {
+      const r = await resolveSmartHttp(c, "receivePack");
+      if (!r.ok) {
+        return c.json(
+          { error: { code: r.code, message: r.message } },
+          r.status,
+        );
+      }
+      return handleReceivePack(
+        repoStore,
+        r.resolved.principal,
+        r.resolved.repoId,
+        c.req.raw,
+      );
+    },
+  );
 
   app.route("/", smartHttp);
 
   return app;
 }
+
+/**
+ * The repository segment of a smart-HTTP path: a name that ends in `.git`.
+ * The routes and the bearer middleware that guards them share it, so no
+ * smart-HTTP route answers a path the middleware does not guard.
+ */
+export const SMART_HTTP_REPO_SEGMENT = ":nameDotGit{[^/]+\\.git}";
 
 /**
  * Paths under the asset routes Hono app that the smart-HTTP wire
