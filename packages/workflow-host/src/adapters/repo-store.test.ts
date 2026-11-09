@@ -19,7 +19,11 @@ import type {
 } from "@intx/hub-sessions";
 import type { WorkflowEvent } from "@intx/workflow";
 
-import { createWorkflowRunRepoStore } from "./repo-store";
+import {
+  createWorkflowRunRepoStore,
+  readRunEventSummary,
+  type PriorRunEvent,
+} from "./repo-store";
 import { compactRunEvents } from "../supervisor/run-event-compaction";
 
 const tempDirs: string[] = [];
@@ -469,5 +473,110 @@ describe("workflow-host RepoStore adapter — permissive handler smoke", () => {
     if (restored.kind !== "RunStarted") throw new Error("unreachable");
     expect(restored.runId).toBe(runId);
     expect(restored.definitionHash).toBe("definition-hash");
+  });
+});
+
+describe("readRunEventSummary", () => {
+  const repoId: RepoId = { kind: "workflow-run", id: "summary-deployment" };
+
+  // A parent tree whose event blobs are the given bodies by object id,
+  // recording every blob it is asked to read.
+  function priorWith(blobs: Record<string, object>) {
+    const read: string[] = [];
+    return {
+      read,
+      prior: {
+        listDirOids: async () => [],
+        readBlobByOid: async (oid: string) => {
+          read.push(oid);
+          const body = blobs[oid];
+          if (body === undefined) throw new Error(`no blob ${oid}`);
+          return new TextEncoder().encode(JSON.stringify(body));
+        },
+      },
+    };
+  }
+
+  function storeKey() {
+    return createRepoStore({
+      dataDir: os.tmpdir(),
+      signingKey,
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: allowAll,
+    });
+  }
+
+  const blobs = {
+    a: { seq: 1, type: "RunStarted" },
+    b: { seq: 2, type: "SignalReceived", signalId: "s-1" },
+    c: { seq: 3, type: "TimerFired", timerId: "t-1" },
+    x: { seq: 2, type: "SignalReceived", signalId: "s-2" },
+    end: { seq: 4, type: "RunCompleted" },
+  };
+  const at = (seq: number, oid: string): PriorRunEvent => ({ seq, oid });
+
+  test("a later call reads only the events past the previous one", async () => {
+    const substrate = storeKey();
+    const first = priorWith(blobs);
+    await readRunEventSummary(
+      substrate,
+      repoId,
+      "run-a",
+      [at(1, "a"), at(2, "b")],
+      first.prior,
+    );
+    expect(first.read.sort()).toEqual(["a", "b"]);
+
+    const second = priorWith(blobs);
+    const summary = await readRunEventSummary(
+      substrate,
+      repoId,
+      "run-a",
+      [at(1, "a"), at(2, "b"), at(3, "c")],
+      second.prior,
+    );
+    expect(second.read).toEqual(["c"]);
+    expect([...summary.signalIds]).toEqual(["s-1"]);
+    expect([...summary.timerFiredIds]).toEqual(["t-1"]);
+    expect(summary.terminal).toBe(false);
+  });
+
+  test("a listing that no longer holds the cursor's blob is read again in full", async () => {
+    const substrate = storeKey();
+    await readRunEventSummary(
+      substrate,
+      repoId,
+      "run-b",
+      [at(1, "a"), at(2, "b")],
+      priorWith(blobs).prior,
+    );
+
+    const replaced = priorWith(blobs);
+    const summary = await readRunEventSummary(
+      substrate,
+      repoId,
+      "run-b",
+      [at(1, "a"), at(2, "x")],
+      replaced.prior,
+    );
+    expect(replaced.read.sort()).toEqual(["a", "x"]);
+    expect([...summary.signalIds]).toEqual(["s-2"]);
+  });
+
+  test("an ended run is known from its last event and keeps no summary", async () => {
+    const substrate = storeKey();
+    const events = [at(1, "a"), at(2, "b"), at(3, "c"), at(4, "end")];
+    for (let call = 0; call < 2; call++) {
+      const ended = priorWith(blobs);
+      const summary = await readRunEventSummary(
+        substrate,
+        repoId,
+        "run-c",
+        events,
+        ended.prior,
+      );
+      expect(summary.terminal).toBe(true);
+      expect(ended.read).toEqual(["end"]);
+    }
   });
 });

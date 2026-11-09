@@ -35,12 +35,12 @@
 // ...) sit alongside them, NOT under a nested `data` object. The kind
 // handler's `validatePush` enforces that every event blob's body `seq`
 // matches the filename's seq, so the scheduler mints the next seq
-// inside the `writeTreePreservingPrefix` merge step and writes both
-// into the envelope and the filename.
+// inside the append's delta step and writes both into the envelope and
+// the filename.
 //
-// The commit flushes that run's pending buffer before the merge
+// The commit flushes that run's pending buffer before the append
 // numbers `TimerFired`. An already-fired timer, or a log that already
-// holds a terminal event, returns the tree unchanged. This is not the
+// holds a terminal event, leaves the log unchanged. This is not the
 // runtime `commit()`: `handleTimerFired` advances `lastSeq` even when
 // the timer is already gone, so a duplicate would move the tip.
 
@@ -61,6 +61,11 @@ import {
   withRunCommitBarrier,
   type RepoStore as RuntimeRepoStore,
 } from "@intx/workflow/runtime";
+import {
+  appendRunEvents,
+  readRunEventSummary,
+  runEventPath,
+} from "../adapters/repo-store";
 
 /**
  * Substrate-shape envelope for the workflow-event blob committed to
@@ -98,7 +103,7 @@ export type SchedulerOpts = {
   repoStore: RepoStore;
   /**
    * Runtime store that owns the commit chain. A timer flushes that
-   * run's pending buffer before the substrate merge numbers
+   * run's pending buffer before the substrate append numbers
    * `TimerFired`. One store serves every run in this process; the
    * barrier selects the buffer by run id.
    */
@@ -493,11 +498,10 @@ async function enumerateEventBlobs(
 
 /**
  * Commit a `TimerFired` event blob to the workflow-run repo. The
- * commit goes through `writeTreePreservingPrefix` so concurrent
- * commits on the same runId's events subtree serialize at the
- * substrate's per-repo lock. Idempotent: if a TimerFired for the
- * same `(runId, timerId)` already exists at the prefix, the merge
- * returns the existing tree unchanged.
+ * append runs under the substrate's per-repo lock, so concurrent
+ * commits on the same runId's events subtree serialize. Idempotent: if
+ * a TimerFired for the same `(runId, timerId)` already exists in the
+ * log, the append leaves it unchanged.
  */
 async function commitTimerFired(
   opts: SchedulerOpts,
@@ -510,74 +514,38 @@ async function commitTimerFired(
       `scheduler commit: cannot find deployment owning run ${runId}`,
     );
   }
-  const prefix = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_EVENTS_DIR}/`;
   await withRunCommitBarrier({ repoStore: opts.runtimeStore }, runId, () =>
-    opts.repoStore.writeTreePreservingPrefix(
-      opts.principal,
-      owningRepoId,
-      opts.ref,
-      {
-        preservePrefix: prefix,
-        merge: async (existing) => {
-          let maxSeq = -1;
-          let alreadyFired = false;
-          let terminal = false;
-          for (const [filepath, contents] of existing) {
-            const name = filepath.slice(prefix.length);
-            const seq = requireEventSeq(name, `${prefix}${name}`);
-            if (seq > maxSeq) maxSeq = seq;
-            try {
-              const parsed: unknown = JSON.parse(
-                new TextDecoder().decode(contents),
-              );
-              if (isMatchingTimerFired(parsed, timerId)) {
-                alreadyFired = true;
-              }
-              if (isTerminalOnDiskEvent(parsed)) {
-                terminal = true;
-              }
-            } catch {
-              // Skip on parse failure -- a corrupt blob would have
-              // been rejected by validatePush at write time; treat as
-              // a non-matching entry.
-            }
-          }
-          const out: Record<string, string> = {};
-          for (const [filepath, contents] of existing) {
-            out[filepath] = new TextDecoder().decode(contents);
-          }
-          // An already-fired timer and a log that already reached a
-          // terminal event both leave the tree unchanged. Appending
-          // past RunFailed, RunCompleted, or RunCancelled would make
-          // the next resume disagree with the terminal result.
-          if (alreadyFired || terminal) return out;
-          const nextSeq = maxSeq + 1;
-          out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
+    appendRunEvents({
+      substrate: opts.repoStore,
+      principal: opts.principal,
+      repoId: owningRepoId,
+      ref: opts.ref,
+      runId,
+      message: `TimerFired ${timerId} for run ${runId}`,
+      compute: async (existing, prior) => {
+        // An already-fired timer and a log that already reached a
+        // terminal event both leave the log unchanged. Appending past
+        // RunFailed, RunCompleted, or RunCancelled would make the next
+        // resume disagree with the terminal result.
+        const summary = await readRunEventSummary(
+          opts.repoStore,
+          owningRepoId,
+          runId,
+          existing,
+          prior,
+        );
+        if (summary.terminal || summary.timerFiredIds.has(timerId)) return {};
+        const nextSeq = (existing.at(-1)?.seq ?? -1) + 1;
+        return {
+          [runEventPath(runId, nextSeq)]: JSON.stringify({
             seq: nextSeq,
             type: "TimerFired",
             timerId,
-          });
-          return out;
-        },
-        message: `TimerFired ${timerId} for run ${runId}`,
+          }),
+        };
       },
-    ),
+    }),
   );
-}
-
-function isTerminalOnDiskEvent(parsed: unknown): boolean {
-  if (typeof parsed !== "object" || parsed === null) return false;
-  const type = (parsed as { type?: unknown }).type;
-  return (
-    type === "RunCompleted" || type === "RunFailed" || type === "RunCancelled"
-  );
-}
-
-function isMatchingTimerFired(parsed: unknown, timerId: string): boolean {
-  if (typeof parsed !== "object" || parsed === null) return false;
-  const obj = parsed as { type?: unknown; timerId?: unknown };
-  if (obj.type !== "TimerFired") return false;
-  return obj.timerId === timerId;
 }
 
 async function findOwningDeployment(

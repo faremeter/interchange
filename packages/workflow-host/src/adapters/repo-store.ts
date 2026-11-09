@@ -36,6 +36,7 @@ import type {
   WriteResult,
 } from "@intx/hub-sessions/substrate";
 import {
+  classifyTerminalEvent,
   parseEventSeq,
   subscribeKind,
   WORKFLOW_RUN_EVENTS_FILE,
@@ -364,6 +365,187 @@ export async function appendRunEvents(args: {
   });
 }
 
+/**
+ * What a duplicate or terminal check reads from one event: whether it is
+ * terminal, the `signalId` of a `SignalReceived`, and the `timerId` of a
+ * `TimerFired`. An event whose bytes are not a JSON object yields no
+ * facts.
+ */
+type RunEventFacts = {
+  terminal: boolean;
+  signalId: string | undefined;
+  timerFiredId: string | undefined;
+};
+
+/**
+ * What a run's log holds that a signal or timer append must not repeat:
+ * whether the run has ended, and the signal ids and fired timer ids it
+ * already holds.
+ */
+export type RunEventSummary = {
+  terminal: boolean;
+  signalIds: ReadonlySet<string>;
+  timerFiredIds: ReadonlySet<string>;
+};
+
+// A live run's summary and the last event it has read. Validation keeps
+// every committed event unchanged, so a summary stays true for as long as
+// the parent still holds the same blob at the cursor's seq; any other
+// listing (a reset, a restore, a sealed log) drops it.
+type CachedRunSummary = {
+  cursor: PriorRunEvent;
+  signalIds: Set<string>;
+  timerFiredIds: Set<string>;
+};
+
+// One map per substrate store, dropped with it. A run's entry is dropped
+// when this store writes or reads the run's terminal event. A run that
+// ends through another process, or is drained without ending, keeps its
+// small entry until its next signal or timer append or until the store
+// goes.
+const runSummariesByStore = new WeakMap<
+  object,
+  Map<string, CachedRunSummary>
+>();
+
+function runSummaryKey(repoId: RepoId, runId: string): string {
+  return `${repoId.kind}/${repoId.id}/${runId}`;
+}
+
+/**
+ * Summarize `events`, the run's per-event log in the parent tree in seq
+ * order. A run's appends on one `substrate` read each event once: a call
+ * reads only the events past the previous call's cursor. An ended run,
+ * which keeps no summary, costs one read, of its last event.
+ */
+export async function readRunEventSummary(
+  substrate: SubstrateRepoStore,
+  repoId: RepoId,
+  runId: string,
+  events: readonly PriorRunEvent[],
+  prior: SubstrateDeltaReads,
+): Promise<RunEventSummary> {
+  let runs = runSummariesByStore.get(substrate);
+  if (runs === undefined) {
+    runs = new Map();
+    runSummariesByStore.set(substrate, runs);
+  }
+  const key = runSummaryKey(repoId, runId);
+  const read = new Map<string, RunEventFacts>();
+  const factsOf = async (event: PriorRunEvent): Promise<RunEventFacts> => {
+    let facts = read.get(event.oid);
+    if (facts === undefined) {
+      facts = eventFactsOf(await prior.readBlobByOid(event.oid));
+      read.set(event.oid, facts);
+    }
+    return facts;
+  };
+
+  let cached = runs.get(key);
+  if (cached !== undefined && !listingHolds(events, cached.cursor)) {
+    runs.delete(key);
+    cached = undefined;
+  }
+  let unread = events;
+  if (cached === undefined) {
+    const last = events.at(-1);
+    if (last === undefined) {
+      return {
+        terminal: false,
+        signalIds: new Set(),
+        timerFiredIds: new Set(),
+      };
+    }
+    // A terminal event can only be the last, so an ended run is known
+    // from that one read and keeps no summary.
+    if ((await factsOf(last)).terminal) {
+      return { terminal: true, signalIds: new Set(), timerFiredIds: new Set() };
+    }
+    cached = { cursor: last, signalIds: new Set(), timerFiredIds: new Set() };
+  } else {
+    const cursorSeq = cached.cursor.seq;
+    unread = events.filter((event) => event.seq > cursorSeq);
+  }
+  for (const event of unread) {
+    const facts = await factsOf(event);
+    if (facts.terminal) {
+      runs.delete(key);
+      return {
+        terminal: true,
+        signalIds: cached.signalIds,
+        timerFiredIds: cached.timerFiredIds,
+      };
+    }
+    if (facts.signalId !== undefined) cached.signalIds.add(facts.signalId);
+    if (facts.timerFiredId !== undefined) {
+      cached.timerFiredIds.add(facts.timerFiredId);
+    }
+    cached.cursor = event;
+  }
+  runs.set(key, cached);
+  return {
+    terminal: false,
+    signalIds: cached.signalIds,
+    timerFiredIds: cached.timerFiredIds,
+  };
+}
+
+/** Drop the summary of a run that has ended. */
+function forgetRunEventSummary(
+  substrate: SubstrateRepoStore,
+  repoId: RepoId,
+  runId: string,
+): void {
+  runSummariesByStore.get(substrate)?.delete(runSummaryKey(repoId, runId));
+}
+
+function listingHolds(
+  events: readonly PriorRunEvent[],
+  cursor: PriorRunEvent,
+): boolean {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event === undefined || event.seq < cursor.seq) return false;
+    if (event.seq === cursor.seq) return event.oid === cursor.oid;
+  }
+  return false;
+}
+
+const EventFactsBody = type({
+  type: "string",
+  "signalId?": "unknown",
+  "timerId?": "unknown",
+  "+": "ignore",
+});
+
+function eventFactsOf(bytes: Uint8Array): RunEventFacts {
+  const none = {
+    terminal: false,
+    signalId: undefined,
+    timerFiredId: undefined,
+  };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    // A corrupt blob is rejected by validatePush at write time.
+    return none;
+  }
+  const body = EventFactsBody(parsed);
+  if (body instanceof type.errors) return none;
+  return {
+    terminal: classifyTerminalEvent(body.type).terminal,
+    signalId:
+      body.type === "SignalReceived" && typeof body.signalId === "string"
+        ? body.signalId
+        : undefined,
+    timerFiredId:
+      body.type === "TimerFired" && typeof body.timerId === "string"
+        ? body.timerId
+        : undefined,
+  };
+}
+
 /** The path of the per-event file at `seq` in a run's log. */
 export function runEventPath(runId: string, seq: number): string {
   return `${RUNS_PREFIX}/${runId}/${EVENTS_DIR}/${String(seq)}.json`;
@@ -446,6 +628,12 @@ async function appendBatchEvents(
       throw new Error(reason, { cause });
     }
     throw cause;
+  }
+  if (
+    seqConflict === null &&
+    events.some((event) => classifyTerminalEvent(event.kind).terminal)
+  ) {
+    forgetRunEventSummary(opts.substrate, opts.repoId, runId);
   }
   if (seqConflict !== null) {
     const conflict: { expected: number; supplied: number } = seqConflict;
