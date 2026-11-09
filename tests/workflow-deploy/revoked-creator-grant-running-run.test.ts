@@ -41,7 +41,7 @@ import {
 const TENANT_ID = "tnt_revoked_creator_grant";
 const RUN_ID = "run_revoked-creator-grant";
 const OWN_RUN = `workflow-run:${RUN_ID}`;
-const OWN_RUN_PATH = `/api/tenants/${TENANT_ID}/workflows/runs/${RUN_ID}`;
+const OWN_RUN_PATH = `/api/tenants/self/workflows/runs/${RUN_ID}`;
 const SIGNAL_NAME = "resume";
 // The grant `seedTenancy` gives the creator, by the id `grantCaller` assigns.
 const CREATOR_READ_GRANT_ID = "grant-caller-read-workflow-run:*";

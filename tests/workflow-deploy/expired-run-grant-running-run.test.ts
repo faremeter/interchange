@@ -38,7 +38,7 @@ import {
 
 const TENANT_ID = "tnt_expired_run_grant";
 const RUN_ID = "run_expired-run-grant";
-const OWN_RUN_PATH = `/api/tenants/${TENANT_ID}/workflows/runs/${RUN_ID}`;
+const OWN_RUN_PATH = `/api/tenants/self/workflows/runs/${RUN_ID}`;
 const SIGNAL_NAME = "resume";
 const PROBE_RESOURCE = `tool:${PROBE_DEFINITION_NAME}`;
 

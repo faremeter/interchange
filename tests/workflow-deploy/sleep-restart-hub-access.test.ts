@@ -90,7 +90,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (t === undefined) throw new Error("env did not start");
       const { env } = t;
       await t.seedTenancy(OTHER_TENANT_ID);
-      const ownRunPath = `${t.runsPath}/${RUN_ID}`;
+      const ownRunPath = `${t.selfRunsPath}/${RUN_ID}`;
       await t.deploy({
         anchorRunId: RUN_ID,
         actions: "./workflow.mjs",

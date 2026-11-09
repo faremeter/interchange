@@ -30,7 +30,7 @@ import {
 const TENANT_ID = "tnt_tool_hub_access";
 const RUN_ID = "run_tool-hub-access";
 const STEP_ID = "step1";
-const OWN_RUN_PATH = `/api/tenants/${TENANT_ID}/workflows/runs/${RUN_ID}`;
+const OWN_RUN_PATH = `/api/tenants/self/workflows/runs/${RUN_ID}`;
 
 let t: HubAccessEnv;
 

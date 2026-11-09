@@ -55,7 +55,7 @@ function deploy(anchorRunId: string, requirement: GrantRequirement) {
       hubAccessWorkflowEntry({
         address,
         workflowId: `wf_${anchorRunId.replaceAll("-", "_")}`,
-        calls: { ownRun: `${t.runsPath}/${anchorRunId}` },
+        calls: { ownRun: `${t.selfRunsPath}/${anchorRunId}` },
         grantRequirements: [requirement],
       }),
   });

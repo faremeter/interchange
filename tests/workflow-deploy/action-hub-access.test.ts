@@ -89,7 +89,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await t.seedTenancy(OTHER_TENANT_ID);
       const principalA = await deriveRunPrincipalId(TENANT_ID, RUN_A);
       await t.grantCaller(`principal:${principalA}`, "manage");
-      const runs = t.runsPath;
+      const runs = t.selfRunsPath;
 
       // The fixture hub routes the packs of the newest deployment only, so
       // each run finishes before the next deployment goes out.
@@ -110,7 +110,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         calls: {
           ownRun: `${runs}/${RUN_A}`,
           otherRun: `${runs}/${RUN_B}`,
-          grants: `/api/tenants/${TENANT_ID}/grants`,
+          grants: "/api/tenants/self/grants",
           otherTenant: `/api/tenants/${OTHER_TENANT_ID}/workflows/runs`,
         },
       });

@@ -40,8 +40,8 @@ const RUN_ID = "run_body-hub";
 let t: HubAccessEnv;
 
 // The route of the top-level run each body action reads.
-const CHILD_PATH = () => `${t.runsPath}/${RUN_ID}`;
-const LOOP_PATH = () => `${t.runsPath}/${RUN_ID}/events`;
+const CHILD_PATH = () => `${t.selfRunsPath}/${RUN_ID}`;
+const LOOP_PATH = () => `${t.selfRunsPath}/${RUN_ID}/events`;
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "body actions call the hub REST API as the top-level run",
