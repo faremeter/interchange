@@ -6,10 +6,16 @@ import {
   expect,
   test,
 } from "bun:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { type } from "arktype";
 import { eq } from "drizzle-orm";
+import type { RouterRoute } from "hono/types";
 
 import { createInMemoryGrantStore } from "@intx/authz";
+import { generateKeyPair } from "@intx/crypto";
 import {
   createApprovalStore,
   createRunTokenStore,
@@ -24,6 +30,7 @@ import {
 } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
+  createAssetService,
   createEventCollectorRegistry,
   createSidecarRouter,
   type AssetService,
@@ -47,6 +54,8 @@ import {
   tenantSlugFromId,
 } from "@intx/test-harness/seed";
 import { base64Encode, signalName } from "@intx/types";
+
+import { createTestRepoStore } from "./lib/repo-store";
 
 // A workflow run token authenticates as its run principal on the tenant
 // routes, carries its consumer into authorization, and reaches every tenant
@@ -166,24 +175,27 @@ describe.skipIf(!harnessDbEnvAvailable())(
       opts: {
         triggerStores?: boolean;
         sidecarRouter?: Partial<SidecarRouter>;
+        stores?: { assetService: AssetService; repoStore: RepoStore };
       } = {},
     ) {
       return createApp({
         // The deploy route and the run mail trigger mount only with the
         // stores. A stub allocation service never reaches them, and a mail
         // request these tests send is refused before the trigger uses them.
-        ...(workflowAllocationService !== undefined ||
-        opts.triggerStores === true
-          ? {
-              ...(workflowAllocationService !== undefined
-                ? { workflowAllocationService }
-                : {}),
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused by the stubbed deploy
-              assetService: {} as AssetService,
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused by the stubbed deploy
-              repoStore: {} as RepoStore,
-            }
-          : { assetService: null, repoStore: null }),
+        ...(opts.stores !== undefined
+          ? opts.stores
+          : workflowAllocationService !== undefined ||
+              opts.triggerStores === true
+            ? {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused by the stubbed deploy
+                assetService: {} as AssetService,
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused by the stubbed deploy
+                repoStore: {} as RepoStore,
+              }
+            : { assetService: null, repoStore: null }),
+        ...(workflowAllocationService !== undefined
+          ? { workflowAllocationService }
+          : {}),
         getSession: mockGetSession(sessionUser),
         authHandler: () => new Response("", { status: 404 }),
         db: h.db,
@@ -685,5 +697,211 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       expect(res.status).toBe(200);
     });
+
+    // Every registered tenant route, called by a run that holds every grant,
+    // with unknown ids and an empty JSON body. The run holds every grant, so
+    // a 401 or 403 can only come from a block on the run itself. Most
+    // handlers stop at their lookup or their body validation, so this shows
+    // that no route blocks or fails a run before that point. A refusal
+    // after validation is out of its reach, such as the git-token mint's
+    // refusal of every principal that is not a user; the tests above cover
+    // the paths past that point. route-registration.test.ts enumerates and
+    // samples the routes the same way.
+    test("no tenant route blocks a run with every grant before validation or fails it with a server error", async () => {
+      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "run-sweep-"));
+      try {
+        const repoStore = createTestRepoStore({
+          dataDir,
+          signingKey: await generateKeyPair(),
+        });
+        const app = makeApp([RUN_EVERYTHING], null, undefined, {
+          stores: {
+            repoStore,
+            assetService: createAssetService({ db: h.db, repoStore }),
+          },
+        });
+
+        const entriesOf = new Map<string, RouterRoute[]>();
+        for (const r of app.routes) {
+          if (r.method === "ALL" && r.path.endsWith("*")) continue;
+          if (!TENANT_PATH.test(r.path)) continue;
+          const key = `${r.method} ${r.path}`;
+          entriesOf.set(key, [...(entriesOf.get(key) ?? []), r]);
+        }
+
+        const keyOf = new Map<RouterRoute, string>();
+        for (const [key, entries] of entriesOf) {
+          for (const e of entries) keyOf.set(e, key);
+        }
+
+        const offenders: string[] = [];
+        const unreached: string[] = [];
+        const unsampled: string[] = [];
+        // Pins for routes the app does not mount.
+        const unmounted = new Set(SWEEP_PINNED.keys());
+        for (const [key, entries] of entriesOf) {
+          const [first] = entries;
+          if (first === undefined) continue;
+          const method = first.method === "ALL" ? "GET" : first.method;
+          const sample = sampleTenantPath(first.path);
+          if (sample.unsampled.length > 0) {
+            unsampled.push(key);
+            continue;
+          }
+          // The first route the sample matches answers it, so it must be this
+          // one; the wildcard guards before it are not in `keyOf`.
+          const [matches] = app.router.match(method, sample.url);
+          const answering = matches
+            .map(([[, entry]]) => keyOf.get(entry))
+            .find((k) => k !== undefined);
+          if (answering !== key) {
+            unreached.push(
+              `${key} at ${sample.url}: answered by ${answering ?? "none"}`,
+            );
+            continue;
+          }
+
+          const withBody = ["POST", "PUT", "PATCH"].includes(method);
+          const res = await asRun(app, sample.url, {
+            method,
+            ...(withBody
+              ? {
+                  headers: { "content-type": "application/json" },
+                  body: "{}",
+                }
+              : {}),
+          });
+          const body = await res.text();
+          const answer = `${key} -> ${res.status} ${body.slice(0, 200)}`;
+          const pinned = SWEEP_PINNED.get(key);
+          if (pinned !== undefined) {
+            unmounted.delete(key);
+            const challenged = res.headers.has("www-authenticate");
+            if (
+              res.status !== pinned.status ||
+              !body.includes(pinned.marker) ||
+              challenged !== (pinned.challenge ?? false)
+            ) {
+              offenders.push(`${answer} (pinned to ${pinned.status})`);
+            }
+            continue;
+          }
+          if (res.status === 401 || res.status === 403 || res.status >= 500) {
+            offenders.push(answer);
+          }
+        }
+
+        for (const route of SWEEP_REQUIRED) {
+          if (!entriesOf.has(route)) unreached.push(`${route}: not mounted`);
+        }
+        expect({
+          offenders,
+          unreached,
+          unsampled,
+          unmounted: [...unmounted],
+        }).toEqual({
+          offenders: [],
+          unreached: [],
+          unsampled: [],
+          unmounted: [],
+        });
+      } finally {
+        await fs.rm(dataDir, { recursive: true, force: true });
+      }
+    });
   },
 );
+
+const TENANT_PATH = /^\/api\/tenants\/:[^/]+(\/|$)/;
+const TENANT_ROUTE = "/api/tenants/:tenantId";
+// The repository segment is SMART_HTTP_REPO_SEGMENT in hub-api's asset routes.
+const SMART_HTTP_REPO = `${TENANT_ROUTE}/assets/:kind/:nameDotGit{[^/]+\\.git}`;
+
+// The value for each parameter and wildcard in a sample request. It must not
+// match a static path segment, or the sample could reach another route.
+const SWEEP_SAMPLE = "__sample__";
+
+// The value for a parameter constrained by a pattern, keyed by the pattern.
+const SWEEP_PATTERN_SAMPLES: Record<string, string> = {
+  "[^/]+\\.git": `${SWEEP_SAMPLE}.git`,
+};
+
+// A route whose answer the sweep pins: its status, a text its body carries,
+// and whether it carries the git-token middleware's Basic challenge, so the
+// pin fails when the answer comes from somewhere else.
+type SweepPin = {
+  status: number;
+  marker: string;
+  challenge?: true;
+  reason: string;
+};
+
+// A stub that answers 501 to every caller.
+const NOT_IMPLEMENTED: SweepPin = {
+  status: 501,
+  marker: '"not_implemented"',
+  reason: "not implemented for any caller",
+};
+const NO_LIFECYCLE: SweepPin = {
+  status: 503,
+  marker: "Workflow lifecycle service unavailable",
+  reason: "the test app has no workflow lifecycle service",
+};
+const GIT_TOKEN_ONLY: SweepPin = {
+  status: 401,
+  marker: '"unauthorized"',
+  challenge: true,
+  reason: "smart-HTTP takes only a git token",
+};
+
+const SWEEP_PINNED = new Map<string, SweepPin>([
+  ...[
+    "/agents/:agentId/logs",
+    "/agents/:agentId/metrics",
+    "/traces",
+    "/traces/:traceId",
+    "/agents/:agentId/data",
+    "/agents/:agentId/data/*",
+    "/agents/:agentId/history",
+    "/agents/:agentId/history/:ref",
+    "/agents/:agentId/branches",
+  ].map((p): [string, SweepPin] => [
+    `GET ${TENANT_ROUTE}${p}`,
+    NOT_IMPLEMENTED,
+  ]),
+  [
+    `POST ${TENANT_ROUTE}/agents/:agentId/history/:ref/restore`,
+    NOT_IMPLEMENTED,
+  ],
+  [`GET ${TENANT_ROUTE}/workflows/runs/:runId/mail`, NOT_IMPLEMENTED],
+  [`GET ${TENANT_ROUTE}/workflows/runs/:runId/lifecycle`, NO_LIFECYCLE],
+  [`POST ${TENANT_ROUTE}/workflows/runs/:runId/capacity/release`, NO_LIFECYCLE],
+  [`DELETE ${TENANT_ROUTE}/workflows/runs/:runId`, NO_LIFECYCLE],
+  [`GET ${SMART_HTTP_REPO}/info/refs`, GIT_TOKEN_ONLY],
+  [`POST ${SMART_HTTP_REPO}/git-upload-pack`, GIT_TOKEN_ONLY],
+  [`POST ${SMART_HTTP_REPO}/git-receive-pack`, GIT_TOKEN_ONLY],
+]);
+
+// Route groups that mount only with a repo store, so a change to the app
+// wiring cannot drop them from the sweep unseen.
+const SWEEP_REQUIRED = [
+  `POST ${TENANT_ROUTE}/workflows/deployments`,
+  `GET ${TENANT_ROUTE}/git-tokens`,
+  `GET ${TENANT_ROUTE}/assets`,
+  `GET ${SMART_HTTP_REPO}/info/refs`,
+];
+
+function sampleTenantPath(routePath: string) {
+  const unsampled: string[] = [];
+  const url = routePath
+    .replace(/^\/api\/tenants\/:[^/]+/, `/api/tenants/${TENANT_ID}`)
+    .replace(/:\w+(?:\{([^}]+)\})?/g, (param, pattern?: string) => {
+      if (pattern === undefined) return SWEEP_SAMPLE;
+      const sample = SWEEP_PATTERN_SAMPLES[pattern];
+      if (sample !== undefined) return sample;
+      unsampled.push(param);
+      return param;
+    })
+    .replace(/\*$/, SWEEP_SAMPLE);
+  return { url, unsampled };
+}
