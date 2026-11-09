@@ -15,7 +15,9 @@ Supported auth methods:
 
 ## Tenant Context
 
-A user can belong to many tenants. Tenant context is always encoded in the URL path as `/api/tenants/:tenantId/...` -- no headers, no implicit context.
+A user can belong to many tenants. Tenant context is always encoded in the URL path as `/api/tenants/:tenantId/...` -- no headers.
+
+The segment `self` in place of the tenant id names the tenant that the request's credential belongs to. A run token belongs to its run principal's tenant, and a git token bound to a tenant belongs to that tenant. A session, or a git token bound to no tenant, belongs to no one tenant, so `self` names no tenant and the request fails as for an unknown tenant. The hub generates tenant ids of the form `tnt_<hex>`, so no tenant that the hub creates has the id `self`.
 
 | Path scope                 | Example                          | Behavior                                                                             |
 | -------------------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
@@ -96,7 +98,7 @@ A workflow run calls the tenant routes with a run token instead of a session. A 
 ```
 Request to /api/tenants/:tenantId/... with Authorization: Bearer itx_run_...
   -> hash the bearer, look up the run_token row; unknown -> 401
-  -> resolve the token's principal in the URL tenant; not there -> 403
+  -> resolve the token's principal in the URL tenant, where `self` names the principal's own tenant; not there -> 403
   -> if the principal is not active (the run ended), or is not a workflow principal: 401
   -> set principal, tenant and the token's consumer, and clear the session user; resolveTenant skips the session
   -> evaluate the run principal's grants against the requested operation

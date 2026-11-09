@@ -53,6 +53,7 @@ function createMockRunTokenStore(): RunTokenStore {
     findByHash: async () => ({
       id: "rtk_a",
       principalId: runPrincipal.id,
+      tenantId: runPrincipal.tenantId,
       consumer: "action:caller",
     }),
     loadDelivery: notImplemented("runTokenStore.loadDelivery"),

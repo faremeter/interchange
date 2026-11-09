@@ -439,6 +439,78 @@ describe("createGitTokenAuth", () => {
       const body: unknown = await res.json();
       expect(body).toMatchObject({ error: { code: "tenant_mismatch" } });
     });
+
+    test("tenant-bound token with its own URL tenant id succeeds", async () => {
+      const token = await makeToken({
+        id: "tok_bound_a",
+        tokenHashSha256: await sha256("itx_svc_bound_own"),
+        kind: "svc",
+        tenantId: "ten_a",
+      });
+      const app = buildApp(
+        createMockDB({
+          gitToken: token,
+          tenant: makeTenant("ten_a"),
+          principal: makePrincipal("prin_1", "ten_a"),
+        }),
+      );
+      const res = await app.request("/tenants/ten_a/probe", {
+        headers: { authorization: "Bearer itx_svc_bound_own" },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ tenantId: "ten_a" });
+    });
+
+    test("tenant-bound token names its own tenant as self", async () => {
+      const token = await makeToken({
+        id: "tok_bound_a",
+        tokenHashSha256: await sha256("itx_svc_bound_self"),
+        kind: "svc",
+        tenantId: "ten_a",
+      });
+      const app = buildApp(
+        createMockDB({
+          gitToken: token,
+          tenant: makeTenant("ten_a"),
+          principal: makePrincipal("prin_1", "ten_a"),
+        }),
+      );
+      const res = await app.request("/tenants/self/probe", {
+        headers: { authorization: "Bearer itx_svc_bound_self" },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ tenantId: "ten_a" });
+    });
+
+    test("token bound to no tenant names no tenant as self", async () => {
+      const token = await makeToken({
+        id: "tok_personal",
+        tokenHashSha256: await sha256("itx_pat_unbound_self"),
+        tenantId: null,
+        principalId: null,
+      });
+      const app = buildApp(
+        createMockDB({
+          gitToken: token,
+          tenant: makeTenant("ten_a"),
+          principalByRef: makePrincipal("prin_alice_a", "ten_a"),
+        }),
+      );
+      const res = await app.request("/tenants/self/probe", {
+        headers: { authorization: "Bearer itx_pat_unbound_self" },
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: { code: "tenant_mismatch" },
+      });
+      expect(
+        captured.some(
+          (r) =>
+            r.category[1] === "git-token" &&
+            r.message.includes("tenant cannot be resolved"),
+        ),
+      ).toBe(true);
+    });
   });
 
   describe("personal token principal resolution from (userId, :tid)", () => {

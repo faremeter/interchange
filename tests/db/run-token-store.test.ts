@@ -106,6 +106,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await s.findByHash(await sha256(delivered.token))).toEqual({
         id: delivered.id,
         principalId: RUN_PRINCIPAL,
+        tenantId: TENANT,
         consumer: "action:h",
       });
       expect(

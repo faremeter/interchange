@@ -8,7 +8,10 @@ import { getLogger } from "@intx/log";
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
-import { resolveTenantPrincipal } from "../principal-lookup";
+import {
+  resolveTenantPrincipal,
+  resolveTenantSegment,
+} from "../principal-lookup";
 
 const log = getLogger(["hub", "run-token"]);
 
@@ -23,7 +26,8 @@ export type CreateRunTokenAuthDeps = {
  * Authenticate a workflow run token on the tenant routes. A request without
  * an `Authorization: Bearer itx_run_...` header passes through untouched, so
  * the session flow and the git bearer routes are unchanged. A run token
- * resolves to its run principal in the URL's tenant, and the request carries
+ * resolves to its run principal in the tenant the URL names, where `self`
+ * names the run principal's own tenant, and the request carries
  * the token's consumer so a grant scoped to a consumer applies only to it.
  * The route's own grant check then decides what the run may do there.
  *
@@ -45,13 +49,13 @@ export function createRunTokenAuth({
       return errorResponse(c, "unauthorized", "Authentication required");
     }
 
-    const tenantId = c.req.param("tenantId");
-    if (!tenantId) {
+    const tenantSegment = c.req.param("tenantId");
+    if (!tenantSegment) {
       return errorResponse(c, "bad_request", "Missing tenantId");
     }
 
     const resolved = await resolveTenantPrincipal(db, {
-      tenantId,
+      tenantId: resolveTenantSegment(tenantSegment, token.tenantId),
       select: { principalId: token.principalId },
     });
 

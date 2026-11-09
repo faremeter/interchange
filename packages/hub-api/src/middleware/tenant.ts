@@ -5,7 +5,10 @@ import { getLogger } from "@intx/log";
 
 import { unauthorizedResponse, type AppEnv, type TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
-import { resolveTenantPrincipal } from "../principal-lookup";
+import {
+  resolveTenantPrincipal,
+  resolveTenantSegment,
+} from "../principal-lookup";
 
 const log = getLogger(["hub", "middleware", "tenant"]);
 
@@ -32,13 +35,14 @@ export function createResolveTenant({
       return unauthorizedResponse(c);
     }
 
-    const tenantId = c.req.param("tenantId");
-    if (!tenantId) {
+    const tenantSegment = c.req.param("tenantId");
+    if (!tenantSegment) {
       return errorResponse(c, "bad_request", "Missing tenantId");
     }
 
+    // A session belongs to no one tenant, so `self` names none.
     const resolved = await resolveTenantPrincipal(db, {
-      tenantId,
+      tenantId: resolveTenantSegment(tenantSegment, null),
       select: { userId: user.id },
     });
 
