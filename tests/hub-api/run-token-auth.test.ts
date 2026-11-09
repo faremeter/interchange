@@ -10,10 +10,15 @@ import { type } from "arktype";
 import { eq } from "drizzle-orm";
 
 import { createInMemoryGrantStore } from "@intx/authz";
-import { createRunTokenStore } from "@intx/db";
+import {
+  createApprovalStore,
+  createRunTokenStore,
+  createSignalCorrelationStore,
+} from "@intx/db";
 import {
   gitToken,
   principal,
+  signalCorrelation,
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
@@ -24,6 +29,7 @@ import {
   type AssetService,
   type RepoStore,
   type SessionService,
+  type SidecarRouter,
   type WorkflowAllocationService,
 } from "@intx/hub-sessions";
 import type { GrantRule } from "@intx/types/authz";
@@ -40,7 +46,7 @@ import {
   seedWorkflowRun,
   tenantSlugFromId,
 } from "@intx/test-harness/seed";
-import { base64Encode } from "@intx/types";
+import { base64Encode, signalName } from "@intx/types";
 
 // A workflow run token authenticates as its run principal on the tenant
 // routes, carries its consumer into authorization, and reaches every tenant
@@ -157,7 +163,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       grants: GrantRule[],
       sessionUser: string | null = null,
       workflowAllocationService?: WorkflowAllocationService,
-      opts: { triggerStores?: boolean } = {},
+      opts: {
+        triggerStores?: boolean;
+        sidecarRouter?: Partial<SidecarRouter>;
+      } = {},
     ) {
       return createApp({
         // The deploy route and the run mail trigger mount only with the
@@ -180,12 +189,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         grantStore: createInMemoryGrantStore(grants),
         credentialCipher: cipher,
-        sidecarRouter: createSidecarRouter({
-          withExecutableWorkflowRun: async (_target, send) => send(),
-          authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
-          resolveSidecarBindings: async () => [],
-          validateSidecarIdentity: async () => true,
-        }),
+        sidecarRouter: {
+          ...createSidecarRouter({
+            withExecutableWorkflowRun: async (_target, send) => send(),
+            authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
+            resolveSidecarBindings: async () => [],
+            validateSidecarIdentity: async () => true,
+          }),
+          ...opts.sidecarRouter,
+        },
         sessionService: mockSessionService(),
         eventCollectors: createEventCollectorRegistry({ db: h.db }),
         maxTarballBytes: 10_000_000,
@@ -441,6 +453,115 @@ describe.skipIf(!harnessDbEnvAvailable())(
           })),
         );
       });
+    });
+
+    describe("approval resolution", () => {
+      // The approval belongs to another run, as for a run that supervises
+      // another deployment.
+      const TARGET = "run_approval_target";
+      const TARGET_ADDRESS = `${TARGET}@${tenantSlugFromId(TENANT_ID).toLowerCase()}.example.test`;
+      const APPROVAL_ID = "apr_target";
+      const CORRELATION = "cor_target";
+      const APPROVE = `/api/tenants/${TENANT_ID}/approvals/${APPROVAL_ID}/approve`;
+
+      beforeEach(async () => {
+        await seedWorkflowRun(h.db, {
+          id: TARGET,
+          tenantId: TENANT_ID,
+          anchorRunId: TARGET,
+          address: TARGET_ADDRESS,
+        });
+        await createApprovalStore(h.db).create({
+          id: APPROVAL_ID,
+          tenantId: TENANT_ID,
+          anchorRunId: TARGET,
+          runId: TARGET,
+          agentAddress: TARGET_ADDRESS,
+          correlationId: CORRELATION,
+          toolDefinition: {
+            name: "search",
+            description: "search",
+            inputSchema: { type: "object" },
+          },
+          toolArguments: {},
+          timeoutAt: new Date(Date.now() + 3_600_000),
+        });
+        await createSignalCorrelationStore(h.db).register({
+          correlationId: CORRELATION,
+          tenantId: TENANT_ID,
+          anchorRunId: TARGET,
+          agentAddress: TARGET_ADDRESS,
+          runId: TARGET,
+          signalName: signalName(CORRELATION),
+          kind: "approval",
+        });
+      });
+
+      async function approve(grants: GrantRule[]) {
+        const delivered: Parameters<SidecarRouter["sendSignalDeliver"]>[0][] =
+          [];
+        const app = makeApp(grants, null, undefined, {
+          sidecarRouter: {
+            sendSignalDeliver: async (frame) => {
+              delivered.push(frame);
+            },
+          },
+        });
+        const res = await asRun(app, APPROVE, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ scope: "once" }),
+        });
+        const stored = await createApprovalStore(h.db).findById(APPROVAL_ID);
+        const correlation = await h.db.query.signalCorrelation.findFirst({
+          where: eq(signalCorrelation.correlationId, CORRELATION),
+        });
+        return { res, delivered, stored, correlation };
+      }
+
+      test("a run with resolve on approvals resolves one", async () => {
+        const { res, delivered, stored, correlation } = await approve([
+          grant("grt_run_resolve", RUN_PRINCIPAL_ID, "approval:*", "resolve"),
+        ]);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({
+          id: APPROVAL_ID,
+          status: "approved",
+          scope: "once",
+          resolvedAt: expect.any(String),
+        });
+        expect(stored?.status).toBe("approved");
+        expect(correlation?.resolvedAt).toBeInstanceOf(Date);
+        expect(delivered).toHaveLength(1);
+        expect(delivered[0]).toMatchObject({
+          agentAddress: TARGET_ADDRESS,
+          runId: TARGET,
+          signalName: signalName(CORRELATION),
+          payload: { outcome: "approved" },
+        });
+      });
+
+      test.each([
+        ["manage on approvals", "approval:*", "manage"],
+        ["resolve on another run's approvals", "approval:run_other", "resolve"],
+      ])(
+        "a run with %s cannot resolve one",
+        async (_name, resource, action) => {
+          const { res, delivered, stored, correlation } = await approve([
+            grant("grt_run_approval", RUN_PRINCIPAL_ID, resource, action),
+          ]);
+          expect(res.status).toBe(403);
+          expect(await res.json()).toEqual({
+            error: {
+              code: "forbidden",
+              message: "You do not have permission to resolve this approval",
+            },
+          });
+          expect(stored?.status).toBe("pending");
+          expect(correlation?.resolvedAt).toBeNull();
+          expect(delivered).toEqual([]);
+        },
+      );
     });
 
     describe("the run mail route", () => {
