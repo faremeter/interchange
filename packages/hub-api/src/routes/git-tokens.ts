@@ -374,19 +374,28 @@ export function createTenantGitTokenRoutes({
       tags: ["Git Tokens"],
       summary: "Mint a tenant-bound service git token",
       description:
-        'Mints a service token (`kind: "svc"`) bound to the requesting tenant. The plaintext secret is returned exactly once in the response and is never persisted in plaintext.',
+        'Mints a service token (`kind: "svc"`) bound to the requesting tenant and owned by the calling user. Only a user principal can mint one; a workflow run or an agent gets 403. The plaintext secret is returned exactly once in the response and is never persisted in plaintext.',
       responses: {
         201: jsonResponse("Token minted", GitTokenMintResponse),
         400: jsonResponse("Validation error", ErrorResponse),
+        403: jsonResponse(
+          "Caller lacks the grant, or is not a user principal",
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", CreateTenantGitToken),
     async (c) => {
       const tenantCtx = c.get("tenant");
       const principalCtx = c.get("principal");
-      const user = c.get("user");
-      if (!user) {
-        return unauthorizedResponse(c);
+      // A git token row names the user who owns it and can revoke it. Only a
+      // user principal has one, as its refId; a run or an agent has none.
+      if (principalCtx.kind !== "user") {
+        return errorResponse(
+          c,
+          "forbidden",
+          "Only a user principal can mint a git token",
+        );
       }
       const body = c.req.valid("json");
 
@@ -395,7 +404,7 @@ export function createTenantGitTokenRoutes({
       try {
         result = await mintGitToken(db, {
           kind: "svc",
-          userId: user.id,
+          userId: principalCtx.refId,
           principalId: principalCtx.id,
           tenantId: tenantCtx.id,
           name: body.name,
