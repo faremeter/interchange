@@ -218,12 +218,13 @@ Query: cursor?, limit?
 ### POST /api/tenants/:tenantId/git-tokens
 Mint a tenant-bound service git token
 
-Mints a service token (`kind: "svc"`) bound to the requesting tenant. The plaintext secret is returned exactly once in the response and is never persisted in plaintext.
+Mints a service token (`kind: "svc"`) bound to the requesting tenant and owned by the calling user. Only a user principal can mint one; a workflow run or an agent gets 403. The plaintext secret is returned exactly once in the response and is never persisted in plaintext.
 
 Body: unknown
 
 201: unknown -- Token minted
 400: ErrorResponse -- Validation error
+403: ErrorResponse -- Caller lacks the grant, or is not a user principal
 
 ### DELETE /api/tenants/:tenantId/git-tokens/:tokenId
 Revoke a tenant git token

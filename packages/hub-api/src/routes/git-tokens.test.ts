@@ -14,6 +14,7 @@ import {
   type SessionService,
   type SidecarRouter,
 } from "@intx/hub-sessions";
+import type { PrincipalRow } from "../context";
 import type { GetSession } from "../session";
 import {
   createGitTokenAuth,
@@ -87,7 +88,10 @@ function notImplemented(path: string) {
   };
 }
 
-function createMockDB(state: MockDBState): DB["db"] {
+function createMockDB(
+  state: MockDBState,
+  principalRow: PrincipalRow,
+): DB["db"] {
   function insertChain(table: unknown) {
     const name = tableName(table);
     return {
@@ -139,7 +143,7 @@ function createMockDB(state: MockDBState): DB["db"] {
         findMany: notImplemented("db.query.tenant.findMany"),
       },
       principal: {
-        findFirst: async () => testPrincipal,
+        findFirst: async () => principalRow,
         findMany: notImplemented("db.query.principal.findMany"),
       },
       gitToken: {
@@ -252,10 +256,11 @@ type TestAppOpts = {
   state: MockDBState;
   grants?: GrantRule[];
   userId?: string;
+  principal?: PrincipalRow;
 };
 
 function createTestApp(opts: TestAppOpts) {
-  const db = createMockDB(opts.state);
+  const db = createMockDB(opts.state, opts.principal ?? testPrincipal);
 
   return {
     app: createApp({
@@ -557,6 +562,59 @@ describe("POST /api/tenants/:tid/git-tokens", () => {
     expect(row.kind).toBe("svc");
     expect(row.actions).toEqual(["receivePack"]);
   });
+
+  test("the calling user principal owns the minted token", async () => {
+    const state: MockDBState = { gitTokens: [] };
+    const { app } = createTestApp({
+      state,
+      principal: { ...testPrincipal, refId: OTHER_USER_ID },
+    });
+
+    const res = await app.request(tenantTokensURL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "ci",
+        resource: "asset:def_xyz",
+        refPattern: "**",
+        actions: ["can_push"],
+        expiresAt: futureISOString(),
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(state.gitTokens[0]?.userId).toBe(OTHER_USER_ID);
+  });
+
+  for (const kind of ["workflow", "agent"] as const) {
+    test(`refuses a ${kind} principal even with a session user present`, async () => {
+      const state: MockDBState = { gitTokens: [] };
+      const { app } = createTestApp({
+        state,
+        principal: { ...testPrincipal, kind, refId: "run_or_agent" },
+      });
+
+      const res = await app.request(tenantTokensURL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "ci",
+          resource: "asset:def_xyz",
+          refPattern: "**",
+          actions: ["can_push"],
+          expiresAt: futureISOString(),
+        }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await parseErrorResponse(res);
+      expect(body.error).toEqual({
+        code: "forbidden",
+        message: "Only a user principal can mint a git token",
+      });
+      expect(state.gitTokens).toHaveLength(0);
+    });
+  }
 
   test("missing git-token:* create grant rejects with 403", async () => {
     const state: MockDBState = { gitTokens: [] };
