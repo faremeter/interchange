@@ -626,8 +626,11 @@ action declares the reserved handle `interchange.hub` (in
 `credentialBindings` entry for it. An action resolves the handle inside
 `perform`'s `run`, as any other handle. The handle resolves to an `http`
 mediated credential pinned to the hub's origin, so the consumer fetches
-relative paths such as `/api/tenants/<tenantId>/workflows/runs/<runId>`.
+relative paths such as `/api/tenants/self/workflows/runs/<runId>`.
 
+- The `self` tenant segment names the run's own tenant, so run code does
+  not need its tenant id. An explicit tenant id also works. A request
+  whose URL names another tenant gets 403.
 - The run holds only the grants its definition's grant requirements
   delegate to it. Name the run itself as `workflow-run:self`; see "Grant
   Requirements on Definitions" in AUTH.md.
@@ -680,15 +683,14 @@ message, and the run code gets the result. The signer sends nothing.
   `Message-ID` that `compose` stamps: it names the run, and the hub refuses
   an ID that does not. To send
   it, post `{ rawMessage }` to
-  `/api/tenants/<tenantId>/workflows/runs/<targetRunId>/mail` through the
+  `/api/tenants/self/workflows/runs/<targetRunId>/mail` through the
   `interchange.hub` credential (item 32). The hub checks the headers and the
   signature, then relays the message as the run's own mail. The run needs
   `manage` on the target run and a `mail.send` grant for it; every run holds
   `mail.send:*:*` from its first trigger. To mail itself, a run declares a
   `workflow-run:self` `manage` requirement (item 32). That grant also opens
   the other `manage` routes on the run, such as stopping it. The mail tools'
-  `tool:mail_send` grant does not apply to this path. No API gives run code
-  its tenant id, so the caller passes it to the run as input.
+  `tool:mail_send` grant does not apply to this path.
 - Each `compose` stamps a new Message-ID. Compose a message in the same
   `perform` as the work that uses it. A crash or a retry after that work and
   before the record composes a new message with a new Message-ID, and the

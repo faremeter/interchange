@@ -16,7 +16,7 @@ This API is not:
 
 Every route falls into one of three scopes:
 
-- **`/api/tenants/:tenantId/...`** -- Tenant-scoped operations. All reads and writes within a tenant.
+- **`/api/tenants/:tenantId/...`** -- Tenant-scoped operations. All reads and writes within a tenant. The segment `self` in place of the tenant id names the tenant that the caller's credential belongs to; see "Tenant Context" in AUTH.md.
 - **`/api/me/...`** -- User-scoped, cross-tenant reads. Dashboard views aggregating across all tenants the user belongs to.
 - **`/api/...`** -- Global operations. Auth, tenant creation, system health, model catalog. Creating a tenant under a parent is the one global operation that checks a grant, in the parent tenant.
 
@@ -28,6 +28,8 @@ Tenant context is encoded in the URL, not in a header. This was a deliberate cho
 - **Loggable and cacheable.** Every request's scope is visible in access logs, cache keys, and browser history without inspecting headers.
 - **Mobile-friendly.** Native mobile clients don't need to manage header state across navigation. The URL carries everything.
 - **RESTful.** Resources are identified by their path. A tenant-scoped agent lives at a tenant-scoped path.
+
+The `self` segment is the one exception. A `self` URL does not show its tenant, because the tenant comes from the credential, so the same URL names a different tenant for each credential. The segment exists for a caller, such as a workflow run, that holds a credential for one tenant but not the tenant id. A credential that belongs to no one tenant, such as a session, gets no tenant from `self`.
 
 The tradeoff is longer URLs. `/api/tenants/tnt_abc/agents/agt_xyz` is more verbose than `/api/agents/agt_xyz`. This is acceptable -- IDs are globally unique and URLs are for machines, not humans.
 

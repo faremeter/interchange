@@ -13,7 +13,10 @@ import { base64Decode } from "@intx/types";
 
 import type { AppEnv, PrincipalRow, TenantRow } from "../context";
 import { errorResponse } from "../error-response";
-import { resolveTenantPrincipal } from "../principal-lookup";
+import {
+  resolveTenantPrincipal,
+  resolveTenantSegment,
+} from "../principal-lookup";
 
 const log = getLogger(["hub", "git-token"]);
 
@@ -122,10 +125,14 @@ export function createGitTokenAuth({
       return forbidden(c, "token_expired", "Token has expired");
     }
 
-    const urlTenantId = c.req.param("tenantId");
+    const urlSegment = c.req.param("tenantId");
+    const urlTenantId =
+      urlSegment === undefined
+        ? null
+        : resolveTenantSegment(urlSegment, tokenRow.tenantId);
 
     if (tokenRow.tenantId !== null) {
-      if (urlTenantId !== undefined && urlTenantId !== tokenRow.tenantId) {
+      if (urlTenantId !== null && urlTenantId !== tokenRow.tenantId) {
         log.info(
           "git-token auth: tenant mismatch {tokenId} token={tokenTenantId} url={urlTenantId}",
           {
@@ -144,9 +151,9 @@ export function createGitTokenAuth({
 
     const resolvedTenantId =
       tokenRow.tenantId !== null ? tokenRow.tenantId : urlTenantId;
-    if (resolvedTenantId === undefined) {
+    if (resolvedTenantId === null) {
       log.info(
-        "git-token auth: tenant cannot be resolved (token not tenant-bound and URL has no :tenantId) {tokenId}",
+        "git-token auth: tenant cannot be resolved (token not tenant-bound and URL names no tenant) {tokenId}",
         { tokenId: tokenRow.id },
       );
       return forbidden(

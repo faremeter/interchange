@@ -70,6 +70,7 @@ const USER_PRINCIPAL_ID = "prn_user";
 const USER_ID = "usr_runtoken";
 const CONSUMER = "action:caller";
 const RUNS = `/api/tenants/${TENANT_ID}/workflows/runs`;
+const SELF_RUNS = "/api/tenants/self/workflows/runs";
 
 const cipher = createTestCredentialCipher();
 
@@ -283,6 +284,113 @@ describe.skipIf(!harnessDbEnvAvailable())(
         `/api/tenants/${OTHER_TENANT_ID}/workflows/runs`,
       );
       expect(res.status).toBe(403);
+    });
+
+    describe("the self tenant segment", () => {
+      test("a run token names its run principal's tenant as self", async () => {
+        const app = makeApp([
+          grant(
+            "grt_tenant_read",
+            RUN_PRINCIPAL_ID,
+            `tenant:${TENANT_ID}`,
+            "read",
+          ),
+        ]);
+        const res = await asRun(app, "/api/tenants/self");
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ id: TENANT_ID });
+      });
+
+      test("each run token names its own principal's tenant as self", async () => {
+        const otherRunPrincipalId = "prn_run_other";
+        await seedPrincipal(h.db, {
+          id: otherRunPrincipalId,
+          tenantId: OTHER_TENANT_ID,
+          kind: "workflow",
+          refId: "run_other",
+        });
+        const store = createRunTokenStore({ db: h.db, cipher });
+        await store.mintIfAbsent(
+          { principalId: otherRunPrincipalId, consumers: [CONSUMER] },
+          h.db,
+        );
+        const [otherDelivered] = await store.loadDelivery(otherRunPrincipalId);
+        if (otherDelivered === undefined) {
+          throw new Error("expected a run token");
+        }
+        // Both grants match any tenant, so only `self` decides which tenant
+        // each request reads.
+        const app = makeApp([
+          grant("grt_tenant_read", RUN_PRINCIPAL_ID, "tenant:*", "read"),
+          grant("grt_other_read", otherRunPrincipalId, "tenant:*", "read"),
+        ]);
+
+        const own = await asRun(app, "/api/tenants/self");
+        const other = await app.request("/api/tenants/self", {
+          headers: { authorization: `Bearer ${otherDelivered.token}` },
+        });
+
+        expect([own.status, other.status]).toEqual([200, 200]);
+        expect(await own.json()).toMatchObject({ id: TENANT_ID });
+        expect(await other.json()).toMatchObject({ id: OTHER_TENANT_ID });
+      });
+
+      test("a run token updates its own tenant as self with manage on it", async () => {
+        const app = makeApp([
+          grant(
+            "grt_tenant_manage",
+            RUN_PRINCIPAL_ID,
+            `tenant:${TENANT_ID}`,
+            "manage",
+          ),
+        ]);
+        const res = await asRun(app, "/api/tenants/self", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Renamed" }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({
+          id: TENANT_ID,
+          name: "Renamed",
+        });
+      });
+
+      test("a grant on the literal self tenant does not authorize self", async () => {
+        const app = makeApp([
+          grant("grt_self_manage", RUN_PRINCIPAL_ID, "tenant:self", "manage"),
+        ]);
+        const res = await asRun(app, "/api/tenants/self", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Renamed" }),
+        });
+        expect(res.status).toBe(403);
+      });
+
+      test("a run token reaches a tenant route as self", async () => {
+        const app = makeApp([
+          grant("grt_run_read", RUN_PRINCIPAL_ID, "workflow-run:*", "read"),
+        ]);
+        expect((await asRun(app, SELF_RUNS)).status).toBe(200);
+      });
+
+      test("a deactivated run principal cannot use self", async () => {
+        await h.db
+          .update(principal)
+          .set({ status: "deactivated" })
+          .where(eq(principal.id, RUN_PRINCIPAL_ID));
+        const res = await asRun(makeApp([RUN_EVERYTHING]), SELF_RUNS);
+        expect(res.status).toBe(401);
+      });
+
+      test("a session names no tenant as self", async () => {
+        const res = await makeApp([USER_OWNER], USER_ID).request(SELF_RUNS);
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({
+          error: { code: "not_found", message: "Tenant not found" },
+        });
+      });
     });
 
     test("a run token stops working when its run principal is deactivated", async () => {
@@ -659,9 +767,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       });
 
-      function postMail(grants: GrantRule[], body: unknown) {
+      function postMail(grants: GrantRule[], body: unknown, runs = RUNS) {
         const app = makeApp(grants, null, undefined, { triggerStores: true });
-        return asRun(app, `${RUNS}/${TARGET}/mail`, {
+        return asRun(app, `${runs}/${TARGET}/mail`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
@@ -670,6 +778,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       test("a run token with manage on the target reaches it and must sign its own mail", async () => {
         const res = await postMail([MANAGE_TARGET], { content: "hi" });
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({
+          error: { code: "signed_mail_required" },
+        });
+      });
+
+      test("a run token reaches the target through the self tenant segment", async () => {
+        const res = await postMail(
+          [MANAGE_TARGET],
+          { content: "hi" },
+          SELF_RUNS,
+        );
         expect(res.status).toBe(400);
         expect(await res.json()).toMatchObject({
           error: { code: "signed_mail_required" },

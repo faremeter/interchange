@@ -10,6 +10,7 @@ import {
 } from "@intx/hub-common";
 
 import type { DB, DBExecutor } from "./client";
+import { principal } from "./schema/principals";
 import { runToken } from "./schema/run-tokens";
 
 type DBHandle = DB["db"];
@@ -31,6 +32,8 @@ function isRunTokenConsumer(value: string): boolean {
 export type RunTokenRow = {
   id: string;
   principalId: string;
+  /** The tenant of the token's principal, the tenant the token belongs to. */
+  tenantId: string;
   consumer: string;
 };
 
@@ -117,9 +120,11 @@ export function createRunTokenStore({ db, cipher }: CreateRunTokenStoreDeps) {
         .select({
           id: runToken.id,
           principalId: runToken.principalId,
+          tenantId: principal.tenantId,
           consumer: runToken.consumer,
         })
         .from(runToken)
+        .innerJoin(principal, eq(principal.id, runToken.principalId))
         .where(eq(runToken.tokenHashSha256, tokenHash))
         .limit(1);
       return row;

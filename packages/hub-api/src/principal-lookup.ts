@@ -5,6 +5,26 @@ import type { DB } from "@intx/db";
 
 import type { PrincipalRow, TenantRow } from "./context";
 
+/**
+ * The tenant path segment that names the tenant the request's credential
+ * belongs to, in place of that tenant's id. Tenant ids are generated as
+ * `tnt_<hex>`, so no tenant has this id.
+ */
+export const SELF_TENANT_SEGMENT = "self";
+
+/**
+ * The tenant id that a tenant path segment names. `self` names the tenant
+ * the credential belongs to, or no tenant for a credential that belongs to
+ * none, such as a session, whose user can be a member of many tenants. Any
+ * other segment is a tenant id.
+ */
+export function resolveTenantSegment(
+  segment: string,
+  credentialTenantId: string | null,
+): string | null {
+  return segment === SELF_TENANT_SEGMENT ? credentialTenantId : segment;
+}
+
 export type FindUserPrincipalArgs = {
   tenantId: string;
   userId: string;
@@ -34,7 +54,8 @@ export type TenantPrincipalSelector =
   | { principalId: string };
 
 export type ResolveTenantPrincipalArgs = {
-  tenantId: string;
+  /** `null` names no tenant, as `resolveTenantSegment` returns it. */
+  tenantId: string | null;
   select: TenantPrincipalSelector;
 };
 
@@ -53,6 +74,8 @@ export async function resolveTenantPrincipal(
   db: DB["db"],
   { tenantId, select }: ResolveTenantPrincipalArgs,
 ): Promise<ResolveTenantPrincipalResult> {
+  if (tenantId === null) return { kind: "tenant_not_found" };
+
   const tenantRow = await db.query.tenant.findFirst({
     where: eq(tenant.id, tenantId),
   });

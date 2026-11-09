@@ -147,7 +147,7 @@ git clone https://hub.example/api/tenants/tnt_abc/assets/skill/greet.git
 /api/tenants/:tenantId/assets/:kind/:name.git/...
 ```
 
-- `:tenantId` is the `tnt_*` ID.
+- `:tenantId` is the `tnt_*` ID. A token bound to a tenant can also use `self`, which names the token's tenant; see "Tenant Context" in `docs/AUTH.md`.
 - `:kind` is one of `skill`, `package-registry`, or `workflow`.
 - `:name` is the kebab-case asset name as registered via `POST /api/tenants/:tenantId/assets`.
 - The `.git` suffix on the trailing segment is required — it is how the hub disambiguates the asset namespace from arbitrary tenant sub-paths.
@@ -217,7 +217,7 @@ The hub returns `403` with one of the `git_token` error codes when the request a
 
 - `code: "token_revoked"` — the token row's `revoked_at` is set. Mint a new token.
 - `code: "token_expired"` — the token's `expires_at` is in the past. Mint a new one with a longer lifetime.
-- `code: "tenant_mismatch"` — the URL's `:tenantId` does not match the token's `tenant_id` claim. Use the right URL or mint a token for the right tenant.
+- `code: "tenant_mismatch"` — the URL's `:tenantId` does not match the token's `tenant_id` claim, or the URL uses `self` with a token that is not bound to a tenant. Use the right URL or mint a token for the right tenant.
 - `code: "principal_not_found"` — the token's principal no longer exists in the target tenant. The user was probably removed from the tenant.
 - `code: "principal_suspended"` — the principal exists but its membership status is not `active`.
 

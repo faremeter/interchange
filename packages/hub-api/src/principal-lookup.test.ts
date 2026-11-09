@@ -3,7 +3,11 @@ import { describe, expect, test } from "bun:test";
 import type { DB } from "@intx/db";
 
 import type { PrincipalRow, TenantRow } from "./context";
-import { resolveTenantPrincipal } from "./principal-lookup";
+import {
+  resolveTenantPrincipal,
+  resolveTenantSegment,
+  SELF_TENANT_SEGMENT,
+} from "./principal-lookup";
 
 const NOW = new Date("2025-01-15T00:00:00Z");
 
@@ -47,7 +51,36 @@ function createMockDB(opts: {
   return mock as unknown as DB["db"];
 }
 
+describe("resolveTenantSegment", () => {
+  test("self names the credential's tenant", () => {
+    expect(resolveTenantSegment(SELF_TENANT_SEGMENT, TENANT.id)).toBe(
+      TENANT.id,
+    );
+  });
+
+  test("self names no tenant for a credential that belongs to none", () => {
+    expect(resolveTenantSegment(SELF_TENANT_SEGMENT, null)).toBeNull();
+  });
+
+  test("any other segment is the tenant id, whatever the credential", () => {
+    expect(resolveTenantSegment("tnt_other", TENANT.id)).toBe("tnt_other");
+    expect(resolveTenantSegment("tnt_other", null)).toBe("tnt_other");
+  });
+});
+
 describe("resolveTenantPrincipal", () => {
+  test("reports a missing tenant for a segment that names none", async () => {
+    const db = createMockDB({
+      tenant: TENANT,
+      principal: makePrincipal("user", "active"),
+    });
+    const result = await resolveTenantPrincipal(db, {
+      tenantId: null,
+      select: { userId: "user_alice" },
+    });
+    expect(result).toEqual({ kind: "tenant_not_found" });
+  });
+
   test("reports a missing tenant before looking up the principal", async () => {
     const db = createMockDB({
       tenant: undefined,
