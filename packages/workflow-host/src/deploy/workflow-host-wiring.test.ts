@@ -134,8 +134,17 @@ function createMinimalStubRepoStore(): RepoStore {
       await args.merge(new Map());
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
+    async writeTreeDelta(_p, _id, _ref, args) {
+      await args.computeDelta(null, {
+        listDirOids: async () => [],
+        readBlobByOid: async (oid) => {
+          throw new Error(`stub RepoStore holds no blob ${oid}`);
+        },
+      });
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
+    },
   };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the wiring test exercises only getRepoDir + writeTreePreservingPrefix
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the wiring test exercises only getRepoDir and the substrate writes
   return new Proxy(stub as RepoStore, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
@@ -427,6 +436,15 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       await args.merge(new Map());
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
+    async writeTreeDelta(_p, _id, _ref, args) {
+      await args.computeDelta(null, {
+        listDirOids: async () => [],
+        readBlobByOid: async (oid) => {
+          throw new Error(`stub RepoStore holds no blob ${oid}`);
+        },
+      });
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
+    },
     // Mirror the `getRepoDir` layout so a write lands where a working-tree
     // read looks for it.
     async writeTree(_p, repoId, _ref, content) {
@@ -439,7 +457,7 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only getRepoDir + writeTreePreservingPrefix + writeTree exercised
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only getRepoDir, the substrate writes and writeTree are exercised
   return new Proxy(stub as RepoStore, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);

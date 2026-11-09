@@ -126,6 +126,15 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
       await args.merge(new Map());
       return { commitSha: "stub-sha", newlyTerminalRuns: [] };
     },
+    async writeTreeDelta(_p, _id, _ref, args) {
+      await args.computeDelta(null, {
+        listDirOids: async () => [],
+        readBlobByOid: async (oid) => {
+          throw new Error(`stub RepoStore holds no blob ${oid}`);
+        },
+      });
+      return { commitSha: "stub-sha", newlyTerminalRuns: [] };
+    },
     // Mirror the `getRepoDir` layout so a write lands where a working-tree
     // read looks for it.
     async writeTree(_p, repoId, _ref, content) {

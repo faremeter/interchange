@@ -120,7 +120,7 @@ export type RepackToggle = {
  * Force a synchronous `git gc` of the repo at `repoDir`. Synchronous
  * (`spawnSync`) so the supervisor's single-writer invariant is trivially
  * preserved: the dispatch loop is the sole caller and blocks here, so no
- * `writeTreePreservingPrefix` commit can interleave with the repack.
+ * substrate commit can interleave with the repack.
  * Returns the wall-clock duration in ms and whether the gc succeeded;
  * a non-zero exit is surfaced (not swallowed) so a broken A/B run does
  * not silently report "repack had no effect".

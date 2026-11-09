@@ -59,6 +59,9 @@
     "@intx/workflow-deploy": "workspace:*",
     "arktype": "catalog:"
   },
+  "devDependencies": {
+    "isomorphic-git": "catalog:"
+  },
   "files": [
     "dist",
     "README.md",

@@ -26,7 +26,6 @@
 
 import { type } from "arktype";
 
-import { parseEventSeq } from "@intx/hub-sessions/substrate";
 import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
@@ -35,19 +34,12 @@ import type {
 import type { CancelOrigin } from "@intx/workflow";
 import { hexEncode } from "@intx/types/hex";
 
+import { appendRunEvents, runEventPath } from "../adapters/repo-store";
 import type {
   PrincipalSigner,
   SignedPayload,
   WorkflowSupervisorPrincipalKind,
 } from "./types";
-
-/**
- * Path inside the workflow-run repo each `CancelRequested` event
- * lands under. Matches the layout the workflow-run kind handler
- * validates: `runs/<runId>/events/<seq>.json`.
- */
-const RUNS_PREFIX = "runs";
-const EVENTS_DIR = "events";
 
 /**
  * The supervisor's stable principal kind used for every supervisor-
@@ -148,59 +140,47 @@ function buildPayloadBytes(args: {
 export async function commitCancelRequested(
   opts: CommitCancelRequestedOpts,
 ): Promise<CommitCancelRequestedResult> {
-  const prefix = `${RUNS_PREFIX}/${opts.runId}/${EVENTS_DIR}/`;
   const principal: WorkflowRunSupervisorPrincipal = {
     kind: SUPERVISOR_PRINCIPAL_KIND,
     anchorRunId: opts.anchorRunId,
   };
   let resolved: { seq: number; signature: SignedPayload } | null = null;
-  const { commitSha } = await opts.substrate.writeTreePreservingPrefix(
+  const { commitSha } = await appendRunEvents({
+    substrate: opts.substrate,
     principal,
-    opts.repoId,
-    opts.ref,
-    {
-      preservePrefix: prefix,
-      merge: async (existing) => {
-        let maxSeq = 0;
-        for (const filepath of existing.keys()) {
-          const name = filepath.slice(prefix.length);
-          const seq = parseEventSeq(name);
-          if (seq === null) continue;
-          if (seq > maxSeq) maxSeq = seq;
-        }
-        const nextSeq = maxSeq + 1;
-        const payloadBytes = buildPayloadBytes({
-          seq: nextSeq,
-          runId: opts.runId,
-          reason: opts.reason,
-          origin: opts.origin,
-          at: opts.at,
-        });
-        const signature = await opts.signAsPrincipal(
-          SUPERVISOR_PRINCIPAL_KIND,
-          payloadBytes,
-        );
-        resolved = { seq: nextSeq, signature };
-        const onDisk = {
-          type: "CancelRequested",
-          seq: nextSeq,
-          runId: opts.runId,
-          at: opts.at,
-          reason: opts.reason,
-          origin: opts.origin,
-          signature: serializeSignedPayload(signature),
-        };
-        const files: Record<string, string | Uint8Array> = {};
-        for (const [k, v] of existing) files[k] = v;
-        files[`${prefix}${String(nextSeq)}.json`] = JSON.stringify(onDisk);
-        return files;
-      },
-      message: `append CancelRequested ${opts.origin} for run ${opts.runId}`,
+    repoId: opts.repoId,
+    ref: opts.ref,
+    runId: opts.runId,
+    message: `append CancelRequested ${opts.origin} for run ${opts.runId}`,
+    compute: async (existing) => {
+      const nextSeq = (existing.at(-1)?.seq ?? 0) + 1;
+      const payloadBytes = buildPayloadBytes({
+        seq: nextSeq,
+        runId: opts.runId,
+        reason: opts.reason,
+        origin: opts.origin,
+        at: opts.at,
+      });
+      const signature = await opts.signAsPrincipal(
+        SUPERVISOR_PRINCIPAL_KIND,
+        payloadBytes,
+      );
+      resolved = { seq: nextSeq, signature };
+      const onDisk = {
+        type: "CancelRequested",
+        seq: nextSeq,
+        runId: opts.runId,
+        at: opts.at,
+        reason: opts.reason,
+        origin: opts.origin,
+        signature: serializeSignedPayload(signature),
+      };
+      return { [runEventPath(opts.runId, nextSeq)]: JSON.stringify(onDisk) };
     },
-  );
+  });
   if (resolved === null) {
     throw new Error(
-      `supervisor cancel-signing: merge callback did not assign a sequence number for run ${opts.runId}`,
+      `supervisor cancel-signing: append callback did not assign a sequence number for run ${opts.runId}`,
     );
   }
   const final: { seq: number; signature: SignedPayload } = resolved;

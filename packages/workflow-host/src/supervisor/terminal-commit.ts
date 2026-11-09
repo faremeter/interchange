@@ -20,20 +20,19 @@ import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import type { RunFailed } from "@intx/workflow";
-import { parseEventSeq } from "@intx/hub-sessions/substrate";
 import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions/substrate";
 
-import { workflowEventToOnDisk } from "../adapters/repo-store";
+import {
+  appendRunEvents,
+  runEventPath,
+  workflowEventToOnDisk,
+} from "../adapters/repo-store";
 
 const logger = getLogger(["workflow-host", "supervisor", "terminal-commit"]);
-
-/** Path layout inside the workflow-run repo: `runs/<runId>/events/<seq>.json`. */
-const RUNS_PREFIX = "runs";
-const EVENTS_DIR = "events";
 
 /**
  * Terminal run-event kinds, mirroring the runtime's terminal vocabulary
@@ -92,8 +91,8 @@ export type CommitRunFailedResult = {
 
 /**
  * Append a supervisor-authored `RunFailed` to a run's event log, unless the
- * run is already terminal. The next seq is computed inside the substrate
- * merge (atomic against any concurrent writer under the per-repo lock): the
+ * run is already terminal. The next seq is computed inside the append
+ * (atomic against any concurrent writer under the per-repo lock): the
  * first event on an empty tree lands at seq 1 (the runtime's convention),
  * otherwise at `maxSeq + 1` so the log stays seq-contiguous. If the run's
  * highest-seq event is already terminal, the write is a no-op so push
@@ -102,76 +101,61 @@ export type CommitRunFailedResult = {
 export async function commitRunFailed(
   opts: CommitRunFailedOpts,
 ): Promise<CommitRunFailedResult> {
-  const prefix = `${RUNS_PREFIX}/${opts.runId}/${EVENTS_DIR}/`;
   const principal: WorkflowRunSupervisorPrincipal = {
     kind: SUPERVISOR_PRINCIPAL_KIND,
     anchorRunId: opts.anchorRunId,
   };
   const decoder = new TextDecoder();
   let appended = false;
-  const { commitSha } = await opts.substrate.writeTreePreservingPrefix(
+  const { commitSha } = await appendRunEvents({
+    substrate: opts.substrate,
     principal,
-    opts.repoId,
-    opts.ref,
-    {
-      preservePrefix: prefix,
-      merge: async (existing) => {
-        let maxSeq = -1;
-        let maxPath: string | null = null;
-        for (const filepath of existing.keys()) {
-          const name = filepath.slice(prefix.length);
-          const seq = parseEventSeq(name);
-          if (seq === null) continue;
-          if (seq > maxSeq) {
-            maxSeq = seq;
-            maxPath = filepath;
-          }
+    repoId: opts.repoId,
+    ref: opts.ref,
+    runId: opts.runId,
+    message: `append RunFailed (crash-loop) for run ${opts.runId}`,
+    compute: async (existing, prior) => {
+      const last = existing.at(-1);
+      // Terminal-lock: appending a terminal event after an existing one
+      // is rejected at push validation. If the run already ended, its
+      // `workflow_run.status` is already terminal, so the crash-loop
+      // tombstone is redundant -- no-op rather than push a rejected write.
+      //
+      // This detects the per-event (`events/<seq>.json`) form only, not
+      // the sealed combined-log (`events.jsonl`) form. That is sufficient
+      // here because the anchor run this commit targets is sealed only
+      // when the DEPLOYMENT itself is terminal, and the crash-loop latch
+      // fires only while the deployment is running -- so the run is never
+      // in the sealed form at this call. If a sealed run ever reached
+      // here, the append would produce a tree carrying both forms, which
+      // push validation rejects, and the caller logs the failure
+      // (best-effort tombstone) rather than corrupting.
+      if (last !== undefined) {
+        const parsed = OnDiskEventEnvelope(
+          JSON.parse(decoder.decode(await prior.readBlobByOid(last.oid))),
+        );
+        if (parsed instanceof type.errors) {
+          throw new Error(
+            `commitRunFailed: event blob ${runEventPath(opts.runId, last.seq)} failed validation: ${parsed.summary}`,
+          );
         }
-        const carried: Record<string, string | Uint8Array> = {};
-        for (const [k, v] of existing) carried[k] = v;
-        // Terminal-lock: appending a terminal event after an existing one
-        // is rejected at push validation. If the run already ended, its
-        // `workflow_run.status` is already terminal, so the crash-loop
-        // tombstone is redundant -- no-op rather than push a rejected write.
-        //
-        // This detects the per-event (`events/<seq>.json`) form only, not
-        // the sealed combined-log (`events.jsonl`) form, which lives outside
-        // `preservePrefix`. That is sufficient here because the anchor run
-        // this commit targets is sealed only when the DEPLOYMENT itself is
-        // terminal, and the crash-loop latch fires only while the deployment
-        // is running -- so the run is never in the sealed form at this call.
-        // If a sealed run ever reached here, the append would produce a tree
-        // carrying both forms, which push validation rejects, and the caller
-        // logs the failure (best-effort tombstone) rather than corrupting.
-        if (maxPath !== null) {
-          const raw = existing.get(maxPath);
-          if (raw !== undefined) {
-            const parsed = OnDiskEventEnvelope(JSON.parse(decoder.decode(raw)));
-            if (parsed instanceof type.errors) {
-              throw new Error(
-                `commitRunFailed: event blob ${maxPath} failed validation: ${parsed.summary}`,
-              );
-            }
-            if (TERMINAL_EVENT_KINDS.has(parsed.type)) {
-              return carried;
-            }
-          }
-        }
-        const nextSeq = maxSeq < 0 ? 1 : maxSeq + 1;
-        const event: RunFailed = {
-          kind: "RunFailed",
-          seq: nextSeq,
-          at: opts.at,
-          error: { message: opts.message },
-        };
-        const onDisk = workflowEventToOnDisk(event, nextSeq);
-        carried[`${prefix}${String(nextSeq)}.json`] = JSON.stringify(onDisk);
-        appended = true;
-        return carried;
-      },
-      message: `append RunFailed (crash-loop) for run ${opts.runId}`,
+        if (TERMINAL_EVENT_KINDS.has(parsed.type)) return {};
+      }
+      const nextSeq = last === undefined ? 1 : last.seq + 1;
+      const event: RunFailed = {
+        kind: "RunFailed",
+        seq: nextSeq,
+        at: opts.at,
+        error: { message: opts.message },
+      };
+      appended = true;
+      return {
+        [runEventPath(opts.runId, nextSeq)]: JSON.stringify(
+          workflowEventToOnDisk(event, nextSeq),
+        ),
+      };
     },
-  );
+  });
   if (!appended) {
     logger.info`commitRunFailed: run ${opts.runId} already terminal; no RunFailed appended`;
   }

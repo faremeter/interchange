@@ -668,6 +668,9 @@
         "@intx/workflow-deploy": "workspace:*",
         "arktype": "catalog:",
       },
+      "devDependencies": {
+        "isomorphic-git": "catalog:",
+      },
     },
     "tests/admin-ui-e2e": {
       "name": "@intx/admin-ui-e2e",

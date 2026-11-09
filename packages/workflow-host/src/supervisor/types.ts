@@ -632,8 +632,8 @@ export interface WorkflowSupervisorBindings {
 
 /**
  * The five per-message substrate legs the D2 attribution splits the
- * unified path's substrate tax across. Each is a single git
- * `writeTreePreservingPrefix` commit (or, for `runevent`, one of several
+ * unified path's substrate tax across. Each is a single git substrate
+ * commit (or, for `runevent`, one of several
  * commits per message) against the growing workflow-run repo:
  *
  *   - `enqueue`      — `enqueueInbox` in `onMailMessage`, BEFORE dispatch

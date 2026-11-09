@@ -102,9 +102,8 @@ function textMail(body: string): Mail {
   };
 }
 
-// Read every file directly under the `runs/<id>/events/` prefix into the
-// full-path-keyed map the merge callback expects (`appendBatchEvents`
-// slices the prefix off each key to recover the seq).
+// Read every file directly under a preserved prefix into the
+// full-path-keyed map the merge callback expects.
 async function readPrefixEntries(
   repoDir: string,
   prefix: string,
@@ -150,6 +149,42 @@ function createStubRepoStore(baseDir: string): RepoStore {
         force: true,
       });
       for (const [relPath, content] of Object.entries(merged)) {
+        const full = path.join(repoDir, relPath);
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, content);
+      }
+      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
+    },
+    async writeTreeDelta(_principal, repoId, _ref, args) {
+      // Back the delta's parent reads with the working tree, a blob's
+      // repo-relative path standing in for its object id.
+      const repoDir = path.join(baseDir, repoId.kind, repoId.id);
+      const { puts, deletes } = await args.computeDelta(null, {
+        async listDirOids(relPath) {
+          let names: string[];
+          try {
+            names = await fs.readdir(path.join(repoDir, relPath));
+          } catch (cause) {
+            if (
+              cause instanceof Error &&
+              "code" in cause &&
+              cause.code === "ENOENT"
+            ) {
+              return [];
+            }
+            throw cause;
+          }
+          return names.map((name) => ({ name, oid: `${relPath}/${name}` }));
+        },
+        readBlobByOid: (oid) => fs.readFile(path.join(repoDir, oid)),
+      });
+      for (const relPath of deletes) {
+        await fs.rm(path.join(repoDir, relPath), {
+          recursive: true,
+          force: true,
+        });
+      }
+      for (const [relPath, content] of Object.entries(puts)) {
         const full = path.join(repoDir, relPath);
         await fs.mkdir(path.dirname(full), { recursive: true });
         await fs.writeFile(full, content);
