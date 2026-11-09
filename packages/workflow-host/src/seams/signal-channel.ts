@@ -42,6 +42,11 @@ import type {
 import { subscribeKind } from "@intx/hub-sessions/substrate";
 import type { RunState, SignalChannel } from "@intx/workflow";
 import {
+  appendRunEvents,
+  readRunEventSummary,
+  runEventPath,
+} from "../adapters/repo-store";
+import {
   withRunCommitBarrier,
   type RepoStore as RuntimeRepoStore,
 } from "@intx/workflow/runtime";
@@ -79,7 +84,7 @@ export type SignalChannelOpts = {
   repoStore: RepoStore;
   /**
    * Runtime store that owns this run's commit chain. `deliver` flushes
-   * its pending buffer before the substrate merge numbers the signal.
+   * its pending buffer before the substrate append numbers the signal.
    * One store serves every run in the deployment; the barrier selects
    * the buffer by `runId`.
    */
@@ -310,62 +315,40 @@ export function createWorkflowHostSignalChannel(
       }
       const id = signalId ?? opts.newId();
       const at = opts.clock().toISOString();
-      const prefix = `runs/${opts.runId}/events/`;
       await withRunCommitBarrier(
         { repoStore: opts.runtimeStore },
         opts.runId,
         () =>
-          opts.repoStore.writeTreePreservingPrefix(
-            opts.principal,
-            opts.repoId,
-            opts.ref,
-            {
-              preservePrefix: prefix,
-              merge: async (existing) => {
-                let maxSeq = -1;
-                let duplicate = false;
-                let terminal = false;
-                for (const [filepath, contents] of existing) {
-                  const fname = filepath.slice(prefix.length);
-                  const match = /^(0|[1-9][0-9]*)\.json$/.exec(fname);
-                  if (match === null) continue;
-                  const seqStr = match[1];
-                  if (seqStr === undefined) continue;
-                  const seq = Number.parseInt(seqStr, 10);
-                  if (seq > maxSeq) maxSeq = seq;
-                  try {
-                    const parsed: unknown = JSON.parse(
-                      new TextDecoder().decode(contents),
-                    );
-                    if (isMatchingSignalId(parsed, id)) {
-                      duplicate = true;
-                    }
-                    if (isTerminalOnDiskEvent(parsed)) {
-                      terminal = true;
-                    }
-                  } catch {
-                    // A corrupt blob is rejected by validatePush at write
-                    // time. Treat as non-matching here.
-                  }
-                }
-                const out: Record<string, string> = {};
-                for (const [filepath, contents] of existing) {
-                  out[filepath] = new TextDecoder().decode(contents);
-                }
-                // A repeated signalId and a log that already reached a
-                // terminal event both leave the tree unchanged. Appending
-                // past RunFailed/RunCompleted/RunCancelled would make the
-                // next resume disagree with the terminal result already
-                // reported.
-                if (duplicate || terminal) return out;
-                const nextSeq = maxSeq + 1;
-                // The workflow-run kind handler's `EventEnvelope`
-                // validator requires `seq: number` on every event blob;
-                // the same `nextSeq` we use to mint the filename also
-                // carries into the body so a reader that hydrates the
-                // envelope (state-machine resume, audit reads) sees a
-                // self-describing event without consulting the filename.
-                out[`${prefix}${String(nextSeq)}.json`] = JSON.stringify({
+          appendRunEvents({
+            substrate: opts.repoStore,
+            principal: opts.principal,
+            repoId: opts.repoId,
+            ref: opts.ref,
+            runId: opts.runId,
+            message: `SignalReceived ${id} (${name}) for run ${opts.runId}`,
+            compute: async (existing, prior) => {
+              // A repeated signalId and a log that already reached a
+              // terminal event both leave the log unchanged. Appending
+              // past RunFailed/RunCompleted/RunCancelled would make the
+              // next resume disagree with the terminal result already
+              // reported.
+              const summary = await readRunEventSummary(
+                opts.repoStore,
+                opts.repoId,
+                opts.runId,
+                existing,
+                prior,
+              );
+              if (summary.terminal || summary.signalIds.has(id)) return {};
+              const nextSeq = (existing.at(-1)?.seq ?? -1) + 1;
+              // The workflow-run kind handler's `EventEnvelope`
+              // validator requires `seq: number` on every event blob;
+              // the same `nextSeq` we use to mint the filename also
+              // carries into the body so a reader that hydrates the
+              // envelope (state-machine resume, audit reads) sees a
+              // self-describing event without consulting the filename.
+              return {
+                [runEventPath(opts.runId, nextSeq)]: JSON.stringify({
                   type: "SignalReceived",
                   seq: nextSeq,
                   signalName: name,
@@ -373,12 +356,10 @@ export function createWorkflowHostSignalChannel(
                   payload,
                   at,
                   ...(correlationId !== undefined ? { correlationId } : {}),
-                });
-                return out;
-              },
-              message: `SignalReceived ${id} (${name}) for run ${opts.runId}`,
+                }),
+              };
             },
-          ),
+          }),
       );
     },
     async awaitNext(name, signal, correlationId) {
@@ -448,22 +429,4 @@ export function createWorkflowHostSignalChannel(
       }
     },
   };
-}
-
-function isTerminalOnDiskEvent(parsed: unknown): boolean {
-  if (typeof parsed !== "object" || parsed === null) return false;
-  const type = (parsed as { type?: unknown }).type;
-  return (
-    type === "RunCompleted" || type === "RunFailed" || type === "RunCancelled"
-  );
-}
-
-function isMatchingSignalId(parsed: unknown, signalId: string): boolean {
-  if (typeof parsed !== "object" || parsed === null) return false;
-  const obj = parsed as {
-    type?: unknown;
-    signalId?: unknown;
-  };
-  if (obj.type !== "SignalReceived") return false;
-  return obj.signalId === signalId;
 }

@@ -109,7 +109,7 @@ function createManualTimeouts(): {
  * scheduler's TimerFired commit instead of waiting for the blob to appear.
  *
  * `commitTimerFired` is the scheduler's only write and it goes through
- * `writeTreePreservingPrefix`. The substrate materializes the working tree
+ * `writeTreeDelta`. The substrate materializes the working tree
  * inside that call, before it resolves, so a resolved commit proves the blob
  * `readTimerFiredBlobs` reads off disk is already there.
  *
@@ -135,11 +135,9 @@ function observeSchedulerCommits(store: RepoStore): {
   return {
     repoStore: {
       ...store,
-      async writeTreePreservingPrefix(
-        ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
-      ) {
+      async writeTreeDelta(...args: Parameters<RepoStore["writeTreeDelta"]>) {
         try {
-          const result = await store.writeTreePreservingPrefix(...args);
+          const result = await store.writeTreeDelta(...args);
           record({ ok: true });
           return result;
         } catch (cause) {
