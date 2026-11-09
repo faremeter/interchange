@@ -127,6 +127,12 @@ function isPlainRelativePath(p: string, isPrefix: boolean): boolean {
   return body.split("/").every(isPlainPathSegment);
 }
 
+// Without the trailing slash a prefix also matches its siblings by
+// string prefix: `run` covers every path under `runs/`.
+function isPlainDirPrefix(p: string): boolean {
+  return p.endsWith("/") && isPlainRelativePath(p, true);
+}
+
 function isAbsentPathError(cause: unknown): boolean {
   return (
     hasCode(cause) && (cause.code === "ENOENT" || cause.code === "ENOTDIR")
@@ -754,11 +760,22 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
 
   function validatePreservePrefix(preservePrefix: string): void {
-    const malformed =
-      !preservePrefix.endsWith("/") ||
-      !isPlainRelativePath(preservePrefix, true);
-    if (malformed) {
+    if (!isPlainDirPrefix(preservePrefix)) {
       throw new Error(`preserve_prefix_invalid: ${preservePrefix}`);
+    }
+  }
+
+  // A handler reads the scope as whole directories, and assertDeltaScoped
+  // matches it by string prefix. A scope that is not a directory prefix
+  // would cover paths the handler then leaves unvalidated.
+  function validateDeltaScope(
+    changedPathPrefixes: ReadonlySet<string> | undefined,
+  ): void {
+    if (changedPathPrefixes === undefined) return;
+    for (const prefix of changedPathPrefixes) {
+      if (!isPlainDirPrefix(prefix)) {
+        throw new Error(`delta_scope_invalid: ${JSON.stringify(prefix)}`);
+      }
     }
   }
 
@@ -1941,6 +1958,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     args: WriteTreeDeltaArgs,
   ): Promise<WriteResult> {
     gateAccess(principal, repoId, ref, "writeTree");
+    validateDeltaScope(args.changedPathPrefixes);
     return withRepoLock(repoId, async () => {
       const dir = repoDir(repoId);
       await storageInitRepo(dir, storageOptsFor(repoId, undefined));

@@ -255,7 +255,7 @@ test("no-slash delete of a directory is rejected (delete_type_mismatch)", async 
   await seed(store, base);
   await expect(
     store.writeTreeDelta(principal, repoId, REF, {
-      changedPathPrefixes: new Set(["foo"]),
+      changedPathPrefixes: undefined,
       message: "delete-dir-as-file",
       computeDelta: async () => ({
         puts: {},

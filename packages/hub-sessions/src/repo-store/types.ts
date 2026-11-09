@@ -216,7 +216,8 @@ export type WriteTreePreservingPrefixArgs = {
  * `changedPathPrefixes` is the validation scoping hint for the touched
  * region (e.g. `addresses/<seg>/`), supplied by the caller because a
  * delta has no single prefix to derive it from; `undefined` means
- * validate the whole tree.
+ * validate the whole tree. Each prefix names a directory and ends in
+ * `/`; a write with any other scope is rejected.
  *
  * The `prior` argument exposes cache-backed reads of that pinned parent
  * tree -- `listDirOids` for a directory's `{name, oid}` children and
