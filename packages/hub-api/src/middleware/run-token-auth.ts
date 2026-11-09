@@ -111,7 +111,8 @@ export type CreateRunTokenAuthDeps = {
  * the token's consumer so a grant scoped to a consumer applies only to it.
  *
  * On success the middleware sets `tenant`, `principal` and `consumer`, which
- * makes `resolveTenant` skip the session lookup.
+ * makes `resolveTenant` skip the session lookup, and clears `user` and
+ * `session`.
  */
 export function createRunTokenAuth({
   db,
@@ -197,6 +198,10 @@ export function createRunTokenAuth({
       },
     );
 
+    // The run token authenticated this request. A session cookie sent with it
+    // names someone else, so no handler may read it as the caller.
+    c.set("user", null);
+    c.set("session", null);
     c.set("tenant", tenantRow);
     c.set("principal", principalRow);
     c.set("consumer", token.consumer);

@@ -99,11 +99,11 @@ Request to /api/tenants/:tenantId/... with Authorization: Bearer itx_run_...
   -> resolve the token's principal in the URL tenant; not there -> 403
   -> if the principal is not active (the run ended), or is not a workflow principal: 401
   -> if the route is not on the run-token allow-list: 403
-  -> set principal, tenant and the token's consumer; resolveTenant skips the session
+  -> set principal, tenant and the token's consumer, and clear the session user; resolveTenant skips the session
   -> evaluate the run principal's grants against the requested operation
 ```
 
-A request with no run token, or with a git token, takes the session flow above unchanged.
+A request with no run token, or with a git token, takes the session flow above unchanged. On a tenant route, a session cookie sent with a run token does not count: the request acts as the run principal alone, and no handler sees the cookie's user.
 
 A consumer opts into hub access by declaring the reserved credential handle `interchange.hub` (`HUB_CREDENTIAL_HANDLE`): a tool in `defineTool({ credentials })`, an action handler in `action({ credentials })`. Deploy records the declaring consumers on the deployment's anchor run, across the root and every nested body. When the run's first trigger links the run principal to the run, in the same transaction, the hub mints one token for each of them and stamps a `credential:hub:<consumer>` / `use` grant scoped to that consumer by a `{ tool }` condition. The hub delivers the tokens on the run's `run.grants` barrier, as a credential delivery that binds the reserved handle to an `http` credential pinned to `HUB_API_ORIGIN`. Every barrier ahead of a trigger mail carries them, including a replay after a reconnect, and the reconnect credential reconcile sends them again. The reconcile never revokes them: a run with no tokens may not have minted them yet, and a deleted token already fails at the hub. The sidecar merges them into the supervisor's credential mirror before it writes the grants. It never writes them in the grants file: it keeps them in the mirror, which it seals in the run record (see _Restoring a run's authority in a new process_). A consumer resolves `interchange.hub` to a mediated credential and calls the hub through it, as with any other credential. Mediation is not containment: a consumer can read the header it sends, so a token that leaks works until its run principal is deactivated.
 
