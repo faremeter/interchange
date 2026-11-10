@@ -562,3 +562,11 @@ probing and freezing the workflow, it:
 The default chooser selects the first match in registration order. A Hub
 composition may provide an asynchronous chooser for probe capacity, deployment
 capacity, or both to implement another policy such as round-robin selection.
+The chooser receives the matching provisioners and a context:
+
+| Field         | Meaning                                                           |
+| ------------- | ----------------------------------------------------------------- |
+| `purpose`     | `probe` or `deployment`                                           |
+| `tenantId`    | The deploying tenant                                              |
+| `anchorRunId` | The deployment's anchor run, also while its probe is being placed |
+| `signal`      | Aborts when the Hub stops waiting for the choice                  |
