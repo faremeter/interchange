@@ -26,20 +26,28 @@
 //   - `runs/<runId>/steps/<urlEncoded(stepId)>/seed.json` — a snapshot the
 //     Hub wrote for the step to start from until it has state of its own.
 //     Immutable once written (see `WORKFLOW_RUN_STEP_SEED_FILE`).
-//   - `addresses/<urlEncoded(address)>/inbox/<receivedAt>-<messageId>.json`
+//   - Every claim-check entry is filed under an identity (see
+//     `claimCheckIdentity`). A sender-scoped entry carries the
+//     hub-authenticated sender and the delivery key derived from it and the
+//     Message-ID, and its identity is that key. A legacy entry carries
+//     neither and its identity is its bare Message-ID. The validator accepts
+//     both forms for as long as a tree can hold a legacy entry, which is
+//     indefinitely: an address that gets no more mail never prunes its
+//     legacy `consumed/` entries.
+//   - `addresses/<urlEncoded(address)>/inbox/<receivedAt>-<identity>.json`
 //     — pending inbound mail for the address, FIFO-ordered by the
 //     filename's parsed numeric `receivedAt` prefix (with a
-//     lexicographic messageId tiebreak). The filename keeps the
+//     lexicographic identity tiebreak). The filename keeps the
 //     decimal `<receivedAt>` form unpadded; the substrate sorts by
 //     parsed integer rather than string so the FIFO invariant holds
 //     for non-uniform digit widths (e.g. `99-…` precedes `100-…`).
-//   - `addresses/<urlEncoded(address)>/processing/<receivedAt>-<messageId>.json`
+//   - `addresses/<urlEncoded(address)>/processing/<receivedAt>-<identity>.json`
 //     — messages currently being handled. Same filename shape and
 //     JSON envelope as the inbox entry; a `dequeueToProcessing`
 //     commit atomically removes the inbox entry and adds the
 //     processing entry preserving the filename key.
-//   - `addresses/<urlEncoded(address)>/consumed/<messageId>.json` —
-//     dedup index keyed by messageId. A `markConsumed` commit
+//   - `addresses/<urlEncoded(address)>/consumed/<identity>.json` —
+//     dedup index keyed by identity. A `markConsumed` commit
 //     atomically removes the matching processing entry and writes
 //     this dedup entry. The dedup index is bounded by a per-address
 //     retention watermark (see `watermark.json`): a `markConsumed`
@@ -107,23 +115,26 @@
 //     `consumed`, plus the single `watermark.json` file. Other names
 //     under an address fail the push.
 //   - Inbox and processing filenames must match
-//     `<receivedAt>-<messageId>.json` where `receivedAt` is a decimal
+//     `<receivedAt>-<identity>.json` where `receivedAt` is a decimal
 //     epoch-ms integer. The body's `receivedAt` matches the filename
-//     `receivedAt` and the body's `messageId` matches the filename
-//     `messageId`. The body's `address` field must decode to the
+//     `receivedAt` and the body's identity matches the filename
+//     identity. The body's `address` field must decode to the
 //     URL-encoded segment.
-//   - Consumed filenames must match `<messageId>.json`. The body's
-//     `messageId` matches the filename `messageId`. The body carries
-//     a `consumedBy` run id and the `receivedAt` of the original
-//     consume for audit.
-//   - Atomicity: a given `<messageId>` appears in at most one
-//     filename across `inbox`, `processing`, and `consumed` combined,
-//     per address per prospective commit. Two inbox entries with the
-//     same `<messageId>` but different `<receivedAt>` are rejected as
-//     a same-state collision; the cross-state check fires when the
-//     same messageId appears in inbox+processing, inbox+consumed, or
+//   - Consumed filenames must match `<identity>.json`. The body's
+//     identity matches the filename identity. The body carries the
+//     `runId` that consumed the message and the `receivedAt` of the
+//     original enqueue for audit.
+//   - A body carries both `authenticatedSender` and `deliveryKey` or
+//     neither, and a `deliveryKey` must be the key derived from the
+//     body's sender and `messageId`, which binds the filename to both.
+//   - Atomicity: a given identity appears in at most one filename
+//     across `inbox`, `processing`, and `consumed` combined, per
+//     address per prospective commit. Two inbox entries with the same
+//     identity but different `<receivedAt>` are rejected as a
+//     same-state collision; the cross-state check fires when the same
+//     identity appears in inbox+processing, inbox+consumed, or
 //     processing+consumed.
-//   - `consumed/<messageId>.json` bytes are immutable: a prospective
+//   - `consumed/<identity>.json` bytes are immutable: a prospective
 //     commit that mutates the bytes of a consumed entry RETAINED from
 //     the prior tree is rejected by the same blob OID comparison with
 //     the prior tree used for run events. A retained consumed entry
@@ -147,15 +158,18 @@
 //   - Inbox→processing transition: a processing entry that is newly
 //     added (not present in the prior tree) must be backed by a
 //     matching inbox entry in the prior tree at the same
-//     `<receivedAt>-<messageId>.json` key. If the prior tree does
-//     not show that inbox entry the transition is rejected so a
-//     direct write into `processing/` cannot bypass the inbox.
+//     `<receivedAt>-<identity>.json` key whose body names the same
+//     message (`messageId`, `authenticatedSender` and `deliveryKey`).
+//     If the prior tree does not show that inbox entry the transition
+//     is rejected so a direct write into `processing/` cannot bypass
+//     the inbox.
 //   - Processing→consumed transition: a consumed entry that is
 //     newly added (not present in the prior tree) must be backed by
 //     a processing entry in the prior tree at the same address with
-//     the same messageId. The receivedAt and messageId carried in
-//     the prior processing envelope must equal the values carried in
-//     the new consumed envelope so the audit trail is unambiguous.
+//     the same identity. The receivedAt, `messageId`,
+//     `authenticatedSender` and `deliveryKey` carried in the prior
+//     processing envelope must equal the values carried in the new
+//     consumed envelope so the audit trail is unambiguous.
 //
 // Authz:
 //   - `hub` principal: full access.
@@ -174,6 +188,7 @@
 import fs from "node:fs";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy/addresses";
 import { parseMailboxIndex, type MailboxIndex } from "./mailbox-index";
@@ -516,18 +531,24 @@ const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
 
 /**
  * Filename shape for inbox and processing entries:
- * `<receivedAt>-<messageId>.json`. `receivedAt` is a decimal integer
- * (epoch ms); `messageId` is captured as the rest of the basename and
- * is validated separately against the body's `messageId`.
+ * `<receivedAt>-<identity>.json`. `receivedAt` is a decimal integer
+ * (epoch ms); the identity is captured as the rest of the basename and
+ * is validated separately against the body (see `claimCheckIdentity`).
+ * The first group holds only digits, so the first `-` ends it and the
+ * parse is unambiguous whatever the identity holds.
  */
 const QUEUE_FILENAME_RE = /^(0|[1-9][0-9]*)-(.+)\.json$/;
 
-/** Filename shape for consumed entries: `<messageId>.json`. */
+/** Filename shape for consumed entries: `<identity>.json`. */
 const CONSUMED_FILENAME_RE = /^(.+)\.json$/;
 
 /**
  * JSON envelope carried by inbox and processing entries. Keys:
- *   - `messageId`: dedup key for the inbound message.
+ *   - `messageId`: the inbound message's Message-ID.
+ *   - `authenticatedSender` / `deliveryKey`: the hub-authenticated sender
+ *     and the delivery key derived from it and the Message-ID. Both are
+ *     present on a sender-scoped entry and both are absent on a legacy
+ *     entry; see `claimCheckIdentity`.
  *   - `receivedAt`: epoch-ms timestamp the reactor accepted the
  *     message; sortable FIFO key prefix.
  *   - `address`: decoded canonical address (not URL-encoded).
@@ -543,6 +564,8 @@ const CONSUMED_FILENAME_RE = /^(.+)\.json$/;
  */
 const ClaimCheckEnvelope = type({
   messageId: "string > 0",
+  "authenticatedSender?": "string > 0",
+  "deliveryKey?": "string > 0",
   receivedAt: "number >= 0",
   address: "string > 0",
   "rawMessage?": "string > 0",
@@ -551,12 +574,15 @@ const ClaimCheckEnvelope = type({
 
 /**
  * JSON envelope carried by consumed entries. The consumed entry is the
- * canonical dedup index keyed by messageId; the envelope preserves
- * the originating receivedAt for audit and carries the runId that
- * consumed the message.
+ * canonical dedup index keyed by identity (see `claimCheckIdentity`); the
+ * envelope carries the processing entry's `messageId`,
+ * `authenticatedSender` and `deliveryKey`, preserves the originating
+ * receivedAt for audit, and carries the runId that consumed the message.
  */
 const ConsumedEnvelope = type({
   messageId: "string > 0",
+  "authenticatedSender?": "string > 0",
+  "deliveryKey?": "string > 0",
   receivedAt: "number >= 0",
   address: "string > 0",
   runId: "string > 0",
@@ -583,6 +609,89 @@ const WatermarkEnvelope = type({
 export type ClaimCheckEnvelope = typeof ClaimCheckEnvelope.infer;
 export type ConsumedEnvelope = typeof ConsumedEnvelope.infer;
 export type WatermarkEnvelope = typeof WatermarkEnvelope.infer;
+
+type MessageIdentityFields = {
+  messageId: string;
+  authenticatedSender?: string;
+  deliveryKey?: string;
+};
+
+/**
+ * The identity a claim-check entry is filed and de-duplicated under: its
+ * delivery key when it carries one, else its bare Message-ID. The envelope
+ * states which form it is; the identity string's shape never decides it,
+ * because a Message-ID can look like a delivery key.
+ */
+export function claimCheckIdentity(envelope: MessageIdentityFields): string {
+  return envelope.deliveryKey ?? envelope.messageId;
+}
+
+/**
+ * Check that an envelope's identity fields agree: a sender-scoped entry
+ * carries both `authenticatedSender` and `deliveryKey`, and the key is the
+ * one derived from the sender and the Message-ID, which binds the filename
+ * to both. A legacy entry carries neither. Returns a rejection reason, or
+ * `null` when the fields agree.
+ */
+async function checkEnvelopeIdentity(
+  envelope: MessageIdentityFields,
+): Promise<string | null> {
+  const { authenticatedSender, deliveryKey, messageId } = envelope;
+  if (authenticatedSender === undefined && deliveryKey === undefined) {
+    return null;
+  }
+  if (authenticatedSender === undefined || deliveryKey === undefined) {
+    return "carries only one of authenticatedSender and deliveryKey";
+  }
+  if (authenticatedSender.includes("\0")) {
+    return "authenticatedSender contains NUL";
+  }
+  if (
+    deliveryKey !== (await deriveDeliveryKey(authenticatedSender, messageId))
+  ) {
+    return `deliveryKey ${JSON.stringify(deliveryKey)} is not the key of its authenticatedSender and messageId`;
+  }
+  return null;
+}
+
+/**
+ * Whether two envelopes name the same message: equal Message-ID, sender and
+ * delivery key, each by presence and by value. Equal identities alone are not
+ * enough, because a legacy identity and a delivery key can be one string.
+ */
+function sameMessage(
+  a: MessageIdentityFields,
+  b: MessageIdentityFields,
+): boolean {
+  return (
+    a.messageId === b.messageId &&
+    a.authenticatedSender === b.authenticatedSender &&
+    a.deliveryKey === b.deliveryKey
+  );
+}
+
+/**
+ * Parse an inbox or processing filename into its receivedAt and identity,
+ * or `null` when the name does not have the queue shape.
+ */
+function parseQueueFilename(
+  name: string,
+): { receivedAt: number; identity: string } | null {
+  const match = QUEUE_FILENAME_RE.exec(name);
+  if (match?.[1] === undefined || match[2] === undefined) return null;
+  return { receivedAt: Number.parseInt(match[1], 10), identity: match[2] };
+}
+
+/**
+ * The queue entry filed under exactly `identity`. A suffix match would also
+ * take `<receivedAt>-x-<identity>.json`, whose identity is `x-<identity>`.
+ */
+function findQueueEntry<T extends { name: string }>(
+  entries: readonly T[],
+  identity: string,
+): T | undefined {
+  return entries.find((e) => parseQueueFilename(e.name)?.identity === identity);
+}
 
 /**
  * Terminal event discriminators mapped to the `workflow_run.status` value
@@ -1891,15 +2000,15 @@ type ClaimCheckBlob = {
   filename: string;
   /**
    * Filename-extracted receivedAt for inbox / processing. Absent on
-   * consumed (which is keyed by messageId only).
+   * consumed (which is keyed by identity only).
    */
   receivedAtFromFilename: number | null;
   /**
-   * Filename-extracted messageId. For inbox / processing this is the
-   * post-dash tail of the basename; for consumed it is the bare
-   * basename.
+   * Filename-extracted identity (see `claimCheckIdentity`). For inbox /
+   * processing this is the post-dash tail of the basename; for consumed
+   * it is the bare basename.
    */
-  messageIdFromFilename: string;
+  identityFromFilename: string;
   blobPath: string;
   /**
    * Git blob object id of the entry, resolved for `consumed` entries
@@ -1916,7 +2025,7 @@ type ClaimCheckBlob = {
 /**
  * FIFO comparator for inbox/processing entries. Sorts by the parsed
  * numeric `receivedAt` (filename prefix); ties break on the
- * messageId tail. The numeric compare is the load-bearing piece —
+ * identity tail. The numeric compare is the load-bearing piece —
  * lexicographic compare on `<receivedAt>-…` filenames with
  * non-uniform digit widths disagrees with chronological order
  * (e.g. `"100-…"` < `"99-…"` because `'1' < '9'`).
@@ -1930,8 +2039,8 @@ function compareQueueEntries(a: ClaimCheckBlob, b: ClaimCheckBlob): number {
     );
   }
   if (aReceivedAt !== bReceivedAt) return aReceivedAt - bReceivedAt;
-  const aId = a.messageIdFromFilename;
-  const bId = b.messageIdFromFilename;
+  const aId = a.identityFromFilename;
+  const bId = b.identityFromFilename;
   if (aId < bId) return -1;
   if (aId > bId) return 1;
   return 0;
@@ -1994,19 +2103,11 @@ async function enumerateClaimCheckBlobs(
           subdir === WORKFLOW_RUN_INBOX_DIR ||
           subdir === WORKFLOW_RUN_PROCESSING_DIR
         ) {
-          const match = QUEUE_FILENAME_RE.exec(filename);
-          if (match === null) {
+          const parsed = parseQueueFilename(filename);
+          if (parsed === null) {
             return {
               ok: false,
-              reason: `${subdir} filename ${dirPath}/${filename} does not match <receivedAt>-<messageId>.json`,
-            };
-          }
-          const receivedAtStr = match[1];
-          const messageId = match[2];
-          if (receivedAtStr === undefined || messageId === undefined) {
-            return {
-              ok: false,
-              reason: `${subdir} filename ${dirPath}/${filename} produced no captures`,
+              reason: `${subdir} filename ${dirPath}/${filename} does not match <receivedAt>-<identity>.json`,
             };
           }
           const entry: ClaimCheckBlob = {
@@ -2014,8 +2115,8 @@ async function enumerateClaimCheckBlobs(
             addressSegment: segment,
             decodedAddress: roundTrip.decoded,
             filename,
-            receivedAtFromFilename: Number.parseInt(receivedAtStr, 10),
-            messageIdFromFilename: messageId,
+            receivedAtFromFilename: parsed.receivedAt,
+            identityFromFilename: parsed.identity,
             blobPath: `${dirPath}/${filename}`,
           };
           if (subdir === WORKFLOW_RUN_INBOX_DIR) bucket.inbox.push(entry);
@@ -2025,14 +2126,14 @@ async function enumerateClaimCheckBlobs(
           if (match === null) {
             return {
               ok: false,
-              reason: `${WORKFLOW_RUN_CONSUMED_DIR} filename ${dirPath}/${filename} does not match <messageId>.json`,
+              reason: `${WORKFLOW_RUN_CONSUMED_DIR} filename ${dirPath}/${filename} does not match <identity>.json`,
             };
           }
-          const messageId = match[1];
-          if (messageId === undefined) {
+          const identity = match[1];
+          if (identity === undefined) {
             return {
               ok: false,
-              reason: `${WORKFLOW_RUN_CONSUMED_DIR} filename ${dirPath}/${filename} produced no message-id capture`,
+              reason: `${WORKFLOW_RUN_CONSUMED_DIR} filename ${dirPath}/${filename} produced no identity capture`,
             };
           }
           const consumedBlobPath = `${dirPath}/${filename}`;
@@ -2042,7 +2143,7 @@ async function enumerateClaimCheckBlobs(
             decodedAddress: roundTrip.decoded,
             filename,
             receivedAtFromFilename: null,
-            messageIdFromFilename: messageId,
+            identityFromFilename: identity,
             blobPath: consumedBlobPath,
           };
           if (resolveConsumedOid !== undefined) {
@@ -2053,7 +2154,7 @@ async function enumerateClaimCheckBlobs(
       }
     }
     // FIFO ordering: sort by the parsed numeric receivedAt prefix
-    // with a lexicographic messageId tiebreak. String-sorting the
+    // with a lexicographic identity tiebreak. String-sorting the
     // raw filename would put "99-…" after "100-…" because '9' > '1',
     // breaking the FIFO invariant for non-uniform digit widths.
     bucket.inbox.sort(compareQueueEntries);
@@ -2169,10 +2270,17 @@ async function parseConsumedBlobFrom(
       reason: `consumed ${entry.blobPath} envelope invalid: ${validated.summary}`,
     };
   }
-  if (validated.messageId !== entry.messageIdFromFilename) {
+  const consumedIdentityProblem = await checkEnvelopeIdentity(validated);
+  if (consumedIdentityProblem !== null) {
     return {
       ok: false,
-      reason: `consumed ${entry.blobPath} body.messageId ${JSON.stringify(validated.messageId)} does not match filename messageId ${JSON.stringify(entry.messageIdFromFilename)}`,
+      reason: `consumed ${entry.blobPath} ${consumedIdentityProblem}`,
+    };
+  }
+  if (claimCheckIdentity(validated) !== entry.identityFromFilename) {
+    return {
+      ok: false,
+      reason: `consumed ${entry.blobPath} body identity ${JSON.stringify(claimCheckIdentity(validated))} does not match filename identity ${JSON.stringify(entry.identityFromFilename)}`,
     };
   }
   if (validated.address !== entry.decodedAddress) {
@@ -2186,11 +2294,11 @@ async function parseConsumedBlobFrom(
 
 async function parseQueueBlob(
   entry: ClaimCheckBlob,
-  readBlob: (path: string) => Promise<Uint8Array>,
+  readBlob: (path: string) => Promise<Uint8Array | null>,
 ): Promise<
   { ok: true; body: ClaimCheckEnvelope } | { ok: false; reason: string }
 > {
-  let raw: Uint8Array;
+  let raw: Uint8Array | null;
   try {
     raw = await readBlob(entry.blobPath);
   } catch (cause) {
@@ -2200,6 +2308,12 @@ async function parseQueueBlob(
       reason: `${entry.kind} ${entry.blobPath} could not be read from the tree: ${
         cause instanceof Error ? cause.message : String(cause)
       }`,
+    };
+  }
+  if (raw === null) {
+    return {
+      ok: false,
+      reason: `${entry.kind} ${entry.blobPath} was enumerated in the tree but its bytes could not be read`,
     };
   }
   let bodyJson: unknown;
@@ -2220,10 +2334,17 @@ async function parseQueueBlob(
       reason: `${entry.kind} ${entry.blobPath} envelope invalid: ${validated.summary}`,
     };
   }
-  if (validated.messageId !== entry.messageIdFromFilename) {
+  const queueIdentityProblem = await checkEnvelopeIdentity(validated);
+  if (queueIdentityProblem !== null) {
     return {
       ok: false,
-      reason: `${entry.kind} ${entry.blobPath} body.messageId ${JSON.stringify(validated.messageId)} does not match filename messageId ${JSON.stringify(entry.messageIdFromFilename)}`,
+      reason: `${entry.kind} ${entry.blobPath} ${queueIdentityProblem}`,
+    };
+  }
+  if (claimCheckIdentity(validated) !== entry.identityFromFilename) {
+    return {
+      ok: false,
+      reason: `${entry.kind} ${entry.blobPath} body identity ${JSON.stringify(claimCheckIdentity(validated))} does not match filename identity ${JSON.stringify(entry.identityFromFilename)}`,
     };
   }
   if (validated.receivedAt !== entry.receivedAtFromFilename) {
@@ -2362,7 +2483,7 @@ function parseCacheKey(oid: string, blobPath: string): string {
 /**
  * Validate the `addresses/<urlEncoded>/{inbox,processing,consumed}`
  * subtree as a whole. The walk enforces filename shape, JSON envelope
- * structure, address round-trip, per-messageId atomicity across the
+ * structure, address round-trip, per-identity atomicity across the
  * three queue states, consumed-blob immutability, and the
  * inbox→processing / processing→consumed transition invariants against
  * the prior tree.
@@ -2438,14 +2559,14 @@ async function validateClaimCheckSubtree(
       );
     }
     const bucket = prospectiveBucketForSegment ?? emptyBucket(decodedAddress);
-    // Per-messageId atomicity: each messageId may appear at most
+    // Per-identity atomicity: each identity may appear at most
     // once across inbox/processing/consumed combined. The check
-    // keys on (messageId, kind, filename) so two inbox entries with
-    // the same messageId at different `receivedAt` values surface
+    // keys on (identity, kind, filename) so two inbox entries with
+    // the same identity at different `receivedAt` values surface
     // as a same-state collision (the Set-of-kinds shape would
     // collapse both into a single "inbox" member and miss the
     // case).
-    const messageIdToLocations = new Map<
+    const identityToLocations = new Map<
       string,
       { kind: "inbox" | "processing" | "consumed"; filename: string }[]
     >();
@@ -2461,22 +2582,22 @@ async function validateClaimCheckSubtree(
         if (!parsed.ok) return parsed;
         if (key !== null) cache.queueEntries.add(key);
       }
-      const list = messageIdToLocations.get(entry.messageIdFromFilename) ?? [];
+      const list = identityToLocations.get(entry.identityFromFilename) ?? [];
       list.push({ kind: entry.kind, filename: entry.filename });
-      messageIdToLocations.set(entry.messageIdFromFilename, list);
+      identityToLocations.set(entry.identityFromFilename, list);
     }
     for (const entry of bucket.consumed) {
-      // Cross-state atomicity needs each consumed messageId in the map;
-      // the messageId is the filename stem, so this needs no blob read.
+      // Cross-state atomicity needs each consumed identity in the map;
+      // the identity is the filename stem, so this needs no blob read.
       // Retained consumed entries are not re-parsed (their envelope was
       // validated when first written and their bytes are proven
       // immutable by the OID compare below); added consumed entries are
       // parsed and validated by the transition check further down.
-      const list = messageIdToLocations.get(entry.messageIdFromFilename) ?? [];
+      const list = identityToLocations.get(entry.identityFromFilename) ?? [];
       list.push({ kind: entry.kind, filename: entry.filename });
-      messageIdToLocations.set(entry.messageIdFromFilename, list);
+      identityToLocations.set(entry.identityFromFilename, list);
     }
-    for (const [messageId, locations] of messageIdToLocations) {
+    for (const [identity, locations] of identityToLocations) {
       if (locations.length > 1) {
         const sorted = [...locations].sort((a, b) => {
           if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
@@ -2488,14 +2609,14 @@ async function validateClaimCheckSubtree(
         if (kinds.size > 1) {
           return {
             ok: false,
-            reason: `address ${JSON.stringify(bucket.decodedAddress)} message ${JSON.stringify(messageId)} appears in multiple queue states ${JSON.stringify(Array.from(kinds).sort())}; at most one of inbox/processing/consumed is permitted`,
+            reason: `address ${JSON.stringify(bucket.decodedAddress)} message ${JSON.stringify(identity)} appears in multiple queue states ${JSON.stringify(Array.from(kinds).sort())}; at most one of inbox/processing/consumed is permitted`,
           };
         }
         const kind = sorted[0]?.kind;
         if (kind === undefined) throw new Error("unreachable");
         return {
           ok: false,
-          reason: `address ${JSON.stringify(bucket.decodedAddress)} message ${JSON.stringify(messageId)} appears at multiple ${kind} positions ${JSON.stringify(sorted.map((l) => l.filename))}; at most one entry per messageId is permitted`,
+          reason: `address ${JSON.stringify(bucket.decodedAddress)} message ${JSON.stringify(identity)} appears at multiple ${kind} positions ${JSON.stringify(sorted.map((l) => l.filename))}; at most one entry per identity is permitted`,
         };
       }
     }
@@ -2549,9 +2670,9 @@ async function validateClaimCheckSubtree(
     const prospectiveProcessingByFilename = new Map<string, ClaimCheckBlob>();
     for (const e of bucket.processing)
       prospectiveProcessingByFilename.set(e.filename, e);
-    const prospectiveConsumedByMessageId = new Map<string, ClaimCheckBlob>();
+    const prospectiveConsumedByIdentity = new Map<string, ClaimCheckBlob>();
     for (const e of bucket.consumed)
-      prospectiveConsumedByMessageId.set(e.messageIdFromFilename, e);
+      prospectiveConsumedByIdentity.set(e.identityFromFilename, e);
 
     // Deletion-direction guards: walk every entry the prior tree
     // carried under `consumed/`, `processing/`, and `inbox/` and reject
@@ -2626,12 +2747,12 @@ async function validateClaimCheckSubtree(
         if (prospectiveProcessingPaths.has(e.blobPath)) continue;
         // A processing entry may legitimately disappear in two
         // shapes: (1) markConsumed wrote a matching consumed entry
-        // keyed by the same messageId, or (2) replayProcessingToInbox
+        // keyed by the same identity, or (2) replayProcessingToInbox
         // moved the entry back to inbox preserving the
-        // `<receivedAt>-<messageId>.json` filename. Anything else is
+        // `<receivedAt>-<identity>.json` filename. Anything else is
         // an in-flight loss.
-        const consumedMatch = prospectiveConsumedByMessageId.get(
-          e.messageIdFromFilename,
+        const consumedMatch = prospectiveConsumedByIdentity.get(
+          e.identityFromFilename,
         );
         const inboxMatch = prospectiveInboxByFilename.get(e.filename);
         if (consumedMatch !== undefined || inboxMatch !== undefined) continue;
@@ -2643,13 +2764,13 @@ async function validateClaimCheckSubtree(
       for (const e of priorBucket.inbox) {
         if (prospectiveInboxPaths.has(e.blobPath)) continue;
         // A prior inbox entry may legitimately disappear when it
-        // transitions to processing (same `<receivedAt>-<messageId>`
-        // filename) or directly to consumed (matching messageId).
+        // transitions to processing (same `<receivedAt>-<identity>`
+        // filename) or directly to consumed (matching identity).
         // Anything else is an inbound-mail loss — the FIFO claim-check
         // contract requires the entry to reappear somewhere.
         const processingMatch = prospectiveProcessingByFilename.get(e.filename);
-        const consumedMatch = prospectiveConsumedByMessageId.get(
-          e.messageIdFromFilename,
+        const consumedMatch = prospectiveConsumedByIdentity.get(
+          e.identityFromFilename,
         );
         if (processingMatch !== undefined || consumedMatch !== undefined)
           continue;
@@ -2661,12 +2782,12 @@ async function validateClaimCheckSubtree(
     }
 
     const priorInboxByFilename = new Map<string, ClaimCheckBlob>();
-    const priorProcessingByMessageId = new Map<string, ClaimCheckBlob>();
+    const priorProcessingByIdentity = new Map<string, ClaimCheckBlob>();
     if (priorBucket !== undefined) {
       for (const e of priorBucket.inbox)
         priorInboxByFilename.set(e.filename, e);
       for (const e of priorBucket.processing)
-        priorProcessingByMessageId.set(e.messageIdFromFilename, e);
+        priorProcessingByIdentity.set(e.identityFromFilename, e);
     }
     const priorProcessingPaths = new Set<string>(
       (priorBucket?.processing ?? []).map((e) => e.blobPath),
@@ -2676,7 +2797,7 @@ async function validateClaimCheckSubtree(
     );
 
     // Newly-added processing entries must match an inbox entry that
-    // existed in the prior tree at the same `<receivedAt>-<messageId>`
+    // existed in the prior tree at the same `<receivedAt>-<identity>`
     // filename. This makes inbox→processing the only legal way to
     // grow processing/.
     for (const entry of bucket.processing) {
@@ -2688,21 +2809,35 @@ async function validateClaimCheckSubtree(
           reason: `processing ${entry.blobPath} is newly added but the prior tree has no matching inbox entry ${JSON.stringify(`${WORKFLOW_RUN_ADDRESSES_PREFIX}/${segment}/${WORKFLOW_RUN_INBOX_DIR}/${entry.filename}`)}; processing entries must originate from a prior-tree inbox entry`,
         };
       }
+      // The filenames match, so the identities match; the envelopes must
+      // also name the same message, since a legacy identity and a delivery
+      // key can be one string.
+      const processingParsed = await parseQueueBlob(entry, readBlob);
+      if (!processingParsed.ok) return processingParsed;
+      const priorInboxParsed = await parseQueueBlob(priorInbox, priorReadBlob);
+      if (!priorInboxParsed.ok) return priorInboxParsed;
+      if (!sameMessage(processingParsed.body, priorInboxParsed.body)) {
+        return {
+          ok: false,
+          reason: `processing ${entry.blobPath} does not name the same message as the prior inbox entry it moved from; messageId, authenticatedSender and deliveryKey must all carry over`,
+        };
+      }
     }
 
     // Newly-added consumed entries must match a processing entry that
-    // existed in the prior tree at the same address+messageId, and
-    // the receivedAt carried in the consumed envelope must equal the
-    // receivedAt the processing entry's filename carried.
+    // existed in the prior tree at the same address and identity, must
+    // name the same message, and the receivedAt carried in the consumed
+    // envelope must equal the receivedAt the processing entry's filename
+    // carried.
     for (const entry of bucket.consumed) {
       if (priorConsumedPaths.has(entry.blobPath)) continue;
-      const priorProcessing = priorProcessingByMessageId.get(
-        entry.messageIdFromFilename,
+      const priorProcessing = priorProcessingByIdentity.get(
+        entry.identityFromFilename,
       );
       if (priorProcessing === undefined) {
         return {
           ok: false,
-          reason: `consumed ${entry.blobPath} is newly added but the prior tree has no matching processing entry for messageId ${JSON.stringify(entry.messageIdFromFilename)}; consumed entries must originate from a prior-tree processing entry`,
+          reason: `consumed ${entry.blobPath} is newly added but the prior tree has no matching processing entry for identity ${JSON.stringify(entry.identityFromFilename)}; consumed entries must originate from a prior-tree processing entry`,
         };
       }
       const parsed = await parseConsumedBlob(entry, readBlob);
@@ -2711,7 +2846,18 @@ async function validateClaimCheckSubtree(
       if (consumedBody.receivedAt !== priorProcessing.receivedAtFromFilename) {
         return {
           ok: false,
-          reason: `consumed ${entry.blobPath} body.receivedAt ${String(consumedBody.receivedAt)} does not match the prior processing entry's receivedAt ${String(priorProcessing.receivedAtFromFilename)} for messageId ${JSON.stringify(entry.messageIdFromFilename)}`,
+          reason: `consumed ${entry.blobPath} body.receivedAt ${String(consumedBody.receivedAt)} does not match the prior processing entry's receivedAt ${String(priorProcessing.receivedAtFromFilename)} for identity ${JSON.stringify(entry.identityFromFilename)}`,
+        };
+      }
+      const priorProcessingParsed = await parseQueueBlob(
+        priorProcessing,
+        priorReadBlob,
+      );
+      if (!priorProcessingParsed.ok) return priorProcessingParsed;
+      if (!sameMessage(consumedBody, priorProcessingParsed.body)) {
+        return {
+          ok: false,
+          reason: `consumed ${entry.blobPath} does not name the same message as the prior processing entry it consumes; messageId, authenticatedSender and deliveryKey must all carry over`,
         };
       }
     }
@@ -3566,11 +3712,11 @@ export const workflowRunAuthorize: AuthorizeFn = (
 //                           processing.
 //   markConsumed          — atomically remove the processing entry
 //                           and write the canonical
-//                           consumed/<messageId>.json dedup index
+//                           consumed/<identity>.json dedup index
 //                           entry.
 //   replayProcessingToInbox — recovery path that moves every
 //                           processing entry back to inbox preserving
-//                           its `<receivedAt>-<messageId>` filename
+//                           its `<receivedAt>-<identity>` filename
 //                           key so FIFO ordering survives a crash.
 //
 // All four route through `writeTreeDelta`, scoped to the per-address
@@ -3587,9 +3733,9 @@ export const workflowRunAuthorize: AuthorizeFn = (
 // guarantee these operations require.
 
 function claimCheckCommitRef(): string {
-  // Every claim-check operation targets the same canonical ref used by
-  // the workflow-run kind handler's event log so subscribers see a
-  // single coherent commit stream.
+  // Every claim-check operation targets this one ref so subscribers see
+  // a single coherent claim-check commit stream. The run event log lives
+  // on `WORKFLOW_RUN_REF`, a different ref.
   return "refs/heads/events";
 }
 
@@ -3612,16 +3758,16 @@ function processingPath(addressSegment: string, key: string): string {
   return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_PROCESSING_DIR}/${key}.json`;
 }
 
-function consumedPath(addressSegment: string, messageId: string): string {
-  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_CONSUMED_DIR}/${messageId}.json`;
+function consumedPath(addressSegment: string, identity: string): string {
+  return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_CONSUMED_DIR}/${identity}.json`;
 }
 
 function watermarkPath(addressSegment: string): string {
   return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_WATERMARK_FILE}`;
 }
 
-function filenameKey(receivedAt: number, messageId: string): string {
-  return `${String(receivedAt)}-${messageId}`;
+function filenameKey(receivedAt: number, identity: string): string {
+  return `${String(receivedAt)}-${identity}`;
 }
 
 type ClaimCheckEntry = { name: string; oid: string };
@@ -3864,7 +4010,6 @@ export async function enqueueInbox(
   const newInboxPath = inboxPath(addressSegment, inboxKey);
   const inboxFname = `${inboxKey}.json`;
   const consumedFname = `${args.messageId}.json`;
-  const messageIdSuffix = `-${args.messageId}.json`;
   // The already-present cases throw `InboxEntryAlreadyPresent` from the merge
   // callback and are caught here into an `already-present` outcome; the
   // stale-refusal throws `StaleInboxEnqueueError`, and a substrate/I/O failure
@@ -3905,7 +4050,7 @@ export async function enqueueInbox(
             `claim_check_already_consumed: address ${args.address} message ${args.messageId} is already in the consumed dedup index`,
           );
         }
-        if (listing.processing.some((e) => e.name.endsWith(messageIdSuffix))) {
+        if (findQueueEntry(listing.processing, args.messageId) !== undefined) {
           throw new InboxEntryAlreadyPresent(
             "processing",
             `claim_check_already_processing: address ${args.address} message ${args.messageId} is currently in processing`,
@@ -3915,9 +4060,7 @@ export async function enqueueInbox(
         // different receivedAt. The validatePush atomicity check also
         // catches this on the commit path, but surfacing it here gives the
         // caller a precise error and keeps the bad tree off the substrate.
-        const inboxDup = listing.inbox.find((e) =>
-          e.name.endsWith(messageIdSuffix),
-        );
+        const inboxDup = findQueueEntry(listing.inbox, args.messageId);
         if (inboxDup !== undefined) {
           throw new InboxEntryAlreadyPresent(
             "already_inbox",
@@ -3951,7 +4094,7 @@ export type DequeueToProcessingResult = {
  * distinguish "nothing to do" from "operation failed".
  *
  * FIFO is keyed on the parsed numeric `receivedAt` prefix of the
- * inbox filename, with a lexicographic messageId tiebreak. The
+ * inbox filename, with a lexicographic identity tiebreak. The
  * substrate does NOT rely on uniform digit widths — sorting raw
  * filenames would put `"100-…"` ahead of `"99-…"` since `'1' < '9'`,
  * which violates the FIFO invariant.
@@ -3971,32 +4114,28 @@ export async function dequeueToProcessing(
     computeDelta: async (_parentCommitSha, prior) => {
       const listing = await readAddressListing(prior, addressSegment);
       const inboxDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_INBOX_DIR}/`;
-      // Sort by numeric receivedAt with a messageId tiebreak. A raw
+      // Sort by numeric receivedAt with an identity tiebreak. A raw
       // string sort would not agree with chronological order when
       // receivedAt values have non-uniform digit widths.
       type InboxCandidate = {
         entry: ClaimCheckEntry;
         receivedAt: number;
-        messageId: string;
+        identity: string;
       };
       const candidates: InboxCandidate[] = [];
       for (const entry of listing.inbox) {
-        const m = QUEUE_FILENAME_RE.exec(entry.name);
-        if (m === null || m[1] === undefined || m[2] === undefined) {
+        const parsed = parseQueueFilename(entry.name);
+        if (parsed === null) {
           throw new Error(
             `claim_check_invalid_inbox_filename: ${inboxDir}${entry.name}`,
           );
         }
-        candidates.push({
-          entry,
-          receivedAt: Number.parseInt(m[1], 10),
-          messageId: m[2],
-        });
+        candidates.push({ entry, ...parsed });
       }
       candidates.sort((a, b) => {
         if (a.receivedAt !== b.receivedAt) return a.receivedAt - b.receivedAt;
-        if (a.messageId < b.messageId) return -1;
-        if (a.messageId > b.messageId) return 1;
+        if (a.identity < b.identity) return -1;
+        if (a.identity > b.identity) return 1;
         return 0;
       });
       const first = candidates[0];
@@ -4027,10 +4166,11 @@ export type ReadProcessingEntryResult = {
 } | null;
 
 /**
- * Read the processing-queue entry for `messageId` at `address` without
- * mutating the tree. Returns the decoded claim-check envelope (carrying,
- * when the enqueuer inlined them, the base64 `rawMessage` bytes) or `null`
- * when no processing entry exists for the messageId.
+ * Read the processing-queue entry filed under `identity` (see
+ * `claimCheckIdentity`) at `address` without mutating the tree. Returns the
+ * decoded claim-check envelope (carrying, when the enqueuer inlined them, the
+ * base64 `rawMessage` bytes) or `null` when no processing entry exists for
+ * the identity.
  *
  * This is the read half of mailbox ownership (§3a): the supervisor's
  * dispatch loop moves an inbox entry to processing and forwards a
@@ -4055,12 +4195,11 @@ export async function readProcessingEntry(
   _principal: Principal,
   repoId: RepoId,
   address: string,
-  messageId: string,
+  identity: string,
 ): Promise<ReadProcessingEntryResult> {
   const addressSegment = addressSegmentFor(address);
   const repoDir = store.getRepoDir(repoId);
   const processingDir = `${repoDir}/${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegment}/${WORKFLOW_RUN_PROCESSING_DIR}`;
-  const suffix = `-${messageId}.json`;
   let filenames: string[];
   try {
     filenames = await fs.promises.readdir(processingDir);
@@ -4076,7 +4215,7 @@ export async function readProcessingEntry(
     throw cause;
   }
   for (const filename of filenames) {
-    if (!filename.endsWith(suffix)) continue;
+    if (parseQueueFilename(filename)?.identity !== identity) continue;
     const blobPath = `${processingDir}/${filename}`;
     const bytes = await fs.promises.readFile(blobPath);
     const envelope = decodeQueueEnvelopeOrThrow(
@@ -4090,7 +4229,8 @@ export async function readProcessingEntry(
 
 export type MarkConsumedArgs = {
   address: string;
-  messageId: string;
+  /** The processing entry's identity (see `claimCheckIdentity`). */
+  identity: string;
   runId: string;
   consumedAt: number;
   /**
@@ -4120,20 +4260,21 @@ export type MarkConsumedResult = {
   envelope: ConsumedEnvelope;
   /** Watermark the commit advanced to (epoch-ms `receivedAt` horizon). */
   watermark: number;
-  /** messageIds whose consumed entries this commit pruned. */
-  prunedMessageIds: string[];
+  /** Identities whose consumed entries this commit pruned. */
+  prunedIdentities: string[];
 };
 
 /**
- * Atomically remove the processing entry for `messageId` at `address`,
- * write the canonical `consumed/<messageId>.json` dedup index entry,
+ * Atomically remove the processing entry for `identity` at `address`,
+ * write the canonical `consumed/<identity>.json` dedup index entry,
  * advance the per-address retention watermark, and prune consumed
  * entries the watermark has passed. The caller is expected to have
- * called `dequeueToProcessing` for this messageId; calling
+ * called `dequeueToProcessing` for this identity; calling
  * `markConsumed` without a matching processing entry throws.
  *
- * The consumed envelope preserves the original `receivedAt` from the
- * processing entry so the dedup index doubles as an audit record.
+ * The consumed envelope carries the processing entry's `messageId`,
+ * `authenticatedSender` and `deliveryKey`, and preserves its original
+ * `receivedAt`, so the dedup index doubles as an audit record.
  *
  * Retention (the bounded-`consumed/` contract): the watermark advances
  * to `max(priorWatermark, min(consumedAt - retentionHorizonMs,
@@ -4156,26 +4297,24 @@ export async function markConsumed(
     args.retentionHorizonMs ?? DEFAULT_CONSUMED_RETENTION_MS;
   let consumedEnvelope: ConsumedEnvelope | null = null;
   let advancedWatermark = 0;
-  const prunedMessageIds: string[] = [];
+  const prunedIdentities: string[] = [];
   const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
-    message: `consume ${args.address} ${args.messageId}`,
+    message: `consume ${args.address} ${args.identity}`,
     computeDelta: async (_parentCommitSha, prior) => {
       const listing = await readAddressListing(prior, addressSegment);
-      const consumedFull = consumedPath(addressSegment, args.messageId);
-      const consumedFname = `${args.messageId}.json`;
+      const consumedFull = consumedPath(addressSegment, args.identity);
+      const consumedFname = `${args.identity}.json`;
       if (listing.consumed.some((e) => e.name === consumedFname)) {
         throw new Error(
           `claim_check_already_consumed: ${consumedFull} already in the dedup index`,
         );
       }
       const processingDir = `${addressPrefix(addressSegment)}${WORKFLOW_RUN_PROCESSING_DIR}/`;
-      const processingEntry = listing.processing.find((e) =>
-        e.name.endsWith(`-${args.messageId}.json`),
-      );
+      const processingEntry = findQueueEntry(listing.processing, args.identity);
       if (processingEntry === undefined) {
         throw new Error(
-          `claim_check_processing_not_found: address ${args.address} message ${args.messageId} has no processing entry`,
+          `claim_check_processing_not_found: address ${args.address} message ${args.identity} has no processing entry`,
         );
       }
       const processingFull = `${processingDir}${processingEntry.name}`;
@@ -4185,7 +4324,13 @@ export async function markConsumed(
         processingFull,
       );
       const envelope: ConsumedEnvelope = {
-        messageId: args.messageId,
+        messageId: processingEnvelope.messageId,
+        ...(processingEnvelope.authenticatedSender !== undefined
+          ? { authenticatedSender: processingEnvelope.authenticatedSender }
+          : {}),
+        ...(processingEnvelope.deliveryKey !== undefined
+          ? { deliveryKey: processingEnvelope.deliveryKey }
+          : {}),
         receivedAt: processingEnvelope.receivedAt,
         address: args.address,
         runId: args.runId,
@@ -4209,7 +4354,7 @@ export async function markConsumed(
       // Prune the oldest consumed tail: read each retained consumed
       // entry's receivedAt and drop any that has fallen strictly below
       // the new watermark. This is the one leg that must scan the
-      // consumed index — its filenames carry only the messageId, so the
+      // consumed index — its filenames carry only the identity, so the
       // receivedAt lives in the bytes — and is the residual the
       // consumed-shard lever removes. The new entry (added via puts) is
       // never below the watermark by construction.
@@ -4223,7 +4368,7 @@ export async function markConsumed(
           blobPath,
         );
         if (consumedReceivedAt < newWatermark) {
-          prunedMessageIds.push(entry.name.slice(0, -".json".length));
+          prunedIdentities.push(entry.name.slice(0, -".json".length));
           deletes.push(blobPath);
         }
       }
@@ -4244,7 +4389,7 @@ export async function markConsumed(
     commitSha,
     envelope: captured,
     watermark: advancedWatermark,
-    prunedMessageIds,
+    prunedIdentities,
   };
 }
 
@@ -4254,7 +4399,7 @@ export type ReplayProcessingToInboxResult = {
 };
 
 export type ScanRunsForBootResult = {
-  ownedMessageIds: Set<string>;
+  ownedIdentities: Set<string>;
   pendingSealRunIds: string[];
 };
 
@@ -4262,13 +4407,16 @@ export type ScanRunsForBootResult = {
  * Walk `runs/` once and return the two boot-recovery inputs the supervisor's
  * spawn needs, from a single traversal of the working tree via `getRepoDir`:
  *
- * - `ownedMessageIds`: the `consumedMessageId`s of NON-terminal runs -- the
+ * - `ownedIdentities`: the `consumedMessageId`s of NON-terminal runs -- the
  *   messages a live run still owns. Spawn feeds this into
- *   `replayProcessingToInbox`'s `ownedMessageIds` so a parked run's message is
- *   not re-admitted to inbox and dispatched a second time while the run is
- *   recovered by re-driving its durable log. Without this, the re-drive AND the
- *   re-triggered fresh run both re-park the same awaitSignal gate on the same
- *   runId, and the two concurrent runtime bodies race to a corrupt terminal.
+ *   `replayProcessingToInbox`'s `ownedIdentities`, which compares it with each
+ *   entry's claim-check identity, so the value a run records must be that
+ *   identity; for a legacy entry the identity is its Message-ID. A parked
+ *   run's message is then not re-admitted to inbox and dispatched a second
+ *   time while the run is recovered by re-driving its durable log. Without
+ *   this, the re-drive AND the re-triggered fresh run both re-park the same
+ *   awaitSignal gate on the same runId, and the two concurrent runtime bodies
+ *   race to a corrupt terminal.
  * - `pendingSealRunIds`: runs that are terminal but still in per-event form --
  *   an interrupted fold left them unsealed. Spawn hands these to the recovery
  *   sweep, which re-runs the idempotent fold. A terminal event is a *proposal*:
@@ -4296,7 +4444,7 @@ export async function scanRunsForBoot(
     runIds = await fs.readdir(runsDir);
   } catch (cause) {
     if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") {
-      return { ownedMessageIds: new Set(), pendingSealRunIds: [] };
+      return { ownedIdentities: new Set(), pendingSealRunIds: [] };
     }
     throw cause;
   }
@@ -4334,7 +4482,7 @@ export async function scanRunsForBoot(
       // ENOENT means the run has neither a sealed log nor a per-event
       // directory (grants may be staged before the first event); skip it.
       // A non-ENOENT error drops the run from BOTH result sets, and a live
-      // run dropped from ownedMessageIds gets its message re-admitted and
+      // run dropped from ownedIdentities gets its message re-admitted and
       // dispatched a second time on the same runId -- the double-driver
       // corruption this scan exists to prevent. Surface it, but still skip:
       // aborting the whole boot scan over one run is worse.
@@ -4395,7 +4543,7 @@ export async function scanRunsForBoot(
     }
     if (consumedMessageId !== undefined) owned.add(consumedMessageId);
   }
-  return { ownedMessageIds: owned, pendingSealRunIds };
+  return { ownedIdentities: owned, pendingSealRunIds };
 }
 
 export type WorkflowRunLifecycle = "absent" | "live" | "terminal";
@@ -4552,23 +4700,24 @@ export async function readWorkflowRunLifecycle(
 
 export type ReplayProcessingToInboxOpts = {
   /**
-   * MessageIds whose run is still LIVE (non-terminal) and therefore owns
-   * its inbound message: recovery re-drives that run against the durable
-   * log, so re-admitting the message to `inbox/` would dispatch a SECOND
-   * run for it, colliding with the re-drive on the shared runId. Entries
-   * in this set are left in `processing/` untouched; the run's eventual
-   * `markConsumed` clears them. The caller computes this by reading the
-   * run event logs, which live on a DIFFERENT ref (`refs/heads/main`)
-   * than the claim-check subtree this operation commits to
-   * (`refs/heads/events`). Empty/absent means replay every processing
-   * entry (the pre-existing behaviour: recover all orphans).
+   * Claim-check identities (see `claimCheckIdentity`) whose run is still
+   * LIVE (non-terminal) and therefore owns its inbound message: recovery
+   * re-drives that run against the durable log, so re-admitting the
+   * message to `inbox/` would dispatch a SECOND run for it, colliding
+   * with the re-drive on the shared runId. Entries in this set are left
+   * in `processing/` untouched; the run's eventual `markConsumed` clears
+   * them. The caller computes this by reading the run event logs, which
+   * live on a DIFFERENT ref (`refs/heads/main`) than the claim-check
+   * subtree this operation commits to (`refs/heads/events`).
+   * Empty/absent means replay every processing entry (the pre-existing
+   * behaviour: recover all orphans).
    */
-  ownedMessageIds?: ReadonlySet<string>;
+  ownedIdentities?: ReadonlySet<string>;
 };
 
 /**
  * Recovery path: move every processing entry at `address` back to
- * inbox preserving the original `<receivedAt>-<messageId>` filename
+ * inbox preserving the original `<receivedAt>-<identity>` filename
  * key so FIFO ordering survives a workflow-process crash. Returns
  * the set of keys that were moved; when nothing was in processing
  * the returned `replayedKeys` is empty (and the commit is a no-op
@@ -4598,7 +4747,7 @@ export async function replayProcessingToInbox(
 ): Promise<ReplayProcessingToInboxResult> {
   const addressSegment = addressSegmentFor(address);
   const ref = claimCheckCommitRef();
-  const ownedMessageIds = opts.ownedMessageIds ?? new Set<string>();
+  const ownedIdentities = opts.ownedIdentities ?? new Set<string>();
   const replayedKeys: string[] = [];
   const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
@@ -4624,7 +4773,7 @@ export async function replayProcessingToInbox(
           bytes,
           `${processingDir}${entry.name}`,
         );
-        if (ownedMessageIds.has(envelope.messageId)) {
+        if (ownedIdentities.has(claimCheckIdentity(envelope))) {
           continue;
         }
         const inboxFull = `${inboxDir}${entry.name}`;

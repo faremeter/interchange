@@ -17,6 +17,7 @@
 
 export {
   classifyTerminalEvent,
+  claimCheckIdentity,
   DEFAULT_CONSUMED_RETENTION_MS,
   dequeueToProcessing,
   enqueueInbox,
