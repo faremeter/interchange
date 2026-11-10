@@ -1,5 +1,8 @@
 export const DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS = 120_000;
 
+// Ensures one provisioning sequence may spend, across every provisioner.
+export const MAX_ENSURE_ATTEMPTS = 10;
+
 export type SidecarReconciliationContext = {
   readonly signal: AbortSignal;
   readonly leaseId: string;
