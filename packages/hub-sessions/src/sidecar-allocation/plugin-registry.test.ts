@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import type { SidecarProvisioner } from "./contracts";
-import { createSidecarPluginRegistry } from "./plugin-registry";
+import {
+  createSidecarPluginRegistry,
+  type SidecarProvisionerChoiceContext,
+} from "./plugin-registry";
 
 function provisioner(
   id: string,
@@ -19,6 +22,18 @@ function provisioner(
     async destroy() {
       return { kind: "destroyed", cleanup: "confirmed" };
     },
+  };
+}
+
+function choiceContext(
+  overrides: Partial<SidecarProvisionerChoiceContext> = {},
+): SidecarProvisionerChoiceContext {
+  return {
+    purpose: "deployment",
+    tenantId: "tnt-1",
+    anchorRunId: "run-1",
+    signal: new AbortController().signal,
+    ...overrides,
   };
 }
 
@@ -117,10 +132,13 @@ describe("createSidecarPluginRegistry", () => {
     });
 
     expect(
-      await registry.selectProvisioner({
-        tenantPolicies: [],
-        workflowRules: [{ capability: "runtime:browser", effect: "require" }],
-      }),
+      await registry.selectProvisioner(
+        {
+          tenantPolicies: [],
+          workflowRules: [{ capability: "runtime:browser", effect: "require" }],
+        },
+        choiceContext(),
+      ),
     ).toEqual({ ok: true, provisioner: containers });
   });
 
@@ -141,12 +159,35 @@ describe("createSidecarPluginRegistry", () => {
     });
 
     expect(
-      await registry.selectProvisioner({
-        tenantPolicies: [],
-        workflowRules: [{ capability: "runtime:browser", effect: "require" }],
-      }),
+      await registry.selectProvisioner(
+        {
+          tenantPolicies: [],
+          workflowRules: [{ capability: "runtime:browser", effect: "require" }],
+        },
+        choiceContext(),
+      ),
     ).toEqual({ ok: true, provisioner: virtualMachines });
     expect(seen).toEqual([[containers, virtualMachines]]);
+  });
+
+  test("passes the choice context to the chooser", async () => {
+    const containers = provisioner("containers");
+    const contexts: SidecarProvisionerChoiceContext[] = [];
+    const registry = createSidecarPluginRegistry({
+      provisioners: [containers],
+      chooser: (_candidates, context) => {
+        contexts.push(context);
+        return containers;
+      },
+    });
+    const context = choiceContext({ purpose: "probe" });
+
+    await registry.selectProvisioner(
+      { tenantPolicies: [], workflowRules: [] },
+      context,
+    );
+
+    expect(contexts).toEqual([context]);
   });
 
   test("rejects a chooser result outside the matching candidates", async () => {
@@ -157,7 +198,10 @@ describe("createSidecarPluginRegistry", () => {
     });
 
     await expect(
-      registry.selectProvisioner({ tenantPolicies: [], workflowRules: [] }),
+      registry.selectProvisioner(
+        { tenantPolicies: [], workflowRules: [] },
+        choiceContext(),
+      ),
     ).rejects.toThrow(/outside the matching candidates/);
   });
 
@@ -173,10 +217,13 @@ describe("createSidecarPluginRegistry", () => {
     });
 
     expect(
-      await registry.selectProvisioner({
-        tenantPolicies: [],
-        workflowRules: [{ capability: "platform:ios", effect: "require" }],
-      }),
+      await registry.selectProvisioner(
+        {
+          tenantPolicies: [],
+          workflowRules: [{ capability: "platform:ios", effect: "require" }],
+        },
+        choiceContext(),
+      ),
     ).toEqual({ ok: true, provisioner: ios });
   });
 
@@ -185,10 +232,13 @@ describe("createSidecarPluginRegistry", () => {
       provisioners: [provisioner("containers")],
     });
 
-    const selection = await registry.selectProvisioner({
-      tenantPolicies: [],
-      workflowRules: [{ capability: "platform:ios", effect: "require" }],
-    });
+    const selection = await registry.selectProvisioner(
+      {
+        tenantPolicies: [],
+        workflowRules: [{ capability: "platform:ios", effect: "require" }],
+      },
+      choiceContext(),
+    );
     expect(selection.ok).toBe(false);
     if (!selection.ok && selection.reason === "no_match") {
       expect(selection.mismatches["containers"]?.[0]).toEqual({

@@ -4,6 +4,7 @@ export {
   formatProvisionerMismatches,
   type CreateSidecarPluginRegistryOpts,
   type SidecarPluginRegistry,
+  type SidecarProvisionerChoiceContext,
   type SidecarProvisionerChooser,
   type SidecarProvisionerSelection,
 } from "./plugin-registry";
