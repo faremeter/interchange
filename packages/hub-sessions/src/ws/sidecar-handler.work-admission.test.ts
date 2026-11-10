@@ -81,6 +81,7 @@ test("reconnect publishes readiness while replay admission is blocked", async ()
         agentAddress: address,
         generation: TEST_IDENTITY.generation,
         messageId: "mail-1",
+        authenticatedSender: "sender@example.test",
       }),
     );
     await waiting;
@@ -346,6 +347,7 @@ test("a transient admission failure during reconnect remains retryable", async (
       agentAddress: address,
       generation: TEST_IDENTITY.generation,
       messageId: "mail-1",
+      authenticatedSender: "sender@example.test",
     }),
   );
   await tick();
@@ -432,6 +434,7 @@ test("an acknowledgement during admission transaction completion is not lost", a
       agentAddress: address,
       generation: TEST_IDENTITY.generation,
       messageId: "mail-1",
+      authenticatedSender: "sender@example.test",
     }),
   );
   await tick();

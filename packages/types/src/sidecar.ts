@@ -499,16 +499,20 @@ export type MailInboundFrame = typeof MailInboundFrame.infer;
  * the agent's on-disk inbox. The hub holds each delivered mail in a pending
  * map and retries until this ack lands (or reconnect-redelivers it), so a
  * message dropped in the connected/reconnecting window is not silently lost.
- * Keyed on the hub-minted `messageId` the `mail.inbound` carried, so the ack
- * clears exactly the pending entry it resolves; the ack is only sent AFTER the
- * durable inbox write resolves (a non-ack IS the retry signal). At-least-once
- * delivery is made effectively-once by the `RunStarted`/signal dedup guards.
+ * Names the `messageId` the `mail.inbound` carried and echoes its
+ * `authenticatedSender`, so the hub derives the delivery key and clears exactly
+ * the pending entry the ack resolves; the pending mail of another sender with
+ * the same `messageId` stays pending. The ack is only sent AFTER the durable
+ * inbox write resolves (a non-ack IS the retry signal). At-least-once delivery
+ * is made effectively-once by the `RunStarted`/signal dedup guards.
  */
 export const MailInboundAckFrame = type({
   type: "'mail.inbound.ack'",
   agentAddress: "string",
   generation: Generation,
   messageId: "string",
+  // Non-empty with no NUL: the hub derives the delivery key from it.
+  authenticatedSender: /^[^\0]+$/,
 });
 export type MailInboundAckFrame = typeof MailInboundAckFrame.infer;
 

@@ -15,6 +15,7 @@ import {
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
 import {
   base64Decode,
+  deriveDeliveryKey,
   deriveMessageId,
   deriveWorkflowRunId,
   isRunAddress,
@@ -39,6 +40,7 @@ import {
   type SidecarCapacity,
   type PackAckFrame,
   type HubFrame,
+  type MailInboundAckFrame,
   type MailInboundFrame,
   type PackPushFrame,
   type PackDoneFrame,
@@ -967,18 +969,20 @@ export function createSidecarRouter(
     string,
     AllocatedSenderDeployAttempt
   >();
-  // agentAddress → messageId → connected-window mail awaiting a
+  // agentAddress → delivery key → connected-window mail awaiting a
   // `mail.inbound.ack`. A `mail.inbound` delivered over a LIVE connection with
-  // a hub-minted messageId is tracked here and redelivered -- identical bytes,
-  // same messageId -- on a timer until the sidecar acknowledges its durable
-  // inbox write, so a frame silently dropped in the connected window (a socket
-  // that half-died before the sidecar wrote the message) is recovered rather
-  // than lost. The sidecar inbox is idempotent on messageId, so a redelivery
-  // of a message the sidecar already wrote is deduped there: at-least-once
-  // redelivery is effectively-once.
+  // a messageId is tracked here and redelivered -- identical bytes, same
+  // messageId -- on a timer until the sidecar acknowledges its durable inbox
+  // write, so a frame silently dropped in the connected window (a socket that
+  // half-died before the sidecar wrote the message) is recovered rather than
+  // lost. The entry is keyed by the delivery key of its authenticated sender
+  // and messageId, so two senders that reuse one Message-ID are tracked
+  // apart. The sidecar inbox de-duplicates a redelivery of a message it
+  // already wrote: at-least-once redelivery is effectively-once.
   type PendingMailEntry = {
     agentAddress: string;
     messageId: string;
+    deliveryKey: string;
     frame: MailInboundFrame;
     attempts: number;
     /**
@@ -1149,12 +1153,13 @@ export function createSidecarRouter(
   function scheduleMailRetry(
     agentAddress: string,
     messageId: string,
+    deliveryKey: string,
     retryLoop: symbol,
   ): () => void {
     return scheduleTimeout(() => {
-      void retryPendingMail(agentAddress, messageId, retryLoop).catch(
+      void retryPendingMail(agentAddress, deliveryKey, retryLoop).catch(
         (err: unknown) => {
-          logger.warn`Redelivery retry for mail ${messageId} to ${agentAddress} failed: ${err instanceof Error ? err.message : String(err)}`;
+          logger.warn`Redelivery retry for mail ${messageId} (${deliveryKey}) to ${agentAddress} failed: ${err instanceof Error ? err.message : String(err)}`;
         },
       );
     }, mailAckRetryIntervalMs);
@@ -1162,11 +1167,13 @@ export function createSidecarRouter(
 
   // Track a connected-window `mail.inbound` for redelivery until the sidecar
   // acks its durable inbox write. Replaces any prior entry for the same
-  // (agentAddress, messageId) -- clearing its timer first so no timer leaks --
-  // which keeps a re-sent delivery from arming a second concurrent retry loop.
+  // (agentAddress, deliveryKey) -- clearing its timer first so no timer leaks
+  // -- which keeps a re-sent delivery from arming a second concurrent retry
+  // loop.
   function trackPendingMail(
     agentAddress: string,
     messageId: string,
+    deliveryKey: string,
     frame: MailInboundFrame,
     allocatedTarget: AllocatedSidecarTarget,
     dispatchBacked: boolean,
@@ -1181,15 +1188,21 @@ export function createSidecarRouter(
       byId = new Map();
       pendingMail.set(agentAddress, byId);
     }
-    const existing = byId.get(messageId);
+    const existing = byId.get(deliveryKey);
     if (existing !== undefined) existing.cancelRetry();
     const retryLoop = Symbol("mail-retry");
-    byId.set(messageId, {
+    byId.set(deliveryKey, {
       agentAddress,
       messageId,
+      deliveryKey,
       frame,
       attempts: 0,
-      cancelRetry: scheduleMailRetry(agentAddress, messageId, retryLoop),
+      cancelRetry: scheduleMailRetry(
+        agentAddress,
+        messageId,
+        deliveryKey,
+        retryLoop,
+      ),
       retryLoop,
       allocatedTarget,
       dispatchBacked,
@@ -1203,14 +1216,14 @@ export function createSidecarRouter(
   // other mail is surfaced as undelivered.
   function abandonPendingMail(entry: PendingMailEntry, reason: string): void {
     if (entry.dispatchBacked) {
-      logger.warn`Stopped redelivering mail ${entry.messageId} to ${entry.agentAddress} and left it to its dispatch row: ${reason}`;
+      logger.warn`Stopped redelivering mail ${entry.messageId} (${entry.deliveryKey}) to ${entry.agentAddress} and left it to its dispatch row: ${reason}`;
       return;
     }
     events.emit("mail.outbound.undelivered", {
       rawMessage: entry.frame.rawMessage,
       recipients: [entry.agentAddress],
     });
-    logger.warn`Dropping un-acked mail ${entry.messageId} for ${entry.agentAddress}: ${reason}`;
+    logger.warn`Dropping un-acked mail ${entry.messageId} (${entry.deliveryKey}) for ${entry.agentAddress}: ${reason}`;
   }
 
   // A pending mail whose generation no longer holds its address. Mail a
@@ -1225,13 +1238,13 @@ export function createSidecarRouter(
   ): boolean {
     if (entry.dispatchBacked) {
       entry.cancelRetry();
-      deletePendingMail(byId, entry.agentAddress, entry.messageId);
-      logger.info`Leaving mail ${entry.messageId} for ${entry.agentAddress} to its dispatch row: generation ${String(entry.allocatedTarget.generation)} no longer holds the address`;
+      deletePendingMail(byId, entry.agentAddress, entry.deliveryKey);
+      logger.info`Leaving mail ${entry.messageId} (${entry.deliveryKey}) for ${entry.agentAddress} to its dispatch row: generation ${String(entry.allocatedTarget.generation)} no longer holds the address`;
       return false;
     }
     if (routed === undefined) {
       entry.cancelRetry();
-      deletePendingMail(byId, entry.agentAddress, entry.messageId);
+      deletePendingMail(byId, entry.agentAddress, entry.deliveryKey);
       abandonPendingMail(
         entry,
         "no generation of it is routed to redeliver to",
@@ -1446,8 +1459,8 @@ export function createSidecarRouter(
   ): Promise<boolean> {
     const lead = await resolveReplayLeadFrame(entry);
     // The resolve above may have awaited real I/O; during that gap a queued
-    // `mail.inbound.ack` can advance and run `resolvePendingMail` (delete +
-    // clearTimeout) on this entry. `mail.inbound.ack` is a QUEUED frame
+    // `mail.inbound.ack` can advance and delete this entry and clear its
+    // timer. `mail.inbound.ack` is a QUEUED frame
     // (frameBypassesQueue returns false for it), so it interleaves only with a
     // replay that runs off the owning ws's message chain: the retry, an
     // independent setTimeout macrotask (retryPendingMail). On the hello's
@@ -1455,7 +1468,7 @@ export function createSidecarRouter(
     // still-running registration on the same ws. Re-confirm it is still the
     // tracked entry before sending, or a post-ack redelivery would arm a retry
     // timer on a detached entry.
-    if (pendingMail.get(entry.agentAddress)?.get(entry.messageId) !== entry) {
+    if (pendingMail.get(entry.agentAddress)?.get(entry.deliveryKey) !== entry) {
       return false;
     }
     if (retryLoop !== undefined && entry.retryLoop !== retryLoop) return false;
@@ -1466,7 +1479,7 @@ export function createSidecarRouter(
     const ws = addressIndex.get(entry.agentAddress);
     if (ws === undefined || connections.get(ws) !== conn) return false;
     const stillOwned = (): boolean =>
-      pendingMail.get(entry.agentAddress)?.get(entry.messageId) === entry &&
+      pendingMail.get(entry.agentAddress)?.get(entry.deliveryKey) === entry &&
       (retryLoop === undefined || entry.retryLoop === retryLoop);
     // Mail tracked since the address was routed here still has its retry
     // armed, and a retry of it may still be awaiting its replay; one retry
@@ -1478,6 +1491,7 @@ export function createSidecarRouter(
       entry.cancelRetry = scheduleMailRetry(
         entry.agentAddress,
         entry.messageId,
+        entry.deliveryKey,
         entry.retryLoop,
       );
     };
@@ -1498,10 +1512,10 @@ export function createSidecarRouter(
       );
     } catch (error) {
       if (error instanceof WorkflowRunNotExecutableError) {
-        logger.warn`Dropping un-acked mail ${entry.messageId} for ${entry.agentAddress}: its workflow run can no longer execute`;
+        logger.warn`Dropping un-acked mail ${entry.messageId} (${entry.deliveryKey}) for ${entry.agentAddress}: its workflow run can no longer execute`;
         resolvePendingMail(
           entry.agentAddress,
-          entry.messageId,
+          entry.deliveryKey,
           entry.allocatedTarget.generation,
         );
       } else {
@@ -1519,9 +1533,9 @@ export function createSidecarRouter(
   function deletePendingMail(
     byId: Map<string, PendingMailEntry>,
     agentAddress: string,
-    messageId: string,
+    deliveryKey: string,
   ): void {
-    byId.delete(messageId);
+    byId.delete(deliveryKey);
     if (byId.size === 0) {
       pendingMail.delete(agentAddress);
       // The retention TTL guards a non-empty pending set; drop it once the set
@@ -1536,12 +1550,12 @@ export function createSidecarRouter(
 
   async function retryPendingMail(
     agentAddress: string,
-    messageId: string,
+    deliveryKey: string,
     retryLoop: symbol,
   ): Promise<void> {
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
-    const entry = byId.get(messageId);
+    const entry = byId.get(deliveryKey);
     if (entry?.retryLoop !== retryLoop) return;
 
     if (entry.attempts >= mailAckMaxRetries) {
@@ -1549,7 +1563,7 @@ export function createSidecarRouter(
       // precisely because the sidecar's durable inbox write failed, so the
       // mail was NOT delivered. Drop the pending entry so its timer does not
       // leak.
-      deletePendingMail(byId, agentAddress, messageId);
+      deletePendingMail(byId, agentAddress, deliveryKey);
       abandonPendingMail(
         entry,
         `no acknowledgement after ${String(entry.attempts)} redelivery attempt(s)`,
@@ -1584,15 +1598,15 @@ export function createSidecarRouter(
 
   function resolvePendingMail(
     agentAddress: string,
-    messageId: string,
+    deliveryKey: string,
     generation: number,
   ): void {
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
-    const entry = byId.get(messageId);
+    const entry = byId.get(deliveryKey);
     if (entry?.allocatedTarget.generation !== generation) return;
     entry.cancelRetry();
-    deletePendingMail(byId, agentAddress, messageId);
+    deletePendingMail(byId, agentAddress, deliveryKey);
   }
 
   // Hold an address's un-acked pending mail across a disconnect. The per-entry
@@ -1961,40 +1975,8 @@ export function createSidecarRouter(
           connectorState: frame.connectorState,
         });
         return;
-      case "mail.inbound.ack": {
-        // Terminal receipt for a connected-window `mail.inbound`: the sidecar
-        // has durably written the message to the inbox of the incarnation the
-        // ack names. Only the incarnation this connection routes may settle
-        // it: an ack from a generation the Hub fenced is for an inbox that may
-        // be gone, and crediting it would settle mail the routed generation
-        // never received.
-        const conn = connections.get(ws);
-        if (conn === undefined) return;
-        if (!namesRoutedIncarnation(conn, frame)) {
-          logger.warn`Dropping mail.inbound.ack for ${frame.agentAddress} generation ${String(frame.generation)}: this sidecar does not route that incarnation`;
-          return;
-        }
-        resolvePendingMail(
-          frame.agentAddress,
-          frame.messageId,
-          frame.generation,
-        );
-        const acknowledging = owningAllocation(conn, frame.agentAddress);
-        events.emit("mail.inbound.acknowledged", {
-          agentAddress: frame.agentAddress,
-          messageId: frame.messageId,
-          ...(acknowledging !== undefined
-            ? {
-                allocated: {
-                  allocationId: acknowledging.allocationId,
-                  anchorRunId: acknowledging.anchorRunId,
-                  generation: acknowledging.generation,
-                },
-              }
-            : {}),
-        });
-        return;
-      }
+      case "mail.inbound.ack":
+        return handleMailInboundAck(ws, frame);
       case "signal.correlation.register":
         return handleSignalCorrelationRegister(ws, frame);
       case "session.ack":
@@ -3825,6 +3807,45 @@ export function createSidecarRouter(
     }
   }
 
+  // Terminal receipt for a connected-window `mail.inbound`: the sidecar has
+  // durably written the message to the inbox of the incarnation the ack names.
+  // Only the incarnation this connection routes may settle it: an ack from a
+  // generation the Hub fenced is for an inbox that may be gone, and crediting
+  // it would settle mail the routed generation never received.
+  async function handleMailInboundAck(
+    ws: WsHandle,
+    frame: MailInboundAckFrame,
+  ): Promise<void> {
+    // Derive the key before any routing check, so the checks and the resolve
+    // below run with no await between them, as one step.
+    const deliveryKey = await deriveDeliveryKey(
+      frame.authenticatedSender,
+      frame.messageId,
+    );
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+    if (!namesRoutedIncarnation(conn, frame)) {
+      logger.warn`Dropping mail.inbound.ack for ${frame.agentAddress} generation ${String(frame.generation)}: this sidecar does not route that incarnation`;
+      return;
+    }
+    resolvePendingMail(frame.agentAddress, deliveryKey, frame.generation);
+    const acknowledging = owningAllocation(conn, frame.agentAddress);
+    events.emit("mail.inbound.acknowledged", {
+      agentAddress: frame.agentAddress,
+      messageId: frame.messageId,
+      deliveryKey,
+      ...(acknowledging !== undefined
+        ? {
+            allocated: {
+              allocationId: acknowledging.allocationId,
+              anchorRunId: acknowledging.anchorRunId,
+              generation: acknowledging.generation,
+            },
+          }
+        : {}),
+    });
+  }
+
   async function handleSignalCorrelationRegister(
     ws: WsHandle,
     frame: SignalCorrelationRegisterFrame,
@@ -4926,12 +4947,17 @@ export function createSidecarRouter(
     // sender's key from its local cache to verify the signature -- and its
     // admission policy gates delivery on the verdict.
     //
-    // Carry the hub-minted messageId on the frame so the sidecar's durable-
-    // receipt ack (`mail.inbound.ack`) keys on the same id the hub tracks, and
-    // a redelivery replays identical bytes for the downstream RunStarted dedup.
+    // Carry the messageId on the frame so the sidecar's durable-receipt ack
+    // (`mail.inbound.ack`) names it; the hub tracks the delivery under the key
+    // of the authenticated sender and the messageId, and a redelivery replays
+    // identical bytes for the downstream RunStarted dedup.
     // Optional: the workflow-trigger and session-conversation callers supply
     // it (they participate in the ack/retry handshake); a caller without a
     // hub-minted id omits it and the delivery is not tracked for redelivery.
+    const deliveryKey =
+      messageId === undefined
+        ? undefined
+        : await deriveDeliveryKey(authenticatedSender, messageId);
     const routed = routedIncarnation(agentAddress);
     if (routed === undefined) return false;
     const { ws, conn, binding } = routed;
@@ -4975,10 +5001,11 @@ export function createSidecarRouter(
         // delivered fire-and-forget as before. A mail that triggered a workflow
         // run carries the run's grants so redelivery can replay them ahead of
         // the mail.
-        if (messageId !== undefined) {
+        if (messageId !== undefined && deliveryKey !== undefined) {
           trackPendingMail(
             agentAddress,
             messageId,
+            deliveryKey,
             frame,
             target,
             false,
@@ -4990,13 +5017,14 @@ export function createSidecarRouter(
     } catch (error) {
       if (error instanceof WorkflowRunNotExecutableError) throw error;
       logger.warn`Mail admission failed for ${agentAddress}: ${error instanceof Error ? error.message : String(error)}`;
-      if (messageId === undefined) return false;
+      if (messageId === undefined || deliveryKey === undefined) return false;
       // Admission may have awaited a disconnect and missed handleClose's
       // pending-mail retention. Record the mail now, then either retry on
       // the current owner or retain it for the next verified reconnect.
       trackPendingMail(
         agentAddress,
         messageId,
+        deliveryKey,
         frame,
         target,
         false,
@@ -5069,6 +5097,7 @@ export function createSidecarRouter(
     // Loaded at send time, never persisted with the dispatch row: the run's
     // tokens ride every barrier, including a redelivery.
     const credentials = await loadRunCredentials(runId);
+    const deliveryKey = await deriveDeliveryKey(authenticatedSender, messageId);
     signal?.throwIfAborted();
     const frame: MailInboundFrame = {
       type: "mail.inbound",
@@ -5094,6 +5123,7 @@ export function createSidecarRouter(
         trackPendingMail(
           agentAddress,
           messageId,
+          deliveryKey,
           frame,
           target,
           true,
