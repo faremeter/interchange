@@ -132,6 +132,8 @@ export type SidecarEventMap = {
   "mail.inbound.acknowledged": {
     agentAddress: string;
     messageId: string;
+    /** The delivery key of the mail's authenticated sender and `messageId`. */
+    deliveryKey: string;
     allocated?: {
       allocationId: string;
       anchorRunId: string;

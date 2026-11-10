@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { type } from "arktype";
 
 import { configureSync, getConfig } from "@intx/log";
 
@@ -27,7 +28,11 @@ import {
   type SidecarAuthIdentity,
 } from "./sidecar-handler";
 import type { SidecarLookups } from "./sidecar-events";
-import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
+import { deriveDeliveryKey } from "@intx/types/message-id";
+import {
+  MailInboundAckFrame,
+  MAX_MAIL_OUTBOUND_BODY_BYTES,
+} from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 
 const TEST_SENDER = "sender@example.test";
@@ -150,6 +155,7 @@ describe("SidecarRouter allocation mail durability", () => {
         agentAddress: TEST_IDENTITY.workflowRunAddress,
         generation: 1,
         messageId: "mid-acked",
+        authenticatedSender: TEST_SENDER,
       }),
     );
     // Connected-window redelivery only ever runs off an armed retry, so the
@@ -216,6 +222,7 @@ describe("SidecarRouter allocation mail durability", () => {
         agentAddress: TEST_IDENTITY.workflowRunAddress,
         generation: 1,
         messageId: "mid-owned",
+        authenticatedSender: TEST_SENDER,
       }),
     );
     await waitUntil(() => inboundCount(owner, "mid-owned") >= 2);
@@ -228,6 +235,7 @@ describe("SidecarRouter allocation mail durability", () => {
         agentAddress: TEST_IDENTITY.workflowRunAddress,
         generation: 1,
         messageId: "mid-owned",
+        authenticatedSender: TEST_SENDER,
       }),
     );
   });
@@ -261,6 +269,7 @@ describe("SidecarRouter allocation mail durability", () => {
         agentAddress: TEST_IDENTITY.workflowRunAddress,
         generation,
         messageId: "mid-generation",
+        authenticatedSender: TEST_SENDER,
       });
     router.handleMessage(ws, ack(TEST_TARGET.generation + 1));
     await tick();
@@ -559,6 +568,7 @@ describe("SidecarRouter allocation mail durability", () => {
           agentAddress: address,
           generation: 2,
           messageId: "mid-follow",
+          authenticatedSender: TEST_SENDER,
         }),
       );
       await tick();
@@ -1030,6 +1040,7 @@ describe("SidecarRouter allocation mail durability", () => {
         agentAddress: TEST_IDENTITY.workflowRunAddress,
         generation: 1,
         messageId: "mid-ack-race",
+        authenticatedSender: runSender,
       }),
     );
     await tick();
@@ -1443,6 +1454,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
           agentAddress: TEST_IDENTITY.workflowRunAddress,
           generation: TEST_IDENTITY.generation,
           messageId,
+          authenticatedSender: TEST_IDENTITY.workflowRunAddress,
         }),
       );
       await tick();
@@ -2924,5 +2936,184 @@ describe("SidecarRouter mail send check", () => {
     send(router, ws, [SENDER, ALLOWED]);
 
     expect(await undelivered.promise).toEqual([ALLOWED]);
+  });
+});
+
+describe("SidecarRouter pending mail from two senders that share a Message-ID", () => {
+  const OTHER_SENDER = "other@example.test";
+  const SHARED_ID = "<shared@example.test>";
+
+  function ackFrame(fields: {
+    generation?: number;
+    authenticatedSender: string;
+  }): string {
+    return JSON.stringify({
+      type: "mail.inbound.ack",
+      agentAddress: TEST_IDENTITY.workflowRunAddress,
+      generation: fields.generation ?? TEST_TARGET.generation,
+      messageId: SHARED_ID,
+      authenticatedSender: fields.authenticatedSender,
+    });
+  }
+
+  async function routeFromBoth() {
+    const retries = createManualRetries(20);
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 20,
+      mailAckMaxRetries: 5,
+      mailHoldTTLMs: 60_000,
+      scheduleTimeout: retries.scheduleTimeout,
+    });
+    const acknowledged: { messageId: string; deliveryKey: string }[] = [];
+    router.events.on("mail.inbound.acknowledged", (event) => {
+      acknowledged.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "YQ==",
+      TEST_SENDER,
+      SHARED_ID,
+    );
+    await router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "Yg==",
+      OTHER_SENDER,
+      SHARED_ID,
+    );
+    return { retries, router, acknowledged, ws };
+  }
+
+  // The senders whose mail is still pending, read from what a reconnect
+  // redelivers.
+  async function pendingSendersAfterReconnect(
+    router: AllocatedRouter,
+    ws: Parameters<AllocatedRouter["handleClose"]>[0],
+  ): Promise<unknown[]> {
+    router.handleClose(ws);
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    return framesOfType(second, "mail.inbound")
+      .filter((frame) => frame["messageId"] === SHARED_ID)
+      .map((frame) => frame["authenticatedSender"]);
+  }
+
+  test("tracks each sender's mail as its own pending entry", async () => {
+    const { retries } = await routeFromBoth();
+    expect(retries.armedCount()).toBe(2);
+  });
+
+  test("an ack that names a sender resolves only that sender's mail", async () => {
+    const { retries, router, acknowledged, ws } = await routeFromBoth();
+    router.handleMessage(ws, ackFrame({ authenticatedSender: TEST_SENDER }));
+    await waitUntil(() => retries.armedCount() === 1);
+    expect(acknowledged).toEqual([
+      expect.objectContaining({
+        messageId: SHARED_ID,
+        deliveryKey: await deriveDeliveryKey(TEST_SENDER, SHARED_ID),
+      }),
+    ]);
+    expect(await pendingSendersAfterReconnect(router, ws)).toEqual([
+      OTHER_SENDER,
+    ]);
+  });
+
+  test("an ack that names a sender with no pending mail leaves the others pending", async () => {
+    const { retries, router, acknowledged, ws } = await routeFromBoth();
+    router.handleMessage(
+      ws,
+      ackFrame({ authenticatedSender: "third@example.test" }),
+    );
+    await waitUntil(() => acknowledged.length === 1);
+    expect(retries.armedCount()).toBe(2);
+    expect(acknowledged[0]?.deliveryKey).toBe(
+      await deriveDeliveryKey("third@example.test", SHARED_ID),
+    );
+  });
+
+  test("an ack for a generation this sidecar does not route resolves nothing", async () => {
+    const { retries, router, ws } = await routeFromBoth();
+    router.handleMessage(
+      ws,
+      ackFrame({
+        generation: TEST_TARGET.generation + 1,
+        authenticatedSender: TEST_SENDER,
+      }),
+    );
+    await tick();
+    expect(retries.armedCount()).toBe(2);
+  });
+
+  test("an ack that names no sender is refused at the frame boundary", async () => {
+    const { retries, router, acknowledged, ws } = await routeFromBoth();
+    const senderless = JSON.stringify({
+      type: "mail.inbound.ack",
+      agentAddress: TEST_IDENTITY.workflowRunAddress,
+      generation: TEST_TARGET.generation,
+      messageId: SHARED_ID,
+    });
+    expect(
+      MailInboundAckFrame(JSON.parse(senderless)) instanceof type.errors,
+    ).toBe(true);
+    router.handleMessage(ws, senderless);
+    await tick();
+    expect(acknowledged).toEqual([]);
+    expect(retries.armedCount()).toBe(2);
+  });
+
+  test("an ack whose sender holds NUL is refused at the frame boundary", () => {
+    const parsed = MailInboundAckFrame(
+      JSON.parse(ackFrame({ authenticatedSender: "a\u0000b" })),
+    );
+    expect(parsed instanceof type.errors).toBe(true);
+  });
+
+  test("tracks dispatched mail per sender and resolves it by the ack's sender", async () => {
+    const retries = createManualRetries(20);
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 20,
+      mailAckMaxRetries: 5,
+      scheduleTimeout: retries.scheduleTimeout,
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    for (const [sender, raw] of [
+      [TEST_SENDER, "YQ=="],
+      [OTHER_SENDER, "Yg=="],
+    ] as const) {
+      await router.sendWorkflowRunDispatchToAllocation(
+        TEST_TARGET,
+        TEST_IDENTITY.workflowRunAddress,
+        TEST_IDENTITY.anchorRunId,
+        [],
+        raw,
+        sender,
+        SHARED_ID,
+      );
+    }
+    expect(retries.armedCount()).toBe(2);
+    router.handleMessage(ws, ackFrame({ authenticatedSender: OTHER_SENDER }));
+    await waitUntil(() => retries.armedCount() === 1);
+    expect(await pendingSendersAfterReconnect(router, ws)).toEqual([
+      TEST_SENDER,
+    ]);
+  });
+
+  test("a reconnect redelivers both senders' mail", async () => {
+    const { router, ws } = await routeFromBoth();
+    router.handleClose(ws);
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    expect(
+      framesOfType(second, "mail.inbound")
+        .filter((frame) => frame["messageId"] === SHARED_ID)
+        .map((frame) => frame["authenticatedSender"])
+        .sort(),
+    ).toEqual([OTHER_SENDER, TEST_SENDER].sort());
   });
 });

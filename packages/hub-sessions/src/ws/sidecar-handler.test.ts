@@ -1669,6 +1669,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
             agentAddress: RECIPIENT,
             generation: 1,
             messageId: frame.messageId,
+            authenticatedSender: frame.authenticatedSender,
           }),
         );
       }

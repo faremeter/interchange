@@ -294,7 +294,7 @@ describe("hub-link mail.inbound throwing router", () => {
 });
 
 describe("hub-link mail.inbound acknowledgement across an undeploy", () => {
-  test("an acknowledgement names the incarnation the mail was delivered to", async () => {
+  test("an acknowledgement names the incarnation and the sender the mail was delivered with", async () => {
     const leaving = "run_ack_leaving@integration.interchange";
     const staying = "run_ack_staying@integration.interchange";
     const fromHub: string[] = [];
@@ -319,7 +319,12 @@ describe("hub-link mail.inbound acknowledgement across an undeploy", () => {
     const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
     const framesOfType = (
       type: string,
-    ): { agentAddress?: string; generation?: number; messageId?: string }[] =>
+    ): {
+      agentAddress?: string;
+      generation?: number;
+      messageId?: string;
+      authenticatedSender?: string;
+    }[] =>
       fromHub
         .map(
           (
@@ -329,17 +334,22 @@ describe("hub-link mail.inbound acknowledgement across an undeploy", () => {
             agentAddress?: string;
             generation?: number;
             messageId?: string;
+            authenticatedSender?: string;
           } => JSON.parse(raw),
         )
         .filter((frame) => frame.type === type);
-    const deliver = (agentAddress: string, messageId: string): void => {
+    const deliver = (
+      agentAddress: string,
+      messageId: string,
+      authenticatedSender: string,
+    ): void => {
       hubSocket?.send(
         JSON.stringify({
           type: "mail.inbound",
           agentAddress,
           generation: 1,
           rawMessage: base64Encode(VALID_MESSAGE),
-          authenticatedSender: "user@integration.interchange",
+          authenticatedSender,
           messageId,
         }),
       );
@@ -384,7 +394,7 @@ describe("hub-link mail.inbound acknowledgement across an undeploy", () => {
     client.connect();
     try {
       await waitUntil(() => framesOfType("hello").length > 0);
-      deliver(leaving, "mail-to-leaving");
+      deliver(leaving, "mail-to-leaving", "alice@integration.interchange");
       hubSocket?.send(
         JSON.stringify({
           type: "agent.undeploy",
@@ -399,26 +409,38 @@ describe("hub-link mail.inbound acknowledgement across an undeploy", () => {
 
       // Mail for an incarnation no longer held is neither delivered nor
       // acknowledged, so its redelivery reaches the one the Hub routes.
-      deliver(leaving, "mail-after-undeploy");
-      deliver(staying, "mail-to-staying");
+      deliver(leaving, "mail-after-undeploy", "alice@integration.interchange");
+      deliver(staying, "mail-to-staying", "bob@integration.interchange");
       await waitUntil(() =>
         framesOfType("mail.inbound.ack").some(
           (frame) => frame.agentAddress === staying,
         ),
       );
       // The late ack still names the incarnation that received the mail;
-      // the Hub credits it to no later one.
+      // the Hub credits it to no later one. Each ack also echoes the sender
+      // its frame named, so the Hub resolves only that sender's mail.
       expect(
         framesOfType("mail.inbound.ack").map(
-          ({ agentAddress, generation, messageId }) => ({
+          ({ agentAddress, generation, messageId, authenticatedSender }) => ({
             agentAddress,
             generation,
             messageId,
+            authenticatedSender,
           }),
         ),
       ).toEqual([
-        { agentAddress: leaving, generation: 1, messageId: "mail-to-leaving" },
-        { agentAddress: staying, generation: 1, messageId: "mail-to-staying" },
+        {
+          agentAddress: leaving,
+          generation: 1,
+          messageId: "mail-to-leaving",
+          authenticatedSender: "alice@integration.interchange",
+        },
+        {
+          agentAddress: staying,
+          generation: 1,
+          messageId: "mail-to-staying",
+          authenticatedSender: "bob@integration.interchange",
+        },
       ]);
     } finally {
       client.close();

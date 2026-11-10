@@ -2991,6 +2991,7 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
         agentAddress: first.workflowRunAddress,
         generation: 1,
         messageId: "mail-to-replaced",
+        authenticatedSender: "sender@example.test",
       }),
     );
     await tick();
