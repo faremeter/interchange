@@ -48,6 +48,7 @@ import {
 import type { LocalRepoStore } from "./repo-store";
 import {
   adapterManifestDigest,
+  deploymentCapabilityPolicy,
   DestroySidecarResult,
   EnsureSidecarResult,
   formatProvisionerMismatches,
@@ -962,11 +963,7 @@ export function createWorkflowAllocationService({
         await chooseProvisioner(
           deploymentPlugins,
           "deployment",
-          {
-            tenantPolicies,
-            workflowRules:
-              approved.projection.sidecarPlacement?.capabilities ?? [],
-          },
+          deploymentCapabilityPolicy(tenantPolicies, approved.projection),
           [],
         ),
       );

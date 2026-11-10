@@ -88,6 +88,30 @@ export async function loadRunPrincipalActiveKey(
 }
 
 /**
+ * Whether the run's principal has held a key, active or retired: its
+ * deployment finished initializing at least once, on any sidecar.
+ */
+export async function runPrincipalHasHeldKey(
+  executor: DBExecutor,
+  tenantId: string,
+  runId: string,
+): Promise<boolean> {
+  const [row] = await executor
+    .select({ id: principalKey.id })
+    .from(principal)
+    .innerJoin(principalKey, eq(principalKey.principalId, principal.id))
+    .where(
+      and(
+        eq(principal.tenantId, tenantId),
+        eq(principal.kind, "workflow"),
+        eq(principal.refId, runId),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
  * The run principal of a run: the `kind = 'workflow'` principal whose `refId`
  * is the run id. A deployment's run principal exists from deploy. Returns
  * null when the run has none.

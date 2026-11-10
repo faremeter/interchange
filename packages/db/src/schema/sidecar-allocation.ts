@@ -6,6 +6,7 @@ import {
   index,
   integer,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -110,4 +111,27 @@ export const sidecarAllocation = pgTable(
       sql`${t.initializationLeaseId} is null or (${t.status} = 'allocated' and ${t.ensureAcceptedGeneration} is not null and ${t.ensureAcceptedGeneration} = ${t.generation})`,
     ),
   ],
+);
+
+// The ensures that failed before a deployment first initialized, so the
+// provisioner chooser still sees them after a Hub restart.
+export const sidecarAllocationAttempt = pgTable(
+  "sidecar_allocation_attempt",
+  {
+    allocationId: text("allocation_id")
+      .notNull()
+      .references(() => sidecarAllocation.id, { onDelete: "cascade" }),
+    // The generation whose ensure failed; a generation runs one ensure.
+    generation: integer("generation").notNull(),
+    provisionerId: text("provisioner_id").notNull(),
+    code: text("code").notNull(),
+    message: text("message").notNull(),
+    retryable: boolean("retryable").notNull(),
+    // False only when the provisioner rejected the ensure, which certifies it
+    // started nothing. Stored because a rejection cannot be told from its
+    // code, which the provisioner chooses.
+    cleanupRequired: boolean("cleanup_required").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.allocationId, t.generation] })],
 );

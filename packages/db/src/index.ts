@@ -132,12 +132,15 @@ export {
   type MarkSidecarDestroyFailedArgs,
   type MarkSidecarReleasedArgs,
   type ParkSidecarReconciliationPolicy,
+  type RebindRejectedSidecarAllocationArgs,
+  type RecordSidecarProvisioningAttemptArgs,
   type ReleaseStoppedSidecarCleanupArgs,
   type ReleaseStoppedSidecarCleanupResult,
   type ScheduleSidecarAllocationRetryArgs,
   type ScheduleSidecarReconnectAfterHubStartArgs,
   type SidecarAllocation,
   type SidecarAllocationStore,
+  type SidecarProvisioningAttempt,
 } from "./sidecar-allocation-store";
 export {
   SidecarReuseRejectedError,

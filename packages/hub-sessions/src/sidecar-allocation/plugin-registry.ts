@@ -20,7 +20,7 @@ export type SidecarProvisionerSelection =
     }
   | { readonly ok: false; readonly reason: "declined" };
 
-/** An ensure that failed for the probe being placed. */
+/** An ensure that failed for the probe or deployment being placed. */
 export type SidecarProvisionerAttempt = {
   readonly provisionerId: string;
   /**
@@ -40,16 +40,16 @@ export type SidecarProvisionerChoiceContext = {
   readonly anchorRunId: string;
   /** Aborts when the Hub stops waiting for the choice. */
   readonly signal: AbortSignal;
-  /** Oldest first. Empty on the first choice, and always for a deployment. */
+  /** Oldest first. Empty on the first choice. */
   readonly attempts: readonly SidecarProvisionerAttempt[];
 };
 
 /**
  * Selects one provisioner from the capability-matched candidates. The Hub
- * asks again after a failed probe ensure, with that failure added to
- * `attempts`. Returning a provisioner that already failed retries it;
- * returning null fails the deploy request. State a chooser keeps belongs to
- * one Hub process.
+ * asks again after a failed probe ensure or a rejected deployment ensure, with
+ * that failure added to `attempts`. Returning a provisioner that already
+ * failed retries it; returning null fails the probe or deployment. State a
+ * chooser keeps belongs to one Hub process.
  */
 export type SidecarProvisionerChooser = (
   candidates: readonly SidecarProvisioner[],
@@ -72,14 +72,21 @@ export type CreateSidecarPluginRegistryOpts = {
 };
 
 /**
- * The first match in registration order. After a failed ensure it selects
- * nothing, so a probe is never moved to another provisioner.
+ * The first match in registration order. After a failed ensure it never moves
+ * to another provisioner: a probe fails, and a deployment retries the
+ * provisioner that failed if the failure was retryable.
  */
 export function chooseFirstSidecarProvisioner(
   candidates: readonly SidecarProvisioner[],
-  { attempts }: SidecarProvisionerChoiceContext,
+  { purpose, attempts }: SidecarProvisionerChoiceContext,
 ): SidecarProvisioner | null {
-  return attempts.length === 0 ? (candidates[0] ?? null) : null;
+  const failed = attempts.at(-1);
+  if (failed === undefined) return candidates[0] ?? null;
+  if (purpose === "probe" || !failed.retryable) return null;
+  return (
+    candidates.find((candidate) => candidate.id === failed.provisionerId) ??
+    null
+  );
 }
 
 export function createSidecarPluginRegistry({
