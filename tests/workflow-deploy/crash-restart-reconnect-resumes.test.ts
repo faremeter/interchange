@@ -216,9 +216,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       // ---- fire the trigger, drive to the mid-run SignalAwaited pause ----
-      const { messageId } = await fireMailTrigger(env, deploymentMailAddress, {
-        messageId: "<crash-restart-resume-1@integration.interchange>",
-      });
+      const { deliveryKey } = await fireMailTrigger(
+        env,
+        deploymentMailAddress,
+        {
+          messageId: "<crash-restart-resume-1@integration.interchange>",
+        },
+      );
 
       await waitFor(
         async () => {
@@ -256,7 +260,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runStartedBody = parked.find((e) => e.type === "RunStarted")?.body;
       if (runStartedBody === undefined) throw new Error("unreachable");
-      expect(runStartedBody["consumedMessageId"]).toBe(messageId);
+      expect(runStartedBody["consumedDeliveryKey"]).toBe(deliveryKey);
 
       // ---- quiesce, then CRASH the sidecar subprocess (process death) ----
       await settleWorkflowRunPacks(env);

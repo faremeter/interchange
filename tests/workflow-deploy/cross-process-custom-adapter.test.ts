@@ -256,7 +256,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const events = await readWorkflowRunEvents(env, anchorRunId, runId);
       const startedBody = events.find((e) => e.type === "RunStarted")?.body;
       if (startedBody === undefined) throw new Error("missing RunStarted");
-      expect(startedBody["consumedMessageId"]).toBe(mail.messageId);
+      expect(startedBody["consumedDeliveryKey"]).toBe(mail.deliveryKey);
 
       // The echoed reply carries the inbound body, proving the custom adapter
       // ran a full inference round-trip in the child (request built, mock SSE

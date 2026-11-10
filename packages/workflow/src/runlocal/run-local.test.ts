@@ -371,3 +371,32 @@ describe("runLocal mail signer", () => {
     ).toThrow("runLocal: mailSigner applies only to the default action-runner");
   });
 });
+
+describe("runLocal consumed mail identity", () => {
+  async function runStarted(
+    consumedMail: { deliveryKey: string } | { messageId: string },
+  ) {
+    const result = await runLocal(soloStep, {
+      authorize: allow,
+      hasUpstreamSignalResolver: true,
+      consumedMail,
+    }).complete;
+    const started = result.events.find((event) => event.kind === "RunStarted");
+    if (started === undefined || started.kind !== "RunStarted") {
+      throw new Error("expected a RunStarted event");
+    }
+    return started;
+  }
+
+  test("a delivery key is recorded as consumedDeliveryKey alone", async () => {
+    const started = await runStarted({ deliveryKey: "mail-k1" });
+    expect(started.consumedDeliveryKey).toBe("mail-k1");
+    expect("consumedMessageId" in started).toBe(false);
+  });
+
+  test("a legacy Message-ID is recorded as consumedMessageId alone", async () => {
+    const started = await runStarted({ messageId: "<m1@example.com>" });
+    expect(started.consumedMessageId).toBe("<m1@example.com>");
+    expect("consumedDeliveryKey" in started).toBe(false);
+  });
+});

@@ -181,9 +181,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      const { messageId } = await fireMailTrigger(env, deploymentMailAddress, {
-        messageId: "<single-step-real-agent-1@integration.interchange>",
-      });
+      const { deliveryKey } = await fireMailTrigger(
+        env,
+        deploymentMailAddress,
+        {
+          messageId: "<single-step-real-agent-1@integration.interchange>",
+        },
+      );
 
       // Wait for the run to reach a terminal phase, then read its full
       // event log. The supervisor mints the runId from the inbound mail
@@ -203,7 +207,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
       const runStartedBody = events.find((e) => e.type === "RunStarted")?.body;
       if (runStartedBody === undefined) throw new Error("missing RunStarted");
-      expect(runStartedBody["consumedMessageId"]).toBe(messageId);
+      expect(runStartedBody["consumedDeliveryKey"]).toBe(deliveryKey);
 
       const stepCompleted = events.find(
         (e) => e.type === "StepCompleted" && e.body["stepId"] === STEP_ID,

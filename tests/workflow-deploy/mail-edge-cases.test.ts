@@ -34,11 +34,11 @@
 //
 // The supervisor's mail-flow path:
 //   onMailMessage -> deriveMessageId -> enqueueInbox -> dispatch loop
-// The dispatch loop, when it forwards `trigger.fire` with
-// `runId === messageId`, mints the run-id from the messageId. The
-// workflow-process child commits `RunStarted.consumedMessageId` to the
-// run's events log, so the test can correlate observed runs back to
-// the bytes that triggered them.
+// The supervisor files each mail under the delivery key derived from the
+// authenticated sender and the messageId. The workflow-process child
+// commits that key as `RunStarted.consumedDeliveryKey` to the run's
+// events log, so the test can correlate observed runs back to the bytes
+// that triggered them.
 //
 // The fixture's existing `fireMailTrigger` uses `assembleMessage`,
 // which validates Message-Id shape -- it would reject case 2's
@@ -61,6 +61,7 @@ import {
 } from "bun:test";
 
 import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   createApprovalSet,
@@ -185,6 +186,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     });
 
     const messageId = await sha256Hex(raw);
+    const deliveryKey = await deriveDeliveryKey(EDGE_SENDER, messageId);
     const runId = deriveWorkflowRunId(ctx.deploymentMailAddress);
 
     // Fire the first mail; the supervisor should start a run with
@@ -195,7 +197,8 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     });
 
     // Verify the canonical chain materialised and the
-    // `consumedMessageId` on `RunStarted` equals the sha256 messageId.
+    // `consumedDeliveryKey` on `RunStarted` is the key of the sha256
+    // messageId.
     const events = await readWorkflowRunEvents(
       env,
       NO_HEADER_DEPLOYMENT_ID,
@@ -206,7 +209,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     expect(types).toContain("RunCompleted");
     const started = events.find((e) => e.type === "RunStarted");
     if (started === undefined) throw new Error("unreachable");
-    expect(started.body["consumedMessageId"]).toBe(messageId);
+    expect(started.body["consumedDeliveryKey"]).toBe(deliveryKey);
 
     // Fire a second byte-identical mail. The supervisor's
     // `deriveMessageId` derives the same sha256 hash; the
@@ -225,12 +228,12 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       env,
       ctx.workflowRunRepoId,
       ctx.deploymentMailAddress,
-      `${messageId}.json`,
+      `${deliveryKey}.json`,
     );
-    const consumedMessageIds = consumedBefore
+    const consumedIdentities = consumedBefore
       .map((e) => /^(.+)\.json$/.exec(e.filename)?.[1])
       .filter((v): v is string => v !== undefined);
-    expect(consumedMessageIds).toContain(messageId);
+    expect(consumedIdentities).toContain(deliveryKey);
 
     // Snapshot the sidecar diagnostics buffer before firing the
     // duplicate so the log-substring wait below can scope its match
@@ -302,7 +305,9 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     if (started === undefined) {
       throw new Error(`malformed edge: run ${runId} has no RunStarted`);
     }
-    expect(started.body["consumedMessageId"]).toBe(malformedMessageId);
+    expect(started.body["consumedDeliveryKey"]).toBe(
+      await deriveDeliveryKey(EDGE_SENDER, malformedMessageId),
+    );
     const types = events.map((e) => e.type);
     expect(types).toContain("RunCompleted");
   }, 60_000);
@@ -318,10 +323,10 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       messageId,
       body: "duplicate edge case body — first send",
     });
-    // Byte-distinct second mail with the SAME Message-Id header. The
-    // substrate's dedup is keyed on messageId, not on full-bytes hash,
-    // so the second mail collides on the messageId index regardless
-    // of body differences.
+    // Byte-distinct second mail with the SAME Message-Id header from the
+    // same sender. The substrate's dedup is keyed on the delivery key
+    // (sender and messageId), not on full-bytes hash, so the second mail
+    // collides on the index regardless of body differences.
     const raw2 = buildMinimalMail({
       from: EDGE_SENDER,
       to: ctx.deploymentMailAddress,
@@ -343,14 +348,15 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // collides on the consumed/ branch rather than the processing/
     // or inbox branch (the test pins documented behavior; we want a
     // stable error class to assert against).
+    const deliveryKey = await deriveDeliveryKey(EDGE_SENDER, messageId);
     const consumedBefore = await waitForConsumedFilename(
       env,
       ctx.workflowRunRepoId,
       ctx.deploymentMailAddress,
-      `${messageId}.json`,
+      `${deliveryKey}.json`,
     );
     const consumedNamesBefore = new Set(consumedBefore.map((e) => e.filename));
-    expect(consumedNamesBefore).toContain(`${messageId}.json`);
+    expect(consumedNamesBefore).toContain(`${deliveryKey}.json`);
 
     // Fire the duplicate. The supervisor's `enqueueInbox` returns an
     // `already-present` outcome (reason `consumed`); `onMailMessage`
@@ -490,15 +496,16 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     );
     const runStarts = events.filter((e) => e.type === "RunStarted");
     expect(runStarts.length).toBe(1);
-    expect(runStarts[0]?.body["consumedMessageId"]).toBe(messageId);
+    const deliveryKey = await deriveDeliveryKey(EDGE_SENDER, messageId);
+    expect(runStarts[0]?.body["consumedDeliveryKey"]).toBe(deliveryKey);
 
     const consumed = await waitForConsumedFilename(
       env,
       ctx.workflowRunRepoId,
       ctx.deploymentMailAddress,
-      `${messageId}.json`,
+      `${deliveryKey}.json`,
     );
-    expect(consumed.map((e) => e.filename)).toEqual([`${messageId}.json`]);
+    expect(consumed.map((e) => e.filename)).toEqual([`${deliveryKey}.json`]);
   }, 180_000);
 });
 

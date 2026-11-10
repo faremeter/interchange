@@ -13,7 +13,7 @@
 // `trigger.fire`. The loop waits for the run's terminal event before
 // dequeueing the next entry; once terminal, it permanently rejects later
 // entries and records that result while moving each processing entry into
-// `consumed/<messageId>.json`. With three mails fired before the first run has
+// `consumed/<identity>.json`. With three mails fired before the first run has
 // reached terminal, the last two are forced to queue, which pins both FIFO
 // ordering and the no-refire invariant.
 //
@@ -207,13 +207,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // next entry after the prior run's terminal event lands, so two
       // of the three mails are guaranteed to queue.
       const firedMessageIds: string[] = [];
+      const firedDeliveryKeys: string[] = [];
       for (const messageId of MESSAGE_IDS) {
-        const { messageId: routed } = await fireMailTrigger(
-          env,
-          deploymentMailAddress,
-          { messageId },
-        );
-        firedMessageIds.push(routed);
+        const fired = await fireMailTrigger(env, deploymentMailAddress, {
+          messageId,
+        });
+        firedMessageIds.push(fired.messageId);
+        firedDeliveryKeys.push(fired.deliveryKey);
       }
       expect(firedMessageIds).toEqual([...MESSAGE_IDS]);
 
@@ -345,7 +345,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The immutable RunStarted belongs to the first message.
       const runStartedBody = currentEvents[runStartedIdx]?.body;
       if (runStartedBody === undefined) throw new Error("unreachable");
-      expect(runStartedBody["consumedMessageId"]).toBe(MESSAGE_IDS[0]);
+      expect(runStartedBody["consumedDeliveryKey"]).toBe(firedDeliveryKeys[0]);
     }, 60_000);
   },
 );

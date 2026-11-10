@@ -772,7 +772,7 @@ describe("source-ref run child", () => {
       type: "trigger.fire",
       data: {
         runId,
-        messageId: "msg-1",
+        mailIdentity: { messageId: "msg-1" },
         receivedAt: 1,
         payload: { content: "hello from the inbox", attachments: [] },
       },
@@ -1115,7 +1115,7 @@ describe("source-ref run child", () => {
       type: "trigger.fire",
       data: {
         runId,
-        messageId: "msg-1",
+        mailIdentity: { messageId: "msg-1" },
         receivedAt: 1,
         payload: { content: "run the action", attachments: [] },
       },
@@ -1206,7 +1206,7 @@ describe("source-ref run child", () => {
       type: "trigger.fire",
       data: {
         runId,
-        messageId: "msg-1",
+        mailIdentity: { messageId: "msg-1" },
         receivedAt: 1,
         payload: { content: "run the action", attachments: [] },
       },

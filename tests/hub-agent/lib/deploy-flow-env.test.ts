@@ -8,6 +8,8 @@
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 
+import { deriveDeliveryKey } from "@intx/types/message-id";
+
 import {
   PRODUCTION_RECONNECT_DELAY_MS,
   WORKFLOW_RUN_TERMINAL_TYPES,
@@ -155,12 +157,14 @@ describe("deploy-flow-env helpers smoke tests", () => {
   test("simulateProcessingCrash composes enqueueInbox + dequeueToProcessing", async () => {
     const address = "run_smoke-test@integration.interchange";
     const messageId = "<smoke-crash-1@integration.interchange>";
+    const sender = "user@integration.interchange";
     const receivedAt = 1_700_000_000_000;
     await simulateProcessingCrash(
       env,
       DEPLOYMENT_ID,
       address,
       messageId,
+      sender,
       receivedAt,
     );
 
@@ -188,7 +192,8 @@ describe("deploy-flow-env helpers smoke tests", () => {
       filepath: `addresses/${encodeURIComponent(address)}/processing`,
     });
     const filenames = tree.tree.map((e) => e.path);
-    expect(filenames).toContain(`${String(receivedAt)}-${messageId}.json`);
+    const deliveryKey = await deriveDeliveryKey(sender, messageId);
+    expect(filenames).toContain(`${String(receivedAt)}-${deliveryKey}.json`);
   });
 });
 

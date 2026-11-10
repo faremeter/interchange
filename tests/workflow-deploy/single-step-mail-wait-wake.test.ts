@@ -294,7 +294,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // The run that consumed MAIL 1 is the one that produced the reply.
       const firstStarted = events.find((e) => e.type === "RunStarted");
-      expect(firstStarted?.body["consumedMessageId"]).toBe(MAIL1_MESSAGE_ID);
+      expect(firstStarted?.body["consumedDeliveryKey"]).toBe(mail1.deliveryKey);
 
       // The first (mail-1 turn) StepCompleted reply carries MAIL 2's body,
       // delivered through mail_wait's mid-turn wake. A timeout would have

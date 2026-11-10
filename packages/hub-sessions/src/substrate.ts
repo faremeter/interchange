@@ -39,6 +39,7 @@ export {
   workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
 export type {
+  ClaimCheckEnvelope,
   WorkflowRunSupervisorPrincipal,
   WorkflowRunWorkflowProcessPrincipal,
   DequeueToProcessingResult,

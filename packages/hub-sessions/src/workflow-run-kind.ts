@@ -274,13 +274,15 @@ export const WORKFLOW_RUN_CONSUMED_DIR = "consumed";
  * (image/audio/video/document mail parts) is committed here as real
  * files rather than inlined into the JSON event log, whose serialization
  * boundary would corrupt binary bytes. The layout is
- * `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`: one
- * directory per inbound message (so a long-lived run's successive turns
- * never collide), and one file per mail part carrying its verbatim
- * bytes. The workflow-host ingest writes the bytes and records a
- * lightweight `{ name, contentType, ref }` reference into the run's
- * trigger / signal payload; the step invoker reads the bytes back at
- * `agent.send` time. Files are immutable once written, like `blobs/`.
+ * `runs/<runId>/parts/<urlEncoded(identity)>/<index>-<name>`, where the
+ * identity is the inbound message's claim-check identity (see
+ * `claimCheckIdentity`): one directory per inbound message (so a
+ * long-lived run's successive turns never collide), and one file per
+ * mail part carrying its verbatim bytes. The workflow-host ingest writes
+ * the bytes and records a lightweight `{ name, contentType, ref }`
+ * reference into the run's trigger / signal payload; the step invoker
+ * reads the bytes back at `agent.send` time. Files are immutable once
+ * written, like `blobs/`.
  */
 export const WORKFLOW_RUN_PARTS_DIR = "parts";
 
@@ -476,7 +478,7 @@ const BLOB_FILENAME_RE = /^[0-9a-f]{64}$/;
 
 /**
  * Per-mail-part filename shape for the
- * `runs/<runId>/parts/<urlEncoded(messageId)>/` subtree:
+ * `runs/<runId>/parts/<urlEncoded(identity)>/` subtree:
  * `<index>-<name>`, where `index` is the decimal position of the
  * mail part within its inbound message and `name` is a non-empty
  * (possibly sanitized) filename. The workflow-host ingest owns the exact
@@ -490,10 +492,11 @@ const PART_FILENAME_RE = /^(0|[1-9][0-9]*)-(.+)$/;
 /**
  * Maximum byte length of a single mail part path component (the
  * URL-encoded message segment, and each `<index>-<name>` filename).
- * messageIds and mail part names arrive from untrusted inbound mail;
- * an over-long RFC 5322 message-id URL-encodes past the filesystem's
- * 255-byte component limit and would otherwise fail at disk-write time,
- * downstream of validation. Reject it at the boundary instead.
+ * A legacy identity (a bare Message-ID) and mail part names arrive from
+ * untrusted inbound mail; an over-long RFC 5322 message-id URL-encodes
+ * past the filesystem's 255-byte component limit and would otherwise fail
+ * at disk-write time, downstream of validation. Reject it at the boundary
+ * instead.
  */
 export const MAX_MAIL_PART_PATH_COMPONENT_BYTES = 255;
 
@@ -553,8 +556,8 @@ const CONSUMED_FILENAME_RE = /^(.+)\.json$/;
  *     message; sortable FIFO key prefix.
  *   - `address`: decoded canonical address (not URL-encoded).
  *   - `rawMessage`: base64 of the inbound mail's raw MIME bytes,
- *     inlined so the workflow-process child can read its step input by
- *     messageId at `trigger.fired` time. The supervisor is the sole
+ *     inlined so the workflow-process child can read its step input at
+ *     `trigger.fired` time. The supervisor is the sole
  *     mail owner under the unified-execution host (§3a); it has no
  *     separate durable byte store the child can read, so the bytes ride
  *     the claim-check envelope itself. Present whenever the supervisor
@@ -1308,10 +1311,11 @@ type RunPartEntry = {
 
 /**
  * Walk every `runs/<runId>/parts/<messageSegment>/` directory and
- * validate each entry: the `<messageSegment>` is a URL-encoded messageId
- * that must round-trip cleanly (the same canonical-encoding discipline the
- * claim-check `addresses/` subtree enforces) and stay within the path-
- * component byte cap, must be a directory rather than a dangling blob, and
+ * validate each entry: the `<messageSegment>` is a URL-encoded claim-check
+ * identity (see `claimCheckIdentity`) that must round-trip cleanly (the
+ * same canonical-encoding discipline the claim-check `addresses/` subtree
+ * enforces) and stay within the path-component byte cap, must be a
+ * directory rather than a dangling blob, and
  * each filename matches the `<index>-<name>` shape within the same cap. The
  * `parts/` subdirectory is optional: a run that never received a
  * non-text inbound message never produces one. Returns the flat entry list
@@ -3848,10 +3852,10 @@ function decodeQueueEnvelopeOrThrow(
   return validated;
 }
 
-function decodeConsumedReceivedAtOrThrow(
+function decodeConsumedEnvelopeOrThrow(
   bytes: Uint8Array,
   blobPath: string,
-): number {
+): ConsumedEnvelope {
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder().decode(bytes));
@@ -3864,7 +3868,7 @@ function decodeConsumedReceivedAtOrThrow(
       `claim_check_consumed_invalid: ${blobPath}: ${validated.summary}`,
     );
   }
-  return validated.receivedAt;
+  return validated;
 }
 
 /**
@@ -3890,12 +3894,19 @@ function parseWatermark(bytes: Uint8Array, watermarkFull: string): number {
 
 export type EnqueueInboxArgs = {
   address: string;
+  /** The inbound mail's Message-ID. */
   messageId: string;
+  /**
+   * The sender the hub authenticated for the mail. The entry is filed under
+   * the delivery key derived from this sender and `messageId` (see
+   * `deriveDeliveryKey`), so it must be non-empty and hold no NUL.
+   */
+  authenticatedSender: string;
   receivedAt: number;
   /**
    * Base64 of the inbound mail's raw MIME bytes. Inlined on the
    * claim-check envelope so the workflow-process child can recover its
-   * step input by messageId at `trigger.fired` time (§3a -- the
+   * step input at `trigger.fired` time (§3a -- the
    * supervisor is the sole mail owner and has no separate durable byte
    * store the child reads).
    */
@@ -3909,7 +3920,7 @@ export type EnqueueInboxResult = {
 };
 
 /**
- * Which already-present state an `enqueueInbox` call found the messageId
+ * Which already-present state an `enqueueInbox` call found the message
  * in. Every value is POSITIVE evidence the message's bytes are durably on
  * disk (inbox/processing) or were already consumed -- so a caller gating a
  * receipt on the enqueue may safely acknowledge on any of them.
@@ -3935,7 +3946,7 @@ export type EnqueueInboxOutcome =
 
 /**
  * Internal signal thrown from the `enqueueInbox` merge callback when the
- * messageId is already present in a queue state. Caught at the `enqueueInbox`
+ * message is already present in a queue state. Caught at the `enqueueInbox`
  * boundary and turned into an `already-present` outcome; never escapes. It
  * carries the specific `reason` so the boundary maps it without re-deriving.
  */
@@ -3980,17 +3991,29 @@ export class StaleInboxEnqueueError extends Error {
 }
 
 /**
- * Append a new inbox entry for `address`. The merge callback reads
- * the address subtree under the per-repo lock, augments the inbox
- * with the new entry, and returns the full set of address files. The
- * substrate replaces the address subtree wholesale.
+ * Append a new sender-scoped inbox entry for `address`, filed under the
+ * delivery key derived from `authenticatedSender` and `messageId`. The merge
+ * callback reads the address listing under the per-repo lock and returns a
+ * delta that adds the one entry.
  *
- * Rejects if a same-messageId entry already exists in any queue
- * state at the address — including a prior inbox entry at a
- * different `receivedAt`. The caller is expected to consult the
- * dedup index (consumed/) before calling, but enforcing the
- * invariant here also catches the concurrent-enqueue race that the
- * per-repo lock alone cannot surface.
+ * Returns `already-present` when the message is already in a queue state at
+ * the address, including an inbox entry at a different `receivedAt`. The
+ * check runs inside the merge callback, so it also catches the
+ * concurrent-enqueue race that the per-repo lock alone cannot surface. Two
+ * lookups decide it:
+ *
+ *   - The delivery key: an entry filed under the key counts only when its
+ *     envelope carries that key.
+ *   - The bare Message-ID: an entry filed under it counts only when its
+ *     envelope carries no key. Such a legacy entry de-duplicates by
+ *     Message-ID alone, whatever the sender, so a mail consumed in the
+ *     legacy form does not run again when it is redelivered. This lookup
+ *     stays for as long as legacy entries can exist, which is indefinitely:
+ *     an address that gets no more mail never prunes its legacy `consumed/`
+ *     entries.
+ *
+ * A filename alone never decides a hit, because a Message-ID can be the same
+ * string as a delivery key.
  */
 export async function enqueueInbox(
   store: RepoStore,
@@ -4000,16 +4023,38 @@ export async function enqueueInbox(
 ): Promise<EnqueueInboxOutcome> {
   const addressSegment = addressSegmentFor(args.address);
   const ref = claimCheckCommitRef();
-  const inboxKey = filenameKey(args.receivedAt, args.messageId);
+  const deliveryKey = await deriveDeliveryKey(
+    args.authenticatedSender,
+    args.messageId,
+  );
+  const inboxKey = filenameKey(args.receivedAt, deliveryKey);
   const envelope: ClaimCheckEnvelope = {
     messageId: args.messageId,
+    authenticatedSender: args.authenticatedSender,
+    deliveryKey,
     receivedAt: args.receivedAt,
     address: args.address,
     ...(args.rawMessage !== undefined ? { rawMessage: args.rawMessage } : {}),
   };
   const newInboxPath = inboxPath(addressSegment, inboxKey);
   const inboxFname = `${inboxKey}.json`;
-  const consumedFname = `${args.messageId}.json`;
+  const label = `address ${args.address} message ${args.messageId} (delivery key ${deliveryKey})`;
+  // The two forms an existing entry for this message can take: the
+  // sender-scoped form under the delivery key, and the legacy form under the
+  // bare Message-ID.
+  const forms: {
+    identity: string;
+    matches: (fields: MessageIdentityFields) => boolean;
+  }[] = [
+    {
+      identity: deliveryKey,
+      matches: (fields) => fields.deliveryKey === deliveryKey,
+    },
+    {
+      identity: args.messageId,
+      matches: (fields) => fields.deliveryKey === undefined,
+    },
+  ];
   // The already-present cases throw `InboxEntryAlreadyPresent` from the merge
   // callback and are caught here into an `already-present` outcome; the
   // stale-refusal throws `StaleInboxEnqueueError`, and a substrate/I/O failure
@@ -4022,7 +4067,7 @@ export async function enqueueInbox(
   try {
     ({ commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
       changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
-      message: `enqueue inbox ${args.address} ${args.messageId}`,
+      message: `enqueue inbox ${args.address} ${deliveryKey}`,
       computeDelta: async (_parentCommitSha, prior) => {
         const listing = await readAddressListing(prior, addressSegment);
         // Refuse a definitively-stale enqueue: a message whose receivedAt
@@ -4033,39 +4078,85 @@ export async function enqueueInbox(
         // watermark the consumed/ index is authoritative; below it, refuse.
         if (args.receivedAt < listing.watermark) {
           throw new StaleInboxEnqueueError(
-            `claim_check_stale_enqueue: address ${args.address} message ${args.messageId} receivedAt ${String(args.receivedAt)} is below the retention watermark ${String(listing.watermark)}; its dedup entry may have been pruned, so it is refused as definitively-stale`,
+            `claim_check_stale_enqueue: ${label} receivedAt ${String(args.receivedAt)} is below the retention watermark ${String(listing.watermark)}; its dedup entry may have been pruned, so it is refused as definitively-stale`,
           );
         }
-        if (listing.inbox.some((e) => e.name === inboxFname)) {
-          throw new InboxEntryAlreadyPresent(
-            "duplicate",
-            `claim_check_duplicate_inbox: ${newInboxPath} already exists`,
+        const readQueueEntry = async (dir: string, entry: ClaimCheckEntry) =>
+          decodeQueueEnvelopeOrThrow(
+            await prior.readBlobByOid(entry.oid),
+            `${addressPrefix(addressSegment)}${dir}/${entry.name}`,
+          );
+        const exact = listing.inbox.find((e) => e.name === inboxFname);
+        if (exact !== undefined) {
+          const exactEnvelope = await readQueueEntry(
+            WORKFLOW_RUN_INBOX_DIR,
+            exact,
+          );
+          if (exactEnvelope.deliveryKey === deliveryKey) {
+            throw new InboxEntryAlreadyPresent(
+              "duplicate",
+              `claim_check_duplicate_inbox: ${newInboxPath} already exists`,
+            );
+          }
+          // A legacy entry whose Message-ID is this delivery key holds the
+          // path. A write over it would drop that mail, so refuse. The
+          // refusal withholds the ack, so the mail is not lost. A
+          // redelivery at a new receivedAt does not recover it: while a
+          // legacy entry holds this identity in inbox, processing or
+          // consumed, the validator refuses a second position for it, so
+          // the mail stays withheld.
+          throw new Error(
+            `claim_check_inbox_path_taken: ${newInboxPath} holds a different message`,
           );
         }
-        // consumed/ is keyed by messageId alone, so this is an exact
-        // filename lookup against the dedup index.
-        if (listing.consumed.some((e) => e.name === consumedFname)) {
-          throw new InboxEntryAlreadyPresent(
-            "consumed",
-            `claim_check_already_consumed: address ${args.address} message ${args.messageId} is already in the consumed dedup index`,
+        for (const form of forms) {
+          const consumed = listing.consumed.find(
+            (e) => e.name === `${form.identity}.json`,
           );
+          if (consumed === undefined) continue;
+          const consumedEnvelope = decodeConsumedEnvelopeOrThrow(
+            await prior.readBlobByOid(consumed.oid),
+            consumedPath(addressSegment, form.identity),
+          );
+          if (form.matches(consumedEnvelope)) {
+            throw new InboxEntryAlreadyPresent(
+              "consumed",
+              `claim_check_already_consumed: ${label} is already in the consumed dedup index as ${form.identity}`,
+            );
+          }
         }
-        if (findQueueEntry(listing.processing, args.messageId) !== undefined) {
-          throw new InboxEntryAlreadyPresent(
-            "processing",
-            `claim_check_already_processing: address ${args.address} message ${args.messageId} is currently in processing`,
+        for (const form of forms) {
+          const processing = findQueueEntry(listing.processing, form.identity);
+          if (processing === undefined) continue;
+          const processingEnvelope = await readQueueEntry(
+            WORKFLOW_RUN_PROCESSING_DIR,
+            processing,
           );
+          if (form.matches(processingEnvelope)) {
+            throw new InboxEntryAlreadyPresent(
+              "processing",
+              `claim_check_already_processing: ${label} is currently in processing as ${form.identity}`,
+            );
+          }
         }
-        // Reject a second inbox entry for the same messageId at a
-        // different receivedAt. The validatePush atomicity check also
-        // catches this on the commit path, but surfacing it here gives the
-        // caller a precise error and keeps the bad tree off the substrate.
-        const inboxDup = findQueueEntry(listing.inbox, args.messageId);
-        if (inboxDup !== undefined) {
-          throw new InboxEntryAlreadyPresent(
-            "already_inbox",
-            `claim_check_already_inbox: address ${args.address} message ${args.messageId} is already in the inbox at ${inboxPath(addressSegment, inboxDup.name.slice(0, -".json".length))}`,
+        // Reject a second inbox entry for the same message at a different
+        // receivedAt. The validatePush atomicity check also catches a
+        // second entry under one identity on the commit path, but surfacing
+        // it here gives the caller a precise outcome and keeps the bad tree
+        // off the substrate.
+        for (const form of forms) {
+          const inboxDup = findQueueEntry(listing.inbox, form.identity);
+          if (inboxDup === undefined) continue;
+          const inboxEnvelope = await readQueueEntry(
+            WORKFLOW_RUN_INBOX_DIR,
+            inboxDup,
           );
+          if (form.matches(inboxEnvelope)) {
+            throw new InboxEntryAlreadyPresent(
+              "already_inbox",
+              `claim_check_already_inbox: ${label} is already in the inbox at ${inboxPath(addressSegment, inboxDup.name.slice(0, -".json".length))}`,
+            );
+          }
         }
         return {
           puts: { [newInboxPath]: utf8(JSON.stringify(envelope)) },
@@ -4363,10 +4454,10 @@ export async function markConsumed(
       for (const entry of listing.consumed) {
         const blobPath = `${consumedDir}${entry.name}`;
         const bytes = await prior.readBlobByOid(entry.oid);
-        const consumedReceivedAt = decodeConsumedReceivedAtOrThrow(
+        const consumedReceivedAt = decodeConsumedEnvelopeOrThrow(
           bytes,
           blobPath,
-        );
+        ).receivedAt;
         if (consumedReceivedAt < newWatermark) {
           prunedIdentities.push(entry.name.slice(0, -".json".length));
           deletes.push(blobPath);
@@ -4407,11 +4498,12 @@ export type ScanRunsForBootResult = {
  * Walk `runs/` once and return the two boot-recovery inputs the supervisor's
  * spawn needs, from a single traversal of the working tree via `getRepoDir`:
  *
- * - `ownedIdentities`: the `consumedMessageId`s of NON-terminal runs -- the
- *   messages a live run still owns. Spawn feeds this into
- *   `replayProcessingToInbox`'s `ownedIdentities`, which compares it with each
- *   entry's claim-check identity, so the value a run records must be that
- *   identity; for a legacy entry the identity is its Message-ID. A parked
+ * - `ownedIdentities`: the claim-check identities that NON-terminal runs
+ *   consumed -- the messages a live run still owns. A run's `RunStarted`
+ *   records the identity as `consumedDeliveryKey` for a sender-scoped entry
+ *   or as `consumedMessageId` for a legacy entry, and never both. Spawn feeds
+ *   this into `replayProcessingToInbox`'s `ownedIdentities`, which compares
+ *   it with each entry's claim-check identity. A parked
  *   run's message is then not re-admitted to inbox and dispatched a second
  *   time while the run is recovered by re-driving its durable log. Without
  *   this, the re-drive AND the re-triggered fresh run both re-park the same
@@ -4496,7 +4588,7 @@ export async function scanRunsForBoot(
       continue;
     }
     let terminal = false;
-    let consumedMessageId: string | undefined;
+    let consumedIdentity: string | undefined;
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
       let parsed: unknown;
@@ -4532,16 +4624,22 @@ export async function scanRunsForBoot(
         terminal = true;
         break;
       }
-      if (type === "RunStarted" && "consumedMessageId" in parsed) {
-        const mid = parsed.consumedMessageId;
-        if (typeof mid === "string") consumedMessageId = mid;
+      if (type === "RunStarted") {
+        const key =
+          "consumedDeliveryKey" in parsed
+            ? parsed.consumedDeliveryKey
+            : undefined;
+        const mid =
+          "consumedMessageId" in parsed ? parsed.consumedMessageId : undefined;
+        if (typeof key === "string") consumedIdentity = key;
+        else if (typeof mid === "string") consumedIdentity = mid;
       }
     }
     if (terminal) {
       pendingSealRunIds.push(runId);
       continue;
     }
-    if (consumedMessageId !== undefined) owned.add(consumedMessageId);
+    if (consumedIdentity !== undefined) owned.add(consumedIdentity);
   }
   return { ownedIdentities: owned, pendingSealRunIds };
 }

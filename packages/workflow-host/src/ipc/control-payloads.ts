@@ -537,7 +537,15 @@ const controlPayloadFactories = defineControlPayloadFactories({
       type: "'trigger.fire'",
       data: {
         runId: "string",
-        messageId: "string",
+        // The claim-check identity of the mail: the delivery key of a
+        // sender-scoped entry, or the bare Message-ID of a legacy entry.
+        // Each branch rejects other keys, so exactly one is present. The
+        // Message-ID of a sender-scoped entry rides in the payload's
+        // headers, not here.
+        mailIdentity: type({ deliveryKey: "string > 0", "+": "reject" }).or({
+          messageId: "string > 0",
+          "+": "reject",
+        }),
         receivedAt: "number",
         // The run's inbound-mail input, resolved by the supervisor (the sole
         // mail owner) before the frame: a decoded `Mail` (headers plus part

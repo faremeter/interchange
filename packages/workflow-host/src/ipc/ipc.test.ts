@@ -264,7 +264,7 @@ describe("Control channel", () => {
       type: "trigger.fire",
       data: {
         runId: "r1",
-        messageId: "m1",
+        mailIdentity: { messageId: "m1" },
         receivedAt: 100,
         payload: firedMail,
       },
@@ -281,7 +281,7 @@ describe("Control channel", () => {
         type: "trigger.fire",
         data: {
           runId: "r1",
-          messageId: "m1",
+          mailIdentity: { messageId: "m1" },
           receivedAt: 100,
           payload: firedMail,
         },
@@ -1549,6 +1549,42 @@ describe("Payload union disjointness", () => {
     };
     const validated = parseInferenceEvent(controlShape);
     expect(validated instanceof type.errors).toBe(true);
+  });
+});
+
+describe("trigger.fire mail identity validation", () => {
+  function triggerFire(mailIdentity: unknown) {
+    return ControlPayload({
+      type: "trigger.fire",
+      data: { runId: "run-1", mailIdentity, receivedAt: 1, payload: {} },
+    });
+  }
+
+  test("accepts a delivery key", () => {
+    expect(
+      triggerFire({ deliveryKey: "mail-abc" }) instanceof type.errors,
+    ).toBe(false);
+  });
+
+  test("accepts a legacy Message-ID", () => {
+    expect(triggerFire({ messageId: "<m@x>" }) instanceof type.errors).toBe(
+      false,
+    );
+  });
+
+  test("rejects an identity that carries both a key and a Message-ID", () => {
+    expect(
+      triggerFire({ deliveryKey: "mail-abc", messageId: "<m@x>" }) instanceof
+        type.errors,
+    ).toBe(true);
+  });
+
+  test("rejects an identity that carries neither", () => {
+    expect(triggerFire({}) instanceof type.errors).toBe(true);
+  });
+
+  test("rejects an empty identity value", () => {
+    expect(triggerFire({ deliveryKey: "" }) instanceof type.errors).toBe(true);
   });
 });
 

@@ -236,13 +236,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // materializes once, and consumed/ carries one envelope per mail in
       // receivedAt-non-decreasing order.
       const firedMessageIds: string[] = [];
+      const firedDeliveryKeys: string[] = [];
       for (const messageId of LOAD_MESSAGE_IDS) {
-        const { messageId: routed } = await fireMailTrigger(
-          env,
-          deploymentMailAddress,
-          { messageId },
-        );
-        firedMessageIds.push(routed);
+        const fired = await fireMailTrigger(env, deploymentMailAddress, {
+          messageId,
+        });
+        firedMessageIds.push(fired.messageId);
+        firedDeliveryKeys.push(fired.deliveryKey);
       }
       expect(firedMessageIds).toEqual([...LOAD_MESSAGE_IDS]);
 
@@ -350,8 +350,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `fifo-mail-load: run ${runId} chain malformed: ${types.join(" -> ")}`,
         );
       }
-      expect(events[runStartedIdx]?.body["consumedMessageId"]).toBe(
-        LOAD_MESSAGE_IDS[0],
+      expect(events[runStartedIdx]?.body["consumedDeliveryKey"]).toBe(
+        firedDeliveryKeys[0],
       );
     }, 300_000);
   },

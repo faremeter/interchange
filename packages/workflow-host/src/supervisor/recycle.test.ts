@@ -19,6 +19,8 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
+import { deriveDeliveryKey } from "@intx/types/message-id";
+import { claimCheckIdentity } from "@intx/hub-sessions";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import {
@@ -231,6 +233,8 @@ async function driveReady(
 function createMemoryInboxPrimitives(): InboxPrimitives {
   type Entry = {
     messageId: string;
+    authenticatedSender?: string;
+    deliveryKey?: string;
     receivedAt: number;
     rawMessage?: string;
   };
@@ -256,9 +260,15 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
   return {
     async enqueueInbox(_store, _principal, _repoId, args) {
       const s = getOrCreate(args.address);
-      const k = key(args.receivedAt, args.messageId);
+      const deliveryKey = await deriveDeliveryKey(
+        args.authenticatedSender,
+        args.messageId,
+      );
+      const k = key(args.receivedAt, deliveryKey);
       const envelope: Entry = {
         messageId: args.messageId,
+        authenticatedSender: args.authenticatedSender,
+        deliveryKey,
         receivedAt: args.receivedAt,
         ...(args.rawMessage !== undefined
           ? { rawMessage: args.rawMessage }
@@ -271,6 +281,8 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
         inboxKey: k,
         envelope: {
           messageId: args.messageId,
+          authenticatedSender: args.authenticatedSender,
+          deliveryKey,
           receivedAt: args.receivedAt,
           address: args.address,
           ...(args.rawMessage !== undefined
@@ -298,6 +310,12 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
         key: k,
         envelope: {
           messageId: envelope.messageId,
+          ...(envelope.authenticatedSender !== undefined
+            ? { authenticatedSender: envelope.authenticatedSender }
+            : {}),
+          ...(envelope.deliveryKey !== undefined
+            ? { deliveryKey: envelope.deliveryKey }
+            : {}),
           receivedAt: envelope.receivedAt,
           address,
           ...(envelope.rawMessage !== undefined
@@ -311,7 +329,7 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
       let foundKey: string | null = null;
       let envelope: Entry | null = null;
       for (const [k, value] of s.processing) {
-        if (value.messageId === args.identity) {
+        if (claimCheckIdentity(value) === args.identity) {
           foundKey = k;
           envelope = value;
           break;
@@ -326,6 +344,12 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
         commitSha: "memory",
         envelope: {
           messageId: envelope.messageId,
+          ...(envelope.authenticatedSender !== undefined
+            ? { authenticatedSender: envelope.authenticatedSender }
+            : {}),
+          ...(envelope.deliveryKey !== undefined
+            ? { deliveryKey: envelope.deliveryKey }
+            : {}),
           receivedAt: envelope.receivedAt,
           address: args.address,
           runId: args.runId,

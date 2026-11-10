@@ -53,6 +53,8 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
+import { deriveDeliveryKey } from "@intx/types/message-id";
+import { claimCheckIdentity } from "@intx/hub-sessions";
 import type { NewlyTerminalRun, RepoId, RepoStore } from "@intx/hub-sessions";
 import {
   createLogCapture,
@@ -220,6 +222,8 @@ function createStubRepoStore(opts: {
 
 type MemoryEntry = {
   messageId: string;
+  authenticatedSender?: string;
+  deliveryKey?: string;
   receivedAt: number;
 };
 
@@ -263,9 +267,15 @@ function createMemoryInboxPrimitives(opts: {
     },
     async enqueueInbox(_store, _principal, _repoId, args) {
       const s = getOrCreate(args.address);
-      const k = key(args.receivedAt, args.messageId);
+      const deliveryKey = await deriveDeliveryKey(
+        args.authenticatedSender,
+        args.messageId,
+      );
+      const k = key(args.receivedAt, deliveryKey);
       const envelope: MemoryEntry = {
         messageId: args.messageId,
+        authenticatedSender: args.authenticatedSender,
+        deliveryKey,
         receivedAt: args.receivedAt,
       };
       s.inbox.set(k, envelope);
@@ -275,6 +285,8 @@ function createMemoryInboxPrimitives(opts: {
         inboxKey: k,
         envelope: {
           messageId: args.messageId,
+          authenticatedSender: args.authenticatedSender,
+          deliveryKey,
           receivedAt: args.receivedAt,
           address: args.address,
         },
@@ -299,6 +311,12 @@ function createMemoryInboxPrimitives(opts: {
         key: k,
         envelope: {
           messageId: envelope.messageId,
+          ...(envelope.authenticatedSender !== undefined
+            ? { authenticatedSender: envelope.authenticatedSender }
+            : {}),
+          ...(envelope.deliveryKey !== undefined
+            ? { deliveryKey: envelope.deliveryKey }
+            : {}),
           receivedAt: envelope.receivedAt,
           address,
         },
@@ -312,7 +330,7 @@ function createMemoryInboxPrimitives(opts: {
       let foundKey: string | null = null;
       let envelope: MemoryEntry | null = null;
       for (const [k, value] of s.processing) {
-        if (value.messageId === args.identity) {
+        if (claimCheckIdentity(value) === args.identity) {
           foundKey = k;
           envelope = value;
           break;
@@ -327,6 +345,12 @@ function createMemoryInboxPrimitives(opts: {
         commitSha: "memory",
         envelope: {
           messageId: envelope.messageId,
+          ...(envelope.authenticatedSender !== undefined
+            ? { authenticatedSender: envelope.authenticatedSender }
+            : {}),
+          ...(envelope.deliveryKey !== undefined
+            ? { deliveryKey: envelope.deliveryKey }
+            : {}),
           receivedAt: envelope.receivedAt,
           address: args.address,
           runId: args.runId,

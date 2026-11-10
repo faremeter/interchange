@@ -324,7 +324,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       )?.body;
       if (firstStartedBody === undefined) throw new Error("missing RunStarted");
       // 4.2: the run consumed the mail this test fired.
-      expect(firstStartedBody["consumedMessageId"]).toBe(first.messageId);
+      expect(firstStartedBody["consumedDeliveryKey"]).toBe(first.deliveryKey);
 
       // 4.3: the granted `mail_send` tool ran in-child and its
       // `env.transport.send` produced a SUCCESSFUL `SendReceipt` -- the tool

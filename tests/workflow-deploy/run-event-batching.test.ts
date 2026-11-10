@@ -30,7 +30,7 @@
 //
 // What these tests deliberately do NOT re-cover: the supervisor IPC,
 // the terminal-write markConsumed coupling, and the
-// consumed/<messageId>.json exactly-once index. Those live on the
+// consumed/<identity>.json exactly-once index. Those live on the
 // production supervisor path and are already exercised unchanged by
 // single-step-full-lifecycle, single-step-conversation-durability, and
 // multistep-signal in this same suite -- batching is transparent to
@@ -245,7 +245,7 @@ describe("B2 run-event batching — correctness gate", () => {
     const runId = "run-gate1";
     const result = await runtimeRun(def, env, {
       runId,
-      consumedMessageId: "msg-gate1",
+      consumedMail: { deliveryKey: "mail-gate1" },
     }).complete;
 
     expect(result.terminalStatus).toBe("completed");
@@ -279,14 +279,14 @@ describe("B2 run-event batching — correctness gate", () => {
     const last = durable[durable.length - 1];
     expect(last?.kind).toBe("RunCompleted");
 
-    // The RunStarted carries the consumed messageId (the exactly-once
+    // The RunStarted carries the consumed delivery key (the exactly-once
     // key the supervisor's markConsumed writes against), unchanged by
     // batching.
     const runStarted = durable[0];
     if (runStarted === undefined || runStarted.kind !== "RunStarted") {
       throw new Error("expected RunStarted first");
     }
-    expect(runStarted.consumedMessageId).toBe("msg-gate1");
+    expect(runStarted.consumedDeliveryKey).toBe("mail-gate1");
   });
 
   test("gate 2: a crash on the terminal flush leaves the step's completion durable, and a re-fire finishes the run without re-invoking the agent", async () => {
@@ -308,7 +308,7 @@ describe("B2 run-event batching — correctness gate", () => {
     await expect(
       runtimeRun(def, crashEnv, {
         runId,
-        consumedMessageId: "msg-gate2",
+        consumedMail: { deliveryKey: "mail-gate2" },
       }).complete,
     ).rejects.toBeInstanceOf(InjectedCrash);
 
@@ -337,7 +337,7 @@ describe("B2 run-event batching — correctness gate", () => {
     };
     const result = await runtimeRun(def, refireEnv, {
       runId,
-      consumedMessageId: "msg-gate2",
+      consumedMail: { deliveryKey: "mail-gate2" },
     }).complete;
     expect(result.terminalStatus).toBe("completed");
     expect(invocations).toBe(0);
@@ -366,7 +366,7 @@ describe("B2 run-event batching — correctness gate", () => {
 
     const handle = runtimeRun(def, env, {
       runId,
-      consumedMessageId: "msg-gate3",
+      consumedMail: { deliveryKey: "mail-gate3" },
     });
 
     // Wait until the run has durably parked at the suspension. The

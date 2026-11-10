@@ -239,8 +239,8 @@ function extractRuntimeOptions(options: RunLocalOptions): RuntimeRunOptions {
   if (options.triggerPayload !== undefined) {
     out.triggerPayload = options.triggerPayload;
   }
-  if (options.consumedMessageId !== undefined) {
-    out.consumedMessageId = options.consumedMessageId;
+  if (options.consumedMail !== undefined) {
+    out.consumedMail = options.consumedMail;
   }
   if (options.runId !== undefined) out.runId = options.runId;
   if (options.resumeFromEvents !== undefined) {

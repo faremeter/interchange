@@ -222,7 +222,7 @@ On an unexpected exit the supervisor, with no external intervention:
 
 1. Replays any mail stranded mid-flight — entries the dead child's
    in-flight dispatch left in the per-address `processing/` subtree —
-   back into `inbox/` under their original `<receivedAt>-<messageId>`
+   back into `inbox/` under their original `<receivedAt>-<identity>`
    keys. Those keys sort ahead of any mail that arrived during the
    kill/respawn gap, so the stranded entry is re-dispatched first and
    FIFO ordering holds across the respawn boundary.

@@ -61,6 +61,7 @@ import {
   replayProcessingToInbox as defaultReplayProcessingToInbox,
   StaleInboxEnqueueError,
   DEFAULT_CONSUMED_RETENTION_MS,
+  type ClaimCheckEnvelope,
   type Principal,
   type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
@@ -95,7 +96,7 @@ import {
   type OutboundMessage,
   type SearchQuery,
 } from "@intx/types/runtime";
-import type { CancelOrigin } from "@intx/workflow";
+import type { CancelOrigin, ConsumedMailIdentity } from "@intx/workflow";
 
 import {
   createControlChannelSender,
@@ -1451,14 +1452,14 @@ export function createWorkflowSupervisor(
     anchorRunId: bindings.anchorRunId,
   };
   let mailboxStore: SubstrateMailboxStore | null = null;
-  // Claim-check messageId -> assigned mailbox uid, so a message dispatched as a
+  // Claim-check identity -> assigned mailbox uid, so a message dispatched as a
   // turn can be flagged \Seen/$Processed by uid. In-memory only: a missing entry
   // (a restart, an arrival whose eager commit failed, or an already-processed
   // message whose entry was pruned) skips the flag mark, which is a cosmetic
   // IMAP flag, never a delivery guarantee. `markMailboxProcessed` prunes an
   // entry once its mark completes, so the map holds only messages awaiting the
   // flag mark rather than growing for the deployment's life.
-  const mailboxUidByMessageId = new Map<string, number>();
+  const mailboxUidByIdentity = new Map<string, number>();
   // Serializes every mailbox mutation (lazy construction, the arrival
   // append+flush, the dispatch flag mark) so concurrent arrivals and a fire-and-
   // forget flag mark never interleave against the shared in-memory mirror.
@@ -1538,6 +1539,7 @@ export function createWorkflowSupervisor(
    * sent only AFTER the append is flushed, so the child reads committed state.
    */
   async function commitInboundToMailbox(
+    identity: string,
     messageId: string,
     rawMessage: Uint8Array,
   ): Promise<void> {
@@ -1545,8 +1547,8 @@ export function createWorkflowSupervisor(
       await runMailboxExclusive(async () => {
         // The caller gates on a fresh `enqueued` outcome, so a redelivery never
         // reaches here; this guard is belt-and-suspenders against a double
-        // append of the same messageId.
-        if (mailboxUidByMessageId.has(messageId)) return;
+        // append of the same message.
+        if (mailboxUidByIdentity.has(identity)) return;
         let decoded: ReturnType<typeof decodeMail>;
         try {
           decoded = decodeMail(rawMessage);
@@ -1562,7 +1564,7 @@ export function createWorkflowSupervisor(
           storedEnvelopeFromHeaders(decoded.headers, messageId),
           [],
         );
-        mailboxUidByMessageId.set(messageId, uid);
+        mailboxUidByIdentity.set(identity, uid);
         await store.flush();
         const commit = await bindings.repoStore.resolveRef(
           mailboxWritePrincipal,
@@ -1600,8 +1602,8 @@ export function createWorkflowSupervisor(
    * missing uid (no eager mailbox entry) or a substrate fault is logged and
    * dropped, never failing the turn.
    */
-  function markMailboxProcessed(messageId: string): void {
-    const uid = mailboxUidByMessageId.get(messageId);
+  function markMailboxProcessed(identity: string): void {
+    const uid = mailboxUidByIdentity.get(identity);
     if (uid === undefined) return;
     void runMailboxExclusive(async () => {
       try {
@@ -1615,12 +1617,12 @@ export function createWorkflowSupervisor(
         // so drop it to bound the map over a long-lived conversational mailbox.
         // Redelivery dedup is owned by the durable inbox index, not this map.
         // The delete runs inside the exclusive section so it never interleaves
-        // with the arrival path's `has(messageId)` check.
-        mailboxUidByMessageId.delete(messageId);
+        // with the arrival path's `has(identity)` check.
+        mailboxUidByIdentity.delete(identity);
       }
     }).catch((cause) => {
       const message = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`mailbox flag mark failed for ${messageId} (uid ${String(uid)}): ${message}`;
+      logger.warn`mailbox flag mark failed for ${identity} (uid ${String(uid)}): ${message}`;
     });
   }
 
@@ -1677,7 +1679,7 @@ export function createWorkflowSupervisor(
     const messageId = await deriveMessageId(delivery.rawMessage);
     const receivedAt = Date.now();
     // Inline the raw mail bytes on the claim-check envelope so the
-    // workflow-process child can recover its step input by messageId at
+    // workflow-process child can recover its step input at
     // `trigger.fired` time. The supervisor is the sole mail owner (§3a)
     // and has no separate durable byte store the child reads; the bytes
     // survive the inbox->processing transition verbatim and are dropped
@@ -1696,6 +1698,7 @@ export function createWorkflowSupervisor(
       {
         address: bindings.deploymentMailAddress,
         messageId,
+        authenticatedSender: delivery.authenticatedSender,
         receivedAt,
         rawMessage: rawMessageBase64,
       },
@@ -1704,14 +1707,18 @@ export function createWorkflowSupervisor(
     // Only a fresh enqueue added a new inbox entry; wake the dispatch loop for
     // it alone. An `already-present` outcome landed nothing new -- returning
     // (which acks) without waking is correct, since the earlier delivery of
-    // the same messageId already drives dispatch. This resolves for both
+    // the same message already drives dispatch. This resolves for both
     // outcomes: both mean the bytes are durably accounted for, so both ack.
     if (outcome.outcome === "enqueued") {
       // Eager-commit the fresh message into the per-run mailbox and notify the
       // child BEFORE waking dispatch, so the warm agent's mail_wait can observe
       // it committed. Non-fatal by contract: the enqueue above already secured
       // the durable delivery, so this never withholds the ack.
-      await commitInboundToMailbox(messageId, delivery.rawMessage);
+      await commitInboundToMailbox(
+        claimCheckIdentity(outcome.envelope),
+        messageId,
+        delivery.rawMessage,
+      );
       wakeDispatch();
     } else {
       // A redelivery of a message already durably present: the ack still
@@ -2497,8 +2504,8 @@ export function createWorkflowSupervisor(
             // Bound the id->uid map: drop any entry now pointing at a removed
             // uid. Not load-bearing -- `markMailboxProcessed` guards with
             // `find` -- but keeps the map from retaining dead uids.
-            for (const [messageId, mappedUid] of mailboxUidByMessageId) {
-              if (mappedUid === uid) mailboxUidByMessageId.delete(messageId);
+            for (const [identity, mappedUid] of mailboxUidByIdentity) {
+              if (mappedUid === uid) mailboxUidByIdentity.delete(identity);
             }
           }
           await store.flush();
@@ -3666,13 +3673,14 @@ export function createWorkflowSupervisor(
    * and record its runId as in-flight. The runId is the local part of the
    * deployment's mail address (see `deriveWorkflowRunId`), identifying its one
    * top-level run. The resolved `Mail` (headers plus committed part references)
-   * rides in the frame as the run's trigger payload; the `messageId`
-   * accompanies it for correlation and audit. The runId is the same value the
+   * rides in the frame as the run's trigger payload; the entry's claim-check
+   * identity accompanies it, and the run records that identity on its
+   * `RunStarted`. The runId is the same value the
    * dispatch loop waits on via `terminalEventSource`.
    */
   async function forwardDispatchedEntry(
     sender: ControlChannelSender,
-    messageId: string,
+    mailIdentity: ConsumedMailIdentity,
     receivedAt: number,
     runId: string,
     payload: Mail,
@@ -3681,7 +3689,7 @@ export function createWorkflowSupervisor(
       type: "trigger.fire",
       data: {
         runId,
-        messageId,
+        mailIdentity,
         receivedAt,
         payload,
       },
@@ -3700,14 +3708,14 @@ export function createWorkflowSupervisor(
    *
    * The two failure modes are deliberately distinct:
    *   - A DETERMINISTIC input rejection -- missing bytes, unparseable MIME, or
-   *     a messageId that cannot form a path segment -- returns `{ ok: false }`
+   *     an identity that cannot form a path segment -- returns `{ ok: false }`
    *     so the caller drops the mail. Replaying it would fail identically.
    *   - A TRANSIENT substrate write failure propagates (thrown), so the caller
    *     treats it as a dispatch fault and leaves the mail reclaimable rather
    *     than silently discarding it on an infrastructure hiccup.
    */
   async function prepareMail(
-    envelope: { messageId: string; rawMessage?: string },
+    envelope: ClaimCheckEnvelope,
     runId: string,
   ): Promise<
     | { ok: true; mail: Mail }
@@ -3748,7 +3756,7 @@ export function createWorkflowSupervisor(
           runId,
           ref: bindings.workflowRunRef,
         },
-        envelope.messageId,
+        claimCheckIdentity(envelope),
         decoded,
       );
       return { ok: true, mail };
@@ -3994,7 +4002,7 @@ export function createWorkflowSupervisor(
                 data: {
                   runId,
                   signalName: signalName(inputChannel.correlationId),
-                  signalId: envelope.messageId,
+                  signalId: claimCheckIdentity(envelope),
                   payload: prepared.mail,
                 },
               });
@@ -4008,7 +4016,7 @@ export function createWorkflowSupervisor(
               runInputChannels.delete(runId);
               // The message was dispatched as a turn: mark its eager mailbox
               // entry \Seen/$Processed. Fire-and-forget off the dispatch path.
-              markMailboxProcessed(envelope.messageId);
+              markMailboxProcessed(claimCheckIdentity(envelope));
               // Durable-consume contract, mirroring the trigger.fire path: hold
               // markConsumed until the child has durably taken up the signal --
               // the resumed run re-parks or reaches a terminal event. That gate
@@ -4069,14 +4077,16 @@ export function createWorkflowSupervisor(
             try {
               await forwardDispatchedEntry(
                 sender,
-                envelope.messageId,
+                envelope.deliveryKey !== undefined
+                  ? { deliveryKey: envelope.deliveryKey }
+                  : { messageId: envelope.messageId },
                 envelope.receivedAt,
                 runId,
                 prepared.mail,
               );
               // The message was dispatched as a turn: mark its eager mailbox
               // entry \Seen/$Processed. Fire-and-forget off the dispatch path.
-              markMailboxProcessed(envelope.messageId);
+              markMailboxProcessed(claimCheckIdentity(envelope));
 
               // Wait for the child to durably take up this trigger (RunStarted
               // committed, then the run parks or terminates) before allowing

@@ -20,11 +20,15 @@ import {
   hexEncode,
   signalName,
 } from "@intx/types";
-import type { InboundDelivery } from "@intx/types/message-id";
+import {
+  deriveDeliveryKey,
+  deriveMessageId,
+  type InboundDelivery,
+} from "@intx/types/message-id";
 import type { InferenceSource, OutboundMessage } from "@intx/types/runtime";
 import { isMail } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
-import { StaleInboxEnqueueError } from "@intx/hub-sessions";
+import { claimCheckIdentity, StaleInboxEnqueueError } from "@intx/hub-sessions";
 import type { EnqueueInboxOutcome } from "@intx/hub-sessions";
 import {
   createMemoryFrameStream,
@@ -74,6 +78,9 @@ import {
   seededOnRunStart,
   seededSnapshot,
 } from "./step-grants.test-helpers";
+
+/** The sender a test names when it derives a delivery key itself. */
+const TEST_SENDER = "sender@example.test";
 
 /**
  * The frame `type`s the supervisor writes to the child control stream, in
@@ -524,17 +531,24 @@ function inboxPrimitivesWithEnqueue(
   return { ...createMemoryInboxPrimitives(), enqueueInbox: enqueue };
 }
 
-function enqueuedOutcome(args: {
+async function enqueuedOutcome(args: {
   address: string;
   messageId: string;
+  authenticatedSender: string;
   receivedAt: number;
-}): EnqueueInboxOutcome {
+}): Promise<EnqueueInboxOutcome> {
+  const deliveryKey = await deriveDeliveryKey(
+    args.authenticatedSender,
+    args.messageId,
+  );
   return {
     outcome: "enqueued",
     commitSha: "memory",
-    inboxKey: `${String(args.receivedAt)}-${args.messageId}`,
+    inboxKey: `${String(args.receivedAt)}-${deliveryKey}`,
     envelope: {
       messageId: args.messageId,
+      authenticatedSender: args.authenticatedSender,
+      deliveryKey,
       receivedAt: args.receivedAt,
       address: args.address,
     },
@@ -776,6 +790,8 @@ function createStubRepoStore(opts: {
  */
 type MemoryInboxEntry = {
   messageId: string;
+  authenticatedSender?: string;
+  deliveryKey?: string;
   receivedAt: number;
   rawMessage?: string;
   rejection?: { code: string; message: string };
@@ -794,8 +810,22 @@ export type MemoryInboxPrimitives = InboxPrimitives & {
   awaitState(predicate: () => boolean): Promise<void>;
 };
 
-function filenameKey(receivedAt: number, messageId: string): string {
-  return `${String(receivedAt)}-${messageId}`;
+function filenameKey(receivedAt: number, identity: string): string {
+  return `${String(receivedAt)}-${identity}`;
+}
+
+/**
+ * Whether `entry` is the message `enqueueInbox` is filing, by the real
+ * primitive's two lookups: the sender-scoped form under the delivery key, or
+ * the legacy form under the bare Message-ID.
+ */
+function isSameInboundMessage(
+  entry: MemoryInboxEntry,
+  messageId: string,
+  deliveryKey: string,
+): boolean {
+  if (entry.deliveryKey !== undefined) return entry.deliveryKey === deliveryKey;
+  return entry.messageId === messageId;
 }
 
 function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
@@ -822,24 +852,28 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
     },
     async enqueueInbox(_store, _principal, _repoId, args) {
       const state = getOrCreate(args.address);
-      const key = filenameKey(args.receivedAt, args.messageId);
-      // Mirror the real `enqueueInbox` contract: an already-present messageId
+      const deliveryKey = await deriveDeliveryKey(
+        args.authenticatedSender,
+        args.messageId,
+      );
+      const key = filenameKey(args.receivedAt, deliveryKey);
+      const sameMessage = (entry: MemoryInboxEntry) =>
+        isSameInboundMessage(entry, args.messageId, deliveryKey);
+      // Mirror the real `enqueueInbox` contract: an already-present message
       // is a returned outcome (ack-worthy), not a throw.
-      if (state.consumed.has(args.messageId)) {
+      if ([...state.consumed.values()].some(sameMessage)) {
         return { outcome: "already-present", reason: "consumed" };
       }
-      for (const entry of state.inbox.values()) {
-        if (entry.messageId === args.messageId) {
-          return { outcome: "already-present", reason: "already_inbox" };
-        }
+      if ([...state.inbox.values()].some(sameMessage)) {
+        return { outcome: "already-present", reason: "already_inbox" };
       }
-      for (const entry of state.processing.values()) {
-        if (entry.messageId === args.messageId) {
-          return { outcome: "already-present", reason: "processing" };
-        }
+      if ([...state.processing.values()].some(sameMessage)) {
+        return { outcome: "already-present", reason: "processing" };
       }
       const envelope: MemoryInboxEntry = {
         messageId: args.messageId,
+        authenticatedSender: args.authenticatedSender,
+        deliveryKey,
         receivedAt: args.receivedAt,
         ...(args.rawMessage !== undefined
           ? { rawMessage: args.rawMessage }
@@ -853,6 +887,8 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
         inboxKey: key,
         envelope: {
           messageId: args.messageId,
+          authenticatedSender: args.authenticatedSender,
+          deliveryKey,
           receivedAt: args.receivedAt,
           address: args.address,
         },
@@ -862,8 +898,10 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       const state = getOrCreate(address);
       const entries = [...state.inbox.entries()].sort(([, a], [, b]) => {
         if (a.receivedAt !== b.receivedAt) return a.receivedAt - b.receivedAt;
-        if (a.messageId < b.messageId) return -1;
-        if (a.messageId > b.messageId) return 1;
+        const aId = claimCheckIdentity(a);
+        const bId = claimCheckIdentity(b);
+        if (aId < bId) return -1;
+        if (aId > bId) return 1;
         return 0;
       });
       if (entries.length === 0) return null;
@@ -879,6 +917,12 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
         key,
         envelope: {
           messageId: envelope.messageId,
+          ...(envelope.authenticatedSender !== undefined
+            ? { authenticatedSender: envelope.authenticatedSender }
+            : {}),
+          ...(envelope.deliveryKey !== undefined
+            ? { deliveryKey: envelope.deliveryKey }
+            : {}),
           receivedAt: envelope.receivedAt,
           address,
           ...(envelope.rawMessage !== undefined
@@ -892,7 +936,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       let foundKey: string | null = null;
       let envelope: MemoryInboxEntry | null = null;
       for (const [key, value] of state.processing) {
-        if (value.messageId === args.identity) {
+        if (claimCheckIdentity(value) === args.identity) {
           foundKey = key;
           envelope = value;
           break;
@@ -1452,6 +1496,53 @@ describe("createWorkflowSupervisor", () => {
       runId,
     ]);
 
+    await wired.supervisor.shutdown();
+  });
+
+  test("the same mail from two senders gets two eager mailbox entries", async () => {
+    const baseDir = await makeTempDir("supervisor-mailbox-two-senders-");
+    // Hold the first dispatch at its mail-parts commit. The dispatch flags
+    // the first entry and then drops its uid from the arrival map, so the
+    // second arrival must land while that map still holds the first.
+    let releaseParts: () => void = () => undefined;
+    const partsGate = new Promise<void>((resolve) => {
+      releaseParts = resolve;
+    });
+    const mailBus = createSettleableMailBus();
+    const wired = await spawnWithRunStart({
+      baseDir,
+      statefulWrites: true,
+      mailBus,
+      beforeWrite: async ({ preservePrefix }) => {
+        if (preservePrefix.includes("/parts/")) await partsGate;
+      },
+    });
+
+    const raw = buildInboundMail({
+      from: "sender@example.com",
+      to: MAILBOX_ADDRESS,
+      subject: "same",
+      messageId: "<same@example.com>",
+      body: "same bytes",
+    });
+    // Each settle resolves after the arrival's eager mailbox commit.
+    await mailBus.settle(
+      MAILBOX_ADDRESS,
+      inboundDelivery(raw, "alice@example.com"),
+    );
+    await mailBus.settle(
+      MAILBOX_ADDRESS,
+      inboundDelivery(raw, "carol@example.com"),
+    );
+
+    const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
+    expect(notifies.map((n) => n.uid)).toEqual([1, 2]);
+    expect(notifies.map((n) => n.headers.messageId)).toEqual([
+      "<same@example.com>",
+      "<same@example.com>",
+    ]);
+
+    releaseParts();
     await wired.supervisor.shutdown();
   });
 
@@ -2811,8 +2902,9 @@ describe("createWorkflowSupervisor", () => {
     let onEnqueue: (args: {
       address: string;
       messageId: string;
+      authenticatedSender: string;
       receivedAt: number;
-    }) => EnqueueInboxOutcome = () => {
+    }) => Promise<EnqueueInboxOutcome> = () => {
       throw new Error("disk exploded");
     };
     const inboxPrimitives = inboxPrimitivesWithEnqueue(
@@ -4597,9 +4689,14 @@ describe("createWorkflowSupervisor", () => {
       { resource: "thing", action: "read" },
     ]);
 
+    const partPrefixes: string[] = [];
     const wired = await spawnWithRunStart({
       baseDir,
-
+      onWrite: ({ preservePrefix }) => {
+        if (preservePrefix.includes("/parts/")) {
+          partPrefixes.push(preservePrefix);
+        }
+      },
       onRunStart: async () => {
         return seededSnapshot(baseDir, {
           stepOrder: ["step-1"],
@@ -4635,7 +4732,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      inboundDelivery(new TextEncoder().encode("msg-2")),
+      inboundDelivery(new TextEncoder().encode("msg-2"), TEST_SENDER),
     );
 
     // msg-2 lands on the parked run as signal.deliver. Wait for it to be
@@ -4678,7 +4775,18 @@ describe("createWorkflowSupervisor", () => {
     const firstSignal = signals[0];
     if (firstSignal === undefined) throw new Error("unreachable");
     expect(firstSignal.signalName).toBe(signalName("corr-input-1"));
-    expect(firstSignal.signalId).toBeTruthy();
+    // The signal and the mail parts carry the mail's claim-check identity:
+    // the delivery key of its sender and Message-ID.
+    const msg2Key = await deriveDeliveryKey(
+      TEST_SENDER,
+      await deriveMessageId(new TextEncoder().encode("msg-2")),
+    );
+    expect(firstSignal.signalId).toBe(msg2Key);
+    expect(
+      partPrefixes.some((prefix) =>
+        prefix.endsWith(`/parts/${encodeURIComponent(msg2Key)}/`),
+      ),
+    ).toBe(true);
     await wired.supervisor.shutdown();
   });
 
@@ -6036,6 +6144,13 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       .flushed()
       .filter((f) => f.includes("trigger.fire"));
     expect(triggerFires.length).toBeGreaterThanOrEqual(1);
+    // The seeded entry is legacy (no delivery key), so the trigger names it
+    // by its bare Message-ID.
+    const fired = await waitForUpstreamPayload(
+      supervisorToChild,
+      "trigger.fire",
+    );
+    expect(fired.data.mailIdentity).toEqual({ messageId: "msg-orphan" });
 
     // Drive the run to terminal so markConsumed can proceed. The wait above
     // already observed the forwarded trigger, and the terminal watcher is
@@ -6061,6 +6176,47 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     const consumedEntry = [...snapshot.consumed.values()][0];
     if (consumedEntry === undefined) throw new Error("unreachable");
     expect(consumedEntry.messageId).toBe("msg-orphan");
+    await supervisor.shutdown();
+  });
+
+  test("a sender-scoped claim-check entry fires its trigger under its delivery key", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    const deliveryKey = await deriveDeliveryKey(TEST_SENDER, "msg-scoped");
+    const state = inbox.snapshot("run_deployment-x@example.com");
+    state.processing.set(`1000-${deliveryKey}`, {
+      messageId: "msg-scoped",
+      authenticatedSender: TEST_SENDER,
+      deliveryKey,
+      receivedAt: 1000,
+      rawMessage: base64Encode(
+        new TextEncoder().encode("Content-Type: text/plain\r\n\r\nscoped body"),
+      ),
+    });
+    const { supervisor, supervisorToChild, childSender } =
+      await buildFifoTestFixture({
+        label: "fifo-scoped-identity-",
+        inbox,
+      });
+    const fired = await waitForUpstreamPayload(
+      supervisorToChild,
+      "trigger.fire",
+    );
+    expect(fired.data.mailIdentity).toEqual({ deliveryKey });
+    await childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: "run_deployment-x",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
+    await inbox.awaitState(
+      () => inbox.snapshot("run_deployment-x@example.com").consumed.size >= 1,
+    );
+    expect([
+      ...inbox.snapshot("run_deployment-x@example.com").consumed.keys(),
+    ]).toEqual([deliveryKey]);
     await supervisor.shutdown();
   });
 });

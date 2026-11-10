@@ -635,7 +635,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       type: "trigger.fire",
       data: {
         runId: "run-1",
-        messageId: "msg-1",
+        mailIdentity: { deliveryKey: "mail-1" },
         receivedAt: 1,
         payload: textMail("alpha"),
       },
@@ -648,7 +648,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       type: "trigger.fire",
       data: {
         runId: "run-2",
-        messageId: "msg-2",
+        mailIdentity: { deliveryKey: "mail-2" },
         receivedAt: 2,
         payload: textMail("bravo"),
       },
@@ -721,7 +721,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       type: "trigger.fire",
       data: {
         runId: "run-3",
-        messageId: "msg-3",
+        mailIdentity: { deliveryKey: "mail-3" },
         receivedAt: 3,
         payload: textMail("charlie"),
       },

@@ -351,10 +351,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
             checkTornDown();
             attempt += 1;
             const messageId = `<settled-control-recovered-${String(attempt)}@integration.interchange>`;
-            await fireMailTrigger(env, deploymentMailAddress, {
-              messageId,
-              content: "recovered",
-            });
+            const { deliveryKey } = await fireMailTrigger(
+              env,
+              deploymentMailAddress,
+              { messageId, content: "recovered" },
+            );
             const reFireAfter = Date.now() + 10_000;
             while (Date.now() < reFireAfter) {
               checkTornDown();
@@ -364,7 +365,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
                 deploymentMailAddress,
                 "consumed",
               );
-              if (consumed.some((c) => c.filename.includes(messageId))) return;
+              if (consumed.some((c) => c.filename === `${deliveryKey}.json`)) {
+                return;
+              }
               await new Promise((r) => setTimeout(r, 100));
             }
           }

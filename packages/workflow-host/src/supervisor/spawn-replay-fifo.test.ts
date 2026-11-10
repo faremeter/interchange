@@ -33,6 +33,8 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
+import { deriveDeliveryKey } from "@intx/types/message-id";
+import { claimCheckIdentity } from "@intx/hub-sessions";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
   createMemoryFrameStream,
@@ -65,6 +67,8 @@ async function makeTempDir(prefix: string): Promise<string> {
 
 type MemoryEntry = {
   messageId: string;
+  authenticatedSender?: string;
+  deliveryKey?: string;
   receivedAt: number;
   rawMessage?: string;
 };
@@ -118,9 +122,15 @@ function createGatedInboxPrimitives(): {
   const primitives: InboxPrimitives = {
     async enqueueInbox(_store, _principal, _repoId, args) {
       const s = getOrCreate(args.address);
-      const k = key(args.receivedAt, args.messageId);
+      const deliveryKey = await deriveDeliveryKey(
+        args.authenticatedSender,
+        args.messageId,
+      );
+      const k = key(args.receivedAt, deliveryKey);
       const envelope: MemoryEntry = {
         messageId: args.messageId,
+        authenticatedSender: args.authenticatedSender,
+        deliveryKey,
         receivedAt: args.receivedAt,
         ...(args.rawMessage !== undefined
           ? { rawMessage: args.rawMessage }
@@ -133,6 +143,8 @@ function createGatedInboxPrimitives(): {
         inboxKey: k,
         envelope: {
           messageId: args.messageId,
+          authenticatedSender: args.authenticatedSender,
+          deliveryKey,
           receivedAt: args.receivedAt,
           address: args.address,
           ...(args.rawMessage !== undefined
@@ -160,6 +172,12 @@ function createGatedInboxPrimitives(): {
         key: k,
         envelope: {
           messageId: envelope.messageId,
+          ...(envelope.authenticatedSender !== undefined
+            ? { authenticatedSender: envelope.authenticatedSender }
+            : {}),
+          ...(envelope.deliveryKey !== undefined
+            ? { deliveryKey: envelope.deliveryKey }
+            : {}),
           receivedAt: envelope.receivedAt,
           address,
           ...(envelope.rawMessage !== undefined
@@ -173,7 +191,7 @@ function createGatedInboxPrimitives(): {
       let foundKey: string | null = null;
       let envelope: MemoryEntry | null = null;
       for (const [k, value] of s.processing) {
-        if (value.messageId === args.identity) {
+        if (claimCheckIdentity(value) === args.identity) {
           foundKey = k;
           envelope = value;
           break;
@@ -188,6 +206,12 @@ function createGatedInboxPrimitives(): {
         commitSha: "memory",
         envelope: {
           messageId: envelope.messageId,
+          ...(envelope.authenticatedSender !== undefined
+            ? { authenticatedSender: envelope.authenticatedSender }
+            : {}),
+          ...(envelope.deliveryKey !== undefined
+            ? { deliveryKey: envelope.deliveryKey }
+            : {}),
           receivedAt: envelope.receivedAt,
           address: args.address,
           runId: args.runId,
@@ -240,6 +264,9 @@ function createGatedInboxPrimitives(): {
   };
 }
 
+/** The authenticated sender of every seeded orphan. */
+const SEED_SENDER = "sender@example.test";
+
 /**
  * Pre-seed an orphaned `processing/` entry on the workflow-run
  * substrate. The test calls this BEFORE `spawn()`; the supervisor's
@@ -260,6 +287,7 @@ async function seedOrphanedProcessing(
   await primitives.enqueueInbox(store, { kind: "supervisor" }, repoId, {
     address,
     messageId,
+    authenticatedSender: SEED_SENDER,
     receivedAt,
     // Decodable mail bytes: the dispatch loop decodes and commits them
     // before forwarding the trigger.fire for the recovered orphan.
@@ -477,7 +505,7 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     const freshMessage = new TextEncoder().encode("fresh@example.com");
     harness.mailBus.deliver(
       harness.deploymentMailAddress,
-      inboundDelivery(freshMessage),
+      inboundDelivery(freshMessage, SEED_SENDER),
     );
     await waitUntil(
       () =>
@@ -520,7 +548,7 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     harness.gatedInbox.release();
     await harness.gatedInbox.replaySettled();
 
-    // Wait for the first `trigger.fire`. Its messageId identifies which
+    // Wait for the first `trigger.fire`. Its mail identity identifies which
     // claim-check entry won the FIFO race even though both entries share the
     // deployment's stable runId.
     await waitForUpstreamPayloads(harness.supervisorToChild, "trigger.fire", 1);
@@ -532,7 +560,9 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     const firstTrigger = triggers[0];
     if (firstTrigger === undefined) throw new Error("first trigger missing");
     expect(firstTrigger.data.runId).toBe("run_deployment-x");
-    expect(firstTrigger.data.messageId).toBe(ORPHAN_ID);
+    expect(firstTrigger.data.mailIdentity).toEqual({
+      deliveryKey: await deriveDeliveryKey(SEED_SENDER, ORPHAN_ID),
+    });
 
     // Keep the stable run live and park it on its next input. This releases the
     // orphan's dispatch wait while preserving the one-run-per-deployment
@@ -560,7 +590,10 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     const freshSignal = signals[0];
     if (freshSignal === undefined) throw new Error("fresh signal missing");
     expect(freshSignal.data.runId).toBe("run_deployment-x");
-    expect(freshSignal.data.signalId).toBe(freshId);
+    // The fresh mail is sender-scoped, so its signal id is its delivery key.
+    expect(freshSignal.data.signalId).toBe(
+      await deriveDeliveryKey(SEED_SENDER, freshId),
+    );
     expect(
       readPayloadsOfType(harness.supervisorToChild.flushed(), "trigger.fire"),
     ).toHaveLength(1);

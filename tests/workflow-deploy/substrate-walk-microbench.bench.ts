@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import type { KeyPair } from "@intx/types/runtime";
 import {
   createRepoStore,
@@ -37,6 +38,7 @@ import {
 const REF = "refs/heads/events";
 const HUB: Principal = { kind: "hub" };
 const BENCH_ADDRESS = "bench@example.com";
+const BENCH_SENDER = "sender@example.com";
 const BENCH_ADDRESS_SEG = encodeURIComponent(BENCH_ADDRESS);
 
 const tempDirs: string[] = [];
@@ -460,13 +462,15 @@ describe("P2 consumed/-retention microbench", () => {
       await enqueueInbox(store, HUB, repoId, {
         address: BENCH_ADDRESS,
         messageId,
+        authenticatedSender: BENCH_SENDER,
         receivedAt: t,
       });
       await dequeueToProcessing(store, HUB, repoId, BENCH_ADDRESS);
+      const identity = await deriveDeliveryKey(BENCH_SENDER, messageId);
       const mc0 = performance.now();
       await markConsumed(store, HUB, repoId, {
         address: BENCH_ADDRESS,
-        identity: messageId,
+        identity,
         runId: `r-${String(i)}`,
         consumedAt: t,
         retentionHorizonMs: horizonMs,

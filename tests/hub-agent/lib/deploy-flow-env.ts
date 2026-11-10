@@ -42,6 +42,7 @@ import type { Subprocess } from "bun";
 
 import { permitAllMailSend } from "@intx/authz/testing";
 import { AgentDeployAckFrame } from "@intx/types/sidecar";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -2494,23 +2495,28 @@ export function isMailTriggerUnroutableError(
   );
 }
 
+/** The MIME From and authenticated sender `fireMailTrigger` uses by default. */
+export const DEFAULT_MAIL_TRIGGER_FROM = "user@integration.interchange";
+
 /**
  * Construct a signed mail message and route it via the hub's
  * `routeMail` path -- the same surface the existing deploy-flow
  * integration test uses to fire a mail at the agent. Returns the
- * `Message-Id` the helper chose so the caller can correlate the
- * downstream `RunStarted` against the message that triggered it.
+ * `Message-Id` the helper chose and the delivery key the supervisor files
+ * the mail under (derived from the authenticated sender, which is the
+ * From), so the caller can correlate the downstream `RunStarted` against
+ * the message that triggered it.
  */
 export async function fireMailTrigger(
   env: DeployFlowEnv,
   address: string,
   opts: FireMailTriggerOpts = {},
-): Promise<{ messageId: string }> {
+): Promise<{ messageId: string; deliveryKey: string }> {
   const messageId =
     opts.messageId ??
     `<wf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@integration.interchange>`;
   const content = opts.content ?? "Hello.";
-  const from = opts.from ?? "user@integration.interchange";
+  const from = opts.from ?? DEFAULT_MAIL_TRIGGER_FROM;
 
   const keyPair = await generateKeyPair();
   const crypto = createEd25519Crypto(keyPair);
@@ -2586,7 +2592,7 @@ export async function fireMailTrigger(
       { code: MAIL_TRIGGER_UNROUTABLE_CODE },
     );
   }
-  return { messageId };
+  return { messageId, deliveryKey: await deriveDeliveryKey(from, messageId) };
 }
 
 /**
@@ -2666,8 +2672,9 @@ export function initiateDrain(
 }
 
 /**
- * Write a `processing/<receivedAt>-<messageId>.json` entry directly
- * into the deployment's workflow-run repo. The helper composes
+ * Write a `processing/<receivedAt>-<deliveryKey>.json` entry directly
+ * into the deployment's workflow-run repo, keyed by `authenticatedSender`
+ * and `messageId`. The helper composes
  * `enqueueInbox` followed by `dequeueToProcessing` -- the same two
  * substrate primitives the supervisor uses on a normal mail trigger
  * fire -- so the resulting on-disk state is bit-identical to the
@@ -2684,6 +2691,7 @@ export async function simulateProcessingCrash(
   anchorRunId: string,
   address: string,
   messageId: string,
+  authenticatedSender: string,
   receivedAt: number,
 ): Promise<void> {
   const handle = requireDeployment(env, anchorRunId);
@@ -2695,6 +2703,7 @@ export async function simulateProcessingCrash(
     {
       address,
       messageId,
+      authenticatedSender,
       receivedAt,
     },
   );
