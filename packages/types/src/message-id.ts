@@ -15,8 +15,53 @@
 // The identifier is the `Message-ID` header value when the message
 // carries one, and a sha256 of the raw bytes otherwise -- so a message
 // from a non-RFC 2822 transport still receives a deterministic id.
+//
+// The originator chooses a Message-ID, so two senders can name the same one
+// (RFC 5598 §3.4.1 says it carries no security weight). A delivery key is the
+// identity of one inbound mail scoped to the hub-authenticated sender: it
+// separates two senders' mail that share a Message-ID, and it is a bounded,
+// path-safe string whatever bytes the Message-ID holds.
 
 import { hexEncode } from "./hex";
+
+/**
+ * The prefix of every delivery key. It names the kind of identifier where a key
+ * appears in a path or a log line. It does not prove that a string is a
+ * delivery key: a Message-ID can have the same shape, so a record states which
+ * identity it carries rather than letting a reader infer it from the string.
+ */
+export const DELIVERY_KEY_PREFIX = "mail-";
+
+/**
+ * Derive the delivery key of an inbound mail: `mail-` followed by the hex
+ * sha256 of the UTF-8 sender, a NUL byte, and the UTF-8 Message-ID.
+ *
+ * The sender is compared byte for byte, so the caller passes it in the one
+ * canonical form the hub authenticated. A sender never holds NUL, so the first
+ * NUL ends it and the encoding is unambiguous; the Message-ID may hold any
+ * text. A string with a lone surrogate encodes as U+FFFD, so it shares a key
+ * with the string that holds U+FFFD in its place; a Message-ID decoded from
+ * message bytes never holds one.
+ */
+export async function deriveDeliveryKey(
+  authenticatedSender: string,
+  messageId: string,
+): Promise<string> {
+  if (authenticatedSender.length === 0) {
+    throw new Error("deriveDeliveryKey: the sender is empty");
+  }
+  if (authenticatedSender.includes("\0")) {
+    throw new Error("deriveDeliveryKey: the sender contains NUL");
+  }
+  const encoder = new TextEncoder();
+  const sender = encoder.encode(authenticatedSender);
+  const id = encoder.encode(messageId);
+  const input = new Uint8Array(sender.length + 1 + id.length);
+  input.set(sender, 0);
+  input.set(id, sender.length + 1);
+  const digest = await crypto.subtle.digest("SHA-256", input);
+  return DELIVERY_KEY_PREFIX + hexEncode(new Uint8Array(digest));
+}
 
 const BARE_LINE_BREAK = /\r(?!\n)|(?<!\r)\n/;
 // Two line breaks back to back, of any flavour. The single-CR branch excludes a

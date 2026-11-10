@@ -1,6 +1,11 @@
 import { describe, test, expect } from "bun:test";
 
-import { deriveMessageId, parseMessageIdHeader } from "./message-id";
+import {
+  DELIVERY_KEY_PREFIX,
+  deriveDeliveryKey,
+  deriveMessageId,
+  parseMessageIdHeader,
+} from "./message-id";
 
 const encoder = new TextEncoder();
 
@@ -124,5 +129,56 @@ describe("deriveMessageId", () => {
     expect(firstId).toMatch(/^[0-9a-f]{64}$/);
     expect(secondId).toMatch(/^[0-9a-f]{64}$/);
     expect(firstId).not.toBe(secondId);
+  });
+});
+
+describe("deriveDeliveryKey", () => {
+  test("matches a digest computed outside the function", async () => {
+    // printf 'run_a@acme.localhost\0<caf\xc3\xa9-1@example.com>' | shasum -a 256
+    expect(
+      await deriveDeliveryKey(
+        "run_a@acme.localhost",
+        "<caf\u00e9-1@example.com>",
+      ),
+    ).toBe(
+      "mail-4cf62b5d6c6d0b19b118d1d6aa409e76f3fa347627bf67ea9d1db415d6260060",
+    );
+  });
+
+  test("has the prefix and a 64-digit hex digest", async () => {
+    expect(await deriveDeliveryKey("a@example.com", "<m@example.com>")).toMatch(
+      new RegExp(`^${DELIVERY_KEY_PREFIX}[0-9a-f]{64}$`),
+    );
+  });
+
+  test("gives two senders of one Message-ID different keys", async () => {
+    const id = "<m@example.com>";
+    expect(await deriveDeliveryKey("a@example.com", id)).not.toBe(
+      await deriveDeliveryKey("b@example.com", id),
+    );
+  });
+
+  test("gives one sender's two Message-IDs different keys", async () => {
+    expect(
+      await deriveDeliveryKey("a@example.com", "<m1@example.com>"),
+    ).not.toBe(await deriveDeliveryKey("a@example.com", "<m2@example.com>"));
+  });
+
+  test("compares the sender byte for byte", async () => {
+    expect(await deriveDeliveryKey("a@example.com", "<m@x>")).not.toBe(
+      await deriveDeliveryKey("A@example.com", "<m@x>"),
+    );
+  });
+
+  test("hashes a NUL in the Message-ID and rejects one in the sender", async () => {
+    // printf 'a\0b\0c' | shasum -a 256
+    expect(await deriveDeliveryKey("a", "b\0c")).toBe(
+      "mail-8badde10c760e9b702defb4b5e225de79c515b1d2a5cfb000e140f3c6fbb5629",
+    );
+    await expect(deriveDeliveryKey("a\0b", "c")).rejects.toThrow(/NUL/);
+  });
+
+  test("refuses an empty sender", async () => {
+    await expect(deriveDeliveryKey("", "<m@x>")).rejects.toThrow(/empty/);
   });
 });
