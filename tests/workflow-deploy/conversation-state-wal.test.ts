@@ -197,6 +197,7 @@ async function makeStore(
     runId: RUN_ID,
     stepId: STEP_ID,
     lifetime,
+    mailboxAddress: "agent@example.com",
   });
 }
 
@@ -493,6 +494,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
         runId: RUN_ID,
         stepId: STEP_ID,
         lifetime: { kind: "deployment" },
+        mailboxAddress: "agent@example.com",
       });
     }
 
@@ -797,6 +799,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       runId: RUN_ID,
       stepId: STEP_ID,
       lifetime: { kind: "deployment" },
+      mailboxAddress: "agent@example.com",
     });
 
     // Boundary 0: the local store holds [a]; during its WAL append the
@@ -885,6 +888,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       runId: RUN_ID,
       stepId: STEP_ID,
       lifetime: { kind: "deployment" },
+      mailboxAddress: "agent@example.com",
     });
 
     // The local store holds [a, b]; fire two overlapping mirrors of it.
@@ -1020,6 +1024,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       runId: RUN_ID,
       stepId: STEP_ID,
       lifetime: { kind: "deployment" },
+      mailboxAddress: "agent@example.com",
     });
 
     const restored = await store.restoreFromSubstrate();
@@ -1363,6 +1368,7 @@ describe("durable conversation store with a seed", () => {
       runId: RUN_ID,
       stepId: STEP_ID,
       lifetime: { kind: "attempt", attempt: 1 },
+      mailboxAddress: "agent@example.com",
     });
     await store.restoreFromSubstrate();
 

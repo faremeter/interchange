@@ -410,6 +410,7 @@ async function seedColdStore(
     runId,
     stepId: STEP_ID,
     lifetime: { kind: "attempt", attempt: 1 },
+    mailboxAddress: "agent@example.com",
   });
   await store.restoreFromSubstrate();
   await store.storage.writeMetadata({

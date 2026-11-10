@@ -148,6 +148,7 @@ async function parkColdStep(
     runId,
     stepId: "s",
     lifetime: { kind: "attempt", attempt },
+    mailboxAddress: "agent@example.com",
   });
   await store.restoreFromSubstrate();
   await store.storage.writeMetadata({
@@ -217,6 +218,7 @@ describe("readWarmParkedApprovalSnapshot", () => {
       runId: RUN_ID,
       stepId: "s",
       lifetime: { kind: "deployment" },
+      mailboxAddress: "agent@example.com",
     });
     // Suspend-time state: the parked approval's pending op, then mirrored to
     // the substrate at the run boundary. No live registry is involved on the
@@ -264,6 +266,7 @@ describe("readWarmParkedApprovalSnapshot", () => {
       runId: RUN_ID,
       stepId: "s",
       lifetime: { kind: "deployment" },
+      mailboxAddress: "agent@example.com",
     });
     await store.storage.writeMetadata({
       pendingOperations: [pendingApproval("corr-1")],
@@ -369,6 +372,7 @@ describe("readColdParkedPendingOperations", () => {
       runId: at.runId,
       stepId: at.stepId,
       lifetime: { kind: "attempt", attempt: at.attempt },
+      mailboxAddress: "agent@example.com",
     });
     await store.restoreFromSubstrate();
     await store.storage.writeTurns(turns);
@@ -461,6 +465,7 @@ describe("readColdParkedPendingOperations", () => {
       runId: at.runId,
       stepId: at.stepId,
       lifetime: { kind: "attempt", attempt: at.attempt },
+      mailboxAddress: "agent@example.com",
     });
     // The host is lost at the restore's second write, whichever file it is.
     const lost = new Error("host lost");
@@ -534,6 +539,7 @@ describe("readColdParkedPendingOperations", () => {
         substrate,
         signer: testSigner,
         correlationId,
+        mailboxAddress: "agent@example.com",
       });
     }
 
@@ -668,6 +674,7 @@ describe("readWarmParkedPendingOperations", () => {
       runId: RUN_ID,
       stepId: "s",
       lifetime: { kind: "deployment" },
+      mailboxAddress: "agent@example.com",
     });
     await store.storage.writeMetadata({
       pendingOperations: [pendingApproval("corr-1", snapshot)],

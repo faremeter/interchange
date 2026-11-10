@@ -120,6 +120,7 @@ async function makeStore(
     runId: RUN_ID,
     stepId: STEP_ID,
     lifetime: { kind: "deployment" },
+    mailboxAddress: "agent@example.com",
   });
 }
 
@@ -138,10 +139,12 @@ function inbound(opts: {
   inReplyTo?: string;
   references?: string[];
   subject?: string;
+  cc?: string[];
 }): InboundMessage {
   return createInboundMessage({
     from: opts.from,
     to: "agent@example.com",
+    ...(opts.cc !== undefined ? { cc: opts.cc } : {}),
     content: "hello",
     messageId: opts.messageId,
     interchangeType: "conversation.message",
@@ -194,10 +197,14 @@ describe("durable conversation store connector seed (design §3c)", () => {
   test("seeding a reply-shaped continuation advances the thread and carries prior speakers to cc", async () => {
     const store = await makeStore(h, localDir);
     await store.seedInbound(
-      inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
+      inbound({
+        from: "alice@example.com",
+        messageId: "<a@example.com>",
+        cc: ["bob@example.com"],
+      }),
     );
-    // Bob replies to Alice's message: In-Reply-To matches the thread's last
-    // message id, so this is a continuation.
+    // Bob, whom Alice cc'd, replies to Alice's message: In-Reply-To matches
+    // the thread's last message id, so this is a continuation.
     await store.seedInbound(
       inbound({
         from: "bob@example.com",
@@ -265,6 +272,48 @@ describe("durable conversation store connector seed (design §3c)", () => {
     });
   });
 
+  test("a non-participant that names the thread is answered alone and does not join it", async () => {
+    const store = await makeStore(h, localDir);
+    await store.seedInbound(
+      inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
+    );
+    await store.mirrorToSubstrate();
+    // Mallory's headers name Alice's message, but nobody on the thread
+    // addressed Mallory, so the message does not continue the thread.
+    await store.beginTurn({});
+    await store.seedInbound(
+      inbound({
+        from: "mallory@example.com",
+        messageId: "<m@example.com>",
+        inReplyTo: "<a@example.com>",
+        references: ["<a@example.com>"],
+      }),
+    );
+
+    expect(requireReply(store)).toEqual({
+      to: "mallory@example.com",
+      cc: [],
+      inReplyTo: "<m@example.com>",
+      references: ["<a@example.com>", "<m@example.com>"],
+    });
+    await store.mirrorToSubstrate();
+    const reconstructed = await readStepState({
+      substrate: h.substrate,
+      workflowRunRepoId: h.workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: RUN_ID,
+      stepId: STEP_ID,
+    });
+    if (reconstructed === null) throw new Error("expected a reconstruction");
+    expect(reconstructed.connectorState).toEqual({
+      threadRoot: "<a@example.com>",
+      lastMessageId: "<a@example.com>",
+      replyTo: "alice@example.com",
+      cc: [],
+    });
+  });
+
   test("a turn that seeds no mail after a passthrough replies on the thread", async () => {
     const store = await makeStore(h, localDir);
     await store.seedInbound(
@@ -295,6 +344,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
         from: "alice@example.com",
         messageId: "<a@example.com>",
         subject: "durable thread",
+        cc: ["bob@example.com"],
       }),
     );
     await store.mirrorToSubstrate();
@@ -322,6 +372,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
       lastMessageId: "<b@example.com>",
       replyTo: "bob@example.com",
       cc: ["alice@example.com"],
+      addressed: ["bob@example.com"],
       subject: "durable thread",
     });
 

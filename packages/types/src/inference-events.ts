@@ -38,6 +38,7 @@ const WireInboundMessage = type({
   "payload?": "object",
   "attachments?": "unknown[]",
   signatureStatus: type.enumerated("valid", "invalid", "unknown", "missing"),
+  "authenticatedSender?": "string",
 });
 
 /**

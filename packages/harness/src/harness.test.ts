@@ -612,7 +612,7 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
   };
 
   test("restores from disk while the bit is unset", async () => {
-    const router = createConnectorRouter();
+    const router = createConnectorRouter({ ownAddress: AGENT_ADDRESS });
     const { storage } = makeStubStorage(stateFromDisk);
     const overrides = createWrappedStorageOverrides(
       storage,
@@ -626,7 +626,7 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
   });
 
   test("does not restore from disk after the bit is set", async () => {
-    const router = createConnectorRouter();
+    const router = createConnectorRouter({ ownAddress: AGENT_ADDRESS });
     router.restore(stateFromRouter);
     expect(router.snapshot()).toEqual(stateFromRouter);
 
@@ -646,7 +646,7 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
     // router's then-current snapshot (bit=true). Asserts both halves
     // of the gating in a single closure so a single-direction read of
     // the bit (cached at construction time) would fail one of them.
-    const router = createConnectorRouter();
+    const router = createConnectorRouter({ ownAddress: AGENT_ADDRESS });
     let bit = false;
     const { storage, loadCount } = makeStubStorage(stateFromDisk);
     const overrides = createWrappedStorageOverrides(storage, router, () => bit);
@@ -672,7 +672,7 @@ describe("createWrappedStorageOverrides dirty-bit gating", () => {
     // Independent of the gating, the writeMetadata override has to
     // forward the router's snapshot into the delegate store's
     // setConnectorState buffer so the next durable write picks it up.
-    const router = createConnectorRouter();
+    const router = createConnectorRouter({ ownAddress: AGENT_ADDRESS });
     router.restore(stateFromRouter);
     const { storage, setConnectorStateCalls } = makeStubStorage(null);
     const overrides = createWrappedStorageOverrides(
