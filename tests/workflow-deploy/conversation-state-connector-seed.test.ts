@@ -20,7 +20,12 @@ import path from "node:path";
 import { generateKeyPair, createSSHSignature } from "@intx/crypto";
 import type { ConnectorReplyParts } from "@intx/harness";
 import { createInboundMessage } from "@intx/mime";
-import type { KeyPair, InboundMessage } from "@intx/types/runtime";
+import type {
+  KeyPair,
+  InboundMessage,
+  PendingOperation,
+  TokenUsage,
+} from "@intx/types/runtime";
 import { emptyTokenUsage } from "@intx/types/runtime";
 import type {
   RepoId,
@@ -402,6 +407,19 @@ describe("durable conversation store connector seed (design §3c)", () => {
       subject: "side question",
     };
 
+    async function readCommitted() {
+      const state = await readStepState({
+        substrate: h.substrate,
+        workflowRunRepoId: h.workflowRunRepoId,
+        workflowRunRef: WORKFLOW_RUN_REF,
+        principal: PRINCIPAL,
+        runId: RUN_ID,
+        stepId: STEP_ID,
+      });
+      if (state === null) throw new Error("expected a reconstruction");
+      return state;
+    }
+
     // Alice starts the thread; Carol's unthreaded mail is the passthrough
     // turn, which parks on gate c1.
     async function parkCarolOnC1(store: DurableConversationStore) {
@@ -429,6 +447,74 @@ describe("durable conversation store connector seed (design §3c)", () => {
       await store.beginTurn({ resume: "c1" });
 
       expect(requireReply(store)).toEqual(CAROL_REPLY);
+    });
+
+    test("parking and resuming keep the reactor's gate and token usage", async () => {
+      const store = await makeStore(h, localDir);
+      await store.seedInbound(
+        inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
+      );
+      await store.mirrorToSubstrate();
+      await store.beginTurn({});
+      await store.seedInbound(
+        inbound({ from: "carol@example.com", messageId: "<c@example.com>" }),
+      );
+      // The reactor stages the gate and the turn's usage before the turn
+      // parks; the park and the resume must not overwrite them.
+      const gate: PendingOperation = {
+        correlationId: "c1",
+        kind: "approval",
+        registeredAt: 1,
+        gateId: "g1",
+      };
+      const usage: TokenUsage = {
+        input: 7,
+        output: 3,
+        cacheRead: 0,
+        cacheWrite: 0,
+        thinking: 0,
+      };
+      await store.storage.writeMetadata({
+        pendingOperations: [gate],
+        tokenUsage: usage,
+      });
+      await store.storage.commit({ message: "turn" });
+
+      await store.parkTurn("c1");
+      await store.mirrorToSubstrate();
+      const parked = await readCommitted();
+      expect(parked.pendingOperations).toEqual([gate]);
+      expect(parked.tokenUsage).toEqual(usage);
+      expect(parked.parkedReplyTargets.c1?.parts?.to).toBe("carol@example.com");
+
+      await store.beginTurn({ resume: "c1" });
+      await store.mirrorToSubstrate();
+      const resumed = await readCommitted();
+      expect(resumed.pendingOperations).toEqual([gate]);
+      expect(resumed.tokenUsage).toEqual(usage);
+      expect(resumed.parkedReplyTargets).toEqual({});
+    });
+
+    test("a resumed turn that parks again moves the target to the new gate durably", async () => {
+      const store = await makeStore(h, localDir);
+      await parkCarolOnC1(store);
+      await store.beginTurn({ resume: "c1" });
+      await store.parkTurn("c2");
+      await store.mirrorToSubstrate();
+
+      const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
+      expect(await fresh.restoreFromSubstrate()).toBe(true);
+      // Restoring a non-null connector state fires the router's
+      // change-driven mirror; drain it so it does not outlive the substrate.
+      await fresh.mirrorToSubstrate();
+
+      await fresh.beginTurn({ resume: "c1" });
+      const onThread = requireReply(fresh);
+      expect(onThread.to).toBe("alice@example.com");
+      expect(onThread.inReplyTo).toBe("<a@example.com>");
+
+      await fresh.beginTurn({ resume: "c2" });
+      expect(requireReply(fresh)).toEqual(CAROL_REPLY);
     });
 
     test("a resume of an id with no filed target replies on the thread", async () => {

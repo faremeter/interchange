@@ -1747,6 +1747,40 @@ describe("connector thread state", () => {
     expect(loaded.connectorState).toBeNull();
   });
 
+  test("parked reply targets round-trip through writeMetadata + commit/loadMetadata", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+    const targets = {
+      c1: { parts: { to: "carol@example.com", cc: [] } },
+      c2: { parts: null },
+    };
+
+    store.setParkedReplyTargets(targets);
+    await store.writeTurns([]);
+    await store.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: ZERO_USAGE,
+    });
+    await store.commit({ message: "checkpoint" });
+
+    expect((await store.loadMetadata()).parkedReplyTargets).toEqual(targets);
+  });
+
+  test("a metadata.json written without parked reply targets reads as none", async () => {
+    const dir = await tempDir();
+    const store = await createIsogitStore(dir);
+    await fs.promises.writeFile(
+      path.join(dir, "metadata.json"),
+      JSON.stringify({
+        pendingOperations: [],
+        tokenUsage: ZERO_USAGE,
+        connectorState: null,
+      }),
+    );
+
+    expect((await store.loadMetadata()).parkedReplyTargets).toEqual({});
+  });
+
   test("a persisted suspendedCall survives commit and reload end-to-end", async () => {
     // End-to-end persistence check: write, commit, reload, compare. This
     // does not by itself pin the schema declaration (arktype passes
