@@ -38,6 +38,7 @@ import {
   workflowRunStepSeedPath,
   type InstallAndApproveWorkflowSourceParams,
   type SidecarProvisioner,
+  type SidecarProvisionerChooser,
 } from "@intx/hub-sessions";
 import {
   credentialAad,
@@ -266,6 +267,53 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sourceOfferingIds: [OFFERING_ID],
         defaultSourceOfferingId: OFFERING_ID,
       } as const;
+    }
+
+    // A service whose deploys probe on the given provisioners.
+    function probingService(args: {
+      provisioners: readonly SidecarProvisioner[];
+      chooser?: SidecarProvisionerChooser;
+    }) {
+      const plugins = createSidecarPluginRegistry({
+        provisioners: args.provisioners,
+        ...(args.chooser !== undefined ? { chooser: args.chooser } : {}),
+      });
+      let allocations = 0;
+      let sidecars = 0;
+      return createWorkflowAllocationService({
+        db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
+        deploymentPlugins: plugins,
+        probePlugins: plugins,
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) => freeze(params),
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("pending allocation is not ready");
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
+          waitForSidecarInventory: async () => undefined,
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        createAllocationId: () => `sal-probing-${String(++allocations)}`,
+        createSidecarId: () => `sc-probing-${String(++sidecars)}`,
+        createToken: () => `token-${String(sidecars)}`,
+      });
     }
 
     test.each([
@@ -1779,6 +1827,36 @@ describe.skipIf(!harnessDbEnvAvailable())(
           where: eq(sidecar.id, "sc-probe-rejected"),
         }),
       ).toEqual({ retiredAt: expect.any(Date) });
+    });
+
+    test("tells the chooser what it is choosing capacity for", async () => {
+      const sandbox = makeProvisioner({
+        id: "sandbox",
+        ensureCalls: [],
+        destroyCalls: [],
+      });
+      const contexts: unknown[] = [];
+      const service = probingService({
+        provisioners: [sandbox],
+        chooser: (_candidates, { signal, ...context }) => {
+          contexts.push({ aborted: signal.aborted, ...context });
+          return sandbox;
+        },
+      });
+
+      await service.prepareProvisionedDeployment(
+        prepareArgs("run-chooser-context"),
+      );
+
+      const deploying = {
+        aborted: false,
+        tenantId: TENANT_ID,
+        anchorRunId: "run-chooser-context",
+      };
+      expect(contexts).toEqual([
+        { ...deploying, purpose: "probe" },
+        { ...deploying, purpose: "deployment" },
+      ]);
     });
 
     test("retires a probe's sidecar before the probe is recorded finished", async () => {

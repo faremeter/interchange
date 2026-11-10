@@ -19,9 +19,19 @@ export type SidecarProvisionerSelection =
       >;
     };
 
+export type SidecarProvisionerChoiceContext = {
+  readonly purpose: "probe" | "deployment";
+  readonly tenantId: string;
+  /** The deployment's anchor run, also when its probe is being placed. */
+  readonly anchorRunId: string;
+  /** Aborts when the Hub stops waiting for the choice. */
+  readonly signal: AbortSignal;
+};
+
 /** Selects one provisioner from the capability-matched candidates. */
 export type SidecarProvisionerChooser = (
   candidates: readonly SidecarProvisioner[],
+  context: SidecarProvisionerChoiceContext,
 ) => SidecarProvisioner | Promise<SidecarProvisioner>;
 
 export type SidecarPluginRegistry = {
@@ -29,6 +39,7 @@ export type SidecarPluginRegistry = {
   getProvisioner(id: string): SidecarProvisioner | null;
   selectProvisioner(
     policy: EffectiveSidecarCapabilityPolicy,
+    context: SidecarProvisionerChoiceContext,
   ): Promise<SidecarProvisionerSelection>;
 };
 
@@ -83,7 +94,7 @@ export function createSidecarPluginRegistry({
     getProvisioner(id) {
       return provisionersById.get(id) ?? null;
     },
-    async selectProvisioner(policy) {
+    async selectProvisioner(policy, context) {
       const mismatches: Record<string, readonly SidecarCapabilityMismatch[]> =
         {};
       const candidates: SidecarProvisioner[] = [];
@@ -101,7 +112,7 @@ export function createSidecarPluginRegistry({
       if (candidates.length === 0) {
         return { ok: false, reason: "no_match", mismatches };
       }
-      const provisioner = await chooser(candidates);
+      const provisioner = await chooser(candidates, context);
       if (!candidates.includes(provisioner)) {
         throw new Error(
           "Sidecar provisioner chooser returned a provisioner outside the matching candidates",

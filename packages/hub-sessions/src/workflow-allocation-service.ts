@@ -50,6 +50,7 @@ import {
   DestroySidecarResult,
   EnsureSidecarResult,
   formatProvisionerMismatches,
+  type EffectiveSidecarCapabilityPolicy,
   type SidecarPluginRegistry,
   type SidecarProvisioner,
   type SidecarProvisionerSelection,
@@ -673,8 +674,24 @@ export function createWorkflowAllocationService({
         `Default offering ${args.defaultSourceOfferingId} was not resolved for deployment ${args.anchorRunId}`,
       );
     }
+    const chooseProvisioner = (
+      plugins: SidecarPluginRegistry,
+      purpose: "probe" | "deployment",
+      policy: EffectiveSidecarCapabilityPolicy,
+    ): Promise<SidecarProvisionerSelection> =>
+      runSidecarOperation(
+        "Sidecar provisioner choice",
+        operationTimeoutMs,
+        (signal) =>
+          plugins.selectProvisioner(policy, {
+            purpose,
+            tenantId: args.tenantId,
+            anchorRunId: args.anchorRunId,
+            signal,
+          }),
+      );
     const probeProvisioner = selectProvisioner(
-      await probePlugins.selectProvisioner({
+      await chooseProvisioner(probePlugins, "probe", {
         tenantPolicies,
         probeRules: configuredProbeCapabilityRules,
         workflowRules: [],
@@ -852,7 +869,7 @@ export function createWorkflowAllocationService({
         operatorApprovals: approved.approval.approvedSurface,
       });
       const deploymentProvisioner = selectProvisioner(
-        await deploymentPlugins.selectProvisioner({
+        await chooseProvisioner(deploymentPlugins, "deployment", {
           tenantPolicies,
           workflowRules:
             approved.projection.sidecarPlacement?.capabilities ?? [],
