@@ -1,5 +1,7 @@
 import { type } from "arktype";
 
+import { correlationIdFromSignalName } from "@intx/types";
+
 import type { CommittedReads } from "./repo-store";
 import {
   splitCombinedEventLog,
@@ -14,6 +16,7 @@ import {
 
 const ConsumedEnvelope = type({
   messageId: "string",
+  "deliveryKey?": "string",
   address: "string",
   "rejection?": {
     code: "string > 0",
@@ -22,8 +25,13 @@ const ConsumedEnvelope = type({
   "+": "ignore",
 });
 
+/**
+ * A consumed claim-check entry. `deliveryKey` is absent on a legacy entry,
+ * which a sidecar filed under the bare Message-ID.
+ */
 export type ConsumedWorkflowDispatch = {
   readonly messageId: string;
+  readonly deliveryKey?: string;
   readonly address: string;
   readonly rejection?: {
     readonly code: string;
@@ -33,12 +41,14 @@ export type ConsumedWorkflowDispatch = {
 
 const SignalReceived = type({
   type: "'SignalReceived'",
+  signalName: "string",
   signalId: "string",
   "+": "ignore",
 });
 
 const RunStarted = type({
   type: "'RunStarted'",
+  "consumedDeliveryKey?": "string",
   "consumedMessageId?": "string",
   "+": "ignore",
 });
@@ -50,7 +60,14 @@ export type ReceivedWorkflowSignal = {
 
 export type AcceptedWorkflowDispatch = {
   readonly runId: string;
-  readonly messageId: string;
+  /**
+   * The dispatch identity the event records: a delivery key or a signal id.
+   * `legacy` marks an id that can be a bare Message-ID from a sidecar that
+   * predates the delivery key: a `RunStarted.consumedMessageId`, or the id of
+   * a `SignalReceived` on a control-plane signal name.
+   */
+  readonly id: string;
+  readonly legacy: boolean;
   /** Event source: SignalReceived also proves mail used to resume an input gate. */
   readonly kind: "mail" | "signal";
 };
@@ -77,7 +94,16 @@ function projectAcceptedDispatch(
         `workflow_dispatch_signal_invalid: ${path}: ${signal.summary}`,
       );
     }
-    return { kind: "signal", messageId: signal.signalId };
+    // Mail that resumes an input gate arrives on a control-plane signal name,
+    // and a sidecar that predates the delivery key recorded its bare
+    // Message-ID as the signal id. A caller cannot deliver on a control-plane
+    // name, and the hub mints the ids of the approvals that do, so no caller
+    // chooses such an id to match another sender's Message-ID.
+    return {
+      kind: "signal",
+      id: signal.signalId,
+      legacy: correlationIdFromSignalName(signal.signalName) !== undefined,
+    };
   }
   if (decoded.type === "RunStarted") {
     const started = RunStarted(decoded);
@@ -86,9 +112,12 @@ function projectAcceptedDispatch(
         `workflow_dispatch_run_started_invalid: ${path}: ${started.summary}`,
       );
     }
+    if (started.consumedDeliveryKey !== undefined) {
+      return { kind: "mail", id: started.consumedDeliveryKey, legacy: false };
+    }
     return started.consumedMessageId === undefined
       ? null
-      : { kind: "mail", messageId: started.consumedMessageId };
+      : { kind: "mail", id: started.consumedMessageId, legacy: true };
   }
   return null;
 }
@@ -97,16 +126,14 @@ function projectAcceptedDispatch(
 export async function listAcceptedWorkflowDispatches(
   reads: CommittedReads,
   runId: string,
-  targetMessageIds?: ReadonlySet<string>,
+  targetIds?: ReadonlySet<string>,
 ): Promise<AcceptedWorkflowDispatch[]> {
-  if (targetMessageIds?.size === 0) return [];
+  if (targetIds?.size === 0) return [];
   const accepted: AcceptedWorkflowDispatch[] = [];
-  const remaining =
-    targetMessageIds === undefined ? undefined : new Set(targetMessageIds);
+  const remaining = targetIds === undefined ? undefined : new Set(targetIds);
   const accept = (dispatch: Omit<AcceptedWorkflowDispatch, "runId"> | null) => {
     if (dispatch === null) return;
-    if (remaining !== undefined && !remaining.delete(dispatch.messageId))
-      return;
+    if (remaining !== undefined && !remaining.delete(dispatch.id)) return;
     accepted.push({ runId, ...dispatch });
   };
   const runPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
@@ -158,7 +185,7 @@ export async function listReceivedWorkflowSignals(
 ): Promise<ReceivedWorkflowSignal[]> {
   return (await listAcceptedWorkflowDispatches(reads, runId))
     .filter((dispatch) => dispatch.kind === "signal")
-    .map((dispatch) => ({ runId, signalId: dispatch.messageId }));
+    .map((dispatch) => ({ runId, signalId: dispatch.id }));
 }
 
 /**
@@ -196,6 +223,9 @@ export async function listConsumedWorkflowDispatches(
       }
       consumed.push({
         messageId: envelope.messageId,
+        ...(envelope.deliveryKey !== undefined
+          ? { deliveryKey: envelope.deliveryKey }
+          : {}),
         address: envelope.address,
         ...(envelope.rejection !== undefined
           ? { rejection: envelope.rejection }

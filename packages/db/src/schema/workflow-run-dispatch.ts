@@ -48,6 +48,12 @@ export const workflowRunDispatch = pgTable(
       .notNull()
       .references(() => workflowRun.id, { onDelete: "cascade" }),
     messageId: text("message_id").notNull(),
+    // The row's identity within its anchor run. A mail row's key is derived
+    // from its sender and Message-ID (`deriveDeliveryKey`), so two senders'
+    // mail with one Message-ID are two rows; a signal row's key is its signal
+    // id. A mail row that predates the key and has no sender keeps its
+    // Message-ID as its key.
+    deliveryKey: text("delivery_key").notNull(),
     kind: text("kind")
       .$type<WorkflowRunDispatchKind>()
       .notNull()
@@ -72,9 +78,9 @@ export const workflowRunDispatch = pgTable(
     settledAt: timestamp("settled_at"),
   },
   (t) => [
-    uniqueIndex("workflow_run_dispatch_anchor_message_idx").on(
+    uniqueIndex("workflow_run_dispatch_anchor_delivery_key_idx").on(
       t.anchorRunId,
-      t.messageId,
+      t.deliveryKey,
     ),
     index("workflow_run_dispatch_delivery_idx")
       .on(t.nextAttemptAt, t.createdAt)

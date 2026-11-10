@@ -656,7 +656,6 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           if (!Array.isArray(canonicalStepGrants)) return canonicalStepGrants;
           await workflowDispatchService.enqueue(
             {
-              id: `dispatch:${anchorRunId}:${messageId}`,
               anchorRunId: anchorRunId,
               messageId,
               senderAddress: fromAddr,
@@ -670,10 +669,10 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         });
       } catch (error) {
         // A caller chooses the Message-ID of the mail it signs. The store
-        // keys a run's queued mail by Message-ID: the same id with the same
-        // payload enqueues once, and the same id with another payload -- other
-        // bytes, or step grants the run's committed grants changed since -- is
-        // refused.
+        // keys a run's queued mail by its sender and Message-ID: the same
+        // sender's id with the same payload enqueues once, and with another
+        // payload -- other bytes, or step grants the run's committed grants
+        // changed since -- is refused.
         if (error instanceof WorkflowRunDispatchPayloadConflictError) {
           return {
             ok: false,
@@ -681,7 +680,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
             body: {
               error: {
                 code: "message_id_conflict",
-                message: `Message-ID ${messageId} is already queued for this run with a different payload: other bytes, or the run's grants changed since it was queued`,
+                message: `Message-ID ${messageId} is already used for this run: this sender queued it with a different payload (other bytes, or the run's grants changed since it was queued), or a signal for the run has it as its id`,
               },
             },
           };

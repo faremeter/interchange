@@ -354,9 +354,10 @@ function createMockWorkflowDispatchService(
       return {
         created: true,
         dispatch: {
-          id: args.id,
+          id: `dispatch:${args.anchorRunId}:${args.signal.signalId}`,
           anchorRunId: args.anchorRunId,
           messageId: args.signal.signalId,
+          deliveryKey: args.signal.signalId,
           kind: "signal",
           senderAddress: null,
           rawMessage: new TextEncoder().encode(JSON.stringify(args.signal)),
@@ -652,9 +653,6 @@ describe("POST /approvals/:approvalId/approve", () => {
     expect(enqueues).toHaveLength(1);
     const enqueue = enqueues[0];
     if (enqueue === undefined) throw new Error("missing signal enqueue");
-    expect(enqueue.id).toBe(
-      `dispatch:${DEPLOYMENT_ID}:${claimCalls[0]?.signalId ?? ""}`,
-    );
     expect(enqueue.anchorRunId).toBe(DEPLOYMENT_ID);
     expect(enqueue.signal).toMatchObject({
       agentAddress: AGENT_ADDRESS,

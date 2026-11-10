@@ -5393,28 +5393,35 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const { store, allocation, leaseId } =
         await createClaimedAllocation("alloc-release");
       const dispatches = createWorkflowRunDispatchStore(h.db);
-      for (const id of ["pending", "acknowledged", "settled", "failed"]) {
-        await dispatches.enqueue({
-          id,
-          anchorRunId: ANCHOR_RUN_ID,
-          messageId: id,
-          senderAddress: "sender@tenant.example",
-          rawMessage: new Uint8Array([1]),
-          stepGrants: [],
-        });
-      }
+      const enqueueNamed = async (name: string) =>
+        (
+          await dispatches.enqueue({
+            anchorRunId: ANCHOR_RUN_ID,
+            messageId: name,
+            senderAddress: "sender@tenant.example",
+            rawMessage: new Uint8Array([1]),
+            stepGrants: [],
+          })
+        ).dispatch;
+      const pendingDispatch = await enqueueNamed("pending");
+      const acknowledgedDispatch = await enqueueNamed("acknowledged");
+      const settledDispatch = await enqueueNamed("settled");
+      const failedDispatch = await enqueueNamed("failed");
       expect(
         await dispatches.acknowledge({
           allocationId: allocation.id,
           anchorRunId: ANCHOR_RUN_ID,
-          messageId: "acknowledged",
+          deliveryKey: acknowledgedDispatch.deliveryKey,
           generation: allocation.generation,
         }),
       ).toMatchObject({ status: "acknowledged" });
-      const settled = await dispatches.settle(ANCHOR_RUN_ID, "settled");
+      const settled = await dispatches.settle(
+        ANCHOR_RUN_ID,
+        settledDispatch.deliveryKey,
+      );
       const failed = await dispatches.fail({
         anchorRunId: ANCHOR_RUN_ID,
-        messageId: "failed",
+        deliveryKey: failedDispatch.deliveryKey,
         code: "malformed_mail",
         message: "Missing MIME bytes",
       });
@@ -5452,8 +5459,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         await store.markReleased({ ...releaseArgs, expectedLeaseId: "stale" }),
       ).toBeNull();
-      expect((await dispatches.findById("pending"))?.status).toBe("pending");
-      expect((await dispatches.findById("acknowledged"))?.status).toBe(
+      expect((await dispatches.findById(pendingDispatch.id))?.status).toBe(
+        "pending",
+      );
+      expect((await dispatches.findById(acknowledgedDispatch.id))?.status).toBe(
         "acknowledged",
       );
 
@@ -5467,7 +5476,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           now: new Date(now.getTime() + 1_000),
         }),
       ).toBeNull();
-      for (const id of ["pending", "acknowledged"]) {
+      for (const { id } of [pendingDispatch, acknowledgedDispatch]) {
         expect(await dispatches.findById(id)).toMatchObject({
           status: "abandoned",
           failureCode: "workflow_capacity_released",
@@ -5475,8 +5484,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           updatedAt: now,
         });
       }
-      expect(await dispatches.findById("settled")).toEqual(settled);
-      expect(await dispatches.findById("failed")).toEqual(failed);
+      expect(await dispatches.findById(settledDispatch.id)).toEqual(settled);
+      expect(await dispatches.findById(failedDispatch.id)).toEqual(failed);
       expect(
         await h.db.query.workflowRun.findFirst({
           where: eq(workflowRun.id, ANCHOR_RUN_ID),
@@ -5511,8 +5520,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const store = createSidecarAllocationStore(h.db);
       const dispatchStore = createWorkflowRunDispatchStore(h.db);
-      await dispatchStore.enqueue({
-        id: "dispatch-terminal",
+      const { dispatch: terminalDispatch } = await dispatchStore.enqueue({
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-terminal",
         senderAddress: "principal-alloc@tenant.example",
@@ -5568,7 +5576,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           columns: { status: true },
         }),
       ).toEqual({ status: "active" });
-      expect((await dispatchStore.findById("dispatch-terminal"))?.status).toBe(
+      expect((await dispatchStore.findById(terminalDispatch.id))?.status).toBe(
         "pending",
       );
 
@@ -5603,7 +5611,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).toEqual({ status: "deactivated" });
       expect(await h.db.select().from(runToken)).toEqual([]);
-      expect(await dispatchStore.findById("dispatch-terminal")).toMatchObject({
+      expect(await dispatchStore.findById(terminalDispatch.id)).toMatchObject({
         status: "abandoned",
         failureCode: "quota_disabled",
         failureMessage: "Provisioning is disabled for this account",
@@ -5814,8 +5822,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             leaseDurationMs: 60_000,
           }),
         ).toMatchObject({ status, generation: 2 });
-        await dispatchStore.enqueue({
-          id: "dispatch-destroy",
+        const { dispatch: destroyDispatch } = await dispatchStore.enqueue({
           anchorRunId: ANCHOR_RUN_ID,
           messageId: "message-destroy",
           senderAddress: "principal-alloc@tenant.example",
@@ -5833,7 +5840,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           await store.markDestroyFailed({ ...failure, expectedGeneration: 1 }),
         ).toBeNull();
         expect((await store.findById("alloc-destroy"))?.status).toBe(status);
-        expect((await dispatchStore.findById("dispatch-destroy"))?.status).toBe(
+        expect((await dispatchStore.findById(destroyDispatch.id))?.status).toBe(
           "pending",
         );
 
@@ -5863,7 +5870,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           failureCode: failure.code,
           failureMessage: failure.message,
         });
-        expect(await dispatchStore.findById("dispatch-destroy")).toMatchObject({
+        expect(await dispatchStore.findById(destroyDispatch.id)).toMatchObject({
           status: "abandoned",
           failureCode: failure.code,
           failureMessage: failure.message,
@@ -6050,27 +6057,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
         allocationId: "alloc-unrecoverable",
         generation: 1,
       });
-      await dispatchStore.enqueue({
-        id: "dispatch-unrecoverable-pending",
+      const { dispatch: unrecoverablePending } = await dispatchStore.enqueue({
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-unrecoverable-pending",
         senderAddress: "principal-alloc@tenant.example",
         rawMessage: new Uint8Array([1, 2, 3]),
         stepGrants: [],
       });
-      await dispatchStore.enqueue({
-        id: "dispatch-unrecoverable-acknowledged",
-        anchorRunId: ANCHOR_RUN_ID,
-        messageId: "message-unrecoverable-acknowledged",
-        senderAddress: "principal-alloc@tenant.example",
-        rawMessage: new Uint8Array([4, 5, 6]),
-        stepGrants: [],
-      });
+      const { dispatch: unrecoverableAcknowledged } =
+        await dispatchStore.enqueue({
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: "message-unrecoverable-acknowledged",
+          senderAddress: "principal-alloc@tenant.example",
+          rawMessage: new Uint8Array([4, 5, 6]),
+          stepGrants: [],
+        });
       expect(
         await dispatchStore.acknowledge({
           allocationId: "alloc-unrecoverable",
           anchorRunId: ANCHOR_RUN_ID,
-          messageId: "message-unrecoverable-acknowledged",
+          deliveryKey: unrecoverableAcknowledged.deliveryKey,
           generation: 1,
         }),
       ).toMatchObject({ status: "acknowledged" });
@@ -6093,10 +6099,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).toBeNull();
       expect(
-        await dispatchStore.findById("dispatch-unrecoverable-pending"),
+        await dispatchStore.findById(unrecoverablePending.id),
       ).toMatchObject({ status: "pending" });
       expect(
-        await dispatchStore.findById("dispatch-unrecoverable-acknowledged"),
+        await dispatchStore.findById(unrecoverableAcknowledged.id),
       ).toMatchObject({ status: "acknowledged" });
       const releasing = await store.beginUnrecoverableRelease({
         expectedStatus: "allocated",
@@ -6130,14 +6136,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).toEqual({ status: "deactivated" });
       expect(
-        await dispatchStore.findById("dispatch-unrecoverable-pending"),
+        await dispatchStore.findById(unrecoverablePending.id),
       ).toMatchObject({
         status: "abandoned",
         failureCode: "sidecar_connect_failed",
         failureMessage: "connect timeout",
       });
       expect(
-        await dispatchStore.findById("dispatch-unrecoverable-acknowledged"),
+        await dispatchStore.findById(unrecoverableAcknowledged.id),
       ).toMatchObject({
         status: "abandoned",
         failureCode: "sidecar_connect_failed",
@@ -6187,8 +6193,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         allocationId: "alloc-stopped",
         generation: 1,
       });
-      await dispatchStore.enqueue({
-        id: "dispatch-stopped",
+      const { dispatch: stoppedDispatch } = await dispatchStore.enqueue({
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-stopped",
         senderAddress: "principal-alloc@tenant.example",
@@ -6244,7 +6249,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           columns: { status: true },
         }),
       ).toEqual({ status: "failed" });
-      expect(await dispatchStore.findById("dispatch-stopped")).toMatchObject({
+      expect(await dispatchStore.findById(stoppedDispatch.id)).toMatchObject({
         status: "abandoned",
         failureCode: "sidecar_deployment_stopped",
       });

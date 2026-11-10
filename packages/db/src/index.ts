@@ -101,6 +101,7 @@ export {
   type EnqueueWorkflowRunDispatchResult,
   type EnqueueWorkflowSignalDispatchArgs,
   type RetryWorkflowRunDispatchArgs,
+  type WorkflowRunDispatchAcknowledgement,
   type WorkflowRunDispatchStore,
 } from "./workflow-run-dispatch-store";
 export {

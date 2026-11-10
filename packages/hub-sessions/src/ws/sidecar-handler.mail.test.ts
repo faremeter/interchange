@@ -1068,6 +1068,77 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     "From: sender@example.test\r\nTo: run_anchor@tenant.example\r\nMessage-ID: <mail-1@example.test>\r\n\r\nbody",
   );
 
+  test("refuses relayed mail whose Message-ID starts with the delivery-key prefix", async () => {
+    const materialized: unknown[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants(args) {
+          materialized.push(args);
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderPrincipal() {
+          return {
+            principalId: "prn_sender",
+            tenantId: "tenant-x",
+            coordinates: [],
+          };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
+        rawMessage: btoa(
+          "From: sender@example.test\r\nTo: run_anchor@tenant.example\r\nMessage-ID: mail-4cf62b5d6c6d0b19b118d1d6aa409e76f3fa347627bf67ea9d1db415d6260060\r\n\r\nbody",
+        ),
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    expect(materialized).toEqual([]);
+    expect(framesOfType(ws, "mail.inbound")).toEqual([]);
+  });
+
+  test("stores no recipient record for the audit copy of such mail", async () => {
+    const persisted: string[][] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async persistMail({ recipients }) {
+          persisted.push(recipients);
+          return [];
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
+        rawMessage: btoa(
+          "From: sender@example.test\r\nTo: peer@tenant.example\r\nMessage-ID: mail-4cf62b5d6c6d0b19b118d1d6aa409e76f3fa347627bf67ea9d1db415d6260060\r\n\r\nbody",
+        ),
+        recipients: ["peer@tenant.example"],
+        delivered: true,
+      }),
+    );
+    await waitUntil(() => persisted.length === 1);
+
+    expect(persisted).toEqual([[]]);
+  });
+
   test("materializes and sends run grants before workflow mail, threading the resolved sender through", async () => {
     const materialized: unknown[] = [];
     const router = createAllocatedRouter({

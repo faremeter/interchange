@@ -29,6 +29,8 @@ import { hexEncode } from "./hex";
  * appears in a path or a log line. It does not prove that a string is a
  * delivery key: a Message-ID can have the same shape, so a record states which
  * identity it carries rather than letting a reader infer it from the string.
+ * The hub refuses a caller's signal id and a relayed Message-ID that start with
+ * it; a caller-signed Message-ID cannot, since it must be an RFC 5322 msg-id.
  */
 export const DELIVERY_KEY_PREFIX = "mail-";
 

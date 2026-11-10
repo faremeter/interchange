@@ -17,6 +17,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
 import { configureSync, getConfig } from "@intx/log";
+import { signalName } from "@intx/types";
 import type { KeyPair } from "@intx/types/runtime";
 import type { DB } from "@intx/db";
 import {
@@ -246,6 +247,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           WFR_REF,
         ),
       ).toBe(tip);
+    }
+
+    function namedDispatchId(ids: Map<string, string>, name: string) {
+      const id = ids.get(name);
+      if (id === undefined) throw new Error(`missing dispatch ${name}`);
+      return id;
     }
 
     async function recordMailRejection(store: RepoStore, messageId: string) {
@@ -561,8 +568,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("settles a retained signal from its internal run event log", async () => {
       const dispatchStore = createWorkflowRunDispatchStore(h.db);
-      await dispatchStore.enqueueSignal({
-        id: "dispatch-internal-signal",
+      const { dispatch: internalSignal } = await dispatchStore.enqueueSignal({
         anchorRunId: DEPLOYMENT,
         signal: {
           agentAddress: DEPLOYMENT_ADDRESS,
@@ -579,15 +585,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const verdict = await receiveWith(h.db, pack, tip);
 
       expect(verdict).toEqual({ accepted: true });
-      expect(
-        (await dispatchStore.findById("dispatch-internal-signal"))?.status,
-      ).toBe("settled");
+      expect((await dispatchStore.findById(internalSignal.id))?.status).toBe(
+        "settled",
+      );
     });
 
     test("preserves child acceptance across failed terminal projection and a stale pin", async () => {
       const dispatches = createWorkflowRunDispatchStore(h.db);
-      await dispatches.enqueueSignal({
-        id: "child-after-anchor",
+      const { dispatch: childSignal } = await dispatches.enqueueSignal({
         anchorRunId: DEPLOYMENT,
         signal: {
           agentAddress: DEPLOYMENT_ADDRESS,
@@ -644,7 +649,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       });
       await projection.project(DEPLOYMENT);
-      expect((await dispatches.findById("child-after-anchor"))?.status).toBe(
+      expect((await dispatches.findById(childSignal.id))?.status).toBe(
         "pending",
       );
 
@@ -655,21 +660,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       switchOnRecheck = true;
       mainReads = 0;
       await projection.project(DEPLOYMENT);
-      expect((await dispatches.findById("child-after-anchor"))?.status).toBe(
+      expect((await dispatches.findById(childSignal.id))?.status).toBe(
         "pending",
       );
 
       switchOnRecheck = false;
       await projection.project(DEPLOYMENT);
-      expect((await dispatches.findById("child-after-anchor"))?.status).toBe(
+      expect((await dispatches.findById(childSignal.id))?.status).toBe(
         "settled",
       );
     });
 
     test("fails a signal when its child run is terminal", async () => {
       const dispatches = createWorkflowRunDispatchStore(h.db);
-      await dispatches.enqueueSignal({
-        id: "terminal-child-signal",
+      const { dispatch: terminalChildSignal } = await dispatches.enqueueSignal({
         anchorRunId: DEPLOYMENT,
         signal: {
           agentAddress: DEPLOYMENT_ADDRESS,
@@ -703,7 +707,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         repoStore: store.repoStore,
       }).project(DEPLOYMENT);
-      expect(await dispatches.findById("terminal-child-signal")).toMatchObject({
+      expect(await dispatches.findById(terminalChildSignal.id)).toMatchObject({
         status: "failed",
         failureCode: "workflow_run_terminal",
       });
@@ -711,8 +715,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("mail on a terminal run keeps a rejection recorded before history is final", async () => {
       const dispatches = createWorkflowRunDispatchStore(h.db);
-      await dispatches.enqueue({
-        id: "late-rejected-mail",
+      const { dispatch: lateRejected } = await dispatches.enqueue({
         anchorRunId: DEPLOYMENT,
         messageId: "late-rejected-mail",
         senderAddress: "sender@example.test",
@@ -736,13 +739,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         repoStore: store.repoStore,
       });
       await projection.project(DEPLOYMENT);
-      expect((await dispatches.findById("late-rejected-mail"))?.status).toBe(
+      expect((await dispatches.findById(lateRejected.id))?.status).toBe(
         "pending",
       );
 
       await recordMailRejection(store.repoStore, "late-rejected-mail");
       await projection.project(DEPLOYMENT);
-      expect(await dispatches.findById("late-rejected-mail")).toMatchObject({
+      expect(await dispatches.findById(lateRejected.id)).toMatchObject({
         status: "failed",
         failureCode: "malformed_mail",
         failureMessage: "Missing MIME bytes",
@@ -753,8 +756,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       "recovers rejected mail without a workflow event ref (%s)",
       async (status) => {
         const dispatches = createWorkflowRunDispatchStore(h.db);
-        await dispatches.enqueue({
-          id: "rejected-mail",
+        const { dispatch: rejected } = await dispatches.enqueue({
           anchorRunId: DEPLOYMENT,
           messageId: "rejected-mail",
           senderAddress: "sender@example.test",
@@ -796,7 +798,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           repoStore: store.repoStore,
         });
         await projection.reconcileNext();
-        expect(await dispatches.findById("rejected-mail")).toMatchObject({
+        expect(await dispatches.findById(rejected.id)).toMatchObject({
           status: "failed",
           failureCode: "malformed_mail",
           failureMessage: "Missing MIME bytes",
@@ -808,8 +810,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       "scans an abandoned delivery once after final history %s pushed events",
       async (history) => {
         const dispatches = createWorkflowRunDispatchStore(h.db);
-        await dispatches.enqueue({
-          id: "lost-mail",
+        const { dispatch: lost } = await dispatches.enqueue({
           anchorRunId: DEPLOYMENT,
           messageId: "lost-mail",
           senderAddress: "sender@example.test",
@@ -853,12 +854,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         await projection.reconcileNext();
         expect(
-          (await dispatches.findById("lost-mail"))?.nextAttemptAt,
+          (await dispatches.findById(lost.id))?.nextAttemptAt,
         ).not.toBeNull();
 
         await h.db.delete(workflowPendingProjection);
         await projection.reconcileNext();
-        expect(await dispatches.findById("lost-mail")).toMatchObject({
+        expect(await dispatches.findById(lost.id)).toMatchObject({
           status: "abandoned",
           failureCode: "workflow_cancelled",
           nextAttemptAt: null,
@@ -874,23 +875,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
       "recovers delivery outcomes after release when the database run is %s",
       async (status) => {
         const dispatches = createWorkflowRunDispatchStore(h.db);
+        const ids = new Map<string, string>();
         for (const messageId of [
           "accepted-mail",
           "resumed-mail",
           "unconsumed-mail",
           "rejected-mail",
         ]) {
-          await dispatches.enqueue({
-            id: messageId,
+          const { dispatch } = await dispatches.enqueue({
             anchorRunId: DEPLOYMENT,
             messageId,
             senderAddress: "sender@example.test",
             rawMessage: new TextEncoder().encode(messageId),
             stepGrants: [],
           });
+          ids.set(messageId, dispatch.id);
         }
-        await dispatches.enqueueSignal({
-          id: "accepted-signal",
+        const { dispatch: acceptedSignal } = await dispatches.enqueueSignal({
           anchorRunId: DEPLOYMENT,
           signal: {
             agentAddress: DEPLOYMENT_ADDRESS,
@@ -905,6 +906,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             runId: DEPLOYMENT,
             consumedMessageId: "accepted-mail",
             signalId: "resumed-mail",
+            signalName: signalName("resume-gate"),
             terminalType: "RunCompleted",
           },
           {
@@ -968,29 +970,36 @@ describe.skipIf(!harnessDbEnvAvailable())(
           projection.reconcileNext(),
           projection.reconcileNext(),
         ]);
-        expect((await dispatches.findById("accepted-mail"))?.status).toBe(
+        expect(
+          (await dispatches.findById(namedDispatchId(ids, "accepted-mail")))
+            ?.status,
+        ).toBe("settled");
+        expect(
+          (await dispatches.findById(namedDispatchId(ids, "resumed-mail")))
+            ?.status,
+        ).toBe("settled");
+        expect((await dispatches.findById(acceptedSignal.id))?.status).toBe(
           "settled",
         );
-        expect((await dispatches.findById("resumed-mail"))?.status).toBe(
-          "settled",
-        );
-        expect((await dispatches.findById("accepted-signal"))?.status).toBe(
-          "settled",
-        );
-        expect(await dispatches.findById("unconsumed-mail")).toMatchObject({
+        expect(
+          await dispatches.findById(namedDispatchId(ids, "unconsumed-mail")),
+        ).toMatchObject({
           status: "failed",
           failureCode: "workflow_run_terminal",
         });
-        expect(await dispatches.findById("rejected-mail")).toMatchObject({
+        expect(
+          await dispatches.findById(namedDispatchId(ids, "rejected-mail")),
+        ).toMatchObject({
           status: "failed",
           failureCode: "malformed_mail",
           failureMessage: "Missing MIME bytes",
         });
         expect(await dispatches.listUnsettled(DEPLOYMENT)).toEqual([]);
         await projection.reconcileNext();
-        expect((await dispatches.findById("accepted-mail"))?.status).toBe(
-          "settled",
-        );
+        expect(
+          (await dispatches.findById(namedDispatchId(ids, "accepted-mail")))
+            ?.status,
+        ).toBe("settled");
         expect((await h.db.select().from(sidecarAllocation))[0]?.status).toBe(
           "released",
         );
@@ -1001,18 +1010,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
       "confirmed stop %s acceptance projection preserves the actual delivery outcome",
       async (order) => {
         const dispatches = createWorkflowRunDispatchStore(h.db);
+        const ids = new Map<string, string>();
         for (const messageId of [
           "accepted-before-stop",
           "unknown-after-stop",
         ]) {
-          await dispatches.enqueue({
-            id: messageId,
+          const { dispatch } = await dispatches.enqueue({
             anchorRunId: DEPLOYMENT,
             messageId,
             senderAddress: "sender@example.test",
             rawMessage: new Uint8Array([1]),
             stepGrants: [],
           });
+          ids.set(messageId, dispatch.id);
         }
         const { pack, tip } = await buildPack([
           { runId: DEPLOYMENT, consumedMessageId: "accepted-before-stop" },
@@ -1084,18 +1094,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
             await Promise.race([reading.promise, projecting]);
             await stop();
             expect(
-              (await dispatches.findById("accepted-before-stop"))?.status,
+              (
+                await dispatches.findById(
+                  namedDispatchId(ids, "accepted-before-stop"),
+                )
+              )?.status,
             ).toBe("abandoned");
             release.resolve(undefined);
           }
           await projecting;
           if (order === "after") await stop();
           expect(
-            (await dispatches.findById("accepted-before-stop"))?.status,
+            (
+              await dispatches.findById(
+                namedDispatchId(ids, "accepted-before-stop"),
+              )
+            )?.status,
           ).toBe("settled");
-          expect(await dispatches.findById("unknown-after-stop")).toMatchObject(
-            { status: "abandoned", failureCode: "workflow_cancelled" },
-          );
+          expect(
+            await dispatches.findById(
+              namedDispatchId(ids, "unknown-after-stop"),
+            ),
+          ).toMatchObject({
+            status: "abandoned",
+            failureCode: "workflow_cancelled",
+          });
           expect(await dispatches.requeueUnsettled(DEPLOYMENT)).toBe(0);
           expect(
             await dispatches.claimNextPending({
@@ -1105,7 +1128,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ).toBeNull();
           await projection.reconcileNext();
           expect(
-            (await dispatches.findById("unknown-after-stop"))?.status,
+            (
+              await dispatches.findById(
+                namedDispatchId(ids, "unknown-after-stop"),
+              )
+            )?.status,
           ).toBe("abandoned");
         } finally {
           release.resolve(undefined);
@@ -1116,21 +1143,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("recovery resumes after a database failure partway through delivery updates", async () => {
       const dispatches = createWorkflowRunDispatchStore(h.db);
+      const ids = new Map<string, string>();
       for (const messageId of ["first-accepted", "second-accepted"]) {
-        await dispatches.enqueue({
-          id: messageId,
+        const { dispatch } = await dispatches.enqueue({
           anchorRunId: DEPLOYMENT,
           messageId,
           senderAddress: "sender@example.test",
           rawMessage: new Uint8Array([1]),
           stepGrants: [],
         });
+        ids.set(messageId, dispatch.id);
       }
       const { pack, tip } = await buildPack([
         {
           runId: DEPLOYMENT,
           consumedMessageId: "first-accepted",
           signalId: "second-accepted",
+          signalName: signalName("resume-gate"),
           terminalType: "RunCompleted",
         },
       ]);
@@ -1159,24 +1188,122 @@ describe.skipIf(!harnessDbEnvAvailable())(
         for each row execute function reject_second_settlement()`);
       try {
         await expect(projection.project(DEPLOYMENT)).rejects.toThrow();
-        expect((await dispatches.findById("first-accepted"))?.status).toBe(
-          "settled",
-        );
-        expect((await dispatches.findById("second-accepted"))?.status).toBe(
-          "pending",
-        );
+        expect(
+          (await dispatches.findById(namedDispatchId(ids, "first-accepted")))
+            ?.status,
+        ).toBe("settled");
+        expect(
+          (await dispatches.findById(namedDispatchId(ids, "second-accepted")))
+            ?.status,
+        ).toBe("pending");
       } finally {
         await h.db.execute(
           sql`drop trigger reject_second_settlement on workflow_run_dispatch`,
         );
       }
       await projection.reconcileNext();
-      expect((await dispatches.findById("first-accepted"))?.status).toBe(
-        "settled",
-      );
-      expect((await dispatches.findById("second-accepted"))?.status).toBe(
-        "settled",
-      );
+      expect(
+        (await dispatches.findById(namedDispatchId(ids, "first-accepted")))
+          ?.status,
+      ).toBe("settled");
+      expect(
+        (await dispatches.findById(namedDispatchId(ids, "second-accepted")))
+          ?.status,
+      ).toBe("settled");
+    });
+
+    describe("evidence for mail that shares a Message-ID across senders", () => {
+      async function enqueueMail(senderAddress: string, messageId: string) {
+        const dispatches = createWorkflowRunDispatchStore(h.db);
+        return (
+          await dispatches.enqueue({
+            anchorRunId: DEPLOYMENT,
+            messageId,
+            senderAddress,
+            rawMessage: new TextEncoder().encode(messageId),
+            stepGrants: [],
+          })
+        ).dispatch;
+      }
+
+      // Push a non-terminal run log so the projection settles only what the
+      // evidence names and never fails a row on a terminal run.
+      async function projectRuns(runs: WorkflowRunPackRun[]): Promise<void> {
+        const { pack, tip } = await buildPack(runs);
+        const store = createAgentRepoStore({
+          dataDir: await makeTempDir("dispatch-shared-message-id-"),
+          signingKey,
+        });
+        const repoId = {
+          kind: "workflow-run",
+          id: DEPLOYMENT_REPO_ID,
+        } as const;
+        await store.repoStore.initRepo(repoId);
+        await applyWorkflowRunPack(store, repoId, pack, WFR_REF, tip);
+        await createWorkflowDispatchProjection({
+          db: h.db,
+          repoStore: store.repoStore,
+        }).project(DEPLOYMENT);
+      }
+
+      async function statusOf(id: string) {
+        return (await createWorkflowRunDispatchStore(h.db).findById(id))
+          ?.status;
+      }
+
+      test("a legacy RunStarted settles the mail of every sender with that Message-ID", async () => {
+        const first = await enqueueMail("a@example.test", "shared-mail");
+        const second = await enqueueMail("b@example.test", "shared-mail");
+        await projectRuns([
+          { runId: DEPLOYMENT, consumedMessageId: "shared-mail" },
+        ]);
+        expect(await statusOf(first.id)).toBe("settled");
+        expect(await statusOf(second.id)).toBe("settled");
+      });
+
+      test("a RunStarted that names a delivery key settles only that sender's mail", async () => {
+        const first = await enqueueMail("a@example.test", "shared-mail");
+        const second = await enqueueMail("b@example.test", "shared-mail");
+        await projectRuns([
+          { runId: DEPLOYMENT, consumedDeliveryKey: first.deliveryKey },
+        ]);
+        expect(await statusOf(first.id)).toBe("settled");
+        expect(await statusOf(second.id)).toBe("pending");
+      });
+
+      test("an author-named signal id that equals a Message-ID does not settle the mail", async () => {
+        const mail = await enqueueMail("a@example.test", "author-signal-id");
+        await projectRuns([
+          {
+            runId: DEPLOYMENT,
+            signalId: "author-signal-id",
+            signalName: "continue",
+          },
+        ]);
+        expect(await statusOf(mail.id)).toBe("pending");
+      });
+
+      // A control-plane signal with a bare Message-ID settles the matching
+      // mail in "recovers delivery outcomes after release when the database
+      // run is %s" and in "recovery resumes after a database failure partway
+      // through delivery updates".
+
+      test("a control-plane signal that names a delivery key settles only the row with that key", async () => {
+        const keyed = await enqueueMail("a@example.test", "keyed-mail");
+        const lookalike = await enqueueMail(
+          "b@example.test",
+          keyed.deliveryKey,
+        );
+        await projectRuns([
+          {
+            runId: DEPLOYMENT,
+            signalId: keyed.deliveryKey,
+            signalName: signalName("resume-gate"),
+          },
+        ]);
+        expect(await statusOf(keyed.id)).toBe("settled");
+        expect(await statusOf(lookalike.id)).toBe("pending");
+      });
     });
 
     test("new arrivals cannot keep a sweep from revisiting earlier unresolved runs", async () => {
@@ -1189,7 +1316,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           address: `${id}@tnt.example`,
         });
         await dispatches.enqueue({
-          id,
           anchorRunId: id,
           messageId: id,
           senderAddress: "sender@example.test",
@@ -1242,7 +1368,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
             address: run.address,
           });
         await dispatches.enqueue({
-          id: run.id,
           anchorRunId: run.id,
           messageId: run.id,
           senderAddress: "sender@example.test",
@@ -1293,16 +1418,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("a stalled history read permits release and does not fail a later enqueue", async () => {
       const dispatches = createWorkflowRunDispatchStore(h.db);
-      const enqueue = (messageId: string) =>
-        dispatches.enqueue({
-          id: messageId,
-          anchorRunId: DEPLOYMENT,
-          messageId,
-          senderAddress: "sender@example.test",
-          rawMessage: new TextEncoder().encode(messageId),
-          stepGrants: [],
-        });
-      await enqueue("old-mail");
+      const enqueue = async (messageId: string) =>
+        (
+          await dispatches.enqueue({
+            anchorRunId: DEPLOYMENT,
+            messageId,
+            senderAddress: "sender@example.test",
+            rawMessage: new TextEncoder().encode(messageId),
+            stepGrants: [],
+          })
+        ).dispatch;
+      const oldMail = await enqueue("old-mail");
       const { pack, tip } = await buildPack([
         {
           runId: DEPLOYMENT,
@@ -1346,7 +1472,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const result = projecting.catch((cause: unknown) => cause);
       try {
         await Promise.race([reading.promise, result]);
-        await enqueue("later-mail");
+        const laterMail = await enqueue("later-mail");
         const lifecycle = createWorkflowLifecycleService({
           retentionRouter: {
             fenceAllocation: () => undefined,
@@ -1383,12 +1509,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ).toBe("releasing");
         releaseRead.resolve(undefined);
         expect(await result).toBeUndefined();
-        expect((await dispatches.findById("old-mail"))?.status).toBe("failed");
-        expect((await dispatches.findById("later-mail"))?.status).toBe(
+        expect((await dispatches.findById(oldMail.id))?.status).toBe("failed");
+        expect((await dispatches.findById(laterMail.id))?.status).toBe(
           "pending",
         );
         await projection.project(DEPLOYMENT);
-        expect((await dispatches.findById("later-mail"))?.status).toBe(
+        expect((await dispatches.findById(laterMail.id))?.status).toBe(
           "settled",
         );
       } finally {
@@ -1399,8 +1525,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("a later database terminal status cannot close deliveries from an older live Git view", async () => {
       const dispatches = createWorkflowRunDispatchStore(h.db);
-      await dispatches.enqueue({
-        id: "waiting-mail",
+      const { dispatch: waiting } = await dispatches.enqueue({
         anchorRunId: DEPLOYMENT,
         messageId: "waiting-mail",
         senderAddress: "sender@example.test",
@@ -1447,9 +1572,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           .where(eq(workflowRun.id, DEPLOYMENT));
         release.resolve(undefined);
         expect(await projecting).toBeUndefined();
-        expect((await dispatches.findById("waiting-mail"))?.status).toBe(
-          "pending",
-        );
+        expect((await dispatches.findById(waiting.id))?.status).toBe("pending");
       } finally {
         release.resolve(undefined);
         await projecting;

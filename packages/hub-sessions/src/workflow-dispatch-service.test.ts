@@ -20,6 +20,7 @@ function dispatch(overrides: Partial<ClaimedDispatch> = {}): ClaimedDispatch {
     id: "dispatch-1",
     anchorRunId: "deployment-1",
     messageId: "message-1",
+    deliveryKey: "delivery-key-1",
     kind: "mail",
     senderAddress: "principal-1@tenant-1.example",
     rawMessage: new TextEncoder().encode("raw mail"),
@@ -213,13 +214,13 @@ describe("createWorkflowDispatchService", () => {
       allocationId: "allocation-1",
       anchorRunId: "deployment-1",
       generation: 1,
-      messageId: "message-1",
+      deliveryKey: "delivery-key-1",
     });
     await service.acknowledge({
       allocationId: "allocation-1",
       anchorRunId: "deployment-1",
       generation: 2,
-      messageId: "message-1",
+      deliveryKey: "delivery-key-1",
     });
 
     expect(acknowledgements).toEqual([
@@ -227,14 +228,14 @@ describe("createWorkflowDispatchService", () => {
         allocationId: "allocation-1",
         anchorRunId: "deployment-1",
         generation: 1,
-        messageId: "message-1",
+        deliveryKey: "delivery-key-1",
         now: NOW,
       },
       {
         allocationId: "allocation-1",
         anchorRunId: "deployment-1",
         generation: 2,
-        messageId: "message-1",
+        deliveryKey: "delivery-key-1",
         now: NOW,
       },
     ]);

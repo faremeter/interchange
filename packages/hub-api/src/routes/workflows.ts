@@ -582,7 +582,7 @@ export function createWorkflowRoutes({
         ),
         404: jsonResponse("Workflow deployment not found", ErrorResponse),
         409: jsonResponse(
-          "Workflow run has not started, is terminal, its deployment allocation is no longer active, or the signalId conflicts with a previously accepted payload",
+          "Workflow run has not started, is terminal, its deployment allocation is no longer active, or the signalId conflicts with a previously accepted payload or with the Message-ID of mail queued for the run",
           ErrorResponse,
         ),
         502: jsonResponse("Sidecar unavailable", ErrorResponse),
@@ -742,7 +742,6 @@ export function createWorkflowRoutes({
             }
             await workflowDispatchService.enqueueSignal(
               {
-                id: `dispatch:${anchorRunId}:${body.signalId}`,
                 anchorRunId,
                 signal: {
                   agentAddress,
@@ -784,7 +783,7 @@ export function createWorkflowRoutes({
             return errorResponse(
               c,
               "signal_id_conflict",
-              "signalId has already been used with a different signal payload",
+              "signalId has already been used with a different signal payload, or a mail queued for the run has it as its Message-ID",
             );
           }
           throw error;
@@ -839,7 +838,7 @@ export function createWorkflowRoutes({
         ),
         404: jsonResponse("Workflow deployment not found", ErrorResponse),
         409: jsonResponse(
-          "Deployment address is not routable, its allocation is no longer active, its top-level run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) a caller-signed message's Message-ID is already queued for the run with a different payload",
+          "Deployment address is not routable, its allocation is no longer active, its top-level run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) the caller already queued a caller-signed message with that Message-ID for the run with a different payload, or a signal for the run has it as its id",
           ErrorResponse,
         ),
         413: jsonResponse(

@@ -12,7 +12,14 @@ export type WorkflowRunPackRun = {
   terminalType?: string;
   terminalAt?: string;
   signalId?: string;
+  /**
+   * The name the signal arrived on. Mail that resumes an input gate arrives
+   * on a control-plane name (`signalName(correlationId)`).
+   */
+  signalName?: string;
   consumedMessageId?: string;
+  /** Written into RunStarted in place of `consumedMessageId`. */
+  consumedDeliveryKey?: string;
   // When true, omit the seq-0 RunStarted and emit the terminal event
   // alone at seq 1 -- the exact artifact the crash-loop guard's
   // supervisor-authored RunFailed produces on an anchor run whose event
@@ -39,7 +46,9 @@ function runFiles(runs: readonly WorkflowRunPackRun[]): Record<string, string> {
     terminalType,
     terminalAt,
     signalId,
+    signalName,
     consumedMessageId,
+    consumedDeliveryKey,
     terminalOnlyAtSeq1,
   } of runs) {
     if (terminalOnlyAtSeq1 === true) {
@@ -63,11 +72,17 @@ function runFiles(runs: readonly WorkflowRunPackRun[]): Record<string, string> {
         seq: 0,
         type: "RunStarted",
         ...(consumedMessageId === undefined ? {} : { consumedMessageId }),
+        ...(consumedDeliveryKey === undefined ? {} : { consumedDeliveryKey }),
       });
     let seq = 1;
     if (signalId !== undefined) {
       files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`] =
-        JSON.stringify({ seq, type: "SignalReceived", signalId });
+        JSON.stringify({
+          seq,
+          type: "SignalReceived",
+          signalName: signalName ?? "continue",
+          signalId,
+        });
       seq += 1;
     }
     if (terminalType !== undefined) {
