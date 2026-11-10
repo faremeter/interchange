@@ -494,6 +494,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             ? store.markReleased(confirmation)
             : store.bindReplacementSidecar({
                 ...confirmation,
+                binding: EC2_SPOT_BINDING,
                 sidecarId: "proof-gate-replacement",
                 tokenHashSha256: new Uint8Array([4, 5, 6]),
                 connectDeadline: new Date(Date.now() + 60_000),
@@ -640,6 +641,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             await store.bindReplacementSidecar({
               allocationId: allocation.id,
               generation: 2,
+              binding: EC2_SPOT_BINDING,
               sidecarId: "replacement-worker",
               tokenHashSha256: new Uint8Array([8, 9, 10]),
               connectDeadline: new Date(Date.now() + 60_000),
@@ -3613,6 +3615,57 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ]);
       });
 
+      test("binds a replacement under another provisioner", async () => {
+        const store = await bindFirstGeneration("alloc-switch", ANCHOR_RUN_ID);
+        await store.claimNextReconcilable({
+          leaseId: "lease-thrown",
+          leaseDurationMs: 60_000,
+        });
+        const replacing = await store.beginReplacement({
+          allocationId: "alloc-switch",
+          expectedStatus: "provisioning",
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-thrown",
+          firstAttemptAt: new Date(),
+          nextAttemptAt: new Date(),
+          failureCode: "ensure_failed",
+          failureMessage: "Provider timed out",
+        });
+        expect(replacing).toMatchObject({
+          ...EC2_SPOT_BINDING,
+          status: "replacing",
+        });
+        await h.db
+          .update(sidecarAllocation)
+          .set({ providerHoldReleased: true })
+          .where(eq(sidecarAllocation.id, "alloc-switch"));
+
+        expect(
+          await store.bindReplacementSidecar({
+            allocationId: "alloc-switch",
+            generation: 2,
+            binding: DOCKER_BINDING,
+            sidecarId: "sidecar-docker",
+            tokenHashSha256: new Uint8Array([8, 8, 8]),
+            adapterManifestDigest: MANIFEST_DIGEST,
+            connectDeadline: new Date(Date.now() + 60_000),
+          }),
+        ).toMatchObject({
+          ...DOCKER_BINDING,
+          status: "provisioning",
+          generation: 3,
+          sidecarId: "sidecar-docker",
+        });
+        expect(await sidecarBinding("sidecar-docker")).toEqual({
+          provisionerId: "docker",
+          provisionerBindingFingerprint: "docker:test",
+        });
+        expect(await sidecarBinding("alloc-switch-minted")).toEqual({
+          provisionerId: "ec2-spot",
+          provisionerBindingFingerprint: "ec2-spot:test",
+        });
+      });
+
       describe("through reconciliation", () => {
         const priorityWithOverflow: SidecarProvisionerChooser = (
           candidates,
@@ -3768,6 +3821,36 @@ describe.skipIf(!harnessDbEnvAvailable())(
             ...DOCKER_BINDING,
             status: "allocated",
             sidecarId: "sidecar-second",
+          });
+        });
+
+        test("a thrown ensure is cleaned up before moving on", async () => {
+          const { store, reconciler, calls } = await failover(async () => {
+            throw new Error("Provider timed out");
+          });
+
+          expect(await reconciler.reconcileNext()).toBe(true);
+          expect(await store.findById("alloc-failover")).toMatchObject({
+            ...EC2_SPOT_BINDING,
+            status: "replacing",
+            generation: 2,
+          });
+          expect(await reconciler.reconcileNext()).toBe(true);
+
+          expect(calls).toEqual([
+            "ec2-spot:ensure",
+            "ec2-spot:destroy",
+            "docker:ensure",
+          ]);
+          expect(await store.findById("alloc-failover")).toMatchObject({
+            ...DOCKER_BINDING,
+            status: "allocated",
+            generation: 3,
+            sidecarId: "sidecar-second",
+          });
+          expect(await sidecarBinding("sidecar-second")).toEqual({
+            provisionerId: "docker",
+            provisionerBindingFingerprint: "docker:test",
           });
         });
       });
@@ -4451,6 +4534,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const replacement = await store.bindReplacementSidecar({
         allocationId: pending.id,
         generation: 2,
+        binding: EC2_SPOT_BINDING,
         sidecarId: "sidecar-generation-3",
         tokenHashSha256: new Uint8Array([4, 5, 6]),
         adapterManifestDigest: MANIFEST_DIGEST,
@@ -6269,6 +6353,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           await store.bindReplacementSidecar({
             allocationId: "alloc-destroy",
             generation: 2,
+            binding: EC2_SPOT_BINDING,
             sidecarId: "sidecar-replacement",
             tokenHashSha256: new Uint8Array([4, 5, 6]),
             adapterManifestDigest: MANIFEST_DIGEST,
