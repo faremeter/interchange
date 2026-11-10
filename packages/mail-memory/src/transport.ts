@@ -21,7 +21,7 @@ import type {
 import { MessageTransportError } from "@intx/types/runtime";
 import {
   buildMessageHeaders,
-  generateSenderScopedMessageId,
+  generateMessageId,
   parseHeaderSection,
 } from "@intx/mime";
 import {
@@ -66,9 +66,8 @@ export interface HubTransport {
   deliver(address: string, message: Uint8Array): void;
   /**
    * Compose and sign `message` as a registered address without sending it.
-   * The caller takes the bytes elsewhere, such as to the hub REST API. Its
-   * Message-ID names the sender (see `senderMessageIdScope`), so it cannot
-   * equal a Message-ID another sender minted.
+   * The caller takes the bytes elsewhere, such as to the hub REST API. The
+   * Message-ID has the same form as the Message-ID of a sent message.
    */
   composeSigned(
     senderAddress: string,
@@ -168,7 +167,7 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
       senderAddress,
       message,
       requireSender(senderAddress, this.#entries).crypto,
-      generateSenderScopedMessageId(senderAddress),
+      generateMessageId(senderAddress),
     );
     return { messageId, rawBytes };
   }
