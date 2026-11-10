@@ -191,6 +191,8 @@ export type BindInitialSidecarArgs = {
 export type BindReplacementSidecarArgs = {
   readonly allocationId: string;
   readonly generation: number;
+  /** The provisioner the replacement runs under, the replaced one or another. */
+  readonly binding: SidecarProvisionerBinding;
   readonly sidecarId: string;
   readonly tokenHashSha256: Uint8Array;
   /** The adapter manifest the ensure for this sidecar carries. */
@@ -1295,13 +1297,14 @@ function buildSidecarAllocationStore(
         await insertSidecarIdentity(tx, {
           sidecarId: args.sidecarId,
           tokenHashSha256: args.tokenHashSha256,
-          binding: allocationBinding(allocation),
+          binding: args.binding,
           adapterManifestDigest: args.adapterManifestDigest,
           now,
         });
         const [updated] = await tx
           .update(sidecarAllocation)
           .set({
+            ...args.binding,
             sidecarId: args.sidecarId,
             adapterManifestDigest: args.adapterManifestDigest,
             status: "provisioning",

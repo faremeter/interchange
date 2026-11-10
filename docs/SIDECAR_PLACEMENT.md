@@ -583,8 +583,7 @@ context:
 
 ### Choosing again after a failed ensure
 
-When a probe's `ensure` fails, or a provisioner rejects a deployment's
-`ensure`, the Hub records the failure and asks the chooser again.
+When an `ensure` fails, the Hub records the failure and asks the chooser again.
 Returning a provisioner that already failed retries it, returning another one
 moves the work there, and returning `null` fails the probe or deployment with
 the last failure's code and message. The Hub matches requirements again before
@@ -598,16 +597,20 @@ code is the provisioner's own rejection code, or one of the Hub's:
 | Code                     | The Hub records it when                           |
 | ------------------------ | ------------------------------------------------- |
 | `ensure_failed`          | `ensure` threw or timed out                       |
+| `ensure_outcome_unknown` | The Hub restarted before it recorded the outcome  |
 | `sidecar_reuse_rejected` | The Hub refused the sidecar the provisioner named |
 
 The Hub does not interpret a provisioner's code. A provisioner that is full
 should reject with `capacity_exhausted`, so a chooser can tell a full
 provisioner from a broken one.
 
-A rejected deployment `ensure` started nothing, so the Hub asks the chooser at
+A deployment moves to another provisioner only once nothing can remain on the
+one that failed. A rejected `ensure` started nothing, so the Hub asks the chooser at
 once and calls no `destroy`. It records the rejection first, so this also holds
-when the Hub stops before it has acted on the answer. A deployment `ensure` that fails any other way is
-destroyed and retried on the same provisioner.
+when the Hub stops before it has acted on the answer. After any other failure the Hub first destroys on
+the provisioner that failed and asks the chooser when that cleanup is
+confirmed; while it is not, the deployment stays with that provisioner under
+the [cleanup policy](#release-and-replacement-cleanup).
 
 ```ts
 const priorityWithOverflow: SidecarProvisionerChooser = (
@@ -639,7 +642,8 @@ Limits:
   one fails the deployment.
 - A deployment's failed attempts are stored, so the chooser sees them after a
   Hub restart. State a chooser keeps itself, such as a round-robin counter,
-  belongs to one Hub process.
+  belongs to one Hub process. The Hub asks again for a choice it could not act
+  on, for example after losing the allocation's lease.
 - The first choice for a deployment does not include its probe's failed
   attempts.
 - A deployment chooser that throws, exceeds the operation timeout, or returns a
@@ -651,8 +655,8 @@ Limits:
   without asking the chooser.
 - A deployment needs the provisioner it is bound to until its next sidecar is
   bound. If that provisioner is removed from the Hub or its binding changes
-  before then, the chooser is not asked, even when another provisioner
-  matches. The deployment waits out the five-minute
+  before then, the chooser is not asked, even when cleanup on it is confirmed
+  and another provisioner matches. The deployment waits out the five-minute
   provider-availability grace under
   [Release and replacement cleanup](#release-and-replacement-cleanup) and fails
   with `provisioner_unavailable`.

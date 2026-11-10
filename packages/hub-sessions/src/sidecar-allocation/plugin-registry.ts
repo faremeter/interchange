@@ -25,8 +25,8 @@ export type SidecarProvisionerAttempt = {
   readonly provisionerId: string;
   /**
    * The provisioner's rejection code, or the Hub's own: `ensure_failed` when
-   * ensure threw and `sidecar_reuse_rejected` when the Hub refused the sidecar
-   * it named.
+   * ensure threw, `ensure_outcome_unknown` when the Hub restarted during it,
+   * and `sidecar_reuse_rejected` when the Hub refused the sidecar it named.
    */
   readonly code: string;
   readonly message: string;
@@ -46,10 +46,10 @@ export type SidecarProvisionerChoiceContext = {
 
 /**
  * Selects one provisioner from the capability-matched candidates. The Hub
- * asks again after a failed probe ensure or a rejected deployment ensure, with
- * that failure added to `attempts`. Returning a provisioner that already
- * failed retries it; returning null fails the probe or deployment. State a
- * chooser keeps belongs to one Hub process.
+ * asks again after each failed ensure, with that failure added to `attempts`.
+ * Returning a provisioner that already failed retries it; returning null
+ * fails the probe or deployment. State a chooser keeps belongs to one Hub
+ * process, and a choice the Hub could not act on is asked for again.
  */
 export type SidecarProvisionerChooser = (
   candidates: readonly SidecarProvisioner[],

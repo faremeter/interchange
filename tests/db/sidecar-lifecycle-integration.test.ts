@@ -721,6 +721,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ).toBe(true);
         const bound = await store.bindReplacementSidecar({
           ...cleanupTarget,
+          binding: {
+            provisionerId: "test",
+            provisionerApiVersion: 2,
+            provisionerBindingFingerprint: "test:v1",
+          },
           sidecarId: "replacement-sidecar",
           tokenHashSha256: await sha256("replacement-token"),
           connectDeadline: new Date(Date.now() + 120_000),
