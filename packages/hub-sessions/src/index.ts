@@ -110,6 +110,7 @@ export {
   adapterManifestDigest,
   attachSidecarProvisioners,
   chooseFirstSidecarProvisioner,
+  createDeploymentCapabilityPolicyResolver,
   createSidecarPluginRegistry,
   createSidecarAllocationReconciler,
   type CreateSidecarPluginRegistryOpts,
