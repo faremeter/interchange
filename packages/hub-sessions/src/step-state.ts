@@ -14,7 +14,8 @@
 // fold the conversation into a fresh checkpoint writes exactly one entry,
 // even when the boundary added no turns, and every entry carries the
 // freshest metadata, so a turnless boundary that only advanced metadata
-// (pending operations, token usage, connector state) is still durable. `checkpointSeq` therefore counts boundaries while `turnCount`
+// (pending operations, token usage, connector state, parked reply targets)
+// is still durable. `checkpointSeq` therefore counts boundaries while `turnCount`
 // counts folded turns; the two diverge in general.
 //
 // `bucket = floor(seq / STEP_STATE_WAL_BUCKET_SIZE)` bounds any single WAL
@@ -25,6 +26,10 @@
 // its metadata, so a later attempt can tell the stored state is not its own.
 // An agent whose conversation spans attempts leaves it unset.
 //
+// Parked reply targets hold the reply target of each turn parked on an
+// approval gate, keyed by the gate's correlation id. State written before
+// they existed omits them, and reads as holding none.
+//
 // Every reader reconstructs through `reconstructStepState` behind the
 // `StepStateReader` seam, whatever it reads the files from.
 
@@ -33,6 +38,7 @@ import { type } from "arktype";
 import {
   ConnectorThreadState,
   ConversationTurn,
+  ParkedReplyTargets,
   PersistedPendingOperation,
   TokenUsage,
   type PendingOperation,
@@ -49,6 +55,7 @@ const StepStateMetadata = type({
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
+  "parkedReplyTargets?": ParkedReplyTargets,
   "attempt?": "number.integer >= 0",
 });
 
@@ -60,6 +67,7 @@ export const StepStateCheckpoint = type({
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
+  "parkedReplyTargets?": ParkedReplyTargets,
   "attempt?": "number.integer >= 0",
 });
 
@@ -69,6 +77,7 @@ export const StepStateCheckpointMeta = type({
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
+  "parkedReplyTargets?": ParkedReplyTargets,
   "attempt?": "number.integer >= 0",
 });
 
@@ -83,6 +92,7 @@ export type StepStateContent = {
   pendingOperations: PendingOperation[];
   tokenUsage: TokenUsage;
   connectorState: ConnectorThreadState | null;
+  parkedReplyTargets: ParkedReplyTargets;
 };
 
 /**
@@ -194,9 +204,14 @@ export function buildStepStateCheckpoint(
     pendingOperations: readonly unknown[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
+    parkedReplyTargets?: ParkedReplyTargets;
     attempt?: number;
   },
 ): Record<string, string> {
+  const parkedReplyTargets =
+    content.parkedReplyTargets !== undefined
+      ? { parkedReplyTargets: content.parkedReplyTargets }
+      : {};
   const attempt =
     content.attempt !== undefined ? { attempt: content.attempt } : {};
   const snapshot = {
@@ -204,6 +219,7 @@ export function buildStepStateCheckpoint(
     pendingOperations: content.pendingOperations,
     tokenUsage: content.tokenUsage,
     connectorState: content.connectorState,
+    ...parkedReplyTargets,
     ...attempt,
   };
   const meta = {
@@ -212,6 +228,7 @@ export function buildStepStateCheckpoint(
     pendingOperations: content.pendingOperations,
     tokenUsage: content.tokenUsage,
     connectorState: content.connectorState,
+    ...parkedReplyTargets,
     ...attempt,
   };
   return {
@@ -251,6 +268,7 @@ export async function reconstructStepState(
     pendingOperations: metadata.pendingOperations,
     tokenUsage: metadata.tokenUsage,
     connectorState: metadata.connectorState,
+    parkedReplyTargets: metadata.parkedReplyTargets ?? {},
     totalTurns: turns.length,
     boundaryCount: baseBoundarySeq + wal.length,
     checkpointBoundarySeq: baseBoundarySeq,
@@ -307,6 +325,9 @@ async function readCheckpoint(
       pendingOperations: validatedSnapshot.pendingOperations,
       tokenUsage: validatedSnapshot.tokenUsage,
       connectorState: validatedSnapshot.connectorState,
+      ...(validatedSnapshot.parkedReplyTargets !== undefined
+        ? { parkedReplyTargets: validatedSnapshot.parkedReplyTargets }
+        : {}),
       ...(validatedSnapshot.attempt !== undefined
         ? { attempt: validatedSnapshot.attempt }
         : {}),
@@ -365,6 +386,9 @@ async function readWalTail(
           pendingOperations: validated.metadata.pendingOperations,
           tokenUsage: validated.metadata.tokenUsage,
           connectorState: validated.metadata.connectorState,
+          ...(validated.metadata.parkedReplyTargets !== undefined
+            ? { parkedReplyTargets: validated.metadata.parkedReplyTargets }
+            : {}),
           ...(validated.metadata.attempt !== undefined
             ? { attempt: validated.metadata.attempt }
             : {}),

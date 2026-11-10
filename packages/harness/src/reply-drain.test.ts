@@ -226,6 +226,73 @@ describe("driveConnectorReplies", () => {
     expect(sent[0]?.references).toBeUndefined();
   });
 
+  test("sends the References chain composeReply supplies without the resolver", async () => {
+    const sent: OutboundMessage[] = [];
+    const resolvedFor: string[] = [];
+
+    const drain = driveConnectorReplies({
+      stream: streamOf([replyEvent(1, "reply to a passthrough sender")]),
+      composeReply: () => ({
+        to: "carol@example.com",
+        cc: [],
+        inReplyTo: "<carol@interchange>",
+        references: ["<earlier@interchange>", "<carol@interchange>"],
+      }),
+      resolveReferences: async (inReplyTo) => {
+        resolvedFor.push(inReplyTo);
+        return ["<resolved@interchange>"];
+      },
+      send: async (message) => {
+        sent.push(message);
+        return { messageId: "<child@interchange>", status: "delivered" };
+      },
+      onReplySent: () => undefined,
+    });
+
+    await drain.done;
+
+    expect(resolvedFor).toEqual([]);
+    expect(sent[0]?.to).toBe("carol@example.com");
+    expect(sent[0]?.references).toEqual([
+      "<earlier@interchange>",
+      "<carol@interchange>",
+    ]);
+  });
+
+  test("drops a reply with no recipient and settles it with no receipt", async () => {
+    const { stream, push, end } = pushStream();
+    let sendCount = 0;
+    let sentCount = 0;
+    const failures: unknown[] = [];
+
+    const drain = driveConnectorReplies({
+      stream,
+      composeReply: () => null,
+      send: async () => {
+        sendCount += 1;
+        return { messageId: "<child@interchange>", status: "delivered" };
+      },
+      onReplySent: () => {
+        sentCount += 1;
+      },
+      onSendFailed: (cause) => {
+        failures.push(cause);
+      },
+    });
+
+    const barrier = drain.waitForReplyAfter(drain.replySeq());
+    push(replyEvent(1, "no one to answer"));
+    const settlement = await barrier;
+
+    expect(settlement).toEqual({ ok: true, receipt: null });
+    expect(sendCount).toBe(0);
+    expect(sentCount).toBe(0);
+    expect(failures).toEqual([]);
+
+    end();
+    await drain.done;
+  });
+
   test("serializes replies so each composes against the advanced thread", async () => {
     // A minimal connector-thread model: `onReplySent` advances the parent id
     // that the next `composeReply` threads against. If the drain did not
@@ -391,7 +458,7 @@ describe("driveConnectorReplies", () => {
     expect(sendAcked).toBe(true);
     expect(settlement.ok).toBe(true);
     if (settlement.ok) {
-      expect(settlement.receipt.messageId).toBe("<child@interchange>");
+      expect(settlement.receipt?.messageId).toBe("<child@interchange>");
     }
     // The sequence advanced by exactly one.
     expect(drain.replySeq()).toBe(1);

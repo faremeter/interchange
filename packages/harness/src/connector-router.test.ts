@@ -6,7 +6,17 @@ import type { ConnectorThreadState, InboundMessage } from "@intx/types/runtime";
 import {
   createConnectorRouter,
   NoActiveConnectorThreadError,
+  type ConnectorReplyParts,
+  type ConnectorRouter,
 } from "./connector-router";
+
+function requireReplyParts(router: ConnectorRouter): ConnectorReplyParts {
+  const parts = router.composeReply();
+  if (parts === null) {
+    throw new Error("composeReply() returned no reply address");
+  }
+  return parts;
+}
 
 function startMessage(opts?: { subject?: string }): InboundMessage {
   return createInboundMessage({
@@ -273,7 +283,7 @@ describe("createConnectorRouter", () => {
       const router = createConnectorRouter();
       router.commit(router.route(startMessage()));
 
-      const parts = router.composeReply();
+      const parts = requireReplyParts(router);
       expect(parts.to).toBe("user@example.com");
       expect(parts.cc).toEqual([]);
       expect(parts.inReplyTo).toBe("<root@example.com>");
@@ -292,7 +302,7 @@ describe("createConnectorRouter", () => {
         ),
       );
 
-      const parts = router.composeReply();
+      const parts = requireReplyParts(router);
       parts.cc.push("injected@example.com");
 
       // Subsequent state must not include the injected value.
@@ -520,6 +530,213 @@ describe("createConnectorRouter", () => {
     });
   });
 
+  describe("passthrough reply target", () => {
+    const THREAD = {
+      threadRoot: "<root@example.com>",
+      lastMessageId: "<root@example.com>",
+      replyTo: "user@example.com",
+      cc: [],
+      subject: "Hello",
+    };
+
+    function passthroughMessage(opts?: {
+      references?: string[];
+    }): InboundMessage {
+      return createInboundMessage({
+        from: "carol@example.com",
+        to: ["agent@example.com"],
+        content: "not on the thread",
+        messageId: "<carol-1@example.com>",
+        subject: "Side question",
+        ...(opts?.references !== undefined
+          ? { references: opts.references }
+          : {}),
+      });
+    }
+
+    function routerWithPassthrough(opts?: {
+      onStateChanged?: (state: ConnectorThreadState | null) => void;
+    }): ConnectorRouter {
+      const router = createConnectorRouter(opts);
+      router.commit(router.route(startMessage({ subject: "Hello" })));
+      const decision = router.route(
+        passthroughMessage({ references: ["<earlier@example.com>"] }),
+      );
+      expect(decision.kind).toBe("passthrough");
+      router.commit(decision);
+      return router;
+    }
+
+    const CAROL_REPLY = {
+      to: "carol@example.com",
+      cc: [],
+      inReplyTo: "<carol-1@example.com>",
+      references: ["<earlier@example.com>", "<carol-1@example.com>"],
+      subject: "Side question",
+    };
+
+    test("a passthrough commit points the reply at its sender and leaves the thread unchanged", () => {
+      const router = routerWithPassthrough();
+
+      expect(router.composeReply()).toEqual(CAROL_REPLY);
+      expect(router.snapshot()).toEqual(THREAD);
+    });
+
+    test("onReplySent after a passthrough reply leaves the thread unchanged", () => {
+      const changes: (ConnectorThreadState | null)[] = [];
+      const router = routerWithPassthrough({
+        onStateChanged: (state) => changes.push(state),
+      });
+      const changesBefore = changes.length;
+
+      router.onReplySent({
+        messageId: "<sent-to-carol@example.com>",
+        status: "delivered",
+      });
+
+      expect(router.snapshot()).toEqual(THREAD);
+      expect(changes.length).toBe(changesBefore);
+    });
+
+    test("two replies in one passthrough turn go to the same sender under the same parent", () => {
+      const router = routerWithPassthrough();
+
+      const first = router.composeReply();
+      router.onReplySent({
+        messageId: "<sent-1@example.com>",
+        status: "delivered",
+      });
+      const second = router.composeReply();
+
+      expect(first).toEqual(CAROL_REPLY);
+      expect(second).toEqual(CAROL_REPLY);
+    });
+
+    test("a continue commit clears the target and replies on the thread", () => {
+      const router = routerWithPassthrough();
+
+      router.commit(
+        router.route(
+          continuationByReferences("<root@example.com>", {
+            messageId: "<follow-1@example.com>",
+          }),
+        ),
+      );
+
+      expect(router.composeReply()).toEqual({
+        to: "user@example.com",
+        cc: [],
+        inReplyTo: "<follow-1@example.com>",
+        subject: "Hello",
+      });
+    });
+
+    test("a start commit clears the target", () => {
+      const noFrom: InboundMessage = {
+        ref: { uid: 9, mailbox: "INBOX" },
+        headers: {
+          to: ["agent@example.com"],
+          date: new Date().toISOString(),
+        },
+        flags: [],
+        content: "x",
+        signatureStatus: "missing",
+      };
+      const router = createConnectorRouter();
+      router.commit(router.route(noFrom));
+      expect(router.composeReply()).toBeNull();
+
+      router.commit(router.route(startMessage({ subject: "Hello" })));
+
+      expect(router.composeReply()).toEqual({
+        to: "user@example.com",
+        cc: [],
+        inReplyTo: "<root@example.com>",
+        subject: "Hello",
+      });
+    });
+
+    test("beginTurn() clears the target, so a later turn replies on the thread", () => {
+      const router = routerWithPassthrough();
+
+      router.beginTurn();
+
+      expect(router.composeReply()).toEqual({
+        to: "user@example.com",
+        cc: [],
+        inReplyTo: "<root@example.com>",
+        subject: "Hello",
+      });
+    });
+
+    test("an approval resume takes the reply target its parked turn filed", () => {
+      const router = routerWithPassthrough();
+
+      expect(router.parkTurn("c1")).toBe(true);
+      expect(router.parkedReplyTargets()).toEqual({
+        c1: { parts: CAROL_REPLY },
+      });
+      expect(router.beginTurn({ resume: "c1" })).toBe(true);
+
+      expect(router.composeReply()).toEqual(CAROL_REPLY);
+      expect(router.parkedReplyTargets()).toEqual({});
+    });
+
+    test("a resume of an id with no filed target replies on the thread", () => {
+      const router = routerWithPassthrough();
+
+      expect(router.beginTurn({ resume: "unknown" })).toBe(false);
+
+      expect(router.composeReply()).toEqual({
+        to: "user@example.com",
+        cc: [],
+        inReplyTo: "<root@example.com>",
+        subject: "Hello",
+      });
+    });
+
+    test("a turn with no reply target files nothing when it parks", () => {
+      const router = createConnectorRouter();
+      router.commit(router.route(startMessage({ subject: "Hello" })));
+
+      expect(router.parkTurn("c1")).toBe(false);
+      expect(router.parkedReplyTargets()).toEqual({});
+    });
+
+    test("a parked target with no address resumes with no reply address", () => {
+      const router = createConnectorRouter();
+      router.commit(router.route(startMessage({ subject: "Hello" })));
+      router.commit({ kind: "passthrough" });
+
+      router.parkTurn("c1");
+      expect(router.parkedReplyTargets()).toEqual({ c1: { parts: null } });
+      router.beginTurn();
+      router.beginTurn({ resume: "c1" });
+
+      expect(router.composeReply()).toBeNull();
+    });
+
+    test("restored parked targets resume like filed ones", () => {
+      const router = createConnectorRouter();
+      router.commit(router.route(startMessage({ subject: "Hello" })));
+
+      router.restoreParkedReplyTargets({ c1: { parts: CAROL_REPLY } });
+      router.beginTurn({ resume: "c1" });
+
+      expect(router.composeReply()).toEqual(CAROL_REPLY);
+    });
+
+    test("a passthrough decision the caller made itself yields no reply address", () => {
+      const router = createConnectorRouter();
+      router.commit(router.route(startMessage({ subject: "Hello" })));
+
+      router.commit({ kind: "passthrough" });
+
+      expect(router.composeReply()).toBeNull();
+      expect(router.snapshot()).toEqual(THREAD);
+    });
+  });
+
   describe("message carrying no originator", () => {
     // A message with no `From` at all reaches the router on the production
     // fetch path: buildMessageHeaders omits the field when the wire message
@@ -558,10 +775,10 @@ describe("createConnectorRouter", () => {
 
       router.commit(decision);
 
-      // No thread exists to reply on, rather than one whose reply address
+      // No thread exists, and the turn has no reply address, rather than one
       // the router chose.
       expect(router.snapshot()).toBeNull();
-      expect(() => router.composeReply()).toThrow(NoActiveConnectorThreadError);
+      expect(router.composeReply()).toBeNull();
     });
 
     test("route() passes through on continue and leaves the thread untouched", () => {
@@ -578,14 +795,10 @@ describe("createConnectorRouter", () => {
       router.commit(decision);
 
       // The thread still names its real speaker: the message that could not
-      // be attributed neither became replyTo nor joined cc.
+      // be attributed neither became replyTo nor joined cc. The reply to it
+      // has no address, so it does not go to the thread's speaker either.
       expect(router.snapshot()).toEqual(before);
-      expect(router.composeReply()).toEqual({
-        to: "user@example.com",
-        cc: [],
-        inReplyTo: "<root@example.com>",
-        subject: "Hello",
-      });
+      expect(router.composeReply()).toBeNull();
     });
 
     test("an absent originator passes through where an unparseable one throws", () => {
@@ -674,7 +887,7 @@ describe("createConnectorRouter", () => {
       const router = createConnectorRouter();
       router.commit(router.route(inboundWithNoMessageId()));
 
-      const parts = router.composeReply();
+      const parts = requireReplyParts(router);
       expect(parts.to).toBe("user@example.com");
       expect(parts.inReplyTo).toBeUndefined();
       expect("inReplyTo" in parts).toBe(false);

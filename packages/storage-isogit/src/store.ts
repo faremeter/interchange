@@ -1,6 +1,7 @@
 import git from "isomorphic-git";
 import {
   ConversationTurn,
+  ParkedReplyTargets,
   PersistedPendingOperation,
   TokenUsage,
   TransformRecord,
@@ -63,16 +64,20 @@ const ConnectorThreadStateSchema = type({
   "subject?": "string",
 });
 
+// A file written before parked reply targets existed omits the field, and
+// reads as holding none.
 const MetadataSchema = type({
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: type("null").or(ConnectorThreadStateSchema),
+  "parkedReplyTargets?": ParkedReplyTargets,
 });
 
 type MetadataData = {
   pendingOperations: PendingOperation[];
   tokenUsage: TokenUsage;
   connectorState: ConnectorThreadState | null;
+  parkedReplyTargets: ParkedReplyTargets;
 };
 
 function parseMetadata(raw: unknown): MetadataData {
@@ -86,6 +91,7 @@ function parseMetadata(raw: unknown): MetadataData {
     pendingOperations: result.pendingOperations,
     tokenUsage: result.tokenUsage,
     connectorState: result.connectorState,
+    parkedReplyTargets: result.parkedReplyTargets ?? {},
   };
 }
 
@@ -260,8 +266,8 @@ function parseTurns(text: string): ConversationTurn[] {
  *
  * Conversation state lives in `turns.jsonl`; per-cycle prompt/response/manifest
  * data lives in `prompt.jsonl`, `response.jsonl`, and `manifest.jsonl`. Pending
- * operations, token usage, and connector state are serialized into
- * `metadata.json`. Audit records are written as individual JSON files under
+ * operations, token usage, connector state, and parked reply targets are
+ * serialized into `metadata.json`. Audit records are written as individual JSON files under
  * `state/audit/{sessionId}/`. All files are tracked by the git repository at
  * `dir`. The caller is responsible for calling `initAgentRepo(dir)` before
  * constructing.
@@ -282,13 +288,14 @@ export interface DurableMirrorReads {
   peekTurns(): ConversationTurn[];
   /**
    * Read only `metadata.json` (pending operations, token usage, connector
-   * state), skipping the O(N) turns parse `load` pays. The mirror gets
-   * its turns from `peekTurns`.
+   * state, parked reply targets), skipping the O(N) turns parse `load`
+   * pays. The mirror gets its turns from `peekTurns`.
    */
   loadMetadata(): Promise<{
     pendingOperations: PendingOperation[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
+    parkedReplyTargets: ParkedReplyTargets;
   }>;
   /**
    * Whether the last checkpoint failed, so the files may not hold the state
@@ -299,13 +306,31 @@ export interface DurableMirrorReads {
   hasFailedCheckpoint(): boolean;
 }
 
+/**
+ * The parked reply targets of a durable agent conversation, kept off the
+ * shared `ContextStore` interface because only the durable conversation
+ * store parks them.
+ */
+export interface ParkedReplyTargetBuffer {
+  /**
+   * Buffer the parked reply targets for the next `writeMetadata`, the same
+   * way `setConnectorState` buffers the connector state.
+   */
+  setParkedReplyTargets(targets: ParkedReplyTargets): void;
+}
+
 export class IsogitStore
-  implements ContextStore, AuditStore, DurableMirrorReads
+  implements
+    ContextStore,
+    AuditStore,
+    DurableMirrorReads,
+    ParkedReplyTargetBuffer
 {
   private readonly runtime: StorageRuntime;
   private readonly dir: string;
   private readonly signer: CommitSigner | undefined;
   private pendingConnectorState: ConnectorThreadState | null = null;
+  private pendingParkedReplyTargets: ParkedReplyTargets = {};
   private lastTurns: ConversationTurn[] = [];
   // `retrying` is a checkpoint opened after a failed one: until it completes,
   // the files can still hold the failed checkpoint's partial state.
@@ -417,6 +442,10 @@ export class IsogitStore
     this.pendingConnectorState = state;
   }
 
+  setParkedReplyTargets(targets: ParkedReplyTargets): void {
+    this.pendingParkedReplyTargets = targets;
+  }
+
   async load(_signal?: AbortSignal): Promise<{
     turns: ConversationTurn[];
     pendingOperations: PendingOperation[];
@@ -439,6 +468,7 @@ export class IsogitStore
     pendingOperations: PendingOperation[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
+    parkedReplyTargets: ParkedReplyTargets;
   }> {
     const metadataPath = this.runtime.path.join(this.dir, METADATA_FILE);
     if (!(await pathExists(this.runtime, metadataPath))) {
@@ -446,6 +476,7 @@ export class IsogitStore
         pendingOperations: [],
         tokenUsage: emptyTokenUsage(),
         connectorState: null,
+        parkedReplyTargets: {},
       };
     }
     const text = await this.runtime.fs.readTextFile(metadataPath);
@@ -455,6 +486,7 @@ export class IsogitStore
       pendingOperations: data.pendingOperations,
       tokenUsage: data.tokenUsage,
       connectorState: data.connectorState,
+      parkedReplyTargets: data.parkedReplyTargets,
     };
   }
 
@@ -685,7 +717,8 @@ export class IsogitStore
 
   /**
    * Write `metadata.json` containing pending operations, token usage, and the
-   * currently-buffered connector state. The reactor calls this once per cycle
+   * currently-buffered connector state and parked reply targets. The reactor
+   * calls this once per cycle
    * before issuing the working-tree commit so the file is staged atomically
    * with the per-cycle conversation data.
    *
@@ -703,6 +736,7 @@ export class IsogitStore
       pendingOperations: metadata.pendingOperations,
       tokenUsage: metadata.tokenUsage,
       connectorState: this.pendingConnectorState,
+      parkedReplyTargets: this.pendingParkedReplyTargets,
     };
     await this.checkpointStep(
       this.writeFileAtomically(METADATA_FILE, JSON.stringify(payload, null, 2)),

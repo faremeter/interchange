@@ -2209,6 +2209,43 @@ export const ConnectorThreadState = type({
 export type ConnectorThreadState = typeof ConnectorThreadState.infer;
 
 /**
+ * The threading headers for a connector reply. The caller composes the
+ * full outbound message by adding its own `content` and `type` fields.
+ *
+ * `inReplyTo` is the nearest identified ancestor: the last message id, or
+ * the thread root when the last message named no id. Absent when neither
+ * exists. `references` is the full References chain for the reply. It is
+ * set only on a reply to a passthrough message, which carries its own
+ * ancestry. It is absent on a thread reply; the caller resolves that chain
+ * from `inReplyTo`.
+ */
+export const ConnectorReplyParts = type({
+  to: "string",
+  cc: "string[]",
+  "inReplyTo?": "string",
+  "references?": "string[]",
+  "subject?": "string",
+});
+export type ConnectorReplyParts = typeof ConnectorReplyParts.infer;
+
+/**
+ * The reply target of an agent turn that parked on an approval gate,
+ * kept until the approval resumes the turn. `parts` is `null` when the
+ * parked turn answered a passthrough message with no sender address: the
+ * resumed turn then sends no reply, and does not reply on the thread.
+ */
+export const ParkedReplyTarget = type({
+  parts: ConnectorReplyParts.or("null"),
+});
+export type ParkedReplyTarget = typeof ParkedReplyTarget.infer;
+
+/** Parked reply targets, keyed by the correlation id of the parked gate. */
+export const ParkedReplyTargets = type({
+  "[string]": ParkedReplyTarget,
+});
+export type ParkedReplyTargets = typeof ParkedReplyTargets.infer;
+
+/**
  * The context store interface. Implementations back the store with git
  * (filesystem, in-memory, or virtual) depending on the execution environment.
  * The reactor accepts any implementation that satisfies this interface.

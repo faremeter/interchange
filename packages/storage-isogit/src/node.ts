@@ -4,6 +4,7 @@ import {
   createIsogitStorage,
   type CommitSigner,
   type DurableMirrorReads,
+  type ParkedReplyTargetBuffer,
 } from "./index";
 import { createNodeIsogitRuntime } from "./node-runtime";
 import { IsogitStore as RuntimeIsogitStore } from "./store";
@@ -20,6 +21,7 @@ export {
   createIsogitStorage,
   type CommitSigner,
   type DurableMirrorReads,
+  type ParkedReplyTargetBuffer,
   type ContextStore,
   type AuditStore,
   type StagedPack,
@@ -82,6 +84,8 @@ export class IsogitStore extends RuntimeIsogitStore {
 export async function createIsogitStore(
   dir: string,
   signer?: CommitSigner,
-): Promise<ContextStore & AuditStore & DurableMirrorReads> {
+): Promise<
+  ContextStore & AuditStore & DurableMirrorReads & ParkedReplyTargetBuffer
+> {
   return storage.createIsogitStore(dir, signer);
 }

@@ -232,6 +232,28 @@ export interface WorkflowStepInvokerOpts {
    */
   seedInbound?: (key: string, message: InboundMessage) => Promise<void>;
   /**
+   * Turn-start hook for the warm path. When supplied, the adapter awaits it
+   * with the step identity at the start of every warm turn, before
+   * `seedInbound`. `turn.resume` is the correlation id of the gate an
+   * `"approval"` resume resumes, and is absent on every other turn. The
+   * sidecar wires this to the durable store's `beginTurn`: an approval
+   * resume takes the reply target its parked turn filed, and any other
+   * turn clears the reply target a passthrough seed set, so a turn that
+   * seeds no mail does not reply to an earlier turn's sender. Omitted on
+   * the cold path, which has no connector thread.
+   */
+  beginTurn?: (key: string, turn: { resume?: string }) => Promise<void>;
+  /**
+   * Park hook for the warm path. When supplied, the adapter awaits it with
+   * the step identity and the gate's correlation id after a send that
+   * settles as `"suspended"`, before `onRunBoundary`. The sidecar wires this
+   * to the durable store's `parkTurn`, which files the turn's reply target
+   * under that id so the run-boundary mirror persists it and the approval
+   * resume replies to the same target. A park failure rejects the step.
+   * Omitted on the cold path, which has no connector thread.
+   */
+  parkTurn?: (key: string, correlationId: string) => Promise<void>;
+  /**
    * Connector reply-drain hook for the warm path (design §3c). When supplied,
    * the adapter invokes it ONCE -- at the warm agent's first-message build --
    * with the step identity (`authzContext.stepId`, the same key the warm
@@ -492,8 +514,18 @@ async function invokeWarmStep(
   // resolves -- a snapshot taken after the send would miss this turn's reply.
   const replyDrive = warmCache.getReplyDrive(key);
   const replySeqBeforeSend = replyDrive !== null ? replyDrive.replySeq() : 0;
+  const beginTurn = opts.beginTurn;
+  const parkTurn = opts.parkTurn;
   return runBodyThenCleanup(
     async () => {
+      if (beginTurn !== undefined) {
+        await beginTurn(
+          key,
+          req.resume?.kind === "approval"
+            ? { resume: req.resume.correlationId }
+            : {},
+        );
+      }
       const sendResult = await sendWithAbort(agent, req, {
         closeOnAbort: false,
         mailPartReader: opts.mailPartReader,
@@ -503,6 +535,9 @@ async function invokeWarmStep(
             : undefined,
       });
       const stepResult = stepResultFromSend(sendResult);
+      if (parkTurn !== undefined && sendResult.type === "suspended") {
+        await parkTurn(key, sendResult.correlationId);
+      }
       // Gate the step's return on THIS turn's reply being durably sent, so the
       // run parks -- and the supervisor consumes the inbound mail -- only after
       // the auto-reply reaches the transport. Only a reply turn produces a

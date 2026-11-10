@@ -23,8 +23,9 @@ const HUB_PRINCIPAL = { kind: "hub" } as const;
  * Export an agent step's state as last committed to the Hub's copy of a
  * deployment's workflow-run history. `runId` is the deployment's top-level
  * run. A step that has no state of its own yet exports the seed its
- * deployment imported for it. Pending operations are left out, since their
- * correlation ids only mean something inside the run that registered them.
+ * deployment imported for it. Pending operations and parked reply targets
+ * are left out, since their correlation ids only mean something inside the
+ * run that registered them.
  * The deployment's mailbox `uidNext` rides along as `mailboxUidNext`,
  * bounding the mailbox UIDs the turns can name. Returns `null` when the step
  * has neither committed state nor a seed.

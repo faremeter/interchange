@@ -506,7 +506,8 @@ turns.jsonl              durable conversation history
 prompt.jsonl             what was sent to inference for the most recent cycle
 response.jsonl           what came back for the most recent cycle
 manifest.jsonl           ordered transform records produced for the most recent cycle
-metadata.json            pending operations, cumulative token usage, connector thread state
+metadata.json            pending operations, cumulative token usage, connector thread state,
+                         parked reply targets
 tool-output/             spill blobs from oversized tool results, keyed by tool call id
 ```
 
