@@ -123,6 +123,7 @@ export {
   type SidecarOperationFailure,
   type SidecarPluginRegistry,
   type SidecarProvisioner,
+  type SidecarProvisionerAttempt,
   type SidecarProvisionerChoiceContext,
   type SidecarProvisionerChooser,
   type SidecarProvisionerHost,

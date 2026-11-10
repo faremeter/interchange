@@ -33,6 +33,7 @@ import { adapterManifestDigest } from "./adapter-manifest-digest";
 import type { SidecarPluginRegistry } from "./plugin-registry";
 import {
   DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
+  MAX_ENSURE_ATTEMPTS,
   runSidecarOperation,
   SidecarDeploymentHistoryPendingError,
   SidecarDeploymentMissingError,
@@ -181,7 +182,6 @@ const MAX_RETRY_BACKOFF_ATTEMPT = 5;
 // How long a first deploy that keeps failing before its deploy frame is sent
 // is retried, from its first failure.
 const FIRST_DEPLOY_RETRY_LIMIT_MS = 60_000;
-const MAX_ENSURE_ATTEMPTS = 10;
 const PROVISIONING_RETRY_EXHAUSTED = "sidecar_provisioning_retry_exhausted";
 const PROVISIONER_AVAILABILITY_GRACE_MS = 5 * 60_000;
 const PROVISIONER_AVAILABILITY_RETRY_MS = 30_000;

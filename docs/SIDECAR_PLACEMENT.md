@@ -135,8 +135,10 @@ retires the sidecar only when nothing is left on it, and answers `retired`,
 the Hub confirmed removed and a probe being released do not. It takes the same
 sidecar lock as placement, so a placement either commits first and the answer is
 `in_use`, or comes later and is refused with `sidecar_reuse_rejected`, which a
-deployment retries on a new generation and which fails a probe. A provisioner
-retires a sidecar first and stops it afterwards.
+deployment retries on a new generation and which fails a probe unless the
+chooser selects a provisioner for another attempt (see
+[Choosing again after a failed ensure](#choosing-again-after-a-failed-ensure)).
+A provisioner retires a sidecar first and stops it afterwards.
 
 A provisioner can do this inside `destroy`. For a connected sidecar, the Hub
 removes the deployment's copy and records that before calling `destroy`, so the
@@ -561,12 +563,66 @@ probing and freezing the workflow, it:
 
 The default chooser selects the first match in registration order. A Hub
 composition may provide an asynchronous chooser for probe capacity, deployment
-capacity, or both to implement another policy such as round-robin selection.
-The chooser receives the matching provisioners and a context:
+capacity, or both to implement another policy such as round-robin selection or
+priority with overflow. The chooser receives the matching provisioners and a
+context:
 
-| Field         | Meaning                                                           |
-| ------------- | ----------------------------------------------------------------- |
-| `purpose`     | `probe` or `deployment`                                           |
-| `tenantId`    | The deploying tenant                                              |
-| `anchorRunId` | The deployment's anchor run, also while its probe is being placed |
-| `signal`      | Aborts when the Hub stops waiting for the choice                  |
+| Field         | Meaning                                                            |
+| ------------- | ------------------------------------------------------------------ |
+| `purpose`     | `probe` or `deployment`                                            |
+| `tenantId`    | The deploying tenant                                               |
+| `anchorRunId` | The deployment's anchor run, also while its probe is being placed  |
+| `signal`      | Aborts when the Hub stops waiting for the choice                   |
+| `attempts`    | The probe ensures that failed in this deploy request, oldest first |
+
+### Choosing again after a failed ensure
+
+When a probe's `ensure` fails, the Hub asks the probe chooser again within the
+deploy request. Returning a provisioner that already failed retries it,
+returning another one moves the probe there, and returning `null` fails the
+request with the last failure. The Hub reads the tenant policy again before it
+asks, so the chooser only sees provisioners that match at that moment.
+
+Each attempt carries `provisionerId`, `code`, `message`, and `retryable`. The
+code is the provisioner's own rejection code, or one of the Hub's:
+
+| Code                     | The Hub records it when                           |
+| ------------------------ | ------------------------------------------------- |
+| `ensure_failed`          | `ensure` threw or timed out                       |
+| `sidecar_reuse_rejected` | The Hub refused the sidecar the provisioner named |
+
+The Hub does not interpret a provisioner's code. A provisioner that is full
+should reject with `capacity_exhausted`, so a chooser can tell a full
+provisioner from a broken one.
+
+```ts
+const priorityWithOverflow: SidecarProvisionerChooser = (
+  candidates,
+  { attempts },
+) => {
+  const full = new Set(
+    attempts
+      .filter((attempt) => attempt.code === "capacity_exhausted")
+      .map((attempt) => attempt.provisionerId),
+  );
+  return candidates.find((provisioner) => !full.has(provisioner.id)) ?? null;
+};
+```
+
+The default chooser never moves a probe after a failure: the request fails.
+
+Limits:
+
+- A probe gets at most 10 ensures. After the tenth the Hub no longer asks the
+  chooser.
+- A probe is retried inside the deploy request, without backoff. Each attempt is
+  its own probe; the periodic probe cleanup destroys a failed one, so a
+  provisioner slow to destroy does not delay the next attempt.
+- State a chooser keeps itself, such as a round-robin counter, belongs to one
+  Hub process.
+- A chooser that throws, exceeds the operation timeout, or returns a
+  provisioner outside the matching set fails the deploy request.
+- An accepted `ensure` whose sidecar never connects fails the request without
+  asking the chooser.
+- The chooser is not asked again for a deployment: its failed `ensure` retries
+  the provisioner selected at deploy or fails.

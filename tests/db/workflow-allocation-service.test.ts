@@ -20,6 +20,7 @@ import {
   principal,
   principalKey,
   sidecar,
+  tenant,
   workflowDefinition,
   workflowProbe,
   workflowRun,
@@ -1852,11 +1853,279 @@ describe.skipIf(!harnessDbEnvAvailable())(
         aborted: false,
         tenantId: TENANT_ID,
         anchorRunId: "run-chooser-context",
+        attempts: [],
       };
       expect(contexts).toEqual([
         { ...deploying, purpose: "probe" },
         { ...deploying, purpose: "deployment" },
       ]);
+    });
+
+    describe("probe capacity after a failed ensure", () => {
+      const full = {
+        kind: "rejected",
+        code: "capacity_exhausted",
+        message: "No capacity left",
+        retryable: false,
+      } as const;
+      const priorityWithOverflow: SidecarProvisionerChooser = (
+        candidates,
+        { attempts },
+      ) => {
+        const fullIds = new Set(
+          attempts
+            .filter((attempt) => attempt.code === "capacity_exhausted")
+            .map((attempt) => attempt.provisionerId),
+        );
+        return candidates.find(({ id }) => !fullIds.has(id)) ?? null;
+      };
+
+      function failingProvisioner(
+        id: string,
+        ensure: SidecarProvisioner["ensure"],
+        destroyCalls: unknown[] = [],
+      ): SidecarProvisioner & { ensures: number } {
+        const provisioner = {
+          ...makeProvisioner({ id, ensureCalls: [], destroyCalls }),
+          ensures: 0,
+          ensure: async (request: Parameters<typeof ensure>[0]) => {
+            provisioner.ensures += 1;
+            return ensure(request);
+          },
+        };
+        return provisioner;
+      }
+
+      const probeRow = (id: string) =>
+        h.db.query.workflowProbe.findFirst({
+          columns: {
+            status: true,
+            provisionerId: true,
+            failureCode: true,
+          },
+          where: eq(workflowProbe.id, id),
+        });
+
+      test.each([
+        {
+          failure: "rejects",
+          ensure: async () => full,
+          attempt: {
+            provisionerId: "local",
+            code: "capacity_exhausted",
+            message: "No capacity left",
+            retryable: false,
+          },
+        },
+        {
+          failure: "throws",
+          ensure: async () => {
+            throw new Error("Provider timed out");
+          },
+          attempt: {
+            provisionerId: "local",
+            code: "ensure_failed",
+            message: "Provider timed out",
+            retryable: true,
+          },
+        },
+      ])(
+        "probes on the provisioner the chooser selects when the first $failure",
+        async ({ ensure, attempt }) => {
+          const localDestroys: unknown[] = [];
+          const local = failingProvisioner("local", ensure, localDestroys);
+          const docker = makeProvisioner({
+            id: "docker",
+            ensureCalls: [],
+            destroyCalls: [],
+          });
+          const contexts: unknown[] = [];
+          const service = probingService({
+            provisioners: [local, docker],
+            chooser: (candidates, { signal, ...context }) => {
+              contexts.push({
+                candidates: candidates.map(({ id }) => id),
+                aborted: signal.aborted,
+                ...context,
+              });
+              return context.purpose === "probe" && context.attempts.length > 0
+                ? docker
+                : local;
+            },
+          });
+
+          const prepared = await service.prepareProvisionedDeployment(
+            prepareArgs("run-probe-failover"),
+          );
+
+          const asked = {
+            candidates: ["local", "docker"],
+            aborted: false,
+            tenantId: TENANT_ID,
+            anchorRunId: "run-probe-failover",
+          };
+          expect(contexts).toEqual([
+            { ...asked, purpose: "probe", attempts: [] },
+            { ...asked, purpose: "probe", attempts: [attempt] },
+            { ...asked, purpose: "deployment", attempts: [] },
+          ]);
+          // The failed probe waits for the cleanup sweep with its own binding.
+          expect(await probeRow("sal-probing-1")).toEqual({
+            status: "releasing",
+            provisionerId: "local",
+            failureCode: attempt.code,
+          });
+          expect(localDestroys).toEqual([]);
+          expect(await probeRow("sal-probing-2")).toEqual({
+            status: "succeeded",
+            provisionerId: "docker",
+            failureCode: null,
+          });
+          expect(
+            await createSidecarAllocationStore(h.db).findByAnchorRunId(
+              "run-probe-failover",
+            ),
+          ).toMatchObject({
+            id: prepared.allocationId,
+            status: "pending",
+            provisionerId: "local",
+          });
+
+          await service.reconcileReleasingProbes?.();
+
+          expect(localDestroys).toHaveLength(1);
+          expect(await probeRow("sal-probing-1")).toMatchObject({
+            status: "failed",
+          });
+        },
+      );
+
+      test("matches the tenant policy as it is when the chooser is asked again", async () => {
+        const local = failingProvisioner("local", async () => {
+          // The tenant starts to require isolation while this attempt runs.
+          await h.db
+            .update(tenant)
+            .set({
+              config: {
+                sidecarPlacement: {
+                  capabilities: [
+                    { capability: "isolation:workload", effect: "require" },
+                  ],
+                },
+              },
+            })
+            .where(eq(tenant.id, TENANT_ID));
+          return full;
+        });
+        const isolated = makeProvisioner({
+          id: "isolated",
+          capabilities: [
+            { capability: "isolation:workload", state: "available" },
+          ],
+          ensureCalls: [],
+          destroyCalls: [],
+        });
+        const offered: string[][] = [];
+        const service = probingService({
+          provisioners: [local, isolated],
+          chooser: (candidates) => {
+            offered.push(candidates.map(({ id }) => id));
+            return candidates[0] ?? null;
+          },
+        });
+
+        await service.prepareProvisionedDeployment(
+          prepareArgs("run-policy-change"),
+        );
+
+        // The probe retry and the deployment only see the provisioner that
+        // still matches.
+        expect(offered).toEqual([
+          ["local", "isolated"],
+          ["isolated"],
+          ["isolated"],
+        ]);
+      });
+
+      test("adopts the probe when the deployment lands on the provisioner that ran it", async () => {
+        const local = failingProvisioner("local", async () => full);
+        const docker = makeProvisioner({
+          id: "docker",
+          ensureCalls: [],
+          destroyCalls: [],
+        });
+        const service = probingService({
+          provisioners: [local, docker],
+          chooser: (_candidates, { purpose, attempts }) =>
+            purpose === "probe" && attempts.length === 0 ? local : docker,
+        });
+
+        const prepared = await service.prepareProvisionedDeployment(
+          prepareArgs("run-probe-adopted"),
+        );
+
+        expect(prepared.allocationId).toBe("sal-probing-2");
+        expect(
+          await createSidecarAllocationStore(h.db).findByAnchorRunId(
+            "run-probe-adopted",
+          ),
+        ).toMatchObject({
+          status: "allocated",
+          provisionerId: "docker",
+          sidecarId: "sc-probing-2",
+        });
+      });
+
+      test("fails for the last rejection when the chooser selects nothing", async () => {
+        const local = failingProvisioner("local", async () => full);
+        const docker = failingProvisioner("docker", async () => ({
+          ...full,
+          message: "Docker is full too",
+        }));
+        const service = probingService({
+          provisioners: [local, docker],
+          chooser: priorityWithOverflow,
+        });
+
+        await expect(
+          service.prepareProvisionedDeployment(prepareArgs("run-all-full")),
+        ).rejects.toMatchObject({
+          name: "WorkflowProvisioningError",
+          code: "capacity_exhausted",
+          message: "Docker is full too",
+        });
+        expect([local.ensures, docker.ensures]).toEqual([1, 1]);
+      });
+
+      test("stops after ten ensures when the chooser keeps retrying", async () => {
+        const local = failingProvisioner("local", async () => ({
+          ...full,
+          retryable: true,
+        }));
+        const service = probingService({
+          provisioners: [local],
+          chooser: () => local,
+        });
+
+        await expect(
+          service.prepareProvisionedDeployment(prepareArgs("run-retry-cap")),
+        ).rejects.toMatchObject({ code: "capacity_exhausted" });
+        expect(local.ensures).toBe(10);
+      });
+
+      test("fails with the provisioner's error when no chooser is configured", async () => {
+        const failure = new Error("Provider timed out");
+        const local = failingProvisioner("local", async () => {
+          throw failure;
+        });
+        const docker = failingProvisioner("docker", async () => full);
+        const service = probingService({ provisioners: [local, docker] });
+
+        await expect(
+          service.prepareProvisionedDeployment(prepareArgs("run-default")),
+        ).rejects.toBe(failure);
+        expect([local.ensures, docker.ensures]).toEqual([1, 0]);
+      });
     });
 
     test("retires a probe's sidecar before the probe is recorded finished", async () => {

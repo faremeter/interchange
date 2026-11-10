@@ -17,7 +17,21 @@ export type SidecarProvisionerSelection =
       readonly mismatches: Readonly<
         Record<string, readonly SidecarCapabilityMismatch[]>
       >;
-    };
+    }
+  | { readonly ok: false; readonly reason: "declined" };
+
+/** An ensure that failed for the probe being placed. */
+export type SidecarProvisionerAttempt = {
+  readonly provisionerId: string;
+  /**
+   * The provisioner's rejection code, or the Hub's own: `ensure_failed` when
+   * ensure threw and `sidecar_reuse_rejected` when the Hub refused the sidecar
+   * it named.
+   */
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+};
 
 export type SidecarProvisionerChoiceContext = {
   readonly purpose: "probe" | "deployment";
@@ -26,13 +40,21 @@ export type SidecarProvisionerChoiceContext = {
   readonly anchorRunId: string;
   /** Aborts when the Hub stops waiting for the choice. */
   readonly signal: AbortSignal;
+  /** Oldest first. Empty on the first choice, and always for a deployment. */
+  readonly attempts: readonly SidecarProvisionerAttempt[];
 };
 
-/** Selects one provisioner from the capability-matched candidates. */
+/**
+ * Selects one provisioner from the capability-matched candidates. The Hub
+ * asks again after a failed probe ensure, with that failure added to
+ * `attempts`. Returning a provisioner that already failed retries it;
+ * returning null fails the deploy request. State a chooser keeps belongs to
+ * one Hub process.
+ */
 export type SidecarProvisionerChooser = (
   candidates: readonly SidecarProvisioner[],
   context: SidecarProvisionerChoiceContext,
-) => SidecarProvisioner | Promise<SidecarProvisioner>;
+) => SidecarProvisioner | null | Promise<SidecarProvisioner | null>;
 
 export type SidecarPluginRegistry = {
   /** Missing plugins return null so reconciliation can stop fail-closed. */
@@ -49,14 +71,15 @@ export type CreateSidecarPluginRegistryOpts = {
   readonly chooser?: SidecarProvisionerChooser;
 };
 
+/**
+ * The first match in registration order. After a failed ensure it selects
+ * nothing, so a probe is never moved to another provisioner.
+ */
 export function chooseFirstSidecarProvisioner(
   candidates: readonly SidecarProvisioner[],
-): SidecarProvisioner {
-  const first = candidates[0];
-  if (first === undefined) {
-    throw new Error("No matching sidecar provisioners are available");
-  }
-  return first;
+  { attempts }: SidecarProvisionerChoiceContext,
+): SidecarProvisioner | null {
+  return attempts.length === 0 ? (candidates[0] ?? null) : null;
 }
 
 export function createSidecarPluginRegistry({
@@ -113,6 +136,7 @@ export function createSidecarPluginRegistry({
         return { ok: false, reason: "no_match", mismatches };
       }
       const provisioner = await chooser(candidates, context);
+      if (provisioner === null) return { ok: false, reason: "declined" };
       if (!candidates.includes(provisioner)) {
         throw new Error(
           "Sidecar provisioner chooser returned a provisioner outside the matching candidates",

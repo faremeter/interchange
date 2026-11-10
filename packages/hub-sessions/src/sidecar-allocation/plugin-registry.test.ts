@@ -33,6 +33,7 @@ function choiceContext(
     tenantId: "tnt-1",
     anchorRunId: "run-1",
     signal: new AbortController().signal,
+    attempts: [],
     ...overrides,
   };
 }
@@ -180,7 +181,17 @@ describe("createSidecarPluginRegistry", () => {
         return containers;
       },
     });
-    const context = choiceContext({ purpose: "probe" });
+    const context = choiceContext({
+      purpose: "probe",
+      attempts: [
+        {
+          provisionerId: "containers",
+          code: "capacity_exhausted",
+          message: "Full",
+          retryable: false,
+        },
+      ],
+    });
 
     await registry.selectProvisioner(
       { tenantPolicies: [], workflowRules: [] },
@@ -188,6 +199,48 @@ describe("createSidecarPluginRegistry", () => {
     );
 
     expect(contexts).toEqual([context]);
+  });
+
+  test("reports a chooser that selects nothing", async () => {
+    const registry = createSidecarPluginRegistry({
+      provisioners: [provisioner("containers")],
+      chooser: () => null,
+    });
+
+    expect(
+      await registry.selectProvisioner(
+        { tenantPolicies: [], workflowRules: [] },
+        choiceContext(),
+      ),
+    ).toEqual({ ok: false, reason: "declined" });
+  });
+
+  describe("default chooser after a failed ensure", () => {
+    const containers = provisioner("containers");
+    const virtualMachines = provisioner("virtual-machines");
+    const select = (
+      provisioners: readonly SidecarProvisioner[],
+      context: Partial<SidecarProvisionerChoiceContext>,
+    ) =>
+      createSidecarPluginRegistry({ provisioners }).selectProvisioner(
+        { tenantPolicies: [], workflowRules: [] },
+        choiceContext(context),
+      );
+    const failed = (provisionerId: string, retryable: boolean) => ({
+      provisionerId,
+      code: "capacity_exhausted",
+      message: "Full",
+      retryable,
+    });
+
+    test("selects nothing after a probe failure", async () => {
+      expect(
+        await select([containers, virtualMachines], {
+          purpose: "probe",
+          attempts: [failed("containers", true)],
+        }),
+      ).toEqual({ ok: false, reason: "declined" });
+    });
   });
 
   test("rejects a chooser result outside the matching candidates", async () => {

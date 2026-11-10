@@ -87,7 +87,8 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
  * after a Hub restart, cleanup precedes any new provisioning attempt.
  * Rejection means no infrastructure exists for this generation (ensure-only;
  * destroy rejections below carry no such guarantee); a provisioner must throw
- * when it cannot determine whether the request took effect.
+ * when it cannot determine whether the request took effect. A provisioner
+ * that is full rejects with `capacity_exhausted`.
  */
 export const EnsureSidecarResult = type({
   kind: "'accepted'",
