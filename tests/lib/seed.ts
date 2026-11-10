@@ -28,6 +28,8 @@ import {
   principal,
   provider,
   runToken,
+  sidecar,
+  sidecarAllocation,
   tenant,
   wallet,
   workflowDefinition,
@@ -454,6 +456,44 @@ export async function seedWorkflowRunLaunchSpec(
     grantSnapshot: s.grantSnapshot,
     sourceOfferingIds: [],
     defaultSourceOfferingId: "offering",
+  });
+}
+
+export type SeedAllocation = {
+  tenantId: string;
+  anchorRunId: string;
+  sidecarId: string;
+  allocationId: string;
+  generation: number;
+};
+
+/**
+ * Give a deployment anchor a sidecar and an `allocated` sidecar allocation
+ * whose ensure the sidecar accepted at `generation`, so hub paths that need a
+ * provisioned deployment take it. The anchor run row must already exist.
+ */
+export async function seedAllocation(db: Db, a: SeedAllocation): Promise<void> {
+  await db.insert(sidecar).values({
+    id: a.sidecarId,
+    tokenHashSha256: new Uint8Array(32),
+    provisionerId: "test",
+    provisionerApiVersion: 2,
+    provisionerBindingFingerprint: "test:1",
+    adapterManifestDigest: "1".repeat(64),
+  });
+  await db.insert(sidecarAllocation).values({
+    id: a.allocationId,
+    tenantId: a.tenantId,
+    anchorRunId: a.anchorRunId,
+    sidecarId: a.sidecarId,
+    generation: a.generation,
+    ensureAcceptedGeneration: a.generation,
+    status: "allocated",
+    provisionerId: "test",
+    provisionerApiVersion: 2,
+    provisionerBindingFingerprint: "test:1",
+    adapterManifestDigest: "1".repeat(64),
+    maxDisconnectedMs: 900_000,
   });
 }
 

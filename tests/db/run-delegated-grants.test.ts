@@ -23,7 +23,6 @@ import {
   principal,
   principalRole,
   role,
-  sidecar,
   sidecarAllocation,
   workflowDefinition,
   workflowRun,
@@ -44,6 +43,7 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
+  seedAllocation,
   seedAsset,
   seedGrant,
   seedPrincipal,
@@ -758,30 +758,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Give run_a's deployment a sidecar allocation, so a resolve takes the
       // provisioned path: it locks the allocation and the run rows and
       // enqueues the decision for durable dispatch.
-      async function seedAllocation() {
-        await h.db.insert(sidecar).values({
-          id: "sidecar_a",
-          tokenHashSha256: new Uint8Array(32),
-          provisionerId: "test",
-          provisionerApiVersion: 2,
-          provisionerBindingFingerprint: "test:1",
-          adapterManifestDigest: "1".repeat(64),
-        });
-        await h.db.insert(sidecarAllocation).values({
-          id: "alloc_a",
-          tenantId: TENANT,
-          anchorRunId: "run_a",
-          sidecarId: "sidecar_a",
-          generation: 1,
-          ensureAcceptedGeneration: 1,
-          status: "allocated",
-          provisionerId: "test",
-          provisionerApiVersion: 2,
-          provisionerBindingFingerprint: "test:1",
-          adapterManifestDigest: "1".repeat(64),
-          maxDisconnectedMs: 900_000,
-        });
-      }
+      const ALLOCATION_A = {
+        tenantId: TENANT,
+        anchorRunId: "run_a",
+        sidecarId: "sidecar_a",
+        allocationId: "alloc_a",
+        generation: 1,
+      };
 
       function resolve(
         status: "approved" | "rejected",
@@ -949,7 +932,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           anchorRunId: "run_a",
           requirements: [ASK_SEARCH],
         });
-        await seedAllocation();
+        await seedAllocation(h.db, ALLOCATION_A);
         const until = inHours(2);
         await seedGrant(h.db, {
           id: "grt_creator_tools",
@@ -976,7 +959,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           anchorRunId: "run_a",
           requirements: [ASK_SEARCH],
         });
-        await seedAllocation();
+        await seedAllocation(h.db, ALLOCATION_A);
         await seedPendingApproval(run);
         const locked = Promise.withResolvers<number>();
         const release = Promise.withResolvers<undefined>();
