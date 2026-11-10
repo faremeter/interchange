@@ -24,6 +24,7 @@ import {
 import type { MailSendAuthorizer } from "@intx/authz";
 import {
   correlationIdFromSignalName,
+  DELIVERY_KEY_PREFIX,
   ErrorResponse,
   deriveWorkflowRunId,
   findUnstorableStepState,
@@ -570,14 +571,13 @@ export function createWorkflowRoutes({
     describeRoute({
       tags: ["Workflows"],
       summary: "Deliver a signal to a workflow run",
-      description:
-        "Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it. An onTrigger body await is addressed by correlationId from that relay's SignalAwaited together with the author signalName. Omit correlationId to address a name-FIFO await, such as a loop or a top-level gate.",
+      description: `Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it. A signalId may not start with "${DELIVERY_KEY_PREFIX}", which is reserved for mail delivery keys. An onTrigger body await is addressed by correlationId from that relay's SignalAwaited together with the author signalName. Omit correlationId to address a name-FIFO await, such as a loop or a top-level gate.`,
       responses: {
         202: {
           description: "Signal accepted for delivery",
         },
         400: jsonResponse(
-          "Reserved signal name or a runId that is not the deployment's addressable run",
+          `Reserved signal name, a signalId with the reserved ${DELIVERY_KEY_PREFIX} prefix, or a runId that is not the deployment's addressable run`,
           ErrorResponse,
         ),
         404: jsonResponse("Workflow deployment not found", ErrorResponse),
@@ -645,6 +645,16 @@ export function createWorkflowRoutes({
           c,
           "reserved_signal_name",
           "signalName names a reserved control-plane channel; deliver author-named signals only",
+        );
+      }
+
+      // The prefix is reserved for mail delivery keys (`deriveDeliveryKey`),
+      // so a caller's signalId never equals one.
+      if (body.signalId.startsWith(DELIVERY_KEY_PREFIX)) {
+        return errorResponse(
+          c,
+          "reserved_signal_id",
+          `signalId may not start with "${DELIVERY_KEY_PREFIX}"; that prefix is reserved for mail delivery keys`,
         );
       }
 

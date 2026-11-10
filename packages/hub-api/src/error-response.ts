@@ -33,6 +33,7 @@ const STATUS_BY_CODE: Readonly<Record<string, ContentfulStatusCode>> = {
   step_state_unreadable: 500,
   step_state_unwritable: 500,
   reserved_signal_name: 400,
+  reserved_signal_id: 400,
   unaddressable_run: 400,
   signal_id_conflict: 409,
   path_violation: 400,

@@ -693,12 +693,12 @@ Lists the workflow deployments for the tenant, most recent first.
 ### POST /api/tenants/:tenantId/workflows/:runId/signals
 Deliver a signal to a workflow run
 
-Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it. An onTrigger body await is addressed by correlationId from that relay's SignalAwaited together with the author signalName. Omit correlationId to address a name-FIFO await, such as a loop or a top-level gate.
+Delivers a caller-supplied, stable signal to the named run of a workflow deployment. The signalId must be supplied by the caller; the run state machine dedups on it. A signalId may not start with "mail-", which is reserved for mail delivery keys. An onTrigger body await is addressed by correlationId from that relay's SignalAwaited together with the author signalName. Omit correlationId to address a name-FIFO await, such as a loop or a top-level gate.
 
 Body: unknown
 
 202: (no content) -- Signal accepted for delivery
-400: ErrorResponse -- Reserved signal name or a runId that is not the deployment's addressable run
+400: ErrorResponse -- Reserved signal name, a signalId with the reserved mail- prefix, or a runId that is not the deployment's addressable run
 404: ErrorResponse -- Workflow deployment not found
 409: ErrorResponse -- Workflow run has not started, is terminal, its deployment allocation is no longer active, or the signalId conflicts with a previously accepted payload
 502: ErrorResponse -- Sidecar unavailable
