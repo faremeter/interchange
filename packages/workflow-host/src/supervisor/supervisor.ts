@@ -52,6 +52,7 @@ import {
 
 import { generateKeyPair } from "@intx/crypto";
 import {
+  claimCheckIdentity,
   enqueueInbox as defaultEnqueueInbox,
   dequeueToProcessing as defaultDequeueToProcessing,
   markConsumed as defaultMarkConsumed,
@@ -3322,13 +3323,13 @@ export function createWorkflowSupervisor(
         bindings.workflowRunRepoId,
       );
       const replayDone = scanDone
-        .then(({ ownedMessageIds }) =>
+        .then(({ ownedIdentities }) =>
           inboxPrimitives.replayProcessingToInbox(
             bindings.repoStore,
             inboxWritePrincipal,
             bindings.workflowRunRepoId,
             bindings.deploymentMailAddress,
-            { ownedMessageIds },
+            { ownedIdentities },
           ),
         )
         .then(() => {
@@ -4141,7 +4142,7 @@ export function createWorkflowSupervisor(
         bindings.workflowRunRepoId,
         {
           address: bindings.deploymentMailAddress,
-          messageId: envelope.messageId,
+          identity: claimCheckIdentity(envelope),
           runId,
           consumedAt: Date.now(),
           retentionHorizonMs: consumedRetentionMs,

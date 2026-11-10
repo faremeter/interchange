@@ -466,7 +466,7 @@ describe("P2 consumed/-retention microbench", () => {
       const mc0 = performance.now();
       await markConsumed(store, HUB, repoId, {
         address: BENCH_ADDRESS,
-        messageId,
+        identity: messageId,
         runId: `r-${String(i)}`,
         consumedAt: t,
         retentionHorizonMs: horizonMs,

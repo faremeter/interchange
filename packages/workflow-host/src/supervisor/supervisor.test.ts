@@ -826,13 +826,13 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       if (state.consumed.has(args.messageId)) {
         return { outcome: "already-present", reason: "consumed" };
       }
-      for (const existingKey of state.inbox.keys()) {
-        if (existingKey.endsWith(`-${args.messageId}`)) {
+      for (const entry of state.inbox.values()) {
+        if (entry.messageId === args.messageId) {
           return { outcome: "already-present", reason: "already_inbox" };
         }
       }
-      for (const existingKey of state.processing.keys()) {
-        if (existingKey.endsWith(`-${args.messageId}`)) {
+      for (const entry of state.processing.values()) {
+        if (entry.messageId === args.messageId) {
           return { outcome: "already-present", reason: "processing" };
         }
       }
@@ -890,7 +890,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       let foundKey: string | null = null;
       let envelope: MemoryInboxEntry | null = null;
       for (const [key, value] of state.processing) {
-        if (value.messageId === args.messageId) {
+        if (value.messageId === args.identity) {
           foundKey = key;
           envelope = value;
           break;
@@ -898,7 +898,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       }
       if (foundKey === null || envelope === null) {
         throw new Error(
-          `claim_check_processing_not_found: ${args.address} ${args.messageId}`,
+          `claim_check_processing_not_found: ${args.address} ${args.identity}`,
         );
       }
       state.processing.delete(foundKey);
@@ -907,7 +907,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
         ...envelope,
         ...(args.rejection !== undefined ? { rejection: args.rejection } : {}),
       };
-      state.consumed.set(args.messageId, consumedEntry);
+      state.consumed.set(args.identity, consumedEntry);
       changes.notify();
       return {
         commitSha: "memory-inbox",
@@ -922,7 +922,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
             : {}),
         },
         watermark: 0,
-        prunedMessageIds: [],
+        prunedIdentities: [],
       };
     },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {

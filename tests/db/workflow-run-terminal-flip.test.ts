@@ -260,7 +260,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await dequeueToProcessing(store, writer, repoId, DEPLOYMENT_ADDRESS);
       await markConsumed(store, writer, repoId, {
         address: DEPLOYMENT_ADDRESS,
-        messageId,
+        identity: messageId,
         runId: DEPLOYMENT,
         consumedAt: now,
         rejection: { code: "malformed_mail", message: "Missing MIME bytes" },

@@ -162,9 +162,9 @@ function createMemoryInbox(): InboxPrimitives & {
     async markConsumed(_s, _p, _r, args) {
       const s = get(args.address);
       for (const [key, value] of s.processing) {
-        if (value.messageId === args.messageId) {
+        if (value.messageId === args.identity) {
           s.processing.delete(key);
-          s.consumed.set(args.messageId, value);
+          s.consumed.set(args.identity, value);
           return {
             commitSha: "memory",
             envelope: {
@@ -175,7 +175,7 @@ function createMemoryInbox(): InboxPrimitives & {
               consumedAt: args.consumedAt,
             },
             watermark: 0,
-            prunedMessageIds: [],
+            prunedIdentities: [],
           };
         }
       }
@@ -308,7 +308,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     const wrappedInbox: InboxPrimitives = {
       ...inbox,
       async markConsumed(s, p, r, args) {
-        consumedRecord.push(args.messageId);
+        consumedRecord.push(args.identity);
         consumedChanges.notify();
         return inbox.markConsumed(s, p, r, args);
       },

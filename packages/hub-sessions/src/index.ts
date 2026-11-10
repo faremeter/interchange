@@ -203,6 +203,7 @@ export {
   dequeueToProcessing,
   readProcessingEntry,
   markConsumed,
+  claimCheckIdentity,
   classifyTerminalEvent,
   scanRunsForBoot,
   readCommittedWorkflowRunLifecycle,

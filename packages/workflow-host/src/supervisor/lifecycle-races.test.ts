@@ -120,7 +120,7 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
       let foundKey: string | null = null;
       let envelope: Entry | null = null;
       for (const [k, value] of s.processing) {
-        if (value.messageId === args.messageId) {
+        if (value.messageId === args.identity) {
           foundKey = k;
           envelope = value;
           break;
@@ -130,7 +130,7 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
         throw new Error("processing entry not found");
       }
       s.processing.delete(foundKey);
-      s.consumed.set(args.messageId, envelope);
+      s.consumed.set(args.identity, envelope);
       return {
         commitSha: "memory",
         envelope: {
@@ -141,7 +141,7 @@ function createMemoryInboxPrimitives(): InboxPrimitives {
           consumedAt: args.consumedAt,
         },
         watermark: 0,
-        prunedMessageIds: [],
+        prunedIdentities: [],
       };
     },
     async replayProcessingToInbox(_store, _principal, _repoId, address) {
