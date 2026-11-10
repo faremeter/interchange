@@ -7,12 +7,17 @@
 // - the routing headers. The signature covers only the signed body part, so
 //   From, To, Message-ID and the type header are outside it. These checks
 //   keep the request consistent with the authenticated caller and the route's
-//   target; they prove nothing cryptographically. The Message-ID must name
-//   the caller, so a caller cannot reuse another sender's. The recipient binds the
+//   target; they prove nothing cryptographically. The recipient binds the
 //   sender through the hub's stamp (the caller's address), the visible From,
 //   and the key the hub co-delivers.
 // - the signature, against the key the hub vouches for at the caller's
 //   address, which is the key the recipient is given.
+//
+// The hub checks only the syntax of the caller's Message-ID. RFC 6409
+// section 8.3 lets a submission server change a Message-ID only when it is
+// missing or invalid, so the hub refuses an invalid one and does not change a
+// valid one. The receiver de-duplicates by the authenticated sender and the
+// Message-ID, so a caller cannot collide with another sender's Message-ID.
 //
 // The bytes the hub verified are the bytes it relays: the request's base64 is
 // decoded once and re-encoded, so a lenient decode cannot let the relayed
@@ -23,7 +28,6 @@ import {
   isDotAtomText,
   isMessageId,
   parseHeaderFields,
-  senderMessageIdScope,
   verifyMimeSignature,
 } from "@intx/mime";
 import {
@@ -34,8 +38,9 @@ import {
 import { base64Decode, hexDecode } from "@intx/types";
 
 /**
- * The longest Message-ID a caller may choose. It becomes part of the durable
- * dispatch id and is logged, so it is held well under the RFC 5322 line limit.
+ * The longest Message-ID a caller may choose. The hub stores it in the
+ * durable dispatch row and logs it, so the limit is well under the RFC 5322
+ * line limit.
  */
 const MAX_CALLER_MESSAGE_ID_LENGTH = 256;
 
@@ -91,16 +96,6 @@ function single(
   const [value] = values;
   if (value === undefined) return invalidHeader(`${name} is missing`);
   return value;
-}
-
-// A caller whose address has no Message-ID scope cannot send caller-signed
-// mail; `checkCallerSignedMail` refuses its message.
-function messageIdScopeOf(address: string): string | null {
-  try {
-    return senderMessageIdScope(address);
-  } catch {
-    return null;
-  }
 }
 
 function sameAddress(headerValue: string, expected: string): boolean {
@@ -183,27 +178,20 @@ function checkCallerSignedMail(
 
   const messageId = single(fields, "message-id");
   if (typeof messageId !== "string") return messageId;
-  // `isMessageId` checks the shape; the id-left must also be dot-atom-text,
-  // so no control character or non-ASCII text reaches the dispatch store or
-  // the recipient.
+  // `isMessageId` checks the shape and refuses an `@` on either side, so the
+  // first `@` splits the id. Both sides must also be dot-atom-text, so no
+  // control character or non-ASCII text reaches the dispatch store or the
+  // recipient. RFC 5322 also allows a domain literal on the right side; the
+  // hub refuses one.
+  const at = messageId.indexOf("@");
   if (
     !isMessageId(messageId) ||
-    !isDotAtomText(messageId.slice(1, messageId.indexOf("@"))) ||
+    !isDotAtomText(messageId.slice(1, at)) ||
+    !isDotAtomText(messageId.slice(at + 1, -1)) ||
     messageId.length > MAX_CALLER_MESSAGE_ID_LENGTH
   ) {
     return invalidHeader(
       `message-id must be an RFC 5322 message identifier of at most ${String(MAX_CALLER_MESSAGE_ID_LENGTH)} characters`,
-    );
-  }
-  // The receiver de-duplicates by Message-ID, and the caller chooses it, so
-  // the id must name the caller: then it can never equal a Message-ID another
-  // sender minted. `isMessageId` refuses an `@` on either side, so the first
-  // `@` splits the id.
-  const scope = messageIdScopeOf(args.callerAddress);
-  const idRight = messageId.slice(messageId.indexOf("@") + 1, -1);
-  if (scope === null || idRight !== scope) {
-    return invalidHeader(
-      `message-id must name the caller after its "@": <...@${scope ?? "(none)"}>`,
     );
   }
 

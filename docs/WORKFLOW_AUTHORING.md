@@ -680,9 +680,7 @@ message, and the run code gets the result. The signer sends nothing.
   and a compose cut off by the child's shutdown.
 - Address the message to the target run's own address,
   `<targetRunId>@<tenant domain>`; the hub refuses any other `To`. Keep the
-  `Message-ID` that `compose` stamps: it names the run, and the hub refuses
-  an ID that does not. To send
-  it, post `{ rawMessage }` to
+  `Message-ID` that `compose` stamps. To send it, post `{ rawMessage }` to
   `/api/tenants/self/workflows/runs/<targetRunId>/mail` through the
   `interchange.hub` credential (item 32). The hub checks the headers and the
   signature, then relays the message as the run's own mail. The run needs

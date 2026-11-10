@@ -39,7 +39,7 @@ import {
   assembleMessage,
   assembleSignedContent,
   createDetachedSignatureFromProvider,
-  generateSenderScopedMessageId,
+  generateMessageId,
 } from "@intx/mime";
 import { base64Decode, base64Encode, hexEncode } from "@intx/types";
 import type { KeyPair } from "@intx/types/runtime";
@@ -71,6 +71,8 @@ const DOMAIN = `${tenantSlugFromId(TENANT).toLowerCase()}.example.test`;
 const SENDER = "run_rest_mail_sender";
 const TARGET = "run_rest_mail_target";
 const SENDER_ADDRESS = `${SENDER}@${DOMAIN}`;
+const OTHER_SENDER = "run_rest_mail_other_sender";
+const OTHER_SENDER_ADDRESS = `${OTHER_SENDER}@${DOMAIN}`;
 const TARGET_ADDRESS = `${TARGET}@${DOMAIN}`;
 const CREATOR = "prn_rest_mail_creator";
 const CONSUMER = "action:relay";
@@ -109,8 +111,9 @@ function stubRepoStore(): RepoStore {
 
 async function signedMail(
   keyPair: KeyPair,
-  messageId: string = generateSenderScopedMessageId(SENDER_ADDRESS),
+  messageId: string = generateMessageId(SENDER_ADDRESS),
   text = "from the sender run",
+  from = SENDER_ADDRESS,
 ): Promise<Uint8Array> {
   const signedContent = assembleSignedContent({
     kind: "conversation",
@@ -122,7 +125,7 @@ async function signedMail(
   );
   return assembleMessage(
     {
-      from: SENDER_ADDRESS,
+      from,
       to: [TARGET_ADDRESS],
       cc: undefined,
       date: new Date("2026-01-15T12:00:00Z"),
@@ -171,46 +174,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         refId: `${CREATOR}-user`,
       });
 
-      // The sender: a deployment whose run principal holds its sidecar key,
-      // a run token for its action, and the grants a run needs to mail
-      // another run.
-      senderKey = await generateKeyPair();
-      await seedWorkflowRun(h.db, {
-        id: SENDER,
-        tenantId: TENANT,
-        address: SENDER_ADDRESS,
-        publicKey: hexEncode(senderKey.publicKey),
-      });
-      const senderPrincipal = await deriveRunPrincipalId(TENANT, SENDER);
-      const tokens = createRunTokenStore({
-        db: h.db,
-        cipher: createNoopCredentialCipher(),
-      });
-      await tokens.mintIfAbsent(
-        { principalId: senderPrincipal, consumers: [CONSUMER] },
-        h.db,
-      );
-      const [delivered] = await tokens.loadDelivery(senderPrincipal);
-      if (delivered === undefined) throw new Error("expected a run token");
-      token = delivered.token;
-      await seedGrant(h.db, {
-        id: "grt_sender_manage_target",
-        tenantId: TENANT,
-        resource: `workflow-run:${TARGET}`,
-        action: "manage",
-        effect: "allow",
-        origin: "creator",
-        principalId: senderPrincipal,
-      });
-      await seedGrant(h.db, {
-        id: "grt_sender_send",
-        tenantId: TENANT,
-        resource: "mail.send:*:*",
-        action: "send",
-        effect: "allow",
-        origin: "creator",
-        principalId: senderPrincipal,
-      });
+      ({ key: senderKey, token } = await seedSender(SENDER, SENDER_ADDRESS));
 
       // The target: a deployment that has not fired.
       await seedAsset(h.db, {
@@ -248,6 +212,48 @@ describe.skipIf(!harnessDbEnvAvailable())(
         grantSnapshot: { perStep: [], grantRequirements: [] },
       });
     });
+
+    // A sender: a deployment whose run principal holds its sidecar key, a run
+    // token for its action, and the grants a run needs to mail the target.
+    async function seedSender(
+      runId: string,
+      address: string,
+    ): Promise<{ key: KeyPair; token: string }> {
+      const key = await generateKeyPair();
+      await seedWorkflowRun(h.db, {
+        id: runId,
+        tenantId: TENANT,
+        address,
+        publicKey: hexEncode(key.publicKey),
+      });
+      const principalId = await deriveRunPrincipalId(TENANT, runId);
+      const tokens = createRunTokenStore({
+        db: h.db,
+        cipher: createNoopCredentialCipher(),
+      });
+      await tokens.mintIfAbsent({ principalId, consumers: [CONSUMER] }, h.db);
+      const [delivered] = await tokens.loadDelivery(principalId);
+      if (delivered === undefined) throw new Error("expected a run token");
+      await seedGrant(h.db, {
+        id: `grt_${runId}_manage_target`,
+        tenantId: TENANT,
+        resource: `workflow-run:${TARGET}`,
+        action: "manage",
+        effect: "allow",
+        origin: "creator",
+        principalId,
+      });
+      await seedGrant(h.db, {
+        id: `grt_${runId}_send`,
+        tenantId: TENANT,
+        resource: "mail.send:*:*",
+        action: "send",
+        effect: "allow",
+        origin: "creator",
+        principalId,
+      });
+      return { key, token: delivered.token };
+    }
 
     function stubRouter() {
       return createSidecarRouter({
@@ -289,13 +295,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
     async function postMail(
       app: ReturnType<typeof makeApp>,
       raw: Uint8Array,
+      bearer = token,
     ): Promise<Response> {
       return app.request(
         `/api/tenants/${TENANT}/workflows/runs/${TARGET}/mail`,
         {
           method: "POST",
           headers: {
-            authorization: `Bearer ${token}`,
+            authorization: `Bearer ${bearer}`,
             "content-type": "application/json",
           },
           body: JSON.stringify({ rawMessage: base64Encode(raw) }),
@@ -410,8 +417,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("queues a re-sent Message-ID once, and refuses it with other bytes", async () => {
         const routed: Parameters<SidecarRouter["routeMail"]>[] = [];
         const app = makeApp(routed, makeDispatchService());
-        // A caller-signed Message-ID names the sender's own scope.
-        const messageId = `<durable-1@${SENDER}.${DOMAIN}>`;
+        const messageId = `<durable-1@${DOMAIN}>`;
         const raw = await signedMail(senderKey, messageId);
 
         for (const attempt of [1, 2]) {
@@ -442,6 +448,57 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await Promise.all(drains);
         expect(dispatched).toEqual([messageId]);
         // The durable path never takes the live relay.
+        expect(routed).toEqual([]);
+      });
+
+      test("queues one Message-ID from two senders as two dispatches", async () => {
+        const other = await seedSender(OTHER_SENDER, OTHER_SENDER_ADDRESS);
+        const routed: Parameters<SidecarRouter["routeMail"]>[] = [];
+        const app = makeApp(routed, makeDispatchService());
+        const messageId = `<shared-1@${DOMAIN}>`;
+
+        const posts: [string, Uint8Array, string][] = [
+          [SENDER, await signedMail(senderKey, messageId), token],
+          [
+            OTHER_SENDER,
+            await signedMail(
+              other.key,
+              messageId,
+              "from the other sender run",
+              OTHER_SENDER_ADDRESS,
+            ),
+            other.token,
+          ],
+        ];
+        for (const [sender, raw, bearer] of posts) {
+          const res = await postMail(app, raw, bearer);
+          if (res.status !== 202) {
+            throw new Error(
+              `${sender}: expected 202, got ${String(res.status)}: ${await res.text()}`,
+            );
+          }
+        }
+
+        const rows = await h.db
+          .select({
+            messageId: workflowRunDispatch.messageId,
+            deliveryKey: workflowRunDispatch.deliveryKey,
+            senderAddress: workflowRunDispatch.senderAddress,
+          })
+          .from(workflowRunDispatch)
+          .where(eq(workflowRunDispatch.anchorRunId, TARGET));
+        expect(rows).toHaveLength(2);
+        expect(rows.map((row) => row.messageId)).toEqual([
+          messageId,
+          messageId,
+        ]);
+        expect(new Set(rows.map((row) => row.deliveryKey)).size).toBe(2);
+        expect(new Set(rows.map((row) => row.senderAddress))).toEqual(
+          new Set([SENDER_ADDRESS, OTHER_SENDER_ADDRESS]),
+        );
+
+        await Promise.all(drains);
+        expect(dispatched).toEqual([messageId, messageId]);
         expect(routed).toEqual([]);
       });
     });

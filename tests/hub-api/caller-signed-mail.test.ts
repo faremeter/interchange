@@ -20,7 +20,6 @@ import {
   assembleSignedContent,
   createDetachedSignatureFromProvider,
   generateMessageId,
-  generateSenderScopedMessageId,
   type MessageHeaders,
 } from "@intx/mime";
 import { base64Encode, hexEncode } from "@intx/types";
@@ -51,8 +50,6 @@ const SENDER = `${SENDER_RUN}@${DOMAIN}`;
 const TARGET = `${TARGET_RUN}@${DOMAIN}`;
 const USER_PRINCIPAL = "prn_caller_signed_user";
 const USER_REF = "usr_caller_signed";
-// The id-right a sender's Message-IDs must carry.
-const SCOPE = `${SENDER_RUN}.${DOMAIN}`;
 
 type Overrides = Partial<
   Pick<
@@ -75,7 +72,7 @@ async function signedMessage(
     to: [TARGET],
     cc: undefined,
     date: new Date("2026-01-15T12:00:00Z"),
-    messageId: generateSenderScopedMessageId(SENDER),
+    messageId: generateMessageId(SENDER),
     subject: undefined,
     inReplyTo: undefined,
     references: undefined,
@@ -169,7 +166,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           createDetachedSignatureWithSigner(content, (input) =>
             principalKeyStore().sign(USER_PRINCIPAL, input),
           ),
-        { from: user, messageId: generateSenderScopedMessageId(user) },
+        { from: user, messageId: generateMessageId(user) },
       );
       const admitted = await admit(raw, user);
       expect("status" in admitted).toBe(false);
@@ -185,7 +182,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("refuses a message with no signature", async () => {
       const unsigned = new TextEncoder().encode(
-        `From: ${SENDER}\r\nTo: ${TARGET}\r\nMessage-ID: <a@${SENDER_RUN}.${DOMAIN}>\r\nInterchange-Type: conversation.message\r\n\r\nhi`,
+        `From: ${SENDER}\r\nTo: ${TARGET}\r\nMessage-ID: <a@${DOMAIN}>\r\nInterchange-Type: conversation.message\r\n\r\nhi`,
       );
       expect(await admit(unsigned)).toMatchObject({
         status: 400,
@@ -216,29 +213,39 @@ describe.skipIf(!harnessDbEnvAvailable())(
           "an oversized message id",
           { messageId: `<${"x".repeat(300)}@b.test>` },
         ],
-        [
-          "a message id in the plain domain",
-          { messageId: generateMessageId(SENDER) },
-        ],
-        ["a message id with a NUL", { messageId: `<a\u0000b@${SCOPE}>` }],
+        ["a message id with a NUL", { messageId: `<a\u0000b@${DOMAIN}>` }],
         [
           "a message id with a control character",
-          { messageId: `<a\u0007b@${SCOPE}>` },
+          { messageId: `<a\u0007b@${DOMAIN}>` },
         ],
-        ["a message id with DEL", { messageId: `<a\u007fb@${SCOPE}>` }],
+        ["a message id with DEL", { messageId: `<a\u007fb@${DOMAIN}>` }],
         [
           "a message id with non-ASCII text",
-          { messageId: `<caf\u00e9@${SCOPE}>` },
+          { messageId: `<caf\u00e9@${DOMAIN}>` },
         ],
         [
-          "another sender's message id",
-          { messageId: generateSenderScopedMessageId(`run_other@${DOMAIN}`) },
+          "a message id with a NUL on the right",
+          { messageId: `<a@b\u0000c.test>` },
         ],
         [
-          "a message id scoped in upper case",
-          {
-            messageId: `<x@${SENDER_RUN.toUpperCase()}.${DOMAIN}>`,
-          },
+          "a message id with a control character on the right",
+          { messageId: `<a@b\u0007c.test>` },
+        ],
+        [
+          "a message id with DEL on the right",
+          { messageId: `<a@b\u007fc.test>` },
+        ],
+        [
+          "a message id with non-ASCII text on the right",
+          { messageId: `<a@caf\u00e9.test>` },
+        ],
+        [
+          "a message id with an empty atom on the right",
+          { messageId: `<a@..>` },
+        ],
+        [
+          "a message id with a domain literal",
+          { messageId: `<a@[127.0.0.1]>` },
         ],
       ];
       for (const [label, overrides] of cases) {
@@ -247,6 +254,27 @@ describe.skipIf(!harnessDbEnvAvailable())(
           label,
           result: { status: 400, code: "mail_header_invalid" },
         });
+      }
+    });
+
+    test("admits any well-formed message id the caller chooses", async () => {
+      // The receiver de-duplicates by the sender and the Message-ID, so the
+      // hub checks only the syntax of the id.
+      const sign = signerFor(runKey);
+      const cases: [string, string][] = [
+        ["a message id in the plain domain", generateMessageId(SENDER)],
+        ["a message id that names another sender", `<x@run_other.${DOMAIN}>`],
+        [
+          "a message id that names the caller in upper case",
+          `<x@${SENDER_RUN.toUpperCase()}.${DOMAIN}>`,
+        ],
+      ];
+      for (const [label, messageId] of cases) {
+        const result = await admit(await signedMessage(sign, { messageId }));
+        if ("status" in result) {
+          throw new Error(`${label} refused: ${result.code} ${result.message}`);
+        }
+        expect(result.messageId).toBe(messageId);
       }
     });
 
