@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
-import { createMockMailBus } from "./mail-bus";
+import { createMockMailBus, inboundDelivery } from "./mail-bus";
 
 describe("createMockMailBus", () => {
   test("awaitRegistered is satisfied by an address already registered", async () => {
@@ -35,10 +35,13 @@ describe("createMockMailBus", () => {
   test("deliver reaches the handler subscribed for the address", async () => {
     const bus = createMockMailBus();
     const seen: string[] = [];
-    bus.subscribeMailForAddress("run_w@example.com", async (raw) => {
-      seen.push(new TextDecoder().decode(raw));
+    bus.subscribeMailForAddress("run_w@example.com", async (delivery) => {
+      seen.push(new TextDecoder().decode(delivery.rawMessage));
     });
-    bus.deliver("run_w@example.com", new TextEncoder().encode("hello"));
+    bus.deliver(
+      "run_w@example.com",
+      inboundDelivery(new TextEncoder().encode("hello")),
+    );
     await waitForLength(seen, 1);
     expect(seen).toEqual(["hello"]);
   });

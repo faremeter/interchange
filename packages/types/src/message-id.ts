@@ -65,6 +65,12 @@ export async function deriveDeliveryKey(
   return DELIVERY_KEY_PREFIX + hexEncode(new Uint8Array(digest));
 }
 
+/** An inbound mail and the sender the hub authenticated for it. */
+export type InboundDelivery = {
+  readonly rawMessage: Uint8Array;
+  readonly authenticatedSender: string;
+};
+
 const BARE_LINE_BREAK = /\r(?!\n)|(?<!\r)\n/;
 // Two line breaks back to back, of any flavour. The single-CR branch excludes a
 // CR that an LF follows, or backtracking would let one CRLF satisfy both halves.

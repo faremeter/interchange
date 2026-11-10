@@ -22,6 +22,7 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import type { SignedMessageBytes } from "@intx/mail-memory";
 import type { SignalKind } from "@intx/types";
+import type { InboundDelivery } from "@intx/types/message-id";
 import type {
   ApprovalSnapshot,
   OutboundMessage,
@@ -107,14 +108,15 @@ export type PrincipalSigner = (
  * supervisor to `InMemoryTransport` or any other concrete bus.
  *
  * `subscribeMailForAddress` returns a disposer the supervisor calls
- * during teardown. The supplied handler is invoked with the raw RFC
- * 2822 message bytes of each inbound message at the address, and returns
- * a promise that resolves once the message is durably accepted (its inbox
- * write landed, or the message was already durably present) and rejects
- * when it was not (a transient failure, a stale refusal, or a phase where
- * the deployment is tearing down). The host propagates that settlement to
- * the wire so a durable-receipt ack is sent only on resolution -- resolve
- * is the ack signal, reject is the withhold signal.
+ * during teardown. The supplied handler is invoked with the delivery of
+ * each inbound message at the address: the raw RFC 2822 message bytes and
+ * the sender the hub authenticated for them. It returns a promise that
+ * resolves once the message is durably accepted (its inbox write landed, or
+ * the message was already durably present) and rejects when it was not (a
+ * transient failure, a stale refusal, or a phase where the deployment is
+ * tearing down). The host propagates that settlement to the wire so a
+ * durable-receipt ack is sent only on resolution -- resolve is the ack
+ * signal, reject is the withhold signal.
  *
  * `sendOutbound` is the OUTBOUND half of mailbox ownership (§3a). The
  * supervisor is the sole mail owner: the workflow-process child never
@@ -139,7 +141,7 @@ export interface MailBusBindings {
   unregisterAddress(address: string): void;
   subscribeMailForAddress(
     address: string,
-    handler: (rawMessage: Uint8Array) => Promise<void>,
+    handler: (delivery: InboundDelivery) => Promise<void>,
   ): () => void;
   sendOutbound(
     senderAddress: string,

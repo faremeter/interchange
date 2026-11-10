@@ -20,6 +20,7 @@ import type {
   RepoStore,
 } from "@intx/hub-sessions/substrate";
 import { hexEncode } from "@intx/types/hex";
+import type { InboundDelivery } from "@intx/types/message-id";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { workflowSourceAssetMountPath } from "@intx/types/workflow-sources";
 import type { CredentialCipher } from "@intx/types/credential-cipher";
@@ -464,12 +465,13 @@ export type CreateSidecarWorkflowSupervisorOpts = {
 export type SidecarWorkflowSupervisor = {
   supervisor: WorkflowSupervisor;
   /**
-   * Hand a delivered inbound message off to the supervisor's mail
-   * subscription. The returned promise resolves once the message is durably
-   * accepted and rejects when it was not, so the hub-link can send a
-   * `mail.inbound.ack` only on resolution (resolve = ack, reject = withhold).
+   * Hand a delivered inbound mail and its authenticated sender off to the
+   * supervisor's mail subscription. The returned promise resolves once the
+   * message is durably accepted and rejects when it was not, so the hub-link
+   * can send a `mail.inbound.ack` only on resolution (resolve = ack, reject
+   * = withhold).
    */
-  routeInbound(message: Uint8Array): Promise<void>;
+  routeInbound(delivery: InboundDelivery): Promise<void>;
   /**
    * The per-run grants source the supervisor reads before firing a run's
    * trigger and for each new child's `authority.set` frame. Rejects for a
@@ -1923,8 +1925,8 @@ export function createSidecarDeployRouter<
       // supervisor's mail-bus subscription. Registration happens after
       // `spawn` succeeds so a spawn-time rejection leaves the registry
       // untouched.
-      deps.multistepMailRouter?.register(spec.agentAddress, (message) =>
-        wired.routeInbound(message),
+      deps.multistepMailRouter?.register(spec.agentAddress, (delivery) =>
+        wired.routeInbound(delivery),
       );
       // Resolve this deployment's authored inbound-mail policy into a total
       // decision map ONCE and store it beside the mail-router registration, so
@@ -2980,8 +2982,8 @@ export function createSidecarWorkflowSupervisor(
   });
   return {
     supervisor,
-    routeInbound(message) {
-      return mailBus.routeInbound(opts.deploymentMailAddress, message);
+    routeInbound(delivery) {
+      return mailBus.routeInbound(opts.deploymentMailAddress, delivery);
     },
     onRunStart,
     closeOutbound,

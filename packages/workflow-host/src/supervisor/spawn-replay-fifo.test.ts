@@ -44,6 +44,7 @@ import {
   createStubRepoStore,
   sendDefinition,
   TEST_DEFINITION_HASH,
+  inboundDelivery,
 } from "@intx/workflow-host/testing";
 
 import {
@@ -474,7 +475,10 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     // event loop. Wait until the fresh mail lands in `inbox/` so the
     // race condition is fully armed before we inspect.
     const freshMessage = new TextEncoder().encode("fresh@example.com");
-    harness.mailBus.deliver(harness.deploymentMailAddress, freshMessage);
+    harness.mailBus.deliver(
+      harness.deploymentMailAddress,
+      inboundDelivery(freshMessage),
+    );
     await waitUntil(
       () =>
         harness.gatedInbox.snapshot(harness.deploymentMailAddress).inbox

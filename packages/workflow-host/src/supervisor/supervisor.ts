@@ -68,7 +68,7 @@ import {
 import { validateAttachments } from "@intx/types/attachment-validation";
 import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
 import { base64Decode, base64Encode } from "@intx/types/base64";
-import { deriveMessageId } from "@intx/types/message-id";
+import { deriveMessageId, type InboundDelivery } from "@intx/types/message-id";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import { signalName } from "@intx/types/signals";
 import { RepoId } from "@intx/types/repo";
@@ -1630,7 +1630,7 @@ export function createWorkflowSupervisor(
   // failure, or a stale refusal). The host propagates that settlement to the
   // wire, so resolution is the durable-receipt ACK signal and rejection is the
   // WITHHOLD signal -- a withheld message is redelivered by the hub.
-  async function onMailMessage(rawMessage: Uint8Array): Promise<void> {
+  async function onMailMessage(delivery: InboundDelivery): Promise<void> {
     // Every inbound mail flows through the FIFO inbox claim-check
     // queue, regardless of the supervisor's current phase. The
     // dispatch loop (started by `spawn()` and restarted by the
@@ -1657,7 +1657,7 @@ export function createWorkflowSupervisor(
       );
     }
     try {
-      await enqueueInboundMail(rawMessage);
+      await enqueueInboundMail(delivery);
     } catch (cause) {
       // Both branches WITHHOLD (rethrow); the split only sets log severity so
       // a stale refusal surfaces as its own loud signal rather than blending
@@ -1673,8 +1673,8 @@ export function createWorkflowSupervisor(
     }
   }
 
-  async function enqueueInboundMail(rawMessage: Uint8Array): Promise<void> {
-    const messageId = await deriveMessageId(rawMessage);
+  async function enqueueInboundMail(delivery: InboundDelivery): Promise<void> {
+    const messageId = await deriveMessageId(delivery.rawMessage);
     const receivedAt = Date.now();
     // Inline the raw mail bytes on the claim-check envelope so the
     // workflow-process child can recover its step input by messageId at
@@ -1682,7 +1682,7 @@ export function createWorkflowSupervisor(
     // and has no separate durable byte store the child reads; the bytes
     // survive the inbox->processing transition verbatim and are dropped
     // when `markConsumed` writes the dedup index.
-    const rawMessageBase64 = base64Encode(rawMessage);
+    const rawMessageBase64 = base64Encode(delivery.rawMessage);
     // D2 leg: `enqueueInbox` runs in `onMailMessage` BEFORE dispatch, so
     // it is paid OUTSIDE the dispatch-start..reply-produced window -- its
     // growth is invisible to the 4.7 bracket. This leg mark is keyed by the
@@ -1711,7 +1711,7 @@ export function createWorkflowSupervisor(
       // child BEFORE waking dispatch, so the warm agent's mail_wait can observe
       // it committed. Non-fatal by contract: the enqueue above already secured
       // the durable delivery, so this never withholds the ack.
-      await commitInboundToMailbox(messageId, rawMessage);
+      await commitInboundToMailbox(messageId, delivery.rawMessage);
       wakeDispatch();
     } else {
       // A redelivery of a message already durably present: the ack still

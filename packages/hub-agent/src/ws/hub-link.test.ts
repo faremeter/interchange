@@ -13,6 +13,7 @@ import { permitAllMailSend } from "@intx/authz/testing";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { base64Encode } from "@intx/types";
+import type { InboundDelivery } from "@intx/types/message-id";
 import type { HarnessConfig } from "@intx/types/runtime";
 
 import {
@@ -1220,10 +1221,13 @@ describe("sidecar↔hub integration", () => {
     // sessions.commitInboundMail.
     const deploymentAddress = "run_mail1@integration.interchange";
 
-    const routed: { address: string; bytes: Uint8Array }[] = [];
+    const routed: { address: string; delivery: InboundDelivery }[] = [];
     const mailInboundRouter = {
-      tryRoute(address: string, message: Uint8Array): Promise<void> | null {
-        routed.push({ address, bytes: message });
+      tryRoute(
+        address: string,
+        delivery: InboundDelivery,
+      ): Promise<void> | null {
+        routed.push({ address, delivery });
         return Promise.resolve();
       },
     };
@@ -1259,7 +1263,10 @@ describe("sidecar↔hub integration", () => {
 
       expect(routed).toHaveLength(1);
       expect(routed[0]?.address).toBe(deploymentAddress);
-      expect(routed[0]?.bytes).toEqual(VALID_MESSAGE);
+      expect(routed[0]?.delivery.rawMessage).toEqual(VALID_MESSAGE);
+      expect(routed[0]?.delivery.authenticatedSender).toBe(
+        "user@integration.interchange",
+      );
     } finally {
       client.close();
       await waitUntil(

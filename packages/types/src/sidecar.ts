@@ -489,7 +489,9 @@ export const MailInboundFrame = type({
   agentAddress: "string",
   generation: Generation,
   rawMessage: "string",
-  authenticatedSender: "string",
+  // Non-empty with no NUL, as `deriveDeliveryKey` requires of a sender: this
+  // is the sender the hub keys the delivery by.
+  authenticatedSender: /^[^\0]+$/,
   "messageId?": "string",
 });
 export type MailInboundFrame = typeof MailInboundFrame.infer;

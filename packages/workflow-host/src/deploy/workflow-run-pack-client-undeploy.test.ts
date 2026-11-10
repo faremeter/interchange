@@ -8,6 +8,9 @@
 
 import { describe, test, expect } from "bun:test";
 
+import type { InboundDelivery } from "@intx/types/message-id";
+import { inboundDelivery } from "@intx/workflow-host/testing";
+
 import {
   createDeploymentAddressRegistry,
   createMultistepDrainRouter,
@@ -18,14 +21,17 @@ import {
 describe("multistep router lifecycle: unregister", () => {
   test("MailRouter.unregister drops the handler so stale frames are not claimed", () => {
     const router = createMultistepMailRouter();
-    const delivered: Uint8Array[] = [];
+    const delivered: InboundDelivery[] = [];
     router.register("dep-A@x.example", async (msg) => {
       delivered.push(msg);
     });
 
     router.unregister("dep-A@x.example");
 
-    const claimed = router.tryRoute("dep-A@x.example", new Uint8Array([1]));
+    const claimed = router.tryRoute(
+      "dep-A@x.example",
+      inboundDelivery(new Uint8Array([1])),
+    );
     expect(claimed).toBeNull();
     expect(delivered).toHaveLength(0);
   });

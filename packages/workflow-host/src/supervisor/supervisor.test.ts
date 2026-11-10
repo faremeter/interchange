@@ -20,6 +20,7 @@ import {
   hexEncode,
   signalName,
 } from "@intx/types";
+import type { InboundDelivery } from "@intx/types/message-id";
 import type { InferenceSource, OutboundMessage } from "@intx/types/runtime";
 import { isMail } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
@@ -42,6 +43,7 @@ import {
   sendDefinition,
   TEST_DEFINITION,
   TEST_DEFINITION_HASH,
+  inboundDelivery,
 } from "@intx/workflow-host/testing";
 import { resumeFromLog } from "@intx/workflow/state-machine";
 
@@ -484,7 +486,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 // asserts. Structurally a superset of `createMockMailBus`'s shape so it drops
 // into the same spawn fixture.
 function createSettleableMailBus(): MockMailBus & {
-  settle(address: string, message: Uint8Array): Promise<void>;
+  settle(address: string, delivery: InboundDelivery): Promise<void>;
 } {
   // Composed on the shared double rather than reimplementing it, so the
   // registration waiter and the register/unregister history keep working.
@@ -492,22 +494,22 @@ function createSettleableMailBus(): MockMailBus & {
   // fires and forgets, while a test asserting on what the enqueue path
   // returned has to await the delivery it triggered.
   const base = createMockMailBus();
-  const handlers = new Map<string, (m: Uint8Array) => Promise<void>>();
+  const handlers = new Map<string, (d: InboundDelivery) => Promise<void>>();
   return {
     ...base,
     subscribeMailForAddress(
       address: string,
-      handler: (rawMessage: Uint8Array) => Promise<void>,
+      handler: (delivery: InboundDelivery) => Promise<void>,
     ) {
       handlers.set(address, handler);
       return base.subscribeMailForAddress(address, handler);
     },
-    settle(address: string, message: Uint8Array): Promise<void> {
+    settle(address: string, delivery: InboundDelivery): Promise<void> {
       const handler = handlers.get(address);
       if (handler === undefined) {
         throw new Error(`no subscriber for ${address}`);
       }
-      return handler(message);
+      return handler(delivery);
     },
   };
 }
@@ -1129,11 +1131,11 @@ describe("createWorkflowSupervisor", () => {
     // supervisor buffers it and replays it after `ready` lands.
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("m1"),
+      inboundDelivery(new TextEncoder().encode("m1")),
     );
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("m2"),
+      inboundDelivery(new TextEncoder().encode("m2")),
     );
     await childSender.send({ type: "ready" });
 
@@ -1337,7 +1339,7 @@ describe("createWorkflowSupervisor", () => {
       messageId: "<msg-1@example.com>",
       body: "first turn",
     });
-    wired.mailBus.deliver(MAILBOX_ADDRESS, raw);
+    wired.mailBus.deliver(MAILBOX_ADDRESS, inboundDelivery(raw));
 
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
@@ -1410,10 +1412,10 @@ describe("createWorkflowSupervisor", () => {
 
     // Deliver sequentially so the arrival order (and thus the assigned uids) is
     // deterministic, then confirm each arrival eager-committed on its own.
-    wired.mailBus.deliver(MAILBOX_ADDRESS, m1);
+    wired.mailBus.deliver(MAILBOX_ADDRESS, inboundDelivery(m1));
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    wired.mailBus.deliver(MAILBOX_ADDRESS, m2);
+    wired.mailBus.deliver(MAILBOX_ADDRESS, inboundDelivery(m2));
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 2);
     notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     // Both messages committed with fresh, monotonic uids even though FIFO
@@ -1475,7 +1477,7 @@ describe("createWorkflowSupervisor", () => {
       messageId: "<flag-1@example.com>",
       body: "turn body",
     });
-    wired.mailBus.deliver(MAILBOX_ADDRESS, raw);
+    wired.mailBus.deliver(MAILBOX_ADDRESS, inboundDelivery(raw));
 
     await waitForUpstreamPayloads(wired.supervisorToChild, "trigger.fire", 1);
     const fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
@@ -1528,7 +1530,7 @@ describe("createWorkflowSupervisor", () => {
       messageId: "<mut-1@example.com>",
       body: "body",
     });
-    wired.mailBus.deliver(MAILBOX_ADDRESS, raw);
+    wired.mailBus.deliver(MAILBOX_ADDRESS, inboundDelivery(raw));
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     expect(notifies[0]?.uid).toBe(1);
@@ -1633,13 +1635,15 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       MAILBOX_ADDRESS,
-      buildInboundMail({
-        from: "sender@example.com",
-        to: MAILBOX_ADDRESS,
-        subject: "flag me",
-        messageId: "<rmf-1@example.com>",
-        body: "body",
-      }),
+      inboundDelivery(
+        buildInboundMail({
+          from: "sender@example.com",
+          to: MAILBOX_ADDRESS,
+          subject: "flag me",
+          messageId: "<rmf-1@example.com>",
+          body: "body",
+        }),
+      ),
     );
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
@@ -1708,25 +1712,29 @@ describe("createWorkflowSupervisor", () => {
     // Deliver two messages so the eager-commit assigns uids 1 and 2.
     wired.mailBus.deliver(
       MAILBOX_ADDRESS,
-      buildInboundMail({
-        from: "a@example.com",
-        to: MAILBOX_ADDRESS,
-        subject: "one",
-        messageId: "<mx-1@example.com>",
-        body: "one",
-      }),
+      inboundDelivery(
+        buildInboundMail({
+          from: "a@example.com",
+          to: MAILBOX_ADDRESS,
+          subject: "one",
+          messageId: "<mx-1@example.com>",
+          body: "one",
+        }),
+      ),
     );
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     wired.mailBus.deliver(
       MAILBOX_ADDRESS,
-      buildInboundMail({
-        from: "b@example.com",
-        to: MAILBOX_ADDRESS,
-        subject: "two",
-        messageId: "<mx-2@example.com>",
-        body: "two",
-      }),
+      inboundDelivery(
+        buildInboundMail({
+          from: "b@example.com",
+          to: MAILBOX_ADDRESS,
+          subject: "two",
+          messageId: "<mx-2@example.com>",
+          body: "two",
+        }),
+      ),
     );
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 2);
     notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
@@ -1799,13 +1807,15 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       MAILBOX_ADDRESS,
-      buildInboundMail({
-        from: "sender@example.com",
-        to: MAILBOX_ADDRESS,
-        subject: "survivor",
-        messageId: "<ee-1@example.com>",
-        body: "body",
-      }),
+      inboundDelivery(
+        buildInboundMail({
+          from: "sender@example.com",
+          to: MAILBOX_ADDRESS,
+          subject: "survivor",
+          messageId: "<ee-1@example.com>",
+          body: "body",
+        }),
+      ),
     );
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
@@ -1940,14 +1950,16 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       MAILBOX_ADDRESS,
-      buildSignedConversation({
-        from: "sender@example.com",
-        to: MAILBOX_ADDRESS,
-        subject: "consume me",
-        messageId: "<part-1@example.com>",
-        body,
-        attachment: { filename: "note.txt", body: attachment },
-      }),
+      inboundDelivery(
+        buildSignedConversation({
+          from: "sender@example.com",
+          to: MAILBOX_ADDRESS,
+          subject: "consume me",
+          messageId: "<part-1@example.com>",
+          body,
+          attachment: { filename: "note.txt", body: attachment },
+        }),
+      ),
     );
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
 
@@ -2078,13 +2090,15 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       MAILBOX_ADDRESS,
-      buildInboundMail({
-        from: "sender@example.com",
-        to: MAILBOX_ADDRESS,
-        subject: "one",
-        messageId: "<sync-1@example.com>",
-        body: "one",
-      }),
+      inboundDelivery(
+        buildInboundMail({
+          from: "sender@example.com",
+          to: MAILBOX_ADDRESS,
+          subject: "one",
+          messageId: "<sync-1@example.com>",
+          body: "one",
+        }),
+      ),
     );
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     const latest = () => {
@@ -2130,13 +2144,15 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       MAILBOX_ADDRESS,
-      buildInboundMail({
-        from: "sender@example.com",
-        to: MAILBOX_ADDRESS,
-        subject: "two",
-        messageId: "<sync-2@example.com>",
-        body: "two",
-      }),
+      inboundDelivery(
+        buildInboundMail({
+          from: "sender@example.com",
+          to: MAILBOX_ADDRESS,
+          subject: "two",
+          messageId: "<sync-2@example.com>",
+          body: "two",
+        }),
+      ),
     );
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 2);
 
@@ -2269,14 +2285,16 @@ describe("createWorkflowSupervisor", () => {
     });
     wired.mailBus.deliver(
       MAILBOX_ADDRESS,
-      buildInboundMail({
-        from: "sender@example.com",
-        to: MAILBOX_ADDRESS,
-        subject: "parent",
-        messageId: PARENT_ID,
-        body: "parent body",
-        references: PARENT_REFERENCES,
-      }),
+      inboundDelivery(
+        buildInboundMail({
+          from: "sender@example.com",
+          to: MAILBOX_ADDRESS,
+          subject: "parent",
+          messageId: PARENT_ID,
+          body: "parent body",
+          references: PARENT_REFERENCES,
+        }),
+      ),
     );
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     for (const [index, send] of opts.sends.entries()) {
@@ -2405,7 +2423,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("barrier-m1"),
+      inboundDelivery(new TextEncoder().encode("barrier-m1")),
     );
 
     const [firedRunId] = await waitForTriggerFireRunIds(
@@ -2612,7 +2630,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("barrier-creds-m1"),
+      inboundDelivery(new TextEncoder().encode("barrier-creds-m1")),
     );
 
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
@@ -2687,7 +2705,7 @@ describe("createWorkflowSupervisor", () => {
     // Fire a trigger: the pre-trigger barrier re-asserts the credential set.
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("revoke-durable-m1"),
+      inboundDelivery(new TextEncoder().encode("revoke-durable-m1")),
     );
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
@@ -2718,7 +2736,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("barrier-fail-m1"),
+      inboundDelivery(new TextEncoder().encode("barrier-fail-m1")),
     );
 
     // The failed run is settled through the claim-check pipeline: the
@@ -2766,14 +2784,20 @@ describe("createWorkflowSupervisor", () => {
 
     // A fresh enqueue is durably accepted -> the receipt resolves (ack).
     await expect(
-      mailBus.settle(address, new TextEncoder().encode("m-fresh")),
+      mailBus.settle(
+        address,
+        inboundDelivery(new TextEncoder().encode("m-fresh")),
+      ),
     ).resolves.toBeUndefined();
 
     // An already-present message is also durably accounted for -> ack, and the
     // hub stops retrying (no infinite retry on a message the sidecar holds).
     mode = "already-present";
     await expect(
-      mailBus.settle(address, new TextEncoder().encode("m-dup")),
+      mailBus.settle(
+        address,
+        inboundDelivery(new TextEncoder().encode("m-dup")),
+      ),
     ).resolves.toBeUndefined();
 
     await wired.supervisor.shutdown();
@@ -2805,7 +2829,7 @@ describe("createWorkflowSupervisor", () => {
     // (a) A transient failure -> the receipt rejects, so no ack is sent and the
     // hub redelivers.
     await expect(
-      mailBus.settle(address, new TextEncoder().encode("m-1")),
+      mailBus.settle(address, inboundDelivery(new TextEncoder().encode("m-1"))),
     ).rejects.toThrow(/disk exploded/);
 
     // (b) A stale refusal also withholds, and surfaces as its own loud type
@@ -2815,7 +2839,10 @@ describe("createWorkflowSupervisor", () => {
     };
     let staleCause: unknown;
     try {
-      await mailBus.settle(address, new TextEncoder().encode("m-1"));
+      await mailBus.settle(
+        address,
+        inboundDelivery(new TextEncoder().encode("m-1")),
+      );
     } catch (err) {
       staleCause = err;
     }
@@ -2825,7 +2852,7 @@ describe("createWorkflowSupervisor", () => {
     // enqueues on a fresh receivedAt and the receipt resolves (ack).
     onEnqueue = (args) => enqueuedOutcome(args);
     await expect(
-      mailBus.settle(address, new TextEncoder().encode("m-1")),
+      mailBus.settle(address, inboundDelivery(new TextEncoder().encode("m-1"))),
     ).resolves.toBeUndefined();
 
     await wired.supervisor.shutdown();
@@ -2855,7 +2882,7 @@ describe("createWorkflowSupervisor", () => {
     await expect(
       mailBus.settle(
         "run_deployment-x@example.com",
-        new TextEncoder().encode("m-late"),
+        inboundDelivery(new TextEncoder().encode("m-late")),
       ),
     ).rejects.toThrow(/not accepted: supervisor phase/);
   });
@@ -3342,11 +3369,11 @@ describe("createWorkflowSupervisor", () => {
     // accumulator count reflects whichever in-flight runIds remain.
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("drain-msg-A"),
+      inboundDelivery(new TextEncoder().encode("drain-msg-A")),
     );
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("drain-msg-B"),
+      inboundDelivery(new TextEncoder().encode("drain-msg-B")),
     );
     await childSender.send({ type: "ready" });
     await spawnPromise;
@@ -3551,7 +3578,7 @@ describe("createWorkflowSupervisor", () => {
     await mailBus.awaitRegistered("run_deployment-x@example.com");
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("escalate-msg"),
+      inboundDelivery(new TextEncoder().encode("escalate-msg")),
     );
     await childSender.send({ type: "ready" });
     await spawnPromise;
@@ -3842,7 +3869,7 @@ describe("createWorkflowSupervisor", () => {
     await mailBus.awaitRegistered("run_deployment-x@example.com");
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("term-msg-A"),
+      inboundDelivery(new TextEncoder().encode("term-msg-A")),
     );
     await childSender.send({ type: "ready" });
     await spawnPromise;
@@ -3989,7 +4016,7 @@ describe("createWorkflowSupervisor", () => {
     await mailBus.awaitRegistered("run_deployment-x@example.com");
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("no-term-msg"),
+      inboundDelivery(new TextEncoder().encode("no-term-msg")),
     );
     await childSender.send({ type: "ready" });
     await spawnPromise;
@@ -4481,7 +4508,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-1"),
+      inboundDelivery(new TextEncoder().encode("msg-1")),
     );
 
     // In the unified-dispatch path markConsumed waits for the child to
@@ -4529,7 +4556,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-1"),
+      inboundDelivery(new TextEncoder().encode("msg-1")),
     );
 
     // The park names a run, so it has to follow the forwarded trigger that
@@ -4582,7 +4609,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-1"),
+      inboundDelivery(new TextEncoder().encode("msg-1")),
     );
 
     // Wait for trigger.fire to land before parking, then send park.notify
@@ -4608,7 +4635,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-2"),
+      inboundDelivery(new TextEncoder().encode("msg-2")),
     );
 
     // msg-2 lands on the parked run as signal.deliver. Wait for it to be
@@ -4673,7 +4700,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-1"),
+      inboundDelivery(new TextEncoder().encode("msg-1")),
     );
 
     // In the unified-dispatch path markConsumed waits for the child to park
@@ -4688,7 +4715,7 @@ describe("createWorkflowSupervisor", () => {
     // Deliver second message BEFORE child parks.
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-2"),
+      inboundDelivery(new TextEncoder().encode("msg-2")),
     );
 
     // Wait for msg-2 to reach the inbox. That enqueue is all that can
@@ -4782,7 +4809,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-1"),
+      inboundDelivery(new TextEncoder().encode("msg-1")),
     );
 
     // Park the run so markConsumed can proceed and the run enters the
@@ -4838,7 +4865,7 @@ describe("createWorkflowSupervisor", () => {
 
       wired.mailBus.deliver(
         "run_deployment-x@example.com",
-        new TextEncoder().encode("msg-1"),
+        inboundDelivery(new TextEncoder().encode("msg-1")),
       );
 
       // A failed barrier fans out a synthesized RunFailed to the run's own
@@ -4878,7 +4905,7 @@ describe("createWorkflowSupervisor", () => {
 
       wired.mailBus.deliver(
         "run_deployment-x@example.com",
-        new TextEncoder().encode("msg-no-grants"),
+        inboundDelivery(new TextEncoder().encode("msg-no-grants")),
       );
 
       const record = await logs.waitForError(
@@ -4911,7 +4938,7 @@ describe("createWorkflowSupervisor", () => {
     // First message triggers the run.
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-1"),
+      inboundDelivery(new TextEncoder().encode("msg-1")),
     );
 
     // Drive the run to terminal so markConsumed can proceed. The terminal
@@ -4939,7 +4966,7 @@ describe("createWorkflowSupervisor", () => {
     // terminated. It must be durably rejected, not treated as a new run.
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-2"),
+      inboundDelivery(new TextEncoder().encode("msg-2")),
     );
 
     await wired.inboxPrimitives.awaitState(
@@ -4981,7 +5008,10 @@ describe("createWorkflowSupervisor", () => {
       type: "resumed.runs",
       data: { runIds: ["run_deployment-x"] },
     });
-    wired.mailBus.deliver(address, new TextEncoder().encode("waiting mail"));
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("waiting mail")),
+    );
     // The dispatch loop moves the mail to `processing` and then waits for the
     // live run to park or terminate: it forwards neither a trigger nor a
     // signal from that branch, and the entry stays in `processing` until the
@@ -5037,7 +5067,7 @@ describe("createWorkflowSupervisor", () => {
     // this is still the deployment's one allowed first fire.
     wired.mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("msg-1"),
+      inboundDelivery(new TextEncoder().encode("msg-1")),
     );
 
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
@@ -5082,7 +5112,10 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("msg-1")),
+    );
 
     await wired.inboxPrimitives.awaitState(
       () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
@@ -5115,7 +5148,10 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("msg-1")),
+    );
 
     // Park as soon as the run exists; the generation check must handle either
     // side of the dispatch loop arming its waiter, and waiting on the
@@ -5175,7 +5211,10 @@ describe("createWorkflowSupervisor", () => {
     // forwarded trigger rather than for ten milliseconds -- which under load
     // let the notification arrive first, leaving the mail unconsumed and the
     // assertion below reading zero.
-    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("msg-1")),
+    );
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "park.notify",
@@ -5192,8 +5231,14 @@ describe("createWorkflowSupervisor", () => {
     // signals, each on the correlation the run is CURRENTLY parked on: msg-2
     // on corr-1, then -- after the run re-parks on corr-2 -- msg-3 on corr-2,
     // never the stale corr-1 the cache would hold without invalidation.
-    wired.mailBus.deliver(address, new TextEncoder().encode("msg-2"));
-    wired.mailBus.deliver(address, new TextEncoder().encode("msg-3"));
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("msg-2")),
+    );
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("msg-3")),
+    );
 
     await waitSignals(1);
     await wired.childSender.send({
@@ -5258,7 +5303,10 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("msg-1")),
+    );
 
     await waitForUpstreamPayloads(wired.supervisorToChild, "signal.deliver", 1);
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
@@ -5310,7 +5358,7 @@ describe("createWorkflowSupervisor", () => {
     const mail = new TextEncoder().encode(
       "Content-Type: text/plain\r\n\r\nhello turn two",
     );
-    wired.mailBus.deliver(address, mail);
+    wired.mailBus.deliver(address, inboundDelivery(mail));
 
     await waitForUpstreamPayloads(wired.supervisorToChild, "signal.deliver", 1);
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
@@ -5399,7 +5447,7 @@ describe("createWorkflowSupervisor", () => {
     const bad = new TextEncoder().encode(
       "Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n!!! not base64 !!!",
     );
-    wired.mailBus.deliver(address, bad);
+    wired.mailBus.deliver(address, inboundDelivery(bad));
 
     await wired.inboxPrimitives.awaitState(
       () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
@@ -5415,7 +5463,7 @@ describe("createWorkflowSupervisor", () => {
     const good = new TextEncoder().encode(
       "Content-Type: text/plain\r\n\r\nhello",
     );
-    wired.mailBus.deliver(address, good);
+    wired.mailBus.deliver(address, inboundDelivery(good));
     await waitForUpstreamPayloads(wired.supervisorToChild, "signal.deliver", 1);
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(1);
@@ -5480,7 +5528,7 @@ describe("createWorkflowSupervisor", () => {
     const good = new TextEncoder().encode(
       "Content-Type: text/plain\r\n\r\nhello",
     );
-    wired.mailBus.deliver(address, good);
+    wired.mailBus.deliver(address, inboundDelivery(good));
 
     // The commit fault is raised after the dequeue and before the signal is
     // sent, and a faulted iteration parks the loop on the dispatch wake
@@ -5536,7 +5584,10 @@ describe("createWorkflowSupervisor", () => {
     // The terminal event names the run the trigger started, so it follows the
     // forwarded trigger; the watcher is subscribed before that forward, so the
     // frame cannot arrive too early to be seen.
-    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("msg-1")),
+    );
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "terminal.event",
@@ -5560,7 +5611,10 @@ describe("createWorkflowSupervisor", () => {
     // on that basis rather than firing again -- and the recovered markConsumed
     // records the rejection, which is the survival this asserts.
     failMarkConsumed = false;
-    wired.mailBus.deliver(address, new TextEncoder().encode("msg-2"));
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("msg-2")),
+    );
     await wired.inboxPrimitives.awaitState(
       () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
     );
@@ -5595,7 +5649,10 @@ describe("createWorkflowSupervisor", () => {
           // settle, then report the inbox empty so dispatchOne returns false.
           // With the capture-after bug the fired wake is lost and this mail
           // sleeps forever; capture-before catches it on the next loop.
-          await mailBus.settle(address, new TextEncoder().encode("msg-1"));
+          await mailBus.settle(
+            address,
+            inboundDelivery(new TextEncoder().encode("msg-1")),
+          );
           return null;
         }
         return memoryInbox.dequeueToProcessing(...args);
@@ -5647,7 +5704,10 @@ describe("createWorkflowSupervisor", () => {
       },
     });
     const address = "run_deployment-x@example.com";
-    wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
+    wired.mailBus.deliver(
+      address,
+      inboundDelivery(new TextEncoder().encode("msg-1")),
+    );
 
     await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     // The watcher is subscribed before trigger.fire, so an immediate terminal
@@ -5902,11 +5962,11 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     // terminal gate and is then rejected.
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("serial-msg-A"),
+      inboundDelivery(new TextEncoder().encode("serial-msg-A")),
     );
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("serial-msg-B"),
+      inboundDelivery(new TextEncoder().encode("serial-msg-B")),
     );
     // Helper that pulls the runId carried on the first/next
     // trigger.fire frame the supervisor wrote to the child stream.

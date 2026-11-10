@@ -7,13 +7,15 @@
 // Per-address subscriber maps live inside the adapter: the
 // supervisor's `subscribeMailForAddress` registers a handler here;
 // the host's transport delivers messages via `routeInbound` and the
-// adapter fans the bytes out to every subscribed handler. The
+// adapter fans each delivery (the message bytes and the sender the hub
+// authenticated) out to every subscribed handler. The
 // transport itself is treated as a sink the host already owns -- the
 // adapter does not register addresses on the transport on the
 // supervisor's behalf (production sidecars register the head's address
 // through the deploy router before the supervisor spawns) and does not
 // double-deliver messages the transport itself routes.
 
+import type { InboundDelivery } from "@intx/types/message-id";
 import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
 
 import type { HubTransport, SignedMessageBytes } from "@intx/mail-memory";
@@ -30,7 +32,7 @@ import type { MailBusBindings } from "../supervisor/types";
  */
 export interface HubTransportMailBusAdapter extends MailBusBindings {
   /**
-   * Fan a delivered message out to every handler subscribed at `address` and
+   * Fan a delivery out to every handler subscribed at `address` and
    * return the combined durable settlement: the promise resolves once every
    * subscribed handler has durably accepted the message and rejects if any
    * handler rejected. The host propagates that settlement to the wire, so
@@ -42,7 +44,7 @@ export interface HubTransportMailBusAdapter extends MailBusBindings {
    * live; a message routed to an address with no live handler was not
    * durably accepted, so it must withhold-and-be-redelivered, never ack.
    */
-  routeInbound(address: string, message: Uint8Array): Promise<void>;
+  routeInbound(address: string, delivery: InboundDelivery): Promise<void>;
 }
 
 /**
@@ -50,7 +52,7 @@ export interface HubTransportMailBusAdapter extends MailBusBindings {
  * `MailBusBindings` shape. The `transport` argument is held only as
  * a sink-side reference the adapter does not actively reach into
  * today -- the sidecar's deploy router registers the head's address
- * on the transport, and the adapter delivers inbound bytes through
+ * on the transport, and the adapter delivers inbound mail through
  * `routeInbound` directly into the per-address subscriber map below.
  */
 export function wrapHubTransportAsMailBus(
@@ -58,7 +60,7 @@ export function wrapHubTransportAsMailBus(
 ): HubTransportMailBusAdapter {
   const subscribers = new Map<
     string,
-    Set<(rawMessage: Uint8Array) => Promise<void>>
+    Set<(delivery: InboundDelivery) => Promise<void>>
   >();
   return {
     registerAddress(address: string) {
@@ -77,7 +79,7 @@ export function wrapHubTransportAsMailBus(
     },
     subscribeMailForAddress(
       address: string,
-      handler: (rawMessage: Uint8Array) => Promise<void>,
+      handler: (delivery: InboundDelivery) => Promise<void>,
     ) {
       let set = subscribers.get(address);
       if (set === undefined) {
@@ -90,7 +92,10 @@ export function wrapHubTransportAsMailBus(
         current?.delete(handler);
       };
     },
-    async routeInbound(address: string, message: Uint8Array): Promise<void> {
+    async routeInbound(
+      address: string,
+      delivery: InboundDelivery,
+    ): Promise<void> {
       const set = subscribers.get(address);
       if (set === undefined || set.size === 0) {
         // No live handler accepted the message, so it was not durably
@@ -101,7 +106,7 @@ export function wrapHubTransportAsMailBus(
           `no active mail subscriber for ${address}; message not durably accepted`,
         );
       }
-      await Promise.all([...set].map((handler) => handler(message)));
+      await Promise.all([...set].map((handler) => handler(delivery)));
     },
     async sendOutbound(
       senderAddress: string,

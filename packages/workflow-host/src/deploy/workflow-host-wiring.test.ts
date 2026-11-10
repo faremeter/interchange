@@ -51,6 +51,7 @@ import {
   createChangeNotifier,
   sendDefinition,
   waitForUpstreamPayload,
+  inboundDelivery,
 } from "@intx/workflow-host/testing";
 import { wrapHubTransportAsMailBus } from "../mail-bus/index";
 import {
@@ -237,7 +238,7 @@ describe("createSidecarWorkflowSupervisor", () => {
     // redelivers, rather than silently dropping (which under the ack model
     // would be an acked loss).
     await expect(
-      wired.routeInbound(new TextEncoder().encode("hello")),
+      wired.routeInbound(inboundDelivery(new TextEncoder().encode("hello"))),
     ).rejects.toThrow(/no active mail subscriber/);
   });
 
@@ -1475,7 +1476,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // address (`frame.agentAddress`), and tryRoute must claim it.
     const claimed = mailRouter.tryRoute(
       frame.agentAddress,
-      new Uint8Array([1, 2, 3]),
+      inboundDelivery(new Uint8Array([1, 2, 3])),
     );
     expect(claimed).not.toBeNull();
     // Settle the durable promise so its resolution/rejection is not left as an
@@ -1745,7 +1746,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     );
 
     expect(
-      mailRouter.tryRoute(frame.agentAddress, new Uint8Array([1])),
+      mailRouter.tryRoute(
+        frame.agentAddress,
+        inboundDelivery(new Uint8Array([1])),
+      ),
     ).toBeNull();
   });
 

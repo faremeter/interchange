@@ -8,7 +8,20 @@
 // ever unregistered" are asking different questions and the second cannot be
 // answered from the first.
 
+import type { InboundDelivery } from "@intx/types/message-id";
+
 import type { MailBusBindings } from "../supervisor/types";
+
+/** The sender `inboundDelivery` stamps when a test names none. */
+export const TEST_INBOUND_SENDER = "sender@example.test";
+
+/** Build the delivery of an inbound mail the way the hub-link hands it on. */
+export function inboundDelivery(
+  rawMessage: Uint8Array,
+  authenticatedSender = TEST_INBOUND_SENDER,
+): InboundDelivery {
+  return { rawMessage, authenticatedSender };
+}
 
 export type MockMailBus = MailBusBindings & {
   /** Addresses currently registered, in registration order. */
@@ -19,8 +32,8 @@ export type MockMailBus = MailBusBindings & {
    * "registered and then released", which `registered()` cannot.
    */
   registrationHistory(): readonly string[];
-  /** Deliver a raw message to every handler subscribed for `address`. */
-  deliver(address: string, message: Uint8Array): void;
+  /** Hand a delivery to every handler subscribed for `address`. */
+  deliver(address: string, delivery: InboundDelivery): void;
   /**
    * Resolve once `address` is registered, whether it already is or is
    * registered later.
@@ -36,7 +49,7 @@ export function createMockMailBus(): MockMailBus {
   const history: string[] = [];
   const subscribers = new Map<
     string,
-    Set<(rawMessage: Uint8Array) => Promise<void>>
+    Set<(delivery: InboundDelivery) => Promise<void>>
   >();
   let waiters: (() => void)[] = [];
 
@@ -67,7 +80,7 @@ export function createMockMailBus(): MockMailBus {
     },
     subscribeMailForAddress(
       address: string,
-      handler: (rawMessage: Uint8Array) => Promise<void>,
+      handler: (delivery: InboundDelivery) => Promise<void>,
     ) {
       let set = subscribers.get(address);
       if (set === undefined) {
@@ -88,10 +101,10 @@ export function createMockMailBus(): MockMailBus {
     },
     registered: () => registered.slice(),
     registrationHistory: () => history.slice(),
-    deliver(address: string, message: Uint8Array) {
+    deliver(address: string, delivery: InboundDelivery) {
       const set = subscribers.get(address);
       if (set === undefined) return;
-      for (const handler of set) void handler(message).catch(() => undefined);
+      for (const handler of set) void handler(delivery).catch(() => undefined);
     },
     async awaitRegistered(address: string) {
       for (;;) {
