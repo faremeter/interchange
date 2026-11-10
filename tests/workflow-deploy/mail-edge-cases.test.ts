@@ -32,6 +32,11 @@
 //    `onMailMessage` `.catch` callback logs and continues; nothing
 //    fires `trigger.fire` for the duplicate.
 //
+// 4. Two senders with the same `Message-Id` header. The delivery key
+//    scopes de-duplication to the authenticated sender, so both mails
+//    reach the run. A byte-identical redelivery from one of the
+//    senders is still deduped.
+//
 // The supervisor's mail-flow path:
 //   onMailMessage -> deriveMessageId -> enqueueInbox -> dispatch loop
 // The supervisor files each mail under the delivery key derived from the
@@ -79,16 +84,18 @@ import {
   seedPrincipal,
   tenantSlugFromId,
 } from "@intx/test-harness/seed";
-import type { RepoId } from "@intx/hub-sessions";
+import type { RepoId, WorkflowRunEvent } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
   deployWorkflowSourceForTest,
   dropHubLink,
+  fireMailTrigger,
   listRunIds,
   readClaimCheckDir,
   readWorkflowRunEvents,
+  replayMail,
   startDeployFlowEnv,
   waitFor,
   waitForReconnect,
@@ -96,6 +103,7 @@ import {
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import { singleStepAgentEntry } from "./fixtures/single-step-agent";
+import { singleStepMailInboxEntry } from "./fixtures/single-step-mail-inbox-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const STEP_ID = "edgeStep";
@@ -104,10 +112,11 @@ const EDGE_SENDER = "edge@integration.interchange";
 const NO_HEADER_DEPLOYMENT_ID = "run_mail-edge-no-header-1";
 const MALFORMED_DEPLOYMENT_ID = "run_mail-edge-malformed-1";
 const DUPLICATE_DEPLOYMENT_ID = "run_mail-edge-duplicate-1";
+const CROSS_SENDER_DEPLOYMENT_ID = "run_mail-edge-cross-sender-1";
 const CONNECTED_WINDOW_DEPLOYMENT_ID = "run_mail-edge-connected-window-1";
 
 // The definition's own tenant, the caller principal that creates the
-// definition assets, and the four `workflow`-kind assets the frozen
+// definition assets, and the `workflow`-kind assets the frozen
 // definitions project over (one per deployed anchor run id). The
 // install/approve freeze and the anchor `workflow_run` insert both write
 // against these, so they must exist in the real DB before each deploy runs.
@@ -117,6 +126,7 @@ const DEFINITION_ASSET_IDS: Record<string, string> = {
   [NO_HEADER_DEPLOYMENT_ID]: "ast_mail_edge_no_header_wf",
   [MALFORMED_DEPLOYMENT_ID]: "ast_mail_edge_malformed_wf",
   [DUPLICATE_DEPLOYMENT_ID]: "ast_mail_edge_duplicate_wf",
+  [CROSS_SENDER_DEPLOYMENT_ID]: "ast_mail_edge_cross_sender_wf",
   [CONNECTED_WINDOW_DEPLOYMENT_ID]: "ast_mail_edge_connected_window_wf",
 };
 
@@ -407,6 +417,130 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     expect(runIds.filter((r) => r === runId).length).toBe(1);
   }, 60_000);
 
+  test("two senders with the same Message-Id both reach the run; one sender's byte-identical redelivery is deduped", async () => {
+    const ctx = await deployEdgeWorkflow(
+      env,
+      CROSS_SENDER_DEPLOYMENT_ID,
+      "unbounded",
+    );
+
+    const messageId = "<cross-sender-1@integration.interchange>";
+    const senderA = "alice@integration.interchange";
+    const senderB = "bob@integration.interchange";
+    const keyA = await deriveDeliveryKey(senderA, messageId);
+    const keyB = await deriveDeliveryKey(senderB, messageId);
+    expect(keyB).not.toBe(keyA);
+    const runId = deriveWorkflowRunId(ctx.deploymentMailAddress);
+
+    const fromA = await fireMailTrigger(env, ctx.deploymentMailAddress, {
+      from: senderA,
+      messageId,
+      content: "cross-sender edge case body from A",
+    });
+    expect(fromA.deliveryKey).toBe(keyA);
+    await waitForConsumedFilename(
+      env,
+      ctx.workflowRunRepoId,
+      ctx.deploymentMailAddress,
+      `${keyA}.json`,
+    );
+
+    const fromB = await fireMailTrigger(env, ctx.deploymentMailAddress, {
+      from: senderB,
+      messageId,
+      content: "cross-sender edge case body from B",
+    });
+    expect(fromB.deliveryKey).toBe(keyB);
+    const consumedBefore = await waitForConsumedFilename(
+      env,
+      ctx.workflowRunRepoId,
+      ctx.deploymentMailAddress,
+      `${keyB}.json`,
+    );
+
+    // The run id is stable per deployment, so both mails reach the same run.
+    // A's mail started it; the unbounded step re-armed, so B's mail resumed
+    // it as a `signal.deliver` whose signalId is B's delivery key. A
+    // Message-ID-only identity would have deduped B, and no signal for it
+    // would exist.
+    let events: WorkflowRunEvent[] = [];
+    await waitFor(
+      async () => {
+        events = await readWorkflowRunEvents(
+          env,
+          CROSS_SENDER_DEPLOYMENT_ID,
+          runId,
+        );
+        return events.some(
+          (e) => e.type === "SignalReceived" && e.body["signalId"] === keyB,
+        );
+      },
+      { diagnostics: env.sidecarDiagnostics },
+    );
+    expect(
+      events
+        .filter((e) => e.type === "RunStarted")
+        .map((e) => e.body["consumedDeliveryKey"]),
+    ).toEqual([keyA]);
+    expect(
+      events.some(
+        (e) =>
+          e.type === "RunCompleted" ||
+          e.type === "RunFailed" ||
+          e.type === "RunCancelled",
+      ),
+    ).toBe(false);
+
+    // Redeliver A's mail byte-identically, with the same authenticated
+    // sender. Its delivery key is already consumed, so the supervisor
+    // acknowledges it without a new dispatch. The log line names the
+    // parsed messageId, which both senders share; the unchanged consumed
+    // set below shows that no new delivery key was filed.
+    const diagBeforeReplay = env.sidecarDiagnostics();
+    await replayMail(env, fromA.routed);
+    await waitFor(
+      () => {
+        // The logger quotes and colors the interpolated messageId, so match
+        // the line on its two parts rather than on one exact string.
+        const fresh = env.sidecarDiagnostics().slice(diagBeforeReplay.length);
+        return fresh
+          .split("\n")
+          .some(
+            (line) =>
+              line.includes(messageId) &&
+              line.includes("already durably present"),
+          );
+      },
+      { diagnostics: env.sidecarDiagnostics },
+    );
+
+    const consumedAfter = await readClaimCheckDir(
+      env,
+      ctx.workflowRunRepoId,
+      ctx.deploymentMailAddress,
+      "consumed",
+    );
+    expect(new Set(consumedAfter.map((e) => e.filename))).toEqual(
+      new Set(consumedBefore.map((e) => e.filename)),
+    );
+    expect(
+      await readClaimCheckDir(
+        env,
+        ctx.workflowRunRepoId,
+        ctx.deploymentMailAddress,
+        "inbox",
+      ),
+    ).toEqual([]);
+    expect(
+      await readClaimCheckDir(
+        env,
+        ctx.workflowRunRepoId,
+        ctx.deploymentMailAddress,
+        "processing",
+      ),
+    ).toEqual([]);
+  }, 60_000);
+
   test("mail into a connected window that drops before the ack survives reconnect and is processed exactly once", async () => {
     // The connected-window mail-loss gap, end to end against a real sidecar
     // subprocess over a real socket. A `mail.inbound` carrying a hub-minted
@@ -512,12 +646,15 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
 /**
  * Deploy a trivial single-step workflow BY SOURCE-REF and register its handle
  * on the env. Returns a context with the deployment's derived mail address and
- * the workflow-run repo id; the caller fires raw bytes at the mail address via
- * `routeRaw`.
+ * the workflow-run repo id. A `batch` step goes terminal after its first turn,
+ * and its callers fire raw bytes at the mail address via `routeRaw`. An
+ * `unbounded` step stays live and takes each later mail as a new turn, and its
+ * caller fires signed mail through `fireMailTrigger`.
  */
 async function deployEdgeWorkflow(
   env: DeployFlowEnv,
   anchorRunId: string,
+  step: "batch" | "unbounded" = "batch",
 ): Promise<{
   deploymentMailAddress: string;
   workflowRunRepoId: RepoId;
@@ -555,22 +692,39 @@ async function deployEdgeWorkflow(
     `mail.address:${deploymentMailAddress}`,
   ]);
 
-  const entryModule = singleStepAgentEntry({
-    stepId: STEP_ID,
-    systemPrompt: `Edge-case agent for ${anchorRunId}.`,
-    address: deploymentMailAddress,
-    agentId: `agent-${anchorRunId}-step`,
-    workflowId: `wf_${anchorRunId}`,
-    // These cases exercise the supervisor's messageId parsing and the
-    // connected-window reconnect redelivery, NOT inbound-signature admission.
-    // They inject UNSIGNED, hand-built mail through the raw routeRaw/routeMail
-    // seam with no co-delivered sender key, so the recipient caches no key and
-    // the admission verdict is `unknown`. Author a policy that admits `unknown`
-    // so the intended non-signature behavior runs; strict enforcement (which
-    // rejects `unknown` under the default policy) is pinned by
-    // inbound-mail-enforcement-real-route.test.ts, not here.
-    inboundMailPolicy: { unknown: "admit" },
-  });
+  // An unbounded step re-arms on an input park after each turn, so a later
+  // mail reaches the same live run as a `signal.deliver`. Its inbound mail is
+  // signed through `fireMailTrigger`, which co-delivers the sender key, so
+  // the default admission policy admits it. The mail-inbox fixture is the
+  // single-step fixture that takes a trigger budget; it pins the mail
+  // toolset, so the deploy approves what the probe reports.
+  const entryModule =
+    step === "unbounded"
+      ? singleStepMailInboxEntry({
+          stepId: STEP_ID,
+          systemPrompt: `Edge-case agent for ${anchorRunId}.`,
+          address: deploymentMailAddress,
+          agentId: `agent-${anchorRunId}-step`,
+          workflowId: `wf_${anchorRunId}`,
+          triggers: "unbounded",
+        })
+      : singleStepAgentEntry({
+          stepId: STEP_ID,
+          systemPrompt: `Edge-case agent for ${anchorRunId}.`,
+          address: deploymentMailAddress,
+          agentId: `agent-${anchorRunId}-step`,
+          workflowId: `wf_${anchorRunId}`,
+          // These cases exercise the supervisor's messageId parsing and the
+          // connected-window reconnect redelivery, NOT inbound-signature
+          // admission. They inject UNSIGNED, hand-built mail through the raw
+          // routeRaw/routeMail seam with no co-delivered sender key, so the
+          // recipient caches no key and the admission verdict is `unknown`.
+          // Author a policy that admits `unknown` so the intended
+          // non-signature behavior runs; strict enforcement (which rejects
+          // `unknown` under the default policy) is pinned by
+          // inbound-mail-enforcement-real-route.test.ts, not here.
+          inboundMailPolicy: { unknown: "admit" },
+        });
 
   const handle = await deployWorkflowSourceForTest(env, {
     entryModule,
@@ -580,7 +734,7 @@ async function deployEdgeWorkflow(
     anchorRunId,
     deploymentDomain: DEPLOYMENT_DOMAIN,
     agentAddress: deploymentMailAddress,
-    approvals: operatorApprovals,
+    approvals: step === "unbounded" ? "approve-probed" : operatorApprovals,
     config,
     sources: { [STEP_ID]: [inferenceSource] },
   });

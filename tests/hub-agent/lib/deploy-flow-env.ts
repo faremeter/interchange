@@ -2499,19 +2499,36 @@ export function isMailTriggerUnroutableError(
 export const DEFAULT_MAIL_TRIGGER_FROM = "user@integration.interchange";
 
 /**
+ * One routed delivery of a trigger mail: the wire bytes, the authenticated
+ * sender, and the run grants that ride ahead of it. `replayMail` routes it
+ * again unchanged, which is a byte-identical redelivery.
+ */
+export type RoutedMail = {
+  address: string;
+  base64: string;
+  authenticatedSender: string;
+  runGrants: {
+    runId: string;
+    stepGrants: WireGrantRule[];
+    senderIdentities: { address: string; publicKey: string }[];
+  };
+};
+
+/**
  * Construct a signed mail message and route it via the hub's
  * `routeMail` path -- the same surface the existing deploy-flow
  * integration test uses to fire a mail at the agent. Returns the
  * `Message-Id` the helper chose and the delivery key the supervisor files
  * the mail under (derived from the authenticated sender, which is the
  * From), so the caller can correlate the downstream `RunStarted` against
- * the message that triggered it.
+ * the message that triggered it. Also returns the routed delivery, so a
+ * caller can redeliver the same bytes through `replayMail`.
  */
 export async function fireMailTrigger(
   env: DeployFlowEnv,
   address: string,
   opts: FireMailTriggerOpts = {},
-): Promise<{ messageId: string; deliveryKey: string }> {
+): Promise<{ messageId: string; deliveryKey: string; routed: RoutedMail }> {
   const messageId =
     opts.messageId ??
     `<wf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@integration.interchange>`;
@@ -2575,24 +2592,45 @@ export async function fireMailTrigger(
   // Route the trigger the way the production route does, stamping the
   // signed-under address as the authenticated sender. This fixture reuses
   // that same address as the MIME From, so it is not a From-independence
-  // check. `routeMail` sends the `run.grants` frame ahead of the mail under
-  // one admission decision.
-  const delivered = await env.hub.router.routeMail(
+  // check.
+  const routed: RoutedMail = {
     address,
     base64,
-    from,
+    authenticatedSender: from,
+    runGrants: { runId, stepGrants: opts.grants ?? [], senderIdentities },
+  };
+  await replayMail(env, routed);
+  return {
+    messageId,
+    deliveryKey: await deriveDeliveryKey(from, messageId),
+    routed,
+  };
+}
+
+/**
+ * Route a delivery through the hub's `routeMail`. `routeMail` sends the
+ * `run.grants` frame ahead of the mail under one admission decision. Throws
+ * the `MAIL_TRIGGER_UNROUTABLE_CODE` error when the address is not routable.
+ */
+export async function replayMail(
+  env: DeployFlowEnv,
+  routed: RoutedMail,
+): Promise<void> {
+  const delivered = await env.hub.router.routeMail(
+    routed.address,
+    routed.base64,
+    routed.authenticatedSender,
     undefined,
-    { runId, stepGrants: opts.grants ?? [], senderIdentities },
+    routed.runGrants,
   );
   if (!delivered) {
     throw Object.assign(
       new Error(
-        `fireMailTrigger: routeMail returned false for ${address}; address is not routable on the hub`,
+        `routeMail returned false for ${routed.address}; address is not routable on the hub`,
       ),
       { code: MAIL_TRIGGER_UNROUTABLE_CODE },
     );
   }
-  return { messageId, deliveryKey: await deriveDeliveryKey(from, messageId) };
 }
 
 /**
