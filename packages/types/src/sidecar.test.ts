@@ -22,6 +22,7 @@ import {
   MAX_MAIL_OUTBOUND_BODY_BYTES,
   MAX_PROBE_GRANTS_FRAME,
   MAX_SIDECAR_FRAME_BYTES,
+  MailInboundFrame,
   MailOutboundFrame,
   PackRejectFrame,
   PackRejectReason,
@@ -52,6 +53,29 @@ describe("MailOutboundFrame sender ownership claim", () => {
     const { senderAddress: _, ...missingSender } = frame;
     expect(MailOutboundFrame(missingSender) instanceof type.errors).toBe(true);
     expect(SidecarFrame(missingSender) instanceof type.errors).toBe(true);
+  });
+});
+
+describe("MailInboundFrame authenticated sender", () => {
+  const frame = (authenticatedSender: string) => ({
+    type: "mail.inbound",
+    agentAddress: "run_a@example.test",
+    generation: 1,
+    rawMessage: "bWFpbA==",
+    authenticatedSender,
+  });
+
+  test("accepts a sender", () => {
+    expect(
+      MailInboundFrame(frame("User@Example.test")) instanceof type.errors,
+    ).toBe(false);
+  });
+
+  test("refuses an empty sender and a sender that holds NUL", () => {
+    expect(MailInboundFrame(frame("")) instanceof type.errors).toBe(true);
+    expect(MailInboundFrame(frame("a\u0000b")) instanceof type.errors).toBe(
+      true,
+    );
   });
 });
 

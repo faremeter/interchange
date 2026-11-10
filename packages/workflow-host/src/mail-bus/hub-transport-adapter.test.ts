@@ -3,6 +3,8 @@ import { describe, test, expect } from "bun:test";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 
+import { inboundDelivery } from "@intx/workflow-host/testing";
+
 import { wrapHubTransportAsMailBus } from "./hub-transport-adapter";
 
 describe("wrapHubTransportAsMailBus", () => {
@@ -12,15 +14,15 @@ describe("wrapHubTransportAsMailBus", () => {
     const observedA: string[] = [];
     const observedB: string[] = [];
     const decoder = new TextDecoder();
-    adapter.subscribeMailForAddress("a@example.com", async (bytes) => {
-      observedA.push(decoder.decode(bytes));
+    adapter.subscribeMailForAddress("a@example.com", async (delivery) => {
+      observedA.push(decoder.decode(delivery.rawMessage));
     });
-    adapter.subscribeMailForAddress("a@example.com", async (bytes) => {
-      observedB.push(decoder.decode(bytes));
+    adapter.subscribeMailForAddress("a@example.com", async (delivery) => {
+      observedB.push(decoder.decode(delivery.rawMessage));
     });
     await adapter.routeInbound(
       "a@example.com",
-      new TextEncoder().encode("hello"),
+      inboundDelivery(new TextEncoder().encode("hello")),
     );
     expect(observedA).toEqual(["hello"]);
     expect(observedB).toEqual(["hello"]);
@@ -33,7 +35,10 @@ describe("wrapHubTransportAsMailBus", () => {
       throw new Error("durable write failed");
     });
     await expect(
-      adapter.routeInbound("a@example.com", new TextEncoder().encode("hi")),
+      adapter.routeInbound(
+        "a@example.com",
+        inboundDelivery(new TextEncoder().encode("hi")),
+      ),
     ).rejects.toThrow(/durable write failed/);
   });
 
@@ -43,19 +48,22 @@ describe("wrapHubTransportAsMailBus", () => {
     const observed: string[] = [];
     const dispose = adapter.subscribeMailForAddress(
       "a@example.com",
-      async (bytes) => {
-        observed.push(new TextDecoder().decode(bytes));
+      async (delivery) => {
+        observed.push(new TextDecoder().decode(delivery.rawMessage));
       },
     );
     await adapter.routeInbound(
       "a@example.com",
-      new TextEncoder().encode("first"),
+      inboundDelivery(new TextEncoder().encode("first")),
     );
     dispose();
     // No subscriber remains, so the delivery is not durably accepted:
     // routeInbound rejects and nothing new is observed.
     await expect(
-      adapter.routeInbound("a@example.com", new TextEncoder().encode("second")),
+      adapter.routeInbound(
+        "a@example.com",
+        inboundDelivery(new TextEncoder().encode("second")),
+      ),
     ).rejects.toThrow(/no active mail subscriber/);
     expect(observed).toEqual(["first"]);
   });
@@ -66,7 +74,7 @@ describe("wrapHubTransportAsMailBus", () => {
     await expect(
       adapter.routeInbound(
         "nobody@example.com",
-        new TextEncoder().encode("ignored"),
+        inboundDelivery(new TextEncoder().encode("ignored")),
       ),
     ).rejects.toThrow(/no active mail subscriber/);
   });
@@ -75,14 +83,14 @@ describe("wrapHubTransportAsMailBus", () => {
     const transport = createInMemoryTransport();
     const adapter = wrapHubTransportAsMailBus(transport);
     const observed: string[] = [];
-    adapter.subscribeMailForAddress("a@example.com", async (bytes) => {
-      observed.push(new TextDecoder().decode(bytes));
+    adapter.subscribeMailForAddress("a@example.com", async (delivery) => {
+      observed.push(new TextDecoder().decode(delivery.rawMessage));
     });
     adapter.unregisterAddress("a@example.com");
     await expect(
       adapter.routeInbound(
         "a@example.com",
-        new TextEncoder().encode("ignored"),
+        inboundDelivery(new TextEncoder().encode("ignored")),
       ),
     ).rejects.toThrow(/no active mail subscriber/);
     expect(observed).toEqual([]);

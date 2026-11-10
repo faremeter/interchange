@@ -44,6 +44,7 @@ import {
   waitForTriggerFireRunIds,
   sendDefinition,
   TEST_DEFINITION_HASH,
+  inboundDelivery,
 } from "@intx/workflow-host/testing";
 
 import {
@@ -374,7 +375,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     const TEST_MESSAGE_ID = "<stale-routing-probe@example.com>";
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode(TEST_MESSAGE),
+      inboundDelivery(new TextEncoder().encode(TEST_MESSAGE)),
     );
 
     // Wait until cohort B has forwarded the trigger.fire (which means

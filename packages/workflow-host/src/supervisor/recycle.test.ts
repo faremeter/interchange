@@ -33,6 +33,7 @@ import {
   sendDefinition,
   TEST_DEFINITION,
   TEST_DEFINITION_HASH,
+  inboundDelivery,
 } from "@intx/workflow-host/testing";
 
 import {
@@ -1066,11 +1067,11 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
     await tracker.awaitChildren(2);
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("gap-1"),
+      inboundDelivery(new TextEncoder().encode("gap-1")),
     );
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("gap-2"),
+      inboundDelivery(new TextEncoder().encode("gap-2")),
     );
 
     const secondChild = tracker.children[1];
@@ -1305,7 +1306,7 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
     // the cohort's terminal broadcaster for its tracked runId.
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("cohort-pre-recycle"),
+      inboundDelivery(new TextEncoder().encode("cohort-pre-recycle")),
     );
     // The drain below only arms an accumulator for a run already in flight,
     // and the forwarded trigger is what says the run exists. The pause this
@@ -1334,7 +1335,7 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
     // and the trigger.fire would never reach the new child's stream.
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("cohort-post-recycle"),
+      inboundDelivery(new TextEncoder().encode("cohort-post-recycle")),
     );
     // Decoded rather than substring-matched: the text "trigger.fire"
     // appearing in an unrelated payload would have satisfied the filter this
@@ -1612,7 +1613,7 @@ describe("supervisor recycle: shutdown owns the retiring dispatch loop", () => {
 
     mailBus.deliver(
       "run_deployment-x@example.com",
-      new TextEncoder().encode("consumed-during-recycle"),
+      inboundDelivery(new TextEncoder().encode("consumed-during-recycle")),
     );
     await waitForTriggerFireRunIds(first.supervisorToChild, 1);
     const [runId] = parseTriggerFireRunIds(first.supervisorToChild.flushed());

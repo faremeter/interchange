@@ -19,6 +19,7 @@ import { getLogger } from "@intx/log";
 import { PackRejectedError } from "@intx/pack-transport";
 import { SourcesUpdatedData } from "../ipc/control-payloads";
 import type { InferenceSource } from "@intx/types/runtime";
+import type { InboundDelivery } from "@intx/types/message-id";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { WorkflowRunRefTips } from "@intx/types/sidecar";
 import {
@@ -228,11 +229,12 @@ export function createDeploymentAddressRegistry(): DeploymentAddressRegistry {
 /**
  * Handler the multi-step deploy router installs on the
  * `MultistepMailRouter` after a supervisor's `spawn` succeeds. The
- * handler hands a delivered inbound mail off to the per-deployment
- * supervisor's `routeInbound`, which dispatches into the workflow-host
- * mail-bus the multi-step child's `awaitSignal` subscribes against.
+ * handler hands a delivered inbound mail and its authenticated sender off
+ * to the per-deployment supervisor's `routeInbound`, which dispatches into
+ * the workflow-host mail-bus the multi-step child's `awaitSignal`
+ * subscribes against.
  */
-export type MultistepMailHandler = (message: Uint8Array) => Promise<void>;
+export type MultistepMailHandler = (delivery: InboundDelivery) => Promise<void>;
 
 /**
  * Per-deployment-address mail handler registry the sidecar hub-link
@@ -253,13 +255,13 @@ export type MultistepMailRouter = {
   register(address: string, handler: MultistepMailHandler): void;
   unregister(address: string): void;
   /**
-   * Dispatch `message` to the handler registered for `address`. Returns
+   * Dispatch `delivery` to the handler registered for `address`. Returns
    * `null` when no handler is registered (the caller logs and drops, and
    * sends no ack). Otherwise returns the handler's durable settlement: a
    * promise that resolves once the message is durably accepted and rejects
    * when it was not, so the caller acks only on resolution.
    */
-  tryRoute(address: string, message: Uint8Array): Promise<void> | null;
+  tryRoute(address: string, delivery: InboundDelivery): Promise<void> | null;
 };
 
 export function createMultistepMailRouter(): MultistepMailRouter {
@@ -271,10 +273,10 @@ export function createMultistepMailRouter(): MultistepMailRouter {
     unregister(address) {
       handlers.delete(address);
     },
-    tryRoute(address, message) {
+    tryRoute(address, delivery) {
       const handler = handlers.get(address);
       if (handler === undefined) return null;
-      return handler(message);
+      return handler(delivery);
     },
   };
 }

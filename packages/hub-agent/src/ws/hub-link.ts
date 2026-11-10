@@ -62,6 +62,7 @@ import {
   type ResolvedInboundMailPolicy,
 } from "./inbound-signature";
 import { base64Decode, base64Encode } from "@intx/types/base64";
+import type { InboundDelivery } from "@intx/types/message-id";
 import { isRunAddress } from "@intx/types/agent-address";
 import type {
   ApprovalSnapshot,
@@ -364,14 +365,14 @@ export type WorkflowControlOutcome = {
  * Per-address mail handler registry the link consults on every
  * `mail.inbound` frame. Production wires this against the sidecar's
  * `createMultistepMailRouter` so a supervised deployment's supervisor
- * receives the bytes through its mail-bus subscription. Mail for an
+ * receives the delivery through its mail-bus subscription. Mail for an
  * address with no registered handler has no receiver and is dropped.
  * The shape lives on hub-agent so the link does not import the sidecar
  * host's wiring module, and so tests can substitute a stub.
  */
 export interface MailInboundRouter {
   /**
-   * Attempt to dispatch `message` to a handler registered against
+   * Attempt to dispatch `delivery` to a handler registered against
    * `agentAddress`. Returns `null` if no handler is registered, in which
    * case the link logs and drops the mail (and sends no ack). Otherwise
    * returns the handler's durable settlement: a promise that resolves once
@@ -381,7 +382,10 @@ export interface MailInboundRouter {
    * `mail.inbound.ack` only on resolution, so resolve is the ack signal and
    * reject is the withhold signal.
    */
-  tryRoute(agentAddress: string, message: Uint8Array): Promise<void> | null;
+  tryRoute(
+    agentAddress: string,
+    delivery: InboundDelivery,
+  ): Promise<void> | null;
 }
 
 /**
@@ -1472,7 +1476,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     //
     // Supervised deployments register the deployment-level mail
     // address on `mailInboundRouter` once their supervisor spawns;
-    // that handler delivers the bytes to the supervisor's mail-bus
+    // that handler delivers the message bytes and the frame's
+    // hub-authenticated sender, verbatim, to the supervisor's mail-bus
     // subscription, which is what the workflow-host's `awaitSignal`
     // listens on. Mail for an address with no registered handler has
     // no receiver -- the in-process session runtime that once backed
@@ -1484,7 +1489,10 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     let durable: Promise<void> | null = null;
     if (mailInboundRouter !== undefined) {
       try {
-        durable = mailInboundRouter.tryRoute(frame.agentAddress, rawBytes);
+        durable = mailInboundRouter.tryRoute(frame.agentAddress, {
+          rawMessage: rawBytes,
+          authenticatedSender: frame.authenticatedSender,
+        });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn`mail.inbound router threw for ${frame.agentAddress}: ${msg}`;

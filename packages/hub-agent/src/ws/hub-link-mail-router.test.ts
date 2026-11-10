@@ -22,6 +22,7 @@ import {
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { base64Encode } from "@intx/types";
+import type { InboundDelivery } from "@intx/types/message-id";
 import type { HarnessConfig, InboundMessage } from "@intx/types/runtime";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
@@ -221,14 +222,17 @@ describe("hub-link mail.inbound throwing router", () => {
     const deploymentAddress = "run_wedge1@integration.interchange";
 
     let calls = 0;
-    const routedAfterThrow: Uint8Array[] = [];
+    const routedAfterThrow: InboundDelivery[] = [];
     const mailInboundRouter = {
-      tryRoute(_address: string, message: Uint8Array): Promise<void> | null {
+      tryRoute(
+        _address: string,
+        delivery: InboundDelivery,
+      ): Promise<void> | null {
         calls += 1;
         if (calls === 1) {
           throw new Error("simulated mail router failure");
         }
-        routedAfterThrow.push(message);
+        routedAfterThrow.push(delivery);
         return Promise.resolve();
       },
     };
@@ -283,6 +287,10 @@ describe("hub-link mail.inbound throwing router", () => {
 
       await waitUntil(() => routedAfterThrow.length > 0);
       expect(routedAfterThrow).toHaveLength(1);
+      // The link hands the router the frame's authenticated sender.
+      expect(routedAfterThrow[0]?.authenticatedSender).toBe(
+        "user@integration.interchange",
+      );
       expect(calls).toBe(2);
     } finally {
       client.close();
@@ -578,8 +586,11 @@ describe("hub-link mail.inbound signature enforcement", () => {
 
     const routed: Uint8Array[] = [];
     const mailInboundRouter = {
-      tryRoute(_address: string, message: Uint8Array): Promise<void> | null {
-        routed.push(message);
+      tryRoute(
+        _address: string,
+        delivery: InboundDelivery,
+      ): Promise<void> | null {
+        routed.push(delivery.rawMessage);
         return Promise.resolve();
       },
     };
