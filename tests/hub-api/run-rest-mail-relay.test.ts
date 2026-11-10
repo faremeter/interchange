@@ -1,5 +1,6 @@
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -13,17 +14,26 @@ import {
   createNoopCredentialCipher,
   generateKeyPair,
 } from "@intx/crypto";
-import { createRunTokenStore, retireRunPrincipalKey } from "@intx/db";
-import { workflowDefinition } from "@intx/db/schema";
+import { eq } from "drizzle-orm";
+
+import {
+  createRunTokenStore,
+  createSidecarAllocationStore,
+  createWorkflowRunDispatchStore,
+  retireRunPrincipalKey,
+} from "@intx/db";
+import { workflowDefinition, workflowRunDispatch } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import { deriveRunPrincipalId } from "@intx/hub-common";
 import {
   createEventCollectorRegistry,
   createSidecarRouter,
+  createWorkflowDispatchService,
   type AssetService,
   type RepoStore,
   type SessionService,
   type SidecarRouter,
+  type WorkflowDispatchService,
 } from "@intx/hub-sessions";
 import {
   assembleMessage,
@@ -39,6 +49,7 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
+  seedAllocation,
   seedAsset,
   seedGrant,
   seedPrincipal,
@@ -96,10 +107,14 @@ function stubRepoStore(): RepoStore {
   });
 }
 
-async function signedMail(keyPair: KeyPair): Promise<Uint8Array> {
+async function signedMail(
+  keyPair: KeyPair,
+  messageId: string = generateSenderScopedMessageId(SENDER_ADDRESS),
+  text = "from the sender run",
+): Promise<Uint8Array> {
   const signedContent = assembleSignedContent({
     kind: "conversation",
-    text: "from the sender run",
+    text,
   });
   const signature = await createDetachedSignatureFromProvider(
     signedContent,
@@ -111,7 +126,7 @@ async function signedMail(keyPair: KeyPair): Promise<Uint8Array> {
       to: [TARGET_ADDRESS],
       cc: undefined,
       date: new Date("2026-01-15T12:00:00Z"),
-      messageId: generateSenderScopedMessageId(SENDER_ADDRESS),
+      messageId,
       subject: undefined,
       inReplyTo: undefined,
       references: undefined,
@@ -234,13 +249,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    function makeApp(routed: Parameters<SidecarRouter["routeMail"]>[]) {
-      const router = createSidecarRouter({
+    function stubRouter() {
+      return createSidecarRouter({
         withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
         resolveSidecarBindings: async () => [],
         validateSidecarIdentity: async () => true,
       });
+    }
+
+    function makeApp(
+      routed: Parameters<SidecarRouter["routeMail"]>[],
+      workflowDispatchService?: WorkflowDispatchService,
+    ) {
+      const router = stubRouter();
       return createApp({
         getSession: noSession,
         authHandler: () => new Response("", { status: 404 }),
@@ -258,13 +280,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         assetService: stubAssetService(),
         repoStore: stubRepoStore(),
         maxTarballBytes: 10_000_000,
+        ...(workflowDispatchService !== undefined
+          ? { workflowDispatchService }
+          : {}),
       });
     }
 
-    test("relays the verified bytes to the target under the sender's address and key", async () => {
-      const routed: Parameters<SidecarRouter["routeMail"]>[] = [];
-      const raw = await signedMail(senderKey);
-      const res = await makeApp(routed).request(
+    async function postMail(
+      app: ReturnType<typeof makeApp>,
+      raw: Uint8Array,
+    ): Promise<Response> {
+      return app.request(
         `/api/tenants/${TENANT}/workflows/runs/${TARGET}/mail`,
         {
           method: "POST",
@@ -275,6 +301,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           body: JSON.stringify({ rawMessage: base64Encode(raw) }),
         },
       );
+    }
+
+    test("relays the verified bytes to the target under the sender's address and key", async () => {
+      const routed: Parameters<SidecarRouter["routeMail"]>[] = [];
+      const raw = await signedMail(senderKey);
+      const res = await postMail(makeApp(routed), raw);
       if (res.status !== 202) {
         throw new Error(
           `expected 202, got ${String(res.status)}: ${await res.text()}`,
@@ -302,22 +334,116 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // A sidecar replacement retires the run's key until the new sidecar
       // records its own.
       await retireRunPrincipalKey(h.db, TENANT, SENDER);
-      const res = await makeApp(routed).request(
-        `/api/tenants/${TENANT}/workflows/runs/${TARGET}/mail`,
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${token}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ rawMessage: base64Encode(raw) }),
-        },
-      );
+      const res = await postMail(makeApp(routed), raw);
       expect(res.status).toBe(503);
       expect(res.headers.get("retry-after")).toBe("5");
       const body = type({ error: { code: "string" } }).assert(await res.json());
       expect(body.error.code).toBe("sender_key_unavailable");
       expect(routed).toEqual([]);
+    });
+
+    describe("to a provisioned deployment", () => {
+      // The durable dispatches the service handed to the sidecar.
+      let dispatched: string[];
+      // Every drain the trigger started, so no test ends with one in flight.
+      let drains: Promise<number>[];
+
+      beforeEach(async () => {
+        dispatched = [];
+        drains = [];
+        await seedAllocation(h.db, {
+          tenantId: TENANT,
+          anchorRunId: TARGET,
+          sidecarId: "sidecar_rest_mail_target",
+          allocationId: "alloc_rest_mail_target",
+          generation: 1,
+        });
+      });
+
+      afterEach(async () => {
+        await Promise.all(drains);
+      });
+
+      // The production dispatch service over the real stores. Its own enqueue
+      // starts a drain that a caller cannot await, so the trigger gets the
+      // store's enqueue and a wake that records the drain it starts.
+      function makeDispatchService(): WorkflowDispatchService {
+        const router = stubRouter();
+        const dispatchStore = createWorkflowRunDispatchStore(h.db);
+        const service = createWorkflowDispatchService({
+          dispatchStore,
+          allocationStore: createSidecarAllocationStore(h.db, {
+            getSidecarInventory: router.getSidecarInventory,
+          }),
+          router: {
+            ...router,
+            async sendWorkflowRunDispatchToAllocation(
+              _target,
+              _agentAddress,
+              _runId,
+              _stepGrants,
+              _rawMessage,
+              _authenticatedSender,
+              messageId,
+            ) {
+              dispatched.push(messageId);
+            },
+          },
+          resolveAnchorAddress: async () => TARGET_ADDRESS,
+        });
+        return {
+          ...service,
+          enqueue: (args, tx) => dispatchStore.enqueue(args, tx),
+          wake: () => {
+            drains.push(service.reconcileUntilIdle());
+          },
+        };
+      }
+
+      async function dispatchRows() {
+        return h.db
+          .select({ messageId: workflowRunDispatch.messageId })
+          .from(workflowRunDispatch)
+          .where(eq(workflowRunDispatch.anchorRunId, TARGET));
+      }
+
+      test("queues a re-sent Message-ID once, and refuses it with other bytes", async () => {
+        const routed: Parameters<SidecarRouter["routeMail"]>[] = [];
+        const app = makeApp(routed, makeDispatchService());
+        // A caller-signed Message-ID names the sender's own scope.
+        const messageId = `<durable-1@${SENDER}.${DOMAIN}>`;
+        const raw = await signedMail(senderKey, messageId);
+
+        for (const attempt of [1, 2]) {
+          const res = await postMail(app, raw);
+          if (res.status !== 202) {
+            throw new Error(
+              `attempt ${String(attempt)}: expected 202, got ${String(res.status)}: ${await res.text()}`,
+            );
+          }
+          const body = type({ messageId: "string" }).assert(await res.json());
+          expect(body.messageId).toBe(messageId);
+        }
+        expect(await dispatchRows()).toEqual([{ messageId }]);
+
+        const conflicting = await signedMail(
+          senderKey,
+          messageId,
+          "other bytes under the same Message-ID",
+        );
+        const res = await postMail(app, conflicting);
+        expect(res.status).toBe(409);
+        const body = type({ error: { code: "string" } }).assert(
+          await res.json(),
+        );
+        expect(body.error.code).toBe("message_id_conflict");
+        expect(await dispatchRows()).toEqual([{ messageId }]);
+
+        await Promise.all(drains);
+        expect(dispatched).toEqual([messageId]);
+        // The durable path never takes the live relay.
+        expect(routed).toEqual([]);
+      });
     });
   },
 );
