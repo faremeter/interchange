@@ -2212,6 +2212,12 @@ export type ContextCommit = {
  * not on outbound mail until it does. It is absent when empty, and in
  * state persisted before the field existed.
  * `subject` is set when the thread starts and preserved for its life.
+ * The parent of the next thread reply is the most recent message on the
+ * thread in either direction. `lastMessageId` is its Message-ID, absent
+ * when it named none. `lastReferences` is its References chain, so the
+ * reply's References is `lastReferences` followed by `lastMessageId`, when
+ * present (RFC 5322 3.6.4). It is absent when that chain is empty, and in
+ * state persisted before the field existed.
  *
  * Defined as an arktype so the wire layer (sidecar↔hub frames) and
  * other parsing boundaries can validate snapshots without
@@ -2220,6 +2226,7 @@ export type ContextCommit = {
 export const ConnectorThreadState = type({
   "threadRoot?": "string",
   "lastMessageId?": "string",
+  "lastReferences?": "string[]",
   replyTo: "string",
   cc: "string[]",
   "addressed?": "string[]",
@@ -2231,12 +2238,11 @@ export type ConnectorThreadState = typeof ConnectorThreadState.infer;
  * The threading headers for a connector reply. The caller composes the
  * full outbound message by adding its own `content` and `type` fields.
  *
- * `inReplyTo` is the nearest identified ancestor: the last message id, or
- * the thread root when the last message named no id. Absent when neither
- * exists. `references` is the full References chain for the reply. It is
- * set only on a reply to a passthrough message, which carries its own
- * ancestry. It is absent on a thread reply; the caller resolves that chain
- * from `inReplyTo`.
+ * `inReplyTo` is the Message-ID of the parent, the message the reply
+ * answers. It is absent when the parent named no id. `references` is the
+ * full References chain for the reply: the parent's References followed by
+ * `inReplyTo`, when present (RFC 5322 3.6.4). It is absent when that chain
+ * is empty.
  */
 export const ConnectorReplyParts = type({
   to: "string",

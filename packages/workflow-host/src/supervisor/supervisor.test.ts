@@ -2364,7 +2364,6 @@ describe("createWorkflowSupervisor", () => {
     sends: readonly {
       inReplyTo?: string;
       references?: readonly string[];
-      completeReferences?: boolean;
     }[];
   }): Promise<OutboundMessage[]> {
     const baseDir = await makeTempDir(opts.label);
@@ -2403,9 +2402,6 @@ describe("createWorkflowSupervisor", () => {
         data: {
           requestId,
           senderAddress: MAILBOX_ADDRESS,
-          ...(send.completeReferences === true
-            ? { completeReferences: true }
-            : {}),
           message: {
             to: "recipient@example.com",
             type: "conversation.message",
@@ -2432,61 +2428,21 @@ describe("createWorkflowSupervisor", () => {
     return sent;
   }
 
-  test("a connector reply takes its References chain from the committed parent", async () => {
-    const sent = await recordOutbound({
-      label: "supervisor-reply-references-",
-      sends: [
-        {
-          inReplyTo: PARENT_ID,
-          completeReferences: true,
-        },
-      ],
-    });
-    expect(sent[0]?.references).toEqual([...PARENT_REFERENCES, PARENT_ID]);
-    expect(sent[0]?.inReplyTo).toBe(PARENT_ID);
-  });
-
-  test("a connector reply whose parent is absent keeps references unset", async () => {
-    const sent = await recordOutbound({
-      label: "supervisor-reply-references-miss-",
-      sends: [
-        {
-          inReplyTo: "<missing@example.com>",
-          completeReferences: true,
-        },
-      ],
-    });
-    expect(sent[0]?.inReplyTo).toBe("<missing@example.com>");
-    expect(sent[0]?.references).toBeUndefined();
-  });
-
-  test("a connector reply that already names references keeps that chain", async () => {
+  // The child builds every reply's References from the exact message it
+  // answers. The supervisor sends the chain the child named and never looks
+  // a parent up in the mailbox by Message-ID, even when the parent is there.
+  test("an outbound message keeps the References the child named", async () => {
     const sent = await recordOutbound({
       label: "supervisor-reply-references-kept-",
       sends: [
-        {
-          inReplyTo: PARENT_ID,
-          references: [],
-          completeReferences: true,
-        },
-        {
-          inReplyTo: PARENT_ID,
-          references: ["<kept@example.com>"],
-          completeReferences: true,
-        },
+        { inReplyTo: PARENT_ID, references: ["<kept@example.com>", PARENT_ID] },
+        { inReplyTo: PARENT_ID },
       ],
     });
-    expect(sent[0]?.references).toEqual([]);
-    expect(sent[1]?.references).toEqual(["<kept@example.com>"]);
-  });
-
-  test("a send without completeReferences leaves a bare inReplyTo alone", async () => {
-    const sent = await recordOutbound({
-      label: "supervisor-reply-references-unmarked-",
-      sends: [{ inReplyTo: PARENT_ID }],
-    });
     expect(sent[0]?.inReplyTo).toBe(PARENT_ID);
-    expect(sent[0]?.references).toBeUndefined();
+    expect(sent[0]?.references).toEqual(["<kept@example.com>", PARENT_ID]);
+    expect(sent[1]?.inReplyTo).toBe(PARENT_ID);
+    expect(sent[1]?.references).toBeUndefined();
   });
 
   test("dispatch pushes a per-run grants-updated before the run's trigger.fire", async () => {

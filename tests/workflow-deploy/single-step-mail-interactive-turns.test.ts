@@ -199,6 +199,13 @@ async function waitForReplyInReplyTo(
   return parseHeaderSection(match.raw).headers;
 }
 
+/** The Message-Ids of a delivered reply's `References` header, in order. */
+function referencesOf(headers: Map<string, string>): string[] {
+  return (headers.get("references") ?? "")
+    .split(/\s+/)
+    .filter((id) => id.length > 0);
+}
+
 /** Count the input-park re-arms serviced: one `SignalAwaited{parkKind:input}`
  * is minted per completed turn of an unbounded step. */
 function inputRearmCount(events: WorkflowRunEvent[]): number {
@@ -313,12 +320,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Reference the thread root (m1) and R1 so the connector router treats
       // mail 2 as a continuation of the SAME thread rather than a new one.
       // userB can continue it because userA addressed userB on mail 1.
+      const mail2References = [MAIL1_MESSAGE_ID, r1MessageId];
       const mail2 = await fireMailTrigger(env, deploymentMailAddress, {
         messageId: MAIL2_MESSAGE_ID,
         from: MAIL2_FROM,
         content: MAIL2_BODY,
         inReplyTo: r1MessageId,
-        references: [MAIL1_MESSAGE_ID, r1MessageId],
+        references: mail2References,
         grants: ALL_TOOL_GRANTS,
       });
       expect(mail2.messageId).toBe(MAIL2_MESSAGE_ID);
@@ -337,18 +345,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // continuation), proving the thread continued rather than restarting.
       expect(r2Headers.get("cc")).toContain(MAIL1_FROM);
 
-      // R2 carries the FULL RFC 5322 References ancestry, not just the parent
-      // it answers (INTR-480). Mail 2 arrived with References [m1, r1], so a
-      // reply threaded onto it ships References [m1, r1, m2] -- mail 2's own
-      // References chain plus mail 2's Message-Id. The reply path builds this
-      // complete chain by looking the parent up in the run mailbox rather than
-      // truncating to the single In-Reply-To element.
-      const r2References = (r2Headers.get("references") ?? "")
-        .split(/\s+/)
-        .filter((id) => id.length > 0);
-      expect(r2References).toEqual([
-        MAIL1_MESSAGE_ID,
-        r1MessageId,
+      // R2 carries the full RFC 5322 References ancestry of the message it
+      // answers: mail 2's own References followed by mail 2's Message-Id. The
+      // connector thread holds that chain from the turn-2 seed.
+      expect(referencesOf(r2Headers)).toEqual([
+        ...mail2References,
         MAIL2_MESSAGE_ID,
       ]);
 
@@ -356,10 +357,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // so its ancestry is the single opener Message-Id. Confirms the
       // full-chain path degrades to one element for a first reply rather than
       // emitting an empty or malformed References header.
-      const r1References = (r1Headers.get("references") ?? "")
-        .split(/\s+/)
-        .filter((id) => id.length > 0);
-      expect(r1References).toEqual([MAIL1_MESSAGE_ID]);
+      expect(referencesOf(r1Headers)).toEqual([MAIL1_MESSAGE_ID]);
 
       // Wait for turn 2 to complete its own re-arm so the event log reflects
       // both serviced turns before the structural assertions read it.
@@ -464,12 +462,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // --- Turn 4: userA answers R2, the thread's last message ------------
       // The passthrough did not advance the thread, so R2 is still its last
       // message, and userC is not on the reply.
+      const mail4References = [MAIL1_MESSAGE_ID, r2MessageId];
       await fireMailTrigger(env, deploymentMailAddress, {
         messageId: MAIL4_MESSAGE_ID,
         from: MAIL1_FROM,
         content: MAIL4_BODY,
         inReplyTo: r2MessageId,
-        references: [MAIL1_MESSAGE_ID, r2MessageId],
+        references: mail4References,
         grants: ALL_TOOL_GRANTS,
       });
 
@@ -480,6 +479,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(r4Headers.get("to")).toBe(MAIL1_FROM);
       expect(r4Headers.get("cc")).toBe(MAIL2_FROM);
+      expect(referencesOf(r4Headers)).toEqual([
+        ...mail4References,
+        MAIL4_MESSAGE_ID,
+      ]);
     });
   },
 );

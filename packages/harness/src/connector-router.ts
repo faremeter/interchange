@@ -35,6 +35,16 @@
 // lets the harness sequence the side effects (deliver, INBOX expunge)
 // around the state change however it needs to.
 //
+// A reply builds its threading headers from the exact message it answers,
+// as RFC 5322 3.6.4 describes: `In-Reply-To` is the parent's Message-ID and
+// `References` is the parent's References followed by that id. A parent with
+// no Message-ID gives no `In-Reply-To`, and `References` is its References
+// alone. On the thread, the parent is the most recent message:
+// `lastMessageId` holds its Message-ID and `lastReferences` its References.
+// An inbound start or continue makes that message the parent; a sent thread
+// reply makes the agent's own reply the parent, with the References it went
+// out with. The router never looks a parent up by Message-ID.
+//
 // A passthrough message does not join the thread, so the thread state does
 // not answer it. Its commit sets a turn reply target instead: the reply
 // goes to the passthrough sender, threaded under that message, and the
@@ -49,7 +59,7 @@
 // `restoreParkedReplyTargets()`.
 
 import { getLogger } from "@intx/log";
-import { extractAddrSpec } from "@intx/mime";
+import { extractAddrSpec, isMessageId } from "@intx/mime";
 import type {
   ConnectorReplyParts,
   ConnectorThreadState,
@@ -176,20 +186,26 @@ export interface ConnectorRouter {
    * message; the return is `null` when that sender has no address.
    * Otherwise `to` is the most recent speaker on the active connector
    * thread and `cc` is everyone else who has spoken on the thread
-   * (deduplicated). The caller composes the full outbound message by
-   * adding its own `content` and `type` fields. Throws
-   * `NoActiveConnectorThreadError` when no turn reply target is set and no
-   * thread is active.
+   * (deduplicated). The thread reply answers the most recent message on
+   * the thread: `inReplyTo` is `lastMessageId` and `references` is
+   * `lastReferences` followed by `lastMessageId`. When that message named
+   * no id, `inReplyTo` is absent and `references` is `lastReferences`
+   * alone. Each is absent when it would be empty. The caller composes the
+   * full outbound message by adding its own `content` and `type` fields.
+   * Throws `NoActiveConnectorThreadError` when no turn reply target is set
+   * and no thread is active.
    */
   composeReply(): ConnectorReplyParts | null;
 
   /**
-   * Update `lastMessageId` after a successful outbound reply send. A reply
-   * to a turn reply target leaves the thread state unchanged. Throws when
+   * Make a sent thread reply the parent of the next one: `lastMessageId`
+   * becomes the receipt's Message-ID, and `lastReferences` becomes
+   * `references`, the References chain the reply was sent with. A reply to
+   * a turn reply target leaves the thread state unchanged. Throws when
    * called with no turn reply target and no active thread — outbound state
    * advance has no meaning without a thread.
    */
-  onReplySent(receipt: SendReceipt): void;
+  onReplySent(receipt: SendReceipt, references: readonly string[]): void;
 
   /**
    * Return the current connector state as a serializable snapshot, or
@@ -214,6 +230,7 @@ function statesEqual(
   return (
     a.threadRoot === b.threadRoot &&
     a.lastMessageId === b.lastMessageId &&
+    listsEqual(a.lastReferences ?? [], b.lastReferences ?? []) &&
     a.replyTo === b.replyTo &&
     a.subject === b.subject &&
     listsEqual(a.cc, b.cc) &&
@@ -251,6 +268,37 @@ function addressedField(addressed: readonly string[]): {
   addressed?: string[];
 } {
   return addressed.length > 0 ? { addressed: [...addressed] } : {};
+}
+
+// The parent fields of a thread state. A parent that named no Message-ID
+// still has a References chain, so each field stands alone: `lastMessageId`
+// is set when the parent named an id, and `lastReferences` when its chain is
+// not empty.
+function parentFields(
+  lastMessageId: string | undefined,
+  lastReferences: readonly string[] | undefined,
+): { lastMessageId?: string; lastReferences?: string[] } {
+  return {
+    ...(lastMessageId !== undefined ? { lastMessageId } : {}),
+    ...(lastReferences !== undefined && lastReferences.length > 0
+      ? { lastReferences: [...lastReferences] }
+      : {}),
+  };
+}
+
+// The References chain of an inbound message, as RFC 5322 3.6.4 has a
+// replier read it: the message's References, or else its In-Reply-To when
+// that names exactly one Message-ID. An In-Reply-To that names several ids
+// or none gives no chain.
+function referencesOf(message: InboundMessage): string[] {
+  const { references, inReplyTo } = message.headers;
+  if (references !== undefined && references.length > 0) {
+    return [...references];
+  }
+  if (inReplyTo !== undefined && isMessageId(inReplyTo.trim())) {
+    return [inReplyTo.trim()];
+  }
+  return [];
 }
 
 export function createConnectorRouter(
@@ -360,11 +408,9 @@ export function createConnectorRouter(
     if (state === null || !isAnchored(state)) {
       const nextState: ConnectorThreadState = {
         ...(message.headers.messageId !== undefined
-          ? {
-              threadRoot: message.headers.messageId,
-              lastMessageId: message.headers.messageId,
-            }
+          ? { threadRoot: message.headers.messageId }
           : {}),
+        ...parentFields(message.headers.messageId, referencesOf(message)),
         replyTo: speaker,
         cc: [],
         ...addressedField(appendUnique([], recipientsOf(message))),
@@ -388,9 +434,7 @@ export function createConnectorRouter(
         ...(state.threadRoot !== undefined
           ? { threadRoot: state.threadRoot }
           : {}),
-        ...(message.headers.messageId !== undefined
-          ? { lastMessageId: message.headers.messageId }
-          : {}),
+        ...parentFields(message.headers.messageId, referencesOf(message)),
         replyTo: speaker,
         cc: carriedCc,
         ...addressedField(
@@ -507,20 +551,33 @@ export function createConnectorRouter(
       throw new NoActiveConnectorThreadError();
     }
 
-    // RFC 5322 3.6.4: a parent that named no Message-ID leaves the root as
-    // the nearest identified ancestor, and the References chain built from
-    // it is what keeps the reply on the thread.
-    const parent = state.lastMessageId ?? state.threadRoot;
+    // RFC 5322 3.6.4: `In-Reply-To` is the parent's Message-ID, and the
+    // chain is the parent's References followed by that id. A parent that
+    // named no Message-ID gives no `In-Reply-To`, and the chain is its
+    // References alone. `lastReferences` is absent when the parent had no
+    // References, and in a state persisted before the field existed.
+    // `threadRoot` is not a fallback parent: the RFC threads a reply under
+    // the message it answers, and that message's own chain is what keeps
+    // the reply on the thread.
+    const { lastMessageId } = state;
+    const references = [
+      ...(state.lastReferences ?? []),
+      ...(lastMessageId !== undefined ? [lastMessageId] : []),
+    ];
 
     return {
       to: state.replyTo,
       cc: [...state.cc],
-      ...(parent !== undefined ? { inReplyTo: parent } : {}),
+      ...(lastMessageId !== undefined ? { inReplyTo: lastMessageId } : {}),
+      ...(references.length > 0 ? { references } : {}),
       ...(state.subject !== undefined ? { subject: state.subject } : {}),
     };
   }
 
-  function onReplySent(receipt: SendReceipt): void {
+  function onReplySent(
+    receipt: SendReceipt,
+    references: readonly string[],
+  ): void {
     if (turnReplyTarget !== null) return;
     if (state === null) {
       throw new NoActiveConnectorThreadError();
@@ -529,7 +586,7 @@ export function createConnectorRouter(
       ...(state.threadRoot !== undefined
         ? { threadRoot: state.threadRoot }
         : {}),
-      lastMessageId: receipt.messageId,
+      ...parentFields(receipt.messageId, references),
       replyTo: state.replyTo,
       cc: [...state.cc],
       ...addressedField(state.addressed ?? []),
@@ -543,9 +600,7 @@ export function createConnectorRouter(
       ...(state.threadRoot !== undefined
         ? { threadRoot: state.threadRoot }
         : {}),
-      ...(state.lastMessageId !== undefined
-        ? { lastMessageId: state.lastMessageId }
-        : {}),
+      ...parentFields(state.lastMessageId, state.lastReferences),
       replyTo: state.replyTo,
       cc: [...state.cc],
       ...addressedField(state.addressed ?? []),
@@ -561,9 +616,7 @@ export function createConnectorRouter(
             ...(next.threadRoot !== undefined
               ? { threadRoot: next.threadRoot }
               : {}),
-            ...(next.lastMessageId !== undefined
-              ? { lastMessageId: next.lastMessageId }
-              : {}),
+            ...parentFields(next.lastMessageId, next.lastReferences),
             replyTo: next.replyTo,
             cc: [...next.cc],
             ...addressedField(next.addressed ?? []),

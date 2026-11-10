@@ -109,6 +109,7 @@ describe("createConnectorRouter", () => {
       expect(router.snapshot()).toEqual({
         threadRoot: "<root@example.com>",
         lastMessageId: "<follow-1@example.com>",
+        lastReferences: ["<root@example.com>"],
         replyTo: "user@example.com",
         cc: [],
         subject: "Hello",
@@ -130,6 +131,7 @@ describe("createConnectorRouter", () => {
       expect(router.snapshot()).toEqual({
         threadRoot: "<root@example.com>",
         lastMessageId: "<follow-2@example.com>",
+        lastReferences: ["<root@example.com>"],
         replyTo: "user@example.com",
         cc: [],
       });
@@ -155,6 +157,7 @@ describe("createConnectorRouter", () => {
       expect(router.snapshot()).toEqual({
         threadRoot: "<root@example.com>",
         lastMessageId: "<follow-3@example.com>",
+        lastReferences: ["<root@example.com>"],
         replyTo: "other@example.com",
         cc: ["user@example.com"],
         addressed: ["other@example.com"],
@@ -276,6 +279,7 @@ describe("createConnectorRouter", () => {
         to: "user@example.com",
         cc: [],
         inReplyTo: "<root@example.com>",
+        references: ["<root@example.com>"],
         subject: "Hello",
       });
     });
@@ -312,6 +316,7 @@ describe("createConnectorRouter", () => {
         to: "third@example.com",
         cc: ["user@example.com", "second@example.com"],
         inReplyTo: "<follow-b@example.com>",
+        references: ["<root@example.com>", "<follow-b@example.com>"],
         subject: "Important",
       });
     });
@@ -369,10 +374,13 @@ describe("createConnectorRouter", () => {
         ),
       );
 
-      router.onReplySent({
-        messageId: "<sent-1@example.com>",
-        status: "delivered",
-      });
+      router.onReplySent(
+        {
+          messageId: "<sent-1@example.com>",
+          status: "delivered",
+        },
+        [],
+      );
 
       expect(router.snapshot()).toEqual({
         threadRoot: "<root@example.com>",
@@ -395,10 +403,13 @@ describe("createConnectorRouter", () => {
     test("onReplySent with no active thread throws", () => {
       const router = createConnectorRouter({ ownAddress: AGENT });
       expect(() => {
-        router.onReplySent({
-          messageId: "<sent@example.com>",
-          status: "delivered",
-        });
+        router.onReplySent(
+          {
+            messageId: "<sent@example.com>",
+            status: "delivered",
+          },
+          [],
+        );
       }).toThrow(NoActiveConnectorThreadError);
     });
   });
@@ -637,10 +648,13 @@ describe("createConnectorRouter", () => {
       });
       const changesBefore = changes.length;
 
-      router.onReplySent({
-        messageId: "<sent-to-carol@example.com>",
-        status: "delivered",
-      });
+      router.onReplySent(
+        {
+          messageId: "<sent-to-carol@example.com>",
+          status: "delivered",
+        },
+        [],
+      );
 
       expect(router.snapshot()).toEqual(THREAD);
       expect(changes.length).toBe(changesBefore);
@@ -650,10 +664,13 @@ describe("createConnectorRouter", () => {
       const router = routerWithPassthrough();
 
       const first = router.composeReply();
-      router.onReplySent({
-        messageId: "<sent-1@example.com>",
-        status: "delivered",
-      });
+      router.onReplySent(
+        {
+          messageId: "<sent-1@example.com>",
+          status: "delivered",
+        },
+        [],
+      );
       const second = router.composeReply();
 
       expect(first).toEqual(CAROL_REPLY);
@@ -675,6 +692,7 @@ describe("createConnectorRouter", () => {
         to: "user@example.com",
         cc: [],
         inReplyTo: "<follow-1@example.com>",
+        references: ["<root@example.com>", "<follow-1@example.com>"],
         subject: "Hello",
       });
     });
@@ -700,6 +718,7 @@ describe("createConnectorRouter", () => {
         to: "user@example.com",
         cc: [],
         inReplyTo: "<root@example.com>",
+        references: ["<root@example.com>"],
         subject: "Hello",
       });
     });
@@ -713,6 +732,7 @@ describe("createConnectorRouter", () => {
         to: "user@example.com",
         cc: [],
         inReplyTo: "<root@example.com>",
+        references: ["<root@example.com>"],
         subject: "Hello",
       });
     });
@@ -739,6 +759,7 @@ describe("createConnectorRouter", () => {
         to: "user@example.com",
         cc: [],
         inReplyTo: "<root@example.com>",
+        references: ["<root@example.com>"],
         subject: "Hello",
       });
     });
@@ -941,10 +962,10 @@ describe("createConnectorRouter", () => {
       expect("inReplyTo" in parts).toBe(false);
     });
 
-    test("a continuation naming no id still threads against the root", () => {
-      // The reply drain only resolves a References chain when `inReplyTo` is
-      // present, so dropping it here costs the outbound reply both threading
-      // headers and starts a new thread in every participant's client.
+    test("a continuation naming no id is answered with its References alone", () => {
+      // RFC 5322 3.6.4: a parent with no Message-ID gives no In-Reply-To,
+      // and the reply's References is the parent's References alone. The
+      // root is not a fallback parent.
       const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(
         router.route(
@@ -961,11 +982,12 @@ describe("createConnectorRouter", () => {
       expect(decision.kind).toBe("continue");
       router.commit(decision);
       expect(router.snapshot()?.lastMessageId).toBeUndefined();
+      expect(router.snapshot()?.lastReferences).toEqual(["<root@example.com>"]);
 
       expect(router.composeReply()).toEqual({
         to: "bob@example.com",
         cc: ["user@example.com"],
-        inReplyTo: "<root@example.com>",
+        references: ["<root@example.com>"],
         subject: "Invoice",
       });
     });
@@ -1043,10 +1065,13 @@ describe("createConnectorRouter", () => {
       // an anchor: the reply's own id becomes `lastMessageId`.
       const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(inboundWithNoMessageId()));
-      router.onReplySent({
-        messageId: "<agent-reply@example.com>",
-        status: "delivered",
-      });
+      router.onReplySent(
+        {
+          messageId: "<agent-reply@example.com>",
+          status: "delivered",
+        },
+        [],
+      );
 
       const decision = router.route(
         continuationByInReplyTo("<agent-reply@example.com>"),
@@ -1124,10 +1149,13 @@ describe("createConnectorRouter", () => {
       router.commit(router.route(startMessage()));
       events.length = 0;
 
-      router.onReplySent({
-        messageId: "<sent-cb@example.com>",
-        status: "delivered",
-      });
+      router.onReplySent(
+        {
+          messageId: "<sent-cb@example.com>",
+          status: "delivered",
+        },
+        [],
+      );
 
       expect(events).toHaveLength(1);
       expect(events[0]?.lastMessageId).toBe("<sent-cb@example.com>");
@@ -1219,10 +1247,13 @@ describe("createConnectorRouter", () => {
         throw new Error("expected non-null captured state");
       }
 
-      router.onReplySent({
-        messageId: "<later@example.com>",
-        status: "delivered",
-      });
+      router.onReplySent(
+        {
+          messageId: "<later@example.com>",
+          status: "delivered",
+        },
+        [],
+      );
 
       expect(captured.lastMessageId).toBe("<root@example.com>");
     });
@@ -1255,10 +1286,10 @@ describe("createConnectorRouter", () => {
       router.commit(router.route(startMessage()));
 
       expect(() =>
-        router.onReplySent({
-          messageId: "<sent-throw@example.com>",
-          status: "delivered",
-        }),
+        router.onReplySent(
+          { messageId: "<sent-throw@example.com>", status: "delivered" },
+          [],
+        ),
       ).not.toThrow();
       expect(router.snapshot()?.lastMessageId).toBe("<sent-throw@example.com>");
     });
@@ -1358,6 +1389,7 @@ describe("createConnectorRouter", () => {
         to: "bob@example.com",
         cc: ["user@example.com"],
         inReplyTo: "<bob-1@example.com>",
+        references: ["<root@example.com>", "<bob-1@example.com>"],
         subject: "Hello",
       });
     });
@@ -1373,6 +1405,7 @@ describe("createConnectorRouter", () => {
         to: "user@example.com",
         cc: [],
         inReplyTo: "<root@example.com>",
+        references: ["<root@example.com>"],
       });
     });
 
@@ -1480,6 +1513,356 @@ describe("createConnectorRouter", () => {
           }),
         ).kind,
       ).toBe("passthrough");
+    });
+  });
+
+  // RFC 5322 3.6.4: a reply's References is the parent's References (or,
+  // when it has none, its single In-Reply-To id) followed by the parent's
+  // Message-ID. The parent is the exact message the reply answers.
+  describe("References chain", () => {
+    function inbound(opts: {
+      from?: string;
+      messageId: string;
+      inReplyTo?: string;
+      references?: string[];
+    }): InboundMessage {
+      return createInboundMessage({
+        from: opts.from ?? "user@example.com",
+        to: [AGENT],
+        content: "x",
+        messageId: opts.messageId,
+        ...(opts.inReplyTo !== undefined ? { inReplyTo: opts.inReplyTo } : {}),
+        ...(opts.references !== undefined
+          ? { references: opts.references }
+          : {}),
+      });
+    }
+
+    // Built by hand because `createInboundMessage` always names a
+    // Message-ID.
+    function inboundWithoutId(opts: {
+      inReplyTo?: string;
+      references?: string[];
+    }): InboundMessage {
+      return {
+        ref: { uid: 1, mailbox: "INBOX" },
+        headers: {
+          from: "user@example.com",
+          to: [AGENT],
+          date: new Date().toISOString(),
+          ...(opts.inReplyTo !== undefined
+            ? { inReplyTo: opts.inReplyTo }
+            : {}),
+          ...(opts.references !== undefined
+            ? { references: opts.references }
+            : {}),
+        },
+        flags: [],
+        content: "x",
+        signatureStatus: "missing",
+      };
+    }
+
+    function sent(messageId: string): {
+      messageId: string;
+      status: "delivered";
+    } {
+      return { messageId, status: "delivered" };
+    }
+
+    test("a start stores the inbound message's References as the parent's chain", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          inbound({
+            messageId: "<m3@example.com>",
+            inReplyTo: "<m2@example.com>",
+            references: ["<m1@example.com>", "<m2@example.com>"],
+          }),
+        ),
+      );
+
+      expect(router.snapshot()?.lastMessageId).toBe("<m3@example.com>");
+      expect(router.snapshot()?.lastReferences).toEqual([
+        "<m1@example.com>",
+        "<m2@example.com>",
+      ]);
+      expect(requireReplyParts(router).references).toEqual([
+        "<m1@example.com>",
+        "<m2@example.com>",
+        "<m3@example.com>",
+      ]);
+      expect(requireReplyParts(router).inReplyTo).toBe("<m3@example.com>");
+    });
+
+    test("a start with no References takes a single-id In-Reply-To as the chain", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          inbound({
+            messageId: "<m2@example.com>",
+            inReplyTo: "<m1@example.com>",
+          }),
+        ),
+      );
+
+      expect(router.snapshot()?.lastReferences).toEqual(["<m1@example.com>"]);
+      expect(requireReplyParts(router).references).toEqual([
+        "<m1@example.com>",
+        "<m2@example.com>",
+      ]);
+    });
+
+    test("an In-Reply-To that names several ids gives no chain", () => {
+      // Built by hand because `createInboundMessage` accepts only a single
+      // id, while a parsed header keeps whatever the sender wrote.
+      const message: InboundMessage = {
+        ref: { uid: 1, mailbox: "INBOX" },
+        headers: {
+          from: "user@example.com",
+          to: [AGENT],
+          date: new Date().toISOString(),
+          messageId: "<m3@example.com>",
+          inReplyTo: "<m1@example.com> <m2@example.com>",
+        },
+        flags: [],
+        content: "x",
+        signatureStatus: "missing",
+      };
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(router.route(message));
+
+      expect(router.snapshot()?.lastReferences).toBeUndefined();
+      expect(requireReplyParts(router).references).toEqual([
+        "<m3@example.com>",
+      ]);
+    });
+
+    test("a continue makes the continuing message the parent", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          inbound({
+            messageId: "<m2@example.com>",
+            references: ["<m1@example.com>"],
+          }),
+        ),
+      );
+      router.commit(
+        router.route(
+          inbound({
+            messageId: "<m4@example.com>",
+            inReplyTo: "<m2@example.com>",
+            references: [
+              "<m1@example.com>",
+              "<m2@example.com>",
+              "<m3@example.com>",
+            ],
+          }),
+        ),
+      );
+
+      expect(router.snapshot()?.lastMessageId).toBe("<m4@example.com>");
+      expect(requireReplyParts(router)).toEqual({
+        to: "user@example.com",
+        cc: [],
+        inReplyTo: "<m4@example.com>",
+        references: [
+          "<m1@example.com>",
+          "<m2@example.com>",
+          "<m3@example.com>",
+          "<m4@example.com>",
+        ],
+      });
+    });
+
+    test("a sent thread reply becomes the parent of the next reply", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          inbound({
+            messageId: "<m2@example.com>",
+            references: ["<m1@example.com>"],
+          }),
+        ),
+      );
+
+      const first = requireReplyParts(router);
+      router.onReplySent(sent("<r1@example.com>"), first.references ?? []);
+
+      expect(router.snapshot()?.lastMessageId).toBe("<r1@example.com>");
+      expect(router.snapshot()?.lastReferences).toEqual([
+        "<m1@example.com>",
+        "<m2@example.com>",
+      ]);
+      const second = requireReplyParts(router);
+      expect(second.inReplyTo).toBe("<r1@example.com>");
+      expect(second.references).toEqual([
+        "<m1@example.com>",
+        "<m2@example.com>",
+        "<r1@example.com>",
+      ]);
+    });
+
+    test("the next reply carries the References the sent reply carried", () => {
+      // The chain comes from the send, not from the state at send time.
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(router.route(inbound({ messageId: "<m1@example.com>" })));
+
+      router.onReplySent(sent("<r1@example.com>"), [
+        "<other@example.com>",
+        "<m1@example.com>",
+      ]);
+
+      expect(requireReplyParts(router).references).toEqual([
+        "<other@example.com>",
+        "<m1@example.com>",
+        "<r1@example.com>",
+      ]);
+    });
+
+    test("a continue that names no id is answered with its References and no In-Reply-To", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          inbound({
+            messageId: "<m1@example.com>",
+            references: ["<r0@example.com>"],
+          }),
+        ),
+      );
+      const first = requireReplyParts(router);
+      expect(first.references).toEqual([
+        "<r0@example.com>",
+        "<m1@example.com>",
+      ]);
+      router.onReplySent(sent("<s1@example.com>"), first.references ?? []);
+
+      const decision = router.route(
+        inboundWithoutId({
+          inReplyTo: "<s1@example.com>",
+          references: [
+            "<r0@example.com>",
+            "<m1@example.com>",
+            "<s1@example.com>",
+          ],
+        }),
+      );
+      expect(decision.kind).toBe("continue");
+      router.commit(decision);
+
+      expect(router.snapshot()?.lastMessageId).toBeUndefined();
+      expect(router.snapshot()?.lastReferences).toEqual([
+        "<r0@example.com>",
+        "<m1@example.com>",
+        "<s1@example.com>",
+      ]);
+      const parts = requireReplyParts(router);
+      expect(parts).toEqual({
+        to: "user@example.com",
+        cc: [],
+        references: [
+          "<r0@example.com>",
+          "<m1@example.com>",
+          "<s1@example.com>",
+        ],
+      });
+      expect("inReplyTo" in parts).toBe(false);
+    });
+
+    test("a start that names no id is answered with its References and no In-Reply-To", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      const decision = router.route(
+        inboundWithoutId({ references: ["<x@example.com>"] }),
+      );
+      expect(decision.kind).toBe("start");
+      router.commit(decision);
+
+      const parts = requireReplyParts(router);
+      expect(parts).toEqual({
+        to: "user@example.com",
+        cc: [],
+        references: ["<x@example.com>"],
+      });
+      expect("inReplyTo" in parts).toBe(false);
+    });
+
+    test("a state persisted without lastReferences threads under the parent id alone", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      const persisted = ConnectorThreadStateSchema({
+        threadRoot: "<m1@example.com>",
+        lastMessageId: "<m5@example.com>",
+        replyTo: "user@example.com",
+        cc: [],
+      });
+      if (persisted instanceof type.errors) {
+        throw new Error(persisted.summary);
+      }
+      router.restore(persisted);
+
+      expect(router.snapshot()).toEqual(persisted);
+      expect(requireReplyParts(router)).toEqual({
+        to: "user@example.com",
+        cc: [],
+        inReplyTo: "<m5@example.com>",
+        references: ["<m5@example.com>"],
+      });
+    });
+
+    test("snapshot and restore carry lastReferences", () => {
+      const a = createConnectorRouter({ ownAddress: AGENT });
+      a.commit(
+        a.route(
+          inbound({
+            messageId: "<m2@example.com>",
+            references: ["<m1@example.com>"],
+          }),
+        ),
+      );
+      a.onReplySent(sent("<r1@example.com>"), [
+        "<m1@example.com>",
+        "<m2@example.com>",
+      ]);
+      const snap = a.snapshot();
+      const parsed = ConnectorThreadStateSchema(snap);
+      if (parsed instanceof type.errors) throw new Error(parsed.summary);
+
+      const b = createConnectorRouter({ ownAddress: AGENT });
+      b.restore(parsed);
+
+      expect(b.snapshot()).toEqual(snap);
+      expect(b.composeReply()).toEqual(a.composeReply());
+
+      // The restored state is a copy of the input's chain.
+      parsed.lastReferences?.push("<injected@example.com>");
+      expect(b.snapshot()?.lastReferences).toEqual([
+        "<m1@example.com>",
+        "<m2@example.com>",
+      ]);
+    });
+
+    test("a change to lastReferences alone notifies the subscriber", () => {
+      const changes: (ConnectorThreadState | null)[] = [];
+      const router = createConnectorRouter({
+        ownAddress: AGENT,
+        onStateChanged: (state) => changes.push(state),
+      });
+      router.restore({
+        lastMessageId: "<m2@example.com>",
+        replyTo: "user@example.com",
+        cc: [],
+      });
+      router.restore({
+        lastMessageId: "<m2@example.com>",
+        lastReferences: ["<m1@example.com>"],
+        replyTo: "user@example.com",
+        cc: [],
+      });
+
+      expect(changes.map((state) => state?.lastReferences)).toEqual([
+        undefined,
+        ["<m1@example.com>"],
+      ]);
     });
   });
 });

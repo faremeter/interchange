@@ -14,7 +14,12 @@ import type {
 
 import { waitUntil } from "@intx/types/testing";
 
-import type { ConnectorReplyParts } from "./connector-router";
+import { createInboundMessage } from "@intx/mime";
+
+import {
+  createConnectorRouter,
+  type ConnectorReplyParts,
+} from "./connector-router";
 import { driveConnectorReplies } from "./reply-drain";
 
 function replyEvent(seq: number, content: string): InferenceEvent {
@@ -135,127 +140,101 @@ describe("driveConnectorReplies", () => {
     expect(receipts[0]?.messageId).toBe("<child@interchange>");
   });
 
-  test("sets the full References chain a supplied resolver returns", async () => {
+  test("sends the References chain composeReply supplies and reports it with the receipt", async () => {
     const sent: OutboundMessage[] = [];
-    const resolvedFor: string[] = [];
+    const reported: (readonly string[])[] = [];
 
     const drain = driveConnectorReplies({
       stream: streamOf([replyEvent(1, "threaded reply")]),
-      composeReply: () => ({
-        to: "alice@example.com",
-        cc: [],
-        inReplyTo: "<parent@interchange>",
-      }),
-      resolveReferences: async (inReplyTo) => {
-        resolvedFor.push(inReplyTo);
-        return [
-          "<root@interchange>",
-          "<mid@interchange>",
-          "<parent@interchange>",
-        ];
-      },
-      send: async (message) => {
-        sent.push(message);
-        return { messageId: "<child@interchange>", status: "delivered" };
-      },
-      onReplySent: () => undefined,
-    });
-
-    await drain.done;
-
-    // The resolver is consulted with the parent id from composeReply, and the
-    // full ancestry it returns rides onto the outbound message verbatim.
-    expect(resolvedFor).toEqual(["<parent@interchange>"]);
-    expect(sent[0]?.references).toEqual([
-      "<root@interchange>",
-      "<mid@interchange>",
-      "<parent@interchange>",
-    ]);
-  });
-
-  test("omits references when the resolver reports no parent", async () => {
-    // A resolver miss (first reply on a fresh thread, malformed id) returns
-    // undefined; the drain then leaves `references` unset so the transport
-    // derives a single-element chain from inReplyTo.
-    const sent: OutboundMessage[] = [];
-
-    const drain = driveConnectorReplies({
-      stream: streamOf([replyEvent(1, "first on the thread")]),
-      composeReply: () => ({
-        to: "alice@example.com",
-        cc: [],
-        inReplyTo: "<parent@interchange>",
-      }),
-      resolveReferences: async () => undefined,
-      send: async (message) => {
-        sent.push(message);
-        return { messageId: "<child@interchange>", status: "delivered" };
-      },
-      onReplySent: () => undefined,
-    });
-
-    await drain.done;
-
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.references).toBeUndefined();
-  });
-
-  test("omits references with no resolver supplied", async () => {
-    // The createHarness path supplies no resolver; the drain must leave
-    // `references` unset, preserving the pre-existing single-element
-    // threading the transport derives from inReplyTo.
-    const sent: OutboundMessage[] = [];
-
-    const drain = driveConnectorReplies({
-      stream: streamOf([replyEvent(1, "no resolver")]),
-      composeReply: () => ({
-        to: "alice@example.com",
-        cc: [],
-        inReplyTo: "<parent@interchange>",
-      }),
-      send: async (message) => {
-        sent.push(message);
-        return { messageId: "<child@interchange>", status: "delivered" };
-      },
-      onReplySent: () => undefined,
-    });
-
-    await drain.done;
-
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.references).toBeUndefined();
-  });
-
-  test("sends the References chain composeReply supplies without the resolver", async () => {
-    const sent: OutboundMessage[] = [];
-    const resolvedFor: string[] = [];
-
-    const drain = driveConnectorReplies({
-      stream: streamOf([replyEvent(1, "reply to a passthrough sender")]),
       composeReply: () => ({
         to: "carol@example.com",
         cc: [],
         inReplyTo: "<carol@interchange>",
         references: ["<earlier@interchange>", "<carol@interchange>"],
       }),
-      resolveReferences: async (inReplyTo) => {
-        resolvedFor.push(inReplyTo);
-        return ["<resolved@interchange>"];
-      },
       send: async (message) => {
         sent.push(message);
         return { messageId: "<child@interchange>", status: "delivered" };
       },
-      onReplySent: () => undefined,
+      onReplySent: (_receipt, references) => {
+        reported.push(references);
+      },
     });
 
     await drain.done;
 
-    expect(resolvedFor).toEqual([]);
-    expect(sent[0]?.to).toBe("carol@example.com");
     expect(sent[0]?.references).toEqual([
       "<earlier@interchange>",
       "<carol@interchange>",
+    ]);
+    expect(reported).toEqual([
+      ["<earlier@interchange>", "<carol@interchange>"],
+    ]);
+  });
+
+  test("reports an empty chain for parts that carry no References", async () => {
+    const sent: OutboundMessage[] = [];
+    const reported: (readonly string[])[] = [];
+
+    const drain = driveConnectorReplies({
+      stream: streamOf([replyEvent(1, "no ancestor")]),
+      composeReply: () => ({ to: "alice@example.com", cc: [] }),
+      send: async (message) => {
+        sent.push(message);
+        return { messageId: "<child@interchange>", status: "delivered" };
+      },
+      onReplySent: (_receipt, references) => {
+        reported.push(references);
+      },
+    });
+
+    await drain.done;
+
+    expect(sent[0]?.references).toBeUndefined();
+    expect(reported).toEqual([[]]);
+  });
+
+  test("each thread reply carries the RFC 5322 chain of the message it answers", async () => {
+    // Driven through a real router: the first reply answers the inbound
+    // message, and the second answers the agent's own first reply.
+    const router = createConnectorRouter({ ownAddress: "agent@example.com" });
+    const inbound = createInboundMessage({
+      from: "alice@example.com",
+      to: ["agent@example.com"],
+      content: "hello",
+      messageId: "<inbound@example.com>",
+      references: ["<root@example.com>", "<mid@example.com>"],
+    });
+    router.commit(router.route(inbound));
+
+    const sentIds = ["<sent-1@example.com>", "<sent-2@example.com>"];
+    const sent: OutboundMessage[] = [];
+    const drain = driveConnectorReplies({
+      stream: streamOf([replyEvent(1, "first"), replyEvent(2, "second")]),
+      composeReply: () => router.composeReply(),
+      send: async (message) => {
+        const messageId = sentIds[sent.length];
+        if (messageId === undefined) throw new Error("unexpected third send");
+        sent.push(message);
+        return { messageId, status: "delivered" };
+      },
+      onReplySent: (receipt, references) => {
+        router.onReplySent(receipt, references);
+      },
+    });
+
+    await drain.done;
+
+    const inboundChain = [
+      ...(inbound.headers.references ?? []),
+      "<inbound@example.com>",
+    ];
+    expect(sent[0]?.inReplyTo).toBe("<inbound@example.com>");
+    expect(sent[0]?.references).toEqual(inboundChain);
+    expect(sent[1]?.inReplyTo).toBe("<sent-1@example.com>");
+    expect(sent[1]?.references).toEqual([
+      ...inboundChain,
+      "<sent-1@example.com>",
     ]);
   });
 
