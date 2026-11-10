@@ -1,6 +1,7 @@
 export {
   chooseFirstSidecarProvisioner,
   createSidecarPluginRegistry,
+  formatProvisionerMismatches,
   type CreateSidecarPluginRegistryOpts,
   type SidecarPluginRegistry,
   type SidecarProvisionerChooser,
