@@ -3,15 +3,15 @@
 // A director emits a `connector.reply` event when the agent produces an
 // outbound reply. Draining that event means: compose the threading
 // headers, send the reply through the transport, then report the send
-// receipt so the caller can advance the thread's `lastMessageId`. The
-// caller's `composeReply` decides the recipient: the turn's `passthrough`
-// sender when one is set, otherwise the active connector thread. When it
-// returns no recipient, the drain drops the reply and logs it. The drain
-// composes when the agent emits the reply, not when the turn starts. This
-// module owns that loop so both the harness
-// composition layer (`createHarness`) and the warm workflow-host agent
-// path drive replies through one implementation rather than each keeping
-// its own copy.
+// receipt and the References the reply carried, so the caller can make the
+// sent reply the parent of the next one. The caller's `composeReply`
+// decides the recipient: the turn's `passthrough` sender when one is set,
+// otherwise the active connector thread. When it returns no recipient, the
+// drain drops the reply and logs it. The drain composes when the agent
+// emits the reply, not when the turn starts. This module owns that loop so
+// both the harness composition layer (`createHarness`) and the warm
+// workflow-host agent path drive replies through one implementation rather
+// than each keeping its own copy.
 //
 // The loop subscribes an agent event stream and serializes every reply
 // through a single chain: two replies fired in quick succession do not
@@ -59,26 +59,17 @@ export interface ConnectorReplyDrainOpts {
    */
   send: (message: OutboundMessage) => Promise<SendReceipt>;
   /**
-   * Resolve the full RFC 5322 References chain for a reply whose parent is
-   * `inReplyTo` (the Message-Id of the message being answered). Returns the
-   * parent's own References plus the parent's Message-Id, in order, so the
-   * outbound reply carries the complete conversational ancestry rather than
-   * a truncated single element. Returns `undefined` when the parent cannot be
-   * located (the very first reply on a fresh thread, or a malformed id); the
-   * drain then omits `references` and the transport derives `[inReplyTo]`.
-   * The drain does not call it when `composeReply()` supplies `references`.
-   *
-   * Optional. When it is omitted, the drain leaves `references` unset.
-   * `createHarness` omits it, and the transport then derives `[inReplyTo]`.
+   * Advance connector state after a successful send. `references` is the
+   * References chain the reply carried: `composeReply()`'s `references`, or
+   * empty when the parts had none. May be synchronous (the in-process
+   * router's `onReplySent`) or asynchronous (a durable store that persists
+   * the advanced state); the drain awaits it before composing the next
+   * reply.
    */
-  resolveReferences?: (inReplyTo: string) => Promise<string[] | undefined>;
-  /**
-   * Advance connector state after a successful send. May be synchronous
-   * (the in-process router's `onReplySent`) or asynchronous (a durable
-   * store that persists the advanced `lastMessageId`); the drain awaits it
-   * before composing the next reply.
-   */
-  onReplySent: (receipt: SendReceipt) => void | Promise<void>;
+  onReplySent: (
+    receipt: SendReceipt,
+    references: readonly string[],
+  ) => void | Promise<void>;
   /**
    * Invoked when `composeReply`, `send`, or `onReplySent` throws for one
    * reply. The reply is dropped and the connector thread stays at its
@@ -253,27 +244,12 @@ export function driveConnectorReplies(
               recordSettlement({ ok: true, receipt: null });
               return;
             }
-            const { references: ownReferences, ...headers } = parts;
-            // Resolve the full References ancestry for the parent this reply
-            // answers, when the parts carry no chain of their own and the
-            // caller supplies a resolver. A resolver miss (parent absent,
-            // malformed id) yields `undefined`, and the transport derives
-            // `[inReplyTo]` as before.
-            const references =
-              ownReferences ??
-              (opts.resolveReferences !== undefined &&
-              headers.inReplyTo !== undefined
-                ? await opts.resolveReferences(headers.inReplyTo)
-                : undefined);
             const receipt = await opts.send({
-              ...headers,
+              ...parts,
               content,
               type: "conversation.message",
-              ...(references !== undefined && references.length > 0
-                ? { references }
-                : {}),
             });
-            await opts.onReplySent(receipt);
+            await opts.onReplySent(receipt, parts.references ?? []);
             recordSettlement({ ok: true, receipt });
           } catch (cause) {
             // The reply is dropped and the connector thread stays at its

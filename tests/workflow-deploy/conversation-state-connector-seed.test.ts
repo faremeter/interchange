@@ -255,10 +255,10 @@ describe("durable conversation store connector seed (design §3c)", () => {
     });
 
     // The send of that reply leaves the thread pinned to Alice.
-    await store.onReplySent({
-      messageId: "<to-carol@example.com>",
-      status: "delivered",
-    });
+    await store.onReplySent(
+      { messageId: "<to-carol@example.com>", status: "delivered" },
+      reply.references ?? [],
+    );
     await store.mirrorToSubstrate();
     const reconstructed = await readStepState({
       substrate: h.substrate,
@@ -375,6 +375,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
     expect(reconstructed.connectorState).toEqual({
       threadRoot: "<a@example.com>",
       lastMessageId: "<b@example.com>",
+      lastReferences: ["<a@example.com>"],
       replyTo: "bob@example.com",
       cc: ["alice@example.com"],
       addressed: ["bob@example.com"],
@@ -395,6 +396,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
     expect(reply.to).toBe("bob@example.com");
     expect(reply.cc).toEqual(["alice@example.com"]);
     expect(reply.inReplyTo).toBe("<b@example.com>");
+    expect(reply.references).toEqual(["<a@example.com>", "<b@example.com>"]);
     expect(reply.subject).toBe("durable thread");
   });
 

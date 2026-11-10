@@ -1758,8 +1758,8 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
               status: "delivered",
             };
           },
-          onReplySent: (receipt) => {
-            router.onReplySent(receipt);
+          onReplySent: (receipt, references) => {
+            router.onReplySent(receipt, references);
           },
         }),
     });

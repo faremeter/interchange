@@ -317,9 +317,9 @@ agent's mail tools ask that supervisor and take its answer, with no hub
 round-trip, so `mail_read`, `mail_search`, and `mail_wait` work. Search,
 fetch, flag changes, folder operations, and attachment reads all go that
 way; the child does not open the run repo to answer them. A `connector.reply`
-goes out through the outbound bridge. When that reply carries `inReplyTo`
-and no `references`, the supervisor fills `References` from the parent it
-finds in the committed mailbox. This does not reopen the ownership decision:
+goes out through the outbound bridge. The child builds the reply's
+`References` from the connector thread state, and the supervisor sends the
+chain as the child named it. This does not reopen the ownership decision:
 the child does not open the mailbox, and there is still exactly one mail owner.
 
 The conversational loop has two first-class shapes, both delivered:

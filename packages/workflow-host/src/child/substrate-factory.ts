@@ -2612,14 +2612,7 @@ export function createSidecarSubstrateFactory(
     const warmConnectorHooks =
       durableConversation !== undefined
         ? createWarmConnectorHooks(durableConversation, (message) =>
-            env.outboundMailBridge.submit(env.spawn.mailboxAddress, message, {
-              // A thread reply carries no References, so the supervisor
-              // completes it from this mailbox. A reply to a passthrough
-              // sender carries its own chain, which the supervisor keeps. A
-              // bare inReplyTo on any other send must not be completed from
-              // this mailbox.
-              completeReferences: true,
-            }),
+            env.outboundMailBridge.submit(env.spawn.mailboxAddress, message),
           )
         : undefined;
 

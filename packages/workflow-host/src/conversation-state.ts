@@ -300,17 +300,22 @@ export interface DurableConversationStore {
   composeReply(): ConnectorReplyParts | null;
   /**
    * Advance the connector thread after a reply was sent. Forwards to the
-   * router's `onReplySent` (which moves `lastMessageId` to the sent reply's
-   * Message-ID so the next inbound continuation matches, and leaves the
-   * thread unchanged for a reply to a passthrough sender) and flushes the
-   * advanced connector state into the local store's metadata the same way
-   * `seedInbound` does, so `lastMessageId` persists across turns and across a
-   * child respawn. Called by the warm mail loop's reply drain after its
-   * outbound send settles. Throws `NoActiveConnectorThreadError` when no
-   * thread is active -- advancing outbound state has no meaning without a
-   * seeded thread. A metadata write failure surfaces.
+   * router's `onReplySent`, which makes the sent reply the parent of the
+   * next one: `lastMessageId` becomes its Message-ID, so the next inbound
+   * continuation matches, and `lastReferences` becomes `references`, the
+   * chain it carried. A reply to a passthrough sender leaves the thread
+   * unchanged. Then flushes the advanced connector state into the local
+   * store's metadata the same way `seedInbound` does, so the parent
+   * persists across turns and across a child respawn. Called by the warm
+   * mail loop's reply drain after its outbound send settles. Throws
+   * `NoActiveConnectorThreadError` when no thread is active -- advancing
+   * outbound state has no meaning without a seeded thread. A metadata
+   * write failure surfaces.
    */
-  onReplySent(receipt: SendReceipt): Promise<void>;
+  onReplySent(
+    receipt: SendReceipt,
+    references: readonly string[],
+  ): Promise<void>;
 }
 
 export async function createDurableConversationStore(
@@ -412,8 +417,11 @@ export async function createDurableConversationStore(
     return connectorRouter.composeReply();
   }
 
-  function onReplySent(receipt: SendReceipt): Promise<void> {
-    return serializeStateOp(() => runReplySent(receipt));
+  function onReplySent(
+    receipt: SendReceipt,
+    references: readonly string[],
+  ): Promise<void> {
+    return serializeStateOp(() => runReplySent(receipt, references));
   }
 
   function openCommittedReads(): Promise<CommittedReads | null> {
@@ -797,7 +805,7 @@ export async function createDurableConversationStore(
 
   // Advance the connector thread after a reply was sent and flush the
   // resulting connector state into the local store's metadata. `onReplySent`
-  // moves `lastMessageId` to the reply's Message-ID and fires the router's
+  // makes the reply the thread's parent and fires the router's
   // `onStateChanged`, which enqueues a change-driven mirror behind this op on
   // the shared serialization tail; because that mirror reads the connector
   // state from the local store's metadata (not from the router), the metadata
@@ -808,8 +816,11 @@ export async function createDurableConversationStore(
   // connector state again. `onReplySent` throws when no
   // thread is active, which surfaces to the reply drain's failure callback
   // rather than persisting a phantom advance.
-  async function runReplySent(receipt: SendReceipt): Promise<void> {
-    connectorRouter.onReplySent(receipt);
+  async function runReplySent(
+    receipt: SendReceipt,
+    references: readonly string[],
+  ): Promise<void> {
+    connectorRouter.onReplySent(receipt, references);
     await writeConnectorMetadata(
       `advance connector thread after reply for ${opts.stepId}`,
     );

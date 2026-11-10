@@ -336,7 +336,8 @@ export async function createHarness<EnvReq extends MailEnv>(
       stream: agent.stream(),
       composeReply: () => connectorRouter.composeReply(),
       send: (message) => transport.send(message),
-      onReplySent: (receipt) => connectorRouter.onReplySent(receipt),
+      onReplySent: (receipt, references) =>
+        connectorRouter.onReplySent(receipt, references),
       ...(env.onReplySendFailed !== undefined
         ? { onSendFailed: env.onReplySendFailed }
         : {}),

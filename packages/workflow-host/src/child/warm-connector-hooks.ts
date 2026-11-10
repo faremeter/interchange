@@ -74,7 +74,8 @@ export function createWarmConnectorHooks(
         stream,
         composeReply: () => registry.get(key).composeReply(),
         send: sendReply,
-        onReplySent: (receipt) => registry.get(key).onReplySent(receipt),
+        onReplySent: (receipt, references) =>
+          registry.get(key).onReplySent(receipt, references),
       }),
   };
 }

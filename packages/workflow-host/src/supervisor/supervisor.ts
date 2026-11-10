@@ -1486,7 +1486,7 @@ export function createWorkflowSupervisor(
 
   // The long-lived mirror drops a message's raw bytes on flush and cannot
   // read them back: its committed-read snapshot was pinned when the mirror
-  // opened. A fetch, a search, or a reply's References lookup opens a fresh
+  // opened. A fetch or a search opens a fresh
   // snapshot, which resolves the committed `<uid>.eml`. Pending mirror writes
   // are flushed first so that snapshot includes them.
   async function openCommittedMailbox(): Promise<SubstrateMailboxStore> {
@@ -2278,33 +2278,6 @@ export function createWorkflowSupervisor(
         );
       }
       const message = outboundMessageFromPayload(data.message);
-      // A connector reply arrives with `inReplyTo` and no References, and
-      // it is the only send that sets `completeReferences`. `mail_send`
-      // is that same shape without the flag; completing it would grow its
-      // one-parent chain into the full ancestry when the parent happens
-      // to be in this mailbox. An already-present `references`, including
-      // an empty array, is the caller's chain. A parent that is not in
-      // the mailbox leaves `references` unset, and the transport still
-      // derives `[inReplyTo]`. The lookup releases the mailbox lock
-      // before the send.
-      if (
-        data.completeReferences === true &&
-        message.inReplyTo !== undefined &&
-        message.references === undefined
-      ) {
-        const inReplyTo = message.inReplyTo;
-        const references = await runMailboxExclusive(async () => {
-          const store = await openCommittedMailbox();
-          const parent = store.messages.find(
-            (m) => m.envelope.messageId === inReplyTo,
-          );
-          if (parent === undefined) return undefined;
-          return [...parent.envelope.references, parent.envelope.messageId];
-        });
-        if (references !== undefined && references.length > 0) {
-          message.references = references;
-        }
-      }
       const receipt = await bindings.mailBus.sendOutbound(
         data.senderAddress,
         message,
