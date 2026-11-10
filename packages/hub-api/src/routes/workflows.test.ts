@@ -2732,6 +2732,30 @@ describe("POST /workflows/:anchorRunId/signals", () => {
     expect(signalCalls).toHaveLength(0);
   });
 
+  test("rejects a signalId with the reserved mail delivery-key prefix with 400", async () => {
+    const signalCalls: SignalCall[] = [];
+    const signalEnqueues: WorkflowSignalDispatchEnqueue[] = [];
+    const app = createTestApp({
+      grants: [manageGrant()],
+      signalCalls,
+      workflowSignalDispatchEnqueues: signalEnqueues,
+      db: { deploymentRow, allocationId: "allocation-1" },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
+        runId: RUN_ID,
+        signalName: "go",
+        signalId: "mail-not-a-key",
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(await errorCode(res)).toBe("reserved_signal_id");
+    expect(signalCalls).toHaveLength(0);
+    expect(signalEnqueues).toHaveLength(0);
+  });
+
   test("rejects a runId that is not the deployment's addressable run with 400", async () => {
     const signalCalls: SignalCall[] = [];
     const app = createTestApp({
