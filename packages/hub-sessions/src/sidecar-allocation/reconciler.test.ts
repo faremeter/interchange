@@ -4205,6 +4205,70 @@ describe("createSidecarAllocationReconciler", () => {
       expect(released).toEqual(["sidecar_provisioning_retry_exhausted"]);
     });
 
+    test.each([
+      {
+        outcome: "thrown ensure",
+        ensure: async (): Promise<EnsureSidecarResult> => {
+          throw new Error("Provider timed out");
+        },
+        code: "ensure_failed",
+        message: "Provider timed out",
+      },
+      {
+        outcome: "refused sidecar reuse",
+        ensure: async (): Promise<EnsureSidecarResult> => ({
+          kind: "accepted",
+          sidecarId: "sc-shared",
+        }),
+        code: "sidecar_reuse_rejected",
+        message: "Cannot place work on sidecar sc-shared: it has no free slot",
+      },
+    ])(
+      "records a $outcome and cleans up before another ensure",
+      async ({ ensure, code, message }) => {
+        const replaced: string[] = [];
+        const { store, rebinds, recorded } = rejectedEnsure({
+          markAllocated: async () => {
+            throw new SidecarReuseRejectedError(
+              "sc-shared",
+              "it has no free slot",
+            );
+          },
+          beginReplacement: async (args) => {
+            replaced.push(args.failureCode);
+            return allocation({ status: "replacing", generation: 2 });
+          },
+        });
+        let asked = false;
+        const reconciler = createSidecarAllocationReconciler(
+          deps({
+            store,
+            provisioner: testProvisioner({ ensure }),
+            chooser: (candidates) => {
+              asked = true;
+              return candidates[0] ?? null;
+            },
+          }),
+        );
+
+        await reconciler.reconcileNext();
+
+        expect(recorded.map(({ attempt }) => attempt)).toEqual([
+          {
+            generation: 1,
+            provisionerId: "test",
+            code,
+            message,
+            retryable: true,
+            cleanupRequired: true,
+          },
+        ]);
+        expect(replaced).toEqual([code]);
+        expect(rebinds).toEqual([]);
+        expect(asked).toBe(false);
+      },
+    );
+
     describe("when the Hub stopped before acting on a failed ensure", () => {
       const rejected = {
         generation: 1,
@@ -4364,6 +4428,19 @@ describe("createSidecarAllocationReconciler", () => {
         }),
         cleanupRequired: false,
       },
+      {
+        state: "replacing",
+        claimed: allocation({
+          status: "replacing",
+          generation: 2,
+          sidecarId: "sc-old",
+          ensureAttempts: 1,
+          deploymentCleanupConfirmed: true,
+          providerHoldReleased: true,
+          reconciliationLeaseId: "lease-1",
+        }),
+        cleanupRequired: true,
+      },
     ])(
       "waits for an unavailable provisioner without asking the chooser ($state)",
       async ({ state, claimed, cleanupRequired }) => {
@@ -4397,6 +4474,164 @@ describe("createSidecarAllocationReconciler", () => {
         expect(waits).toEqual([state]);
       },
     );
+
+    describe("once cleanup of a failed ensure is done", () => {
+      const replacing = allocation({
+        status: "replacing",
+        generation: 2,
+        sidecarId: "sc-old",
+        ensureAttempts: 1,
+        deploymentCleanupConfirmed: true,
+        reconciliationLeaseId: "lease-1",
+      });
+      const thrown = {
+        generation: 1,
+        provisionerId: "test",
+        code: "ensure_failed",
+        message: "Provider timed out",
+        retryable: true,
+        cleanupRequired: true,
+      };
+
+      function cleanedUp(attempts: readonly (typeof thrown)[] | null) {
+        const bindings: unknown[] = [];
+        const failures: Failure[] = [];
+        const calls: string[] = [];
+        const store = fakeStore({
+          claimNextReconcilable: async () => replacing,
+          listProvisioningAttempts: async () => attempts,
+          bindReplacementSidecar: async (args) => {
+            bindings.push(args.binding);
+            return allocation({
+              ...replacing,
+              ...args.binding,
+              status: "provisioning",
+              generation: 3,
+              sidecarId: args.sidecarId,
+              connectDeadline: args.connectDeadline,
+            });
+          },
+          markAllocated: async () => null,
+          failWithoutInfrastructure: async (args) => {
+            failures.push(args);
+            return allocation({ status: "failed", generation: 2 });
+          },
+        });
+        const provisioner = testProvisioner({
+          async ensure() {
+            calls.push("test:ensure");
+            return { kind: "accepted" };
+          },
+          async destroy() {
+            calls.push("test:destroy");
+            return { kind: "destroyed", cleanup: "confirmed" };
+          },
+        });
+        const other = overflow({
+          async ensure() {
+            calls.push("overflow:ensure");
+            return { kind: "accepted" };
+          },
+        });
+        return { store, provisioner, other, bindings, failures, calls };
+      }
+
+      test("ensures on the provisioner the chooser selects", async () => {
+        const { store, provisioner, other, bindings, calls } = cleanedUp([
+          thrown,
+        ]);
+        const seen: unknown[] = [];
+        const reconciler = createSidecarAllocationReconciler(
+          deps({
+            store,
+            provisioner,
+            otherProvisioners: [other],
+            chooser: (_candidates, { attempts }) => {
+              seen.push(attempts);
+              return other;
+            },
+          }),
+        );
+
+        await reconciler.reconcileNext();
+
+        expect(seen).toEqual([
+          [
+            {
+              provisionerId: "test",
+              code: "ensure_failed",
+              message: "Provider timed out",
+              retryable: true,
+            },
+          ],
+        ]);
+        expect(bindings).toEqual([
+          {
+            provisionerId: "overflow",
+            provisionerApiVersion: 2,
+            provisionerBindingFingerprint: "overflow:v1",
+          },
+        ]);
+        expect(calls).toEqual(["test:destroy", "overflow:ensure"]);
+      });
+
+      test("fails for the failed ensure when the chooser selects nothing", async () => {
+        const { store, provisioner, bindings, failures, calls } = cleanedUp([
+          thrown,
+        ]);
+        const reconciler = createSidecarAllocationReconciler(
+          deps({ store, provisioner, chooser: () => null }),
+        );
+
+        await reconciler.reconcileNext();
+
+        expect(failures).toMatchObject([
+          {
+            expectedStatus: "replacing",
+            expectedGeneration: 2,
+            code: "ensure_failed",
+            message: "Provider timed out",
+          },
+        ]);
+        expect(bindings).toEqual([]);
+        expect(calls).toEqual(["test:destroy"]);
+      });
+
+      test.each([
+        { reason: "the deployment initialized before", attempts: null },
+        {
+          reason: "the replaced generation's ensure did not fail",
+          attempts: [{ ...thrown, generation: 0 }],
+        },
+      ])("keeps the provisioner when $reason", async ({ attempts }) => {
+        const { store, provisioner, other, bindings, calls } =
+          cleanedUp(attempts);
+        let asked = false;
+        const reconciler = createSidecarAllocationReconciler(
+          deps({
+            store,
+            provisioner,
+            otherProvisioners: [other],
+            chooser: () => {
+              asked = true;
+              return other;
+            },
+          }),
+        );
+
+        await reconciler.reconcileNext();
+
+        expect(asked).toBe(false);
+        expect(bindings).toEqual([
+          {
+            provisionerId: "test",
+            provisionerApiVersion: 2,
+            provisionerBindingFingerprint: "test:v1",
+          },
+        ]);
+        expect(calls).toEqual(["test:destroy", "test:ensure"]);
+      });
+    });
   });
 
   test("backs off before replacing an unknown ensure outcome", async () => {
