@@ -49,7 +49,7 @@ import {
   adapterManifestDigest,
   DestroySidecarResult,
   EnsureSidecarResult,
-  type SidecarCapabilityMismatch,
+  formatProvisionerMismatches,
   type SidecarPluginRegistry,
   type SidecarProvisioner,
   type SidecarProvisionerSelection,
@@ -1133,20 +1133,4 @@ export function createWorkflowAllocationService({
     prepareProvisionedDeployment,
     deployReadyAllocation,
   };
-}
-
-function formatProvisionerMismatches(
-  mismatches: Readonly<Record<string, readonly SidecarCapabilityMismatch[]>>,
-): string {
-  const details = Object.entries(mismatches)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .flatMap(([provisionerId, failures]) =>
-      failures.map(
-        ({ capability, expected, actual }) =>
-          `${provisionerId}: ${capability} must be ${expected}, was ${actual}`,
-      ),
-    );
-  return details.length === 0
-    ? "No sidecar provisioners are registered"
-    : `No sidecar provisioner satisfies the deployment (${details.join("; ")})`;
 }
