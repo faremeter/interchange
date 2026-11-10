@@ -233,6 +233,30 @@ describe("createSidecarPluginRegistry", () => {
       retryable,
     });
 
+    test("retries the provisioner of a retryable deployment failure", async () => {
+      expect(
+        await select([containers, virtualMachines], {
+          attempts: [failed("virtual-machines", true)],
+        }),
+      ).toEqual({ ok: true, provisioner: virtualMachines });
+    });
+
+    test("selects nothing after a non-retryable deployment failure", async () => {
+      expect(
+        await select([containers, virtualMachines], {
+          attempts: [failed("containers", true), failed("containers", false)],
+        }),
+      ).toEqual({ ok: false, reason: "declined" });
+    });
+
+    test("selects nothing when the failed provisioner no longer matches", async () => {
+      expect(
+        await select([containers], {
+          attempts: [failed("virtual-machines", true)],
+        }),
+      ).toEqual({ ok: false, reason: "declined" });
+    });
+
     test("selects nothing after a probe failure", async () => {
       expect(
         await select([containers, virtualMachines], {

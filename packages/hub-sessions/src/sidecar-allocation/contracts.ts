@@ -88,7 +88,9 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
  * Rejection means no infrastructure exists for this generation (ensure-only;
  * destroy rejections below carry no such guarantee); a provisioner must throw
  * when it cannot determine whether the request took effect. A provisioner
- * that is full rejects with `capacity_exhausted`.
+ * that is full rejects with `capacity_exhausted`. A destroy does not always
+ * follow a rejected ensure before the next one, which may go to another
+ * provisioner, so do not rely on it.
  */
 export const EnsureSidecarResult = type({
   kind: "'accepted'",

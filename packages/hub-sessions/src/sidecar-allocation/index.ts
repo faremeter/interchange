@@ -10,6 +10,10 @@ export {
   type SidecarProvisionerSelection,
 } from "./plugin-registry";
 export {
+  createDeploymentCapabilityPolicyResolver,
+  deploymentCapabilityPolicy,
+} from "./deployment-policy";
+export {
   matchSidecarCapabilityPolicy,
   type EffectiveSidecarCapabilityPolicy,
   type SidecarCapabilityMatch,

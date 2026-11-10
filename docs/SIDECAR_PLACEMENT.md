@@ -336,8 +336,14 @@ costs little since it has not run yet.
 ### Provisioning retries
 
 Provisioning and parked restoration allow at most 10 attempts for retryable
-failures. Once a first placement is accepted, missing the connection deadline
+failures, counted across every provisioner the chooser selects. Once a first
+placement is accepted, missing the connection deadline
 fails it with `sidecar_connect_failed` instead of starting another attempt.
+Until a deployment first initializes, a rejected `ensure` is not destroyed
+before the next attempt, because it started nothing. That attempt follows its
+backoff on a provisioner that already failed for the deployment and starts at
+once on one that has not. Any other failed `ensure`, and every failed `ensure`
+of a deployment that has initialized, is destroyed first.
 Binding an identity spends an attempt before `ensure`, even if interrupted.
 Cleanup and Hub restarts preserve the count. Only replacing a parked worker
 that completed initialization resets the count and backoff; replacements that
@@ -573,15 +579,18 @@ context:
 | `tenantId`    | The deploying tenant                                               |
 | `anchorRunId` | The deployment's anchor run, also while its probe is being placed  |
 | `signal`      | Aborts when the Hub stops waiting for the choice                   |
-| `attempts`    | The probe ensures that failed in this deploy request, oldest first |
+| `attempts`    | The ensures that failed for this probe or deployment, oldest first |
 
 ### Choosing again after a failed ensure
 
-When a probe's `ensure` fails, the Hub asks the probe chooser again within the
-deploy request. Returning a provisioner that already failed retries it,
-returning another one moves the probe there, and returning `null` fails the
-request with the last failure. The Hub reads the tenant policy again before it
-asks, so the chooser only sees provisioners that match at that moment.
+When a probe's `ensure` fails, or a provisioner rejects a deployment's
+`ensure`, the Hub records the failure and asks the chooser again.
+Returning a provisioner that already failed retries it, returning another one
+moves the work there, and returning `null` fails the probe or deployment with
+the last failure's code and message. The Hub matches requirements again before
+each choice, using the tenant policy as it is at that moment and the workflow
+requirements frozen at deploy, so the chooser only ever sees provisioners that
+match. If none match, the deployment fails with `provisioner_no_match`.
 
 Each attempt carries `provisionerId`, `code`, `message`, and `retryable`. The
 code is the provisioner's own rejection code, or one of the Hub's:
@@ -594,6 +603,11 @@ code is the provisioner's own rejection code, or one of the Hub's:
 The Hub does not interpret a provisioner's code. A provisioner that is full
 should reject with `capacity_exhausted`, so a chooser can tell a full
 provisioner from a broken one.
+
+A rejected deployment `ensure` started nothing, so the Hub asks the chooser at
+once and calls no `destroy`. It records the rejection first, so this also holds
+when the Hub stops before it has acted on the answer. A deployment `ensure` that fails any other way is
+destroyed and retried on the same provisioner.
 
 ```ts
 const priorityWithOverflow: SidecarProvisionerChooser = (
@@ -609,20 +623,36 @@ const priorityWithOverflow: SidecarProvisionerChooser = (
 };
 ```
 
-The default chooser never moves a probe after a failure: the request fails.
+The default chooser never moves work after a failure. A probe fails, and a
+deployment retries the provisioner that failed when the failure was retryable
+and fails otherwise.
 
 Limits:
 
-- A probe gets at most 10 ensures. After the tenth the Hub no longer asks the
-  chooser.
+- A probe and a deployment each get at most 10 ensures. After the tenth the Hub
+  no longer asks the chooser.
 - A probe is retried inside the deploy request, without backoff. Each attempt is
   its own probe; the periodic probe cleanup destroys a failed one, so a
   provisioner slow to destroy does not delay the next attempt.
-- State a chooser keeps itself, such as a round-robin counter, belongs to one
-  Hub process.
-- A chooser that throws, exceeds the operation timeout, or returns a
-  provisioner outside the matching set fails the deploy request.
-- An accepted `ensure` whose sidecar never connects fails the request without
-  asking the chooser.
-- The chooser is not asked again for a deployment: its failed `ensure` retries
-  the provisioner selected at deploy or fails.
+- A deployment is moved only until it first finishes initializing. After that
+  it keeps its provisioner: a retryable failure retries it and a non-retryable
+  one fails the deployment.
+- A deployment's failed attempts are stored, so the chooser sees them after a
+  Hub restart. State a chooser keeps itself, such as a round-robin counter,
+  belongs to one Hub process.
+- The first choice for a deployment does not include its probe's failed
+  attempts.
+- A deployment chooser that throws, exceeds the operation timeout, or returns a
+  provisioner outside the matching set fails the deployment with
+  `sidecar_provisioner_choice_failed`. In the deploy request the same error
+  fails the request.
+- An accepted `ensure` whose sidecar never connects, unavailable sidecar
+  inventory, and a probe sidecar with no room for its deployment still fail
+  without asking the chooser.
+- A deployment needs the provisioner it is bound to until its next sidecar is
+  bound. If that provisioner is removed from the Hub or its binding changes
+  before then, the chooser is not asked, even when another provisioner
+  matches. The deployment waits out the five-minute
+  provider-availability grace under
+  [Release and replacement cleanup](#release-and-replacement-cleanup) and fails
+  with `provisioner_unavailable`.
