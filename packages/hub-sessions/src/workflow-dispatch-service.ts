@@ -5,6 +5,7 @@ import type {
   EnqueueWorkflowSignalDispatchArgs,
   SidecarAllocation,
   SidecarAllocationStore,
+  WorkflowRunDispatchAcknowledgement,
   WorkflowRunDispatchStore,
 } from "@intx/db";
 import { getLogger } from "@intx/log";
@@ -44,12 +45,8 @@ type ClaimedDispatch = NonNullable<
   Awaited<ReturnType<WorkflowRunDispatchStore["claimNextPending"]>>
 >;
 
-export type WorkflowDispatchAcknowledgement = {
-  readonly allocationId: string;
-  readonly anchorRunId: string;
-  readonly generation: number;
-  readonly messageId: string;
-};
+export type WorkflowDispatchAcknowledgement =
+  WorkflowRunDispatchAcknowledgement;
 
 export type WorkflowDispatchService = {
   enqueue(
@@ -61,7 +58,7 @@ export type WorkflowDispatchService = {
     tx?: DBExecutor,
   ): Promise<EnqueueWorkflowRunDispatchResult>;
   acknowledge(args: WorkflowDispatchAcknowledgement): Promise<void>;
-  settle(anchorRunId: string, messageId: string): Promise<void>;
+  settle(anchorRunId: string, deliveryKey: string): Promise<void>;
   requeueForReadyAllocation(anchorRunId: string): Promise<number>;
   reconcileNext(): Promise<boolean>;
   reconcileUntilIdle(maxIterations?: number): Promise<number>;
@@ -352,8 +349,8 @@ export function createWorkflowDispatchService({
       });
     },
 
-    async settle(anchorRunId, messageId) {
-      await dispatchStore.settle(anchorRunId, messageId, now());
+    async settle(anchorRunId, deliveryKey) {
+      await dispatchStore.settle(anchorRunId, deliveryKey, now());
     },
 
     async requeueForReadyAllocation(anchorRunId) {

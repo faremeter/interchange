@@ -314,7 +314,6 @@ export async function resolveApproval(
     if (provisionedDispatchService !== undefined) {
       await provisionedDispatchService.enqueueSignal(
         {
-          id: `dispatch:${approval.anchorRunId}:${signalId}`,
           anchorRunId: approval.anchorRunId,
           signal: {
             agentAddress: claim.agentAddress,

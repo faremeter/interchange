@@ -2351,25 +2351,44 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    async function cancelledCleanup(confirmed: boolean) {
-      const dispatches = createWorkflowRunDispatchStore(h.db);
-      for (const id of ["pending", "acknowledged"]) {
-        await dispatches.enqueue({
-          id,
+    async function enqueueNamedDispatches(
+      dispatches: ReturnType<typeof createWorkflowRunDispatchStore>,
+    ) {
+      const ids = new Map<string, string>();
+      const keys = new Map<string, string>();
+      for (const name of ["pending", "acknowledged"]) {
+        const { dispatch } = await dispatches.enqueue({
           anchorRunId: runId,
-          messageId: id,
+          messageId: name,
           senderAddress: "sender@example.test",
           rawMessage: new Uint8Array([1]),
           stepGrants: [],
           now: current,
         });
+        ids.set(name, dispatch.id);
+        keys.set(name, dispatch.deliveryKey);
       }
+      const lookup = (map: Map<string, string>, name: string) => {
+        const value = map.get(name);
+        if (value === undefined) throw new Error(`missing dispatch ${name}`);
+        return value;
+      };
+      return {
+        dispatchId: (name: string) => lookup(ids, name),
+        deliveryKey: (name: string) => lookup(keys, name),
+      };
+    }
+
+    async function cancelledCleanup(confirmed: boolean) {
+      const dispatches = createWorkflowRunDispatchStore(h.db);
+      const { dispatchId, deliveryKey } =
+        await enqueueNamedDispatches(dispatches);
       expect(
         await dispatches.acknowledge({
           allocationId,
           anchorRunId: runId,
           generation: 1,
-          messageId: "acknowledged",
+          deliveryKey: deliveryKey("acknowledged"),
           now: current,
         }),
       ).toMatchObject({ status: "acknowledged" });
@@ -2406,6 +2425,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return {
         lifecycle,
         dispatches,
+        dispatchId,
         release: async () => {
           const target = {
             allocationId,
@@ -2439,14 +2459,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
     ] as const)(
       "confirmed cancellation owns dispatches when cleanup ends as %s %s the sweep",
       async (outcome, order) => {
-        const { lifecycle, dispatches, release, fail } =
+        const { lifecycle, dispatches, dispatchId, release, fail } =
           await cancelledCleanup(true);
         const finish = () =>
           outcome === "released" ? release() : fail(outcome);
         if (order === "before") {
           await finish();
           for (const id of ["pending", "acknowledged"]) {
-            expect(await dispatches.findById(id)).toMatchObject({
+            expect(await dispatches.findById(dispatchId(id))).toMatchObject({
               status: id,
               failureCode: null,
             });
@@ -2480,7 +2500,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             outcome === "released" ? "workflow_stop_failed" : outcome,
         });
         for (const id of ["pending", "acknowledged"]) {
-          expect(await dispatches.findById(id)).toMatchObject({
+          expect(await dispatches.findById(dispatchId(id))).toMatchObject({
             status: "abandoned",
             failureCode: "workflow_cancelled",
             failureMessage: "User cancelled",
@@ -2502,7 +2522,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test.each(["released", "provider_rejected"] as const)(
       "cleanup ending as %s leaves dispatches to cancellation after history recovery",
       async (outcome) => {
-        const { dispatches, release, fail } = await cancelledCleanup(true);
+        const { dispatches, dispatchId, release, fail } =
+          await cancelledCleanup(true);
         await leavePending();
         if (outcome === "released") await release();
         else await fail(outcome);
@@ -2515,7 +2536,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }).reconcileNext();
         expect(await pendingIds()).toHaveLength(1);
         for (const id of ["pending", "acknowledged"]) {
-          expect(await dispatches.findById(id)).toMatchObject({
+          expect(await dispatches.findById(dispatchId(id))).toMatchObject({
             status: id,
             failureCode: null,
           });
@@ -2536,7 +2557,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           }),
         ).toMatchObject({ status: "cancelled", failureCode: null });
         for (const id of ["pending", "acknowledged"]) {
-          expect(await dispatches.findById(id)).toMatchObject({
+          expect(await dispatches.findById(dispatchId(id))).toMatchObject({
             status: "abandoned",
             failureCode: "workflow_cancelled",
             failureMessage: "User cancelled",
@@ -2615,22 +2636,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       "pending cancellation survives %s and settles dispatches after history recovery",
       async (failure) => {
         const dispatches = createWorkflowRunDispatchStore(h.db);
-        for (const id of ["pending", "acknowledged"]) {
-          await dispatches.enqueue({
-            id,
-            anchorRunId: runId,
-            messageId: id,
-            senderAddress: "sender@example.test",
-            rawMessage: new Uint8Array([1]),
-            stepGrants: [],
-            now: current,
-          });
-        }
+        const { dispatchId, deliveryKey } =
+          await enqueueNamedDispatches(dispatches);
         await dispatches.acknowledge({
           allocationId,
           anchorRunId: runId,
           generation: 1,
-          messageId: "acknowledged",
+          deliveryKey: deliveryKey("acknowledged"),
           now: current,
         });
         const store = createSidecarAllocationStore(h.db, {
@@ -2738,7 +2750,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           cancellationReason: "User cancelled",
         });
         for (const id of ["pending", "acknowledged"])
-          expect(await dispatches.findById(id)).toMatchObject({
+          expect(await dispatches.findById(dispatchId(id))).toMatchObject({
             status: id,
             failureCode: null,
           });
@@ -2759,7 +2771,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expect((await store.findById(allocationId))?.status).toBe("released");
         }
         for (const id of ["pending", "acknowledged"])
-          expect(await dispatches.findById(id)).toMatchObject({
+          expect(await dispatches.findById(dispatchId(id))).toMatchObject({
             status: "abandoned",
             failureCode: "workflow_cancelled",
             failureMessage: "User cancelled",
@@ -2770,7 +2782,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test.each([false, true])(
       "unrecoverable replacement preserves cancellation only after confirmed removal: %s",
       async (confirmed) => {
-        const { lifecycle, dispatches } = await cancelledCleanup(confirmed);
+        const { lifecycle, dispatches, dispatchId } =
+          await cancelledCleanup(confirmed);
         await h.db
           .update(sidecarAllocation)
           .set({ status: "replacing" })
@@ -2802,7 +2815,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             : "sidecar_provisioning_retry_exhausted",
         });
         for (const id of ["pending", "acknowledged"])
-          expect(await dispatches.findById(id)).toMatchObject({
+          expect(await dispatches.findById(dispatchId(id))).toMatchObject({
             status: "abandoned",
             failureCode: confirmed
               ? "workflow_cancelled"
@@ -2828,7 +2841,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test.each(["removed", "unconfirmed", "no infrastructure"] as const)(
       "capacity failure preserves cancellation only when no copy remains: %s",
       async (outcome) => {
-        const { lifecycle, dispatches } = await cancelledCleanup(
+        const { lifecycle, dispatches, dispatchId } = await cancelledCleanup(
           outcome !== "unconfirmed",
         );
         await h.db
@@ -2874,7 +2887,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             infrastructureFailedAt: null,
           });
           for (const id of ["pending", "acknowledged"])
-            expect(await dispatches.findById(id)).toMatchObject({
+            expect(await dispatches.findById(dispatchId(id))).toMatchObject({
               status: id,
               failureCode: null,
             });
@@ -2889,7 +2902,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           failureCode: outcome === "unconfirmed" ? "capacity_failed" : null,
         });
         for (const id of ["pending", "acknowledged"])
-          expect(await dispatches.findById(id)).toMatchObject({
+          expect(await dispatches.findById(dispatchId(id))).toMatchObject({
             status: "abandoned",
             failureCode:
               outcome === "unconfirmed"

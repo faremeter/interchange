@@ -824,7 +824,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             ]),
             workflowDispatchService: {
               enqueueSignal: (args, tx) => {
-                enqueued.push(args.id);
+                enqueued.push(args.signal.signalId);
                 return dispatchStore.enqueueSignal(args, tx);
               },
               wake: () => {

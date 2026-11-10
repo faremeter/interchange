@@ -239,6 +239,7 @@ describe("listAcceptedWorkflowDispatches", () => {
         JSON.stringify({
           type: "SignalReceived",
           signalId: "signal-1",
+          signalName: "continue",
         }),
       ],
     ]);
@@ -268,11 +269,17 @@ describe("listAcceptedWorkflowDispatches", () => {
     await expect(
       listAcceptedWorkflowDispatches(reads, "workflow@tenant"),
     ).resolves.toEqual([
-      { runId: "workflow@tenant", kind: "mail", messageId: "mail-1" },
+      {
+        runId: "workflow@tenant",
+        kind: "mail",
+        id: "mail-1",
+        legacy: true,
+      },
       {
         runId: "workflow@tenant",
         kind: "signal",
-        messageId: "signal-1",
+        id: "signal-1",
+        legacy: false,
       },
     ]);
   });
@@ -302,7 +309,11 @@ describe("listAcceptedWorkflowDispatches", () => {
           throw new Error(`unexpected old event read: ${oid}`);
         }
         return new TextEncoder().encode(
-          JSON.stringify({ type: "SignalReceived", signalId: "signal-10" }),
+          JSON.stringify({
+            type: "SignalReceived",
+            signalId: "signal-10",
+            signalName: "continue",
+          }),
         );
       },
     };
@@ -317,7 +328,8 @@ describe("listAcceptedWorkflowDispatches", () => {
       {
         runId: "workflow@tenant",
         kind: "signal",
-        messageId: "signal-10",
+        id: "signal-10",
+        legacy: false,
       },
     ]);
     expect(visitedOids).toEqual(["latest-signal"]);

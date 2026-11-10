@@ -18,6 +18,7 @@ import {
   workflowDefinition,
   workflowRunDispatch,
 } from "@intx/db/schema";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import { RunGrantsFrame, SignalDeliverFrame } from "@intx/types/sidecar";
 import {
   createTestDb,
@@ -94,7 +95,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "Message-ID: <dispatch-1@example>\r\n\r\nrun",
       );
       const enqueued = await store.enqueue({
-        id: "dispatch-1",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "dispatch-message-1",
         senderAddress: SENDER_ADDRESS,
@@ -110,12 +110,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         leaseId: "delivery-lease-1",
         leaseDurationMs: 60_000,
       });
-      expect(claimed?.id).toBe("dispatch-1");
+      expect(claimed?.id).toBe(enqueued.dispatch.id);
 
       const acknowledged = await store.acknowledge({
         allocationId: "allocation-ack",
         anchorRunId: ANCHOR_RUN_ID,
-        messageId: "dispatch-message-1",
+        deliveryKey: enqueued.dispatch.deliveryKey,
         generation: 3,
       });
       expect(acknowledged?.status).toBe("acknowledged");
@@ -123,7 +123,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(acknowledged?.rawMessage).toEqual(rawMessage);
       expect(await store.listUnsettled(ANCHOR_RUN_ID)).toHaveLength(1);
 
-      const settled = await store.settle(ANCHOR_RUN_ID, "dispatch-message-1");
+      const settled = await store.settle(
+        ANCHOR_RUN_ID,
+        enqueued.dispatch.deliveryKey,
+      );
       expect(settled?.status).toBe("settled");
       expect(settled?.rawMessage).toEqual(rawMessage);
       expect(await store.listUnsettled(ANCHOR_RUN_ID)).toEqual([]);
@@ -131,16 +134,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("excludes an executing dispatch even after its database lease expires", async () => {
       const store = createWorkflowRunDispatchStore(h.db);
-      for (const id of ["stuck", "healthy"]) {
-        await store.enqueue({
-          id,
-          anchorRunId: ANCHOR_RUN_ID,
-          messageId: `message-${id}`,
-          senderAddress: SENDER_ADDRESS,
-          rawMessage: new TextEncoder().encode(id),
-          stepGrants: [],
-        });
-      }
+      const enqueueNamed = async (name: string) =>
+        (
+          await store.enqueue({
+            anchorRunId: ANCHOR_RUN_ID,
+            messageId: `message-${name}`,
+            senderAddress: SENDER_ADDRESS,
+            rawMessage: new TextEncoder().encode(name),
+            stepGrants: [],
+          })
+        ).dispatch.id;
+      const stuck = await enqueueNamed("stuck");
+      const healthy = await enqueueNamed("healthy");
       expect(
         (
           await store.claimNextPending({
@@ -148,26 +153,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
             leaseDurationMs: 60_000,
           })
         )?.id,
-      ).toBe("stuck");
+      ).toBe(stuck);
       await h.db
         .update(workflowRunDispatch)
         .set({ deliveryLeaseExpiresAt: new Date(0) })
-        .where(eq(workflowRunDispatch.id, "stuck"));
+        .where(eq(workflowRunDispatch.id, stuck));
 
       expect(
         (
           await store.claimNextPending({
             leaseId: "healthy-lease",
             leaseDurationMs: 60_000,
-            excludedDispatchIds: ["stuck"],
+            excludedDispatchIds: [stuck],
           })
         )?.id,
-      ).toBe("healthy");
+      ).toBe(healthy);
       expect(
         await store.claimNextPending({
           leaseId: "excluded-lease",
           leaseDurationMs: 60_000,
-          excludedDispatchIds: ["stuck"],
+          excludedDispatchIds: [stuck],
         }),
       ).toBeNull();
       expect(
@@ -178,7 +183,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             excludedDispatchIds: [],
           })
         )?.id,
-      ).toBe("stuck");
+      ).toBe(stuck);
     });
 
     test("deduplicates an exact message and rejects a conflicting payload", async () => {
@@ -202,7 +207,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ],
       }).stepGrants;
       const args = {
-        id: "dispatch-dedup",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "dispatch-message-dedup",
         senderAddress: SENDER_ADDRESS,
@@ -210,25 +214,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         stepGrants,
       };
       expect((await store.enqueue(args)).created).toBe(true);
-      expect(
-        (
-          await store.enqueue({
-            ...args,
-            id: "dispatch-redelivery",
-          })
-        ).created,
-      ).toBe(false);
+      expect((await store.enqueue({ ...args })).created).toBe(false);
       await expect(
         store.enqueue({
           ...args,
-          id: "dispatch-conflict",
           rawMessage: new Uint8Array([9, 9, 9]),
         }),
       ).rejects.toThrow(/conflicts with its durable payload/);
       await expect(
         store.enqueue({
           ...args,
-          id: "dispatch-grant-conflict",
           stepGrants: [],
         }),
       ).rejects.toThrow(/conflicts with its durable payload/);
@@ -267,14 +262,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const store = createWorkflowRunDispatchStore(h.db);
       const enqueueAcknowledged = async (
-        id: string,
+        name: string,
         allocationId: string,
         anchorRunId: string,
       ) => {
-        await store.enqueue({
-          id,
+        const { dispatch } = await store.enqueue({
           anchorRunId,
-          messageId: `${id}-message`,
+          messageId: `${name}-message`,
           senderAddress: SENDER_ADDRESS,
           rawMessage: new Uint8Array([1]),
           stepGrants: [],
@@ -282,37 +276,38 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await store.acknowledge({
           allocationId,
           anchorRunId,
-          messageId: `${id}-message`,
+          deliveryKey: dispatch.deliveryKey,
           generation: 1,
         });
+        return dispatch;
       };
-      await enqueueAcknowledged(
+      const requeue = await enqueueAcknowledged(
         "dispatch-requeue",
         "allocation-ack",
         ANCHOR_RUN_ID,
       );
-      await enqueueAcknowledged(
+      const settledDispatch = await enqueueAcknowledged(
         "dispatch-settled",
         "allocation-ack",
         ANCHOR_RUN_ID,
       );
-      await store.settle(ANCHOR_RUN_ID, "dispatch-settled-message");
-      await enqueueAcknowledged(
+      await store.settle(ANCHOR_RUN_ID, settledDispatch.deliveryKey);
+      const otherRunDispatch = await enqueueAcknowledged(
         "dispatch-other-run",
         "allocation-other",
         "dep-dispatch-other",
       );
 
       expect(await store.requeueUnsettled(ANCHOR_RUN_ID)).toBe(1);
-      const requeued = await store.findById("dispatch-requeue");
+      const requeued = await store.findById(requeue.id);
       expect(requeued?.status).toBe("pending");
       expect(requeued?.acknowledgedGeneration).toBeNull();
       expect(requeued?.acknowledgedAt).toBeNull();
       expect(requeued?.nextAttemptAt).toBeInstanceOf(Date);
-      expect((await store.findById("dispatch-settled"))?.status).toBe(
+      expect((await store.findById(settledDispatch.id))?.status).toBe(
         "settled",
       );
-      const otherRun = await store.findById("dispatch-other-run");
+      const otherRun = await store.findById(otherRunDispatch.id);
       expect(otherRun?.status).toBe("acknowledged");
       expect(otherRun?.acknowledgedGeneration).toBe(1);
     });
@@ -321,8 +316,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedAllocatedSidecar(1);
 
       const store = createWorkflowRunDispatchStore(h.db);
-      await store.enqueue({
-        id: "dispatch-fenced-ack",
+      const { dispatch: fenced } = await store.enqueue({
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-fenced-ack",
         senderAddress: SENDER_ADDRESS,
@@ -334,14 +328,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await store.acknowledge({
           allocationId: "allocation-ack",
           anchorRunId: ANCHOR_RUN_ID,
-          messageId: "message-fenced-ack",
+          deliveryKey: fenced.deliveryKey,
           generation: 0,
         }),
       ).toBeNull();
       const acknowledged = await store.acknowledge({
         allocationId: "allocation-ack",
         anchorRunId: ANCHOR_RUN_ID,
-        messageId: "message-fenced-ack",
+        deliveryKey: fenced.deliveryKey,
         generation: 1,
       });
       expect(acknowledged?.status).toBe("acknowledged");
@@ -360,19 +354,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await store.acknowledge({
           allocationId: "allocation-ack",
           anchorRunId: ANCHOR_RUN_ID,
-          messageId: "message-fenced-ack",
+          deliveryKey: fenced.deliveryKey,
           generation: 1,
         }),
       ).toBeNull();
-      expect((await store.findById("dispatch-fenced-ack"))?.status).toBe(
-        "pending",
-      );
+      expect((await store.findById(fenced.id))?.status).toBe("pending");
     });
 
     test("persists and deduplicates an idempotent signal payload", async () => {
       const store = createWorkflowRunDispatchStore(h.db);
       const args = {
-        id: "dispatch-signal",
         anchorRunId: ANCHOR_RUN_ID,
         signal: {
           agentAddress: "workflow@tenant.example",
@@ -392,87 +383,139 @@ describe.skipIf(!harnessDbEnvAvailable())(
           JSON.parse(new TextDecoder().decode(enqueued.dispatch.rawMessage)),
         ),
       ).toEqual({ type: "signal.deliver", ...args.signal });
-      expect(
-        (
-          await store.enqueueSignal({
-            ...args,
-            id: "dispatch-signal-redelivery",
-          })
-        ).created,
-      ).toBe(false);
+      expect((await store.enqueueSignal({ ...args })).created).toBe(false);
       await expect(
         store.enqueueSignal({
           ...args,
-          id: "dispatch-signal-conflict",
           signal: { ...args.signal, payload: { approved: false } },
         }),
       ).rejects.toBeInstanceOf(WorkflowRunDispatchPayloadConflictError);
     });
 
-    test("rejects a message id already owned by the other dispatch kind", async () => {
+    test("refuses a signal and a mail that share one id string, in either order", async () => {
       const store = createWorkflowRunDispatchStore(h.db);
-      const signalFirst = {
-        id: "dispatch-signal-first",
-        anchorRunId: ANCHOR_RUN_ID,
-        signal: {
-          agentAddress: "workflow@tenant.example",
-          runId: "workflow@tenant.example",
-          signalName: "continue",
-          signalId: "shared-id-signal-first",
-          payload: { approved: true },
-        },
-      };
-      const signalDispatch = await store.enqueueSignal(signalFirst);
-      await expect(
-        store.enqueue({
-          id: "dispatch-mail-second",
+      const signal = (signalId: string) =>
+        store.enqueueSignal({
           anchorRunId: ANCHOR_RUN_ID,
-          messageId: signalFirst.signal.signalId,
+          signal: {
+            agentAddress: "workflow@tenant.example",
+            runId: "workflow@tenant.example",
+            signalName: "continue",
+            signalId,
+            payload: { approved: true },
+          },
+        });
+      const mail = (messageId: string) =>
+        store.enqueue({
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId,
           senderAddress: SENDER_ADDRESS,
-          rawMessage: signalDispatch.dispatch.rawMessage,
+          rawMessage: new TextEncoder().encode("mail"),
           stepGrants: [],
-        }),
-      ).rejects.toThrow(/conflicts with its durable payload/);
+        });
 
-      const mailFirstSignal = {
-        agentAddress: "workflow@tenant.example",
-        runId: "workflow@tenant.example",
-        signalName: "continue",
-        signalId: "shared-id-mail-first",
-        payload: { approved: true },
-      };
-      const encodedSignal = new TextEncoder().encode(
-        JSON.stringify(
-          SignalDeliverFrame.assert({
-            type: "signal.deliver",
-            ...mailFirstSignal,
-          }),
-        ),
+      const first = await signal("signal-first");
+      expect(first.dispatch.deliveryKey).toBe("signal-first");
+      await expect(mail("signal-first")).rejects.toThrow(
+        /conflicts with its durable payload/,
       );
-      await store.enqueue({
-        id: "dispatch-mail-first",
+
+      const mailed = await mail("mail-first-id");
+      expect(mailed.dispatch.deliveryKey).toBe(
+        await deriveDeliveryKey(SENDER_ADDRESS, "mail-first-id"),
+      );
+      await expect(signal("mail-first-id")).rejects.toThrow(
+        /conflicts with its durable payload/,
+      );
+    });
+
+    test("refuses a signal whose id names a mail row kept from before the delivery key", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      const { dispatch } = await store.enqueue({
         anchorRunId: ANCHOR_RUN_ID,
-        messageId: mailFirstSignal.signalId,
+        messageId: "pre-key",
         senderAddress: SENDER_ADDRESS,
-        rawMessage: encodedSignal,
+        rawMessage: new TextEncoder().encode("mail"),
         stepGrants: [],
       });
+      await h.db
+        .update(workflowRunDispatch)
+        .set({ id: `dispatch:${ANCHOR_RUN_ID}:pre-key`, status: "settled" })
+        .where(eq(workflowRunDispatch.id, dispatch.id));
+
       await expect(
         store.enqueueSignal({
-          id: "dispatch-signal-second",
           anchorRunId: ANCHOR_RUN_ID,
-          signal: mailFirstSignal,
+          signal: {
+            agentAddress: "workflow@tenant.example",
+            runId: "workflow@tenant.example",
+            signalName: "continue",
+            signalId: "pre-key",
+            payload: null,
+          },
         }),
       ).rejects.toThrow(/conflicts with its durable payload/);
     });
 
+    test("keeps two senders' mail with one Message-ID apart and de-duplicates one sender's repeat", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      const other = "other-principal@tnt-dispatch.example";
+      const enqueue = (senderAddress: string, body: string) =>
+        store.enqueue({
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: "<shared@example>",
+          senderAddress,
+          rawMessage: new TextEncoder().encode(body),
+          stepGrants: [],
+        });
+
+      const first = await enqueue(SENDER_ADDRESS, "first");
+      const second = await enqueue(other, "second");
+      expect(first.created).toBe(true);
+      expect(second.created).toBe(true);
+      expect(second.dispatch.id).not.toBe(first.dispatch.id);
+
+      const repeat = await enqueue(SENDER_ADDRESS, "first");
+      expect(repeat.created).toBe(false);
+      expect(repeat.dispatch.id).toBe(first.dispatch.id);
+      await expect(enqueue(SENDER_ADDRESS, "changed")).rejects.toThrow(
+        /conflicts with its durable payload/,
+      );
+    });
+
+    test("acknowledges only the row of the sender the key names", async () => {
+      await seedAllocatedSidecar(1);
+      const store = createWorkflowRunDispatchStore(h.db);
+      const enqueue = async (senderAddress: string) =>
+        (
+          await store.enqueue({
+            anchorRunId: ANCHOR_RUN_ID,
+            messageId: "<ack@example>",
+            senderAddress,
+            rawMessage: new TextEncoder().encode(senderAddress),
+            stepGrants: [],
+          })
+        ).dispatch;
+      const first = await enqueue(SENDER_ADDRESS);
+      const second = await enqueue("second@tnt-dispatch.example");
+      const ack = {
+        allocationId: "allocation-ack",
+        anchorRunId: ANCHOR_RUN_ID,
+        generation: 1,
+      };
+
+      await store.acknowledge({ ...ack, deliveryKey: first.deliveryKey });
+      expect((await store.findById(first.id))?.status).toBe("acknowledged");
+      expect((await store.findById(second.id))?.status).toBe("pending");
+    });
+
     test("uses the supplied transaction for both dispatch kinds", async () => {
       const store = createWorkflowRunDispatchStore(h.db);
+      const rolledBack: string[] = [];
       await expect(
         h.db.transaction(async (tx) => {
-          await store.enqueue(
+          const mail = await store.enqueue(
             {
-              id: "dispatch-mail-rollback",
               anchorRunId: ANCHOR_RUN_ID,
               messageId: "message-rollback",
               senderAddress: SENDER_ADDRESS,
@@ -481,9 +524,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
             },
             tx,
           );
-          await store.enqueueSignal(
+          rolledBack.push(mail.dispatch.id);
+          const signal = await store.enqueueSignal(
             {
-              id: "dispatch-signal-rollback",
               anchorRunId: ANCHOR_RUN_ID,
               signal: {
                 agentAddress: "workflow@tenant.example",
@@ -495,25 +538,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
             },
             tx,
           );
+          rolledBack.push(signal.dispatch.id);
           throw new Error("force rollback");
         }),
       ).rejects.toThrow("force rollback");
-      expect(await store.findById("dispatch-mail-rollback")).toBeNull();
-      expect(await store.findById("dispatch-signal-rollback")).toBeNull();
+      expect(rolledBack).toHaveLength(2);
+      for (const id of rolledBack) {
+        expect(await store.findById(id)).toBeNull();
+      }
     });
 
     test("abandons outstanding attempts without overwriting settled deliveries", async () => {
       const store = createWorkflowRunDispatchStore(h.db);
-      await store.enqueue({
-        id: "dispatch-already-consumed",
+      const { dispatch: consumed } = await store.enqueue({
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-consumed",
         senderAddress: SENDER_ADDRESS,
         rawMessage: new Uint8Array([1]),
         stepGrants: [],
       });
-      await store.enqueueSignal({
-        id: "dispatch-too-late",
+      const { dispatch: tooLate } = await store.enqueueSignal({
         anchorRunId: ANCHOR_RUN_ID,
         signal: {
           agentAddress: "workflow@tenant.example",
@@ -523,7 +567,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           payload: null,
         },
       });
-      await store.settle(ANCHOR_RUN_ID, "message-consumed");
+      await store.settle(ANCHOR_RUN_ID, consumed.deliveryKey);
 
       await expect(
         store.abandonUnsettled(
@@ -532,35 +576,34 @@ describe.skipIf(!harnessDbEnvAvailable())(
           "run is terminal",
         ),
       ).resolves.toBe(1);
-      expect((await store.findById("dispatch-already-consumed"))?.status).toBe(
-        "settled",
-      );
-      expect(await store.findById("dispatch-too-late")).toMatchObject({
+      expect((await store.findById(consumed.id))?.status).toBe("settled");
+      expect(await store.findById(tooLate.id)).toMatchObject({
         status: "abandoned",
         failureCode: "workflow_run_terminal",
         failureMessage: "run is terminal",
       });
-      expect(
-        (await store.findById("dispatch-too-late"))?.nextAttemptAt,
-      ).not.toBeNull();
+      expect((await store.findById(tooLate.id))?.nextAttemptAt).not.toBeNull();
     });
 
     test("abandonment cannot be retried, but can be resolved by acceptance or rejection", async () => {
       const store = createWorkflowRunDispatchStore(h.db);
       await seedAllocatedSidecar(1);
-      for (const id of ["accepted", "rejected", "unknown"]) {
-        await store.enqueue({
-          id,
-          anchorRunId: ANCHOR_RUN_ID,
-          messageId: id,
-          senderAddress: SENDER_ADDRESS,
-          rawMessage: new Uint8Array([1]),
-          stepGrants: [],
-        });
-      }
+      const enqueueNamed = async (name: string) =>
+        (
+          await store.enqueue({
+            anchorRunId: ANCHOR_RUN_ID,
+            messageId: name,
+            senderAddress: SENDER_ADDRESS,
+            rawMessage: new Uint8Array([1]),
+            stepGrants: [],
+          })
+        ).dispatch;
+      const accepted = await enqueueNamed("accepted");
+      const rejected = await enqueueNamed("rejected");
+      const unknown = await enqueueNamed("unknown");
       await store.fail({
         anchorRunId: ANCHOR_RUN_ID,
-        messageId: "rejected",
+        deliveryKey: rejected.deliveryKey,
         code: "invalid_mail",
         message: "Recorded rejection",
       });
@@ -579,7 +622,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           allocationId: "allocation-ack",
           anchorRunId: ANCHOR_RUN_ID,
           generation: 1,
-          messageId: "accepted",
+          deliveryKey: accepted.deliveryKey,
         }),
       ).toBeNull();
       expect(await store.requeueUnsettled(ANCHOR_RUN_ID)).toBe(0);
@@ -592,19 +635,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         (await store.listUnsettled(ANCHOR_RUN_ID)).map((row) => row.status),
       ).toEqual(["abandoned", "abandoned"]);
-      expect(await store.findById("unknown")).toMatchObject({
+      expect(await store.findById(unknown.id)).toMatchObject({
         status: "abandoned",
         failureCode: "workflow_cancelled",
       });
-      expect((await store.settle(ANCHOR_RUN_ID, "accepted"))?.status).toBe(
-        "settled",
-      );
-      expect(await store.settle(ANCHOR_RUN_ID, "rejected")).toBeNull();
+      expect(
+        (await store.settle(ANCHOR_RUN_ID, accepted.deliveryKey))?.status,
+      ).toBe("settled");
+      expect(
+        await store.settle(ANCHOR_RUN_ID, rejected.deliveryKey),
+      ).toBeNull();
       expect(
         (
           await store.fail({
             anchorRunId: ANCHOR_RUN_ID,
-            messageId: "unknown",
+            deliveryKey: unknown.deliveryKey,
             code: "invalid_mail",
             message: "Later recorded rejection",
           })
@@ -613,7 +658,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         await store.fail({
           anchorRunId: ANCHOR_RUN_ID,
-          messageId: "accepted",
+          deliveryKey: accepted.deliveryKey,
           code: "workflow_cancelled",
           message: "Must not overwrite acceptance",
         }),
@@ -631,6 +676,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           id: "dispatch-no-sender",
           anchorRunId: ANCHOR_RUN_ID,
           messageId: "message-no-sender",
+          deliveryKey: "message-no-sender",
           kind: "mail",
           rawMessage: new Uint8Array([1]),
           stepGrants: [],
@@ -656,6 +702,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-terminal-no-sender",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-terminal-no-sender",
+        deliveryKey: "message-terminal-no-sender",
         kind: "mail",
         status: "failed",
         rawMessage: new Uint8Array([1]),

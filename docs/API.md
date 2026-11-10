@@ -587,7 +587,7 @@ Body: SendMailRequest
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A caller-signed message is refused with `malformed_raw_message`, `mail_header_invalid` (From, To, Cc, Bcc, Message-ID, Interchange-Type or Interchange-Tenant-ID) or `mail_signature_invalid`; a structured body from a caller whose key the hub does not hold is refused with `signed_mail_required`. A malformed request body that fails SendMailRequest validation returns the generic error shape instead.
 403: ErrorResponse -- The caller lacks `manage` on the run, (`insufficient_grants`) a delegator lacks a grant the definition requires, or (`mail_send_denied`) no `mail.send` grant of the caller allows mail to the run
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run address is not routable, its allocation is no longer active, the run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) a caller-signed message's Message-ID is already queued for the run with a different payload
+409: ErrorResponse -- Run address is not routable, its allocation is no longer active, the run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) the caller already queued a caller-signed message with that Message-ID for the run with a different payload, or a signal for the run has it as its id
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Run trigger substrate unavailable, or (`sender_key_unavailable`, with `Retry-After`) no signing key is recorded for the caller of a caller-signed message, as while a run's sidecar is replaced
 
@@ -700,7 +700,7 @@ Body: unknown
 202: (no content) -- Signal accepted for delivery
 400: ErrorResponse -- Reserved signal name, a signalId with the reserved mail- prefix, or a runId that is not the deployment's addressable run
 404: ErrorResponse -- Workflow deployment not found
-409: ErrorResponse -- Workflow run has not started, is terminal, its deployment allocation is no longer active, or the signalId conflicts with a previously accepted payload
+409: ErrorResponse -- Workflow run has not started, is terminal, its deployment allocation is no longer active, or the signalId conflicts with a previously accepted payload or with the Message-ID of mail queued for the run
 502: ErrorResponse -- Sidecar unavailable
 503: ErrorResponse -- Durable workflow dispatch unavailable
 
@@ -715,7 +715,7 @@ Body: SendMailRequest
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A caller-signed message is refused with `malformed_raw_message`, `mail_header_invalid` (From, To, Cc, Bcc, Message-ID, Interchange-Type or Interchange-Tenant-ID) or `mail_signature_invalid`; a structured body from a caller whose key the hub does not hold is refused with `signed_mail_required`. A malformed request body that fails SendMailRequest validation returns the generic error shape instead.
 403: ErrorResponse -- The caller lacks `manage` on the deployment, (`insufficient_grants`) a delegator lacks a grant the definition requires, or (`mail_send_denied`) no `mail.send` grant of the caller allows mail to the deployment
 404: ErrorResponse -- Workflow deployment not found
-409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, its top-level run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) a caller-signed message's Message-ID is already queued for the run with a different payload
+409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, its top-level run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) the caller already queued a caller-signed message with that Message-ID for the run with a different payload, or a signal for the run has it as its id
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Durable workflow dispatch unavailable, or (`sender_key_unavailable`, with `Retry-After`) no signing key is recorded for the caller of a caller-signed message, as while a run's sidecar is replaced
 

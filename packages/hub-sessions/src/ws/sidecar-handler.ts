@@ -15,6 +15,7 @@ import {
 import { chunkPack, createPackReceiver } from "@intx/pack-transport";
 import {
   base64Decode,
+  DELIVERY_KEY_PREFIX,
   deriveDeliveryKey,
   deriveMessageId,
   deriveWorkflowRunId,
@@ -3439,6 +3440,9 @@ export function createSidecarRouter(
       }
     }
 
+    const messageId = await relayedMessageId(rawMessage, authenticatedSender);
+    if (messageId === null) return;
+
     // The send check runs before anything holds or relays the mail: a parked
     // message whose sender never initializes is reported undelivered with its
     // recipients, and the host can relay that report. Both re-drives of a
@@ -3451,10 +3455,27 @@ export function createSidecarRouter(
     if (permitted.length === 0) return;
     await routePermittedMail(
       rawMessage,
+      messageId,
       authenticatedSender,
       permitted,
       recordedSenderKey,
     );
+  }
+
+  // The Message-ID of a relayed mail, or null when the hub refuses the mail
+  // for it. A record written before the delivery key, or for a legacy
+  // claim-check entry, holds a bare Message-ID where a sender-scoped record
+  // holds a key, and dispatch settlement reads an id with the delivery-key
+  // prefix in such a record as a key. A relayed Message-ID with the prefix
+  // could then pass for another sender's key, so the hub refuses it.
+  async function relayedMessageId(
+    rawMessage: string,
+    authenticatedSender: string,
+  ): Promise<string | null> {
+    const messageId = await deriveMessageId(base64Decode(rawMessage));
+    if (!messageId.startsWith(DELIVERY_KEY_PREFIX)) return messageId;
+    logger.warn`Refused mail from ${authenticatedSender}: its Message-ID ${messageId} starts with the reserved delivery-key prefix`;
+    return null;
   }
 
   // The recipients of a relayed mail that its sender may send to. A refused
@@ -3503,6 +3524,7 @@ export function createSidecarRouter(
   // Route a relayed mail to the recipients its sender may send to.
   async function routePermittedMail(
     rawMessage: string,
+    messageId: string,
     authenticatedSender: string,
     recipients: string[],
     recordedSenderKey: string | null | undefined,
@@ -3609,6 +3631,7 @@ export function createSidecarRouter(
         const outcome = await deliverMailToRecipient(
           recipient,
           rawMessage,
+          messageId,
           authenticatedSender,
           senderIdentities,
           senderPrincipal,
@@ -3666,6 +3689,7 @@ export function createSidecarRouter(
   async function deliverMailToRecipient(
     recipient: string,
     rawMessage: string,
+    messageId: string,
     authenticatedSender: string,
     senderIdentities: RunGrantsFrame["senderIdentities"],
     senderPrincipal: ResolvedSenderPrincipal | null,
@@ -3732,9 +3756,6 @@ export function createSidecarRouter(
         // workflow may relax `unknown` to admit). The sender gate has already
         // admitted this sender, so it resolved to a principal; a sender the hub
         // cannot resolve never reaches this point.
-        // Finish asynchronous preparation before sending the grants and mail
-        // together, keeping another delivery's key out of the gap between them.
-        const messageId = await deriveMessageId(base64Decode(rawMessage));
         // Route through the messageId handshake `routeMail` -- NOT a
         // fire-and-forget send. This branch COMMITS a run, so a mail dropped in
         // the connected window (a socket that half-dies before the sidecar's
@@ -3778,9 +3799,12 @@ export function createSidecarRouter(
   ): Promise<void> {
     // The audit copy stores the mail as delivered in each recipient's session
     // and pushes it to that recipient's subscribers, so it is a delivery too
-    // and gets the same send check. The sender's own record stays when the
-    // check refuses every recipient.
-    const permitted = await permittedRecipients(senderAddress, recipients);
+    // and gets the same send check and Message-ID refusal. The sender's own
+    // record stays when they refuse every recipient.
+    const permitted =
+      (await relayedMessageId(rawMessage, senderAddress)) === null
+        ? []
+        : await permittedRecipients(senderAddress, recipients);
     let results: SidecarMailPersistedRow[];
     let raw: Uint8Array;
     try {

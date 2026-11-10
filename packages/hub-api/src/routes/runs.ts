@@ -922,7 +922,7 @@ export function createRunRoutes({
         ),
         404: jsonResponse("Run not found", ErrorResponse),
         409: jsonResponse(
-          "Run address is not routable, its allocation is no longer active, the run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) a caller-signed message's Message-ID is already queued for the run with a different payload",
+          "Run address is not routable, its allocation is no longer active, the run is stopping or terminal, (`deployer_unavailable`) the definition has invoker-sourced grant requirements and the deployer is not recorded or no longer active, (`workflow_run_principal_inactive`) the first trigger finds the run principal suspended or deactivated, or (`message_id_conflict`) the caller already queued a caller-signed message with that Message-ID for the run with a different payload, or a signal for the run has it as its id",
           ErrorResponse,
         ),
         413: jsonResponse(

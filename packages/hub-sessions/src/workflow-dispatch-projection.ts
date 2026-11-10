@@ -22,7 +22,10 @@ import {
   workflowRunDispatch,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
-import { isSidecarAllocationDispatchable } from "@intx/types";
+import {
+  DELIVERY_KEY_PREFIX,
+  isSidecarAllocationDispatchable,
+} from "@intx/types";
 import { SignalDeliverFrame } from "@intx/types/sidecar";
 
 import { createAnchorRunSweep } from "./anchor-run-sweep";
@@ -90,8 +93,32 @@ export function createWorkflowDispatchProjection({
       "refs/heads/events",
     );
     const remaining = new Map(
-      unsettled.map((dispatch) => [dispatch.messageId, dispatch]),
+      unsettled.map((dispatch) => [dispatch.deliveryKey, dispatch]),
     );
+    const mailKeysByMessageId = new Map<string, string[]>();
+    for (const dispatch of unsettled) {
+      if (dispatch.kind !== "mail") continue;
+      const keys = mailKeysByMessageId.get(dispatch.messageId) ?? [];
+      keys.push(dispatch.deliveryKey);
+      mailKeysByMessageId.set(dispatch.messageId, keys);
+    }
+    // The unsettled rows a piece of evidence names. An id with the
+    // delivery-key prefix is a key and names only the row with that key: the
+    // hub refuses a relayed Message-ID with the prefix, so no legacy record
+    // holds one. Any other id names the row keyed by it, and legacy mail
+    // evidence also names every unsettled mail row of this anchor with that
+    // Message-ID: a sidecar that predates the delivery key recorded the bare
+    // Message-ID and de-duplicated by it alone, so its one record stands for
+    // every sender's mail with that Message-ID. The legacy branch can go once
+    // no run log or claim-check that such a sidecar wrote remains.
+    const rowsNamedBy = (id: string, legacy: boolean): string[] => {
+      const keys = remaining.has(id) ? [id] : [];
+      if (!legacy || id.startsWith(DELIVERY_KEY_PREFIX)) return keys;
+      for (const key of mailKeysByMessageId.get(id) ?? []) {
+        if (key !== id && remaining.has(key)) keys.push(key);
+      }
+      return keys;
+    };
     const outcomes = new Map<
       string,
       | { status: "settled" }
@@ -103,20 +130,27 @@ export function createWorkflowDispatchProjection({
         : await listConsumedWorkflowDispatches(consumedReads);
     for (const consumed of consumedDispatches) {
       if (consumed.address !== anchor.address) continue;
-      if (remaining.get(consumed.messageId)?.kind !== "mail") continue;
-      outcomes.set(
-        consumed.messageId,
-        consumed.rejection === undefined
-          ? { status: "settled" }
-          : {
-              status: "failed",
-              code: consumed.rejection.code,
-              message: consumed.rejection.message,
-            },
+      const keys = rowsNamedBy(
+        consumed.deliveryKey ?? consumed.messageId,
+        consumed.deliveryKey === undefined,
       );
-      remaining.delete(consumed.messageId);
+      for (const key of keys) {
+        if (remaining.get(key)?.kind !== "mail") continue;
+        outcomes.set(
+          key,
+          consumed.rejection === undefined
+            ? { status: "settled" }
+            : {
+                status: "failed",
+                code: consumed.rejection.code,
+                message: consumed.rejection.message,
+              },
+        );
+        remaining.delete(key);
+      }
     }
-    const messageIdsByRun = new Map<string, Set<string>>();
+    const keysByRun = new Map<string, Set<string>>();
+    const targetIdsByRun = new Map<string, Set<string>>();
     for (const dispatch of remaining.values()) {
       const runId =
         dispatch.kind === "mail"
@@ -124,34 +158,44 @@ export function createWorkflowDispatchProjection({
           : SignalDeliverFrame.assert(
               JSON.parse(new TextDecoder().decode(dispatch.rawMessage)),
             ).runId;
-      const ids = messageIdsByRun.get(runId) ?? new Set<string>();
-      ids.add(dispatch.messageId);
-      messageIdsByRun.set(runId, ids);
+      const keys = keysByRun.get(runId) ?? new Set<string>();
+      keys.add(dispatch.deliveryKey);
+      keysByRun.set(runId, keys);
+      const targets = targetIdsByRun.get(runId) ?? new Set<string>();
+      targets.add(dispatch.deliveryKey);
+      if (dispatch.kind === "mail") targets.add(dispatch.messageId);
+      targetIdsByRun.set(runId, targets);
     }
-    for (const [runId, ids] of messageIdsByRun) {
+    for (const [runId, keys] of keysByRun) {
       const acceptedDispatches =
         reads === null
           ? []
-          : await listAcceptedWorkflowDispatches(reads, runId, ids);
+          : await listAcceptedWorkflowDispatches(
+              reads,
+              runId,
+              targetIdsByRun.get(runId),
+            );
       for (const accepted of acceptedDispatches) {
-        const dispatch = remaining.get(accepted.messageId);
-        if (dispatch === undefined) continue;
-        // Mail resuming an input gate is also recorded as SignalReceived.
-        // The Hub's message-id uniqueness spans both dispatch kinds within
-        // this anchor; RunStarted alone still cannot prove a signal delivery.
-        if (accepted.kind === "mail" && dispatch.kind !== "mail") continue;
-        outcomes.set(accepted.messageId, { status: "settled" });
-        remaining.delete(accepted.messageId);
+        for (const key of rowsNamedBy(accepted.id, accepted.legacy)) {
+          const dispatch = remaining.get(key);
+          if (dispatch === undefined) continue;
+          // Mail resuming an input gate is also recorded as SignalReceived.
+          // The Hub's key uniqueness spans both dispatch kinds within this
+          // anchor; RunStarted alone still cannot prove a signal delivery.
+          if (accepted.kind === "mail" && dispatch.kind !== "mail") continue;
+          outcomes.set(key, { status: "settled" });
+          remaining.delete(key);
+        }
       }
       if (
         (await readCommittedWorkflowRunLifecycle(reads, runId)) === "terminal"
       ) {
-        for (const messageId of ids) {
+        for (const key of keys) {
           // A mail rejection is recorded on the events ref, which can trail the
           // run log, so mail waits for final history below.
-          if (remaining.get(messageId)?.kind === "mail") continue;
-          if (!remaining.delete(messageId)) continue;
-          outcomes.set(messageId, {
+          if (remaining.get(key)?.kind === "mail") continue;
+          if (!remaining.delete(key)) continue;
+          outcomes.set(key, {
             status: "failed",
             code: "workflow_run_terminal",
             message: `Workflow run ${runId} is terminal and cannot accept this dispatch`,
@@ -175,8 +219,8 @@ export function createWorkflowDispatchProjection({
         { ref: "refs/heads/events", reads: consumedReads },
       ]));
     if (anchorTerminal && historyFinal) {
-      for (const messageId of remaining.keys()) {
-        outcomes.set(messageId, {
+      for (const key of remaining.keys()) {
+        outcomes.set(key, {
           status: "failed",
           code: "workflow_run_terminal",
           message: `Workflow deployment ${anchor.address} is terminal and cannot accept this dispatch`,
@@ -187,13 +231,13 @@ export function createWorkflowDispatchProjection({
     // commit independently: a failed pass leaves the remainder discoverable,
     // and a large backlog never holds allocation or run locks during cleanup.
     const now = new Date();
-    for (const [messageId, outcome] of outcomes) {
+    for (const [deliveryKey, outcome] of outcomes) {
       if (outcome.status === "settled") {
-        await dispatches.settle(anchorRunId, messageId, now);
+        await dispatches.settle(anchorRunId, deliveryKey, now);
       } else {
         await dispatches.fail({
           anchorRunId,
-          messageId,
+          deliveryKey,
           code: outcome.code,
           message: outcome.message,
           now,
@@ -205,7 +249,7 @@ export function createWorkflowDispatchProjection({
     if (historyFinal)
       await dispatches.concludeAbandonedScans(
         anchorRunId,
-        unscannedAbandoned.map((dispatch) => dispatch.messageId),
+        unscannedAbandoned.map((dispatch) => dispatch.deliveryKey),
         now,
       );
   }

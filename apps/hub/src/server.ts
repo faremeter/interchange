@@ -557,9 +557,9 @@ export async function createHubServer({
   );
   sidecarRouter.events.on(
     "mail.inbound.acknowledged",
-    ({ messageId, allocated }) => {
+    ({ deliveryKey, allocated }) => {
       if (allocated === undefined) return;
-      return workflowDispatchService.acknowledge({ ...allocated, messageId });
+      return workflowDispatchService.acknowledge({ ...allocated, deliveryKey });
     },
   );
 

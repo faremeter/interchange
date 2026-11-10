@@ -30,6 +30,7 @@ import type {
   StepStateSnapshot,
 } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import type { RunGrantsFrame } from "@intx/types/sidecar";
 import {
   asset as assetTable,
@@ -713,10 +714,16 @@ function createMockWorkflowDispatchService(
   return {
     async enqueue(args) {
       enqueues.push(args);
+      const deliveryKey = await deriveDeliveryKey(
+        args.senderAddress,
+        args.messageId,
+      );
       return {
         created: true,
         dispatch: {
           ...args,
+          id: `dispatch:${args.anchorRunId}:${deliveryKey}`,
+          deliveryKey,
           kind: "mail",
           status: "pending",
           acknowledgedGeneration: null,
@@ -739,9 +746,10 @@ function createMockWorkflowDispatchService(
       return {
         created: true,
         dispatch: {
-          id: args.id,
+          id: `dispatch:${args.anchorRunId}:${args.signal.signalId}`,
           anchorRunId: args.anchorRunId,
           messageId: args.signal.signalId,
+          deliveryKey: args.signal.signalId,
           kind: "signal",
           senderAddress: null,
           rawMessage: new TextEncoder().encode(JSON.stringify(args.signal)),
@@ -2451,7 +2459,6 @@ describe("POST /workflows/:anchorRunId/signals", () => {
     expect(signalCalls).toEqual([]);
     expect(signalEnqueues).toEqual([
       {
-        id: `dispatch:${DEPLOYMENT_ID}:sig-durable-1`,
         anchorRunId: DEPLOYMENT_ID,
         signal: {
           agentAddress: RUN_ADDRESS,
@@ -2485,7 +2492,6 @@ describe("POST /workflows/:anchorRunId/signals", () => {
     expect(res.status).toBe(202);
     expect(signalEnqueues).toEqual([
       {
-        id: `dispatch:${DEPLOYMENT_ID}:sig-durable-corr`,
         anchorRunId: DEPLOYMENT_ID,
         signal: {
           agentAddress: RUN_ADDRESS,

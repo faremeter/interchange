@@ -15,6 +15,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import {
   RunGrantsFrame,
   SignalDeliverFrame,
@@ -36,7 +37,6 @@ type DBHandle = DB["db"];
 type ParsedDispatch = ReturnType<typeof parseWorkflowRunDispatchRow>;
 
 export type EnqueueWorkflowRunDispatchArgs = {
-  readonly id: string;
   readonly anchorRunId: string;
   readonly messageId: string;
   readonly senderAddress: string;
@@ -46,7 +46,6 @@ export type EnqueueWorkflowRunDispatchArgs = {
 };
 
 export type EnqueueWorkflowSignalDispatchArgs = {
-  readonly id: string;
   readonly anchorRunId: string;
   readonly signal: Omit<SignalDeliverFrameType, "type">;
   readonly now?: Date;
@@ -59,9 +58,9 @@ export type EnqueueWorkflowRunDispatchResult = {
 
 type InsertOrReconcileDispatchArgs = {
   readonly operation: "enqueue" | "enqueueSignal";
-  readonly id: string;
   readonly anchorRunId: string;
   readonly messageId: string;
+  readonly deliveryKey: string;
   readonly kind: ParsedDispatch["kind"];
   readonly senderAddress: string | null;
   readonly rawMessage: Uint8Array;
@@ -88,13 +87,15 @@ export type ClaimWorkflowRunDispatchArgs = {
   readonly leaseDurationMs: number;
 };
 
-export type AcknowledgeWorkflowRunDispatchArgs = {
+export type WorkflowRunDispatchAcknowledgement = {
   readonly allocationId: string;
   readonly anchorRunId: string;
-  readonly messageId: string;
+  readonly deliveryKey: string;
   readonly generation: number;
-  readonly now?: Date;
 };
+
+export type AcknowledgeWorkflowRunDispatchArgs =
+  WorkflowRunDispatchAcknowledgement & { readonly now?: Date };
 
 export type RetryWorkflowRunDispatchArgs = {
   readonly dispatchId: string;
@@ -107,7 +108,7 @@ export type RetryWorkflowRunDispatchArgs = {
 
 export type FailWorkflowRunDispatchArgs = {
   readonly anchorRunId: string;
-  readonly messageId: string;
+  readonly deliveryKey: string;
   readonly code: string;
   readonly message: string;
   readonly now?: Date;
@@ -151,14 +152,51 @@ async function insertOrReconcileDispatch(
   executor: DBExecutor,
   args: InsertOrReconcileDispatchArgs,
 ): Promise<EnqueueWorkflowRunDispatchResult> {
+  // The anchor row lock, held to the end of the enclosing transaction,
+  // serializes the cross-kind check below with any other enqueue to this
+  // anchor.
   const [anchor] = await executor
     .select({ anchorRunId: workflowRun.anchorRunId })
     .from(workflowRun)
     .where(eq(workflowRun.id, args.anchorRunId))
-    .limit(1);
+    .limit(1)
+    .for("update");
   if (anchor?.anchorRunId !== args.anchorRunId) {
     throw new Error(
       `workflowRunDispatchStore.${args.operation}: run ${args.anchorRunId} is not a deployment anchor`,
+    );
+  }
+  // A signal id may not equal the Message-ID of a mail row in the anchor, nor
+  // the reverse. Mail from a legacy claim-check entry resumes an input gate
+  // with its bare Message-ID as the signal id, and a workflow-run repo written
+  // before the delivery key holds such SignalReceived records. The run records
+  // one SignalReceived per id, so the two would share one record and one of
+  // them would never be delivered. A mail row written before the key also
+  // keeps `dispatch:<anchor>:<Message-ID>` as its row id, which a signal with
+  // that id would collide with.
+  const [crossKind] = await executor
+    .select({ id: workflowRunDispatch.id })
+    .from(workflowRunDispatch)
+    .where(
+      and(
+        eq(workflowRunDispatch.anchorRunId, args.anchorRunId),
+        args.kind === "mail"
+          ? and(
+              eq(workflowRunDispatch.kind, "signal"),
+              eq(workflowRunDispatch.deliveryKey, args.messageId),
+            )
+          : and(
+              eq(workflowRunDispatch.kind, "mail"),
+              eq(workflowRunDispatch.messageId, args.messageId),
+            ),
+      ),
+    )
+    .limit(1);
+  if (crossKind !== undefined) {
+    throw new WorkflowRunDispatchPayloadConflictError(
+      args.messageId,
+      args.kind === "mail" ? "message" : "signal",
+      args.operation,
     );
   }
 
@@ -166,9 +204,10 @@ async function insertOrReconcileDispatch(
   const [inserted] = await executor
     .insert(workflowRunDispatch)
     .values({
-      id: args.id,
+      id: `dispatch:${args.anchorRunId}:${args.deliveryKey}`,
       anchorRunId: args.anchorRunId,
       messageId: args.messageId,
+      deliveryKey: args.deliveryKey,
       kind: args.kind,
       senderAddress: args.senderAddress,
       rawMessage: args.rawMessage,
@@ -179,7 +218,10 @@ async function insertOrReconcileDispatch(
       updatedAt: now,
     })
     .onConflictDoNothing({
-      target: [workflowRunDispatch.anchorRunId, workflowRunDispatch.messageId],
+      target: [
+        workflowRunDispatch.anchorRunId,
+        workflowRunDispatch.deliveryKey,
+      ],
     })
     .returning();
   if (inserted !== undefined) {
@@ -192,12 +234,12 @@ async function insertOrReconcileDispatch(
   const existing = await executor.query.workflowRunDispatch.findFirst({
     where: and(
       eq(workflowRunDispatch.anchorRunId, args.anchorRunId),
-      eq(workflowRunDispatch.messageId, args.messageId),
+      eq(workflowRunDispatch.deliveryKey, args.deliveryKey),
     ),
   });
   if (existing === undefined) {
     throw new Error(
-      `workflowRunDispatchStore.${args.operation}: conflicting row disappeared for ${args.anchorRunId}/${args.messageId}`,
+      `workflowRunDispatchStore.${args.operation}: conflicting row disappeared for ${args.anchorRunId}/${args.deliveryKey}`,
     );
   }
   const parsed = parseWorkflowRunDispatchRow(existing);
@@ -243,23 +285,38 @@ async function acknowledgeMatchingDispatch(
 }
 
 export function createWorkflowRunDispatchStore(db: DBHandle) {
+  // An enqueue's anchor lock must hold until its insert, so an enqueue with
+  // no caller transaction runs in its own.
+  function withTransaction<T>(
+    tx: DBExecutor | undefined,
+    run: (executor: DBExecutor) => Promise<T>,
+  ): Promise<T> {
+    return tx === undefined ? db.transaction(run) : run(tx);
+  }
+
   return {
     async enqueue(
       args: EnqueueWorkflowRunDispatchArgs,
       tx?: DBExecutor,
     ): Promise<EnqueueWorkflowRunDispatchResult> {
       const stepGrants = validateStepGrants(args.anchorRunId, args.stepGrants);
-      return insertOrReconcileDispatch(tx ?? db, {
-        operation: "enqueue",
-        id: args.id,
-        anchorRunId: args.anchorRunId,
-        messageId: args.messageId,
-        kind: "mail",
-        senderAddress: args.senderAddress,
-        rawMessage: args.rawMessage,
-        stepGrants,
-        ...(args.now !== undefined ? { now: args.now } : {}),
-      });
+      const deliveryKey = await deriveDeliveryKey(
+        args.senderAddress,
+        args.messageId,
+      );
+      return withTransaction(tx, (executor) =>
+        insertOrReconcileDispatch(executor, {
+          operation: "enqueue",
+          anchorRunId: args.anchorRunId,
+          messageId: args.messageId,
+          deliveryKey,
+          kind: "mail",
+          senderAddress: args.senderAddress,
+          rawMessage: args.rawMessage,
+          stepGrants,
+          ...(args.now !== undefined ? { now: args.now } : {}),
+        }),
+      );
     },
 
     async enqueueSignal(
@@ -271,17 +328,19 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
         ...args.signal,
       });
       const encoded = new TextEncoder().encode(JSON.stringify(signal));
-      return insertOrReconcileDispatch(tx ?? db, {
-        operation: "enqueueSignal",
-        id: args.id,
-        anchorRunId: args.anchorRunId,
-        messageId: signal.signalId,
-        kind: "signal",
-        senderAddress: null,
-        rawMessage: encoded,
-        stepGrants: [],
-        ...(args.now !== undefined ? { now: args.now } : {}),
-      });
+      return withTransaction(tx, (executor) =>
+        insertOrReconcileDispatch(executor, {
+          operation: "enqueueSignal",
+          anchorRunId: args.anchorRunId,
+          messageId: signal.signalId,
+          deliveryKey: signal.signalId,
+          kind: "signal",
+          senderAddress: null,
+          rawMessage: encoded,
+          stepGrants: [],
+          ...(args.now !== undefined ? { now: args.now } : {}),
+        }),
+      );
     },
 
     async claimNextPending(
@@ -376,7 +435,7 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
           args.generation,
           [
             eq(workflowRunDispatch.anchorRunId, args.anchorRunId),
-            eq(workflowRunDispatch.messageId, args.messageId),
+            eq(workflowRunDispatch.deliveryKey, args.deliveryKey),
             eq(workflowRunDispatch.kind, "mail"),
             eq(workflowRunDispatch.status, "pending"),
           ],
@@ -414,7 +473,7 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
 
     async settle(
       anchorRunId: string,
-      messageId: string,
+      deliveryKey: string,
       now = new Date(),
     ): Promise<ParsedDispatch | null> {
       const [updated] = await db
@@ -432,7 +491,7 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
         .where(
           and(
             eq(workflowRunDispatch.anchorRunId, anchorRunId),
-            eq(workflowRunDispatch.messageId, messageId),
+            eq(workflowRunDispatch.deliveryKey, deliveryKey),
             inArray(workflowRunDispatch.status, [
               ...unresolvedWorkflowRunDispatchStatuses,
             ]),
@@ -462,7 +521,7 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
         .where(
           and(
             eq(workflowRunDispatch.anchorRunId, args.anchorRunId),
-            eq(workflowRunDispatch.messageId, args.messageId),
+            eq(workflowRunDispatch.deliveryKey, args.deliveryKey),
             inArray(workflowRunDispatch.status, [
               ...unresolvedWorkflowRunDispatchStatuses,
             ]),
@@ -542,10 +601,10 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
     /** Stop scanning abandoned rows once their deployment's history is final. */
     async concludeAbandonedScans(
       anchorRunId: string,
-      messageIds: readonly string[],
+      deliveryKeys: readonly string[],
       now = new Date(),
     ): Promise<number> {
-      if (messageIds.length === 0) return 0;
+      if (deliveryKeys.length === 0) return 0;
       const rows = await db
         .update(workflowRunDispatch)
         .set({ nextAttemptAt: null, updatedAt: now })
@@ -553,7 +612,7 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
           and(
             eq(workflowRunDispatch.anchorRunId, anchorRunId),
             eq(workflowRunDispatch.status, "abandoned"),
-            inArray(workflowRunDispatch.messageId, [...messageIds]),
+            inArray(workflowRunDispatch.deliveryKey, [...deliveryKeys]),
           ),
         )
         .returning({ id: workflowRunDispatch.id });
