@@ -1,4 +1,7 @@
 import { describe, test, expect } from "bun:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { type } from "arktype";
 
 import { ApprovalDecision } from "@intx/types";
@@ -11,6 +14,15 @@ import {
 } from "@intx/agent";
 import { noopAuditStore } from "@intx/agent/testing";
 import { createDefaultDirectorRegistry } from "@intx/agent";
+import { generateKeyPair } from "@intx/crypto";
+import { createConnectorRouter, driveConnectorReplies } from "@intx/harness";
+import {
+  createRepoStore,
+  workflowRunKindHandler,
+  WORKFLOW_RUN_GITIGNORE_PATH,
+  type RepoId,
+  type WorkflowRunWorkflowProcessPrincipal,
+} from "@intx/hub-sessions";
 import { createInboundTurn } from "@intx/inference";
 import {
   StepOutcomeCommitError,
@@ -28,12 +40,15 @@ import type {
   Mail,
   MailPart,
   MailPartReader,
+  OutboundMessage,
   PerCallInferenceOptions,
 } from "@intx/types/runtime";
 
 import { createChangeNotifier } from "@intx/workflow-host/testing";
 
 import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
+import { createDurableConversationRegistry } from "../conversation-state";
+import { createWarmConnectorHooks } from "../child/warm-connector-hooks";
 import {
   createWarmAgentCache,
   type WarmReplyDrive,
@@ -1474,6 +1489,462 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
     );
     expect(boundaries).toBe(1);
     await warmCache.evictAll("test teardown");
+  });
+
+  test("every warm turn begins a connector turn, including one that seeds no mail", async () => {
+    const warmCache = createWarmAgentCache();
+    const stub = buildWarmStubAgent();
+    const begun: string[] = [];
+    const seeded: string[] = [];
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+      warmCache,
+      beginTurn: async (key) => {
+        begun.push(key);
+      },
+      seedInbound: async (key) => {
+        seeded.push(key);
+      },
+    });
+
+    await invoker(buildRequest({ input: "first" }));
+    await invoker(buildRequest({ input: "second" }));
+
+    expect(begun).toEqual(["step-1", "step-1"]);
+    expect(seeded).toEqual([]);
+    await warmCache.evictAll("test teardown");
+  });
+
+  test("a mail turn begins its connector turn once, before the seed", async () => {
+    const warmCache = createWarmAgentCache();
+    const stub = buildWarmStubAgent();
+    const calls: string[] = [];
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+      warmCache,
+      beginTurn: async () => {
+        calls.push("begin");
+      },
+      seedInbound: async () => {
+        calls.push("seed");
+      },
+    });
+
+    await invoker(
+      buildRequest({
+        input: inboundMail({
+          from: "alice@example.com",
+          messageId: "<a@example.com>",
+        }),
+      }),
+    );
+
+    expect(calls).toEqual(["begin", "seed"]);
+    await warmCache.evictAll("test teardown");
+  });
+});
+
+function inboundMail(opts: {
+  from: string;
+  messageId: string;
+  inReplyTo?: string;
+  references?: string[];
+  subject?: string;
+}): Mail {
+  return {
+    headers: {
+      from: opts.from,
+      to: ["run@deployment.example.com"],
+      date: "2026-01-02T03:04:05Z",
+      messageId: opts.messageId,
+      ...(opts.inReplyTo !== undefined ? { inReplyTo: opts.inReplyTo } : {}),
+      ...(opts.references !== undefined ? { references: opts.references } : {}),
+      ...(opts.subject !== undefined ? { subject: opts.subject } : {}),
+    },
+    rawHeaders: {},
+    parts: [
+      {
+        contentType: "text/plain",
+        ref: `mail-part:///r/${opts.messageId}/0-text`,
+        text: "hello",
+      },
+    ],
+  };
+}
+
+type ScriptedTurn =
+  | { kind: "reply"; content: string; release?: Promise<void> }
+  | { kind: "suspend"; correlationId: string };
+
+/**
+ * A warm agent that plays a script, one turn per `send`, against a real
+ * connector router and reply drain. A reply turn pushes `connector.reply`
+ * onto the lifetime stream before its send settles, as the real agent does.
+ * Turns run one at a time, and a send whose signal aborts rejects at once
+ * while its turn runs on, as the real agent's send queue does. A reply turn
+ * with `release` emits its reply only once `release` resolves.
+ */
+function buildScriptedAgent(script: ScriptedTurn[]): {
+  agent: Agent;
+  sendCount: () => number;
+  sendsChanged: ReturnType<typeof createChangeNotifier>;
+} {
+  // Every `stream()` call is its own consumer, as on the real agent: the warm
+  // path reads the stream twice, once to forward events and once to drain
+  // replies.
+  type Consumer = { queue: InferenceEvent[]; wake: (() => void) | null };
+  const consumers = new Set<Consumer>();
+  let closed = false;
+  let seq = 0;
+  let sends = 0;
+  const sendsChanged = createChangeNotifier();
+  let cycleTail: Promise<unknown> = Promise.resolve();
+
+  function wakeConsumer(consumer: Consumer): void {
+    const resume = consumer.wake;
+    consumer.wake = null;
+    resume?.();
+  }
+
+  function push(event: InferenceEvent): void {
+    for (const consumer of consumers) {
+      consumer.queue.push(event);
+      wakeConsumer(consumer);
+    }
+  }
+
+  async function* consume(consumer: Consumer): AsyncGenerator<InferenceEvent> {
+    for (;;) {
+      const next = consumer.queue.shift();
+      if (next !== undefined) {
+        yield next;
+        continue;
+      }
+      if (closed) return;
+      await new Promise<void>((resolve) => {
+        consumer.wake = resolve;
+      });
+    }
+  }
+
+  async function runTurn(turn: ScriptedTurn): Promise<SendResult> {
+    if (turn.kind === "suspend") {
+      return {
+        type: "suspended",
+        correlationId: turn.correlationId,
+        approvalSnapshot: {
+          name: "tool_a",
+          description: "needs approval",
+          inputSchema: { type: "object" },
+          arguments: {},
+        },
+      };
+    }
+    if (turn.release !== undefined) await turn.release;
+    seq += 1;
+    push({ type: "connector.reply", seq, data: { content: turn.content } });
+    return replySendResult(turn.content);
+  }
+
+  const agent: Agent = {
+    async send(_content, opts): Promise<SendResult> {
+      sends += 1;
+      sendsChanged.notify();
+      const turn = script.shift();
+      if (turn === undefined) {
+        throw new Error("scripted agent: the script has no turn left");
+      }
+      const cycle = cycleTail.then(() => runTurn(turn));
+      cycleTail = cycle.catch(() => undefined);
+      const signal = opts?.signal;
+      if (signal === undefined) return cycle;
+      return new Promise<SendResult>((resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            reject(new DOMException("aborted", "AbortError"));
+          },
+          { once: true },
+        );
+        cycle.then(resolve, reject);
+      });
+    },
+    stream() {
+      const consumer: Consumer = { queue: [], wake: null };
+      consumers.add(consumer);
+      return consume(consumer);
+    },
+    deliver(_message: InboundMessage) {
+      throw new Error("stub deliver() not used");
+    },
+    async close() {
+      closed = true;
+      for (const consumer of consumers) wakeConsumer(consumer);
+    },
+    setSource(_source: InferenceSource) {
+      throw new Error("stub setSource() not used");
+    },
+    setSources(_sources: InferenceSource[], _defaultSource: string) {
+      throw new Error("stub setSources() not used");
+    },
+    async history() {
+      return [];
+    },
+    async checkpoints() {
+      return [];
+    },
+    async readAt() {
+      return [];
+    },
+    blobReader: stubBlobReader(),
+  };
+  return { agent, sendCount: () => sends, sendsChanged };
+}
+
+describe("workflow-host StepInvoker adapter - warm reply target", () => {
+  const allow: WorkflowAuthorizeFn = async () => ({
+    effect: "allow",
+    matchingGrants: [],
+    resolvedBy: null,
+  });
+
+  const ALICE = { from: "alice@example.com", messageId: "<a@example.com>" };
+  const CAROL = {
+    from: "carol@example.com",
+    messageId: "<c@example.com>",
+    subject: "side question",
+  };
+
+  /**
+   * Wire a warm step invoker to a real connector router and reply drain.
+   * The hooks call the router the way the durable conversation store does.
+   */
+  function wire(script: ScriptedTurn[]) {
+    const warmCache = createWarmAgentCache();
+    const scripted = buildScriptedAgent(script);
+    const router = createConnectorRouter();
+    const sent: OutboundMessage[] = [];
+    const sentChanged = createChangeNotifier();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => scripted.agent,
+      warmCache,
+      beginTurn: async (_key, turn) => {
+        router.beginTurn(turn);
+      },
+      parkTurn: async (_key, correlationId) => {
+        router.parkTurn(correlationId);
+      },
+      seedInbound: async (_key, message) => {
+        router.commit(router.route(message));
+      },
+      driveReplies: (_key, stream) =>
+        driveConnectorReplies({
+          stream,
+          composeReply: () => router.composeReply(),
+          send: async (message) => {
+            sent.push(message);
+            sentChanged.notify();
+            return {
+              messageId: `<sent-${String(sent.length)}@agent.example.com>`,
+              status: "delivered",
+            };
+          },
+          onReplySent: (receipt) => {
+            router.onReplySent(receipt);
+          },
+        }),
+    });
+    return { warmCache, scripted, router, sent, sentChanged, invoker };
+  }
+
+  function mailRequest(mail: Mail, signal?: AbortSignal): StepInvokeRequest {
+    return buildRequest({
+      input: mail,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  function resumeRequest(correlationId: string): StepInvokeRequest {
+    return {
+      ...buildRequest({ input: "unused" }),
+      resume: {
+        correlationId,
+        decision: { outcome: "approved" },
+        kind: "approval",
+      },
+    };
+  }
+
+  function sentAt(sent: OutboundMessage[], index: number): OutboundMessage {
+    const message = sent[index];
+    if (message === undefined) {
+      throw new Error(`expected a sent reply at ${String(index)}`);
+    }
+    return message;
+  }
+
+  test("an approval resume replies to the sender of the passthrough turn that parked", async () => {
+    const w = wire([
+      { kind: "reply", content: "to alice" },
+      { kind: "suspend", correlationId: "c1" },
+      { kind: "reply", content: "to carol" },
+    ]);
+
+    await w.invoker(mailRequest(inboundMail(ALICE)));
+    await w.invoker(mailRequest(inboundMail(CAROL)));
+    await w.invoker(resumeRequest("c1"));
+
+    expect(w.sent).toHaveLength(2);
+    const reply = sentAt(w.sent, 1);
+    expect(reply.content).toBe("to carol");
+    expect(reply.to).toBe("carol@example.com");
+    expect(reply.inReplyTo).toBe("<c@example.com>");
+    await w.warmCache.evictAll("test teardown");
+  });
+
+  test("a resumed turn that parks again keeps the target under the new gate", async () => {
+    const w = wire([
+      { kind: "reply", content: "to alice" },
+      { kind: "suspend", correlationId: "c1" },
+      { kind: "suspend", correlationId: "c2" },
+      { kind: "reply", content: "to carol" },
+      { kind: "reply", content: "to the owner" },
+    ]);
+
+    await w.invoker(mailRequest(inboundMail(ALICE)));
+    await w.invoker(mailRequest(inboundMail(CAROL)));
+    await w.invoker(resumeRequest("c1"));
+    expect(w.router.parkedReplyTargets()).toEqual({
+      c2: {
+        parts: {
+          to: "carol@example.com",
+          cc: [],
+          inReplyTo: "<c@example.com>",
+          references: ["<c@example.com>"],
+          subject: "side question",
+        },
+      },
+    });
+    await w.invoker(resumeRequest("c2"));
+
+    expect(sentAt(w.sent, 1).to).toBe("carol@example.com");
+    expect(sentAt(w.sent, 1).inReplyTo).toBe("<c@example.com>");
+
+    // A later turn that is neither mail nor a resume replies on the thread,
+    // and nothing stays parked.
+    await w.invoker(buildRequest({ input: "next" }));
+
+    expect(sentAt(w.sent, 2).content).toBe("to the owner");
+    expect(sentAt(w.sent, 2).to).toBe("alice@example.com");
+    expect(w.router.parkedReplyTargets()).toEqual({});
+    await w.warmCache.evictAll("test teardown");
+  });
+
+  test("a thread turn between the park and the resume does not take the parked target", async () => {
+    const w = wire([
+      { kind: "reply", content: "to alice" },
+      { kind: "suspend", correlationId: "c1" },
+      { kind: "reply", content: "to alice again" },
+      { kind: "reply", content: "to carol" },
+    ]);
+
+    await w.invoker(mailRequest(inboundMail(ALICE)));
+    await w.invoker(mailRequest(inboundMail(CAROL)));
+    await w.invoker(
+      mailRequest(
+        inboundMail({
+          from: "alice@example.com",
+          messageId: "<a2@example.com>",
+          inReplyTo: "<sent-1@agent.example.com>",
+        }),
+      ),
+    );
+    await w.invoker(resumeRequest("c1"));
+
+    expect(sentAt(w.sent, 1).content).toBe("to alice again");
+    expect(sentAt(w.sent, 1).to).toBe("alice@example.com");
+    expect(sentAt(w.sent, 2).content).toBe("to carol");
+    expect(sentAt(w.sent, 2).to).toBe("carol@example.com");
+    expect(sentAt(w.sent, 2).inReplyTo).toBe("<c@example.com>");
+    await w.warmCache.evictAll("test teardown");
+  });
+
+  test("the durable store's connector hooks keep each turn's reply target", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "warm-hooks-"));
+    const repoId: RepoId = { kind: "workflow-run", id: "warm-hooks" };
+    const ref = "refs/heads/main";
+    const principal: WorkflowRunWorkflowProcessPrincipal = {
+      kind: "workflow-process",
+      anchorRunId: repoId.id,
+    };
+    const substrate = createRepoStore({
+      dataDir: path.join(dataDir, "substrate"),
+      signingKey: await generateKeyPair(),
+      handlers: { "workflow-run": workflowRunKindHandler },
+      authorize: () => ({ allowed: true }),
+    });
+    await substrate.writeTree({ kind: "hub" }, repoId, ref, {
+      files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+      message: "genesis",
+    });
+    const registry = createDurableConversationRegistry({
+      dataDir,
+      workflowRunRepoId: repoId,
+      runId: "run-1",
+      workflowRunRef: ref,
+      substrate,
+      principal,
+      signer: (payload) => Promise.resolve(`sig:${String(payload.length)}`),
+    });
+    const sent: OutboundMessage[] = [];
+    const hooks = createWarmConnectorHooks(registry, async (message) => {
+      sent.push(message);
+      return {
+        messageId: `<sent-${String(sent.length)}@agent.example.com>`,
+        status: "delivered",
+      };
+    });
+    const warmCache = createWarmAgentCache();
+    const scripted = buildScriptedAgent([
+      { kind: "reply", content: "to alice" },
+      { kind: "suspend", correlationId: "c1" },
+      { kind: "reply", content: "to the owner" },
+      { kind: "reply", content: "to carol" },
+    ]);
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async (req) => {
+        const stepId = req.authzContext.stepId;
+        if (stepId === undefined) throw new Error("expected a step id");
+        await registry.acquire(stepId);
+        return stubBuildEnv();
+      },
+      agentFactory: async () => scripted.agent,
+      warmCache,
+      ...hooks,
+    });
+
+    try {
+      await invoker(mailRequest(inboundMail(ALICE)));
+      await invoker(mailRequest(inboundMail(CAROL)));
+      await invoker(buildRequest({ input: "next" }));
+      await invoker(resumeRequest("c1"));
+
+      expect(sent.map((message) => [message.content, message.to])).toEqual([
+        ["to alice", "alice@example.com"],
+        ["to the owner", "alice@example.com"],
+        ["to carol", "carol@example.com"],
+      ]);
+    } finally {
+      await warmCache.evictAll("test teardown");
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
   });
 });
 

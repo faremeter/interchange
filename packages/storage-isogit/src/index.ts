@@ -17,7 +17,11 @@ import { collectReachableObjects } from "./object-walk";
 import { createObjectPresence } from "./object-presence";
 import { writeTreeToDisk } from "./write-tree";
 import { indexPackIntoGitDir } from "./index-pack";
-import { IsogitStore, type DurableMirrorReads } from "./store";
+import {
+  IsogitStore,
+  type DurableMirrorReads,
+  type ParkedReplyTargetBuffer,
+} from "./store";
 import type { CommitSigner } from "./signer";
 import {
   normalizeRuntime,
@@ -29,7 +33,7 @@ export type { ContextStore, AuditStore, CommitSigner };
 export type { StagedPack } from "./pack-receive";
 export type { IncludeShaPredicate } from "./pack-send";
 export type { ObjectPresence } from "./object-presence";
-export type { DurableMirrorReads };
+export type { DurableMirrorReads, ParkedReplyTargetBuffer };
 export type { InitRepoOpts } from "./init";
 export type { IsogitPath, IsogitRuntime } from "./runtime";
 export { writeTreeToDisk } from "./write-tree";
@@ -56,7 +60,9 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     createIsogitStore: async (
       dir: string,
       signer?: CommitSigner,
-    ): Promise<ContextStore & AuditStore & DurableMirrorReads> => {
+    ): Promise<
+      ContextStore & AuditStore & DurableMirrorReads & ParkedReplyTargetBuffer
+    > => {
       const resolvedDir = storageRuntime.path.resolve(dir);
       await initAgentRepo(storageRuntime, resolvedDir);
       return new IsogitStore(storageRuntime, resolvedDir, signer);

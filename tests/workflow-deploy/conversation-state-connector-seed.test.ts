@@ -18,8 +18,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair, createSSHSignature } from "@intx/crypto";
+import type { ConnectorReplyParts } from "@intx/harness";
 import { createInboundMessage } from "@intx/mime";
 import type { KeyPair, InboundMessage } from "@intx/types/runtime";
+import { emptyTokenUsage } from "@intx/types/runtime";
 import type {
   RepoId,
   RepoStore,
@@ -27,7 +29,9 @@ import type {
 } from "@intx/hub-sessions";
 import {
   createRepoStore,
+  stepStateWalEntryPath,
   workflowRunKindHandler,
+  workflowRunStepStatePrefix,
   WORKFLOW_RUN_GITIGNORE_PATH,
 } from "@intx/hub-sessions";
 import {
@@ -47,6 +51,7 @@ const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
 
 interface Harness {
   baseDir: string;
+  signingKey: KeyPair;
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
   signer: (payload: string) => Promise<string>;
@@ -80,7 +85,25 @@ async function makeHarness(): Promise<Harness> {
     Promise.resolve(
       createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey),
     );
-  return { baseDir, substrate, workflowRunRepoId, signer };
+  return { baseDir, signingKey, substrate, workflowRunRepoId, signer };
+}
+
+/**
+ * A second substrate over the harness repo that skips push validation, to
+ * commit state the validated substrate refuses.
+ */
+function unvalidatedSubstrate(h: Harness): RepoStore {
+  return createRepoStore({
+    dataDir: h.baseDir,
+    signingKey: h.signingKey,
+    handlers: {
+      "workflow-run": {
+        ...workflowRunKindHandler,
+        validatePush: async () => ({ ok: true }),
+      },
+    },
+    authorize: () => ({ allowed: true }),
+  });
 }
 
 async function makeStore(
@@ -98,6 +121,14 @@ async function makeStore(
     stepId: STEP_ID,
     lifetime: { kind: "deployment" },
   });
+}
+
+function requireReply(store: DurableConversationStore): ConnectorReplyParts {
+  const reply = store.composeReply();
+  if (reply === null) {
+    throw new Error("composeReply() returned no reply address");
+  }
+  return reply;
 }
 
 /** Build a mail-derived inbound message the way the step invoker delivers it. */
@@ -151,7 +182,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
     // the test's substrate.
     await store.mirrorToSubstrate();
 
-    const reply = store.composeReply();
+    const reply = requireReply(store);
     // The first inbound starts the thread: reply to its sender, in-reply-to
     // its own message id, no other participants yet.
     expect(reply.to).toBe("alice@example.com");
@@ -176,7 +207,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
     );
     await store.mirrorToSubstrate();
 
-    const reply = store.composeReply();
+    const reply = requireReply(store);
     // Bob is now the most recent speaker (the primary recipient); Alice moves
     // into cc; the reply threads onto Bob's message.
     expect(reply.to).toBe("bob@example.com");
@@ -184,21 +215,72 @@ describe("durable conversation store connector seed (design §3c)", () => {
     expect(reply.inReplyTo).toBe("<b@example.com>");
   });
 
-  test("an inbound matching no active thread is a passthrough and leaves the thread unchanged", async () => {
+  test("a passthrough inbound is answered to its own sender and leaves the thread pinned", async () => {
     const store = await makeStore(h, localDir);
     await store.seedInbound(
       inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
     );
+    await store.mirrorToSubstrate();
     // Carol's message references nothing on the thread, so on an already-active
-    // thread it routes as a passthrough: the thread stays pinned to Alice.
+    // thread it routes as a passthrough. The reply to it goes to Carol, under
+    // her message, and not to the thread owner.
+    await store.beginTurn({});
+    await store.seedInbound(
+      inbound({
+        from: "carol@example.com",
+        messageId: "<c@example.com>",
+        subject: "side question",
+      }),
+    );
+
+    const reply = requireReply(store);
+    expect(reply).toEqual({
+      to: "carol@example.com",
+      cc: [],
+      inReplyTo: "<c@example.com>",
+      references: ["<c@example.com>"],
+      subject: "side question",
+    });
+
+    // The send of that reply leaves the thread pinned to Alice.
+    await store.onReplySent({
+      messageId: "<to-carol@example.com>",
+      status: "delivered",
+    });
+    await store.mirrorToSubstrate();
+    const reconstructed = await readStepState({
+      substrate: h.substrate,
+      workflowRunRepoId: h.workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: RUN_ID,
+      stepId: STEP_ID,
+    });
+    if (reconstructed === null) throw new Error("expected a reconstruction");
+    expect(reconstructed.connectorState).toEqual({
+      threadRoot: "<a@example.com>",
+      lastMessageId: "<a@example.com>",
+      replyTo: "alice@example.com",
+      cc: [],
+    });
+  });
+
+  test("a turn that seeds no mail after a passthrough replies on the thread", async () => {
+    const store = await makeStore(h, localDir);
+    await store.seedInbound(
+      inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
+    );
+    await store.mirrorToSubstrate();
+    await store.beginTurn({});
     await store.seedInbound(
       inbound({ from: "carol@example.com", messageId: "<c@example.com>" }),
     );
-    // Only the start seed enqueued a change-driven mirror (the passthrough
-    // advanced nothing); drain it so it does not outlive the substrate.
-    await store.mirrorToSubstrate();
+    expect(requireReply(store).to).toBe("carol@example.com");
 
-    const reply = store.composeReply();
+    // The next turn starts from a non-mail input, so it seeds nothing.
+    await store.beginTurn({});
+
+    const reply = requireReply(store);
     expect(reply.to).toBe("alice@example.com");
     expect(reply.inReplyTo).toBe("<a@example.com>");
     expect(reply.cc).toEqual([]);
@@ -253,10 +335,132 @@ describe("durable conversation store connector seed (design §3c)", () => {
     // mirror; drain it so it does not outlive the test's substrate.
     await fresh.mirrorToSubstrate();
 
-    const reply = fresh.composeReply();
+    const reply = requireReply(fresh);
     expect(reply.to).toBe("bob@example.com");
     expect(reply.cc).toEqual(["alice@example.com"]);
     expect(reply.inReplyTo).toBe("<b@example.com>");
     expect(reply.subject).toBe("durable thread");
+  });
+
+  describe("a passthrough turn parked on an approval gate", () => {
+    const CAROL_REPLY = {
+      to: "carol@example.com",
+      cc: [],
+      inReplyTo: "<c@example.com>",
+      references: ["<earlier@example.com>", "<c@example.com>"],
+      subject: "side question",
+    };
+
+    // Alice starts the thread; Carol's unthreaded mail is the passthrough
+    // turn, which parks on gate c1.
+    async function parkCarolOnC1(store: DurableConversationStore) {
+      await store.seedInbound(
+        inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
+      );
+      await store.mirrorToSubstrate();
+      await store.beginTurn({});
+      await store.seedInbound(
+        inbound({
+          from: "carol@example.com",
+          messageId: "<c@example.com>",
+          references: ["<earlier@example.com>"],
+          subject: "side question",
+        }),
+      );
+      await store.parkTurn("c1");
+      await store.mirrorToSubstrate();
+    }
+
+    test("the approval resume replies to the passthrough sender", async () => {
+      const store = await makeStore(h, localDir);
+      await parkCarolOnC1(store);
+
+      await store.beginTurn({ resume: "c1" });
+
+      expect(requireReply(store)).toEqual(CAROL_REPLY);
+    });
+
+    test("a resume of an id with no filed target replies on the thread", async () => {
+      const store = await makeStore(h, localDir);
+      await parkCarolOnC1(store);
+
+      await store.beginTurn({ resume: "unknown" });
+
+      const reply = requireReply(store);
+      expect(reply.to).toBe("alice@example.com");
+      expect(reply.inReplyTo).toBe("<a@example.com>");
+    });
+
+    test("a respawned store resumes the parked turn to the passthrough sender", async () => {
+      const store = await makeStore(h, localDir);
+      await parkCarolOnC1(store);
+
+      const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
+      expect(await fresh.restoreFromSubstrate()).toBe(true);
+      // Restoring a non-null connector state fires the router's
+      // change-driven mirror; drain it so it does not outlive the substrate.
+      await fresh.mirrorToSubstrate();
+      await fresh.beginTurn({ resume: "c1" });
+
+      expect(requireReply(fresh)).toEqual(CAROL_REPLY);
+    });
+
+    test("a respawned store resumes a parked turn with no sender address to no reply", async () => {
+      const store = await makeStore(h, localDir);
+      await store.seedInbound(
+        inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
+      );
+      await store.mirrorToSubstrate();
+      await store.beginTurn({});
+      const noFrom: InboundMessage = {
+        ref: { uid: 9, mailbox: "INBOX" },
+        headers: {
+          to: ["agent@example.com"],
+          date: new Date().toISOString(),
+          messageId: "<nofrom@example.com>",
+        },
+        flags: [],
+        content: "x",
+        signatureStatus: "missing",
+      };
+      await store.seedInbound(noFrom);
+      await store.parkTurn("c1");
+      await store.mirrorToSubstrate();
+
+      const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
+      expect(await fresh.restoreFromSubstrate()).toBe(true);
+      await fresh.mirrorToSubstrate();
+      await fresh.beginTurn({ resume: "c1" });
+
+      expect(fresh.composeReply()).toBeNull();
+    });
+
+    test("a restore rejects a malformed parked reply target", async () => {
+      const statePrefix = workflowRunStepStatePrefix(RUN_ID, STEP_ID);
+      const entry = JSON.stringify({
+        seq: 0,
+        turns: [],
+        metadata: {
+          pendingOperations: [],
+          tokenUsage: emptyTokenUsage(),
+          connectorState: null,
+          parkedReplyTargets: { c1: { parts: { to: 5, cc: [] } } },
+        },
+      });
+      await unvalidatedSubstrate(h).writeTree(
+        PRINCIPAL,
+        h.workflowRunRepoId,
+        WORKFLOW_RUN_REF,
+        {
+          files: { [stepStateWalEntryPath(statePrefix, 0)]: entry },
+          message: "write a malformed parked reply target",
+        },
+      );
+
+      const store = await makeStore(h, localDir);
+      await expect(store.restoreFromSubstrate()).rejects.toThrow(
+        /parkedReplyTargets/,
+      );
+    });
   });
 });

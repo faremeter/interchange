@@ -1,10 +1,14 @@
 // Shared connector reply drain for the agent harness.
 //
 // A director emits a `connector.reply` event when the agent produces an
-// outbound reply on its connector thread. Draining that event means:
-// compose the threading headers for the active thread, send the reply
-// through the transport, then advance the thread's `lastMessageId` from
-// the send receipt. This module owns that loop so both the harness
+// outbound reply. Draining that event means: compose the threading
+// headers, send the reply through the transport, then report the send
+// receipt so the caller can advance the thread's `lastMessageId`. The
+// caller's `composeReply` decides the recipient: the turn's `passthrough`
+// sender when one is set, otherwise the active connector thread. When it
+// returns no recipient, the drain drops the reply and logs it. The drain
+// composes when the agent emits the reply, not when the turn starts. This
+// module owns that loop so both the harness
 // composition layer (`createHarness`) and the warm workflow-host agent
 // path drive replies through one implementation rather than each keeping
 // its own copy.
@@ -40,11 +44,13 @@ export interface ConnectorReplyDrainOpts {
   /** The agent event stream to drain. Each `connector.reply` sends a reply. */
   stream: AgentEventStream;
   /**
-   * Produce the threading headers (`to`, `cc`, `inReplyTo`, `subject`) for
-   * the active connector thread. Throws when no thread is active; the throw
-   * is caught per reply and routed to `onSendFailed`.
+   * Produce the threading headers (`to`, `cc`, `inReplyTo`, `references`,
+   * `subject`) for the reply. Returns `null` when the reply has no
+   * recipient; the drain then drops the reply without a send, logs it, and
+   * settles it as `ok` with no receipt. Throws when no thread is active;
+   * the throw is caught per reply and routed to `onSendFailed`.
    */
-  composeReply: () => ConnectorReplyParts;
+  composeReply: () => ConnectorReplyParts | null;
   /**
    * Send the composed reply. The drain builds the `OutboundMessage` from
    * `composeReply()`'s parts plus the reply content and a
@@ -60,6 +66,7 @@ export interface ConnectorReplyDrainOpts {
    * a truncated single element. Returns `undefined` when the parent cannot be
    * located (the very first reply on a fresh thread, or a malformed id); the
    * drain then omits `references` and the transport derives `[inReplyTo]`.
+   * The drain does not call it when `composeReply()` supplies `references`.
    *
    * Optional. When it is omitted, the drain leaves `references` unset.
    * `createHarness` omits it, and the transport then derives `[inReplyTo]`.
@@ -95,10 +102,12 @@ export interface ConnectorReplyDrainOpts {
  * from a failed one (compose, send, or `onReplySent` threw). A caller gating a
  * side effect on the reply reaching the transport awaits the barrier and acts
  * only on `ok: true`; `ok: false` carries the failure `cause` so the caller can
- * surface it rather than treat the reply as sent.
+ * surface it rather than treat the reply as sent. A reply that `composeReply`
+ * gave no recipient settles as `ok: true` with a `null` receipt: nothing was
+ * sent, and nothing is left to send.
  */
 export type ReplySettlement =
-  | { readonly ok: true; readonly receipt: SendReceipt }
+  | { readonly ok: true; readonly receipt: SendReceipt | null }
   | { readonly ok: false; readonly cause: unknown };
 
 export interface ConnectorReplyDrain {
@@ -239,17 +248,25 @@ export function driveConnectorReplies(
         replyChain = replyChain.then(async () => {
           try {
             const parts = opts.composeReply();
+            if (parts === null) {
+              logger.warn`Dropping connector reply: the message it answers names no reply address`;
+              recordSettlement({ ok: true, receipt: null });
+              return;
+            }
+            const { references: ownReferences, ...headers } = parts;
             // Resolve the full References ancestry for the parent this reply
-            // answers, when the caller supplies a resolver. A resolver miss
-            // (parent absent, malformed id) yields `undefined`, and the
-            // transport derives `[inReplyTo]` as before.
+            // answers, when the parts carry no chain of their own and the
+            // caller supplies a resolver. A resolver miss (parent absent,
+            // malformed id) yields `undefined`, and the transport derives
+            // `[inReplyTo]` as before.
             const references =
-              opts.resolveReferences !== undefined &&
-              parts.inReplyTo !== undefined
-                ? await opts.resolveReferences(parts.inReplyTo)
-                : undefined;
+              ownReferences ??
+              (opts.resolveReferences !== undefined &&
+              headers.inReplyTo !== undefined
+                ? await opts.resolveReferences(headers.inReplyTo)
+                : undefined);
             const receipt = await opts.send({
-              ...parts,
+              ...headers,
               content,
               type: "conversation.message",
               ...(references !== undefined && references.length > 0

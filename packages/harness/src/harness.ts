@@ -445,6 +445,14 @@ export async function createHarness<EnvReq extends MailEnv>(
           }
 
           if (decision.kind === "passthrough") {
+            // A passthrough commit only sets the router's turn reply target,
+            // which points the reply at this message's sender. This harness
+            // does not commit it. It routes at delivery, and `agent.deliver`
+            // gives it no hook at the point the reactor takes the message
+            // up, so it cannot bind a per-message target to the turn that
+            // answers it: a passthrough that arrived during another
+            // sender's turn would take that sender's reply. Replies to
+            // passthrough mail therefore go to the connector thread.
             if (stopped) return;
             agent.deliver(message);
             return;

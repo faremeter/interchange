@@ -457,6 +457,99 @@ describe("createHarness outbound pipeline", () => {
       await harness.close();
     }
   });
+
+  function outboundEnv(transport: MessageTransport, storage: ContextStore) {
+    return {
+      ...mailEnv({ workdir: workDir, storage, transport }),
+      deps: inference.deps,
+    };
+  }
+
+  function storedMessage(
+    uid: number,
+    opts: { from: string; messageId: string; references?: string[] },
+  ): InboundMessage {
+    const message = createInboundMessage({
+      from: opts.from,
+      to: AGENT_ADDRESS,
+      content: "Hello agent",
+      messageId: opts.messageId,
+      interchangeType: "conversation.message",
+      ...(opts.references !== undefined ? { references: opts.references } : {}),
+    });
+    return { ...message, ref: { uid, mailbox: "INBOX" } };
+  }
+
+  // The stubbed inference advances on the harness clock, and the reply
+  // drain that follows it runs on the real event loop, so both are pumped.
+  // The loop carries no deadline: a state that never arrives is the lane
+  // timeout's to report.
+  async function pumpUntil(done: () => boolean): Promise<void> {
+    while (!done()) {
+      await inference.run();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  // A passthrough commit would point the reply at its sender, but this
+  // harness commits at delivery, so a passthrough that arrives during
+  // another sender's turn would take that turn's reply.
+  test("a passthrough that arrives during a turn does not take the turn's reply", async () => {
+    inference.scenario.replyOnce("anthropic", { text: "first answer" });
+    inference.scenario.replyOnce("anthropic", { text: "answer for alice" });
+    inference.scenario.replyOnce("anthropic", { text: "third answer" });
+    const { transport, control } = makeMockTransport();
+    const storage = await createIsogitStore(workDir);
+    const harness = await createHarness(
+      emptyDef(),
+      outboundEnv(transport, storage),
+    );
+
+    try {
+      control.enqueue(
+        401,
+        storedMessage(401, {
+          from: "alice@example.com",
+          messageId: "<alice-1@example.com>",
+        }),
+      );
+      control.fireExists(401);
+      await pumpUntil(() => control.getSent().length === 1);
+
+      control.enqueue(
+        402,
+        storedMessage(402, {
+          from: "alice@example.com",
+          messageId: "<alice-2@example.com>",
+          references: ["<alice-1@example.com>"],
+        }),
+      );
+      control.enqueue(
+        403,
+        storedMessage(403, {
+          from: "mallory@example.com",
+          messageId: "<mallory-1@example.com>",
+        }),
+      );
+      control.fireExists(402);
+      control.fireExists(403);
+      // Mallory's message is delivered before the agent answers Alice, so
+      // a target committed at delivery would take Alice's answer.
+      await pumpUntil(() => control.getSent().length === 2);
+
+      expect(control.getSent()[1]).toMatchObject({
+        content: "answer for alice",
+        to: "alice@example.com",
+        inReplyTo: "<alice-2@example.com>",
+        references: ["<alice-1@example.com>", "<alice-2@example.com>"],
+      });
+      expect(control.getSent()).not.toContainEqual(
+        expect.objectContaining({ to: "mallory@example.com" }),
+      );
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 describe("createWrappedStorageOverrides dirty-bit gating", () => {

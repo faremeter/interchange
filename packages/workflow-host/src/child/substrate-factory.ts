@@ -35,7 +35,6 @@ import type {
   AuditStore,
   ContextStore,
   ConversationTurn,
-  InboundMessage,
   MessageTransport,
   PendingOperation,
 } from "@intx/types/runtime-core";
@@ -57,9 +56,6 @@ import {
   createCredentialProviderRegistry,
   createHarnessRuntimeCapabilities,
   createInferenceCredentialResolver,
-  driveConnectorReplies,
-  type AgentEventStream,
-  type ConnectorReplyDrain,
   type CredentialProviderRegistry,
 } from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
@@ -175,6 +171,7 @@ import {
   createSupervisorBackedTransport,
   type SupervisorBackedTransportInbound,
 } from "./supervisor-backed-transport";
+import { createWarmConnectorHooks } from "./warm-connector-hooks";
 
 // The child does not construct a workflow-run pack-push pipeline of
 // its own. The supervisor owns the workflow-run repo's write
@@ -2602,68 +2599,24 @@ export function createSidecarSubstrateFactory(
     // instantiate-send-teardown per step. Forwarding it here is the only
     // warm-keep wiring this binding needs -- the adapter and the run-loop
     // own the rest of the lifecycle.
-    // Run-boundary durability flush (design §3c). When the deployment is
-    // warm-kept, mirror the warm agent's conversation snapshot to the
-    // workflow-run substrate after each message's send settles. The key
-    // is the step identity, the same key the env builder filed the
-    // durable store under, so the hook resolves the right per-agent
-    // store. Absent for a multi-step deploy (no durable registry).
-    const onRunBoundary: ((key: string) => Promise<void>) | undefined =
+    // Connector hooks (design §3c). When the deployment is warm-kept, the
+    // durable store drives the warm agent's connector thread: the seed, the
+    // turn start and park, the reply drain, and the run-boundary mirror.
+    // Replies go through the outbound bridge (`bridge.submit`, the same
+    // signed-send path the agent's own supervisor-backed transport uses).
+    // Absent for a multi-step deploy (no durable registry).
+    const warmConnectorHooks =
       durableConversation !== undefined
-        ? async (key: string) => {
-            await durableConversation.get(key).mirrorToSubstrate();
-          }
-        : undefined;
-
-    // Connector-thread seed (design §3c). When the deployment is warm-kept,
-    // route each mail-derived inbound message onto the warm agent's
-    // connector thread before its send, so the reply path has thread state.
-    // The key is the step identity, the same key the durable store is filed
-    // under. Absent for a multi-step deploy (no durable registry).
-    const seedInbound:
-      | ((key: string, message: InboundMessage) => Promise<void>)
-      | undefined =
-      durableConversation !== undefined
-        ? async (key: string, message: InboundMessage) => {
-            await durableConversation.get(key).seedInbound(message);
-          }
-        : undefined;
-
-    // Connector reply drain (design §3c). When the deployment is
-    // warm-kept, drive the warm agent's outbound replies through the shared
-    // connector reply drain: on each `connector.reply` the agent emits,
-    // compose a threaded reply from the durable store's connector thread,
-    // send it through the outbound bridge (`bridge.submit`, the same signed-
-    // send path the agent's own supervisor-backed transport uses), then
-    // advance the thread from the receipt. Established once per warm agent
-    // over its lifetime stream; the returned drain handle carries the lifetime
-    // `done` promise the step-invoker folds into the warm entry so eviction
-    // drains it, plus the per-turn settle barrier the warm step gates each
-    // reply turn on. The key is the step identity, the same key the durable
-    // store is filed under. Absent for a multi-step deploy (no durable
-    // registry).
-    const driveReplies:
-      | ((key: string, stream: AgentEventStream) => ConnectorReplyDrain)
-      | undefined =
-      durableConversation !== undefined
-        ? (key: string, stream: AgentEventStream) =>
-            driveConnectorReplies({
-              stream,
-              composeReply: () => durableConversation.get(key).composeReply(),
-              send: (message) =>
-                env.outboundMailBridge.submit(
-                  env.spawn.mailboxAddress,
-                  message,
-                  {
-                    // Connector replies do not carry References. A bare
-                    // inReplyTo on any other send must not be completed
-                    // from this mailbox.
-                    completeReferences: true,
-                  },
-                ),
-              onReplySent: (receipt) =>
-                durableConversation.get(key).onReplySent(receipt),
-            })
+        ? createWarmConnectorHooks(durableConversation, (message) =>
+            env.outboundMailBridge.submit(env.spawn.mailboxAddress, message, {
+              // A thread reply carries no References, so the supervisor
+              // completes it from this mailbox. A reply to a passthrough
+              // sender carries its own chain, which the supervisor keeps. A
+              // bare inReplyTo on any other send must not be completed from
+              // this mailbox.
+              completeReferences: true,
+            }),
+          )
         : undefined;
 
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (
@@ -2693,12 +2646,9 @@ export function createSidecarSubstrateFactory(
         sourcesRef,
         mailPartReader,
         ...(warmCache !== undefined ? { warmCache } : {}),
-        ...(onRunBoundary !== undefined ? { onRunBoundary } : {}),
-        ...(seedInbound !== undefined ? { seedInbound } : {}),
-        ...(driveReplies !== undefined ? { driveReplies } : {}),
-        ...(durableConversation === undefined
-          ? { onColdStepSettled: flushColdStepState }
-          : {}),
+        ...(warmConnectorHooks !== undefined
+          ? warmConnectorHooks
+          : { onColdStepSettled: flushColdStepState }),
       })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = createGrantEvaluator();
