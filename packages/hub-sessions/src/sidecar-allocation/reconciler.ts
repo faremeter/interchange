@@ -697,6 +697,42 @@ export function createSidecarAllocationReconciler({
       : { attempts, failure };
   }
 
+  // A replacement the chooser has a say in follows a failed ensure of a
+  // deployment that never initialized: `beginReplacement` advanced the
+  // generation by one from the ensure that failed. Any other replacement
+  // keeps its provisioner.
+  async function chooseReplacementProvisioner(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    current: SidecarProvisioner,
+  ): Promise<ProvisionerChoice> {
+    const failed = await failedEnsuresAt(allocation, allocation.generation - 1);
+    return failed === null
+      ? { provisioner: current }
+      : chooseNextProvisioner(
+          allocation,
+          leaseId,
+          failed.attempts,
+          failed.failure,
+        );
+  }
+
+  // The ensure may have started capacity, so cleanup comes before the next
+  // ensure and the chooser is asked once it is done.
+  async function replaceAfterFailedEnsure(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    code: string,
+    message: string,
+  ): Promise<void> {
+    await recordFailedEnsure(
+      allocation,
+      { code, message, retryable: true },
+      true,
+    );
+    await replaceAfterFailure(allocation, leaseId, code, message);
+  }
+
   async function failWithoutInfrastructure(
     allocation: SidecarAllocation,
     leaseId: string,
@@ -1158,7 +1194,7 @@ export function createSidecarAllocationReconciler({
       );
     } catch (error) {
       if (error instanceof ReconciliationLeaseLostError) throw error;
-      await replaceAfterFailure(
+      await replaceAfterFailedEnsure(
         allocation,
         leaseId,
         "ensure_failed",
@@ -1299,7 +1335,7 @@ export function createSidecarAllocationReconciler({
         return;
       }
       if (!(error instanceof SidecarReuseRejectedError)) throw error;
-      await replaceAfterFailure(
+      await replaceAfterFailedEnsure(
         allocation,
         leaseId,
         "sidecar_reuse_rejected",
@@ -1338,7 +1374,7 @@ export function createSidecarAllocationReconciler({
   async function bindAndEnsure(
     allocation: SidecarAllocation,
     leaseId: string,
-    provisioner: SidecarProvisioner,
+    current: SidecarProvisioner,
     replacement: boolean,
   ): Promise<void> {
     if (
@@ -1354,6 +1390,14 @@ export function createSidecarAllocationReconciler({
       if (releasing !== null) fence(releasing);
       return;
     }
+    const choice: ProvisionerChoice = replacement
+      ? await chooseReplacementProvisioner(allocation, leaseId, current)
+      : { provisioner: current };
+    if (!("provisioner" in choice)) {
+      await failWithoutInfrastructure(allocation, leaseId, "replacing", choice);
+      return;
+    }
+    const { provisioner } = choice;
     const token = createToken();
     const sidecarId = createSidecarId();
     const connectDeadline = new Date(now().getTime() + connectTimeoutMs);
@@ -1362,6 +1406,7 @@ export function createSidecarAllocationReconciler({
       ? await allocationStore.bindReplacementSidecar({
           allocationId: allocation.id,
           generation: allocation.generation,
+          binding: provisionerBinding(provisioner),
           sidecarId,
           tokenHashSha256: await sha256(token),
           adapterManifestDigest: digest,
@@ -2075,7 +2120,7 @@ export function createSidecarAllocationReconciler({
         }
         // The raw bearer token and unrecorded acceptance are not durable. A
         // restart has no parked result to resume, so it fences uncertain work.
-        await replaceAfterFailure(
+        await replaceAfterFailedEnsure(
           allocation,
           leaseId,
           "ensure_outcome_unknown",
