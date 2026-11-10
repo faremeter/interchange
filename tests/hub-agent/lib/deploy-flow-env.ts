@@ -2450,16 +2450,24 @@ export type FireMailTriggerOpts = {
    * RFC 2822 `In-Reply-To` header of the synthesized mail. Set it to a prior
    * message's `Message-Id` to thread this inbound onto an existing connector
    * conversation: the connector router treats the message as a continuation
-   * when its `In-Reply-To` matches the thread's last message id. Omitted (no
-   * header) by default, which starts a fresh thread.
+   * when its `In-Reply-To` matches the thread's last message id and its
+   * sender is a thread participant. Omitted (no header) by default, which
+   * starts a fresh thread.
    */
   inReplyTo?: string;
   /**
    * RFC 2822 `References` header (a message-id chain) of the synthesized mail.
-   * The connector router also treats an inbound as a continuation when its
-   * `References` includes the thread root. Omitted (no header) by default.
+   * The connector router also treats an inbound from a thread participant as a
+   * continuation when its `References` includes the thread root. Omitted (no
+   * header) by default.
    */
   references?: string[];
+  /**
+   * RFC 2822 `Cc` recipients of the synthesized mail. A recipient that a
+   * thread participant addresses becomes a participant that can continue the
+   * thread. Omitted (no header) by default.
+   */
+  cc?: string[];
 };
 
 /**
@@ -2540,7 +2548,7 @@ export async function fireMailTrigger(
   const headers: MessageHeaders = {
     from,
     to: [address],
-    cc: undefined,
+    cc: opts.cc,
     date: new Date(),
     messageId,
     subject: undefined,

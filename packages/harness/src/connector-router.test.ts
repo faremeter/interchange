@@ -1,7 +1,13 @@
 import { describe, test, expect } from "bun:test";
+import { type } from "arktype";
 
 import { createInboundMessage } from "@intx/mime";
-import type { ConnectorThreadState, InboundMessage } from "@intx/types/runtime";
+import {
+  ConnectorThreadState as ConnectorThreadStateSchema,
+  type InboundMessage,
+} from "@intx/types/runtime";
+
+type ConnectorThreadState = typeof ConnectorThreadStateSchema.infer;
 
 import {
   createConnectorRouter,
@@ -9,6 +15,8 @@ import {
   type ConnectorReplyParts,
   type ConnectorRouter,
 } from "./connector-router";
+
+const AGENT = "agent@example.com";
 
 function requireReplyParts(router: ConnectorRouter): ConnectorReplyParts {
   const parts = router.composeReply();
@@ -18,12 +26,18 @@ function requireReplyParts(router: ConnectorRouter): ConnectorReplyParts {
   return parts;
 }
 
-function startMessage(opts?: { subject?: string }): InboundMessage {
+// `cc` names the recipients the starting sender addresses besides the
+// agent, which makes them participants that can join the thread.
+function startMessage(opts?: {
+  subject?: string;
+  cc?: string[];
+}): InboundMessage {
   return createInboundMessage({
     from: "user@example.com",
-    to: ["agent@example.com"],
+    to: [AGENT],
     content: "hello",
     messageId: "<root@example.com>",
+    ...(opts?.cc !== undefined ? { cc: opts.cc } : {}),
     ...(opts?.subject !== undefined ? { subject: opts.subject } : {}),
   });
 }
@@ -66,7 +80,7 @@ function unrelatedMessage(): InboundMessage {
 describe("createConnectorRouter", () => {
   describe("route + commit (inbound)", () => {
     test("no active thread: start initializes with empty cc", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
 
       router.commit(router.route(startMessage({ subject: "Hello" })));
 
@@ -80,7 +94,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("active thread + references includes threadRoot: continue from the same sender keeps cc empty", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage({ subject: "Hello" })));
 
       router.commit(
@@ -102,7 +116,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("active thread + inReplyTo equals lastMessageId: continue from the same sender keeps cc empty", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage()));
 
       router.commit(
@@ -122,8 +136,12 @@ describe("createConnectorRouter", () => {
     });
 
     test("continue from a different sender moves the prior replyTo into cc", () => {
-      const router = createConnectorRouter();
-      router.commit(router.route(startMessage({ subject: "Important" })));
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          startMessage({ subject: "Important", cc: ["other@example.com"] }),
+        ),
+      );
 
       router.commit(
         router.route(
@@ -139,13 +157,21 @@ describe("createConnectorRouter", () => {
         lastMessageId: "<follow-3@example.com>",
         replyTo: "other@example.com",
         cc: ["user@example.com"],
+        addressed: ["other@example.com"],
         subject: "Important",
       });
     });
 
     test("continue accumulates participants across multiple distinct senders", () => {
-      const router = createConnectorRouter();
-      router.commit(router.route(startMessage({ subject: "Important" })));
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          startMessage({
+            subject: "Important",
+            cc: ["second@example.com", "third@example.com"],
+          }),
+        ),
+      );
 
       router.commit(
         router.route(
@@ -170,8 +196,8 @@ describe("createConnectorRouter", () => {
     });
 
     test("continue from a sender already in cc does not duplicate them", () => {
-      const router = createConnectorRouter();
-      router.commit(router.route(startMessage()));
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(router.route(startMessage({ cc: ["second@example.com"] })));
       router.commit(
         router.route(
           continuationByReferences("<root@example.com>", {
@@ -198,10 +224,13 @@ describe("createConnectorRouter", () => {
     });
 
     test("subject is preserved across many continues from different senders", () => {
-      const router = createConnectorRouter();
-      router.commit(router.route(startMessage({ subject: "Important" })));
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      const others = ["b@example.com", "c@example.com", "d@example.com"];
+      router.commit(
+        router.route(startMessage({ subject: "Important", cc: others })),
+      );
 
-      for (const from of ["b@example.com", "c@example.com", "d@example.com"]) {
+      for (const from of others) {
         router.commit(
           router.route(
             continuationByReferences("<root@example.com>", {
@@ -212,11 +241,12 @@ describe("createConnectorRouter", () => {
         );
       }
 
+      expect(router.snapshot()?.replyTo).toBe("d@example.com");
       expect(router.snapshot()?.subject).toBe("Important");
     });
 
     test("active thread + neither header rule matches: passthrough leaves state unchanged", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage({ subject: "Hello" })));
       const before = router.snapshot();
 
@@ -229,7 +259,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("commit on a foreign decision throws", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       expect(() => {
         router.commit({ kind: "start" });
       }).toThrow();
@@ -238,7 +268,7 @@ describe("createConnectorRouter", () => {
 
   describe("composeReply (outbound)", () => {
     test("single-participant thread: cc is empty", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage({ subject: "Hello" })));
 
       const parts = router.composeReply();
@@ -251,8 +281,15 @@ describe("createConnectorRouter", () => {
     });
 
     test("multi-participant thread: cc contains all prior speakers", () => {
-      const router = createConnectorRouter();
-      router.commit(router.route(startMessage({ subject: "Important" })));
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          startMessage({
+            subject: "Important",
+            cc: ["second@example.com", "third@example.com"],
+          }),
+        ),
+      );
       router.commit(
         router.route(
           continuationByReferences("<root@example.com>", {
@@ -280,7 +317,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("active thread without subject: subject key absent (not undefined)", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage()));
 
       const parts = requireReplyParts(router);
@@ -291,8 +328,8 @@ describe("createConnectorRouter", () => {
     });
 
     test("composeReply returns a copy of cc, not the live array", () => {
-      const router = createConnectorRouter();
-      router.commit(router.route(startMessage()));
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(router.route(startMessage({ cc: ["second@example.com"] })));
       router.commit(
         router.route(
           continuationByReferences("<root@example.com>", {
@@ -310,15 +347,19 @@ describe("createConnectorRouter", () => {
     });
 
     test("no active thread: throws NoActiveConnectorThreadError", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       expect(() => {
         router.composeReply();
       }).toThrow(NoActiveConnectorThreadError);
     });
 
     test("onReplySent advances lastMessageId and preserves cc", () => {
-      const router = createConnectorRouter();
-      router.commit(router.route(startMessage({ subject: "Hello" })));
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          startMessage({ subject: "Hello", cc: ["second@example.com"] }),
+        ),
+      );
       router.commit(
         router.route(
           continuationByReferences("<root@example.com>", {
@@ -338,6 +379,7 @@ describe("createConnectorRouter", () => {
         lastMessageId: "<sent-1@example.com>",
         replyTo: "second@example.com",
         cc: ["user@example.com"],
+        addressed: ["second@example.com"],
         subject: "Hello",
       });
 
@@ -351,7 +393,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("onReplySent with no active thread throws", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       expect(() => {
         router.onReplySent({
           messageId: "<sent@example.com>",
@@ -363,8 +405,10 @@ describe("createConnectorRouter", () => {
 
   describe("snapshot/restore round-trip", () => {
     test("a router restored from a snapshot decides identically", () => {
-      const a = createConnectorRouter();
-      a.commit(a.route(startMessage({ subject: "Hello" })));
+      const a = createConnectorRouter({ ownAddress: AGENT });
+      a.commit(
+        a.route(startMessage({ subject: "Hello", cc: ["other@example.com"] })),
+      );
       a.commit(
         a.route(
           continuationByReferences("<root@example.com>", {
@@ -376,7 +420,7 @@ describe("createConnectorRouter", () => {
 
       const snap = a.snapshot();
 
-      const b = createConnectorRouter();
+      const b = createConnectorRouter({ ownAddress: AGENT });
       b.restore(snap);
 
       expect(b.snapshot()).toEqual(snap);
@@ -391,7 +435,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("restore(null) clears active thread", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage()));
       expect(router.snapshot()).not.toBeNull();
 
@@ -402,7 +446,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("snapshot is a copy, not the live state", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage({ subject: "Hello" })));
 
       const snap = router.snapshot();
@@ -423,7 +467,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("restore takes a defensive copy of the input state and its cc", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       const input: ConnectorThreadState = {
         threadRoot: "<x@example.com>",
         lastMessageId: "<x@example.com>",
@@ -468,7 +512,7 @@ describe("createConnectorRouter", () => {
     }
 
     test("strips display name and lowercases when storing replyTo on start", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
 
       router.commit(
         router.route(
@@ -480,8 +524,12 @@ describe("createConnectorRouter", () => {
     });
 
     test("strips display name when advancing replyTo on continue", () => {
-      const router = createConnectorRouter();
-      router.commit(router.route(startMessage({ subject: "Hello" })));
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          startMessage({ subject: "Hello", cc: ["other@example.com"] }),
+        ),
+      );
 
       const followup: InboundMessage = {
         ref: { uid: 2, mailbox: "INBOX" },
@@ -502,14 +550,14 @@ describe("createConnectorRouter", () => {
     });
 
     test("route() throws when the from header is unparseable on start", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       const message = inboundWith("not-an-address", "<bad@example.com>");
 
       expect(() => router.route(message)).toThrow();
     });
 
     test("route() throws when the from header is unparseable on continue", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage()));
 
       const malformedContinuation: InboundMessage = {
@@ -557,7 +605,7 @@ describe("createConnectorRouter", () => {
     function routerWithPassthrough(opts?: {
       onStateChanged?: (state: ConnectorThreadState | null) => void;
     }): ConnectorRouter {
-      const router = createConnectorRouter(opts);
+      const router = createConnectorRouter({ ownAddress: AGENT, ...opts });
       router.commit(router.route(startMessage({ subject: "Hello" })));
       const decision = router.route(
         passthroughMessage({ references: ["<earlier@example.com>"] }),
@@ -642,7 +690,7 @@ describe("createConnectorRouter", () => {
         content: "x",
         signatureStatus: "missing",
       };
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(noFrom));
       expect(router.composeReply()).toBeNull();
 
@@ -696,7 +744,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("a turn with no reply target files nothing when it parks", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage({ subject: "Hello" })));
 
       expect(router.parkTurn("c1")).toBe(false);
@@ -704,7 +752,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("a parked target with no address resumes with no reply address", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage({ subject: "Hello" })));
       router.commit({ kind: "passthrough" });
 
@@ -717,7 +765,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("restored parked targets resume like filed ones", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage({ subject: "Hello" })));
 
       router.restoreParkedReplyTargets({ c1: { parts: CAROL_REPLY } });
@@ -727,7 +775,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("a passthrough decision the caller made itself yields no reply address", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage({ subject: "Hello" })));
 
       router.commit({ kind: "passthrough" });
@@ -767,7 +815,7 @@ describe("createConnectorRouter", () => {
     }
 
     test("route() passes through on start and opens no thread", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       const message = inboundWithNoFrom("<orphan@example.com>");
 
       const decision = router.route(message);
@@ -782,7 +830,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("route() passes through on continue and leaves the thread untouched", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(startMessage({ subject: "Hello" })));
       const before = router.snapshot();
 
@@ -807,12 +855,12 @@ describe("createConnectorRouter", () => {
       // it differently, and only the throw is a failure. Pinning all three
       // shapes in one closure keeps a change that collapses them together
       // from passing.
-      const absent = createConnectorRouter();
+      const absent = createConnectorRouter({ ownAddress: AGENT });
       expect(absent.route(inboundWithNoFrom("<orphan@example.com>")).kind).toBe(
         "passthrough",
       );
 
-      const unparseable = createConnectorRouter();
+      const unparseable = createConnectorRouter({ ownAddress: AGENT });
       const malformed: InboundMessage = {
         ref: { uid: 8, mailbox: "INBOX" },
         headers: {
@@ -827,7 +875,7 @@ describe("createConnectorRouter", () => {
       };
       expect(() => unparseable.route(malformed)).toThrow();
 
-      const named = createConnectorRouter();
+      const named = createConnectorRouter({ ownAddress: AGENT });
       const decision = named.route(startMessage({ subject: "Hello" }));
       expect(decision.kind).toBe("start");
       named.commit(decision);
@@ -870,7 +918,7 @@ describe("createConnectorRouter", () => {
     }
 
     test("route() opens a thread so the reply is not dropped", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       const decision = router.route(inboundWithNoMessageId());
 
       expect(decision.kind).toBe("start");
@@ -884,7 +932,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("composeReply() omits In-Reply-To rather than emitting an empty one", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(inboundWithNoMessageId()));
 
       const parts = requireReplyParts(router);
@@ -897,8 +945,12 @@ describe("createConnectorRouter", () => {
       // The reply drain only resolves a References chain when `inReplyTo` is
       // present, so dropping it here costs the outbound reply both threading
       // headers and starts a new thread in every participant's client.
-      const router = createConnectorRouter();
-      router.commit(router.route(startMessage({ subject: "Invoice" })));
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(
+          startMessage({ subject: "Invoice", cc: ["bob@example.com"] }),
+        ),
+      );
 
       const decision = router.route(
         inboundWithNoMessageId({
@@ -919,7 +971,7 @@ describe("createConnectorRouter", () => {
     });
 
     test("an arriving message re-anchors the thread rather than continuing it", () => {
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(inboundWithNoMessageId()));
 
       const next = continuationByInReplyTo("<whatever@example.com>", {
@@ -942,7 +994,7 @@ describe("createConnectorRouter", () => {
       // real correspondent into `cc`. The value reaches the router through
       // the wire, not through `createInboundMessage`, which rejects an empty
       // `inReplyTo`.
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(inboundWithNoMessageId()));
 
       const stranger = inboundWithNoMessageId({
@@ -963,10 +1015,10 @@ describe("createConnectorRouter", () => {
       // `isContinuation`, so every later message routed `passthrough` -- the
       // INBOX never drained and the first sender kept the reply address for
       // the life of the agent.
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(inboundWithNoMessageId()));
 
-      const anchored = startMessage();
+      const anchored = startMessage({ cc: ["other@example.com"] });
       const decision = router.route(anchored);
       expect(decision.kind).toBe("start");
       router.commit(decision);
@@ -989,7 +1041,7 @@ describe("createConnectorRouter", () => {
     test("onReplySent anchors the thread so later replies continue it", () => {
       // The agent replying is the ordinary way an anchorless thread acquires
       // an anchor: the reply's own id becomes `lastMessageId`.
-      const router = createConnectorRouter();
+      const router = createConnectorRouter({ ownAddress: AGENT });
       router.commit(router.route(inboundWithNoMessageId()));
       router.onReplySent({
         messageId: "<agent-reply@example.com>",
@@ -1009,6 +1061,7 @@ describe("createConnectorRouter", () => {
     test("fires after a start decision commits", () => {
       const events: (ConnectorThreadState | null)[] = [];
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: (s) => events.push(s),
       });
 
@@ -1027,9 +1080,10 @@ describe("createConnectorRouter", () => {
     test("fires after continue advances the thread", () => {
       const events: (ConnectorThreadState | null)[] = [];
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: (s) => events.push(s),
       });
-      router.commit(router.route(startMessage()));
+      router.commit(router.route(startMessage({ cc: ["second@example.com"] })));
       events.length = 0;
 
       router.commit(
@@ -1050,6 +1104,7 @@ describe("createConnectorRouter", () => {
     test("does not fire for passthrough commits", () => {
       const events: (ConnectorThreadState | null)[] = [];
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: (s) => events.push(s),
       });
       router.commit(router.route(startMessage()));
@@ -1063,6 +1118,7 @@ describe("createConnectorRouter", () => {
     test("fires after onReplySent advances lastMessageId", () => {
       const events: (ConnectorThreadState | null)[] = [];
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: (s) => events.push(s),
       });
       router.commit(router.route(startMessage()));
@@ -1080,6 +1136,7 @@ describe("createConnectorRouter", () => {
     test("fires on restore() when state changes from null", () => {
       const events: (ConnectorThreadState | null)[] = [];
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: (s) => events.push(s),
       });
 
@@ -1097,6 +1154,7 @@ describe("createConnectorRouter", () => {
     test("does not fire on restore(null) when already null (cold start)", () => {
       const events: (ConnectorThreadState | null)[] = [];
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: (s) => events.push(s),
       });
 
@@ -1108,6 +1166,7 @@ describe("createConnectorRouter", () => {
     test("does not fire on restore() into an equal state", () => {
       const events: (ConnectorThreadState | null)[] = [];
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: (s) => events.push(s),
       });
       const snap: ConnectorThreadState = {
@@ -1129,6 +1188,7 @@ describe("createConnectorRouter", () => {
       // Defensive: any field of the state changing is a state change.
       const events: (ConnectorThreadState | null)[] = [];
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: (s) => events.push(s),
       });
       const snap: ConnectorThreadState = {
@@ -1149,6 +1209,7 @@ describe("createConnectorRouter", () => {
     test("fires with a snapshot copy, not the live state", () => {
       const events: (ConnectorThreadState | null)[] = [];
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: (s) => events.push(s),
       });
 
@@ -1168,6 +1229,7 @@ describe("createConnectorRouter", () => {
 
     test("a throwing subscriber does not propagate out of commit()", () => {
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: () => {
           throw new Error("subscriber boom");
         },
@@ -1181,6 +1243,7 @@ describe("createConnectorRouter", () => {
     test("a throwing subscriber does not propagate out of onReplySent()", () => {
       let firstCall = true;
       const router = createConnectorRouter({
+        ownAddress: AGENT,
         onStateChanged: () => {
           if (firstCall) {
             firstCall = false;
@@ -1198,6 +1261,225 @@ describe("createConnectorRouter", () => {
         }),
       ).not.toThrow();
       expect(router.snapshot()?.lastMessageId).toBe("<sent-throw@example.com>");
+    });
+  });
+
+  describe("participant check", () => {
+    // `In-Reply-To` and `References` are the sender's own claims, so naming
+    // the thread is not enough to join it: the speaker must be on the
+    // thread or addressed by a participant.
+    function threadMessage(opts: {
+      from: string;
+      messageId: string;
+      authenticatedSender?: string;
+      cc?: string[];
+    }): InboundMessage {
+      const message = createInboundMessage({
+        from: opts.from,
+        to: [AGENT],
+        content: "more",
+        messageId: opts.messageId,
+        references: ["<root@example.com>"],
+        ...(opts.cc !== undefined ? { cc: opts.cc } : {}),
+      });
+      return opts.authenticatedSender !== undefined
+        ? { ...message, authenticatedSender: opts.authenticatedSender }
+        : message;
+    }
+
+    const THREAD: ConnectorThreadState = {
+      threadRoot: "<root@example.com>",
+      lastMessageId: "<root@example.com>",
+      replyTo: "user@example.com",
+      cc: [],
+      subject: "Hello",
+    };
+
+    test("a participant that names the thread continues it", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.restore(THREAD);
+
+      const decision = router.route(
+        threadMessage({
+          from: "user@example.com",
+          messageId: "<user-2@example.com>",
+        }),
+      );
+
+      expect(decision.kind).toBe("continue");
+    });
+
+    test("a non-participant that names the thread is passthrough and gets its own reply", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.restore(THREAD);
+
+      const decision = router.route(
+        threadMessage({
+          from: "mallory@example.com",
+          messageId: "<mallory-1@example.com>",
+        }),
+      );
+      expect(decision.kind).toBe("passthrough");
+      router.commit(decision);
+
+      expect(router.snapshot()).toEqual(THREAD);
+      expect(router.composeReply()).toEqual({
+        to: "mallory@example.com",
+        cc: [],
+        inReplyTo: "<mallory-1@example.com>",
+        references: ["<root@example.com>", "<mallory-1@example.com>"],
+      });
+    });
+
+    test("a recipient a participant cc'd joins the thread by speaking", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.restore(THREAD);
+      router.commit(
+        router.route(
+          threadMessage({
+            from: "user@example.com",
+            messageId: "<user-2@example.com>",
+            cc: ["Bob@Example.com"],
+          }),
+        ),
+      );
+      expect(router.snapshot()?.addressed).toEqual(["bob@example.com"]);
+
+      const decision = router.route(
+        threadMessage({
+          from: "bob@example.com",
+          messageId: "<bob-1@example.com>",
+        }),
+      );
+      expect(decision.kind).toBe("continue");
+      router.commit(decision);
+
+      expect(router.composeReply()).toEqual({
+        to: "bob@example.com",
+        cc: ["user@example.com"],
+        inReplyTo: "<bob-1@example.com>",
+        subject: "Hello",
+      });
+    });
+
+    test("an addressed recipient is not on outbound mail until it speaks", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(
+        router.route(startMessage({ cc: ["bob@example.com", AGENT] })),
+      );
+
+      expect(router.snapshot()?.addressed).toEqual(["bob@example.com"]);
+      expect(router.composeReply()).toEqual({
+        to: "user@example.com",
+        cc: [],
+        inReplyTo: "<root@example.com>",
+      });
+    });
+
+    test("the speaker is the authenticated sender, not the From", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.restore(THREAD);
+
+      // The From claims the thread owner; the hub verified someone else.
+      const forged = threadMessage({
+        from: "user@example.com",
+        messageId: "<forged@example.com>",
+        authenticatedSender: "mallory@example.com",
+      });
+      const decision = router.route(forged);
+      expect(decision.kind).toBe("passthrough");
+      router.commit(decision);
+      expect(router.composeReply()?.to).toBe("mallory@example.com");
+
+      const genuine = threadMessage({
+        from: "someone-else@example.com",
+        messageId: "<genuine@example.com>",
+        authenticatedSender: "user@example.com",
+      });
+      expect(router.route(genuine).kind).toBe("continue");
+    });
+
+    test("the speaker is the From when the message has no authenticated sender", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.restore(THREAD);
+
+      const decision = router.route(
+        threadMessage({
+          from: "User@Example.com",
+          messageId: "<user-2@example.com>",
+        }),
+      );
+      expect(decision.kind).toBe("continue");
+      router.commit(decision);
+      expect(router.snapshot()?.replyTo).toBe("user@example.com");
+    });
+
+    test("a thread owner stored with another letter case still continues", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.restore({
+        ...THREAD,
+        replyTo: "Alice@Example.com",
+        cc: ["Carol@Example.com"],
+      });
+
+      const decision = router.route(
+        threadMessage({
+          from: "alice@example.com",
+          messageId: "<alice-2@example.com>",
+        }),
+      );
+      expect(decision.kind).toBe("continue");
+      router.commit(decision);
+
+      // The returning owner is not also carried on cc under the old spelling.
+      expect(router.snapshot()?.replyTo).toBe("alice@example.com");
+      expect(router.snapshot()?.cc).toEqual(["Carol@Example.com"]);
+    });
+
+    test("a cc'd participant stored with another letter case still continues", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.restore({ ...THREAD, addressed: ["Bob@Example.com"] });
+
+      const decision = router.route(
+        threadMessage({
+          from: "bob@example.com",
+          messageId: "<bob-1@example.com>",
+        }),
+      );
+
+      expect(decision.kind).toBe("continue");
+    });
+
+    test("a state persisted without addressed restores and keeps its participants", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      const persisted = ConnectorThreadStateSchema({
+        threadRoot: "<root@example.com>",
+        lastMessageId: "<root@example.com>",
+        replyTo: "user@example.com",
+        cc: ["second@example.com"],
+      });
+      if (persisted instanceof type.errors) {
+        throw new Error(persisted.summary);
+      }
+      router.restore(persisted);
+
+      expect(router.snapshot()).toEqual(persisted);
+      expect(
+        router.route(
+          threadMessage({
+            from: "second@example.com",
+            messageId: "<second-1@example.com>",
+          }),
+        ).kind,
+      ).toBe("continue");
+      expect(
+        router.route(
+          threadMessage({
+            from: "stranger@example.com",
+            messageId: "<stranger-1@example.com>",
+          }),
+        ).kind,
+      ).toBe("passthrough");
     });
   });
 });

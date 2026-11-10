@@ -612,6 +612,7 @@ export async function persistColdRecoveredPark(args: {
   stepId: string;
   attempt: number;
   correlationId: string;
+  mailboxAddress: string;
 }): Promise<void> {
   const label = `recovered park ${args.correlationId} of step ${args.stepId} (run ${args.runId}, attempt ${String(args.attempt)})`;
   const committed = await readStepState(args);
@@ -639,6 +640,7 @@ export async function persistColdRecoveredPark(args: {
     runId: args.runId,
     stepId: args.stepId,
     lifetime: { kind: "attempt", attempt: args.attempt },
+    mailboxAddress: args.mailboxAddress,
   });
   await store.restoreFromSubstrate();
   await store.mirrorToSubstrate();
@@ -1006,6 +1008,7 @@ export function createSidecarStepBuildEnv(
         runId,
         stepId,
         lifetime: { kind: "attempt", attempt },
+        mailboxAddress: deps.mailboxAddress,
       });
       await coldStore.restoreFromSubstrate();
       storage = coldStore.storage;
@@ -2439,6 +2442,7 @@ export function createSidecarSubstrateFactory(
             substrate,
             principal,
             signer: conversationSigner,
+            mailboxAddress: env.spawn.mailboxAddress,
           })
         : undefined;
 
@@ -2805,6 +2809,7 @@ export function createSidecarSubstrateFactory(
               stepId,
               attempt,
               correlationId,
+              mailboxAddress: env.spawn.mailboxAddress,
             });
 
     const bindings: RunWorkflowChildBindings = {

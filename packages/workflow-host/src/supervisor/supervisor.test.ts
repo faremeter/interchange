@@ -1383,7 +1383,12 @@ describe("createWorkflowSupervisor", () => {
       messageId: "<msg-1@example.com>",
       body: "first turn",
     });
-    wired.mailBus.deliver(MAILBOX_ADDRESS, inboundDelivery(raw));
+    // The authenticated sender differs from the From, so the trigger payload
+    // below shows which one the supervisor carries.
+    wired.mailBus.deliver(
+      MAILBOX_ADDRESS,
+      inboundDelivery(raw, "authenticated@example.test"),
+    );
 
     await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
@@ -1430,7 +1435,10 @@ describe("createWorkflowSupervisor", () => {
       wired.supervisorToChild.flushed(),
     );
     expect(payloads).toHaveLength(1);
-    expect(isMail(payloads[0])).toBe(true);
+    const firstPayload = payloads[0];
+    if (!isMail(firstPayload)) throw new Error("trigger payload is not Mail");
+    expect(firstPayload.authenticatedSender).toBe("authenticated@example.test");
+    expect(firstPayload.headers.from).toBe("sender@example.com");
 
     await wired.supervisor.shutdown();
   });

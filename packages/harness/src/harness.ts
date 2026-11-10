@@ -259,6 +259,7 @@ export async function createHarness<EnvReq extends MailEnv>(
   let inMemoryStateAuthoritative = false;
   const userOnStateChanged = env.onConnectorStateChanged;
   const connectorRouter = createConnectorRouter({
+    ownAddress: env.address,
     onStateChanged: (state) => {
       inMemoryStateAuthoritative = true;
       if (userOnStateChanged !== undefined) userOnStateChanged(state);

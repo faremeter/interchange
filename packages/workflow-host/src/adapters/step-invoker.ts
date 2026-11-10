@@ -875,7 +875,8 @@ function usableAddrs(raw: string[]): string[] {
  * turns into a media / document content block. Part bytes are resolved through
  * the reader; a text part small enough to have inlined `text` skips the read.
  * The real sender / recipient headers are carried through so the agent frames
- * the turn with the actual `From:` rather than a synthetic address. The decoded
+ * the turn with the actual `From:` rather than a synthetic address, and the
+ * mail's authenticated sender rides along for the connector router. The decoded
  * `Message-ID` and, when present, `In-Reply-To` / `References` ride through too,
  * so the delivered message keeps its place in the conversation thread rather
  * than being stamped with a fresh synthesized id. Content is omitted when empty
@@ -935,11 +936,13 @@ async function buildInboundMessageFromMail(
   // createInboundMessage synthesizes a valid one; such mail cannot thread.
   const validReferences = mail.headers.references?.filter(isMessageId) ?? [];
   const from = usableAddr(mail.headers.from);
+  const cc = usableAddrs(mail.headers.cc ?? []);
   // No `correlationId` option: a sender's `Interchange-Correlation-ID` is
   // deliberately not forwarded, because resolving one clears a parked gate.
-  return createInboundMessage({
+  const message = createInboundMessage({
     ...(from !== undefined ? { from } : {}),
     to: usableAddrs(mail.headers.to),
+    ...(cc.length > 0 ? { cc } : {}),
     ...(mail.headers.subject !== undefined
       ? { subject: mail.headers.subject }
       : {}),
@@ -956,6 +959,9 @@ async function buildInboundMessageFromMail(
     ...(attachments.length > 0 ? { attachments } : {}),
     interchangeType: "conversation.message",
   });
+  return mail.authenticatedSender !== undefined
+    ? { ...message, authenticatedSender: mail.authenticatedSender }
+    : message;
 }
 
 /**

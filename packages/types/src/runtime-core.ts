@@ -330,6 +330,12 @@ export type Mail = {
   /** Every header, lowercased name to its ordered values; nothing dropped. */
   rawHeaders: Record<string, string[]>;
   parts: MailPart[];
+  /**
+   * The hub-verified sender address the mail arrived under, never taken
+   * from its `From`. Absent for mail the hub recorded without one, so a
+   * replayed trigger payload from such mail still validates.
+   */
+  authenticatedSender?: string;
 };
 
 const MailShape = type({
@@ -353,6 +359,7 @@ const MailShape = type({
   })
     .onUndeclaredKey("reject")
     .array(),
+  "authenticatedSender?": "string",
 }).onUndeclaredKey("reject");
 
 /**
@@ -402,6 +409,12 @@ export type InboundMessage = {
 
   attachments?: MessageAttachment[];
   signatureStatus: SignatureStatus;
+
+  /**
+   * The hub-verified sender address, never taken from the message's own
+   * `From`. Absent when the receiver has none for the message.
+   */
+  authenticatedSender?: string;
 };
 
 /**
@@ -2193,6 +2206,11 @@ export type ContextCommit = {
  * on the next outbound reply. `cc` is every other participant who has
  * spoken on the thread, deduplicated, in arrival order — they ride as
  * `cc` on the next outbound reply so everyone stays in the loop.
+ * `addressed` is every recipient that a message which started or continued
+ * the thread named in `To` or `Cc`, other than the agent, deduplicated.
+ * An addressed recipient can join the thread by speaking on it, but it is
+ * not on outbound mail until it does. It is absent when empty, and in
+ * state persisted before the field existed.
  * `subject` is set when the thread starts and preserved for its life.
  *
  * Defined as an arktype so the wire layer (sidecar↔hub frames) and
@@ -2204,6 +2222,7 @@ export const ConnectorThreadState = type({
   "lastMessageId?": "string",
   replyTo: "string",
   cc: "string[]",
+  "addressed?": "string[]",
   "subject?": "string",
 });
 export type ConnectorThreadState = typeof ConnectorThreadState.infer;

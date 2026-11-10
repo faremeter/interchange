@@ -89,6 +89,13 @@ const MAIL2_MESSAGE_ID = "<mail-int-m2-7c4e21@integration.interchange>";
 const MAIL2_FROM = "usertwo-7c4e21@integration.interchange";
 const MAIL2_BODY = "Turn two continuation body marker mail-int-7c4e21.";
 
+const MAIL3_MESSAGE_ID = "<mail-int-m3-7c4e21@integration.interchange>";
+const MAIL3_FROM = "userthree-7c4e21@integration.interchange";
+const MAIL3_BODY = "Turn three outsider body marker mail-int-7c4e21.";
+
+const MAIL4_MESSAGE_ID = "<mail-int-m4-7c4e21@integration.interchange>";
+const MAIL4_BODY = "Turn four owner body marker mail-int-7c4e21.";
+
 // A plain text reply per turn: the step produces an OUTPUT (so the unbounded
 // step re-arms on an input park) and calls no tool (so it never stays inside a
 // single turn the way `mail_wait` would). The connector reply drain threads
@@ -120,6 +127,11 @@ const DEFINITION_ASSET_ID = "ast_single_step_mail_int_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
+
+// The two-turn test records the run and the thread's last message for the
+// non-participant test that follows it on the same deployment.
+let threadRunId: string | undefined;
+let threadLastMessageId: string | undefined;
 
 beforeAll(async () => {
   if (!harnessDbEnvAvailable()) return;
@@ -252,9 +264,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       // --- Turn 1: opener from userA (trigger.fire) ---------------------
+      // userA cc's userB, which makes userB a participant that can continue
+      // the thread.
       const mail1 = await fireMailTrigger(env, deploymentMailAddress, {
         messageId: MAIL1_MESSAGE_ID,
         from: MAIL1_FROM,
+        cc: [MAIL2_FROM],
         content: MAIL1_BODY,
         grants: ALL_TOOL_GRANTS,
       });
@@ -263,6 +278,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
       });
+      threadRunId = runId;
 
       const r1Headers = await waitForReplyInReplyTo(
         env,
@@ -271,6 +287,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(r1Headers.get("in-reply-to")).toBe(MAIL1_MESSAGE_ID);
       expect(r1Headers.get("to")).toBe(MAIL1_FROM);
+      // userB is addressed but has not spoken, so R1 does not cc userB.
+      expect(r1Headers.get("cc")).toBeUndefined();
       // R1's own Message-Id anchors mail 2's threading, exactly as a mail
       // client continuing the conversation would set In-Reply-To.
       const r1MessageId = r1Headers.get("message-id");
@@ -294,6 +312,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // --- Turn 2: continuation from userB, dispatched as signal.deliver ---
       // Reference the thread root (m1) and R1 so the connector router treats
       // mail 2 as a continuation of the SAME thread rather than a new one.
+      // userB can continue it because userA addressed userB on mail 1.
       const mail2 = await fireMailTrigger(env, deploymentMailAddress, {
         messageId: MAIL2_MESSAGE_ID,
         from: MAIL2_FROM,
@@ -311,6 +330,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(r2Headers.get("in-reply-to")).toBe(MAIL2_MESSAGE_ID);
       expect(r2Headers.get("to")).toBe(MAIL2_FROM);
+      threadLastMessageId = r2Headers.get("message-id");
       // Connector cc-accumulation: userA, turn 1's participant, is carried
       // forward onto turn 2's reply. This only happens if the SAME connector
       // thread advanced across the two dispatched turns (mail 2 seeded as a
@@ -401,6 +421,65 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ).length;
       expect(repliesThreadedOn(MAIL1_MESSAGE_ID)).toBe(1);
       expect(repliesThreadedOn(MAIL2_MESSAGE_ID)).toBe(1);
+    });
+
+    test("a non-participant that names the thread gets its own reply and leaves the thread unchanged", async () => {
+      const runId = threadRunId;
+      const r2MessageId = threadLastMessageId;
+      if (runId === undefined || r2MessageId === undefined) {
+        throw new Error("the two-turn thread test did not run first");
+      }
+      const deploymentMailAddress = deriveRunAddress({
+        runId: DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+
+      // --- Turn 3: userC names the thread, but nobody addressed userC -----
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: MAIL3_MESSAGE_ID,
+        from: MAIL3_FROM,
+        content: MAIL3_BODY,
+        inReplyTo: r2MessageId,
+        references: [MAIL1_MESSAGE_ID, r2MessageId],
+        grants: ALL_TOOL_GRANTS,
+      });
+
+      // The reply goes to userC alone, under userC's mail.
+      const r3Headers = await waitForReplyInReplyTo(
+        env,
+        deploymentMailAddress,
+        MAIL3_MESSAGE_ID,
+      );
+      expect(r3Headers.get("to")).toBe(MAIL3_FROM);
+      expect(r3Headers.get("cc")).toBeUndefined();
+
+      await waitFor(
+        async () =>
+          inputRearmCount(
+            await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId),
+          ) >= 3,
+        { diagnostics: env.sidecarDiagnostics },
+      );
+
+      // --- Turn 4: userA answers R2, the thread's last message ------------
+      // The passthrough did not advance the thread, so R2 is still its last
+      // message, and userC is not on the reply.
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: MAIL4_MESSAGE_ID,
+        from: MAIL1_FROM,
+        content: MAIL4_BODY,
+        inReplyTo: r2MessageId,
+        references: [MAIL1_MESSAGE_ID, r2MessageId],
+        grants: ALL_TOOL_GRANTS,
+      });
+
+      const r4Headers = await waitForReplyInReplyTo(
+        env,
+        deploymentMailAddress,
+        MAIL4_MESSAGE_ID,
+      );
+      expect(r4Headers.get("to")).toBe(MAIL1_FROM);
+      expect(r4Headers.get("cc")).toBe(MAIL2_FROM);
     });
   },
 );

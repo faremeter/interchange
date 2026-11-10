@@ -213,6 +213,11 @@ export interface DurableConversationStoreOpts {
   /** The step whose state this store holds. */
   stepId: string;
   lifetime: DurableConversationLifetime;
+  /**
+   * The deployment mailbox address the step's agent receives mail at. The
+   * connector router keeps it out of the thread's addressed recipients.
+   */
+  mailboxAddress: string;
 }
 
 /**
@@ -322,6 +327,7 @@ export async function createDurableConversationStore(
   // mirror still commits every boundary. Both triggers persist state, so a
   // dropped change-driven mirror is recoverable at the next boundary.
   const connectorRouter = createConnectorRouter({
+    ownAddress: opts.mailboxAddress,
     onStateChanged: () => {
       void mirrorToSubstrate().catch((cause) => {
         logger.error`connector-state-change conversation mirror failed for ${opts.stepId}: ${cause instanceof Error ? cause.message : String(cause)}`;
@@ -727,8 +733,8 @@ export async function createDurableConversationStore(
   }
 
   // Classify an inbound message, treating a `route()` throw as passthrough.
-  // The router throws when `message.headers.from` is not a parseable bare
-  // addr-spec; per the router contract that is a passthrough (deliver the
+  // The router throws when the speaker (the authenticated sender, else
+  // `message.headers.from`) is not a parseable bare addr-spec; per the router contract that is a passthrough (deliver the
   // message to the agent -- the caller's send is separate -- but do not
   // advance the thread), not a programmer error, so it must not fail the
   // seed. A synthesized passthrough decision names no sender, so its commit
@@ -841,6 +847,8 @@ export interface DurableConversationRegistryOpts {
   principal: Principal;
   /** Commit signer for the per-agent local isogit stores. */
   signer: (payload: string) => Promise<string>;
+  /** The deployment mailbox address each store's agent receives mail at. */
+  mailboxAddress: string;
 }
 
 /**
@@ -890,6 +898,7 @@ export function createDurableConversationRegistry(
         runId: opts.runId,
         stepId,
         lifetime: { kind: "deployment" },
+        mailboxAddress: opts.mailboxAddress,
       });
       // Restore the prior conversation BEFORE the store is observable (and
       // before the warm agent's reactor `load()` reads it). On a genuine

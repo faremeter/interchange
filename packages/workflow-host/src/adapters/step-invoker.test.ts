@@ -5,6 +5,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { ApprovalDecision } from "@intx/types";
+import { isMail } from "@intx/types/runtime";
 import {
   defineAgent,
   type Agent,
@@ -1726,7 +1727,9 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
   function wire(script: ScriptedTurn[]) {
     const warmCache = createWarmAgentCache();
     const scripted = buildScriptedAgent(script);
-    const router = createConnectorRouter();
+    const router = createConnectorRouter({
+      ownAddress: "run@deployment.example.com",
+    });
     const sent: OutboundMessage[] = [];
     const sentChanged = createChangeNotifier();
     const invoker = createWorkflowStepInvoker({
@@ -1901,6 +1904,7 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
       substrate,
       principal,
       signer: (payload) => Promise.resolve(`sig:${String(payload.length)}`),
+      mailboxAddress: "run@deployment.example.com",
     });
     const sent: OutboundMessage[] = [];
     const hooks = createWarmConnectorHooks(registry, async (message) => {
@@ -2561,6 +2565,62 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     expect(new TextDecoder().decode(msg.attachments?.[0]?.data)).toBe(
       "PNGDATA",
     );
+  });
+
+  test("carries the Mail's authenticated sender and Cc onto the InboundMessage", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+    const base = mail([
+      { contentType: "text/plain", ref: "mail-part:///r/m/0-text", text: "hi" },
+    ]);
+    const input: Mail = {
+      ...base,
+      headers: { ...base.headers, cc: ['"Bob" <Bob@Example.com>'] },
+      authenticatedSender: "verified@example.com",
+    };
+    expect(isMail(input)).toBe(true);
+
+    await invoker(buildRequest({ input }));
+
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    expect(msg.authenticatedSender).toBe("verified@example.com");
+    expect(msg.headers.from).toBe("sender@example.com");
+    expect(msg.headers.cc).toEqual(["bob@example.com"]);
+  });
+
+  test("a Mail with no authenticated sender projects none", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+
+    await invoker(
+      buildRequest({
+        input: mail([
+          {
+            contentType: "text/plain",
+            ref: "mail-part:///r/m/0-text",
+            text: "hi",
+          },
+        ]),
+      }),
+    );
+
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    expect("authenticatedSender" in msg).toBe(false);
+    expect(msg.headers.cc).toBeUndefined();
   });
 
   test("preserves the Mail's threading headers on the InboundMessage", async () => {

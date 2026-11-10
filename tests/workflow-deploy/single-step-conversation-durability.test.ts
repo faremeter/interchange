@@ -522,6 +522,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         substrate,
         principal,
         signer: conversationSigner,
+        mailboxAddress: "agent@example.com",
       });
 
       const { agentFactory, builds } = buildStorageAwareSpyAgentFactory();

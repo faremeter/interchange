@@ -3759,7 +3759,17 @@ export function createWorkflowSupervisor(
         claimCheckIdentity(envelope),
         decoded,
       );
-      return { ok: true, mail };
+      // A legacy envelope carries no authenticated sender, so its mail
+      // carries none either.
+      return {
+        ok: true,
+        mail: {
+          ...mail,
+          ...(envelope.authenticatedSender !== undefined
+            ? { authenticatedSender: envelope.authenticatedSender }
+            : {}),
+        },
+      };
     } catch (cause) {
       if (cause instanceof InvalidMailError) {
         return {

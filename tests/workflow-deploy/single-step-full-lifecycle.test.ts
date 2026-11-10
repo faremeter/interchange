@@ -422,6 +422,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         substrate: respawnSubstrate,
         principal: respawnPrincipal,
         signer: respawnSigner,
+        mailboxAddress: "agent@example.com",
       });
 
       // The first acquire builds the store and restores its prior

@@ -9,6 +9,26 @@
 // nothing for a later message to continue, so the next arrival opens a
 // fresh thread and the accumulated list starts over.
 //
+// The speaker of a message is its reply address: the authenticated sender
+// when the message carries one, else the addr-spec of its `From`. The
+// authenticated sender is the address the hub verified the message under,
+// a run address or the address of the principal that sent it, and the hub
+// routes mail to either. The `From` is the sender's own claim. It is the
+// speaker only for mail with no authenticated sender: mail that
+// `createHarness` receives, and mail recorded before the hub stamped one.
+//
+// `In-Reply-To` and `References` are the sender's own claims too, so a
+// message that names the thread continues it only when its speaker is a
+// participant: a speaker on the thread (`replyTo` or `cc`), or a recipient
+// that a participant addressed on the thread (`addressed`). Mail from any
+// other speaker that names the thread is passthrough. An addressed
+// recipient is not on outbound mail until it speaks on the thread.
+//
+// Addresses compare case-insensitively: both sides of a comparison are
+// lowercased whole, so state restored with any spelling still matches.
+// The router does not rewrite restored values. An address it reads from a
+// message comes through `extractAddrSpec`, which lowercases it.
+//
 // Two-phase decision: route() is pure and returns a discriminated kind
 // plus an opaque carrier of the next state; commit() advances router
 // state from that carrier. Separating the decision from the mutation
@@ -57,6 +77,12 @@ export class NoActiveConnectorThreadError extends Error {
 
 export type ConnectorRouterOptions = {
   /**
+   * The address the agent receives mail at. The router keeps it out of
+   * `addressed`, so mail to the agent does not make the agent a
+   * participant of its own thread.
+   */
+  ownAddress: string;
+  /**
    * Called synchronously after the router's internal state mutates and the
    * new state is committed to internal storage. Fires only when the new
    * state differs from the prior state — restore() into the same state,
@@ -81,12 +107,15 @@ export interface ConnectorRouter {
    * does not mutate router state. The returned decision must be passed to
    * `commit()` to take effect.
    *
-   * Returns `passthrough` when `message.headers.from` is absent: the
-   * message names nobody to reply to.
+   * Returns `passthrough` when the message names no speaker, that is, it
+   * carries neither `authenticatedSender` nor `headers.from`: the message
+   * names nobody to reply to. Returns `passthrough` when the message names
+   * the active anchored thread but its speaker is not a participant.
    *
-   * Throws when it is present but is not a parseable bare addr-spec.
-   * Callers should treat the throw as passthrough — deliver the message
-   * but do not advance router state or consume it from the INBOX.
+   * Throws when the speaker's address is present but is not a parseable
+   * addr-spec. Callers should treat the throw as passthrough — deliver
+   * the message but do not advance router state or consume it from the
+   * INBOX.
    *
    * Does not read `Interchange-Type`. A structured payload that names a
    * `From` starts or continues the thread exactly as a conversation
@@ -187,16 +216,48 @@ function statesEqual(
     a.lastMessageId === b.lastMessageId &&
     a.replyTo === b.replyTo &&
     a.subject === b.subject &&
-    a.cc.length === b.cc.length &&
-    a.cc.every((v, i) => v === b.cc[i])
+    listsEqual(a.cc, b.cc) &&
+    listsEqual(a.addressed ?? [], b.addressed ?? [])
   );
 }
 
+function listsEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+function sameAddress(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function includesAddress(list: readonly string[], address: string): boolean {
+  return list.some((entry) => sameAddress(entry, address));
+}
+
+// Append each of `values` to `existing` when it is not already present.
+// The thread's address lists are small enough that linear-scan dedup is
+// the right cost.
+function appendUnique(
+  existing: readonly string[],
+  values: readonly string[],
+): string[] {
+  const result = [...existing];
+  for (const value of values) {
+    if (!includesAddress(result, value)) result.push(value);
+  }
+  return result;
+}
+
+function addressedField(addressed: readonly string[]): {
+  addressed?: string[];
+} {
+  return addressed.length > 0 ? { addressed: [...addressed] } : {};
+}
+
 export function createConnectorRouter(
-  options?: ConnectorRouterOptions,
+  options: ConnectorRouterOptions,
 ): ConnectorRouter {
   let state: ConnectorThreadState | null = null;
-  const onStateChanged = options?.onStateChanged;
+  const { ownAddress, onStateChanged } = options;
 
   // Pending state per decision is held off the decision object via a
   // WeakMap so callers see only `{ kind }` — no path to inspect or
@@ -232,44 +293,56 @@ export function createConnectorRouter(
     }
   }
 
-  function isContinuation(message: InboundMessage): boolean {
-    if (state === null) return false;
-
+  function isContinuation(
+    s: ConnectorThreadState,
+    message: InboundMessage,
+    speaker: string,
+  ): boolean {
     const { inReplyTo, references } = message.headers;
+    const namesThread =
+      (s.threadRoot !== undefined &&
+        references !== undefined &&
+        references.includes(s.threadRoot)) ||
+      (inReplyTo !== undefined && inReplyTo === s.lastMessageId);
+    if (!namesThread) return false;
 
-    if (
-      state.threadRoot !== undefined &&
-      references !== undefined &&
-      references.includes(state.threadRoot)
-    ) {
-      return true;
-    }
-
-    if (inReplyTo !== undefined && inReplyTo === state.lastMessageId) {
-      return true;
-    }
-
-    return false;
-  }
-
-  // Append `value` to `existing` only when it is not already present.
-  // The thread's participant list is small enough that linear-scan dedup
-  // is the right cost.
-  function appendUnique(existing: readonly string[], value: string): string[] {
-    if (existing.includes(value)) return [...existing];
-    return [...existing, value];
+    return (
+      sameAddress(s.replyTo, speaker) ||
+      includesAddress(s.cc, speaker) ||
+      includesAddress(s.addressed ?? [], speaker)
+    );
   }
 
   function speakerOf(message: InboundMessage): string | null {
+    if (message.authenticatedSender !== undefined) {
+      return extractAddrSpec(message.authenticatedSender);
+    }
     const { from } = message.headers;
     if (from === undefined) return null;
     return extractAddrSpec(from);
   }
 
+  // A recipient entry that does not parse names nobody the thread could
+  // admit, so the router leaves it out rather than fail the route.
+  function recipientsOf(message: InboundMessage): string[] {
+    const { to, cc } = message.headers;
+    const recipients: string[] = [];
+    for (const entry of [...to, ...(cc ?? [])]) {
+      let address: string;
+      try {
+        address = extractAddrSpec(entry);
+      } catch {
+        continue;
+      }
+      if (!sameAddress(address, ownAddress)) recipients.push(address);
+    }
+    return recipients;
+  }
+
   function passthroughWithNoReplyAddress(
     message: InboundMessage,
   ): RouteDecision {
-    logger.debug`Message ${message.headers.messageId} carries no From header, so it has no reply address; routing it as passthrough and leaving the connector thread unadvanced`;
+    logger.debug`Message ${message.headers.messageId} names no sender, so it has no reply address; routing it as passthrough and leaving the connector thread unadvanced`;
     return { kind: "passthrough" };
   }
 
@@ -281,10 +354,10 @@ export function createConnectorRouter(
   }
 
   function route(message: InboundMessage): RouteDecision {
-    if (state === null || !isAnchored(state)) {
-      const replyTo = speakerOf(message);
-      if (replyTo === null) return passthroughWithNoReplyAddress(message);
+    const speaker = speakerOf(message);
+    if (speaker === null) return passthroughWithNoReplyAddress(message);
 
+    if (state === null || !isAnchored(state)) {
       const nextState: ConnectorThreadState = {
         ...(message.headers.messageId !== undefined
           ? {
@@ -292,8 +365,9 @@ export function createConnectorRouter(
               lastMessageId: message.headers.messageId,
             }
           : {}),
-        replyTo,
+        replyTo: speaker,
         cc: [],
+        ...addressedField(appendUnique([], recipientsOf(message))),
         ...(message.headers.subject !== undefined
           ? { subject: message.headers.subject }
           : {}),
@@ -303,15 +377,12 @@ export function createConnectorRouter(
       return decision;
     }
 
-    if (isContinuation(message)) {
-      const nextSpeaker = speakerOf(message);
-      if (nextSpeaker === null) return passthroughWithNoReplyAddress(message);
-
+    if (isContinuation(state, message, speaker)) {
       // The previous most-recent speaker moves into the cc list; the
       // new speaker becomes replyTo. Dedup so a sender returning after
       // others have spoken doesn't appear twice.
-      const carriedCc = appendUnique(state.cc, state.replyTo).filter(
-        (addr) => addr !== nextSpeaker,
+      const carriedCc = appendUnique(state.cc, [state.replyTo]).filter(
+        (addr) => !sameAddress(addr, speaker),
       );
       const nextState: ConnectorThreadState = {
         ...(state.threadRoot !== undefined
@@ -320,8 +391,11 @@ export function createConnectorRouter(
         ...(message.headers.messageId !== undefined
           ? { lastMessageId: message.headers.messageId }
           : {}),
-        replyTo: nextSpeaker,
+        replyTo: speaker,
         cc: carriedCc,
+        ...addressedField(
+          appendUnique(state.addressed ?? [], recipientsOf(message)),
+        ),
         ...(state.subject !== undefined ? { subject: state.subject } : {}),
       };
       const decision: RouteDecision = { kind: "continue" };
@@ -329,10 +403,8 @@ export function createConnectorRouter(
       return decision;
     }
 
-    const sender = speakerOf(message);
-    if (sender === null) return passthroughWithNoReplyAddress(message);
     const decision: RouteDecision = { kind: "passthrough" };
-    pendingReplyTargets.set(decision, passthroughReplyParts(message, sender));
+    pendingReplyTargets.set(decision, passthroughReplyParts(message, speaker));
     return decision;
   }
 
@@ -460,6 +532,7 @@ export function createConnectorRouter(
       lastMessageId: receipt.messageId,
       replyTo: state.replyTo,
       cc: [...state.cc],
+      ...addressedField(state.addressed ?? []),
       ...(state.subject !== undefined ? { subject: state.subject } : {}),
     });
   }
@@ -475,6 +548,7 @@ export function createConnectorRouter(
         : {}),
       replyTo: state.replyTo,
       cc: [...state.cc],
+      ...addressedField(state.addressed ?? []),
       ...(state.subject !== undefined ? { subject: state.subject } : {}),
     };
   }
@@ -492,6 +566,7 @@ export function createConnectorRouter(
               : {}),
             replyTo: next.replyTo,
             cc: [...next.cc],
+            ...addressedField(next.addressed ?? []),
             ...(next.subject !== undefined ? { subject: next.subject } : {}),
           },
     );
