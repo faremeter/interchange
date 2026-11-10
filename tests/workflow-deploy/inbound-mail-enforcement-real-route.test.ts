@@ -54,6 +54,7 @@ import {
   type RepoId,
 } from "@intx/hub-sessions";
 import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { generateKeyPair } from "@intx/crypto";
 import {
@@ -113,6 +114,10 @@ const d2MailAddress = deriveRunAddress({
 // a key for it and the unsigned message verifies `missing`, not the cache-miss
 // `unknown`.
 const EXTERNAL_SENDER = "external@integration.interchange";
+
+// The address the `/mail` route stamps as the authenticated sender of the
+// caller's trigger: the caller's principal ref at the tenant domain.
+const CALLER_SENDER = `${CALLER_USER_ID}@${DEPLOYMENT_DOMAIN}`;
 
 // The trigger route's 202 body shape. Validated rather than cast so a route
 // response drift surfaces at the boundary.
@@ -378,14 +383,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `expected RunCompleted for the valid D1 run, got ${validTerminal.type}: ${JSON.stringify(validTerminal.body)}\n${env.sidecarDiagnostics()}`,
         );
       }
+      const validKey = await deriveDeliveryKey(
+        CALLER_SENDER,
+        trigger.messageId,
+      );
       const validConsumed = await waitForConsumedFilename(
         env,
         d1.workflowRunRepoId,
         d1MailAddress,
-        `${trigger.messageId}.json`,
+        `${validKey}.json`,
       );
       expect(validConsumed.map((e) => e.filename)).toContain(
-        `${trigger.messageId}.json`,
+        `${validKey}.json`,
       );
 
       // ----- (b) UNSIGNED -> DROPPED on D1 (default policy) -----
@@ -437,11 +446,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // ABSENCE signal: a dropped message is never dispatched, so no
       // `RunStarted` carries it and it is never consumed. Bound the settle so a
       // late materialization would still be caught.
+      const droppedKey = await deriveDeliveryKey(
+        EXTERNAL_SENDER,
+        droppedMessageId,
+      );
       await assertConsumedFilenameAbsent(
         env,
         d1.workflowRunRepoId,
         d1MailAddress,
-        `${droppedMessageId}.json`,
+        `${droppedKey}.json`,
         { windowMs: 2_000, diagnostics: env.sidecarDiagnostics },
       );
       const d1Events = await readWorkflowRunEvents(
@@ -449,10 +462,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         D1_DEPLOYMENT_ID,
         d1RunId,
       );
-      const d1ConsumedMessageIds = d1Events
+      const d1ConsumedKeys = d1Events
         .filter((e) => e.type === "RunStarted")
-        .map((e) => e.body["consumedMessageId"]);
-      expect(d1ConsumedMessageIds).not.toContain(droppedMessageId);
+        .map((e) => e.body["consumedDeliveryKey"]);
+      expect(d1ConsumedKeys).not.toContain(droppedKey);
 
       // ----- (c) SAME UNSIGNED shape -> ADMITTED on D2 (admits `missing`) -----
       // Deploy D2 only now, after D1's push-producing scenario (a) has
@@ -516,15 +529,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `admitted D2 run ${d2RunId} has no RunStarted\n${env.sidecarDiagnostics()}`,
         );
       }
-      expect(admittedStarted.body["consumedMessageId"]).toBe(admittedMessageId);
+      const admittedKey = await deriveDeliveryKey(
+        EXTERNAL_SENDER,
+        admittedMessageId,
+      );
+      expect(admittedStarted.body["consumedDeliveryKey"]).toBe(admittedKey);
       const admittedConsumed = await waitForConsumedFilename(
         env,
         d2.workflowRunRepoId,
         d2MailAddress,
-        `${admittedMessageId}.json`,
+        `${admittedKey}.json`,
       );
       expect(admittedConsumed.map((e) => e.filename)).toContain(
-        `${admittedMessageId}.json`,
+        `${admittedKey}.json`,
       );
     }, 120_000);
   },

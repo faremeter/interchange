@@ -468,8 +468,9 @@ export type SignalCorrelationRegisterAckFrame =
  * can acknowledge durable receipt (`mail.inbound.ack`) keyed on the SAME id
  * the hub tracks -- no per-side re-derivation. It is the id the hub minted at
  * ingress (also the message's `Message-ID` header), so a redelivery replays
- * identical bytes and the downstream `RunStarted` dedup (consumedMessageIds)
- * makes at-least-once effectively-once. Present only on hub-originated mail
+ * identical bytes and the downstream `RunStarted` dedup (consumedIdentities,
+ * keyed by the delivery key of this sender and id) makes at-least-once
+ * effectively-once. Present only on hub-originated mail
  * that participates in the ack/retry handshake (workflow trigger mail, session
  * conversation mail); agent-to-agent relayed mail omits it.
  *

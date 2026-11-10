@@ -18,6 +18,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { generateKeyPair } from "@intx/crypto";
 import { configureSync, getConfig } from "@intx/log";
 import { signalName } from "@intx/types";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 import type { KeyPair } from "@intx/types/runtime";
 import type { DB } from "@intx/db";
 import {
@@ -259,15 +260,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const repoId = { kind: "workflow-run", id: DEPLOYMENT_REPO_ID } as const;
       const writer = { kind: "supervisor", anchorRunId: DEPLOYMENT_REPO_ID };
       const now = Date.now();
+      // The sender of every dispatch row these tests reject.
+      const authenticatedSender = "sender@example.test";
       await enqueueInbox(store, writer, repoId, {
         address: DEPLOYMENT_ADDRESS,
         messageId,
+        authenticatedSender,
         receivedAt: now,
       });
       await dequeueToProcessing(store, writer, repoId, DEPLOYMENT_ADDRESS);
       await markConsumed(store, writer, repoId, {
         address: DEPLOYMENT_ADDRESS,
-        identity: messageId,
+        identity: await deriveDeliveryKey(authenticatedSender, messageId),
         runId: DEPLOYMENT,
         consumedAt: now,
         rejection: { code: "malformed_mail", message: "Missing MIME bytes" },

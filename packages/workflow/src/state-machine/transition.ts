@@ -184,24 +184,35 @@ function handleRunStarted(state: RunState, e: RunStarted): RunState {
     throw new TransitionError("phase", `RunStarted in phase ${state.phase}`, e);
   }
   if (
-    e.consumedMessageId !== undefined &&
-    state.consumedMessageIds.has(e.consumedMessageId)
+    e.consumedDeliveryKey !== undefined &&
+    e.consumedMessageId !== undefined
   ) {
     throw new TransitionError(
       "consumed-message",
-      `RunStarted re-issued for consumed message-id ${e.consumedMessageId}`,
+      `RunStarted carries both consumedDeliveryKey ${e.consumedDeliveryKey} and consumedMessageId ${e.consumedMessageId}`,
       e,
     );
   }
-  const consumedMessageIds = new Set(state.consumedMessageIds);
-  if (e.consumedMessageId !== undefined) {
-    consumedMessageIds.add(e.consumedMessageId);
+  const consumedIdentity = e.consumedDeliveryKey ?? e.consumedMessageId;
+  if (
+    consumedIdentity !== undefined &&
+    state.consumedIdentities.has(consumedIdentity)
+  ) {
+    throw new TransitionError(
+      "consumed-message",
+      `RunStarted re-issued for consumed identity ${consumedIdentity}`,
+      e,
+    );
+  }
+  const consumedIdentities = new Set(state.consumedIdentities);
+  if (consumedIdentity !== undefined) {
+    consumedIdentities.add(consumedIdentity);
   }
   return {
     ...state,
     phase: "running",
     definitionHash: e.definitionHash,
-    consumedMessageIds,
+    consumedIdentities,
     lastSeq: e.seq,
   };
 }
@@ -553,7 +564,7 @@ function consumeAwaiter(
  * or input park, a name mismatch, or a correlation-id mismatch is a producer
  * bug or a mis-target and is rejected, never silently cleared. It never
  * touches either unconsumed queue, `observedSignalIds`, or
- * `consumedMessageIds`. A torn-down await does not consume or dedup a signal.
+ * `consumedIdentities`. A torn-down await does not consume or dedup a signal.
  * A late name-only delivery still queues for the next name await. A late
  * correlated delivery queues under its own id and does not satisfy a
  * different correlation.

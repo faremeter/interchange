@@ -1509,7 +1509,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     // frames; on rejection (transient failure, stale refusal, or a
     // tearing-down phase) no ack is sent, so the hub redelivers. The ack
     // names the incarnation the mail was delivered to, so the Hub credits
-    // it to no other. It also names the frame's sender, so the Hub resolves
+    // it to no other. It also names the frame's sender, because the inbox
+    // keys the mail by that sender and the Message-ID, so the Hub resolves
     // only that sender's mail.
     const ackMessageId = frame.messageId;
     if (ackMessageId !== undefined) {

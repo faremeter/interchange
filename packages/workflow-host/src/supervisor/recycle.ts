@@ -62,7 +62,7 @@
 // `ctx.replayProcessingToInbox()` so any in-flight `processing/`
 // entries that the dying cohort's dispatch loop did not reach
 // `markConsumed` for get moved back to `inbox/` under their original
-// `<receivedAt>-<messageId>` keys. Without this step the dying child
+// `<receivedAt>-<identity>` keys. Without this step the dying child
 // would leave an orphaned processing entry that no live dispatch
 // loop owns.
 //

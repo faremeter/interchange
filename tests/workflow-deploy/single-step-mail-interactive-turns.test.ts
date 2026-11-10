@@ -39,7 +39,7 @@
 //       References plus mail 2's Message-Id), not a truncated [m2]; R1's is the
 //       single-element [m1] the opener seeds.
 //   (c) mail 2 was consumed as turn 2 on the same run: a `SignalReceived` whose
-//       signalId is mail 2's Message-Id, plus two input re-arms serviced.
+//       signalId is mail 2's delivery key, plus two input re-arms serviced.
 //   (d) connector cc-accumulation: R2 cc-includes userA, the prior turn's
 //       participant carried forward -- the connector thread continued across the
 //       two dispatched turns rather than restarting on mail 2.
@@ -358,9 +358,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // 2, not dispatched as a fresh run.
       const started = events.filter((e) => e.type === "RunStarted");
       expect(started).toHaveLength(1);
-      expect(started[0]?.body["consumedMessageId"]).toBe(MAIL1_MESSAGE_ID);
-      const consumed = started.map((e) => e.body["consumedMessageId"]);
-      expect(consumed).not.toContain(MAIL2_MESSAGE_ID);
+      expect(started[0]?.body["consumedDeliveryKey"]).toBe(mail1.deliveryKey);
+      const consumed = started.map((e) => e.body["consumedDeliveryKey"]);
+      expect(consumed).not.toContain(mail2.deliveryKey);
 
       // The run reached no terminal event between the turns: the unbounded
       // re-arm kept it live, so mail 2 was serviced rather than refused as
@@ -375,14 +375,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Mail 2 was consumed as turn 2's input: the supervisor delivered it on
       // the input channel as a `signal.deliver` whose signalId is mail 2's
-      // Message-Id, and the child committed a SignalReceived carrying it. An
+      // delivery key, and the child committed a SignalReceived carrying it. An
       // at-least-once redelivery can record it more than once on the same input
       // correlation; the state machine dedups by signalId, so those extra
       // commits service no extra turn -- hence "at least one", not "exactly one".
       const signalReceived = events.filter(
         (e) =>
           e.type === "SignalReceived" &&
-          e.body["signalId"] === MAIL2_MESSAGE_ID,
+          e.body["signalId"] === mail2.deliveryKey,
       );
       expect(signalReceived.length).toBeGreaterThanOrEqual(1);
 

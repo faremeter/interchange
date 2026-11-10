@@ -71,7 +71,7 @@ describe("workflow-run validatePush: deletion-bypass surface", () => {
     expect(r.reason).toMatch(/immutable|prior tree/i);
   });
 
-  test("rejects a prospective tree that DROPS a consumed/<msg>.json dedup entry", async () => {
+  test("rejects a prospective tree that DROPS a consumed/<identity>.json dedup entry", async () => {
     const ADDR = "address-a";
     const ADDR_SEG = encodeURIComponent(ADDR);
     const consumedBody = JSON.stringify({

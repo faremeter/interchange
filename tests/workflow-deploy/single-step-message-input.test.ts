@@ -230,7 +230,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         (e) => e.type === "RunStarted",
       )?.body;
       if (firstStartedBody === undefined) throw new Error("missing RunStarted");
-      expect(firstStartedBody["consumedMessageId"]).toBe(first.messageId);
+      expect(firstStartedBody["consumedDeliveryKey"]).toBe(first.deliveryKey);
 
       // The mail decoded end to end: the trigger payload is a `Mail` whose
       // parts include the text body AND the attachment, the supervisor having
@@ -353,7 +353,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (startedBody === undefined) {
         throw new Error("missing RunStarted for the non-text message");
       }
-      expect(startedBody["consumedMessageId"]).toBe(fired.messageId);
+      expect(startedBody["consumedDeliveryKey"]).toBe(fired.deliveryKey);
 
       // The decoded Mail carries the audio attachment as a committed,
       // resolvable part; the run completing proves the child resolved it back

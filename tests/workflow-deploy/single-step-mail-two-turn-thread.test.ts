@@ -362,9 +362,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // mail_wait, the continuation, not dispatched as a second turn.
       const started = events.filter((e) => e.type === "RunStarted");
       expect(started).toHaveLength(1);
-      expect(started[0]?.body["consumedMessageId"]).toBe(MAIL1_MESSAGE_ID);
-      const consumed = started.map((e) => e.body["consumedMessageId"]);
-      expect(consumed).not.toContain(MAIL2_MESSAGE_ID);
+      expect(started[0]?.body["consumedDeliveryKey"]).toBe(mail1.deliveryKey);
+      const consumed = started.map((e) => e.body["consumedDeliveryKey"]);
+      expect(consumed).not.toContain(mail2.deliveryKey);
     });
   },
 );

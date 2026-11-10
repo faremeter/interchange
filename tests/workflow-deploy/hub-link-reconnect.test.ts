@@ -251,7 +251,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           deploymentMailAddress,
           "consumed",
         );
-        return consumed.some((c) => c.filename.includes(secondMessageId));
+        return consumed.some(
+          (c) => c.filename === `${second.deliveryKey}.json`,
+        );
       });
 
       // Mail 2 is rejected, not dispatched. The supervisor derives the

@@ -7,6 +7,7 @@ export {
   type ChildCancelRequested,
   type ChildCompleted,
   type ChildSpawned,
+  type ConsumedMailIdentity,
   type RunCancelled,
   type RunCompleted,
   type RunFailed,

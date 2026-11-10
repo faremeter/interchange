@@ -191,9 +191,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       // ---- fire the trigger and drive to the mid-run signal pause ----
-      const { messageId } = await fireMailTrigger(env, deploymentMailAddress, {
-        messageId: "<midrun-signal-reconnect-1@integration.interchange>",
-      });
+      const { deliveryKey } = await fireMailTrigger(
+        env,
+        deploymentMailAddress,
+        {
+          messageId: "<midrun-signal-reconnect-1@integration.interchange>",
+        },
+      );
 
       // First-half event chain: RunStarted -> StepStarted{step1} ->
       // StepCompleted{step1} -> SignalAwaited{name:"go"}.
@@ -238,7 +242,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runStartedBody = eventsBeforeDrop[runStartedIdx]?.body;
       if (runStartedBody === undefined) throw new Error("unreachable");
-      expect(runStartedBody["consumedMessageId"]).toBe(messageId);
+      expect(runStartedBody["consumedDeliveryKey"]).toBe(deliveryKey);
 
       // The run is parked at the signal gate; step2 has NOT started yet. This
       // is the mid-run state the drop must interrupt without losing.

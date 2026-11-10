@@ -20,7 +20,7 @@ function triggerFireLine(seq: number, runId: string): string {
         type: "trigger.fire",
         data: {
           runId,
-          messageId: `msg-${runId}`,
+          mailIdentity: { messageId: `msg-${runId}` },
           receivedAt: 0,
           payload: null,
         },

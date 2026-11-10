@@ -32,7 +32,10 @@ function expectThrowsAt(events: WorkflowEvent[], match: RegExp): void {
   }
 }
 
-function startRun(opts?: { consumedMessageId?: string }): WorkflowEvent {
+function startRun(opts?: {
+  consumedDeliveryKey?: string;
+  consumedMessageId?: string;
+}): WorkflowEvent {
   const event: WorkflowEvent = {
     kind: "RunStarted",
     seq: 1,
@@ -40,6 +43,9 @@ function startRun(opts?: { consumedMessageId?: string }): WorkflowEvent {
     runId: RUN,
     definitionHash: "h",
     trigger: { type: "manual", payload: null },
+    ...(opts?.consumedDeliveryKey !== undefined
+      ? { consumedDeliveryKey: opts.consumedDeliveryKey }
+      : {}),
     ...(opts?.consumedMessageId !== undefined
       ? { consumedMessageId: opts.consumedMessageId }
       : {}),
@@ -103,24 +109,60 @@ describe("applyEvent: RunStarted", () => {
     expect(state.definitionHash).toBe("h");
   });
 
-  test("rejects re-issue with previously consumed message-id", () => {
+  test("rejects re-issue with a previously consumed legacy message-id", () => {
     let state = fresh();
     state = applyEvent(state, startRun({ consumedMessageId: "msg-1" }));
-    expect(state.consumedMessageIds.has("msg-1")).toBe(true);
+    expect(state.consumedIdentities.has("msg-1")).toBe(true);
     // Drive run to completion so we can verify the dedup invariant against a
     // hypothetical re-issue against a fresh state with the consumed id preloaded.
     const preloaded: RunState = {
       ...emptyState(RUN),
-      consumedMessageIds: new Set(["msg-1"]),
+      consumedIdentities: new Set(["msg-1"]),
     };
     expect(() =>
       applyEvent(preloaded, startRun({ consumedMessageId: "msg-1" })),
-    ).toThrow(/consumed message-id msg-1/);
+    ).toThrow(/consumed identity msg-1/);
+  });
+
+  test("rejects re-issue with a previously consumed delivery key", () => {
+    const state = applyEvent(
+      fresh(),
+      startRun({ consumedDeliveryKey: "mail-k1" }),
+    );
+    expect(state.consumedIdentities.has("mail-k1")).toBe(true);
+    const preloaded: RunState = {
+      ...emptyState(RUN),
+      consumedIdentities: new Set(["mail-k1"]),
+    };
+    expect(() =>
+      applyEvent(preloaded, startRun({ consumedDeliveryKey: "mail-k1" })),
+    ).toThrow(/consumed identity mail-k1/);
+  });
+
+  test("rejects a RunStarted that carries both a delivery key and a message-id", () => {
+    let thrown: unknown;
+    try {
+      applyEvent(
+        fresh(),
+        startRun({
+          consumedDeliveryKey: "mail-k1",
+          consumedMessageId: "msg-1",
+        }),
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TransitionError);
+    if (!(thrown instanceof TransitionError)) return;
+    expect(thrown.code).toBe("consumed-message");
+    expect(thrown.message).toMatch(
+      /both consumedDeliveryKey mail-k1 and consumedMessageId msg-1/,
+    );
   });
 
   test("consumedMessageId dedup is independent across distinct message-ids", () => {
     // Two distinct message-ids consumed against two separate runs are
-    // both retained on each run's consumedMessageIds set. The invariant
+    // both retained on each run's consumedIdentities set. The invariant
     // covers the per-run scope; the per-address FIFO serialization
     // invariant is enforced by the queue substrate, not the state
     // machine (see events.ts on RunStarted.consumedMessageId).
@@ -142,10 +184,10 @@ describe("applyEvent: RunStarted", () => {
       trigger: { type: "mail", payload: null },
       consumedMessageId: "msg-B",
     });
-    expect(runA.consumedMessageIds.has("msg-A")).toBe(true);
-    expect(runA.consumedMessageIds.has("msg-B")).toBe(false);
-    expect(runB.consumedMessageIds.has("msg-B")).toBe(true);
-    expect(runB.consumedMessageIds.has("msg-A")).toBe(false);
+    expect(runA.consumedIdentities.has("msg-A")).toBe(true);
+    expect(runA.consumedIdentities.has("msg-B")).toBe(false);
+    expect(runB.consumedIdentities.has("msg-B")).toBe(true);
+    expect(runB.consumedIdentities.has("msg-A")).toBe(false);
   });
 
   test("rejects RunStarted in non-pending phase", () => {

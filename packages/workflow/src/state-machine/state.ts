@@ -123,13 +123,14 @@ export interface RunState {
    */
   unconsumedByCorrelation: Map<string, CorrelatedQueuedSignal[]>;
   /**
-   * Message-ids consumed by this run's `RunStarted` events. The kind
-   * handler rejects a re-issued `RunStarted` whose message-id appears
-   * here. v1 only ever issues `RunStarted` once per run, so the set has
-   * at most one entry, but the invariant is enforced regardless so
-   * resume-after-crash with partial commits stays well-defined.
+   * Claim-check identities consumed by this run's `RunStarted` events: a
+   * `consumedDeliveryKey` or a `consumedMessageId`. The kind handler
+   * rejects a re-issued `RunStarted` whose identity appears here. v1 only
+   * ever issues `RunStarted` once per run, so the set has at most one
+   * entry, but the invariant is enforced regardless so resume-after-crash
+   * with partial commits stays well-defined.
    */
-  consumedMessageIds: Set<string>;
+  consumedIdentities: Set<string>;
   cancelReason?: string;
 }
 
@@ -144,7 +145,7 @@ export function emptyState(runId: RunId): RunState {
     observedSignalIds: new Set(),
     unconsumedSignals: new Map(),
     unconsumedByCorrelation: new Map(),
-    consumedMessageIds: new Set(),
+    consumedIdentities: new Set(),
   };
 }
 

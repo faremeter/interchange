@@ -193,13 +193,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Fire all three mails. Mail 0 fires the stable run; mails 1 and 2
       // queue behind it in the inbox FIFO.
       const firedMessageIds: string[] = [];
+      const firedDeliveryKeys: string[] = [];
       for (const messageId of MESSAGE_IDS) {
-        const { messageId: routed } = await fireMailTrigger(
-          env,
-          deploymentMailAddress,
-          { messageId },
-        );
-        firedMessageIds.push(routed);
+        const fired = await fireMailTrigger(env, deploymentMailAddress, {
+          messageId,
+        });
+        firedMessageIds.push(fired.messageId);
+        firedDeliveryKeys.push(fired.deliveryKey);
       }
       expect(firedMessageIds).toEqual([...MESSAGE_IDS]);
 
@@ -223,7 +223,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(parkedTypes).not.toContain("RunCompleted");
       const runStartedBody = parked.find((e) => e.type === "RunStarted")?.body;
       if (runStartedBody === undefined) throw new Error("unreachable");
-      expect(runStartedBody["consumedMessageId"]).toBe(MESSAGE_IDS[0]);
+      expect(runStartedBody["consumedDeliveryKey"]).toBe(firedDeliveryKeys[0]);
 
       // Mail 0 is mid-flight in `processing/` (it fired the run and the run
       // has not reached `markConsumed`); its stranded entry is what the

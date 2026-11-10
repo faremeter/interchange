@@ -12,9 +12,12 @@ import {
   type RepoId,
   type WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions/substrate";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 
 import { createWorkflowRunPackClient } from "./workflow-run-pack-client";
 import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
+
+const SENDER = "sender@workflow.test";
 
 function deriveWorkflowRunRepoId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
@@ -59,6 +62,7 @@ test("a first deploy keeps its seeded refs and the next sidecar commit fast-forw
     await enqueueInbox(source.repoStore, hubPrincipal, repoId, {
       address: agentAddress,
       messageId: "message-seeded",
+      authenticatedSender: SENDER,
       receivedAt: 1,
     });
 
@@ -102,7 +106,7 @@ test("a first deploy keeps its seeded refs and the next sidecar commit fast-forw
       "addresses",
       encodeURIComponent(agentAddress),
       "inbox",
-      "1-message-seeded.json",
+      `1-${await deriveDeliveryKey(SENDER, "message-seeded")}.json`,
     );
     expect(JSON.parse(await fs.readFile(restoredInbox, "utf8"))).toMatchObject({
       messageId: "message-seeded",
@@ -135,6 +139,7 @@ test("a first deploy keeps its seeded refs and the next sidecar commit fast-forw
     await enqueueInbox(target.repoStore, supervisorPrincipal, repoId, {
       address: agentAddress,
       messageId: "message-after-deploy",
+      authenticatedSender: SENDER,
       receivedAt: 2,
     });
     await packClient.push({

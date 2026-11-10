@@ -35,6 +35,8 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
+import { deriveDeliveryKey } from "@intx/types/message-id";
+import { claimCheckIdentity } from "@intx/hub-sessions";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
   createMemoryFrameStream,
@@ -92,6 +94,8 @@ function createMemoryInbox(): InboxPrimitives & {
 } {
   type E = {
     messageId: string;
+    authenticatedSender?: string;
+    deliveryKey?: string;
     receivedAt: number;
     rawMessage?: string;
   };
@@ -117,9 +121,15 @@ function createMemoryInbox(): InboxPrimitives & {
   return {
     async enqueueInbox(_s, _p, _r, args) {
       const s = get(args.address);
-      const key = k(args.receivedAt, args.messageId);
+      const deliveryKey = await deriveDeliveryKey(
+        args.authenticatedSender,
+        args.messageId,
+      );
+      const key = k(args.receivedAt, deliveryKey);
       const env: E = {
         messageId: args.messageId,
+        authenticatedSender: args.authenticatedSender,
+        deliveryKey,
         receivedAt: args.receivedAt,
         ...(args.rawMessage !== undefined
           ? { rawMessage: args.rawMessage }
@@ -132,6 +142,8 @@ function createMemoryInbox(): InboxPrimitives & {
         inboxKey: key,
         envelope: {
           messageId: args.messageId,
+          authenticatedSender: args.authenticatedSender,
+          deliveryKey,
           receivedAt: args.receivedAt,
           address: args.address,
         },
@@ -152,6 +164,12 @@ function createMemoryInbox(): InboxPrimitives & {
         key,
         envelope: {
           messageId: env.messageId,
+          ...(env.authenticatedSender !== undefined
+            ? { authenticatedSender: env.authenticatedSender }
+            : {}),
+          ...(env.deliveryKey !== undefined
+            ? { deliveryKey: env.deliveryKey }
+            : {}),
           receivedAt: env.receivedAt,
           address,
           ...(env.rawMessage !== undefined
@@ -163,13 +181,19 @@ function createMemoryInbox(): InboxPrimitives & {
     async markConsumed(_s, _p, _r, args) {
       const s = get(args.address);
       for (const [key, value] of s.processing) {
-        if (value.messageId === args.identity) {
+        if (claimCheckIdentity(value) === args.identity) {
           s.processing.delete(key);
           s.consumed.set(args.identity, value);
           return {
             commitSha: "memory",
             envelope: {
               messageId: value.messageId,
+              ...(value.authenticatedSender !== undefined
+                ? { authenticatedSender: value.authenticatedSender }
+                : {}),
+              ...(value.deliveryKey !== undefined
+                ? { deliveryKey: value.deliveryKey }
+                : {}),
               receivedAt: value.receivedAt,
               address: args.address,
               runId: args.runId,
@@ -372,10 +396,16 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     // for that runId.
     const TEST_MESSAGE =
       "Message-ID: <stale-routing-probe@example.com>\r\n\r\nbody";
-    const TEST_MESSAGE_ID = "<stale-routing-probe@example.com>";
+    const TEST_SENDER = "sender@example.test";
+    // The claim-check identity markConsumed names: the delivery key of the
+    // sender and the Message-ID.
+    const TEST_IDENTITY = await deriveDeliveryKey(
+      TEST_SENDER,
+      "<stale-routing-probe@example.com>",
+    );
     mailBus.deliver(
       "run_deployment-x@example.com",
-      inboundDelivery(new TextEncoder().encode(TEST_MESSAGE)),
+      inboundDelivery(new TextEncoder().encode(TEST_MESSAGE), TEST_SENDER),
     );
 
     // Wait until cohort B has forwarded the trigger.fire (which means
@@ -414,7 +444,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     // time), NOT cohort B's, so it does NOT resolve cohort B's wait.
     // The message therefore stays in processing/ until cohort B sends a
     // real terminal event.
-    expect(consumedRecord).not.toContain(TEST_MESSAGE_ID);
+    expect(consumedRecord).not.toContain(TEST_IDENTITY);
 
     // Settle the run legitimately from cohort B under the stable runId.
     await senderB.send({
@@ -429,8 +459,8 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
 
     // The real terminal event from cohort B resolves
     // waitForRunTerminalOrPark, allowing markConsumed to run.
-    await consumedChanges.until(() => consumedRecord.includes(TEST_MESSAGE_ID));
-    expect(consumedRecord).toContain(TEST_MESSAGE_ID);
+    await consumedChanges.until(() => consumedRecord.includes(TEST_IDENTITY));
+    expect(consumedRecord).toContain(TEST_IDENTITY);
 
     childA.c2s.close();
     await supervisor.shutdown();

@@ -2,11 +2,13 @@
 //
 // The supervisor decodes an inbound MIME message into parts (via `decodeMail`)
 // and commits each part's decoded bytes here as a real file under
-// `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`, returning the
-// JSON-safe `MailPart[]` descriptors that ride in the run's trigger/signal
-// payload. A `MailPartReader` resolves a descriptor's opaque `ref` back to the
-// committed bytes for any consumer -- an agent's content-block projection, a
-// workflow tool, a child run -- through the single, environment-agnostic
+// `runs/<runId>/parts/<urlEncoded(identity)>/<index>-<name>`, where the
+// identity is the message's claim-check identity (its delivery key, or the
+// bare Message-ID of a legacy entry), returning the JSON-safe `MailPart[]`
+// descriptors that ride in the run's trigger/signal payload. A
+// `MailPartReader` resolves a descriptor's opaque `ref` back to the committed
+// bytes for any consumer -- an agent's content-block projection, a workflow
+// tool, a child run -- through the single, environment-agnostic
 // `MailPartReader` interface.
 //
 // Modeled on the sibling `blob-substrate` adapter: same per-run handles, same
@@ -59,9 +61,10 @@ function byteLength(value: string): number {
 
 /**
  * Thrown for a DETERMINISTIC, input-shaped rejection of an inbound mail -- a
- * messageId that cannot form a usable path segment. Distinct from a transient
- * substrate write failure so the caller drops the offending mail (replaying it
- * would fail identically) rather than treating it as a retryable fault.
+ * message identity that cannot form a usable path segment. Distinct from a
+ * transient substrate write failure so the caller drops the offending mail
+ * (replaying it would fail identically) rather than treating it as a
+ * retryable fault.
  */
 export class InvalidMailError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -70,19 +73,19 @@ export class InvalidMailError extends Error {
   }
 }
 
-function encodeMessageSegment(messageId: string): string {
-  const encoded = encodeURIComponent(messageId);
+function encodeMessageSegment(identity: string): string {
+  const encoded = encodeURIComponent(identity);
   if (byteLength(encoded) > MAX_MAIL_PART_PATH_COMPONENT_BYTES) {
     throw new InvalidMailError(
-      `mail part store: messageId ${JSON.stringify(messageId)} url-encodes to ${String(byteLength(encoded))} bytes, over the ${String(MAX_MAIL_PART_PATH_COMPONENT_BYTES)}-byte path-component limit`,
+      `mail part store: identity ${JSON.stringify(identity)} url-encodes to ${String(byteLength(encoded))} bytes, over the ${String(MAX_MAIL_PART_PATH_COMPONENT_BYTES)}-byte path-component limit`,
     );
   }
-  // `encodeURIComponent` leaves `.` unescaped, so a messageId such as ".." or
+  // `encodeURIComponent` leaves `.` unescaped, so an identity such as ".." or
   // ".git" encodes to a segment the substrate refuses. Refusing it here makes
   // that a rejection of this mail rather than a write failure to retry.
   if (!isPlainPathSegment(encoded)) {
     throw new InvalidMailError(
-      `mail part store: messageId ${JSON.stringify(messageId)} url-encodes to ${JSON.stringify(encoded)}, which is not a usable path segment`,
+      `mail part store: identity ${JSON.stringify(identity)} url-encodes to ${JSON.stringify(encoded)}, which is not a usable path segment`,
     );
   }
   return encoded;
@@ -220,21 +223,21 @@ export type MailPartStoreOpts = {
 
 /**
  * Commit a decoded message's parts and assemble the JSON-safe `Mail`. Every
- * part's bytes are written in ONE prefix-preserving commit under the message's
- * directory (write-once, atomic), and each part becomes a `MailPart` descriptor
- * carrying its metadata, an opaque `ref`, and -- for a small UTF-8 text part --
- * its decoded `text` inline.
+ * part's bytes are written in ONE prefix-preserving commit under the directory
+ * named by the message's claim-check `identity` (write-once, atomic), and
+ * each part becomes a `MailPart` descriptor carrying its metadata, an opaque
+ * `ref`, and -- for a small UTF-8 text part -- its decoded `text` inline.
  */
 export async function commitMail(
   opts: MailPartStoreOpts,
-  messageId: string,
+  identity: string,
   decoded: {
     headers: MessageHeaders;
     rawHeaders: Record<string, string[]>;
     parts: MessagePart[];
   },
 ): Promise<Mail> {
-  const messageSegment = encodeMessageSegment(messageId);
+  const messageSegment = encodeMessageSegment(identity);
   const messagePrefix = `${WORKFLOW_RUN_RUNS_PREFIX}/${opts.runId}/${WORKFLOW_RUN_PARTS_DIR}/${messageSegment}/`;
   const fresh: Record<string, Uint8Array> = {};
   const mailParts: MailPart[] = decoded.parts.map((part, index) => {
@@ -272,7 +275,7 @@ export async function commitMail(
             for (const [k, v] of Object.entries(fresh)) files[k] = v;
             return files;
           },
-          message: `commit ${String(decoded.parts.length)} mail part(s) for message ${messageId} of run ${opts.runId}`,
+          message: `commit ${String(decoded.parts.length)} mail part(s) for message ${identity} of run ${opts.runId}`,
         },
       );
     } catch (cause) {

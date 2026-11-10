@@ -24,9 +24,9 @@ import {
 /**
  * Read the `consumed/` dedup index for the deployment's mail
  * address on the workflow-run repo's claim-check ref
- * (`refs/heads/events`). Returns one entry per consumed message in
- * the order the substrate's tree iteration surfaces them (which is
- * filename-sorted by `isomorphic-git`).
+ * (`refs/heads/events`). Returns one entry per consumed message, with the
+ * Message-ID its envelope carries, in the order the substrate's tree
+ * iteration surfaces them (which is filename-sorted by `isomorphic-git`).
  */
 export async function readConsumedEntries(
   env: DeployFlowEnv,
@@ -51,14 +51,20 @@ export async function readConsumedEntries(
     rejection?: { code: string; message: string };
   }[] = [];
   for (const entry of entries) {
-    const m = /^(.+)\.json$/.exec(entry.filename);
-    if (m === null || m[1] === undefined) continue;
-    const messageId = m[1];
+    if (!entry.filename.endsWith(".json")) continue;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow-run kind handler validates the consumed envelope shape at push time; readers downstream of validatePush observe Record<string, unknown>
     const parsed = JSON.parse(new TextDecoder().decode(entry.bytes)) as Record<
       string,
       unknown
     >;
+    // The filename is the entry's claim-check identity (a delivery key for
+    // sender-scoped mail), so the Message-ID comes from the envelope.
+    const messageId = parsed["messageId"];
+    if (typeof messageId !== "string") {
+      throw new Error(
+        `readConsumedEntries: ${entry.filename} envelope is missing a string messageId`,
+      );
+    }
     const receivedAt = parsed["receivedAt"];
     if (typeof receivedAt !== "number") {
       throw new Error(

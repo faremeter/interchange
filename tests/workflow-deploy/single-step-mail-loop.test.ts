@@ -257,7 +257,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (startedBody === undefined) throw new Error("missing RunStarted");
       // Step-input delivery still drives the turn: the run consumed the mail
       // this test fired (AC5).
-      expect(startedBody["consumedMessageId"]).toBe(inbound.messageId);
+      expect(startedBody["consumedDeliveryKey"]).toBe(inbound.deliveryKey);
 
       // AC1 + AC2: the agent's `mail_search` returned the fired inbound within
       // the same turn. The mock replied with the tool_result content behind

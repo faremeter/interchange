@@ -1238,7 +1238,7 @@ async function handleControlPayload(
       });
       const handle = runtimeRun(ctx.definition, env, {
         runId: payload.data.runId,
-        consumedMessageId: payload.data.messageId,
+        consumedMail: payload.data.mailIdentity,
         triggerPayload,
       });
       ctx.runsInFlight.set(payload.data.runId, handle);

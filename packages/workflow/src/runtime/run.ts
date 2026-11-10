@@ -91,13 +91,20 @@ import {
   isTerminalStepPhase,
   resumeFromLog,
   TransitionError,
+  type ConsumedMailIdentity,
+  type RunStarted,
   type RunState,
   type WorkflowEvent,
 } from "../state-machine/index";
 
 export interface RuntimeRunOptions {
   triggerPayload?: unknown;
-  consumedMessageId?: string;
+  /**
+   * Claim-check identity of the mail that fired the run. `RunStarted`
+   * records a delivery key as `consumedDeliveryKey` and a legacy Message-ID
+   * as `consumedMessageId`.
+   */
+  consumedMail?: ConsumedMailIdentity;
   runId?: string;
   /**
    * Pre-existing event log to resume from. The runtime re-applies the
@@ -956,9 +963,7 @@ async function executeRunBody(
       runId,
       definitionHash: bytesToHex(hashDefinition(definition)),
       trigger: triggerSnapshot(definition, options.triggerPayload),
-      ...(options.consumedMessageId !== undefined
-        ? { consumedMessageId: options.consumedMessageId }
-        : {}),
+      ...consumedMailFields(options.consumedMail),
     };
     try {
       state = await commit(env, runId, event);
@@ -1407,6 +1412,21 @@ async function emitChildCancelCascade(
     current = await commit(env, runId, event);
   }
   return current;
+}
+
+/**
+ * The `RunStarted` field that records the consumed mail: exactly one of
+ * `consumedDeliveryKey` and `consumedMessageId`, or neither when no mail
+ * fired the run.
+ */
+function consumedMailFields(
+  consumedMail: ConsumedMailIdentity | undefined,
+): Pick<RunStarted, "consumedDeliveryKey" | "consumedMessageId"> {
+  if (consumedMail === undefined) return {};
+  if (consumedMail.deliveryKey !== undefined) {
+    return { consumedDeliveryKey: consumedMail.deliveryKey };
+  }
+  return { consumedMessageId: consumedMail.messageId };
 }
 
 function triggerSnapshot(

@@ -180,9 +180,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deploymentMailAddress,
       );
 
-      const { messageId } = await fireMailTrigger(env, deploymentMailAddress, {
-        messageId: "<multistep-signal-1@integration.interchange>",
-      });
+      const { deliveryKey } = await fireMailTrigger(
+        env,
+        deploymentMailAddress,
+        {
+          messageId: "<multistep-signal-1@integration.interchange>",
+        },
+      );
 
       // First-half event chain: RunStarted -> StepStarted{step1} ->
       // StepCompleted{step1} -> SignalAwaited{name:"go"}.
@@ -227,7 +231,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runStartedBody = eventsBeforeSignal[runStartedIdx]?.body;
       if (runStartedBody === undefined) throw new Error("unreachable");
-      expect(runStartedBody["consumedMessageId"]).toBe(messageId);
+      expect(runStartedBody["consumedDeliveryKey"]).toBe(deliveryKey);
 
       const signalAwaitedBody = eventsBeforeSignal[signalAwaitedIdx]?.body;
       if (signalAwaitedBody === undefined) throw new Error("unreachable");

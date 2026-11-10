@@ -1731,7 +1731,7 @@ describe("workflowRunKindHandler.validatePush — blobs subtree", () => {
 
 describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
   // The workflow-host ingest commits inbound-mail mail part bytes as real
-  // files under `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`,
+  // files under `runs/<runId>/parts/<urlEncoded(identity)>/<index>-<name>`,
   // one directory per inbound message and one file per mail part. The bytes
   // are opaque and immutable; immutability is enforced by prior-tree git-OID
   // equality (the filename is not content-addressed, so a same-path rewrite
@@ -2689,6 +2689,13 @@ describe("workflowRunAuthorize — unknown principal", () => {
 
 const ADDRESS = "alice@example.com";
 const ADDRESS_SEG = encodeURIComponent(ADDRESS);
+// The authenticated sender of the mail that the claim-check API tests enqueue.
+const SENDER = "bob@example.com";
+
+/** The delivery key that `enqueueInbox` files a mail from `sender` under. */
+function keyOf(messageId: string, sender = SENDER): Promise<string> {
+  return deriveDeliveryKey(sender, messageId);
+}
 
 function inboxPathFor(seg: string, receivedAt: number, messageId: string) {
   return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${seg}/${WORKFLOW_RUN_INBOX_DIR}/${String(receivedAt)}-${messageId}.json`;
@@ -2843,7 +2850,7 @@ describe("workflowRunKindHandler.validatePush — claim-check subtree shape", ()
     expect(r.reason).toMatch(/body\.address .* does not match decoded address/);
   });
 
-  test("rejects a consumed filename that is not <messageId>.json shape", async () => {
+  test("rejects a consumed filename that is not <identity>.json shape", async () => {
     // Lay out a valid processing entry in the prior tree so we can
     // exercise the consumed-only filename check rather than the
     // transition check.
@@ -3054,36 +3061,36 @@ async function makeClaimCheckStore(prefix: string): Promise<{
 }
 
 describe("claim-check API — enqueueInbox", () => {
-  test("writes a single inbox entry with the expected filename and envelope", async () => {
+  test("writes a sender-scoped inbox entry under the delivery key", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore("cc-enq-");
     const result = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 100,
+      rawMessage: "cmF3",
     });
     expect(result.outcome).toBe("enqueued");
     if (result.outcome !== "enqueued") throw new Error("expected enqueued");
-    expect(result.inboxKey).toBe("100-msg-1");
-    expect(result.envelope.messageId).toBe("msg-1");
+    const key = await keyOf("msg-1");
+    expect(result.inboxKey).toBe(`100-${key}`);
+    const expected = {
+      messageId: "msg-1",
+      authenticatedSender: SENDER,
+      deliveryKey: key,
+      receivedAt: 100,
+      address: ADDRESS,
+      rawMessage: "cmF3",
+    };
+    expect(result.envelope).toEqual(expected);
 
     const repoDir = store.getRepoDir(repoId);
     const blob = await fs.promises.readFile(
-      path.join(repoDir, inboxPathFor(ADDRESS_SEG, 100, "msg-1")),
+      path.join(repoDir, inboxPathFor(ADDRESS_SEG, 100, key)),
       "utf-8",
     );
     const parsed: unknown = JSON.parse(blob);
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      !("messageId" in parsed) ||
-      !("address" in parsed) ||
-      !("receivedAt" in parsed)
-    ) {
-      throw new Error("unexpected inbox envelope shape");
-    }
-    expect(parsed.messageId).toBe("msg-1");
-    expect(parsed.address).toBe(ADDRESS);
-    expect(parsed.receivedAt).toBe(100);
+    expect(parsed).toEqual(expected);
   });
 
   test("two enqueueInbox calls coexist in the inbox subtree", async () => {
@@ -3091,11 +3098,13 @@ describe("claim-check API — enqueueInbox", () => {
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-2",
+      authenticatedSender: SENDER,
       receivedAt: 200,
     });
     const repoDir = store.getRepoDir(repoId);
@@ -3104,7 +3113,12 @@ describe("claim-check API — enqueueInbox", () => {
       `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_INBOX_DIR}`,
     );
     const entries = await fs.promises.readdir(inboxDir);
-    expect(entries.sort()).toEqual(["100-msg-1.json", "200-msg-2.json"]);
+    expect(entries.sort()).toEqual(
+      [
+        `100-${await keyOf("msg-1")}.json`,
+        `200-${await keyOf("msg-2")}.json`,
+      ].sort(),
+    );
   });
 
   test("returns already-present for a messageId already in processing", async () => {
@@ -3113,12 +3127,14 @@ describe("claim-check API — enqueueInbox", () => {
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const outcome = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 300,
     });
     expect(outcome).toEqual({
@@ -3181,6 +3197,7 @@ describe("claim-check API — markConsumed", () => {
     const redelivered = await enqueueInbox(store, HUB_PRINCIPAL, repoId, {
       address: ADDRESS,
       messageId: "msg-older",
+      authenticatedSender: SENDER,
       receivedAt: 50,
     });
     expect(redelivered.outcome).toBe("already-present");
@@ -3191,12 +3208,13 @@ describe("claim-check API — markConsumed", () => {
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const result = await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "msg-1",
+      identity: await keyOf("msg-1"),
       runId: "run-X",
       consumedAt: 500,
     });
@@ -3215,7 +3233,7 @@ describe("claim-check API — markConsumed", () => {
 
     const consumedPath = path.join(
       repoDir,
-      consumedPathFor(ADDRESS_SEG, "msg-1"),
+      consumedPathFor(ADDRESS_SEG, await keyOf("msg-1")),
     );
     await fs.promises.access(consumedPath);
   });
@@ -3249,11 +3267,13 @@ describe("claim-check substrate FIFO invariant", () => {
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-2",
+      authenticatedSender: SENDER,
       receivedAt: 200,
     });
 
@@ -3261,11 +3281,11 @@ describe("claim-check substrate FIFO invariant", () => {
     expect(first).not.toBeNull();
     if (first === null) throw new Error("unreachable");
     expect(first.envelope.messageId).toBe("msg-1");
-    expect(first.key).toBe("100-msg-1");
+    expect(first.key).toBe(`100-${await keyOf("msg-1")}`);
 
     await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "msg-1",
+      identity: await keyOf("msg-1"),
       runId: "run-1",
       consumedAt: 150,
     });
@@ -3274,7 +3294,7 @@ describe("claim-check substrate FIFO invariant", () => {
     expect(second).not.toBeNull();
     if (second === null) throw new Error("unreachable");
     expect(second.envelope.messageId).toBe("msg-2");
-    expect(second.key).toBe("200-msg-2");
+    expect(second.key).toBe(`200-${await keyOf("msg-2")}`);
 
     // Mid-FIFO crash: msg-2 stays in processing, no consumed entry
     // landed. The worker process is gone. The recovery path moves
@@ -3285,7 +3305,7 @@ describe("claim-check substrate FIFO invariant", () => {
       repoId,
       ADDRESS,
     );
-    expect(replay.replayedKeys).toEqual(["200-msg-2"]);
+    expect(replay.replayedKeys).toEqual([`200-${await keyOf("msg-2")}`]);
 
     const reDequeue = await dequeueToProcessing(
       store,
@@ -3296,11 +3316,11 @@ describe("claim-check substrate FIFO invariant", () => {
     expect(reDequeue).not.toBeNull();
     if (reDequeue === null) throw new Error("unreachable");
     expect(reDequeue.envelope.messageId).toBe("msg-2");
-    expect(reDequeue.key).toBe("200-msg-2");
+    expect(reDequeue.key).toBe(`200-${await keyOf("msg-2")}`);
 
     await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "msg-2",
+      identity: await keyOf("msg-2"),
       runId: "run-2",
       consumedAt: 300,
     });
@@ -3320,6 +3340,7 @@ describe("claim-check substrate FIFO invariant", () => {
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     const replay = await replayProcessingToInbox(
@@ -3340,32 +3361,34 @@ describe("claim-check substrate FIFO invariant", () => {
   // dequeueToProcessing sorted inbox filenames as strings, so a
   // later-received message with a longer receivedAt prefix dequeued
   // ahead of an earlier-received message with a shorter prefix
-  // (e.g. "100-msg-B" < "99-msg-A" because '1' < '9'). After the
-  // fix the substrate sorts by parsed numeric receivedAt and the
-  // earlier message wins.
+  // (e.g. `100-<key of msg-B>` < `99-<key of msg-A>` because
+  // '1' < '9'). After the fix the substrate sorts by parsed numeric
+  // receivedAt and the earlier message wins.
   test("non-uniform receivedAt widths still respect FIFO (msg-A at 99 dequeues before msg-B at 100)", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-fifo-width-");
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-A",
+      authenticatedSender: SENDER,
       receivedAt: 99,
     });
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-B",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     const first = await dequeueToProcessing(store, principal, repoId, ADDRESS);
     expect(first).not.toBeNull();
     if (first === null) throw new Error("unreachable");
     expect(first.envelope.messageId).toBe("msg-A");
-    expect(first.key).toBe("99-msg-A");
+    expect(first.key).toBe(`99-${await keyOf("msg-A")}`);
     const second = await dequeueToProcessing(store, principal, repoId, ADDRESS);
     expect(second).not.toBeNull();
     if (second === null) throw new Error("unreachable");
     expect(second.envelope.messageId).toBe("msg-B");
-    expect(second.key).toBe("100-msg-B");
+    expect(second.key).toBe(`100-${await keyOf("msg-B")}`);
   });
 });
 
@@ -3378,7 +3401,12 @@ describe("claim-check substrate FIFO invariant", () => {
 // ref (`refs/heads/events`) cannot see them, so the caller reads them via
 // the working tree and hands the owned set to `replayProcessingToInbox`.
 describe("claim-check API — resume-owned processing entries survive replay", () => {
-  function runStartedBody(runId: string): string {
+  function runStartedBody(
+    runId: string,
+    consumed:
+      | { consumedDeliveryKey: string }
+      | { consumedMessageId: string } = { consumedMessageId: runId },
+  ): string {
     return JSON.stringify({
       type: "RunStarted",
       seq: 0,
@@ -3386,7 +3414,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       runId,
       definitionHash: "x",
       trigger: { type: "mail" },
-      consumedMessageId: runId,
+      ...consumed,
     });
   }
 
@@ -3738,25 +3766,31 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "live",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "orphan",
+      authenticatedSender: SENDER,
       receivedAt: 200,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    const liveKey = await keyOf("live");
+    const orphanKey = await keyOf("orphan");
     await store.writeTree(principal, repoId, "refs/heads/main", {
       files: {
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
-          runStartedBody("live"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]: runStartedBody(
+          "live",
+          { consumedDeliveryKey: liveKey },
+        ),
       },
       message: "seed the live run for the owned entry",
     });
 
     const { ownedIdentities: owned } = await scanRunsForBoot(store, repoId);
-    expect(owned).toEqual(new Set(["live"]));
+    expect(owned).toEqual(new Set([liveKey]));
 
     const replay = await replayProcessingToInbox(
       store,
@@ -3766,7 +3800,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       { ownedIdentities: owned },
     );
     // Only the orphan is re-admitted; the owned entry stays in processing.
-    expect(replay.replayedKeys).toEqual(["200-orphan"]);
+    expect(replay.replayedKeys).toEqual([`200-${orphanKey}`]);
 
     const repoDir = store.getRepoDir(repoId);
     const processingDir = path.join(
@@ -3778,10 +3812,10 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_INBOX_DIR}`,
     );
     expect((await fs.promises.readdir(processingDir)).sort()).toEqual([
-      "100-live.json",
+      `100-${liveKey}.json`,
     ]);
     expect((await fs.promises.readdir(inboxDir)).sort()).toEqual([
-      "200-orphan.json",
+      `200-${orphanKey}.json`,
     ]);
   });
 
@@ -3791,6 +3825,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "live",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
@@ -3809,7 +3844,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       repoId,
       ADDRESS,
     );
-    expect(replay.replayedKeys).toEqual(["100-live"]);
+    expect(replay.replayedKeys).toEqual([`100-${await keyOf("live")}`]);
   });
 });
 
@@ -3831,11 +3866,13 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-X",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     const outcome = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-X",
+      authenticatedSender: SENDER,
       receivedAt: 200,
     });
     expect(outcome).toEqual({
@@ -3848,7 +3885,7 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
       `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${ADDRESS_SEG}/${WORKFLOW_RUN_INBOX_DIR}`,
     );
     const entries = await fs.promises.readdir(inboxDir);
-    expect(entries.sort()).toEqual(["100-msg-X.json"]);
+    expect(entries.sort()).toEqual([`100-${await keyOf("msg-X")}.json`]);
   });
 
   test("returns already-present for a duplicate enqueue of the same messageId at the same receivedAt", async () => {
@@ -3857,11 +3894,13 @@ describe("claim-check API — enqueueInbox per-messageId atomicity in inbox", ()
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-D",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     const outcome = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-D",
+      authenticatedSender: SENDER,
       receivedAt: 100,
     });
     expect(outcome).toEqual({
@@ -3927,7 +3966,7 @@ describe("claim-check API — replayProcessingToInbox collision guard", () => {
 });
 
 describe("claim-check API — dequeueToProcessing filename guard", () => {
-  test("rejects an inbox entry whose filename is not <receivedAt>-<messageId>.json", async () => {
+  test("rejects an inbox entry whose filename is not <receivedAt>-<identity>.json", async () => {
     // Seed a malformed inbox filename via a permissive handler (the real
     // handler's shape check would reject it), then confirm the FIFO
     // dequeue refuses it rather than mis-parsing.
@@ -3992,6 +4031,7 @@ describe("workflow-run substrate — per-commit pack validation", () => {
       {
         address: ADDRESS,
         messageId: "msg-1",
+        authenticatedSender: SENDER,
         receivedAt: 100,
       },
     );
@@ -5059,12 +5099,13 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 1000,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "msg-1",
+      identity: await keyOf("msg-1"),
       runId: "run-1",
       consumedAt: 2000,
       retentionHorizonMs: horizon,
@@ -5076,6 +5117,7 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     const outcome = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 3000,
     });
     expect(outcome).toEqual({ outcome: "already-present", reason: "consumed" });
@@ -5092,12 +5134,13 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-driver",
+      authenticatedSender: SENDER,
       receivedAt: 100_000,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const consumed = await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "msg-driver",
+      identity: await keyOf("msg-driver"),
       runId: "run-driver",
       consumedAt: 100_000,
       retentionHorizonMs: horizon,
@@ -5110,6 +5153,7 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       enqueueInbox(store, principal, repoId, {
         address: ADDRESS,
         messageId: "msg-stale",
+        authenticatedSender: SENDER,
         receivedAt: 50_000,
       }),
     ).rejects.toThrow(/claim_check_stale_enqueue/);
@@ -5123,12 +5167,13 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-driver",
+      authenticatedSender: SENDER,
       receivedAt: 100_000,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "msg-driver",
+      identity: await keyOf("msg-driver"),
       runId: "run-driver",
       consumedAt: 100_000,
       retentionHorizonMs: horizon,
@@ -5137,11 +5182,12 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     const r = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-fresh",
+      authenticatedSender: SENDER,
       receivedAt: 100_500,
     });
     expect(r.outcome).toBe("enqueued");
     if (r.outcome !== "enqueued") throw new Error("expected enqueued");
-    expect(r.inboxKey).toBe("100500-msg-fresh");
+    expect(r.inboxKey).toBe(`100500-${await keyOf("msg-fresh")}`);
   });
 
   // Gate 4: after N >> horizon-worth of messages with advancing time,
@@ -5167,12 +5213,13 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       await enqueueInbox(store, principal, repoId, {
         address: ADDRESS,
         messageId,
+        authenticatedSender: SENDER,
         receivedAt: t,
       });
       await dequeueToProcessing(store, principal, repoId, ADDRESS);
       await markConsumed(store, principal, repoId, {
         address: ADDRESS,
-        identity: messageId,
+        identity: await keyOf(messageId),
         runId: `r-${String(i)}`,
         consumedAt: t,
         retentionHorizonMs: horizon,
@@ -5200,12 +5247,13 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "a",
+      authenticatedSender: SENDER,
       receivedAt: 50_000,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "a",
+      identity: await keyOf("a"),
       runId: "ra",
       consumedAt: 50_000,
       retentionHorizonMs: horizon,
@@ -5219,12 +5267,13 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "b",
+      authenticatedSender: SENDER,
       receivedAt: 49_500,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const consumedB = await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "b",
+      identity: await keyOf("b"),
       runId: "rb",
       consumedAt: 49_600,
       retentionHorizonMs: horizon,
@@ -5255,6 +5304,7 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "inflight",
+      authenticatedSender: SENDER,
       receivedAt: 10_000,
     });
     const inflightDequeue = await dequeueToProcessing(
@@ -5272,12 +5322,13 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "newer",
+      authenticatedSender: SENDER,
       receivedAt: 100_000,
     });
     await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const newerConsumed = await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "newer",
+      identity: await keyOf("newer"),
       runId: "r-newer",
       consumedAt: 100_000,
       retentionHorizonMs: horizon,
@@ -5295,7 +5346,7 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       repoId,
       ADDRESS,
     );
-    expect(replay.replayedKeys).toContain("10000-inflight");
+    expect(replay.replayedKeys).toContain(`10000-${await keyOf("inflight")}`);
     // The entry is back in inbox at its original filename key.
     const inboxDir = path.join(
       repoDir,
@@ -5304,7 +5355,7 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       WORKFLOW_RUN_INBOX_DIR,
     );
     const inboxEntries = await fs.promises.readdir(inboxDir);
-    expect(inboxEntries).toContain("10000-inflight.json");
+    expect(inboxEntries).toContain(`10000-${await keyOf("inflight")}.json`);
 
     // 4. It can be dequeued and consumed exactly once.
     const reDequeue = await dequeueToProcessing(
@@ -5316,7 +5367,7 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     expect(reDequeue?.envelope.messageId).toBe("inflight");
     await markConsumed(store, principal, repoId, {
       address: ADDRESS,
-      identity: "inflight",
+      identity: await keyOf("inflight"),
       runId: "r-inflight",
       consumedAt: 101_000,
       retentionHorizonMs: horizon,
@@ -5326,7 +5377,7 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
       WORKFLOW_RUN_ADDRESSES_PREFIX,
       ADDRESS_SEG,
       WORKFLOW_RUN_CONSUMED_DIR,
-      "inflight.json",
+      `${await keyOf("inflight")}.json`,
     );
     await fs.promises.access(consumedPath);
 
@@ -5344,6 +5395,7 @@ describe("claim-check API — retention watermark exactly-once + bounded", () =>
     const outcome = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "inflight",
+      authenticatedSender: SENDER,
       receivedAt: 102_000,
     });
     expect(outcome).toEqual({ outcome: "already-present", reason: "consumed" });
@@ -5361,12 +5413,13 @@ describe("claim-check API — a receive whose prior watermark the receiver lost"
     await enqueueInbox(hub.store, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-1",
+      authenticatedSender: SENDER,
       receivedAt: 1000,
     });
     await dequeueToProcessing(hub.store, principal, repoId, ADDRESS);
     await markConsumed(hub.store, principal, repoId, {
       address: ADDRESS,
-      identity: "msg-1",
+      identity: await keyOf("msg-1"),
       runId: "run-1",
       consumedAt: 100_000,
       retentionHorizonMs: 1000,
@@ -5408,6 +5461,7 @@ describe("claim-check API — a receive whose prior watermark the receiver lost"
     await enqueueInbox(sender, principal, repoId, {
       address: ADDRESS,
       messageId: "msg-2",
+      authenticatedSender: SENDER,
       receivedAt: 150_000,
     });
     await dequeueToProcessing(sender, principal, repoId, ADDRESS);
@@ -5430,7 +5484,7 @@ describe("claim-check API — a receive whose prior watermark the receiver lost"
 
     await markConsumed(sender, principal, repoId, {
       address: ADDRESS,
-      identity: "msg-2",
+      identity: await keyOf("msg-2"),
       runId: "run-2",
       consumedAt: 200_000,
       retentionHorizonMs: 1000,
@@ -5748,18 +5802,23 @@ describe("claim-check API — sender-scoped entries", () => {
 
   test("an identity that ends another identity does not match it", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore("cc-exact-");
-    await enqueueInbox(store, principal, repoId, {
-      address: ADDRESS,
-      messageId: "x-abc",
-      receivedAt: 100,
+    // A legacy entry is filed under its bare Message-ID, so its identity can
+    // end with another Message-ID.
+    await store.writeTree(principal, repoId, REF, {
+      files: {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [inboxPathFor(ADDRESS_SEG, 100, "x-abc")]: inboxBody("x-abc", 100),
+      },
+      message: "seed a legacy inbox entry",
     });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
     const second = await enqueueInbox(store, principal, repoId, {
       address: ADDRESS,
       messageId: "abc",
+      authenticatedSender: SENDER,
       receivedAt: 101,
     });
     expect(second.outcome).toBe("enqueued");
-    await dequeueToProcessing(store, principal, repoId, ADDRESS);
     expect(
       await readProcessingEntry(store, principal, repoId, ADDRESS, "abc"),
     ).toBeNull();
@@ -5771,5 +5830,322 @@ describe("claim-check API — sender-scoped entries", () => {
         consumedAt: 200,
       }),
     ).rejects.toThrow(/claim_check_processing_not_found/);
+  });
+});
+
+// The sender-scoped de-duplication of `enqueueInbox`. A legacy entry cannot
+// be added through the real handler in every state these cases need, so they
+// seed it through a permissive one.
+describe("claim-check API — enqueueInbox sender-scoped de-duplication", () => {
+  const OTHER_SENDER = "carol@example.com";
+
+  // The store accepts every push until `enforce` is called, and from then on
+  // validates each push with the real kind handler.
+  async function makePermissiveStore(prefix: string): Promise<{
+    store: ReturnType<typeof createRepoStore>;
+    repoId: RepoId;
+    enforce: () => void;
+  }> {
+    let enforced = false;
+    const store = createRepoStore({
+      dataDir: await makeClaimCheckTempDir(prefix),
+      signingKey: claimCheckSigningKey,
+      handlers: {
+        "workflow-run": {
+          kind: "workflow-run",
+          directoryPrefix: "workflow-runs",
+          validatePush: (args) =>
+            enforced ? workflowRunKindHandler.validatePush(args) : { ok: true },
+          onRefUpdated: () => undefined,
+        },
+      },
+      authorize: () => ({ allowed: true }),
+    });
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: `dep-${Math.random().toString(36).slice(2, 10)}`,
+    };
+    await store.initRepo(repoId);
+    return {
+      store,
+      repoId,
+      enforce: () => {
+        enforced = true;
+      },
+    };
+  }
+
+  async function seed(
+    store: ReturnType<typeof createRepoStore>,
+    repoId: RepoId,
+    files: Record<string, string>,
+  ): Promise<void> {
+    await store.writeTree(HUB_PRINCIPAL, repoId, REF, {
+      files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "", ...files },
+      message: "seed claim-check entries",
+    });
+  }
+
+  async function inboxNames(
+    store: ReturnType<typeof createRepoStore>,
+    repoId: RepoId,
+  ): Promise<string[]> {
+    const dir = path.join(
+      store.getRepoDir(repoId),
+      WORKFLOW_RUN_ADDRESSES_PREFIX,
+      ADDRESS_SEG,
+      WORKFLOW_RUN_INBOX_DIR,
+    );
+    return (await fs.promises.readdir(dir)).sort();
+  }
+
+  test("two senders with one Message-ID both enqueue", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-two-");
+    const first = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "<m@x>",
+      authenticatedSender: SENDER,
+      receivedAt: 100,
+    });
+    const second = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "<m@x>",
+      authenticatedSender: OTHER_SENDER,
+      receivedAt: 101,
+    });
+    expect(first.outcome).toBe("enqueued");
+    expect(second.outcome).toBe("enqueued");
+    expect(await inboxNames(store, repoId)).toEqual(
+      [
+        `100-${await keyOf("<m@x>")}.json`,
+        `101-${await keyOf("<m@x>", OTHER_SENDER)}.json`,
+      ].sort(),
+    );
+  });
+
+  test("a redelivery from the same sender is already present in each state", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-same-");
+    const redeliver = (receivedAt: number) =>
+      enqueueInbox(store, principal, repoId, {
+        address: ADDRESS,
+        messageId: "<m@x>",
+        authenticatedSender: SENDER,
+        receivedAt,
+      });
+    expect((await redeliver(100)).outcome).toBe("enqueued");
+    expect(await redeliver(100)).toEqual({
+      outcome: "already-present",
+      reason: "duplicate",
+    });
+    expect(await redeliver(200)).toEqual({
+      outcome: "already-present",
+      reason: "already_inbox",
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    expect(await redeliver(300)).toEqual({
+      outcome: "already-present",
+      reason: "processing",
+    });
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      identity: await keyOf("<m@x>"),
+      runId: "run-1",
+      consumedAt: 400,
+    });
+    expect(await redeliver(500)).toEqual({
+      outcome: "already-present",
+      reason: "consumed",
+    });
+  });
+
+  test("a legacy consumed entry for the Message-ID makes the enqueue already present", async () => {
+    const { store, repoId } = await makePermissiveStore("cc-legacy-hit-");
+    await seed(store, repoId, {
+      [consumedPathFor(ADDRESS_SEG, "<m@x>")]: consumedBody(
+        "<m@x>",
+        100,
+        "run-old",
+        150,
+      ),
+    });
+    const outcome = await enqueueInbox(store, HUB_PRINCIPAL, repoId, {
+      address: ADDRESS,
+      messageId: "<m@x>",
+      authenticatedSender: SENDER,
+      receivedAt: 200,
+    });
+    expect(outcome).toEqual({ outcome: "already-present", reason: "consumed" });
+  });
+
+  test("legacy inbox and processing entries for the Message-ID make the enqueue already present", async () => {
+    const { store, repoId } = await makePermissiveStore("cc-legacy-queue-");
+    await seed(store, repoId, {
+      [processingPathFor(ADDRESS_SEG, 100, "<p@x>")]: inboxBody("<p@x>", 100),
+      [inboxPathFor(ADDRESS_SEG, 100, "<i@x>")]: inboxBody("<i@x>", 100),
+    });
+    const enqueue = (messageId: string) =>
+      enqueueInbox(store, HUB_PRINCIPAL, repoId, {
+        address: ADDRESS,
+        messageId,
+        authenticatedSender: SENDER,
+        receivedAt: 200,
+      });
+    expect(await enqueue("<p@x>")).toEqual({
+      outcome: "already-present",
+      reason: "processing",
+    });
+    expect(await enqueue("<i@x>")).toEqual({
+      outcome: "already-present",
+      reason: "already_inbox",
+    });
+  });
+
+  test("a legacy consumed entry named as the delivery key does not block the enqueue", async () => {
+    const { store, repoId } = await makePermissiveStore("cc-legacy-named-k-");
+    const key = await keyOf("<m@x>");
+    // A legacy entry carries no key, so its name is a Message-ID that only
+    // looks like a delivery key.
+    await seed(store, repoId, {
+      [consumedPathFor(ADDRESS_SEG, key)]: consumedBody(
+        key,
+        100,
+        "run-old",
+        150,
+      ),
+    });
+    const outcome = await enqueueInbox(store, HUB_PRINCIPAL, repoId, {
+      address: ADDRESS,
+      messageId: "<m@x>",
+      authenticatedSender: SENDER,
+      receivedAt: 200,
+    });
+    expect(outcome.outcome).toBe("enqueued");
+    expect(await inboxNames(store, repoId)).toEqual([`200-${key}.json`]);
+  });
+
+  test("legacy processing and inbox entries named as the delivery key do not make the enqueue already present", async () => {
+    const key = await keyOf("<m@x>");
+    // A legacy entry carries no key, so its name is a Message-ID that only
+    // looks like a delivery key. It still holds that identity, so the
+    // validator refuses the new entry, and the mail stays unacknowledged.
+    for (const [seedPath, refusal] of [
+      [
+        processingPathFor(ADDRESS_SEG, 100, key),
+        /appears in multiple queue states/,
+      ],
+      [
+        inboxPathFor(ADDRESS_SEG, 100, key),
+        /appears at multiple inbox positions/,
+      ],
+    ] as const) {
+      const { store, repoId, enforce } = await makePermissiveStore(
+        "cc-legacy-queue-named-k-",
+      );
+      await seed(store, repoId, { [seedPath]: inboxBody(key, 100) });
+      enforce();
+      await expect(
+        enqueueInbox(store, HUB_PRINCIPAL, repoId, {
+          address: ADDRESS,
+          messageId: "<m@x>",
+          authenticatedSender: SENDER,
+          receivedAt: 200,
+        }),
+      ).rejects.toThrow(refusal);
+    }
+  });
+
+  test("a sender-scoped consumed entry does not block another sender's mail whose Message-ID is its key", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-scoped-key-id-");
+    const key = await keyOf("<m@x>");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "<m@x>",
+      authenticatedSender: SENDER,
+      receivedAt: 100,
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      identity: key,
+      runId: "run-1",
+      consumedAt: 150,
+    });
+    // The consumed entry is filed under the key, but it carries the key, so
+    // it is not the legacy entry of a mail whose Message-ID is the key.
+    const other = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: key,
+      authenticatedSender: OTHER_SENDER,
+      receivedAt: 200,
+    });
+    expect(other.outcome).toBe("enqueued");
+  });
+
+  test("a sender-scoped consumed entry does not block another sender's mail with the Message-ID", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-scoped-");
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "<m@x>",
+      authenticatedSender: SENDER,
+      receivedAt: 100,
+    });
+    await dequeueToProcessing(store, principal, repoId, ADDRESS);
+    await markConsumed(store, principal, repoId, {
+      address: ADDRESS,
+      identity: await keyOf("<m@x>"),
+      runId: "run-1",
+      consumedAt: 150,
+    });
+    const other = await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "<m@x>",
+      authenticatedSender: OTHER_SENDER,
+      receivedAt: 200,
+    });
+    expect(other.outcome).toBe("enqueued");
+  });
+
+  test("a legacy entry de-duplicates the Message-ID for every sender", async () => {
+    // A legacy entry names no sender, so its de-duplication is by
+    // Message-ID alone: it blocks the mail of each sender.
+    const { store, repoId } = await makePermissiveStore("cc-legacy-all-");
+    await seed(store, repoId, {
+      [consumedPathFor(ADDRESS_SEG, "<m@x>")]: consumedBody(
+        "<m@x>",
+        100,
+        "run-old",
+        150,
+      ),
+    });
+    for (const sender of [SENDER, OTHER_SENDER]) {
+      const outcome = await enqueueInbox(store, HUB_PRINCIPAL, repoId, {
+        address: ADDRESS,
+        messageId: "<m@x>",
+        authenticatedSender: sender,
+        receivedAt: 200,
+      });
+      expect(outcome).toEqual({
+        outcome: "already-present",
+        reason: "consumed",
+      });
+    }
+  });
+
+  test("refuses to write over a legacy inbox entry that holds the new entry's path", async () => {
+    const { store, repoId } = await makePermissiveStore("cc-path-taken-");
+    const key = await keyOf("<m@x>");
+    await seed(store, repoId, {
+      [inboxPathFor(ADDRESS_SEG, 200, key)]: inboxBody(key, 200),
+    });
+    await expect(
+      enqueueInbox(store, HUB_PRINCIPAL, repoId, {
+        address: ADDRESS,
+        messageId: "<m@x>",
+        authenticatedSender: SENDER,
+        receivedAt: 200,
+      }),
+    ).rejects.toThrow(/claim_check_inbox_path_taken/);
   });
 });

@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { type } from "arktype";
+
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
@@ -81,6 +83,36 @@ import {
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+const RunStartedOnDisk = type({
+  type: "'RunStarted'",
+  "consumedDeliveryKey?": "string",
+  "consumedMessageId?": "string",
+  "+": "ignore",
+});
+
+/** The `RunStarted` event the child committed for `runId`. */
+async function readRunStarted(
+  baseDir: string,
+  runId: string,
+): Promise<typeof RunStartedOnDisk.infer> {
+  const dir = path.join(
+    baseDir,
+    "workflow-run",
+    "deployment-x",
+    "runs",
+    runId,
+    "events",
+  );
+  for (const name of await fs.readdir(dir)) {
+    const raw: unknown = JSON.parse(
+      await fs.readFile(path.join(dir, name), "utf8"),
+    );
+    const started = RunStartedOnDisk(raw);
+    if (!(started instanceof type.errors)) return started;
+  }
+  throw new Error(`run ${runId} committed no RunStarted`);
 }
 
 // Build the minimal decoded `Mail` for a plain-text body: a single
@@ -344,12 +376,13 @@ async function seedRun(
 }
 
 /**
- * Seed a claim-check processing entry into the workflow-run repo's
+ * Seed a legacy claim-check processing entry into the workflow-run repo's
  * working tree so the child's `trigger.fire` handler can recover the
- * inbound message bytes by messageId. Mirrors the production substrate's
- * working-tree materialization: the supervisor's `dequeueToProcessing`
- * commit lands the entry at
- * `addresses/<urlEncoded(address)>/processing/<receivedAt>-<messageId>.json`,
+ * inbound message bytes by its identity. A legacy entry carries no
+ * delivery key, so its identity is the bare messageId. Mirrors the
+ * production substrate's working-tree materialization: the supervisor's
+ * `dequeueToProcessing` commit lands the entry at
+ * `addresses/<urlEncoded(address)>/processing/<receivedAt>-<identity>.json`,
  * which `readProcessingEntry` reads with a flat fs read.
  */
 async function seedProcessingEntry(
@@ -620,7 +653,7 @@ describe("runWorkflowChild", () => {
       type: "trigger.fire",
       data: {
         runId: "run-1",
-        messageId: "msg-1",
+        mailIdentity: { messageId: "msg-1" },
         receivedAt: 1,
         payload: textMail("hello from the inbox"),
       },
@@ -917,7 +950,7 @@ describe("runWorkflowChild", () => {
       type: "trigger.fire",
       data: {
         runId: "run-1",
-        messageId: "msg-1",
+        mailIdentity: { messageId: "msg-1" },
         receivedAt: 1,
         payload: textMail("body msg-1"),
       },
@@ -926,7 +959,7 @@ describe("runWorkflowChild", () => {
       type: "trigger.fire",
       data: {
         runId: "run-2",
-        messageId: "msg-2",
+        mailIdentity: { messageId: "msg-2" },
         receivedAt: 2,
         payload: textMail("body msg-2"),
       },
@@ -947,6 +980,95 @@ describe("runWorkflowChild", () => {
     // Exactly one reclamation per run, keyed by that run's id -- never a
     // per-step or per-attempt call, never another run's id.
     expect([...cleaned].sort()).toEqual(["run-1", "run-2"]);
+  });
+
+  test("RunStarted records the trigger's mail identity in exactly one field", async () => {
+    const baseDir = await makeTempDir("child-mail-identity-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const {
+      packageDir: closurePackageDir,
+      approvedHash: definitionHash,
+      definition,
+    } = await materializeClosure("child-def-", emptyWorkflowDefinition());
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    // Each run reaches terminal on its own, and the run-loop then reclaims
+    // it, so the reclamation is the signal that the run's log is complete.
+    const cleaned: string[] = [];
+    const reclaimed = createChangeNotifier();
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      cleanupRunStorage: (runId: string) => {
+        cleaned.push(runId);
+        reclaimed.notify();
+        return Promise.resolve();
+      },
+    };
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+    const runPromise = runWorkflowChild({
+      env,
+      definition,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+    });
+    await waitForUpstreamPayload(childToSupervisor, "ready");
+
+    const deliveryKey = `mail-${"ab".repeat(32)}`;
+    // A sender-scoped claim-check entry names its delivery key.
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: {
+        runId: "run-scoped",
+        mailIdentity: { deliveryKey },
+        receivedAt: 1,
+        payload: textMail("scoped"),
+      },
+    });
+    // A legacy claim-check entry, written before the delivery key existed,
+    // names its bare Message-ID.
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: {
+        runId: "run-legacy",
+        mailIdentity: { messageId: "<legacy@example.com>" },
+        receivedAt: 2,
+        payload: textMail("legacy"),
+      },
+    });
+    await reclaimed.until(() => cleaned.length >= 2);
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+
+    const scoped = await readRunStarted(baseDir, "run-scoped");
+    expect(scoped.consumedDeliveryKey).toBe(deliveryKey);
+    expect(scoped.consumedMessageId).toBeUndefined();
+    const legacy = await readRunStarted(baseDir, "run-legacy");
+    expect(legacy.consumedMessageId).toBe("<legacy@example.com>");
+    expect(legacy.consumedDeliveryKey).toBeUndefined();
   });
 
   test("warm path never fires cleanupRunStorage on run completion", async () => {
@@ -1044,7 +1166,7 @@ describe("runWorkflowChild", () => {
       type: "trigger.fire",
       data: {
         runId: "run-1",
-        messageId: "msg-1",
+        mailIdentity: { messageId: "msg-1" },
         receivedAt: 1,
         payload: textMail("warm body"),
       },
@@ -1339,7 +1461,7 @@ describe("runWorkflowChild", () => {
         type: "trigger.fire",
         data: {
           runId,
-          messageId: runId,
+          mailIdentity: { messageId: runId },
           receivedAt: 1,
           payload: textMail("re-fired inbound"),
         },
@@ -1836,7 +1958,7 @@ describe("runWorkflowChild", () => {
       type: "trigger.fire",
       data: {
         runId: "run-bad",
-        messageId: "msg-bad",
+        mailIdentity: { messageId: "msg-bad" },
         receivedAt: 1,
         payload: textMail("test input"),
       },
@@ -2272,7 +2394,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       type: "trigger.fire",
       data: {
         runId: "run-1",
-        messageId: "msg-1",
+        mailIdentity: { messageId: "msg-1" },
         receivedAt: 1,
         payload: textMail("alpha body"),
       },
@@ -2290,7 +2412,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       type: "trigger.fire",
       data: {
         runId: "run-2",
-        messageId: "msg-2",
+        mailIdentity: { messageId: "msg-2" },
         receivedAt: 2,
         payload: textMail("bravo body"),
       },
@@ -2463,7 +2585,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       type: "trigger.fire",
       data: {
         runId: "run-1",
-        messageId: "msg-1",
+        mailIdentity: { messageId: "msg-1" },
         receivedAt: 1,
         payload: textMail("alpha body"),
       },

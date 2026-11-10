@@ -38,6 +38,7 @@ test("sends the Hub's main and events refs sequentially to the exact allocation"
     await enqueueInbox(agentRepoStore.repoStore, principal, repoId, {
       address: agentAddress,
       messageId: "message-1",
+      authenticatedSender: "sender@example.com",
       receivedAt: 1,
     });
 

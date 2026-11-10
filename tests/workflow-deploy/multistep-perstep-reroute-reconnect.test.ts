@@ -261,15 +261,15 @@ async function runInterStepChainToCompletion(
 ): Promise<string> {
   const { anchorRunId, deploymentMailAddress, messageId } = args;
 
-  const { messageId: firedMessageId } = await fireMailTrigger(
+  const { deliveryKey: firedDeliveryKey } = await fireMailTrigger(
     env,
     deploymentMailAddress,
     { messageId },
   );
 
   // The deployment's local part is the one stable top-level runId. RunStarted
-  // is immutable, so its consumedMessageId permanently identifies the mail that
-  // first fired this deployment.
+  // is immutable, so its consumedDeliveryKey permanently identifies the mail
+  // that first fired this deployment.
   const runId = deriveWorkflowRunId(deploymentMailAddress);
   await waitFor(
     async () => {
@@ -277,7 +277,7 @@ async function runInterStepChainToCompletion(
       return events.some(
         (e) =>
           e.type === "RunStarted" &&
-          e.body["consumedMessageId"] === firedMessageId,
+          e.body["consumedDeliveryKey"] === firedDeliveryKey,
       );
     },
     { diagnostics: env.sidecarDiagnostics },
@@ -320,7 +320,7 @@ async function runInterStepChainToCompletion(
 
   const runStartedBody = eventsBeforeSignal[runStartedIdx]?.body;
   if (runStartedBody === undefined) throw new Error("unreachable");
-  expect(runStartedBody["consumedMessageId"]).toBe(firedMessageId);
+  expect(runStartedBody["consumedDeliveryKey"]).toBe(firedDeliveryKey);
 
   // Tests that need to interrupt a live run (for example, to exercise a
   // reconnect) do so at the durable inter-step park, never by completing and
