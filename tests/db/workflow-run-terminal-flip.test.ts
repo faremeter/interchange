@@ -44,6 +44,8 @@ import {
   enqueueInbox,
   dequeueToProcessing,
   markConsumed,
+  WORKFLOW_RUN_ADDRESSES_PREFIX,
+  WORKFLOW_RUN_INBOX_DIR,
   type RepoStore,
 } from "@intx/hub-sessions";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
@@ -256,22 +258,51 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return id;
     }
 
-    async function recordMailRejection(store: RepoStore, messageId: string) {
+    // Record a consumed rejection of the mail with `messageId`. A null sender
+    // records a legacy entry, which a sidecar that predates the delivery key
+    // filed under the bare Message-ID.
+    async function recordMailRejection(
+      store: RepoStore,
+      messageId: string,
+      authenticatedSender: string | null,
+    ) {
       const repoId = { kind: "workflow-run", id: DEPLOYMENT_REPO_ID } as const;
       const writer = { kind: "supervisor", anchorRunId: DEPLOYMENT_REPO_ID };
       const now = Date.now();
-      // The sender of every dispatch row these tests reject.
-      const authenticatedSender = "sender@example.test";
-      await enqueueInbox(store, writer, repoId, {
-        address: DEPLOYMENT_ADDRESS,
-        messageId,
-        authenticatedSender,
-        receivedAt: now,
-      });
+      if (authenticatedSender === null) {
+        // `enqueueInbox` writes only the sender-scoped form.
+        const addressPrefix = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${encodeURIComponent(DEPLOYMENT_ADDRESS)}/`;
+        await store.writeTreeDelta(writer, repoId, "refs/heads/events", {
+          changedPathPrefixes: new Set([addressPrefix]),
+          message: `enqueue legacy inbox ${messageId}`,
+          computeDelta: () =>
+            Promise.resolve({
+              puts: {
+                [`${addressPrefix}${WORKFLOW_RUN_INBOX_DIR}/${String(now)}-${messageId}.json`]:
+                  JSON.stringify({
+                    messageId,
+                    receivedAt: now,
+                    address: DEPLOYMENT_ADDRESS,
+                  }),
+              },
+              deletes: [],
+            }),
+        });
+      } else {
+        await enqueueInbox(store, writer, repoId, {
+          address: DEPLOYMENT_ADDRESS,
+          messageId,
+          authenticatedSender,
+          receivedAt: now,
+        });
+      }
       await dequeueToProcessing(store, writer, repoId, DEPLOYMENT_ADDRESS);
       await markConsumed(store, writer, repoId, {
         address: DEPLOYMENT_ADDRESS,
-        identity: await deriveDeliveryKey(authenticatedSender, messageId),
+        identity:
+          authenticatedSender === null
+            ? messageId
+            : await deriveDeliveryKey(authenticatedSender, messageId),
         runId: DEPLOYMENT,
         consumedAt: now,
         rejection: { code: "malformed_mail", message: "Missing MIME bytes" },
@@ -747,7 +778,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "pending",
       );
 
-      await recordMailRejection(store.repoStore, "late-rejected-mail");
+      await recordMailRejection(
+        store.repoStore,
+        "late-rejected-mail",
+        "sender@example.test",
+      );
       await projection.project(DEPLOYMENT);
       expect(await dispatches.findById(lateRejected.id)).toMatchObject({
         status: "failed",
@@ -771,7 +806,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
           dataDir: await makeTempDir("dispatch-rejection-recovery-"),
           signingKey,
         });
-        await recordMailRejection(store.repoStore, "rejected-mail");
+        await recordMailRejection(
+          store.repoStore,
+          "rejected-mail",
+          "sender@example.test",
+        );
         // The claim-check history is independent of the workflow event ref.
         await git.deleteRef({
           fs,
@@ -923,7 +962,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
           dataDir: await makeTempDir("dispatch-recovery-"),
           signingKey,
         });
-        await recordMailRejection(store.repoStore, "rejected-mail");
+        await recordMailRejection(
+          store.repoStore,
+          "rejected-mail",
+          "sender@example.test",
+        );
         // Git was accepted before the crash, but delivery outcomes have not
         // been projected when capacity is released.
         await applyWorkflowRunPack(
@@ -1232,7 +1275,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Push a non-terminal run log so the projection settles only what the
       // evidence names and never fails a row on a terminal run.
-      async function projectRuns(runs: WorkflowRunPackRun[]): Promise<void> {
+      async function projectRuns(
+        runs: WorkflowRunPackRun[],
+        recordConsumed?: (store: RepoStore) => Promise<void>,
+      ): Promise<void> {
         const { pack, tip } = await buildPack(runs);
         const store = createAgentRepoStore({
           dataDir: await makeTempDir("dispatch-shared-message-id-"),
@@ -1244,6 +1290,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         } as const;
         await store.repoStore.initRepo(repoId);
         await applyWorkflowRunPack(store, repoId, pack, WFR_REF, tip);
+        await recordConsumed?.(store.repoStore);
         await createWorkflowDispatchProjection({
           db: h.db,
           repoStore: store.repoStore,
@@ -1273,6 +1320,39 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ]);
         expect(await statusOf(first.id)).toBe("settled");
         expect(await statusOf(second.id)).toBe("pending");
+      });
+
+      test("a sender-scoped consumed rejection fails only that sender's mail", async () => {
+        const first = await enqueueMail("a@example.test", "shared-mail");
+        const second = await enqueueMail("b@example.test", "shared-mail");
+        await projectRuns([{ runId: DEPLOYMENT }], (store) =>
+          recordMailRejection(store, "shared-mail", "a@example.test"),
+        );
+        expect(
+          await createWorkflowRunDispatchStore(h.db).findById(first.id),
+        ).toMatchObject({
+          status: "failed",
+          failureCode: "malformed_mail",
+          failureMessage: "Missing MIME bytes",
+        });
+        expect(await statusOf(second.id)).toBe("pending");
+      });
+
+      test("a legacy consumed rejection fails the mail of every sender with that Message-ID", async () => {
+        const first = await enqueueMail("a@example.test", "shared-mail");
+        const second = await enqueueMail("b@example.test", "shared-mail");
+        await projectRuns([{ runId: DEPLOYMENT }], (store) =>
+          recordMailRejection(store, "shared-mail", null),
+        );
+        for (const mail of [first, second]) {
+          expect(
+            await createWorkflowRunDispatchStore(h.db).findById(mail.id),
+          ).toMatchObject({
+            status: "failed",
+            failureCode: "malformed_mail",
+            failureMessage: "Missing MIME bytes",
+          });
+        }
       });
 
       test("an author-named signal id that equals a Message-ID does not settle the mail", async () => {
