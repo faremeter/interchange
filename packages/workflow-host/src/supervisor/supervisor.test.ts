@@ -808,7 +808,31 @@ export type MemoryInboxPrimitives = InboxPrimitives & {
   snapshot(address: string): MemoryInboxState;
   /** Resolve once the predicate holds over the snapshots. */
   awaitState(predicate: () => boolean): Promise<void>;
+  /**
+   * The identities `markConsumed` named that no `processing` entry carries,
+   * in call order.
+   */
+  rejectedConsumes(): string[];
 };
+
+/**
+ * Resolve once `address` holds `n` consumed entries, then require that the
+ * double refused no `markConsumed`. A refused consume leaves the entry in
+ * `processing` and the dispatch loop waiting, so the wait also wakes on that
+ * refusal and the test fails on the identity the supervisor named.
+ */
+async function awaitConsumed(
+  inbox: MemoryInboxPrimitives,
+  address: string,
+  n: number,
+): Promise<void> {
+  await inbox.awaitState(
+    () =>
+      inbox.snapshot(address).consumed.size >= n ||
+      inbox.rejectedConsumes().length > 0,
+  );
+  expect(inbox.rejectedConsumes()).toEqual([]);
+}
 
 function filenameKey(receivedAt: number, identity: string): string {
   return `${String(receivedAt)}-${identity}`;
@@ -833,6 +857,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
   // instead of re-reading the maps on a timer.
   const changes = createChangeNotifier();
   const byAddress = new Map<string, MemoryInboxState>();
+  const rejectedConsumes: string[] = [];
   function getOrCreate(address: string): MemoryInboxState {
     let entry = byAddress.get(address);
     if (entry === undefined) {
@@ -847,6 +872,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
   }
   return {
     awaitState: changes.until,
+    rejectedConsumes: () => [...rejectedConsumes],
     snapshot(address: string): MemoryInboxState {
       return getOrCreate(address);
     },
@@ -943,6 +969,8 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
         }
       }
       if (foundKey === null || envelope === null) {
+        rejectedConsumes.push(args.identity);
+        changes.notify();
         throw new Error(
           `claim_check_processing_not_found: ${args.address} ${args.identity}`,
         );
@@ -1215,9 +1243,7 @@ describe("createWorkflowSupervisor", () => {
         at: "test",
       },
     });
-    await inbox.awaitState(
-      () => inbox.snapshot("run_deployment-x@example.com").consumed.size >= 2,
-    );
+    await awaitConsumed(inbox, "run_deployment-x@example.com", 2);
     expect(parseTriggerFireRunIds(supervisorToChild.flushed())).toEqual([
       firstRunId,
     ]);
@@ -1494,9 +1520,7 @@ describe("createWorkflowSupervisor", () => {
       type: "terminal.event",
       data: { runId, seq: 0, kind: "RunCompleted", at: "test" },
     });
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(MAILBOX_ADDRESS).consumed.size >= 2,
-    );
+    await awaitConsumed(wired.inboxPrimitives, MAILBOX_ADDRESS, 2);
     expect(wired.inboxPrimitives.snapshot(MAILBOX_ADDRESS).consumed.size).toBe(
       2,
     );
@@ -2797,9 +2821,7 @@ describe("createWorkflowSupervisor", () => {
     // The failed run is settled through the claim-check pipeline: the
     // message moves to `consumed`. Wait on that observable settle.
     const address = "run_deployment-x@example.com";
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     // The barrier suppressed the trigger: NO trigger.fire and NO
@@ -4584,9 +4606,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
@@ -4635,9 +4655,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     // markConsumed only runs once the dispatch wait returns; a wait still
     // hanging on the approval park would leave this at 0 until the backstop.
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
@@ -4689,9 +4707,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     wired.mailBus.deliver(
@@ -4729,9 +4745,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 2,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 2);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(2);
 
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
@@ -4849,9 +4863,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     // Both messages are consumed.
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 2,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 2);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(2);
     await wired.supervisor.shutdown();
   });
@@ -4901,9 +4913,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.drain({ deadlineMs: 5_000 });
@@ -4944,9 +4954,7 @@ describe("createWorkflowSupervisor", () => {
       // watcher, so the dispatch reaches markConsumed without the child
       // reporting anything: nothing here has to drive the mock child.
       const address = "run_deployment-x@example.com";
-      await wired.inboxPrimitives.awaitState(
-        () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-      );
+      await awaitConsumed(wired.inboxPrimitives, address, 1);
       expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
       const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
@@ -5029,9 +5037,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     // Second message arrives after the deployment's one top-level run
@@ -5041,9 +5047,7 @@ describe("createWorkflowSupervisor", () => {
       inboundDelivery(new TextEncoder().encode("msg-2")),
     );
 
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 2,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 2);
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
     expect(runIds).toEqual(["run_deployment-x"]);
@@ -5106,9 +5110,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(parseTriggerFireRunIds(wired.supervisorToChild.flushed())).toEqual(
       [],
     );
@@ -5189,9 +5191,7 @@ describe("createWorkflowSupervisor", () => {
       inboundDelivery(new TextEncoder().encode("msg-1")),
     );
 
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(parseTriggerFireRunIds(wired.supervisorToChild.flushed())).toEqual(
       [],
     );
@@ -5240,9 +5240,7 @@ describe("createWorkflowSupervisor", () => {
     });
 
     // The loop must proceed and consume msg-1 despite the lost park wake.
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.shutdown();
@@ -5268,9 +5266,7 @@ describe("createWorkflowSupervisor", () => {
     // as the wait that failed. Neither carries a deadline now; the lane
     // timeout is the failsafe.
     const waitConsumed = (n: number) =>
-      wired.inboxPrimitives.awaitState(
-        () => wired.inboxPrimitives.snapshot(address).consumed.size >= n,
-      );
+      awaitConsumed(wired.inboxPrimitives, address, n);
     const waitSignals = (n: number) =>
       waitForUpstreamPayload(wired.supervisorToChild, "signal.deliver", () => {
         return (
@@ -5521,9 +5517,7 @@ describe("createWorkflowSupervisor", () => {
     );
     wired.mailBus.deliver(address, inboundDelivery(bad));
 
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
     expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(0);
     // No signal was delivered for the poison mail.
@@ -5687,9 +5681,7 @@ describe("createWorkflowSupervisor", () => {
       address,
       inboundDelivery(new TextEncoder().encode("msg-2")),
     );
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(
       wired.inboxPrimitives.snapshot(address).consumed.size,
     ).toBeGreaterThanOrEqual(1);
@@ -5754,9 +5746,7 @@ describe("createWorkflowSupervisor", () => {
         at: "test",
       },
     });
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.shutdown();
@@ -5796,9 +5786,7 @@ describe("createWorkflowSupervisor", () => {
 
     // The wait releases and the mail is consumed WITHOUT the (minutes-long)
     // backstop firing.
-    await wired.inboxPrimitives.awaitState(
-      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
-    );
+    await awaitConsumed(wired.inboxPrimitives, address, 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.shutdown();
@@ -6062,9 +6050,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
         at: "test",
       },
     });
-    await inbox.awaitState(
-      () => inbox.snapshot("run_deployment-x@example.com").consumed.size >= 2,
-    );
+    await awaitConsumed(inbox, "run_deployment-x@example.com", 2);
     firedIds = triggerRunIds();
     expect(firedIds).toEqual([firstRunId]);
     const consumed = inbox.snapshot("run_deployment-x@example.com").consumed;
@@ -6132,9 +6118,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     // The processing entry was moved back to inbox during spawn,
     // then dequeued by the dispatch loop and forwarded as trigger.fire.
     // After the child reaches terminal, markConsumed moves it to consumed.
-    await inbox.awaitState(
-      () => inbox.snapshot("run_deployment-x@example.com").consumed.size >= 1,
-    );
+    await awaitConsumed(inbox, "run_deployment-x@example.com", 1);
     const snapshot = inbox.snapshot("run_deployment-x@example.com");
     expect(snapshot.consumed.size).toBe(1);
     const consumedEntry = [...snapshot.consumed.values()][0];
@@ -6175,9 +6159,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
         at: "test",
       },
     });
-    await inbox.awaitState(
-      () => inbox.snapshot("run_deployment-x@example.com").consumed.size >= 1,
-    );
+    await awaitConsumed(inbox, "run_deployment-x@example.com", 1);
     expect([
       ...inbox.snapshot("run_deployment-x@example.com").consumed.keys(),
     ]).toEqual([deliveryKey]);
