@@ -6,7 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 import {
   createWorkflowRunDispatchStore,
@@ -32,6 +32,21 @@ const DEFINITION_ID = "wfd-dispatch";
 const ANCHOR_RUN_ID = "dep-dispatch";
 const SENDER_ADDRESS = "principal-dispatch@tnt-dispatch.example";
 const MANIFEST_DIGEST = "1".repeat(64);
+
+function observe(work: Promise<unknown>) {
+  let settled = false;
+  const result = work.then(
+    (value) => {
+      settled = true;
+      return { status: "fulfilled", value } as const;
+    },
+    (reason: unknown) => {
+      settled = true;
+      return { status: "rejected", reason } as const;
+    },
+  );
+  return { result, isSettled: () => settled };
+}
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "workflowRunDispatchStore (real DB)",
@@ -455,6 +470,154 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         }),
       ).rejects.toThrow(/conflicts with its durable payload/);
+    });
+
+    describe("anchor lock", () => {
+      const sharedSignal = {
+        agentAddress: "workflow@tenant.example",
+        runId: "workflow@tenant.example",
+        signalName: "continue",
+        signalId: "shared-id",
+        payload: null,
+      };
+
+      async function backendPid(executor: Pick<TestDb["db"], "execute">) {
+        const [backend] = await executor.execute(
+          sql`select pg_backend_pid() as pid`,
+        );
+        const pid = backend?.["pid"];
+        if (typeof pid !== "number") throw new Error("Missing backend PID");
+        return pid;
+      }
+
+      async function waitForBlocked(
+        blockerPid: number,
+        operation: ReturnType<typeof observe>,
+      ) {
+        // Postgres exposes lock waits through its activity view, without a
+        // notification.
+        for (;;) {
+          const waiting = await h.db.execute(
+            sql`select pid from pg_stat_activity where ${blockerPid} = any(pg_blocking_pids(pid))`,
+          );
+          const pid = waiting[0]?.["pid"];
+          if (typeof pid === "number") return pid;
+          if (operation.isSettled()) {
+            throw new Error("The enqueue did not wait for the anchor lock");
+          }
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      }
+
+      test("a cross-kind enqueue waits for the anchor lock of a concurrent enqueue", async () => {
+        const store = createWorkflowRunDispatchStore(h.db);
+        const holding = Promise.withResolvers<number>();
+        const release = Promise.withResolvers<undefined>();
+        const holder = h.db.transaction(async (tx) => {
+          await store.enqueue(
+            {
+              anchorRunId: ANCHOR_RUN_ID,
+              messageId: "shared-id",
+              senderAddress: SENDER_ADDRESS,
+              rawMessage: new TextEncoder().encode("mail"),
+              stepGrants: [],
+            },
+            tx,
+          );
+          holding.resolve(await backendPid(tx));
+          await release.promise;
+        });
+        void holder.catch(holding.reject);
+        let signal: ReturnType<typeof observe> | undefined;
+        try {
+          const holderPid = await holding.promise;
+          signal = observe(
+            store.enqueueSignal({
+              anchorRunId: ANCHOR_RUN_ID,
+              signal: sharedSignal,
+            }),
+          );
+          await waitForBlocked(holderPid, signal);
+        } finally {
+          release.resolve(undefined);
+          await holder;
+          await signal?.result;
+        }
+        const outcome = await signal.result;
+        expect(outcome.status).toBe("rejected");
+        if (outcome.status === "rejected") {
+          expect(outcome.reason).toBeInstanceOf(
+            WorkflowRunDispatchPayloadConflictError,
+          );
+        }
+      });
+
+      test("an enqueue with no caller transaction holds the anchor lock until its insert commits", async () => {
+        const store = createWorkflowRunDispatchStore(h.db);
+        // Park every mail insert behind a row lock the test holds, so the
+        // mail enqueue stops between its anchor lock and its insert.
+        await h.db
+          .execute(sql`create function park_mail_insert() returns trigger language plpgsql as $$
+          begin
+            perform 1 from workflow_definition where id = 'wfd-dispatch' for update;
+            return new;
+          end
+        $$`);
+        await h.db
+          .execute(sql`create trigger park_mail_insert before insert on workflow_run_dispatch
+          for each row when (new.kind = 'mail') execute function park_mail_insert()`);
+        const parked = Promise.withResolvers<number>();
+        const release = Promise.withResolvers<undefined>();
+        const parker = h.db.transaction(async (tx) => {
+          await tx
+            .select()
+            .from(workflowDefinition)
+            .where(eq(workflowDefinition.id, DEFINITION_ID))
+            .for("update");
+          parked.resolve(await backendPid(tx));
+          await release.promise;
+        });
+        void parker.catch(parked.reject);
+        let mail: ReturnType<typeof observe> | undefined;
+        let signal: ReturnType<typeof observe> | undefined;
+        try {
+          const parkerPid = await parked.promise;
+          mail = observe(
+            store.enqueue({
+              anchorRunId: ANCHOR_RUN_ID,
+              messageId: "shared-id",
+              senderAddress: SENDER_ADDRESS,
+              rawMessage: new TextEncoder().encode("mail"),
+              stepGrants: [],
+            }),
+          );
+          const mailPid = await waitForBlocked(parkerPid, mail);
+          signal = observe(
+            store.enqueueSignal({
+              anchorRunId: ANCHOR_RUN_ID,
+              signal: sharedSignal,
+            }),
+          );
+          await waitForBlocked(mailPid, signal);
+        } finally {
+          release.resolve(undefined);
+          await parker;
+          await Promise.all([mail?.result, signal?.result]);
+          await h.db.execute(
+            sql`drop trigger park_mail_insert on workflow_run_dispatch`,
+          );
+          await h.db.execute(sql`drop function park_mail_insert()`);
+        }
+        const mailOutcome = await mail.result;
+        expect(mailOutcome.status).toBe("fulfilled");
+        const signalOutcome = await signal.result;
+        expect(signalOutcome.status).toBe("rejected");
+        if (signalOutcome.status === "rejected") {
+          expect(signalOutcome.reason).toBeInstanceOf(
+            WorkflowRunDispatchPayloadConflictError,
+          );
+        }
+      });
     });
 
     test("keeps two senders' mail with one Message-ID apart and de-duplicates one sender's repeat", async () => {
