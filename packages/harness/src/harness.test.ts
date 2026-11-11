@@ -30,6 +30,7 @@ import {
 import { createInboundMessage } from "@intx/mime";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
+  ConnectorThreadState,
   ContextStore,
   InboundMessage,
   InferenceSource,
@@ -467,7 +468,12 @@ describe("createHarness outbound pipeline", () => {
 
   function storedMessage(
     uid: number,
-    opts: { from: string; messageId: string; references?: string[] },
+    opts: {
+      from: string;
+      messageId: string;
+      references?: string[];
+      cc?: string[];
+    },
   ): InboundMessage {
     const message = createInboundMessage({
       from: opts.from,
@@ -476,6 +482,7 @@ describe("createHarness outbound pipeline", () => {
       messageId: opts.messageId,
       interchangeType: "conversation.message",
       ...(opts.references !== undefined ? { references: opts.references } : {}),
+      ...(opts.cc !== undefined ? { cc: opts.cc } : {}),
     });
     return { ...message, ref: { uid, mailbox: "INBOX" } };
   }
@@ -549,6 +556,41 @@ describe("createHarness outbound pipeline", () => {
     } finally {
       await harness.close();
     }
+  });
+
+  describe("createHarness own address", () => {
+    // The connector router learns the agent's own address from the
+    // harness, so mail to the agent does not list the agent among the
+    // thread's addressed participants.
+    test("leaves the agent's own address out of the thread's addressed participants", async () => {
+      inference.scenario.replyOnce("anthropic", { text: "answer" });
+      const { transport, control } = makeMockTransport();
+      const storage = await createIsogitStore(workDir);
+      const states: (ConnectorThreadState | null)[] = [];
+      const harness = await createHarness(emptyDef(), {
+        ...outboundEnv(transport, storage),
+        onConnectorStateChanged: (state) => {
+          states.push(state);
+        },
+      });
+
+      try {
+        control.enqueue(
+          501,
+          storedMessage(501, {
+            from: "alice@example.com",
+            messageId: "<alice-own@example.com>",
+            cc: ["bob@example.com"],
+          }),
+        );
+        control.fireExists(501);
+        await pumpUntil(() => states.length > 0);
+
+        expect(states[0]).toMatchObject({ addressed: ["bob@example.com"] });
+      } finally {
+        await harness.close();
+      }
+    });
   });
 });
 
