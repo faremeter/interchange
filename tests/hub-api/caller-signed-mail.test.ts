@@ -95,6 +95,17 @@ async function signedMessage(
   return assembleMessage(headers, signedContent, await sign(signedContent));
 }
 
+// The hub's message-id length limit counts the angle brackets.
+const MESSAGE_ID_LIMIT = 256;
+
+function messageIdOfLength(length: number): string {
+  const messageId = `<${"x".repeat(length - "<@b.test>".length)}@b.test>`;
+  if (messageId.length !== length) {
+    throw new Error(`message id is ${String(messageId.length)} characters`);
+  }
+  return messageId;
+}
+
 function signerFor(keyPair: KeyPair) {
   const crypto = createEd25519Crypto(keyPair);
   return (content: Uint8Array) =>
@@ -213,6 +224,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           "an oversized message id",
           { messageId: `<${"x".repeat(300)}@b.test>` },
         ],
+        [
+          "a message id one character over the limit",
+          { messageId: messageIdOfLength(MESSAGE_ID_LIMIT + 1) },
+        ],
         ["a message id with a NUL", { messageId: `<a\u0000b@${DOMAIN}>` }],
         [
           "a message id with a control character",
@@ -267,6 +282,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         [
           "a message id that names the caller in upper case",
           `<x@${SENDER_RUN.toUpperCase()}.${DOMAIN}>`,
+        ],
+        [
+          "a message id at the length limit",
+          messageIdOfLength(MESSAGE_ID_LIMIT),
         ],
       ];
       for (const [label, messageId] of cases) {
