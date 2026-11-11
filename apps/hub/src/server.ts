@@ -33,6 +33,7 @@ import {
 } from "@intx/hub-api";
 import {
   attachSidecarProvisioners,
+  attachWorkflowDispatchAcknowledgements,
   createAgentRepoStore,
   createAssetService,
   createEventCollectorRegistry,
@@ -555,13 +556,10 @@ export async function createHubServer({
   sidecarRouter.events.on("deployment.stopped", (allocated) =>
     sidecarAllocationReconciler.handleConnected(allocated),
   );
-  sidecarRouter.events.on(
-    "mail.inbound.acknowledged",
-    ({ deliveryKey, allocated }) => {
-      if (allocated === undefined) return;
-      return workflowDispatchService.acknowledge({ ...allocated, deliveryKey });
-    },
-  );
+  attachWorkflowDispatchAcknowledgements({
+    events: sidecarRouter.events,
+    dispatchService: workflowDispatchService,
+  });
 
   const allocationScheduler = createReconciliationScheduler({
     name: "Sidecar allocation",

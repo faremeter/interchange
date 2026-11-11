@@ -1,11 +1,18 @@
 import { describe, expect, test } from "bun:test";
 
 import type { SidecarAllocation } from "@intx/db";
+import { deriveDeliveryKey } from "@intx/types/message-id";
 
 import {
+  attachWorkflowDispatchAcknowledgements,
   createWorkflowDispatchService,
+  type WorkflowDispatchAcknowledgement,
   type WorkflowDispatchServiceDeps,
 } from "./workflow-dispatch-service";
+import {
+  createSidecarEmitter,
+  type SidecarEventEmitter,
+} from "./ws/sidecar-events";
 
 const NOW = new Date("2026-08-03T14:00:00.000Z");
 
@@ -636,5 +643,74 @@ describe("createWorkflowDispatchService", () => {
       await Promise.all([first, second]);
     }
     expect(sends).toBe(1);
+  });
+});
+
+function recordAcknowledgements(): {
+  events: SidecarEventEmitter;
+  acknowledgements: WorkflowDispatchAcknowledgement[];
+} {
+  const events = createSidecarEmitter();
+  const acknowledgements: WorkflowDispatchAcknowledgement[] = [];
+  attachWorkflowDispatchAcknowledgements({
+    events,
+    dispatchService: {
+      async acknowledge(args) {
+        acknowledgements.push(args);
+      },
+    },
+  });
+  return { events, acknowledgements };
+}
+
+describe("attachWorkflowDispatchAcknowledgements", () => {
+  test("acknowledges only the delivery key of the sender the event names", async () => {
+    const { events, acknowledgements } = recordAcknowledgements();
+    const messageId = "<shared@example.com>";
+    const keyA = await deriveDeliveryKey(
+      "principal-a@tenant-1.example",
+      messageId,
+    );
+    const keyB = await deriveDeliveryKey(
+      "principal-b@tenant-1.example",
+      messageId,
+    );
+    expect(keyA).not.toBe(keyB);
+    const allocated = {
+      allocationId: "allocation-1",
+      anchorRunId: "deployment-1",
+      generation: 2,
+    };
+
+    events.emit("mail.inbound.acknowledged", {
+      agentAddress: "deployment-1@tenant-1.example",
+      messageId,
+      deliveryKey: keyA,
+      allocated,
+    });
+    expect(acknowledgements).toEqual([{ ...allocated, deliveryKey: keyA }]);
+
+    events.emit("mail.inbound.acknowledged", {
+      agentAddress: "deployment-1@tenant-1.example",
+      messageId,
+      deliveryKey: keyB,
+      allocated: { ...allocated, generation: 3 },
+    });
+    expect(acknowledgements).toEqual([
+      { ...allocated, deliveryKey: keyA },
+      { ...allocated, generation: 3, deliveryKey: keyB },
+    ]);
+  });
+
+  test("ignores an acknowledgement with no allocation", () => {
+    const { events, acknowledgements } = recordAcknowledgements();
+
+    events.emit("mail.inbound.acknowledged", {
+      agentAddress: "agent@tenant-1.example",
+      messageId: "<unallocated@example.com>",
+      deliveryKey: "delivery-key-1",
+    });
+
+    expect(acknowledgements).toEqual([]);
   });
 });
