@@ -153,7 +153,9 @@ export {
   type WorkflowAllocationServiceDeps,
 } from "./workflow-allocation-service";
 export {
+  attachWorkflowDispatchAcknowledgements,
   createWorkflowDispatchService,
+  type AttachWorkflowDispatchAcknowledgementsDeps,
   type WorkflowDispatchAcknowledgement,
   type WorkflowDispatchService,
   type WorkflowDispatchServiceDeps,

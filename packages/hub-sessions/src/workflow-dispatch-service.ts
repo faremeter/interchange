@@ -16,6 +16,7 @@ import type {
   AllocatedSidecarTarget,
   SidecarAllocationRouter,
 } from "./ws/sidecar-handler";
+import type { SidecarEventEmitter } from "./ws/sidecar-events";
 import {
   runSidecarOperation,
   SidecarOperationTimeoutError,
@@ -363,4 +364,24 @@ export function createWorkflowDispatchService({
     reconcileUntilIdle,
     wake,
   };
+}
+
+export type AttachWorkflowDispatchAcknowledgementsDeps = {
+  readonly events: Pick<SidecarEventEmitter, "on">;
+  readonly dispatchService: Pick<WorkflowDispatchService, "acknowledge">;
+};
+
+/**
+ * Records each provisioned sidecar's durable-inbox acknowledgement against
+ * the dispatch row of the exact delivery it names. An acknowledgement with
+ * no allocation comes from a sidecar that has no dispatch rows.
+ */
+export function attachWorkflowDispatchAcknowledgements({
+  events,
+  dispatchService,
+}: AttachWorkflowDispatchAcknowledgementsDeps): void {
+  events.on("mail.inbound.acknowledged", ({ deliveryKey, allocated }) => {
+    if (allocated === undefined) return;
+    return dispatchService.acknowledge({ ...allocated, deliveryKey });
+  });
 }
