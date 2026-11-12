@@ -189,12 +189,16 @@ import fs from "node:fs";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { deriveDeliveryKey } from "@intx/types/message-id";
+import { ControlParkKind } from "@intx/types/runtime-core";
+import { correlationIdFromSignalName } from "@intx/types/signals";
 import { StepStateSnapshot } from "@intx/types/step-state-snapshot";
+import { controlParkKindOf } from "@intx/workflow/state-machine";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy/addresses";
 import { parseMailboxIndex, type MailboxIndex } from "./mailbox-index";
 import {
   authorizeUserPrincipal,
   NoBlobAtPathError,
+  type ApprovalWaitChange,
   type AuthorizeFn,
   type CommittedReads,
   type CommittedTreeEntry,
@@ -1864,11 +1868,50 @@ async function checkRetainedBlobUnchanged(
 }
 
 /**
- * The fields of a valid event blob that the per-run checks read. A
- * `CancelRequested` event carries its validated `origin`; every other
- * event carries none.
+ * The fields of a `SignalAwaited` or `SignalAwaitAbandoned` payload that say
+ * which wait the event is about.
  */
-type EventSummary = { type: string; origin: string | undefined };
+const SignalWaitFields = type({
+  signalName: "string",
+  "parkKind?": ControlParkKind,
+  "+": "ignore",
+});
+
+/** The approval a wait event names, and whether the run now waits on it. */
+type ApprovalWait = { correlationId: string; waiting: boolean };
+
+/**
+ * The fields of a valid event blob that the per-run checks read. A
+ * `CancelRequested` event carries its validated `origin`, and an event that
+ * starts or retires a wait on an approval carries `approvalWait`; every other
+ * event carries neither.
+ */
+type EventSummary = {
+  type: string;
+  origin: string | undefined;
+  approvalWait: ApprovalWait | undefined;
+};
+
+/**
+ * Read the approval a wait event is about. Only a reserved signal name
+ * carries a correlation, and of the parks on that channel only an approval
+ * registers one. The runtime's reading of the park kind decides which that
+ * is, so the two cannot disagree. A retire records no park kind, so one that
+ * retires an input park is reported too; it names a correlation no approval
+ * has.
+ */
+function approvalWaitOf(
+  eventType: "SignalAwaited" | "SignalAwaitAbandoned",
+  fields: typeof SignalWaitFields.infer,
+): ApprovalWait | undefined {
+  const correlationId = correlationIdFromSignalName(fields.signalName);
+  if (correlationId === undefined) return undefined;
+  if (eventType === "SignalAwaitAbandoned") {
+    return { correlationId, waiting: false };
+  }
+  if (controlParkKindOf(fields) !== "approval") return undefined;
+  return { correlationId, waiting: true };
+}
 
 async function parseEventBlob(
   entry: RunEventBlob,
@@ -1926,10 +1969,41 @@ async function parseEventBlob(
     }
     return {
       ok: true,
-      event: { type: validated.type, origin: cancelFields.origin },
+      event: {
+        type: validated.type,
+        origin: cancelFields.origin,
+        approvalWait: undefined,
+      },
     };
   }
-  return { ok: true, event: { type: validated.type, origin: undefined } };
+  if (
+    validated.type === "SignalAwaited" ||
+    validated.type === "SignalAwaitAbandoned"
+  ) {
+    const waitFields = SignalWaitFields(body);
+    if (waitFields instanceof type.errors) {
+      return {
+        ok: false,
+        reason: `event ${entry.blobPath} ${validated.type} payload invalid: ${waitFields.summary}`,
+      };
+    }
+    return {
+      ok: true,
+      event: {
+        type: validated.type,
+        origin: undefined,
+        approvalWait: approvalWaitOf(validated.type, waitFields),
+      },
+    };
+  }
+  return {
+    ok: true,
+    event: {
+      type: validated.type,
+      origin: undefined,
+      approvalWait: undefined,
+    },
+  };
 }
 
 /**
@@ -3326,6 +3400,7 @@ export const workflowRunKindHandler: KindHandler = {
     }
 
     const newlyTerminalRuns: NewlyTerminalRun[] = [];
+    const approvalWaitChanges: ApprovalWaitChange[] = [];
     for (const [runId, entries] of enumerated.runs) {
       if (entries.length === 0) {
         return {
@@ -3371,6 +3446,8 @@ export const workflowRunKindHandler: KindHandler = {
       }
       let terminalSeq: number | null = null;
       let terminalType: string | null = null;
+      // The last word this commit adds on each approval the run waits on.
+      const approvalWaits = new Map<string, boolean>();
       const afterTerminal = (entry: RunEventBlob): ValidatePushResult => ({
         ok: false,
         reason: `run ${runId} has event at seq ${String(entry.filenameSeq)} after terminal ${String(terminalType)} at seq ${String(terminalSeq)}`,
@@ -3429,6 +3506,12 @@ export const workflowRunKindHandler: KindHandler = {
           }
         }
         if (terminalSeq !== null) return afterTerminal(entry);
+        if (newlyAdded && parsed.event.approvalWait !== undefined) {
+          approvalWaits.set(
+            parsed.event.approvalWait.correlationId,
+            parsed.event.approvalWait.waiting,
+          );
+        }
         const classified = classifyTerminalEvent(parsed.event.type);
         if (classified.terminal) {
           terminalSeq = entry.filenameSeq;
@@ -3449,6 +3532,12 @@ export const workflowRunKindHandler: KindHandler = {
               terminalEventJson: new TextDecoder().decode(terminalBytes),
             });
           }
+        }
+      }
+      // A run that ended waits on nothing, and its approvals end with it.
+      if (terminalSeq === null) {
+        for (const [correlationId, waiting] of approvalWaits) {
+          approvalWaitChanges.push({ runId, correlationId, waiting });
         }
       }
     }
@@ -3567,7 +3656,7 @@ export const workflowRunKindHandler: KindHandler = {
       return stepsCheck;
     }
 
-    return { ok: true, newlyTerminalRuns };
+    return { ok: true, newlyTerminalRuns, approvalWaitChanges };
   },
   onRefUpdated() {
     // No cached index today. Consumers read events through the

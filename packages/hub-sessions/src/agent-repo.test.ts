@@ -66,6 +66,7 @@ describe("AgentRepoStore", () => {
     expect(await prepared.commit()).toEqual({
       kind: "applied",
       newlyTerminalRuns: [],
+      approvalWaitChanges: [],
     });
 
     const repoDir = path.join(dataDir, "workflow-runs", anchorRunId);

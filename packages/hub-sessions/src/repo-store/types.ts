@@ -119,8 +119,27 @@ export type NewlyTerminalRun = {
   terminalEventJson: string;
 };
 
+/**
+ * The last word the commit under validation adds on one approval a run
+ * waits on. `waiting` is true when the run began to wait on the approval and
+ * false when it retired the wait and went on. Like `NewlyTerminalRun`, only
+ * an event this commit adds counts. A run that is terminal in the commit
+ * reports none: its approvals end with it.
+ */
+export type ApprovalWaitChange = {
+  runId: string;
+  correlationId: string;
+  waiting: boolean;
+};
+
+/** What a kind handler found in one commit it accepted. */
+export type PushFindings = {
+  newlyTerminalRuns: NewlyTerminalRun[];
+  approvalWaitChanges: ApprovalWaitChange[];
+};
+
 export type ValidatePushResult =
-  | { ok: true; newlyTerminalRuns?: NewlyTerminalRun[] }
+  | ({ ok: true } & Partial<PushFindings>)
   | { ok: false; reason: string };
 
 /**
@@ -671,10 +690,7 @@ export type RepoStoreSubscribeEvent = {
  */
 export type PackCommitResult =
   | { readonly kind: "already_applied" }
-  | {
-      readonly kind: "applied";
-      readonly newlyTerminalRuns: NewlyTerminalRun[];
-    };
+  | ({ readonly kind: "applied" } & Readonly<PushFindings>);
 
 /**
  * A pack that `prepareReceivePack` staged and validated. `commit()`

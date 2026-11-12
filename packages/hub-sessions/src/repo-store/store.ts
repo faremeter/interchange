@@ -32,6 +32,7 @@ import type {
   PackCommitResult,
   PreparedReceivePack,
   Principal,
+  PushFindings,
   RefEntry,
   RepoAction,
   RepoId,
@@ -192,7 +193,7 @@ export type LocalRepoStore = RepoStore & {
    * `expectedOldSha`: when the live tip already holds `commitSha`,
    * `commit()` answers `already_applied`, and publishes the pack only
    * when it brings objects the store lacks; when the live tip is a commit
-   * of this pack, it returns only the runs of the later commits. Any
+   * of this pack, it returns only the findings of the later commits. Any
    * other live tip gets the pack tip, because the sender is authoritative
    * for the shape of its history.
    *
@@ -2258,10 +2259,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // Validate each new commit of a staged pack against its own
   // first-parent tree, through the staged view. It needs no lock: each
   // result depends only on the commit and its parent, which no write
-  // changes. Returns each commit's newly terminal runs, in chain order.
-  async function validateStaged(
-    s: StagedReceive,
-  ): Promise<NewlyTerminalRun[][]> {
+  // changes. Returns each commit's findings, in chain order.
+  async function validateStaged(s: StagedReceive): Promise<PushFindings[]> {
     const { principal, repoId, ref, dir, handler } = s;
     return withReceiveCache(dir, async (cache) => {
       const receive = receiveReads(dir, s.staged.fs, cache);
@@ -2324,7 +2323,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       };
       const validateCommit = async (
         newCommit: string,
-      ): Promise<NewlyTerminalRun[]> => {
+      ): Promise<PushFindings> => {
         const parsed = await reads.readCommit(newCommit);
         const parents = parsed.parent;
         const declaredParent =
@@ -2391,13 +2390,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref} at commit ${newCommit}: ${result.reason}`;
           throw new Error(`path_violation: ${result.reason}`);
         }
-        return result.newlyTerminalRuns ?? [];
+        return {
+          newlyTerminalRuns: result.newlyTerminalRuns ?? [],
+          approvalWaitChanges: result.approvalWaitChanges ?? [],
+        };
       };
-      const runs: NewlyTerminalRun[][] = [];
+      const findings: PushFindings[] = [];
       for (const newCommit of s.chain) {
         // The memo window now holds this commit and its parent.
         receive.advance();
-        runs.push(
+        findings.push(
           await readingObjectsOf(newCommit, () => validateCommit(newCommit)),
         );
       }
@@ -2410,16 +2412,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           admit(s.commitSha, (await reads.readCommit(s.commitSha)).tree),
         );
       }
-      return runs;
+      return findings;
     });
   }
 
   // The locked last step of every receive: publish the staged pack and
-  // move the ref. The caller holds the repo lock. `runs` is the result
+  // move the ref. The caller holds the repo lock. `findings` is the result
   // of `validateStaged`.
   async function commitStaged(
     s: StagedReceive,
-    runs: readonly NewlyTerminalRun[][],
+    findings: readonly PushFindings[],
     mode: ReceiveMode,
   ): Promise<PackCommitResult> {
     const { repoId, ref, commitSha, dir, handler } = s;
@@ -2448,8 +2450,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         return { kind: "already_applied" };
       }
       // A live tip inside this pack's chain already applied the commits
-      // up to it, so only the later commits' runs are new. Any other live
-      // tip takes the whole chain: the sender is authoritative for the
+      // up to it, so only the later commits' findings are new. Any other
+      // live tip takes the whole chain: the sender is authoritative for the
       // shape of its history.
       firstNew = liveTip === null ? 0 : s.chain.indexOf(liveTip) + 1;
     }
@@ -2467,9 +2469,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       newSha: commitSha,
     });
     await emitRefUpdate(repoId, ref, liveTip, commitSha);
+    const applied = findings.slice(firstNew);
     return {
       kind: "applied",
-      newlyTerminalRuns: runs.slice(firstNew).flat(),
+      newlyTerminalRuns: applied.flatMap((found) => found.newlyTerminalRuns),
+      approvalWaitChanges: applied.flatMap(
+        (found) => found.approvalWaitChanges,
+      ),
     };
   }
 
@@ -2502,8 +2508,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         prebuilt,
       );
       try {
-        const runs = await validateStaged(s);
-        const result = await commitStaged(s, runs, mode);
+        const findings = await validateStaged(s);
+        const result = await commitStaged(s, findings, mode);
         // A receive that checks `expectedOldSha` always moves the ref.
         return result.kind === "applied" ? result.newlyTerminalRuns : [];
       } finally {
@@ -2539,10 +2545,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       stageReceive(principal, repoId, ref, pack, commitSha, mode, prebuilt),
     );
 
-    let runs: NewlyTerminalRun[][];
+    let findings: PushFindings[];
     let needed: boolean;
     try {
-      runs = await validateStaged(s);
+      findings = await validateStaged(s);
       // A held tip that is complete without the pack needs nothing of it.
       needed = !s.held || (await packBringsObjects(s));
     } catch (err) {
@@ -2581,7 +2587,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         state = "committed";
         return withRepoLock(repoId, async () => {
           try {
-            return await commitStaged(s, runs, mode);
+            return await commitStaged(s, findings, mode);
           } finally {
             await discardStaged(s);
           }
