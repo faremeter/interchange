@@ -7,13 +7,17 @@
 // `lookups`.
 
 import { eq, and, asc, inArray, isNotNull, isNull } from "drizzle-orm";
-import type { DB } from "@intx/db";
+import type { DB, DBExecutor } from "@intx/db";
 import {
   createApprovalStore,
   runPrincipalActiveKeySql,
   createSignalCorrelationStore,
   createWorkflowPendingProjectionStore,
   createWorkflowRunStore,
+  expireApprovals,
+  listUndecidedCorrelations,
+  reopenApprovals,
+  type UndecidedCorrelation,
 } from "@intx/db";
 import {
   agentSession,
@@ -30,7 +34,10 @@ import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
-import { RepoRemovedDuringReceiveError } from "./repo-store";
+import {
+  RepoRemovedDuringReceiveError,
+  type ApprovalWaitChange,
+} from "./repo-store";
 import type {
   SidecarLookups,
   WorkflowRunPackSource,
@@ -41,6 +48,58 @@ import { readWorkflowRunRefTips } from "./workflow-run-restore";
 import { projectTerminalRun } from "./workflow-run-terminal-projection";
 
 const logger = getLogger(["hub", "lookups"]);
+
+/**
+ * Bring a deployment's approvals in line with the wait changes a pack
+ * carries, in the caller's transaction. Replays the changes in the order
+ * given over the correlations they can move, read once, and writes only the
+ * net result, so the statements do not grow with the pack.
+ */
+export async function applyApprovalWaitChanges(
+  tx: DBExecutor,
+  anchorRunId: string,
+  changes: readonly ApprovalWaitChange[],
+  now: Date,
+): Promise<void> {
+  if (changes.length === 0) return;
+  const correlations = await listUndecidedCorrelations(
+    tx,
+    anchorRunId,
+    [...new Set(changes.map((change) => change.runId))],
+    // Only a change that waits can open a correlation an expiry closed.
+    changes.flatMap((change) => (change.waiting ? [change.correlationId] : [])),
+  );
+  if (correlations.length === 0) return;
+
+  const byRun = new Map<string, UndecidedCorrelation[]>();
+  for (const correlation of correlations) {
+    const ofRun = byRun.get(correlation.runId);
+    if (ofRun === undefined) byRun.set(correlation.runId, [correlation]);
+    else ofRun.push(correlation);
+  }
+  const open = new Map(
+    correlations.map((correlation) => [
+      correlation.correlationId,
+      correlation.open,
+    ]),
+  );
+  for (const change of changes) {
+    for (const correlation of byRun.get(change.runId) ?? []) {
+      if (correlation.correlationId === change.correlationId)
+        open.set(correlation.correlationId, change.waiting);
+    }
+  }
+
+  const moved = (to: boolean): string[] =>
+    correlations
+      .filter(
+        (correlation) =>
+          correlation.open !== to && open.get(correlation.correlationId) === to,
+      )
+      .map((correlation) => correlation.correlationId);
+  await expireApprovals(tx, moved(false), now);
+  await reopenApprovals(tx, anchorRunId, moved(true), now);
+}
 
 // The one definition of a source that owns the deployment's allocation. The
 // unlocked pre-check and the locked recheck of a workflow-run receive both
@@ -473,15 +532,16 @@ export function createHubSessionLookups(
       // Git.
       if (prepared.kind === "already_applied") return { accepted: true };
 
-      // Recorded before Git can advance: Git acceptance and the run-status
-      // projection below are not atomic, and this row is the only durable
-      // trace of a projection that fails after the ref moves. It is removed
-      // here only when the receive provably left Git unchanged or every run
-      // reached a final decision; otherwise lifecycle recovery reconciles the
-      // deployment from Git and removes it.
+      // Recorded before Git can advance: Git acceptance and the projection
+      // below are not atomic, and this row is the only durable trace of a
+      // projection that fails after the ref moves. It is removed here only
+      // when the receive provably left Git unchanged or every run and
+      // approval reached a final decision; otherwise lifecycle recovery
+      // reconciles the deployment from Git and removes it.
       const pendingId = generateId("workflowPendingProjection");
       let newlyTerminalRuns;
       let applied;
+      let decided = true;
       let reachedGit = false;
       try {
         historyReceives.begin(pendingId);
@@ -531,17 +591,44 @@ export function createHubSessionLookups(
           // decision is made, so ownership cannot change between the
           // rechecks above and the ref write.
           reachedGit = true;
-          return { committed: await prepared.commit() } as const;
+          const committed = await prepared.commit();
+          // Settled while this lock is still held, so two packs settle their
+          // approvals in the order their commits reached Git, whichever
+          // connection carried each. A failed update rolls back only its
+          // savepoint: failing the transaction would reject a pack Git
+          // already holds.
+          let approvalsSettled = true;
+          if (
+            committed.kind === "applied" &&
+            committed.approvalWaitChanges.length > 0
+          ) {
+            const { approvalWaitChanges } = committed;
+            try {
+              await tx.transaction((savepoint) =>
+                applyApprovalWaitChanges(
+                  savepoint,
+                  anchor.id,
+                  approvalWaitChanges,
+                  new Date(),
+                ),
+              );
+            } catch (err) {
+              approvalsSettled = false;
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error`Approval update failed for deployment ${anchor.id}; its projection stays pending: ${msg}`;
+            }
+          }
+          return { committed, approvalsSettled } as const;
         });
         if ("rejected" in received) {
           logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${received.rejected}`;
           return { accepted: false, reason: "path_violation" as const };
         }
-        applied = received.committed.kind === "applied";
+        const { committed } = received;
+        applied = committed.kind === "applied";
+        decided = received.approvalsSettled;
         newlyTerminalRuns =
-          received.committed.kind === "applied"
-            ? received.committed.newlyTerminalRuns
-            : [];
+          committed.kind === "applied" ? committed.newlyTerminalRuns : [];
       } catch (err) {
         // A receive that reached Git keeps its pending row: the ref may have
         // advanced before the failure, so only a Git read can prove nothing was
@@ -569,14 +656,18 @@ export function createHubSessionLookups(
 
       // The substrate has already durably advanced the git ref by the time it
       // returns, so the pack is accepted regardless of what happens below. The
-      // per-run status flip and principal deactivation are a downstream side
-      // effect of that durable advance, not part of accepting the pack, so the
-      // verdict stays accepted and the sidecar does not wedge re-pushing a pack
-      // that already landed. A redelivery of the same durable tip produces no
-      // newly-terminal signal, so a failed flip is not retried here; the
-      // pending row stays and lifecycle recovery projects the run from Git.
+      // approval updates above, the per-run status flip and the principal
+      // deactivation are a downstream side effect of that durable advance, not
+      // part of accepting the pack, so the verdict stays accepted and the
+      // sidecar does not wedge re-pushing a pack that already landed. A
+      // redelivery of the same durable tip reports nothing as new, so a failed
+      // update is not retried here; the pending row stays and lifecycle
+      // recovery projects the deployment from Git.
+      //
+      // A run's waits were settled before its end is. Its terminal event is
+      // the last of its log, so every wait change the pack carries comes
+      // first, and an approval the end expires is not opened again after it.
       const now = new Date();
-      let decided = true;
       for (const { runId, status, terminalEventJson } of newlyTerminalRuns) {
         try {
           const outcome = await db.transaction((tx) =>

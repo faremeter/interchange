@@ -62,8 +62,10 @@ import {
   DEFAULT_ASSET_REF,
   readWorkflowRunRefTips,
   type AgentRepoStore,
+  type ApprovalWaitChange,
   type InstallAndApproveResult,
   type NewlyTerminalRun,
+  type PackCommitResult,
   type RepoId,
   type SidecarCredentialIdentity,
   type SidecarLookups,
@@ -740,15 +742,31 @@ export async function applyWorkflowRunPack(
   ref: string,
   commitSha: string,
 ): Promise<NewlyTerminalRun[]> {
+  const result = await commitWorkflowRunPack(
+    store,
+    repoId,
+    pack,
+    ref,
+    commitSha,
+  );
+  return result.kind === "applied" ? result.newlyTerminalRuns : [];
+}
+
+async function commitWorkflowRunPack(
+  store: Pick<AgentRepoStore, "prepareWorkflowRunPack">,
+  repoId: RepoId,
+  pack: Uint8Array,
+  ref: string,
+  commitSha: string,
+): Promise<PackCommitResult> {
   const prepared = await store.prepareWorkflowRunPack(
     repoId,
     pack,
     ref,
     commitSha,
   );
-  if (prepared.kind === "already_applied") return [];
-  const result = await prepared.commit();
-  return result.kind === "applied" ? result.newlyTerminalRuns : [];
+  if (prepared.kind === "already_applied") return prepared;
+  return prepared.commit();
 }
 
 export type HubEnv = {
@@ -842,6 +860,7 @@ export async function startHub(
   registerTempDir: (dir: string) => void,
   opts: {
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
+    settleApprovalWaits?: StartDeployFlowEnvOpts["settleApprovalWaits"];
     materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
     loadRunCredentials?: SidecarLookups["loadRunCredentials"];
     loadRunGrants?: SidecarLookups["loadRunGrants"];
@@ -962,13 +981,16 @@ export async function startHub(
           return { accepted: true };
         }
         try {
-          await applyWorkflowRunPack(
+          const committed = await commitWorkflowRunPack(
             agentRepoStore,
             repoId,
             pack,
             ref,
             commitSha,
           );
+          if (committed.kind === "applied") {
+            await opts.settleApprovalWaits?.(committed.approvalWaitChanges);
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           workflowRunPackReceiveFailures.push({
@@ -1575,6 +1597,15 @@ export type StartDeployFlowEnvOpts = {
    */
   registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
   /**
+   * Receives the approval wait changes of each workflow-run pack the mock hub
+   * applies. Production's pack receive settles approval rows from them; the
+   * mock hub writes no rows, so a test that asserts on approval rows supplies
+   * that step here, backed by a real DB. A throw fails the receive.
+   */
+  settleApprovalWaits?: (
+    changes: readonly ApprovalWaitChange[],
+  ) => Promise<void>;
+  /**
    * Materializer for a mail-triggered run's grants, wired into the mock
    * hub's sidecar router as the `materializeMailTriggeredRunGrants` lookup.
    * When a `mail.outbound` frame names a workflow-derived recipient, the
@@ -1641,6 +1672,9 @@ export async function startDeployFlowEnv(
   const hub = await startHub(registerTempDir, {
     ...(opts.registerSignalCorrelation !== undefined
       ? { registerSignalCorrelation: opts.registerSignalCorrelation }
+      : {}),
+    ...(opts.settleApprovalWaits !== undefined
+      ? { settleApprovalWaits: opts.settleApprovalWaits }
       : {}),
     ...(opts.materializeMailTriggeredRunGrants !== undefined
       ? {

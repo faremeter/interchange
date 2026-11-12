@@ -70,13 +70,14 @@ export function createSignalCorrelationStore(db: DBHandle) {
      * `resolved_at IS NULL` guard makes the claim single-shot: the first caller
      * stamps `resolvedAt` and gets the row back; any second caller matches no
      * row and receives null, so a redelivered signal is not delivered twice.
-     * When `signalId` is provided it is persisted on the same update, recording
-     * which signal instance won the claim for redelivery idempotency.
+     * `signalId` is persisted on the same update, recording which signal
+     * instance won the claim for redelivery idempotency. It is required: a
+     * closed correlation without one reads as closed by an expiry.
      */
     async claimTerminal(
       correlationId: string,
       resolvedAt: Date,
-      signalId: string | null,
+      signalId: string,
       tx?: DBExecutor,
     ): Promise<ParsedSignalCorrelation | null> {
       const [claimed] = await (tx ?? db)

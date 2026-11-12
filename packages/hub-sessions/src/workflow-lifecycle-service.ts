@@ -17,12 +17,14 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 import {
   deactivateRunPrincipals,
+  expireApprovals,
   expireDeploymentApprovals,
   createSidecarAllocationStore,
   createWorkflowPendingProjectionStore,
   createWorkflowRunStore,
   createWorkflowRunDispatchStore,
   parseWorkflowRunRow,
+  reopenApprovals,
   runPrincipalHasActiveKey,
   workflowCapacityReleaseAt,
   SIDECAR_CLEANUP_RETRY_EXHAUSTED_FAILURE_CODE,
@@ -33,6 +35,7 @@ import {
   type SidecarAllocation,
 } from "@intx/db";
 import {
+  approval,
   liveWorkflowRunStatuses,
   isLiveWorkflowRunStatus,
   sidecarAllocation,
@@ -47,7 +50,11 @@ import {
 
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
 import type { SidecarEventMap } from "./ws/sidecar-events";
-import type { WorkflowRunReader } from "./workflow-run-reader";
+import type { RepoId } from "./repo-store";
+import type {
+  WorkflowRunEvent,
+  WorkflowRunReader,
+} from "./workflow-run-reader";
 import {
   WorkflowControlNotConnectedError,
   WorkflowControlHistoryPendingError,
@@ -61,6 +68,7 @@ import {
 } from "./ws/sidecar-handler";
 import {
   classifyTerminalEvent,
+  latestApprovalWaits,
   workflowRunRepoIdForAddress,
   WORKFLOW_RUN_REF,
 } from "./workflow-run-kind";
@@ -316,6 +324,46 @@ export function createWorkflowLifecycleService({
     return result;
   }
 
+  // The approvals of the deployment's live runs whose row disagrees with the
+  // last word accepted history has on them, each with that word. `latest`
+  // holds the last event of every run not settled yet; a run that ended is
+  // left to its terminal event, which expires its approvals. This reads the
+  // whole log of each run it covers.
+  async function readApprovalWaits(
+    anchorRunId: string,
+    repoId: RepoId,
+    latest: ReadonlyMap<string, WorkflowRunEvent | null>,
+  ): Promise<{ correlationId: string; waiting: boolean }[]> {
+    const rows = await db
+      .select({
+        runId: approval.runId,
+        correlationId: approval.correlationId,
+        status: approval.status,
+      })
+      .from(approval)
+      .where(
+        and(
+          eq(approval.anchorRunId, anchorRunId),
+          inArray(approval.status, ["pending", "expired"]),
+        ),
+      );
+    const waits: { correlationId: string; waiting: boolean }[] = [];
+    for (const id of new Set(rows.map((row) => row.runId))) {
+      const last = latest.get(id);
+      if (last == null || classifyTerminalEvent(last.type).terminal) continue;
+      const words = latestApprovalWaits(
+        await runReader.readRunEvents(repoId, WORKFLOW_RUN_REF, id),
+      );
+      for (const { runId, correlationId, status } of rows) {
+        const waiting = words.get(correlationId);
+        if (runId !== id || waiting === undefined) continue;
+        if (waiting === (status === "pending")) continue;
+        waits.push({ correlationId, waiting });
+      }
+    }
+    return waits;
+  }
+
   // Project accepted history for the deployment and claim the pending rows
   // that history covers. Returns false when Git moved after the read, so the
   // read may have missed a receive and nothing was claimed.
@@ -360,11 +408,18 @@ export function createWorkflowLifecycleService({
       (repoId === null || !(await runReader.hasRepository(repoId)))
     )
       throw new Error("Accepted workflow history is missing from the Hub");
+    // Read at the ref, not at `history.tip`: a tip that moved in between
+    // fails the recheck below, so these are used only when both reads saw
+    // one tip.
+    const approvalWaits =
+      repoId === null
+        ? []
+        : await readApprovalWaits(runId, repoId, history.events);
     // Only the allocation row is locked: pack ingestion moves Git only
     // while it holds this row, so an unchanged tip under it proves the read
-    // covered every claimed receive. Locking the anchor row as well would
-    // deadlock against a receive minting a child row, whose foreign key
-    // needs it.
+    // covered every claimed receive. A pack settles approvals under this row
+    // and every end of a run takes it, so neither runs beside the writes
+    // below.
     return db.transaction(async (tx) => {
       await tx
         .select({ id: sidecarAllocation.id })
@@ -377,6 +432,12 @@ export function createWorkflowLifecycleService({
           history.tip
       )
         return false;
+      const ofWord = (waiting: boolean): string[] =>
+        approvalWaits
+          .filter((wait) => wait.waiting === waiting)
+          .map((wait) => wait.correlationId);
+      await expireApprovals(tx, ofWord(false), now());
+      await reopenApprovals(tx, runId, ofWord(true), now());
       for (const [id, event] of history.events) {
         if (event === null) continue;
         const terminal = classifyTerminalEvent(event.type);

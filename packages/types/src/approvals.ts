@@ -19,7 +19,7 @@ export const ApprovalResponse = type({
   status: type(
     "'pending' | 'approved' | 'rejected' | 'timeout' | 'expired'",
   ).describe(
-    "An approval is 'expired' when its run stopped waiting on it before it was decided. It can no longer be decided.",
+    "An approval is 'expired' when its run stopped waiting on it before it was decided. It cannot be decided while expired, and it is 'pending' again if the run waits on it again.",
   ),
   timeoutAt: type("string | null").describe(
     "Deadline after which the approval expires. Null records a hold-indefinitely approval with no deadline.",

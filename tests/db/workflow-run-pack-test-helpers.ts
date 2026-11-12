@@ -20,6 +20,11 @@ export type WorkflowRunPackRun = {
   consumedMessageId?: string;
   /** Written into RunStarted in place of `consumedMessageId`. */
   consumedDeliveryKey?: string;
+  /**
+   * Wait events written after RunStarted, in order: a `SignalAwaited` on the
+   * name, or a `SignalAwaitAbandoned` when `abandoned` is set.
+   */
+  waits?: readonly { signalName: string; abandoned?: boolean }[];
   // When true, omit the seq-0 RunStarted and emit the terminal event
   // alone at seq 1 -- the exact artifact the crash-loop guard's
   // supervisor-authored RunFailed produces on an anchor run whose event
@@ -49,6 +54,7 @@ function runFiles(runs: readonly WorkflowRunPackRun[]): Record<string, string> {
     signalName,
     consumedMessageId,
     consumedDeliveryKey,
+    waits,
     terminalOnlyAtSeq1,
   } of runs) {
     if (terminalOnlyAtSeq1 === true) {
@@ -75,6 +81,17 @@ function runFiles(runs: readonly WorkflowRunPackRun[]): Record<string, string> {
         ...(consumedDeliveryKey === undefined ? {} : { consumedDeliveryKey }),
       });
     let seq = 1;
+    for (const wait of waits ?? []) {
+      files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`] =
+        JSON.stringify({
+          seq,
+          type:
+            wait.abandoned === true ? "SignalAwaitAbandoned" : "SignalAwaited",
+          stepId: "ask",
+          signalName: wait.signalName,
+        });
+      seq += 1;
+    }
     if (signalId !== undefined) {
       files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`] =
         JSON.stringify({
