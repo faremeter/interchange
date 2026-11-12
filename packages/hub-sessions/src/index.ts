@@ -76,6 +76,7 @@ export {
   type WorkflowRunPackSource,
 } from "./ws";
 export {
+  applyApprovalWaitChanges,
   createHubSessionLookups,
   findRoutableById,
   resolveRoutableAddress,

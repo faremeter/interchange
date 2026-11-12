@@ -77,10 +77,14 @@ export {
 export type { MailAcceptCoordinate } from "@intx/authz";
 export {
   createApprovalStore,
+  expireApprovals,
   expireDeploymentApprovals,
   expireRunApprovals,
+  listUndecidedCorrelations,
+  reopenApprovals,
   type ApprovalStore,
   type ResolveApprovalArgs,
+  type UndecidedCorrelation,
 } from "./approval-store";
 export {
   createSignalCorrelationStore,

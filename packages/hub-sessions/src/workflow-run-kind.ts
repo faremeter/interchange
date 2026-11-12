@@ -1913,6 +1913,34 @@ function approvalWaitOf(
   return { correlationId, waiting: true };
 }
 
+/**
+ * The last word a run's accepted event log has on each approval the run
+ * waited on: true while it waits, false once it retired the wait. The same
+ * reading the push validator applies to the events one commit adds.
+ */
+export function latestApprovalWaits(
+  events: readonly { type: string; body: unknown }[],
+): Map<string, boolean> {
+  const waits = new Map<string, boolean>();
+  for (const event of events) {
+    if (
+      event.type !== "SignalAwaited" &&
+      event.type !== "SignalAwaitAbandoned"
+    ) {
+      continue;
+    }
+    const fields = SignalWaitFields(event.body);
+    if (fields instanceof type.errors) {
+      throw new Error(
+        `accepted ${event.type} event has an invalid payload: ${fields.summary}`,
+      );
+    }
+    const wait = approvalWaitOf(event.type, fields);
+    if (wait !== undefined) waits.set(wait.correlationId, wait.waiting);
+  }
+  return waits;
+}
+
 async function parseEventBlob(
   entry: RunEventBlob,
   readBlob: (path: string) => Promise<Uint8Array>,

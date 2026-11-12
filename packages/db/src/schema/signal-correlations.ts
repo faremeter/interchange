@@ -35,8 +35,8 @@ export const signalCorrelation = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
-    // A run's end and a deployment's end each look up the open correlations
-    // of a deployment's runs.
+    // A run's end, a deployment's end and a pack's settle each look up the
+    // open correlations of a deployment's runs.
     index("signal_correlation_open_run_idx")
       .on(t.anchorRunId, t.runId)
       .where(sql`${t.resolvedAt} is null`),
