@@ -5407,6 +5407,77 @@ describe("supervisor standby and wake", () => {
     await supervisor.shutdown();
   });
 
+  test("mail a dispatch took before the child declined earlier mail gives way to it", async () => {
+    const inbox = createMemoryInboxPrimitives();
+    let arrivals = 0;
+    let taken = 0;
+    const turnTwoTaken = Promise.withResolvers<undefined>();
+    const releaseTurnTwo = Promise.withResolvers<undefined>();
+    const { supervisor, firstSender, first, mailBus } = await setupLiveRun({
+      inboxPrimitives: {
+        ...inbox,
+        enqueueInbox: (store, principal, repoId, args) =>
+          inbox.enqueueInbox(store, principal, repoId, {
+            ...args,
+            receivedAt: (arrivals += 1),
+          }),
+        async dequeueToProcessing(...args) {
+          const entry = await inbox.dequeueToProcessing(...args);
+          if (entry === null) return entry;
+          taken += 1;
+          // Turn two is held until the child has declined turn one and the run
+          // waits on the same input again, so no backstop decides the order.
+          if (taken === 2) {
+            turnTwoTaken.resolve(undefined);
+            await releaseTurnTwo.promise;
+          }
+          return entry;
+        },
+      },
+      dispatchRetryBackoffMs: 0,
+      dispatchWaitBackstopMs: 1,
+    });
+    const unanswered: ParkedCorrelation = {
+      runId: RUN,
+      correlationId: "corr-unanswered",
+      parkKind: "input",
+    };
+    await answerParkedQuery(first, firstSender, 1, [unanswered]);
+    mailBus.deliver(
+      ADDRESS,
+      inboundDelivery(new TextEncoder().encode("turn one")),
+    );
+    const turnOne = await waitForUpstreamPayload(
+      first.supervisorToChild,
+      "signal.deliver",
+    );
+    mailBus.deliver(
+      ADDRESS,
+      inboundDelivery(new TextEncoder().encode("turn two")),
+    );
+    await turnTwoTaken.promise;
+
+    await confirmDelivery(first, firstSender, 1, false);
+    await answerParkedQuery(first, firstSender, 2, [unanswered]);
+    // Answered after the decline's own query, so that answer has landed too.
+    const reEmitted = supervisor.reEmitParkedCorrelations();
+    await answerParkedQuery(first, firstSender, 3, [unanswered]);
+    await reEmitted;
+    releaseTurnTwo.resolve(undefined);
+
+    const deliveries = await waitForUpstreamPayloads(
+      first.supervisorToChild,
+      "signal.deliver",
+      2,
+    );
+    expect(deliveries[1]?.data).toMatchObject({
+      signalName: signalName("corr-unanswered"),
+      signalId: turnOne.data.signalId,
+    });
+
+    await supervisor.shutdown();
+  });
+
   test("an input whose child crashed before committing it goes to the next child", async () => {
     const {
       supervisor,
