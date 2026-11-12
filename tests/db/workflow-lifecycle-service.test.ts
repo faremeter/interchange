@@ -16,6 +16,7 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import {
+  seedPendingApproval,
   seedPrincipal,
   seedRunPrincipalKey,
   seedTenants,
@@ -32,6 +33,7 @@ import {
 } from "@intx/db";
 import * as dbSchema from "@intx/db/schema";
 import {
+  approval,
   principal,
   sidecar,
   sidecarAllocation,
@@ -3028,6 +3030,48 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await h.db.select().from(runToken)).toEqual([]);
     });
 
+    test("forced stop expires every pending approval of the deployment", async () => {
+      await expire();
+      await addChild("run_child_parked");
+      // A run that ended earlier can still hold a pending approval. The stop
+      // cancels no row of it, and must expire its approval all the same.
+      await h.db.insert(workflowRun).values({
+        id: "run_child_ended",
+        tenantId,
+        definitionId: "definition",
+        anchorRunId: runId,
+        status: "completed",
+        createdAt,
+      });
+      for (const parked of [runId, "run_child_parked", "run_child_ended"]) {
+        await seedPendingApproval(h.db, {
+          correlationId: `c-${parked}`,
+          tenantId,
+          anchorRunId: runId,
+          runId: parked,
+        });
+      }
+      const options = { sendControl: async () => undefined };
+      await service(options).reconcileNext();
+      current = new Date(current.getTime() + 1_000);
+      await service(options).reconcileNext();
+      expect(await runStates()).toEqual({
+        [runId]: "cancelled",
+        run_child_parked: "cancelled",
+        run_child_ended: "completed",
+      });
+      const approvals = await h.db
+        .select({ runId: approval.runId, status: approval.status })
+        .from(approval);
+      expect(
+        Object.fromEntries(approvals.map((row) => [row.runId, row.status])),
+      ).toEqual({
+        [runId]: "expired",
+        run_child_parked: "expired",
+        run_child_ended: "expired",
+      });
+    });
+
     test("an unresponsive worker is not declared stopped until capacity destruction is confirmed", async () => {
       await expire();
       const options = {
@@ -3990,6 +4034,32 @@ describe.skipIf(!harnessDbEnvAvailable())(
       current = new Date(current.getTime() + 1_000);
       expect(await lifecycle.reconcileNext()).toBe(true);
       expect(await runStates()).toEqual({ [runId]: "failed" });
+    });
+
+    test("a deferred capacity failure expires the deployment's approvals when it is applied", async () => {
+      await seedPendingApproval(h.db, {
+        correlationId: "c-parked",
+        tenantId,
+        anchorRunId: runId,
+        runId,
+      });
+      const approvalStatuses = async () =>
+        (await h.db.select({ status: approval.status }).from(approval)).map(
+          (row) => row.status,
+        );
+      await leavePending();
+      await loseCapacity(current);
+      const lifecycle = service();
+      expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe("live");
+      // The runs are live until the deferred failure is applied, and so is
+      // the approval.
+      expect(await approvalStatuses()).toEqual(["pending"]);
+
+      current = new Date(current.getTime() + 1_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+
+      expect(await runStates()).toEqual({ [runId]: "failed" });
+      expect(await approvalStatuses()).toEqual(["expired"]);
     });
 
     describe("standby", () => {

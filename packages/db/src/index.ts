@@ -77,6 +77,8 @@ export {
 export type { MailAcceptCoordinate } from "@intx/authz";
 export {
   createApprovalStore,
+  expireDeploymentApprovals,
+  expireRunApprovals,
   type ApprovalStore,
   type ResolveApprovalArgs,
 } from "./approval-store";

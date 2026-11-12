@@ -15,9 +15,10 @@ import {
 } from "@intx/db";
 import { deriveRunPrincipalId } from "@intx/hub-common";
 import type { WorkflowRunCredentialRefs } from "@intx/db/schema";
-import { TenantSlug, type GrantWalkSnapshot } from "@intx/types";
+import { signalName, TenantSlug, type GrantWalkSnapshot } from "@intx/types";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import {
+  approval,
   asset,
   credential,
   grant,
@@ -30,6 +31,7 @@ import {
   runToken,
   sidecar,
   sidecarAllocation,
+  signalCorrelation,
   tenant,
   wallet,
   workflowDefinition,
@@ -540,5 +542,45 @@ export async function seedRunToken(
     consumer: t.consumer ?? "action:seeded",
     tokenHashSha256: new TextEncoder().encode(t.id.padEnd(32, "-")),
     sealedToken: "sealed",
+  });
+}
+
+/**
+ * Insert the correlation and pending approval rows a parked run registers,
+ * as the register co-write leaves them. The run and its anchor must exist.
+ */
+export async function seedPendingApproval(
+  db: Db,
+  a: {
+    correlationId: string;
+    tenantId: string;
+    anchorRunId: string;
+    runId: string;
+  },
+): Promise<void> {
+  const agentAddress = `${a.anchorRunId}@seed.example`;
+  await db.insert(signalCorrelation).values({
+    correlationId: a.correlationId,
+    tenantId: a.tenantId,
+    anchorRunId: a.anchorRunId,
+    agentAddress,
+    runId: a.runId,
+    signalName: signalName(a.correlationId),
+    kind: "approval",
+  });
+  await db.insert(approval).values({
+    id: `apr_${a.correlationId}`,
+    tenantId: a.tenantId,
+    anchorRunId: a.anchorRunId,
+    runId: a.runId,
+    agentAddress,
+    correlationId: a.correlationId,
+    status: "pending",
+    toolDefinition: {
+      name: "charge_card",
+      description: "Charge the customer's card",
+      inputSchema: { type: "object" },
+    },
+    toolArguments: { amount: 100 },
   });
 }

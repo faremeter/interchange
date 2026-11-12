@@ -16,7 +16,11 @@ export const ApprovalResponse = type({
   ),
   toolArguments: "Record<string, unknown>",
   scope: "'once' | 'always' | null",
-  status: "'pending' | 'approved' | 'rejected' | 'timeout' | 'expired'",
+  status: type(
+    "'pending' | 'approved' | 'rejected' | 'timeout' | 'expired'",
+  ).describe(
+    "An approval is 'expired' when its run stopped waiting on it before it was decided. It can no longer be decided.",
+  ),
   timeoutAt: type("string | null").describe(
     "Deadline after which the approval expires. Null records a hold-indefinitely approval with no deadline.",
   ),

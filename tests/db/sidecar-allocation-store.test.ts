@@ -34,6 +34,7 @@ import {
   type RetainedSidecarIncarnation,
 } from "@intx/db";
 import {
+  approval,
   principalKey,
   sidecar,
   sidecarAllocation,
@@ -49,6 +50,7 @@ import {
 } from "@intx/test-harness/db-harness";
 import {
   seedAsset,
+  seedPendingApproval,
   seedPrincipal,
   seedTenants,
   seedWorkflowRun,
@@ -5499,7 +5501,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBeDefined();
     });
 
-    test("terminal allocation failure fails runs, principals, and dispatches", async () => {
+    test("terminal allocation failure fails runs, principals, approvals, and dispatches", async () => {
       await seedPrincipal(h.db, {
         id: "prn-terminal-run",
         tenantId: TENANT_ID,
@@ -5517,6 +5519,27 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedRunToken(h.db, {
         id: "rtk_terminal_run",
         principalId: "prn-terminal-run",
+      });
+      await seedPendingApproval(h.db, {
+        correlationId: "c-terminal-run",
+        tenantId: TENANT_ID,
+        anchorRunId: ANCHOR_RUN_ID,
+        runId: "run-terminal",
+      });
+      // A run that ended earlier can still hold a pending approval. The
+      // failure flips no row of it, and must expire its approval all the same.
+      await seedWorkflowRun(h.db, {
+        id: "run-ended-earlier",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
+        status: "cancelled",
+      });
+      await seedPendingApproval(h.db, {
+        correlationId: "c-ended-earlier",
+        tenantId: TENANT_ID,
+        anchorRunId: ANCHOR_RUN_ID,
+        runId: "run-ended-earlier",
       });
       const store = createSidecarAllocationStore(h.db);
       const dispatchStore = createWorkflowRunDispatchStore(h.db);
@@ -5576,6 +5599,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           columns: { status: true },
         }),
       ).toEqual({ status: "active" });
+      expect(
+        await h.db.select({ status: approval.status }).from(approval),
+      ).toEqual([{ status: "pending" }, { status: "pending" }]);
       expect((await dispatchStore.findById(terminalDispatch.id))?.status).toBe(
         "pending",
       );
@@ -5611,6 +5637,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).toEqual({ status: "deactivated" });
       expect(await h.db.select().from(runToken)).toEqual([]);
+      expect(
+        await h.db.select({ status: approval.status }).from(approval),
+      ).toEqual([{ status: "expired" }, { status: "expired" }]);
       expect(await dispatchStore.findById(terminalDispatch.id)).toMatchObject({
         status: "abandoned",
         failureCode: "quota_disabled",

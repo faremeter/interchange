@@ -1355,6 +1355,7 @@ Source: packages/types/src/approvals.ts
 
 **anchorRunId**: The anchor run the approval originates from. Every approval is raised during a workflow run; there is no launched single agent or agent-definition row behind it.
 **correlationId**: Ties the approval to the suspension it resolves. The parked run awaits the control signal keyed by this id.
+**status**: An approval is 'expired' when its run stopped waiting on it before it was decided. It can no longer be decided.
 **timeoutAt**: Deadline after which the approval expires. Null records a hold-indefinitely approval with no deadline.
 **toolDefinition**: The approver-facing tool snapshot (name, description, input schema) captured at suspend time.
 
