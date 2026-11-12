@@ -7,6 +7,7 @@ import { generateKeyPair } from "@intx/crypto";
 import { collectReachableObjects } from "@intx/storage-isogit/node";
 import { deriveDeliveryKey } from "@intx/types/message-id";
 import type { KeyPair } from "@intx/types/runtime";
+import { signalName } from "@intx/types/signals";
 import {
   workflowRunKindHandler,
   workflowRunAuthorize,
@@ -702,6 +703,139 @@ describe("workflowRunKindHandler.validatePush — step state", () => {
       },
     });
   });
+});
+
+describe("workflowRunKindHandler.validatePush — approval wait changes", () => {
+  const eventPath = (runId: string, seq: number) =>
+    `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`;
+  const awaited = (seq: number, name: string, parkKind?: string) =>
+    eventBody(seq, "SignalAwaited", {
+      stepId: "ask",
+      signalName: name,
+      ...(parkKind === undefined ? {} : { parkKind }),
+    });
+  const abandoned = (seq: number, name: string) =>
+    eventBody(seq, "SignalAwaitAbandoned", { stepId: "ask", signalName: name });
+
+  async function changesOf(
+    files: Record<string, string>,
+    opts: ValidateOpts = {},
+  ) {
+    const r = await validate(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "", ...files },
+      opts,
+    );
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    return r.approvalWaitChanges;
+  }
+
+  test.each([undefined, "approval"])(
+    "reports an approval a run begins to wait on (park kind %p)",
+    async (parkKind) => {
+      expect(
+        await changesOf({
+          [eventPath("run-a", 0)]: eventBody(0, "RunStarted"),
+          [eventPath("run-a", 1)]: awaited(1, signalName("c-1"), parkKind),
+        }),
+      ).toEqual([{ runId: "run-a", correlationId: "c-1", waiting: true }]);
+    },
+  );
+
+  test("reports an approval wait a run retires", async () => {
+    const prior = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [eventPath("run-a", 0)]: eventBody(0, "RunStarted"),
+      [eventPath("run-a", 1)]: awaited(1, signalName("c-1")),
+    };
+    expect(
+      await changesOf(
+        { ...prior, [eventPath("run-a", 2)]: abandoned(2, signalName("c-1")) },
+        { priorFiles: prior },
+      ),
+    ).toEqual([{ runId: "run-a", correlationId: "c-1", waiting: false }]);
+  });
+
+  test("reports only the last word a commit adds on a wait", async () => {
+    expect(
+      await changesOf({
+        [eventPath("run-a", 0)]: eventBody(0, "RunStarted"),
+        [eventPath("run-a", 1)]: awaited(1, signalName("c-again")),
+        [eventPath("run-a", 2)]: abandoned(2, signalName("c-again")),
+        [eventPath("run-a", 3)]: awaited(3, signalName("c-again")),
+        [eventPath("run-a", 4)]: awaited(4, signalName("c-left")),
+        [eventPath("run-a", 5)]: abandoned(5, signalName("c-left")),
+      }),
+    ).toEqual([
+      { runId: "run-a", correlationId: "c-again", waiting: true },
+      { runId: "run-a", correlationId: "c-left", waiting: false },
+    ]);
+  });
+
+  test("reports no change for an input park or an author signal", async () => {
+    expect(
+      await changesOf({
+        [eventPath("run-a", 0)]: eventBody(0, "RunStarted"),
+        [eventPath("run-a", 1)]: awaited(1, signalName("c-input"), "input"),
+        [eventPath("run-a", 2)]: awaited(2, "continue"),
+        [eventPath("run-a", 3)]: abandoned(3, "continue"),
+      }),
+    ).toEqual([]);
+  });
+
+  test("reports no change for a relay park on a reserved signal name", async () => {
+    expect(
+      await changesOf({
+        [eventPath("run-a", 0)]: eventBody(0, "RunStarted"),
+        [eventPath("run-a", 1)]: awaited(
+          1,
+          signalName("c-relay"),
+          "signal-relay",
+        ),
+      }),
+    ).toEqual([]);
+  });
+
+  test("rejects a SignalAwaited event with an unknown park kind", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [eventPath("run-a", 0)]: eventBody(0, "RunStarted"),
+      [eventPath("run-a", 1)]: awaited(1, signalName("c-1"), "escalation"),
+    });
+    expect(r).toMatchObject({ ok: false });
+    if (!r.ok) expect(r.reason).toContain("SignalAwaited payload invalid");
+  });
+
+  test("does not report a wait event already present in the prior tree", async () => {
+    const files = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [eventPath("run-a", 0)]: eventBody(0, "RunStarted"),
+      [eventPath("run-a", 1)]: awaited(1, signalName("c-1")),
+    };
+    expect(await changesOf(files, { priorFiles: files })).toEqual([]);
+  });
+
+  test("reports no change for a run that ends in the commit", async () => {
+    expect(
+      await changesOf({
+        [eventPath("run-a", 0)]: eventBody(0, "RunStarted"),
+        [eventPath("run-a", 1)]: awaited(1, signalName("c-1")),
+        [eventPath("run-a", 2)]: eventBody(2, "RunCancelled"),
+      }),
+    ).toEqual([]);
+  });
+
+  test.each(["SignalAwaited", "SignalAwaitAbandoned"])(
+    "rejects a %s event that names no signal",
+    async (type) => {
+      const r = await validate({
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [eventPath("run-a", 0)]: eventBody(0, "RunStarted"),
+        [eventPath("run-a", 1)]: eventBody(1, type, { stepId: "ask" }),
+      });
+      expect(r).toMatchObject({ ok: false });
+      if (!r.ok) expect(r.reason).toContain(`${type} payload invalid`);
+    },
+  );
 });
 
 describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => {

@@ -76,6 +76,7 @@ function preparedWith(
 const appliedNothing: PackCommitResult = {
   kind: "applied",
   newlyTerminalRuns: [],
+  approvalWaitChanges: [],
 };
 
 describe.skipIf(!harnessDbEnvAvailable())(

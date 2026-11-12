@@ -292,6 +292,7 @@ export {
   encodeCombinedEventLog,
 } from "./workflow-run-event-log";
 export type {
+  ApprovalWaitChange,
   AuthorizeFn,
   CommittedReads,
   CommittedTreeEntry,

@@ -216,7 +216,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // the allocation lock and runs its locked rechecks.
         prepareWorkflowRunPack: async () => ({
           kind: "prepared",
-          commit: async () => ({ kind: "applied", newlyTerminalRuns: [] }),
+          commit: async () => ({
+            kind: "applied",
+            newlyTerminalRuns: [],
+            approvalWaitChanges: [],
+          }),
           discard: () => Promise.resolve(),
         }),
       };

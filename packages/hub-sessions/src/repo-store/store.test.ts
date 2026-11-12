@@ -11,6 +11,7 @@ import { createRepoStore, type LocalRepoStore } from "./store";
 import { workflowAuthorize, workflowKindHandler } from "../workflow-kind";
 import { RepoRemovedDuringReceiveError } from "./types";
 import type {
+  ApprovalWaitChange,
   AuthorizeFn,
   KindHandler,
   NewlyTerminalRun,
@@ -5605,6 +5606,10 @@ describe("RepoStore prepared pack receive", () => {
     return { runId: content, status: "completed", terminalEventJson: "{}" };
   }
 
+  function waitOf(content: string): ApprovalWaitChange {
+    return { runId: content, correlationId: content, waiting: false };
+  }
+
   // A pack that carries every commit, tree and blob from the root up to
   // `tip`, so a receive validates each commit against its own parent.
   async function historyPack(dir: string, tip: string): Promise<Uint8Array> {
@@ -5695,7 +5700,11 @@ describe("RepoStore prepared pack receive", () => {
         if (!(await check(text))) {
           return { ok: false, reason: `rejected ${text}` };
         }
-        return { ok: true, newlyTerminalRuns: [runOf(text)] };
+        return {
+          ok: true,
+          newlyTerminalRuns: [runOf(text)],
+          approvalWaitChanges: [waitOf(text)],
+        };
       },
       onRefUpdated(args) {
         onRefUpdatedCalls.push(args);
@@ -5773,6 +5782,7 @@ describe("RepoStore prepared pack receive", () => {
     expect(await prepared.commit()).toEqual({
       kind: "applied",
       newlyTerminalRuns: [runOf("v1"), runOf("v2")],
+      approvalWaitChanges: [waitOf("v1"), waitOf("v2")],
     });
     expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
     expect(handler.onRefUpdatedCalls).toEqual([
@@ -5889,6 +5899,7 @@ describe("RepoStore prepared pack receive", () => {
     expect(await prepared.commit()).toEqual({
       kind: "applied",
       newlyTerminalRuns: [runOf("v2")],
+      approvalWaitChanges: [waitOf("v2")],
     });
     expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
     expect(await store.resolveRef(principal, other, REF)).toBe(tip);
@@ -5914,6 +5925,7 @@ describe("RepoStore prepared pack receive", () => {
     expect(await prepared.commit()).toEqual({
       kind: "applied",
       newlyTerminalRuns: [runOf("v3")],
+      approvalWaitChanges: [waitOf("v3")],
     });
     expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
     expect(handler.onRefUpdatedCalls.at(-1)).toEqual({
@@ -5976,6 +5988,7 @@ describe("RepoStore prepared pack receive", () => {
     expect(await prepared.commit()).toEqual({
       kind: "applied",
       newlyTerminalRuns: [runOf("v1"), runOf("v2")],
+      approvalWaitChanges: [waitOf("v1"), waitOf("v2")],
     });
     expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
   });
@@ -6010,6 +6023,7 @@ describe("RepoStore prepared pack receive", () => {
     expect(await committing).toEqual({
       kind: "applied",
       newlyTerminalRuns: [runOf("v1")],
+      approvalWaitChanges: [waitOf("v1")],
     });
     expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
     expect(await receivedPacks(repoDirOf(repoId))).toHaveLength(1);
@@ -6030,6 +6044,7 @@ describe("RepoStore prepared pack receive", () => {
     expect(await a.commit()).toEqual({
       kind: "applied",
       newlyTerminalRuns: [runOf("v1"), runOf("v2")],
+      approvalWaitChanges: [waitOf("v1"), waitOf("v2")],
     });
     expect(await b.commit()).toEqual({ kind: "already_applied" });
     expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);

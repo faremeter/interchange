@@ -1,4 +1,5 @@
 export type {
+  ApprovalWaitChange,
   AuthorizeFn,
   CommittedReads,
   CommittedTreeEntry,
