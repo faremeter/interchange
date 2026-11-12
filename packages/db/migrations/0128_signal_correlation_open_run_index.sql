@@ -1,0 +1,1 @@
+CREATE INDEX "signal_correlation_open_run_idx" ON "signal_correlation" USING btree ("anchor_run_id","run_id") WHERE "signal_correlation"."resolved_at" is null;

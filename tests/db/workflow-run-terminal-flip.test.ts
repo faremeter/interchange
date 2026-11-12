@@ -27,9 +27,11 @@ import {
   createWorkflowRunStore,
 } from "@intx/db";
 import {
+  approval,
   principal,
   sidecar,
   sidecarAllocation,
+  signalCorrelation,
   workflowPendingProjection,
   workflowRun,
   runToken,
@@ -56,6 +58,7 @@ import {
 } from "@intx/test-harness/db-harness";
 import {
   seedAsset,
+  seedPendingApproval,
   seedPrincipal,
   seedTenants,
   seedWorkflowRun,
@@ -342,6 +345,59 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(prn?.status).toBe("deactivated");
       expect(await h.db.select().from(runToken)).toEqual([]);
       expect(await h.db.select().from(workflowPendingProjection)).toEqual([]);
+    });
+
+    test("a run that ends while it waits on an approval expires the approval", async () => {
+      for (const runId of ["run-parked", "run-live"]) {
+        await seedWorkflowRun(h.db, {
+          id: runId,
+          anchorRunId: DEPLOYMENT,
+          tenantId: TENANT,
+        });
+        await seedPendingApproval(h.db, {
+          correlationId: `c-${runId}`,
+          tenantId: TENANT,
+          anchorRunId: DEPLOYMENT,
+          runId,
+        });
+      }
+
+      await buildAndReceive("run-parked", "RunCancelled");
+
+      const approvals = await h.db
+        .select({ runId: approval.runId, status: approval.status })
+        .from(approval);
+      expect(
+        Object.fromEntries(approvals.map((row) => [row.runId, row.status])),
+      ).toEqual({ "run-parked": "expired", "run-live": "pending" });
+    });
+
+    test("the anchor's end expires the approvals of the runs it leaves live", async () => {
+      // A crash-looping deployment ends its anchor run and leaves a parked
+      // child run as it was. No later pack ends that run, and a decision for
+      // it is refused once the anchor is not live.
+      await seedWorkflowRun(h.db, {
+        id: "run-child",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+      });
+      await seedPendingApproval(h.db, {
+        correlationId: "c-child",
+        tenantId: TENANT,
+        anchorRunId: DEPLOYMENT,
+        runId: "run-child",
+      });
+
+      await buildAndReceive(DEPLOYMENT, "RunFailed");
+
+      const approvals = await h.db
+        .select({ runId: approval.runId, status: approval.status })
+        .from(approval);
+      expect(approvals).toEqual([{ runId: "run-child", status: "expired" }]);
+      const [correlation] = await h.db
+        .select({ resolvedAt: signalCorrelation.resolvedAt })
+        .from(signalCorrelation);
+      expect(correlation?.resolvedAt).not.toBeNull();
     });
 
     test("delayed terminal delivery uses the same retention deadline as projection recovery", async () => {

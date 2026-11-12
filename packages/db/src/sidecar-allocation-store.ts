@@ -21,6 +21,7 @@ import {
   type SidecarView,
 } from "@intx/types";
 
+import { expireDeploymentApprovals } from "./approval-store";
 import type { DB, DBExecutor } from "./client";
 import { deactivateRunPrincipals } from "./principal-store";
 import {
@@ -812,6 +813,9 @@ function buildSidecarAllocationStore(
         failedRuns.map(({ id }) => id),
         now,
       );
+      // The deployment ends here, so every approval of it expires, one of
+      // a run that ended earlier included.
+      await expireDeploymentApprovals(tx, anchorRunId, now);
     }
     return failedRuns.map(({ id }) => id);
   }

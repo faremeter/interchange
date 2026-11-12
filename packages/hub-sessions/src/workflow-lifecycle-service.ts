@@ -17,6 +17,7 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 import {
   deactivateRunPrincipals,
+  expireDeploymentApprovals,
   createSidecarAllocationStore,
   createWorkflowPendingProjectionStore,
   createWorkflowRunStore,
@@ -1229,6 +1230,9 @@ export function createWorkflowLifecycleService({
       stopped.map((row) => row.id),
       endedAt,
     );
+    // The deployment ends here, so every approval of it expires, one of a
+    // run that ended earlier included.
+    await expireDeploymentApprovals(tx, run.id, endedAt);
     await dispatches.abandonUnsettled(
       run.id,
       "workflow_cancelled",

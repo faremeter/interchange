@@ -2,10 +2,12 @@ import { eq } from "drizzle-orm";
 
 import {
   deactivateRunPrincipals,
+  expireDeploymentApprovals,
+  expireRunApprovals,
   type DBExecutor,
   type WorkflowRunStore,
 } from "@intx/db";
-import { workflowRun } from "@intx/db/schema";
+import { sidecarAllocation, workflowRun } from "@intx/db/schema";
 
 import { getWorkflowRunEndedAt } from "./workflow-run-ended-at";
 
@@ -26,7 +28,8 @@ export type TerminalProjectionOutcome = "projected" | "settled" | "foreign";
 /**
  * Project one accepted terminal event onto its `workflow_run` row. Pack
  * ingestion and lifecycle recovery both settle runs through this, so a run's
- * status, end time, and principal follow the same rules on either path.
+ * status, end time, principal, and approvals follow the same rules on either
+ * path.
  */
 export async function projectTerminalRun(
   tx: DBExecutor,
@@ -40,6 +43,15 @@ export async function projectTerminalRun(
   },
 ): Promise<TerminalProjectionOutcome> {
   const { anchor, runId, status, terminalEvent, now } = args;
+  // A run's end expires approvals, the anchor's those of the whole
+  // deployment. It takes the deployment's allocation row first, as every
+  // other path that ends a run or decides an approval does: none of them
+  // then runs beside it, and their row locks cannot cross with its own.
+  await tx
+    .select({ id: sidecarAllocation.id })
+    .from(sidecarAllocation)
+    .where(eq(sidecarAllocation.anchorRunId, anchor.id))
+    .for("update");
   // Lazily anchor the run before settling it. An internal run that parks only
   // on a plain signal gate never reaches `registerSignalCorrelation`, the sole
   // other path that mints an internal run row, so its terminal event can be the
@@ -99,5 +111,9 @@ export async function projectTerminalRun(
   // winning the flip -- the single claim point -- not on the principal's own
   // status.
   await deactivateRunPrincipals(tx, anchor.tenantId, [runId], now);
+  // The anchor's end stops every run of the deployment from taking a
+  // decision, and no later pack settles the runs it left live.
+  if (runId === anchor.id) await expireDeploymentApprovals(tx, anchor.id, now);
+  else await expireRunApprovals(tx, anchor.id, [runId], now);
   return "projected";
 }

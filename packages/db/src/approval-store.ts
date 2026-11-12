@@ -1,7 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull, type SQL } from "drizzle-orm";
 
 import type { DB, DBExecutor } from "./client";
 import { approval } from "./schema/approvals";
+import { signalCorrelation } from "./schema/signal-correlations";
 import { parseApprovalRow } from "./parse-row";
 
 type DBHandle = DB["db"];
@@ -144,3 +145,71 @@ export function createApprovalStore(db: DBHandle) {
 }
 
 export type ApprovalStore = ReturnType<typeof createApprovalStore>;
+
+/**
+ * Expire the pending approvals of the given runs of a deployment and close
+ * their signal correlations, in the caller's transaction. A run that ended
+ * can take no decision, so its approvals must stop being offered to an
+ * approver.
+ */
+export async function expireRunApprovals(
+  tx: DBExecutor,
+  anchorRunId: string,
+  runIds: readonly string[],
+  now: Date | SQL,
+): Promise<void> {
+  if (runIds.length === 0) return;
+  await expireOpenApprovals(
+    tx,
+    and(
+      eq(signalCorrelation.anchorRunId, anchorRunId),
+      inArray(signalCorrelation.runId, [...runIds]),
+    ),
+    now,
+  );
+}
+
+/**
+ * Expire every pending approval of a deployment and close their signal
+ * correlations, in the caller's transaction. Once the deployment has ended, a
+ * decision is refused for each of its runs: the ones still recorded as live,
+ * and the ones that ended earlier and were registered after their end.
+ */
+export async function expireDeploymentApprovals(
+  tx: DBExecutor,
+  anchorRunId: string,
+  now: Date | SQL,
+): Promise<void> {
+  await expireOpenApprovals(
+    tx,
+    eq(signalCorrelation.anchorRunId, anchorRunId),
+    now,
+  );
+}
+
+async function expireOpenApprovals(
+  tx: DBExecutor,
+  correlations: SQL | undefined,
+  now: Date | SQL,
+): Promise<void> {
+  // The correlation is claimed before its approval, as the resolver does, so
+  // the two take their row locks in one order.
+  const claimed = await tx
+    .update(signalCorrelation)
+    .set({ resolvedAt: now })
+    .where(and(correlations, isNull(signalCorrelation.resolvedAt)))
+    .returning({ correlationId: signalCorrelation.correlationId });
+  if (claimed.length === 0) return;
+  await tx
+    .update(approval)
+    .set({ status: "expired", resolvedAt: now, updatedAt: now })
+    .where(
+      and(
+        inArray(
+          approval.correlationId,
+          claimed.map((row) => row.correlationId),
+        ),
+        eq(approval.status, "pending"),
+      ),
+    );
+}

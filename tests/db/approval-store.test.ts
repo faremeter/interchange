@@ -7,7 +7,11 @@ import {
   test,
 } from "bun:test";
 
-import { createApprovalStore, createSignalCorrelationStore } from "@intx/db";
+import {
+  createApprovalStore,
+  createSignalCorrelationStore,
+  expireRunApprovals,
+} from "@intx/db";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -15,6 +19,7 @@ import {
 } from "@intx/test-harness/db-harness";
 import {
   seedAsset,
+  seedPendingApproval,
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
@@ -237,6 +242,106 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedTenants(h.db, [{ id: TENANT }]);
       const store = createSignalCorrelationStore(h.db);
       expect(await store.resolveRoute("ghost")).toBeNull();
+    });
+  },
+);
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "expireRunApprovals (real DB)",
+  () => {
+    let h: TestDb;
+
+    beforeAll(async () => {
+      h = await createTestDb();
+    });
+
+    afterAll(async () => {
+      await h.close();
+    });
+
+    beforeEach(async () => {
+      await h.reset();
+      await seedDeploymentDeps(h);
+    });
+
+    async function park(runId: string, correlationId: string): Promise<void> {
+      await seedPendingApproval(h.db, {
+        correlationId,
+        tenantId: TENANT,
+        anchorRunId: DEPLOYMENT,
+        runId,
+      });
+    }
+
+    async function stateOf(correlationId: string) {
+      const approval = await createApprovalStore(h.db).findByCorrelationId(
+        correlationId,
+      );
+      const correlation = await createSignalCorrelationStore(h.db).resolveRoute(
+        correlationId,
+      );
+      return {
+        status: approval?.status,
+        approvalResolvedAt: approval?.resolvedAt,
+        correlationResolvedAt: correlation?.resolvedAt,
+      };
+    }
+
+    test("expires every pending approval of the named runs and closes its correlation", async () => {
+      await seedRun(h, "run-ended");
+      await seedRun(h, "run-live");
+      await park("run-ended", "c-first");
+      await park("run-ended", "c-second");
+      await park("run-live", "c-live");
+      const now = new Date("2025-03-01T00:00:00Z");
+
+      await h.db.transaction((tx) =>
+        expireRunApprovals(tx, DEPLOYMENT, ["run-ended"], now),
+      );
+
+      for (const correlationId of ["c-first", "c-second"]) {
+        expect(await stateOf(correlationId)).toEqual({
+          status: "expired",
+          approvalResolvedAt: now,
+          correlationResolvedAt: now,
+        });
+      }
+      expect(await stateOf("c-live")).toEqual({
+        status: "pending",
+        approvalResolvedAt: null,
+        correlationResolvedAt: null,
+      });
+    });
+
+    test("leaves a decided approval as it was decided", async () => {
+      await seedRun(h, "run-ended");
+      await park("run-ended", "c-decided");
+      const decidedAt = new Date("2025-02-01T00:00:00Z");
+      await createSignalCorrelationStore(h.db).claimTerminal(
+        "c-decided",
+        decidedAt,
+        "sig-decided",
+      );
+      await createApprovalStore(h.db).resolve("c-decided", {
+        status: "approved",
+        scope: "once",
+        resolvedAt: decidedAt,
+      });
+
+      await h.db.transaction((tx) =>
+        expireRunApprovals(
+          tx,
+          DEPLOYMENT,
+          ["run-ended"],
+          new Date("2025-03-01T00:00:00Z"),
+        ),
+      );
+
+      expect(await stateOf("c-decided")).toEqual({
+        status: "approved",
+        approvalResolvedAt: decidedAt,
+        correlationResolvedAt: decidedAt,
+      });
     });
   },
 );
