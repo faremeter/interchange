@@ -487,6 +487,11 @@ class MailDeclinedError extends Error {
   override name = "MailDeclinedError";
 }
 
+/** A dispatch put its mail back behind earlier mail owed a way back. */
+class DispatchGaveWayError extends Error {
+  override name = "DispatchGaveWayError";
+}
+
 /** Mail a dispatch took out of the inbox that no run has committed. */
 type UntakenMail = { messageId: string; identity: string; runId: string };
 
@@ -4393,7 +4398,9 @@ export function createWorkflowSupervisor(
     const envelope = dequeued.envelope;
     const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
     const messageId = envelope.messageId;
-    untakenMail = { messageId, identity: claimCheckIdentity(envelope), runId };
+    const mail = { messageId, identity: claimCheckIdentity(envelope), runId };
+    untakenMail = mail;
+    let gaveWay = false;
     let rejection:
       | {
           code: string;
@@ -4527,6 +4534,10 @@ export function createWorkflowSupervisor(
             // is not missed; the park watcher is armed inside
             // waitForRunTerminalOrPark.
             if (!(await deliveryAllowed(cohortAbort))) break;
+            if (giveWayToUnsettledMail(mail)) {
+              gaveWay = true;
+              break;
+            }
             const iter = broadcaster.source(runId)[Symbol.asyncIterator]();
             let waitEntered = false;
             try {
@@ -4738,7 +4749,7 @@ export function createWorkflowSupervisor(
         }
       }
     }
-    if (cohortAbort.signal.aborted) {
+    if (cohortAbort.signal.aborted || gaveWay) {
       currentDispatchMessageId = null;
       return false;
     }
@@ -5048,10 +5059,29 @@ export function createWorkflowSupervisor(
     oweSettlement(mail, cause);
   }
 
-  // A wait that ran out says the run was busy, not that the mail or its
-  // dispatch is at fault, so it does not count against the mail.
+  // Mail can be owed a way back while this dispatch waited on the run, as when
+  // the child declines mail after its dispatch gave up on the answer. This mail
+  // then goes back behind it instead of overtaking it.
+  function giveWayToUnsettledMail(mail: UntakenMail): boolean {
+    if (unsettledMail.size === 0) return false;
+    logger.info`mail ${mail.messageId} goes back behind mail a failed dispatch left`;
+    oweSettlement(
+      mail,
+      new DispatchGaveWayError(
+        `mail ${mail.messageId} gave way to mail a failed dispatch left`,
+      ),
+    );
+    return true;
+  }
+
+  // A wait that ran out says the run was busy, and giving way says earlier mail
+  // goes first. Neither is the mail's or its dispatch's fault, so neither counts
+  // against the mail.
   function oweSettlement(mail: UntakenMail, cause: unknown): void {
-    const counts = !(cause instanceof DispatchWaitTimeoutError);
+    const counts = !(
+      cause instanceof DispatchWaitTimeoutError ||
+      cause instanceof DispatchGaveWayError
+    );
     const failures =
       (dispatchFailures.get(mail.identity) ?? 0) + (counts ? 1 : 0);
     dispatchFailures.set(mail.identity, failures);
