@@ -1,0 +1,106 @@
+{
+  "id": "resp_003202f94aa67c2c006ae54bd2be7887d0b57cc7727e8a35e5",
+  "object": "response",
+  "created_at": 1793412050,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793412056,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-5-mini-2025-08-07",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_003202f94aa67c2c006ae54bd3192c87d0b2a531a66d21033a",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5UvYt3Dt7EqbBRxTU0fh5mShdUSbUP12FGVLkEhrXRcb1F1PFHPoMjRp6ctoaHz21nqaMhhfUHebKOEtGs9fMV9VQ48iue1-BA614qihiAk6tFrOvAtz2qnH6x4MJcuSTk-26UK3j17qwtIoZLW3svxPSn5Xdu8Ba5Cr1fujQhwUIP4xas-p74Ek5prQ-ivcGoz5-rv3DicpmftTm3XUSC02i70Zjfk9FQD9aUQOTuTp7khzBXbdItcD6iafHn5MLSTq2SDbiwUiah29VR7iSogPzZCVrmF8vysI2OnoKRDCDaTWK5YMmO2YJM7x161MKE3QgOvds2-IqK5S0p-cw7M8UPmXmbHzr_JXZl8cw7puCqQzClsx1qoc_9LbOakr55QcjfpckjLHf_wsNTBRLrxsSsVnpKeBTC9ZFZYxuovbtxmEk4b_f87Hmzlh2nyRkr7wKaraXcFewzasG-JvErVBr2p2cjyLEwQJxN6CaAlTaAvcmF-sIdAWyBT-aAGBpfkvDxJorNIo9NlJk64LOvUxsbemZQR3atXYM_ehIoqB4DBPnUUXuSUjR4c1NXLaG8G0oDhvuqpeKlbQPkCBql78VDMHYGeGVd4kut7NlU_2X2pM2isuvc2XR_C7LOQjkGJPaCP-j7Zuv5_VvzkPjMAI0yNXH2v0S1JugdiO7vIXuFVthVLHyWiqWcIk13o9fYP58zXUGdhq4i30tAzIo8Z-KvZ9Vjqof48niNP9H3kvLk1infgFxrsXYpZxPVED5_gBsi2a_WBnaoU5nPhsuPnvkVpAS-kSHATb0bKdkIBDy7bkvghxbXQmpvFlH_f6aNhB5NDvopGaBjUh3tN6gLmqsV80u1aoVFIDu-QrhpHLdzwv61cZZZDT4t3iyD2vAe4qotLBZW_Nmbj6w7cQIVwMQDZ22L8KB5eZaId7wHIJHzPCm7r6GTsxP67hI7DzKL63cDsQItQMy1KlesKexXKw793MkQvDMiig_jJhgs1oolZgo7TzG0fouc1H0sM_M9m2O6ifgI8aPGk-T9AjbIi3GgeXDq9_-LTIF8xjtLY_W9Va21x25V0L3g_Bn6Zqr3QpIBPoi_iplKy-SugWHzuCpGtuJenPF37bRa--JvivShGvT778UrNZtZ1I0q69BO_dEj6SX9w2NRoWBcD6oCHNLMl8_Z1hflzXKldqxMo5eULVNvhs5gS1tmQN9pgJiHz0xUyy8tMvGnVfzvhfTu7L-bfH5dN7BAQQVg218HN8RL98d9ky5rchUe-fGozyCnXf5_75cShQ_aIEhvucv1hRqPFy0gni7U3zmaOgsuxwz4YhYGLGw3AHVjRocd82pmA5N0L8gdhb0iXaDfWkGG7fvDOgBVACzRB9wo45DQOYsuUPO2LtTBDk6XvDPg83cK8sP9w4vyFWN9uEJA33Uuz9jDJwf3EIIIEAizUjJBgbVAdu4Q3NJ1aG2umtDA24K-ERxh-pvfGT4jI4S8XmdOySR11fNKTGSVdYOs5Yq1ezSgqypENqQ2swbel8FW63SHw9ngEoRWuCDeeU6iqwNT_aiW5FNj0zyYQtszcIE25EcaASx_sp1uGMkmZ1Q-Q_-bymK72uUmdGXBhbci_KBnZk2wO9s62gteafVy9Mz7WjU4SIUeDLsQiD_EiKGsVq44DYGsJ7dOQYkvoC4jVXtjs9ocq98n8Gx219KfYSbMIt5eBKWuImTiv87uP-w0n4l_C-hgpSPtosWTQGzm7UUDLgYRPVKjRmgsXmVfa9NSxE94MS1mFEox_-a0zT-s90KnIreXCAG5iPqzzD48-akEmmNHbP3gN0r4PzOyPUER9lRbU7rV9v4in0_nwaxMGfeRXZluHv-33cLVRRrULguXy3DoEqcx4A39O1M_t8EGs9qPpGzOn8YOVqJ1pzrPbgYerWB5sGUBb0H728DWXtWmrkqH3DQjrDkKhG3EZ-a573hOrYQBQLdhslcZB5XjeKIjQSwvb9bkP7xJBcEBZhiIRkiujf4WaaTqr7gqCjAlfxyMkr_UYqL6EjfEmYmREdkV4qSNmwzjZWLPcAIXrcuVtUdwB-stlKno7inr1H7GOPsPYb46qDdIEyepreMbDOeVStx5nZUCNA_9k0zC0w82xv7EIi-vbWvldTzLrJdMQt2RCsYscyWI3H6T9Bv4KwB0KsxyjeLykd22iPgo9W1mIMpkrzdHd8LqzFDT_xTMW7WEhrC9J3aFPFrkuaXk-TqfpCviLX3OUSBtu0y2BFtOqzAuvQygFkp8Nq_1WM6cPkqWzkZ49QMHlvr6NwgIaNwBX5AVWJotzyUGfnckPq3rxxYBlUpnU8C0XtYiwjjQxqcAlR0kvTbb2ip2qYVf3U_UK2tYYT5ZqJDPkcuSFnSSt65wYikviwKCB4S4RRhCbxDWno5muEgFPMacpVNhjMmOX-yHY_kV6shj7fpt5-zK3UubaL8Kzm_aKX-lDXmj2wWORxUeaGkxVRZ6cpEknyT01dNPlQbp6Ou97DqlBK1D82yyLZy6xkewpjJBWUEH-qZ7um8GDNpqz1Sg3yhKDfHDnaSEIm860LLmmH2v43jRpYxowrqyOpw5dRAZAHMYAhWTOUFv1H0HPHsQ6RHeMYagqhGu5fkiXWtcMxWSTEEIP07sY75m4RI1KuIAqL-XOaACKjkAos2acUR1GnB4l6bcSOOX9C6uLC31G4-isBpTGDvncbY4WShrtlEvoet9Iq_yl2BM7HlvfBSLagg2BdpXG6Xw0hlovhVD9FB5TY2tbfnjtEJhlCMpn9paHoe4_-WvAsZS4Qm--81gtGeZxdNisorh_yCHOUJONuIKABQVJrKESrXjVFkhXnZMcqTMHkREDJ1ibO6xAj1K_60espH9DncQ3gdLAga0fOkm8vr6MNn0687llJ6qpMoHvhuEf6BQP5DU_pMCQJ62YvLmaQMWY8qSnVW9KiFjEMRl2KGVdQy-IQcmp95MDmwrTBXa6b0LmuRlPselxH3NSvpheDFr-RuF_6iBF7yOTiZrm5U96ZDCUqWrvYnbTOwurDzvPKK7DCVwR2eK6hnrtIhjlW3C5LfWTF-Af07WnFqeTOEfoQrHHlD1iO4XpHu0P98WtanegPptHsXEKqJk4NoKHgWW7-2USrhEdHGup1snBuVGyUxgd27_jQPop3tZd77AmI5MqSHb4Ouvp-bAvYTRN1wgQSGauJPuxFSCoaAx10xXJePWzTf05NkePsiXg6wj6sKONJ_YyC1q0Gc9Q3svYhEy08Wn7sr-G-ZbXr899qN7PZqdGWTpxxEZ7mju7R76rP-WMx336pGXh7XN3a_BhioFQjACF2xP5tpBtbWuC2hZeaZZs5F4HqaZUDvanuPTEplUT76XfXhJliApbjkmqDffgxGeLnQnpcou7MHfAW1HpufvzADbjqWAzQj3E9SJ02-kAe24KLg5fpZYYDhedgCMmy_TBD1juXrXQB2kSz3_MByn-Mhy9qKhD5UDcWfULYtQoZ7b0LWYHSN5d4W-kVItRAWFwhRTkoEamM-a-5JEWRz2KG952_ulNuudCLdfB8vvActyMXAH7YJICQOivllzGWO8XUz0bguA-ZZEi9WvdnWnr22EOfbg63lz-pNhXunIlNVFknfoLUKVzZ7CAMPkJS4ONc3I19XIeDxdUCxI-xUu0N_miWpwrEC6pG04soiC1z2sOw8qd2AI2VW0tJrehSmWJekwT0j4J3E8YPLemwVeOCpivR-BGwyrbAkhR_FYUARJ96CPJuPZ7M3UyQROEP20lVXZbrcH3AhR4Xfrip8B9tMjrbk9zxZt7qqtqW83hBKoVrByIiKl-TbPufokIliXzeZUb9ufh3jiqVaLerRd8-OOO-hwNfR4o3UA7J4EuLAHX_uQOofcadeH7xFfStaWAtOhJSW5JqshHnJDFALbIYhWDpGDmJdhLFXThDtBW8ho22tWi674uYFt6pXrMVcy6HBfYKH1IP_GVMgzTqMQ==",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "**Explaining the cognitive reflection test**\n\nI'm working through the classic cognitive reflection test. First, I define variables: let the ball be x and the bat be x + $1.00. So, the equation is x + (x + 1) = $1.10. Solving it leads to: 2x + 1 = 1.10, then 2x = 0.10, giving x = $0.05. I might also mention the common intuitive trap of thinking it's $0.10, but I\u2019ll stick to showing my reasoning and then conclude with my final answer: $0.05."
+        }
+      ]
+    },
+    {
+      "id": "msg_003202f94aa67c2c006ae54bd8176c87d08c7fbcf0cd694146",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Let the ball cost x dollars. Then the bat costs x + 1.00 dollars.  \nTogether: x + (x + 1.00) = 1.10.  \nSo 2x + 1.00 = 1.10 \u2192 2x = 0.10 \u2192 x = 0.05.\n\nFinal answer: The ball costs $0.05 (5 cents)."
+        }
+      ],
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "in_memory",
+  "reasoning": {
+    "context": "current_turn",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": "detailed"
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 1.0,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 45,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 318,
+    "output_tokens_details": {
+      "reasoning_tokens": 192
+    },
+    "total_tokens": 363
+  },
+  "user": null,
+  "metadata": {}
+}

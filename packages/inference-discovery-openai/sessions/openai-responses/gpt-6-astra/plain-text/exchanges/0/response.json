@@ -1,0 +1,102 @@
+{
+  "id": "resp_041b00c211a3dc0c006ae42e04d57c87d0a3d6aa89ef5a3e52",
+  "object": "response",
+  "created_at": 1793338884,
+  "status": "completed",
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": 1793338886,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "max_tool_calls": null,
+  "model": "gpt-6-astra",
+  "moderation": null,
+  "output": [
+    {
+      "id": "rs_041b00c211a3dc0c006ae42e05d15887d08cb91982589038b9",
+      "type": "reasoning",
+      "content": [],
+      "encrypted_content": "gAAAAABq5C4Gj5iyQA0ckSma-l6izbc4H5YEvPT-eOGmVlFlN8clORnfrIpk16fKAdJAE-e0atEPWRSVGBK0D3ldtU4QxqVLpiG3eL6VP6IZda-DI-P7Y6ZRTaw6i616MYAGiK4kCHSFZfsLijDFa9-SGP_1VRXpIp7_Gg6SBF3FayPtm9zvgfEPt_OCKuLUZhNeOzZka7y2-NCjPu2u4ZZs8gEw-xQo45UuPPJ5XKuK5Zy7crE5E3IF3m8Ptjrd7CuU2khxY96fsG8QBi4FylWTAkadogeovP7ZE5IteX0NBYzAAksJ-lhb92xqiQBQ7T2QEHL1qiuAfeTv0446lwedyFU7_dCzAzVVVM6TsMZRGO4Ety_6cnOQDzimlskAY7eWnUJPpl-NbwezE5lJ6nRM8DjmtRGpOc8RzESPqkLGqinpq5TXR2PAkJDuekCklfNhDoAJ6dF3z7-U64GzT-KcKvlpFX3LmaNMbXOb2SeBI5O4DMlLcYVecZIYotn5N7MC7P0MUteylBcIkorFMvzxt1Dk8eyY2uyvnyJ6RQyNlZWrFLDGiEXllfxuTTMpD7SxUIYoDxvkZWobDnfHYcuoT864-7-V3ROoxeyKDSddoGBRi9h3-ABROHY1RQ7lbgdjQSVAogUgg8EpZwvBvkSVDeTzBNtikImRgNTbYfh8Z1wn20JFORVjhf-H78rTsaw8Td0Zxyt6ejREbhrNgGGmgIKL0SCXPcWhl8TSd8Hnebf7R8cNkVpRFSC8u5nvcTpjioCpQySmOHAo59rWrPiWHOlJlM-_8a6K32eOP1lNInhIX5n8KverLvf4-JL7B39HiO23D7GUeO8rhMKHGFbxN17i8a3qONzEeh77YSPE4tsIQX5p6-aHXFT1msGbMwhF9os_3eYTzvBcAiFF2XUwdbujdjSu3EbuKUZ5pG0YRop6akbZHmWW8bE3bsiWtDg2G6mfqI8kcS2rXTV6rM72ThO2vGCO7_ZTmMu0jKKPOVnkRO8YRqLlP3504Vp-yIfNXpt5c4ECh0jkYRsE36Q7wn_4gmenS-BESePTc8xwUUbnPX0fLyVAvAtKu7lso-8R8ZR6z7crlREErWdzYk_6lgIqVs86vn8ll8IeN5Rq8lTSjYkmOXcDWTeXiDePAF0XjbO5-rBzKqqQeqWKdIdrF0XmQilnaJlstjiE3xkBoD1faMpuHriwt6rbyAl47gT44_tA24sm1TYQ2ElAXFnKDiWZOrqwMcEMwaVF5sscqzR4GXUiO2AJaHrchAElL-Gq6VFj0_fpQOwFq9SVQHTfasNCVbm5XSqhZvUfZ_BRLYLx8sujRdeeBGLLWXUnoxlJxKzW7aHAw9FBCySn6Vj-p-4ytbdLXKPUAE194LTlrXDuszc2GBjTMFGTLC_we6WG4BKuyN-eXPTMZK9ZZGmdAJCgL7A5QhWwVmmL6-bNz4x-1LEWuiPIqhMicc2VCale5lj_49tP1W8pnAB7ie0QJ6qhkF8RKaQ4dW-K82n52hVtsvlKrwPdIQ_P-1M6fA4ioX_5dBszUiRnt_n8HJGt4EOyXoGxtMPJyEqMJj-QdFQrtqchyiaP8tQfO1RrYNmI7yCyowrf_5CtZ1Afz5xNZnPujuLnvJD-4FSTyLMKzAEvQitiJi_5efCjjX7mMeXL3TE1vMVQhA_z2r76Sa3lVcVOLpvFUmQO7U8P-z60ge41Ag3gqLME24gULTkjsB9QJQ-RuyKHtvhTaGpsvZmrT7YcKza6xw==",
+      "summary": []
+    },
+    {
+      "id": "msg_041b00c211a3dc0c006ae42e05f9d887d0a70c9ded6d46bf43",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "The capital of France is Paris."
+        }
+      ],
+      "phase": "final_answer",
+      "role": "assistant"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "store": true,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 19,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 38,
+    "output_tokens_details": {
+      "reasoning_tokens": 25
+    },
+    "total_tokens": 57
+  },
+  "user": null,
+  "metadata": {}
+}

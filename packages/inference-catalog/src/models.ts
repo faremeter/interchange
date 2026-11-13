@@ -102,4 +102,9 @@ export const catalogModels: CatalogModelSpec[] = [
   { canonicalName: "grok-4.5", displayName: "Grok 4.5" },
   { canonicalName: "grok-4.6", displayName: "Grok 4.6" },
   { canonicalName: "grok-build-0.1", displayName: "Grok Build 0.1" },
+  { canonicalName: "gpt-6-astra", displayName: "GPT-6 Astra" },
+  { canonicalName: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" },
+  { canonicalName: "gpt-6.1-terra", displayName: "GPT-6.1 Terra" },
+  { canonicalName: "gpt-6-luna", displayName: "GPT-6 Luna" },
+  { canonicalName: "gpt-6-sol", displayName: "GPT-6 Sol" },
 ];

@@ -22,6 +22,7 @@
 const CATALOG_TO_ADAPTER: Record<string, string> = {
   anthropic: "anthropic",
   openai: "openai-compatible",
+  "openai-responses": "openai-responses",
   "opencode-zen": "openai-compatible",
   xai: "openai-compatible",
   "google-genai": "google-genai",
@@ -47,6 +48,7 @@ const CATALOG_TO_BASE_URL: Record<string, string> = {
   // source the production seed data configures.
   "google-genai": "https://generativelanguage.googleapis.com",
   openai: "https://api.openai.com/v1",
+  "openai-responses": "https://api.openai.com/v1",
   "opencode-zen": "https://opencode.ai/zen/v1",
   xai: "https://api.x.ai/v1",
 };

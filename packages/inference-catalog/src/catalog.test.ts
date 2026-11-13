@@ -8,6 +8,7 @@ import {
   AnthropicQuirks,
   GoogleGenAIQuirks,
   OpenAIQuirks,
+  ResponsesQuirks,
 } from "@intx/inference/providers";
 import {
   baseURLForCatalogProvider,
@@ -26,6 +27,7 @@ const quirkValidatorByPlugin: Record<CatalogPlugin, Type> = {
   anthropic: AnthropicQuirks,
   openai: OpenAIQuirks,
   "openai-compatible": OpenAIQuirks,
+  "openai-responses": ResponsesQuirks,
   "google-genai": GoogleGenAIQuirks,
 };
 
@@ -67,6 +69,26 @@ describe("first-party OpenAI maxEffort", () => {
   for (const offering of openai.offerings) {
     test(`${offering.model} carries the expected maxEffort`, () => {
       expect(offering.quirks["maxEffort"]).toBe(expected[offering.model]);
+    });
+  }
+});
+
+describe("OpenAI Responses reasoning", () => {
+  // Same maxEffort contract as above, read from the Responses adapter's
+  // nested key, plus the summary every Responses offering requests.
+  // Exact equality, so a removed or swapped field fails the build the
+  // same as for Direct.
+  const expected: Record<string, unknown> = {
+    "gpt-5.5": { maxEffort: "xhigh", summary: "detailed" },
+    "gpt-5.6-sol": { maxEffort: "max", summary: "detailed" },
+  };
+  const responses = catalogProviders.find((p) => p.name === "OpenAI Responses");
+  if (responses === undefined) throw new Error("OpenAI Responses is missing");
+  for (const offering of responses.offerings) {
+    test(`${offering.model} carries the expected reasoning quirks`, () => {
+      expect(offering.quirks["reasoning"]).toEqual(
+        expected[offering.model] ?? { summary: "detailed" },
+      );
     });
   }
 });

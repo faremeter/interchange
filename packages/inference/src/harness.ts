@@ -375,6 +375,9 @@ async function* runSingleAttempt(
   const timeoutAbort = new AbortController();
   let timeoutReason: "inactivity" | "total" | null = null;
   let cancelInactivity: (() => void) | null = null;
+  // The live response body, when one has been received. Released by the
+  // attempt `finally` so no exit path leaves a held-open socket pinned.
+  let openBody: ReadableStream<Uint8Array> | null = null;
   const armInactivity = () => {
     cancelInactivity?.();
     cancelInactivity = scheduler.setTimeout(() => {
@@ -508,7 +511,11 @@ async function* runSingleAttempt(
     // Captured as a const so the non-null narrowing from the guard above
     // carries into the SSE branch of the event-source generator below (a
     // bare `response.body` re-widens to nullable across the closure).
+    // Also assigned to the outer slot so the attempt `finally` releases
+    // the socket on every exit path, including a `parseResponse` throw on
+    // a terminal failure envelope while the server holds the connection.
     const responseBody = response.body;
+    openBody = responseBody;
 
     let responseKind: ResponseKind;
     try {
@@ -552,11 +559,29 @@ async function* runSingleAttempt(
         yield adapter.parseJSONResponse(body);
         return;
       }
+      // The attempt `finally` releases the body only when the loop below
+      // stops early — on a semantic terminal chunk or a `parseResponse`
+      // throw — while the server holds the connection open. A drained loop
+      // clears the slot first, since the server already closed the socket;
+      // adapters without the predicate keep their `[DONE]`/close behavior
+      // byte-for-byte, and the predicate is never consulted for them.
+      let stoppedEarly = false;
       for await (const sseData of parseSSE(responseBody)) {
         // Reset inactivity timer — we just got something from the wire.
         armInactivity();
         yield adapter.parseResponse(sseData);
+        if (adapter.isStreamTerminal?.(sseData) === true) {
+          // The protocol ended on a semantic terminal event while the
+          // server holds the connection open (a Responses
+          // `response.completed` with no `[DONE]` or close to follow).
+          // The batch above is already queued for the accumulator, so
+          // stopping here processes the terminal chunk's events —
+          // including usage — through the normal completion path below.
+          stoppedEarly = true;
+          break;
+        }
       }
+      if (!stoppedEarly) openBody = null;
     };
 
     try {
@@ -1328,6 +1353,13 @@ async function* runSingleAttempt(
     // finally). Both cleanups are idempotent.
     cleanupTimers();
     cleanupSignal();
+    // Release a held-open socket: a terminal chunk can arrive while the
+    // server keeps the connection open, and a `parseResponse` throw exits
+    // before the stream is drained. The slot is already clear when the
+    // stream drained naturally, so this only fires on early exits.
+    // Cancel is idempotent and safe on an already-cancelled body.
+    await openBody?.cancel().catch(() => undefined);
+    openBody = null;
   }
 }
 
