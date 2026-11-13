@@ -1,11 +1,18 @@
 export {
   chooseFirstSidecarProvisioner,
   createSidecarPluginRegistry,
+  formatProvisionerMismatches,
   type CreateSidecarPluginRegistryOpts,
   type SidecarPluginRegistry,
+  type SidecarProvisionerAttempt,
+  type SidecarProvisionerChoiceContext,
   type SidecarProvisionerChooser,
   type SidecarProvisionerSelection,
 } from "./plugin-registry";
+export {
+  createDeploymentCapabilityPolicyResolver,
+  deploymentCapabilityPolicy,
+} from "./deployment-policy";
 export {
   matchSidecarCapabilityPolicy,
   type EffectiveSidecarCapabilityPolicy,

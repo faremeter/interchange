@@ -28,6 +28,7 @@ import {
   recordRunPrincipalKey,
   retireRunPrincipalKey,
   runPrincipalHasActiveKey,
+  runPrincipalHasHeldKey,
 } from "./run-principal-key";
 import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
 import {
@@ -50,6 +51,7 @@ import {
   liveWorkflowRunStatuses,
   sidecar,
   sidecarAllocation,
+  sidecarAllocationAttempt,
   workflowRun,
   workflowRunLaunchSpec,
   type WorkflowRunCredentialRefs,
@@ -189,12 +191,52 @@ export type BindInitialSidecarArgs = {
 export type BindReplacementSidecarArgs = {
   readonly allocationId: string;
   readonly generation: number;
+  /** The provisioner the replacement runs under, the replaced one or another. */
+  readonly binding: SidecarProvisionerBinding;
   readonly sidecarId: string;
   readonly tokenHashSha256: Uint8Array;
   /** The adapter manifest the ensure for this sidecar carries. */
   readonly adapterManifestDigest: string;
   readonly connectDeadline: Date;
   readonly expectedLeaseId?: string;
+  readonly now?: Date;
+};
+
+/** An ensure that failed before its deployment first initialized. */
+export type SidecarProvisioningAttempt = {
+  /** The generation whose ensure failed. */
+  readonly generation: number;
+  readonly provisionerId: string;
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+  /**
+   * Whether the failed generation may have left capacity on its provisioner,
+   * which is then destroyed before the next ensure. False for a rejection.
+   */
+  readonly cleanupRequired: boolean;
+};
+
+type ProvisioningAttemptsArgs = {
+  readonly allocationId: string;
+  readonly tenantId: string;
+  readonly anchorRunId: string;
+};
+
+export type RecordSidecarProvisioningAttemptArgs = ProvisioningAttemptsArgs & {
+  readonly attempt: SidecarProvisioningAttempt;
+  readonly now?: Date;
+};
+
+export type RebindRejectedSidecarAllocationArgs = {
+  readonly allocationId: string;
+  readonly expectedGeneration: number;
+  readonly expectedLeaseId: string;
+  /** The provisioner the next ensure goes to, the rejecting one or another. */
+  readonly binding: SidecarProvisionerBinding;
+  readonly nextAttemptAt: Date;
+  readonly failureCode: string;
+  readonly failureMessage: string;
   readonly now?: Date;
 };
 
@@ -640,6 +682,30 @@ function buildSidecarAllocationStore(
         allocation.anchorRunId,
       )) !== null
     );
+  }
+
+  // Null once the deployment has initialized: from then on its provisioner is
+  // kept, so its earlier failures no longer matter.
+  async function loadProvisioningAttempts(
+    executor: DBExecutor,
+    args: ProvisioningAttemptsArgs,
+    record?: (executor: DBExecutor) => Promise<unknown>,
+  ): Promise<readonly SidecarProvisioningAttempt[] | null> {
+    if (await runPrincipalHasHeldKey(executor, args.tenantId, args.anchorRunId))
+      return null;
+    await record?.(executor);
+    return executor
+      .select({
+        generation: sidecarAllocationAttempt.generation,
+        provisionerId: sidecarAllocationAttempt.provisionerId,
+        code: sidecarAllocationAttempt.code,
+        message: sidecarAllocationAttempt.message,
+        retryable: sidecarAllocationAttempt.retryable,
+        cleanupRequired: sidecarAllocationAttempt.cleanupRequired,
+      })
+      .from(sidecarAllocationAttempt)
+      .where(eq(sidecarAllocationAttempt.allocationId, args.allocationId))
+      .orderBy(asc(sidecarAllocationAttempt.generation));
   }
 
   async function insertSidecarIdentity(
@@ -1231,13 +1297,14 @@ function buildSidecarAllocationStore(
         await insertSidecarIdentity(tx, {
           sidecarId: args.sidecarId,
           tokenHashSha256: args.tokenHashSha256,
-          binding: allocationBinding(allocation),
+          binding: args.binding,
           adapterManifestDigest: args.adapterManifestDigest,
           now,
         });
         const [updated] = await tx
           .update(sidecarAllocation)
           .set({
+            ...args.binding,
             sidecarId: args.sidecarId,
             adapterManifestDigest: args.adapterManifestDigest,
             status: "provisioning",
@@ -1260,6 +1327,51 @@ function buildSidecarAllocationStore(
         if (updated === undefined) {
           throw new Error(
             `sidecarAllocationStore.bindReplacementSidecar: locked allocation ${args.allocationId} changed before update`,
+          );
+        }
+        return parseSidecarAllocationRow(updated);
+      });
+    },
+
+    /**
+     * Returns a generation whose ensure was rejected to `pending` under the
+     * provisioner chosen for its next ensure. A rejected ensure started
+     * nothing, so no cleanup precedes that ensure; the caller has retired the
+     * rejected sidecar identity.
+     */
+    async rebindAfterEnsureRejection(
+      args: RebindRejectedSidecarAllocationArgs,
+    ): Promise<SidecarAllocation | null> {
+      return db.transaction(async (tx) => {
+        const condition = and(
+          eq(sidecarAllocation.id, args.allocationId),
+          eq(sidecarAllocation.status, "provisioning"),
+          eq(sidecarAllocation.generation, args.expectedGeneration),
+          ...leaseCondition(args.expectedLeaseId),
+        );
+        if ((await lockAllocationWithSidecars(tx, condition)) === undefined)
+          return null;
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            ...args.binding,
+            sidecarId: null,
+            status: "pending",
+            // A late hello of the rejected generation must not match the next.
+            generation: args.expectedGeneration + 1,
+            connectDeadline: null,
+            nextAttemptAt: args.nextAttemptAt,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            failureCode: args.failureCode,
+            failureMessage: args.failureMessage,
+            updatedAt: databaseTimestamp(args.now),
+          })
+          .where(condition)
+          .returning();
+        if (updated === undefined) {
+          throw new Error(
+            `sidecarAllocationStore.rebindAfterEnsureRejection: locked allocation ${args.allocationId} changed before update`,
           );
         }
         return parseSidecarAllocationRow(updated);
@@ -1407,6 +1519,39 @@ function buildSidecarAllocationStore(
           now: databaseTimestamp(args.now),
         }),
       );
+    },
+
+    /**
+     * Records a failed ensure of a deployment that has never initialized and
+     * returns its failed ensures, oldest first. Returns null, recording
+     * nothing, for a deployment that has. A generation already recorded keeps
+     * its first record.
+     */
+    async recordProvisioningAttempt(
+      args: RecordSidecarProvisioningAttemptArgs,
+    ): Promise<readonly SidecarProvisioningAttempt[] | null> {
+      return db.transaction((tx) =>
+        loadProvisioningAttempts(tx, args, (executor) =>
+          executor
+            .insert(sidecarAllocationAttempt)
+            .values({
+              allocationId: args.allocationId,
+              ...args.attempt,
+              createdAt: databaseTimestamp(args.now),
+            })
+            .onConflictDoNothing(),
+        ),
+      );
+    },
+
+    /**
+     * The failed ensures of a deployment that has never initialized, oldest
+     * first, or null for a deployment that has.
+     */
+    async listProvisioningAttempts(
+      args: ProvisioningAttemptsArgs,
+    ): Promise<readonly SidecarProvisioningAttempt[] | null> {
+      return loadProvisioningAttempts(db, args);
     },
 
     /** See `retireProvisionerSidecar`. */

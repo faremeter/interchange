@@ -1621,6 +1621,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
             retainedIncarnations: [],
           }),
         }),
+        resolvePlacementPolicy: async () => ({
+          tenantPolicies: [],
+          workflowRules: [],
+        }),
         plugins: createSidecarPluginRegistry({
           provisioners: [
             {
@@ -2310,6 +2314,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
             retainedIncarnations: [],
           }),
         }),
+        resolvePlacementPolicy: async () => ({
+          tenantPolicies: [],
+          workflowRules: [],
+        }),
         plugins: createSidecarPluginRegistry({
           provisioners: [
             {
@@ -2706,6 +2714,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         };
         const reconciler = createSidecarAllocationReconciler({
           allocationStore: store,
+          resolvePlacementPolicy: async () => ({
+            tenantPolicies: [],
+            workflowRules: [],
+          }),
           plugins: createSidecarPluginRegistry({
             provisioners:
               failure === "missing provisioner" ? [] : [provisioner],
@@ -3539,6 +3551,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const reconciler = createSidecarAllocationReconciler({
         allocationStore,
+        resolvePlacementPolicy: async () => ({
+          tenantPolicies: [],
+          workflowRules: [],
+        }),
         plugins: createSidecarPluginRegistry({
           provisioners: [
             {
@@ -4930,6 +4946,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await allocations.wakeReconciliation(allocationId, 1);
         const reconciler = createSidecarAllocationReconciler({
           allocationStore: allocations,
+          resolvePlacementPolicy: async () => ({
+            tenantPolicies: [],
+            workflowRules: [],
+          }),
           plugins: createSidecarPluginRegistry({
             provisioners: [
               {

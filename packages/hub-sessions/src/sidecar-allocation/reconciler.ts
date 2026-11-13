@@ -13,6 +13,8 @@ import {
   SidecarInventoryUnavailableError,
   type SidecarAllocation,
   type SidecarAllocationStore,
+  type SidecarProvisionerBinding,
+  type SidecarProvisioningAttempt,
 } from "@intx/db";
 import { getLogger } from "@intx/log";
 import { hexEncode, type AdapterManifest } from "@intx/types";
@@ -30,9 +32,15 @@ import {
   type SidecarProvisioner,
 } from "./contracts";
 import { adapterManifestDigest } from "./adapter-manifest-digest";
-import type { SidecarPluginRegistry } from "./plugin-registry";
+import type { EffectiveSidecarCapabilityPolicy } from "./capability-policy";
+import {
+  formatProvisionerMismatches,
+  type SidecarPluginRegistry,
+  type SidecarProvisionerSelection,
+} from "./plugin-registry";
 import {
   DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
+  MAX_ENSURE_ATTEMPTS,
   runSidecarOperation,
   SidecarDeploymentHistoryPendingError,
   SidecarDeploymentMissingError,
@@ -57,6 +65,7 @@ type AllocationStore = Pick<
   | "failWithoutInfrastructure"
   | "listActive"
   | "listForConnectionRepair"
+  | "listProvisioningAttempts"
   | "isReconciliationLeaseCurrent"
   | "hasRunnableAnchor"
   | "markAllocated"
@@ -70,6 +79,8 @@ type AllocationStore = Pick<
   | "resumeCleanupAfterDisconnect"
   | "retireSidecar"
   | "parkReconciliation"
+  | "rebindAfterEnsureRejection"
+  | "recordProvisioningAttempt"
   | "scheduleReconnectAfterHubStart"
   | "scheduleReconnectIfUnscheduled"
   | "scheduleRetry"
@@ -79,6 +90,14 @@ type AllocationStore = Pick<
 export type SidecarAllocationReconcilerDeps = {
   readonly allocationStore: AllocationStore;
   readonly plugins: SidecarPluginRegistry;
+  /**
+   * What the deployment's provisioner must satisfy now. Read before each
+   * choice after a failed ensure, so the chooser only sees provisioners that
+   * match at that moment.
+   */
+  readonly resolvePlacementPolicy: (
+    allocation: SidecarAllocation,
+  ) => Promise<EffectiveSidecarCapabilityPolicy>;
   readonly router: Pick<
     SidecarAllocationRouter,
     | "fenceAllocation"
@@ -181,8 +200,34 @@ const MAX_RETRY_BACKOFF_ATTEMPT = 5;
 // How long a first deploy that keeps failing before its deploy frame is sent
 // is retried, from its first failure.
 const FIRST_DEPLOY_RETRY_LIMIT_MS = 60_000;
-const MAX_ENSURE_ATTEMPTS = 10;
 const PROVISIONING_RETRY_EXHAUSTED = "sidecar_provisioning_retry_exhausted";
+const PROVISIONER_CHOICE_FAILED = "sidecar_provisioner_choice_failed";
+
+type EnsureFailure = {
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+};
+
+type ProvisionerChoice =
+  | { readonly provisioner: SidecarProvisioner }
+  | { readonly code: string; readonly message: string };
+
+/** An allocation's failed ensures, with the latest one. */
+type FailedEnsures = {
+  readonly attempts: readonly SidecarProvisioningAttempt[];
+  readonly failure: SidecarProvisioningAttempt;
+};
+
+function provisionerBinding(
+  provisioner: SidecarProvisioner,
+): SidecarProvisionerBinding {
+  return {
+    provisionerId: provisioner.id,
+    provisionerApiVersion: provisioner.apiVersion,
+    provisionerBindingFingerprint: provisioner.bindingFingerprint,
+  };
+}
 const PROVISIONER_AVAILABILITY_GRACE_MS = 5 * 60_000;
 const PROVISIONER_AVAILABILITY_RETRY_MS = 30_000;
 const CLEANUP_PREPARATION_GRACE_MS = 5 * 60_000;
@@ -221,6 +266,7 @@ function parseDestroyResult(value: unknown): DestroySidecarResult {
 export function createSidecarAllocationReconciler({
   allocationStore,
   plugins,
+  resolvePlacementPolicy,
   router,
   hubWebSocketUrl,
   adapterManifest,
@@ -568,6 +614,148 @@ export function createSidecarAllocationReconciler({
     );
   }
 
+  function recordFailedEnsure(
+    allocation: SidecarAllocation,
+    failure: EnsureFailure,
+    cleanupRequired: boolean,
+  ): Promise<readonly SidecarProvisioningAttempt[] | null> {
+    return allocationStore.recordProvisioningAttempt({
+      allocationId: allocation.id,
+      tenantId: allocation.tenantId,
+      anchorRunId: allocation.anchorRunId,
+      attempt: {
+        generation: allocation.generation,
+        provisionerId: allocation.provisionerId,
+        ...failure,
+        cleanupRequired,
+      },
+      now: now(),
+    });
+  }
+
+  // `failure` is the last of `attempts`. A chooser that selects nothing
+  // fails the deployment for that reason.
+  async function chooseNextProvisioner(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    attempts: readonly SidecarProvisioningAttempt[],
+    failure: EnsureFailure,
+  ): Promise<ProvisionerChoice> {
+    const policy = await resolvePlacementPolicy(allocation);
+    let selection: SidecarProvisionerSelection;
+    try {
+      selection = await withReconciliationLease(
+        allocation,
+        leaseId,
+        "Sidecar provisioner choice",
+        ({ signal }) =>
+          plugins.selectProvisioner(policy, {
+            purpose: "deployment",
+            tenantId: allocation.tenantId,
+            anchorRunId: allocation.anchorRunId,
+            signal,
+            attempts: attempts.map(
+              ({ provisionerId, code, message, retryable }) => ({
+                provisionerId,
+                code,
+                message,
+                retryable,
+              }),
+            ),
+          }),
+        operationTimeoutMs,
+      );
+    } catch (error) {
+      if (error instanceof ReconciliationLeaseLostError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error`Could not choose a provisioner for allocation ${allocation.id} after ${failure.code}: ${message}`;
+      return { code: PROVISIONER_CHOICE_FAILED, message };
+    }
+    if (selection.ok) return { provisioner: selection.provisioner };
+    return selection.reason === "no_match"
+      ? {
+          code: "provisioner_no_match",
+          message: formatProvisionerMismatches(selection.mismatches),
+        }
+      : { code: failure.code, message: failure.message };
+  }
+
+  // The failed ensures of a deployment that never initialized, when the
+  // latest is of `generation`.
+  async function failedEnsuresAt(
+    allocation: SidecarAllocation,
+    generation: number,
+  ): Promise<FailedEnsures | null> {
+    const attempts = await allocationStore.listProvisioningAttempts({
+      allocationId: allocation.id,
+      tenantId: allocation.tenantId,
+      anchorRunId: allocation.anchorRunId,
+    });
+    const failure = attempts?.at(-1);
+    return attempts == null || failure?.generation !== generation
+      ? null
+      : { attempts, failure };
+  }
+
+  // A replacement the chooser has a say in follows a failed ensure of a
+  // deployment that never initialized: `beginReplacement` advanced the
+  // generation by one from the ensure that failed. Any other replacement
+  // keeps its provisioner.
+  async function chooseReplacementProvisioner(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    current: SidecarProvisioner,
+  ): Promise<ProvisionerChoice> {
+    const failed = await failedEnsuresAt(allocation, allocation.generation - 1);
+    return failed === null
+      ? { provisioner: current }
+      : chooseNextProvisioner(
+          allocation,
+          leaseId,
+          failed.attempts,
+          failed.failure,
+        );
+  }
+
+  // The ensure may have started capacity, so cleanup comes before the next
+  // ensure and the chooser is asked once it is done.
+  async function replaceAfterFailedEnsure(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    code: string,
+    message: string,
+  ): Promise<void> {
+    await recordFailedEnsure(
+      allocation,
+      { code, message, retryable: true },
+      true,
+    );
+    await replaceAfterFailure(allocation, leaseId, code, message);
+  }
+
+  async function failWithoutInfrastructure(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    expectedStatus: "provisioning" | "replacing",
+    failure: { readonly code: string; readonly message: string },
+  ): Promise<void> {
+    const failed = await allocationStore.failWithoutInfrastructure({
+      allocationId: allocation.id,
+      expectedStatus,
+      expectedGeneration: allocation.generation,
+      code: failure.code,
+      message: failure.message,
+      expectedLeaseId: leaseId,
+      now: now(),
+    });
+    if (failed !== null) {
+      router.retireAllocation({
+        allocationId: failed.id,
+        generation: failed.generation,
+      });
+    }
+  }
+
   async function replaceAfterFailure(
     allocation: SidecarAllocation,
     leaseId: string,
@@ -899,6 +1087,79 @@ export function createSidecarAllocationReconciler({
     );
   }
 
+  // Nothing is left to clean up after a rejection, so the allocation waits
+  // out its backoff as `pending` under the provisioner chosen next.
+  async function rebindRejectedEnsure(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    provisioner: SidecarProvisioner,
+    failure: EnsureFailure,
+    /** Whether an ensure on `provisioner` failed for this deployment before. */
+    retried: boolean,
+  ): Promise<void> {
+    await queueReconciliationStep(
+      { allocationId: allocation.id, generation: allocation.generation },
+      async () => {
+        const pending = await allocationStore.rebindAfterEnsureRejection({
+          allocationId: allocation.id,
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: leaseId,
+          binding: provisionerBinding(provisioner),
+          // Backoff spares a provisioner that already failed for this
+          // deployment; one that has not gets the ensure at once.
+          nextAttemptAt: retried
+            ? retryAt(Math.max(0, allocation.ensureAttempts - 1))
+            : now(),
+          failureCode: failure.code,
+          failureMessage: failure.message,
+          now: now(),
+        });
+        if (pending !== null) fence(pending);
+      },
+    );
+  }
+
+  async function chooseAfterRejectedEnsure(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    attempts: readonly SidecarProvisioningAttempt[],
+    failure: EnsureFailure,
+  ): Promise<void> {
+    const choice = await chooseNextProvisioner(
+      allocation,
+      leaseId,
+      attempts,
+      failure,
+    );
+    if ("provisioner" in choice) {
+      await rebindRejectedEnsure(
+        allocation,
+        leaseId,
+        choice.provisioner,
+        failure,
+        attempts.some(
+          (attempt) => attempt.provisionerId === choice.provisioner.id,
+        ),
+      );
+      return;
+    }
+    await failWithoutInfrastructure(
+      allocation,
+      leaseId,
+      "provisioning",
+      choice,
+    );
+  }
+
+  // A rejection the Hub recorded but did not act on, such as when it stopped
+  // while the chooser was deciding. Null when this generation has none.
+  async function recordedRejection(
+    allocation: SidecarAllocation,
+  ): Promise<FailedEnsures | null> {
+    const failed = await failedEnsuresAt(allocation, allocation.generation);
+    return failed === null || failed.failure.cleanupRequired ? null : failed;
+  }
+
   async function acceptEnsure(
     allocation: SidecarAllocation,
     leaseId: string,
@@ -933,7 +1194,7 @@ export function createSidecarAllocationReconciler({
       );
     } catch (error) {
       if (error instanceof ReconciliationLeaseLostError) throw error;
-      await replaceAfterFailure(
+      await replaceAfterFailedEnsure(
         allocation,
         leaseId,
         "ensure_failed",
@@ -942,31 +1203,38 @@ export function createSidecarAllocationReconciler({
       return;
     }
     if (result.kind === "rejected") {
-      // A rejected ensure started nothing.
+      const failure = {
+        code: result.code,
+        message: result.message,
+        retryable: result.retryable,
+      };
+      // The chooser is asked while the deployment has never initialized and
+      // has provisioning attempts left. Otherwise its provisioner is kept.
+      // The rejection is recorded before anything else changes, so a Hub that
+      // stops here still knows the ensure started nothing.
+      const attempts =
+        allocation.ensureAttempts < MAX_ENSURE_ATTEMPTS
+          ? await recordFailedEnsure(allocation, failure, false)
+          : null;
       await allocationStore.retireSidecar({ sidecarId, now: now() });
-      if (!result.retryable) {
-        const failed = await allocationStore.failWithoutInfrastructure({
-          allocationId: allocation.id,
-          expectedStatus: "provisioning",
-          expectedGeneration: allocation.generation,
-          code: result.code,
-          message: result.message,
-          expectedLeaseId: leaseId,
-          now: now(),
-        });
-        if (failed !== null) {
-          router.retireAllocation({
-            allocationId: failed.id,
-            generation: failed.generation,
-          });
-        }
+      if (attempts !== null) {
+        await chooseAfterRejectedEnsure(allocation, leaseId, attempts, failure);
         return;
       }
-      await replaceAfterFailure(
+      if (failure.retryable) {
+        await replaceAfterFailure(
+          allocation,
+          leaseId,
+          failure.code,
+          failure.message,
+        );
+        return;
+      }
+      await failWithoutInfrastructure(
         allocation,
         leaseId,
-        result.code,
-        result.message,
+        "provisioning",
+        failure,
       );
       return;
     }
@@ -1067,7 +1335,7 @@ export function createSidecarAllocationReconciler({
         return;
       }
       if (!(error instanceof SidecarReuseRejectedError)) throw error;
-      await replaceAfterFailure(
+      await replaceAfterFailedEnsure(
         allocation,
         leaseId,
         "sidecar_reuse_rejected",
@@ -1106,7 +1374,7 @@ export function createSidecarAllocationReconciler({
   async function bindAndEnsure(
     allocation: SidecarAllocation,
     leaseId: string,
-    provisioner: SidecarProvisioner,
+    current: SidecarProvisioner,
     replacement: boolean,
   ): Promise<void> {
     if (
@@ -1122,6 +1390,14 @@ export function createSidecarAllocationReconciler({
       if (releasing !== null) fence(releasing);
       return;
     }
+    const choice: ProvisionerChoice = replacement
+      ? await chooseReplacementProvisioner(allocation, leaseId, current)
+      : { provisioner: current };
+    if (!("provisioner" in choice)) {
+      await failWithoutInfrastructure(allocation, leaseId, "replacing", choice);
+      return;
+    }
+    const { provisioner } = choice;
     const token = createToken();
     const sidecarId = createSidecarId();
     const connectDeadline = new Date(now().getTime() + connectTimeoutMs);
@@ -1130,6 +1406,7 @@ export function createSidecarAllocationReconciler({
       ? await allocationStore.bindReplacementSidecar({
           allocationId: allocation.id,
           generation: allocation.generation,
+          binding: provisionerBinding(provisioner),
           sidecarId,
           tokenHashSha256: await sha256(token),
           adapterManifestDigest: digest,
@@ -1808,9 +2085,42 @@ export function createSidecarAllocationReconciler({
         return;
       }
       case "provisioning": {
+        const rejection = await recordedRejection(allocation);
+        if (rejection !== null) {
+          if (allocation.sidecarId !== undefined)
+            await allocationStore.retireSidecar({
+              sidecarId: allocation.sidecarId,
+              now: now(),
+            });
+          // The chooser is asked only while the deployment's provisioner is
+          // available. The ensure started nothing, so one that stays away
+          // fails the allocation with no cleanup owed.
+          const selected = provisionerFor(allocation);
+          if ("error" in selected) {
+            if (await waitForProvisioner(allocation, leaseId, selected.error))
+              return;
+            await failWithoutInfrastructure(
+              allocation,
+              leaseId,
+              "provisioning",
+              {
+                code: "provisioner_unavailable",
+                message: selected.error,
+              },
+            );
+            return;
+          }
+          await chooseAfterRejectedEnsure(
+            allocation,
+            leaseId,
+            rejection.attempts,
+            rejection.failure,
+          );
+          return;
+        }
         // The raw bearer token and unrecorded acceptance are not durable. A
         // restart has no parked result to resume, so it fences uncertain work.
-        await replaceAfterFailure(
+        await replaceAfterFailedEnsure(
           allocation,
           leaseId,
           "ensure_outcome_unknown",

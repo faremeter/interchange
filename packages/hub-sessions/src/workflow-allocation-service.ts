@@ -12,6 +12,7 @@ import {
   canExecuteWorkflowRun,
   resolveSourcesByOfferingIds,
   SidecarInventoryUnavailableError,
+  SidecarReuseRejectedError,
   type DB,
   type DBExecutor,
   type SidecarAllocation,
@@ -47,11 +48,14 @@ import {
 import type { LocalRepoStore } from "./repo-store";
 import {
   adapterManifestDigest,
+  deploymentCapabilityPolicy,
   DestroySidecarResult,
   EnsureSidecarResult,
-  type SidecarCapabilityMismatch,
+  formatProvisionerMismatches,
+  type EffectiveSidecarCapabilityPolicy,
   type SidecarPluginRegistry,
   type SidecarProvisioner,
+  type SidecarProvisionerAttempt,
   type SidecarProvisionerSelection,
 } from "./sidecar-allocation";
 import {
@@ -73,6 +77,7 @@ import type { InstallAndApproveResult } from "./workflow-probe-gate";
 import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
 import {
   DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
+  MAX_ENSURE_ATTEMPTS,
   SidecarDeploymentHistoryPendingError,
   SidecarDeploymentMissingError,
   SidecarDeploymentStoppedError,
@@ -204,11 +209,24 @@ function selectProvisioner(
   selection: SidecarProvisionerSelection,
 ): SidecarProvisioner {
   if (selection.ok) return selection.provisioner;
+  if (selection.reason === "declined") {
+    throw new WorkflowProvisioningError(
+      "provisioner_declined",
+      "The sidecar provisioner chooser selected no provisioner",
+    );
+  }
   throw new WorkflowProvisioningError(
     "provisioner_no_match",
     formatProvisionerMismatches(selection.mismatches),
   );
 }
+
+// `error` is what the deploy request fails with if no other provisioner is
+// tried.
+type ProbeEnsureFailure = Omit<SidecarProvisionerAttempt, "provisionerId"> & {
+  readonly probe: WorkflowProbe;
+  readonly error: unknown;
+};
 
 function parseEnsureResult(value: unknown): EnsureSidecarResult {
   const result = EnsureSidecarResult(value);
@@ -648,7 +666,7 @@ export function createWorkflowAllocationService({
       );
     }
 
-    const [sourceCheck, tenantPolicies] = await Promise.all([
+    const [sourceCheck, deployTenantPolicies] = await Promise.all([
       resolveSourcesByOfferingIds(
         db,
         args.tenantId,
@@ -673,19 +691,51 @@ export function createWorkflowAllocationService({
         `Default offering ${args.defaultSourceOfferingId} was not resolved for deployment ${args.anchorRunId}`,
       );
     }
-    const probeProvisioner = selectProvisioner(
-      await probePlugins.selectProvisioner({
-        tenantPolicies,
-        probeRules: configuredProbeCapabilityRules,
-        workflowRules: [],
-      }),
+    const chooseProvisioner = (
+      plugins: SidecarPluginRegistry,
+      purpose: "probe" | "deployment",
+      policy: EffectiveSidecarCapabilityPolicy,
+      attempts: readonly SidecarProvisionerAttempt[],
+    ): Promise<SidecarProvisionerSelection> =>
+      runSidecarOperation(
+        "Sidecar provisioner choice",
+        operationTimeoutMs,
+        (signal) =>
+          plugins.selectProvisioner(policy, {
+            purpose,
+            tenantId: args.tenantId,
+            anchorRunId: args.anchorRunId,
+            signal,
+            attempts,
+          }),
+      );
+    // Read again before each choice that follows a failed probe ensure: the
+    // policy can change while an attempt runs. The deployment is matched
+    // against the newest read.
+    let tenantPolicies = deployTenantPolicies;
+    const probePolicy = (): EffectiveSidecarCapabilityPolicy => ({
+      tenantPolicies,
+      probeRules: configuredProbeCapabilityRules,
+      workflowRules: [],
+    });
+    const probeAttempts: SidecarProvisionerAttempt[] = [];
+    const firstProbeProvisioner = selectProvisioner(
+      await chooseProvisioner(probePlugins, "probe", probePolicy(), []),
     );
     const digest = await currentAdapterManifestDigest;
     // The probe is assigned inside a closure, which TypeScript does not track,
     // so a plain `let` would stay narrowed to `null` below.
     const probeHolder: { current: WorkflowProbe | null } = { current: null };
     let stepStateWriteStarted = false;
-    async function getProbeTarget(): Promise<AllocatedSidecarTarget> {
+
+    // Each call uses its own probe row, so a failed one keeps the binding its
+    // cleanup needs.
+    async function ensureProbe(
+      probeProvisioner: SidecarProvisioner,
+    ): Promise<
+      | { probing: WorkflowProbe; target: AllocatedSidecarTarget }
+      | ProbeEnsureFailure
+    > {
       const probeId = createAllocationId();
       probeHolder.current = await probeStore.create({
         id: probeId,
@@ -715,70 +765,128 @@ export function createWorkflowAllocationService({
         );
       }
       probeHolder.current = bound;
-      const allocationTarget: AllocatedSidecarTarget = {
+      const target: AllocatedSidecarTarget = {
         allocationId: bound.id,
         generation: bound.generation,
       };
       allocationRouter.fenceAllocation(bound.id, bound.generation);
-      const ensured = parseEnsureResult(
-        await runSidecarOperation(
-          "Probe ensure",
-          operationTimeoutMs,
-          (signal) =>
-            probeProvisioner.ensure({
-              signal,
-              allocationId: bound.id,
-              generation: bound.generation,
-              tenantId: bound.tenantId,
-              // The provisioner contract treats this as an opaque owner id. A
-              // probe has no workflow run, so its own id is the honest owner.
-              anchorRunId: bound.id,
-              sidecarId,
-              token,
-              hubWebSocketUrl,
-              ...(adapterManifest !== undefined ? { adapterManifest } : {}),
-            }),
-        ),
-      );
+      let ensured: EnsureSidecarResult;
+      try {
+        ensured = parseEnsureResult(
+          await runSidecarOperation(
+            "Probe ensure",
+            operationTimeoutMs,
+            (signal) =>
+              probeProvisioner.ensure({
+                signal,
+                allocationId: bound.id,
+                generation: bound.generation,
+                tenantId: bound.tenantId,
+                // The provisioner contract treats this as an opaque owner id. A
+                // probe has no workflow run, so its own id is the honest owner.
+                anchorRunId: bound.id,
+                sidecarId,
+                token,
+                hubWebSocketUrl,
+                ...(adapterManifest !== undefined ? { adapterManifest } : {}),
+              }),
+          ),
+        );
+      } catch (error) {
+        return {
+          code: "ensure_failed",
+          message: error instanceof Error ? error.message : String(error),
+          retryable: true,
+          probe: bound,
+          error,
+        };
+      }
       if (ensured.kind === "rejected") {
         // A rejected ensure started nothing.
         await probeStore.retireSidecar({ sidecarId, now: now() });
-        throw new WorkflowProvisioningError(ensured.code, ensured.message);
+        return {
+          code: ensured.code,
+          message: ensured.message,
+          retryable: ensured.retryable,
+          probe: bound,
+          error: new WorkflowProvisioningError(ensured.code, ensured.message),
+        };
       }
-      const probing = await probeStore.markProbing({
-        probeId,
-        ...(ensured.sidecarId !== undefined
-          ? { sidecarId: ensured.sidecarId }
-          : {}),
-        ...(ensured.externalRef !== undefined
-          ? { externalRef: ensured.externalRef }
-          : {}),
-        now: now(),
-      });
+      let probing: WorkflowProbe | null;
+      try {
+        probing = await probeStore.markProbing({
+          probeId,
+          ...(ensured.sidecarId !== undefined
+            ? { sidecarId: ensured.sidecarId }
+            : {}),
+          ...(ensured.externalRef !== undefined
+            ? { externalRef: ensured.externalRef }
+            : {}),
+          now: now(),
+        });
+      } catch (error) {
+        if (!(error instanceof SidecarReuseRejectedError)) throw error;
+        return {
+          code: "sidecar_reuse_rejected",
+          message: error.message,
+          retryable: true,
+          probe: bound,
+          error,
+        };
+      }
       if (probing === null) {
         throw new Error(`Workflow probe ${probeId} changed after provisioning`);
       }
       probeHolder.current = probing;
-      await runSidecarOperation(
-        "Probe connection",
-        connectTimeoutMs,
-        async (signal) => {
-          if (probing.sidecarId !== null) {
-            // Joining a reused connection may wait behind its existing work.
-            // That wait belongs to the same deadline as readiness.
-            await allocationRouter.syncSidecar(probing.sidecarId, signal);
-          }
-          signal.throwIfAborted();
-          await allocationRouter.waitForAllocatedSidecar(
-            allocationTarget,
-            connectTimeoutMs,
-            undefined,
-            signal,
-          );
-        },
-      );
+      return { probing, target };
+    }
 
-      return allocationTarget;
+    async function getProbeTarget(): Promise<AllocatedSidecarTarget> {
+      let probeProvisioner = firstProbeProvisioner;
+      for (;;) {
+        const ensured = await ensureProbe(probeProvisioner);
+        if ("probing" in ensured) {
+          const { probing, target } = ensured;
+          await runSidecarOperation(
+            "Probe connection",
+            connectTimeoutMs,
+            async (signal) => {
+              if (probing.sidecarId !== null) {
+                // Joining a reused connection may wait behind its existing work.
+                // That wait belongs to the same deadline as readiness.
+                await allocationRouter.syncSidecar(probing.sidecarId, signal);
+              }
+              signal.throwIfAborted();
+              await allocationRouter.waitForAllocatedSidecar(
+                target,
+                connectTimeoutMs,
+                undefined,
+                signal,
+              );
+            },
+          );
+          return target;
+        }
+
+        const { error, probe: failedProbe, ...failure } = ensured;
+        probeAttempts.push({ provisionerId: probeProvisioner.id, ...failure });
+        if (probeAttempts.length >= MAX_ENSURE_ATTEMPTS) throw error;
+        tenantPolicies = await resolveTenantSidecarCapabilityPolicies(
+          db,
+          args.tenantId,
+        );
+        const selection = await chooseProvisioner(
+          probePlugins,
+          "probe",
+          probePolicy(),
+          probeAttempts,
+        );
+        if (!selection.ok && selection.reason === "declined") throw error;
+        probeProvisioner = selectProvisioner(selection);
+        // Cleanup of the failed probe is left to the releasing-probe sweep, so
+        // a provisioner slow to destroy does not hold up the next one.
+        await beginProbeRelease(failedProbe, failure);
+      }
     }
 
     try {
@@ -852,19 +960,22 @@ export function createWorkflowAllocationService({
         operatorApprovals: approved.approval.approvedSurface,
       });
       const deploymentProvisioner = selectProvisioner(
-        await deploymentPlugins.selectProvisioner({
-          tenantPolicies,
-          workflowRules:
-            approved.projection.sidecarPlacement?.capabilities ?? [],
-        }),
+        await chooseProvisioner(
+          deploymentPlugins,
+          "deployment",
+          deploymentCapabilityPolicy(tenantPolicies, approved.projection),
+          [],
+        ),
       );
-      const sameBinding =
-        deploymentProvisioner.id === probeProvisioner.id &&
-        deploymentProvisioner.apiVersion === probeProvisioner.apiVersion &&
-        deploymentProvisioner.bindingFingerprint ===
-          probeProvisioner.bindingFingerprint;
       const probe = probeHolder.current;
-      const adoptedProbe = sameBinding ? probe : null;
+      const adoptedProbe =
+        probe !== null &&
+        deploymentProvisioner.id === probe.provisionerId &&
+        deploymentProvisioner.apiVersion === probe.provisionerApiVersion &&
+        deploymentProvisioner.bindingFingerprint ===
+          probe.provisionerBindingFingerprint
+          ? probe
+          : null;
       if (probe !== null && adoptedProbe === null) {
         await releaseProbe(probe, "succeeded");
       }
@@ -1133,20 +1244,4 @@ export function createWorkflowAllocationService({
     prepareProvisionedDeployment,
     deployReadyAllocation,
   };
-}
-
-function formatProvisionerMismatches(
-  mismatches: Readonly<Record<string, readonly SidecarCapabilityMismatch[]>>,
-): string {
-  const details = Object.entries(mismatches)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .flatMap(([provisionerId, failures]) =>
-      failures.map(
-        ({ capability, expected, actual }) =>
-          `${provisionerId}: ${capability} must be ${expected}, was ${actual}`,
-      ),
-    );
-  return details.length === 0
-    ? "No sidecar provisioners are registered"
-    : `No sidecar provisioner satisfies the deployment (${details.join("; ")})`;
 }
