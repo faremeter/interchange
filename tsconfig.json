@@ -72,7 +72,6 @@
     { "path": "tests/workflow" },
     { "path": "tests/workflow-quickstart" },
     { "path": "bin" },
-    { "path": "./tsconfig.eslint.json" },
     { "path": "apps/admin-ui/tsconfig.node.json" },
     { "path": "packages/db/tsconfig.config.json" }
   ]

@@ -344,7 +344,7 @@ the repo root, which verifies the environment via
 | `make all`            | lint + build + admin-ui bundle + test        |
 | `make build`          | type check (`tsc -b --noEmit --force`)       |
 | `make build-admin-ui` | bundle the admin UI (`vite build`)           |
-| `make lint`           | prettier + eslint + API docs freshness       |
+| `make lint`           | prettier + oxlint + API docs freshness       |
 | `make format`         | auto-format                                  |
 | `make test`           | run tests                                    |
 | `make docs`           | regenerate [`docs/API.md`](./docs/API.md)    |

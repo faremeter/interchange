@@ -91,7 +91,7 @@ make all
 
 This runs lint, type check (`tsc -b`), the admin-ui production bundle
 (`vite build`), and tests in order, after verifying the environment via
-`bin/check-env`. Do not run `tsc`, `eslint`, or `bun test` directly in
+`bin/check-env`. Do not run `tsc`, `oxlint`, or `bun test` directly in
 place of `make all` -- the Makefile is the authoritative entrypoint and
 gates on `bin/check-env` first.
 
@@ -119,7 +119,7 @@ When you detect that a refactor might be necessary, prompt the user with specifi
 
 ## Configuration
 
-Do not modify configuration files (e.g. eslint, prettier, tsconfig) unless explicitly asked. Focus on writing working software, not changing the conventions that are being used.
+Do not modify configuration files (e.g. oxlint, prettier, tsconfig) unless explicitly asked. Focus on writing working software, not changing the conventions that are being used.
 
 ## Personality
 

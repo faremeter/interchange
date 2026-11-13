@@ -5,7 +5,7 @@ import { createSendQueue, SendQueueFullError } from "./send-queue";
 /**
  * Tests use `string` as the result type so the queue's generic R parameter
  * holds a real value (it cannot be `void` under
- * `@typescript-eslint/no-invalid-void-type`). The actual values are
+ * `typescript/no-invalid-void-type`). The actual values are
  * arbitrary; tests assert ordering and lifecycle, not result content.
  */
 

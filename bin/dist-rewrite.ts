@@ -32,7 +32,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import ts from "typescript";
+
+import { collectModuleSpecifiers } from "./lib/module-specifiers";
 
 // Extensions Node's ESM loader accepts as-is; a specifier already ending
 // in one of these is left alone.
@@ -44,48 +45,12 @@ function isRewritable(spec: string): boolean {
   return spec.startsWith(".") && !RESOLVED_EXTENSION.test(spec);
 }
 
-/** One string-literal module specifier located in the source text. */
-type SpecifierRef = { start: number; end: number; text: string };
-
-/** Collect the module-specifier string literals of a parsed source file:
- *  static `import`/`export ... from` clauses, `import x = require("...")`,
- *  dynamic `import("...")`, and `.d.ts` `import("...")` type nodes. A
- *  `declare module "name"` declaration names a module rather than
- *  importing one, so its name literal is deliberately not collected. */
-function collectSpecifiers(source: ts.SourceFile): SpecifierRef[] {
-  const refs: SpecifierRef[] = [];
-  const record = (node: ts.Node | undefined): void => {
-    if (node !== undefined && ts.isStringLiteral(node)) {
-      refs.push({
-        start: node.getStart(source),
-        end: node.getEnd(),
-        text: node.text,
-      });
-    }
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      record(node.moduleSpecifier);
-    } else if (
-      ts.isImportEqualsDeclaration(node) &&
-      ts.isExternalModuleReference(node.moduleReference)
-    ) {
-      record(node.moduleReference.expression);
-    } else if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword
-    ) {
-      record(node.arguments[0]);
-    } else if (
-      ts.isImportTypeNode(node) &&
-      ts.isLiteralTypeNode(node.argument)
-    ) {
-      record(node.argument.literal);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return refs;
+/** `text` as a string literal in the original `quote` style, escaped so it
+ *  means `text` again; inside backticks `${` would otherwise interpolate. */
+function quoted(text: string, quote: string): string {
+  let escaped = text.replaceAll("\\", "\\\\").replaceAll(quote, `\\${quote}`);
+  if (quote === "`") escaped = escaped.replaceAll("${", "\\${");
+  return `${quote}${escaped}${quote}`;
 }
 
 /** Rewrite the relative module specifiers of `sourceText` using
@@ -99,14 +64,9 @@ export function rewriteSpecifiers(
   fileName: string,
   resolve: (spec: string) => string | null,
 ): string {
-  const source = ts.createSourceFile(
-    fileName,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-  );
   const edits: { start: number; end: number; replacement: string }[] = [];
-  for (const ref of collectSpecifiers(source)) {
+  for (const ref of collectModuleSpecifiers(sourceText, fileName, "auto")) {
+    if (ref.kind !== "import") continue;
     if (!isRewritable(ref.text)) continue;
     const resolved = resolve(ref.text);
     if (resolved === null || resolved === ref.text) continue;
@@ -115,7 +75,7 @@ export function rewriteSpecifiers(
     edits.push({
       start: ref.start,
       end: ref.end,
-      replacement: `${quote}${resolved}${quote}`,
+      replacement: quoted(resolved, quote),
     });
   }
   edits.sort((a, b) => b.start - a.start);
