@@ -810,6 +810,18 @@ export type HubLink = {
     approvalSnapshot?: ApprovalSnapshot;
   }) => void;
   /**
+   * Stop resending the registers of a run that is about to stop waiting on
+   * them: the one for `correlationId`, or every one of the run without it.
+   * Called before the history that records the change can be pushed, so no
+   * resend can reach the hub after the pack that retired the wait.
+   */
+  releaseSignalCorrelationRegisters: (release: {
+    runId: string;
+    correlationId?: string;
+    agentAddress: string;
+    generation: number;
+  }) => void;
+  /**
    * Ship a workflow-run pack to the hub. Streams the supplied pack as
    * `repo.pack.push` chunks followed by a `repo.pack.done`, then
    * resolves on the matching `repo.pack.ack` (rejects on
@@ -2397,6 +2409,28 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       registerAcker.send(frame);
     };
 
+  const releaseSignalCorrelationRegisters: HubLink["releaseSignalCorrelationRegisters"] =
+    (release) => {
+      const released = (frame: SignalCorrelationRegisterFrame): boolean =>
+        frame.agentAddress === release.agentAddress &&
+        frame.generation === release.generation &&
+        frame.runId === release.runId &&
+        (release.correlationId === undefined ||
+          frame.correlationId === release.correlationId);
+      // A register queued while the link is down goes out once it is
+      // welcomed, so the queued copy is dropped as well.
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        const queued = queue[index];
+        if (
+          queued?.type === "signal.correlation.register" &&
+          released(queued)
+        ) {
+          queue.splice(index, 1);
+        }
+      }
+      registerAcker.cancelWhere(released);
+    };
+
   const sendDeploymentStopped: HubLink["sendDeploymentStopped"] = (report) => {
     welcomedSocket()?.send(
       JSON.stringify({
@@ -2423,6 +2457,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     close,
     sendEvent,
     sendSignalCorrelationRegister,
+    releaseSignalCorrelationRegisters,
     pushWorkflowRunPack,
     sendDeploymentStopped,
     sendDeploymentWoken,

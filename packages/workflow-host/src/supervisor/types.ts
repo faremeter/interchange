@@ -282,6 +282,18 @@ export interface SuspensionRegistration {
 }
 
 /**
+ * A run that is about to stop waiting on its approvals, forwarded to the host
+ * from the child's `park.release`. It names one retired correlation, or none
+ * when the run ends. The supervisor stamps `agentAddress` as it does for a
+ * registration.
+ */
+export interface SuspensionRelease {
+  runId: string;
+  correlationId?: string;
+  agentAddress: string;
+}
+
+/**
  * Constructor arguments for `createWorkflowSupervisor`. One
  * `RepoStore` handle plus a `signAsPrincipal` callback that mints
  * signatures on demand per principal, rather than pre-minting
@@ -310,6 +322,15 @@ export interface WorkflowSupervisorBindings {
    * or abort a re-emit partway through the parked set.
    */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
+  /**
+   * Optional sink for a run that is about to stop waiting on approvals it
+   * registered. The pump invokes it when the child's `park.release` arrives,
+   * before the write that records the change can be committed. Production
+   * wires it to the hub link, which stops resending those registers: a resend
+   * that left after that history was pushed could reach the hub after it and
+   * leave the approval pending.
+   */
+  onSuspensionRelease?: (release: SuspensionRelease) => void;
   /**
    * Self-termination sink. The supervisor invokes it when it reaches a terminal
    * phase on its own -- the crash-loop latch (`crash-looping`), a channel crash

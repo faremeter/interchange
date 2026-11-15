@@ -32,6 +32,7 @@ import {
   type SubprocessHandle,
   type SubprocessSpawner,
   type SuspensionRegistration,
+  type SuspensionRelease,
   type WorkflowSupervisor,
 } from "./index";
 import { wrapHubTransportAsMailBus } from "../mail-bus/index";
@@ -100,6 +101,13 @@ type FakeChild = {
   // When true, the supervisor's downstream writes to this child throw,
   // simulating a closing pipe so the driver's send-failure path is exercised.
   failWrites: boolean;
+  /** How many control lines the child has sent the supervisor. */
+  sent: number;
+  /**
+   * The supervisor's pump takes each of the child's lines once this settles,
+   * so a test can keep a line the child already sent from being read.
+   */
+  held: Promise<void>;
 };
 
 /**
@@ -119,6 +127,8 @@ function createSpawnTracker() {
       c2s,
       events,
       failWrites: false,
+      sent: 0,
+      held: Promise.resolve(),
     };
     children.push(child);
     // `exited` models the live child's process: it stays pending until the
@@ -137,7 +147,17 @@ function createSpawnTracker() {
           return s2c.writer.write(line);
         },
       },
-      controlReader: c2s.reader,
+      controlReader: {
+        read() {
+          const lines = c2s.reader.read();
+          return (async function* () {
+            for await (const line of lines) {
+              await child.held;
+              yield line;
+            }
+          })();
+        },
+      },
       eventReader: events.reader,
       kill: () => {
         events.close();
@@ -158,7 +178,8 @@ function createSpawnTracker() {
  * query arrives and `onReply` after each answer, so a test can await the
  * fire-and-forget Trigger A effect deterministically. The two are distinct
  * reports because the watchdog path answers nothing: a test asserting a query
- * is in flight has only `onRequest` to go on.
+ * is in flight has only `onRequest` to go on. Returns the child's sender, for
+ * a test that sends a frame of its own as that child.
  */
 async function driveReadyAndAnswer(
   child: FakeChild,
@@ -166,13 +187,14 @@ async function driveReadyAndAnswer(
   nextReply: { current: ParkedEntry[] | null },
   onReply: () => void,
   onRequest: () => void,
-): Promise<void> {
+): Promise<ReturnType<typeof createControlChannelSender>> {
   if (child.channelId === undefined) throw new Error("no channelId");
   const childSender = createControlChannelSender({
     privateKeySeed: ipcKp.privateKey,
     channelId: child.channelId,
     writer: {
       write(line: string) {
+        child.sent += 1;
         child.c2s.inject(line);
       },
     },
@@ -203,11 +225,20 @@ async function driveReadyAndAnswer(
       onReply();
     }
   })();
+  return childSender;
 }
 
 interface Harness {
   supervisor: WorkflowSupervisor;
   registrations: SuspensionRegistration[];
+  releases: SuspensionRelease[];
+  /** The first cohort's sender, for a frame the test sends as that child. */
+  firstChildSender: ReturnType<typeof createControlChannelSender>;
+  /**
+   * At each registration, how many of the child's lines the supervisor's pump
+   * had not finished with: 1 while it is still on the line it registers from.
+   */
+  unfinishedLinesAtRegister: number[];
   nextReply: { current: ParkedEntry[] | null };
   children: FakeChild[];
   ipcKp: { privateKey: Uint8Array; publicKey: Uint8Array };
@@ -238,6 +269,8 @@ async function setup(opts: {
   const tracker = createSpawnTracker();
 
   const registrations: SuspensionRegistration[] = [];
+  const releases: SuspensionRelease[] = [];
+  const unfinishedLinesAtRegister: number[] = [];
   const nextReply: { current: ParkedEntry[] | null } = {
     current: opts.initialReply,
   };
@@ -253,6 +286,12 @@ async function setup(opts: {
     mailBus,
     onSuspensionRegister: (registration) => {
       registrations.push(registration);
+      const child = tracker.children.at(-1);
+      if (child === undefined) throw new Error("registered with no child");
+      unfinishedLinesAtRegister.push(child.sent - child.c2s.readCount());
+    },
+    onSuspensionRelease: (release) => {
+      releases.push(release);
     },
     subprocessSpawner: tracker.spawner,
     binaryPath: "/fake/bin/workflow-child",
@@ -281,7 +320,7 @@ async function setup(opts: {
   await waitUntil(() => tracker.children.length >= 1);
   const childA = tracker.children[0];
   if (childA === undefined) throw new Error("cohort A missing");
-  await driveReadyAndAnswer(
+  const firstChildSender = await driveReadyAndAnswer(
     childA,
     ipcKp,
     nextReply,
@@ -302,6 +341,9 @@ async function setup(opts: {
   return {
     supervisor,
     registrations,
+    releases,
+    firstChildSender,
+    unfinishedLinesAtRegister,
     nextReply,
     children: tracker.children,
     ipcKp,
@@ -388,6 +430,95 @@ describe("supervisor reEmitParkedCorrelations", () => {
     await harness.cleanup();
   });
 
+  // Send `frame` as the first child, replace that child before the supervisor
+  // reads it, and return once the old pump has read it. The replacement
+  // reports `stillParked`.
+  async function readAfterReplacement(
+    harness: Harness,
+    frame: ControlPayload,
+    stillParked: ParkedEntry[],
+  ): Promise<void> {
+    const childA = harness.children[0];
+    if (childA === undefined) throw new Error("cohort A missing");
+    const read = Promise.withResolvers<undefined>();
+    childA.held = read.promise.then(() => undefined);
+    await harness.firstChildSender.send(frame);
+
+    harness.nextReply.current = stillParked;
+    const recycleP = harness.supervisor.recycle({ reason: "test-recycle" });
+    await waitUntil(() => harness.children.length >= 2);
+    const childB = harness.children[1];
+    if (childB === undefined) throw new Error("cohort B missing");
+    let replacementReplies = 0;
+    await driveReadyAndAnswer(
+      childB,
+      harness.ipcKp,
+      harness.nextReply,
+      () => {
+        replacementReplies += 1;
+      },
+      () => undefined,
+    );
+    await recycleP;
+    await waitUntil(() => replacementReplies >= 1);
+    await harness.waitForRegistrations(stillParked.length);
+
+    read.resolve(undefined);
+    await childA.c2s.awaitReadCount(childA.sent);
+  }
+
+  test("a release read after its cohort was replaced does not release what the replacement registered", async () => {
+    // The first child sends a release and is replaced before its write lands,
+    // so the wait is still open and the replacement registers it again.
+    const harness = await setup({ initialReply: [] });
+    const parked: ParkedEntry = {
+      runId: "run-a",
+      correlationId: "corr-a",
+      parkKind: "approval",
+      snapshot: SNAPSHOT,
+    };
+
+    await readAfterReplacement(
+      harness,
+      {
+        type: "park.release",
+        data: { runId: parked.runId, correlationId: parked.correlationId },
+      },
+      [parked],
+    );
+
+    expect(harness.registrations).toEqual([registrationFor(parked)]);
+    expect(harness.releases).toEqual([]);
+
+    await harness.cleanup();
+  });
+
+  test("a park read after its cohort was replaced is not registered", async () => {
+    // The first child parks and is replaced before the supervisor reads the
+    // notice. The replacement has retired the wait since, so it reports
+    // nothing parked, and a register now would open an approval no run
+    // waits on.
+    const harness = await setup({ initialReply: [] });
+
+    await readAfterReplacement(
+      harness,
+      {
+        type: "park.notify",
+        data: {
+          runId: "run-a",
+          correlationId: "corr-a",
+          parkKind: "approval",
+          snapshot: SNAPSHOT,
+        },
+      },
+      [],
+    );
+
+    expect(harness.registrations).toEqual([]);
+
+    await harness.cleanup();
+  });
+
   test("re-registers what the child reports on an explicit call", async () => {
     // The spawn auto-emit reported nothing; an explicit call then re-registers
     // the freshly-reported set.
@@ -406,6 +537,28 @@ describe("supervisor reEmitParkedCorrelations", () => {
 
     await harness.waitForRegistrations(1);
     expect(harness.registrations).toEqual([registrationFor(parked)]);
+
+    await harness.cleanup();
+  });
+
+  test("registers the parked set before the pump takes the child's next payload", async () => {
+    // A `park.release` the child sends after its answer must find these
+    // registers to cancel. They are made while the pump is still on the
+    // answer, the one line the child has sent that it has not finished with.
+    const harness = await setup({ initialReply: [] });
+    harness.nextReply.current = [
+      {
+        runId: "run-x",
+        correlationId: "corr-x",
+        parkKind: "approval",
+        snapshot: SNAPSHOT,
+      },
+    ];
+
+    await harness.supervisor.reEmitParkedCorrelations();
+
+    await harness.waitForRegistrations(1);
+    expect(harness.unfinishedLinesAtRegister).toEqual([1]);
 
     await harness.cleanup();
   });

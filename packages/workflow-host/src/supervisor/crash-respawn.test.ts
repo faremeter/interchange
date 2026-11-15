@@ -50,6 +50,7 @@ import {
   type SignedPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
+  type SuspensionRelease,
   type WorkflowSupervisorBindings,
 } from "./index";
 import { createControlChannelSender } from "../ipc/index";
@@ -399,6 +400,7 @@ async function buildBindings(opts: {
     phase: "stopped" | "crash-looping";
     reason: string;
   }) => void;
+  onSuspensionRelease?: (release: SuspensionRelease) => void;
 }): Promise<WorkflowSupervisorBindings> {
   const repoStore = createStubRepoStore(opts.baseDir, opts.writeRecorder);
   return {
@@ -440,6 +442,9 @@ async function buildBindings(opts: {
     ...(opts.onSelfTerminate !== undefined
       ? { onSelfTerminate: opts.onSelfTerminate }
       : {}),
+    ...(opts.onSuspensionRelease !== undefined
+      ? { onSuspensionRelease: opts.onSuspensionRelease }
+      : {}),
   };
 }
 
@@ -460,6 +465,7 @@ async function spawnSupervisor(opts: {
     phase: "stopped" | "crash-looping";
     reason: string;
   }) => void;
+  onSuspensionRelease?: (release: SuspensionRelease) => void;
 }) {
   await seedStepGrants(opts.baseDir, "step-1", [
     { resource: "thing", action: "read" },
@@ -489,6 +495,9 @@ async function spawnSupervisor(opts: {
       : {}),
     ...(opts.onSelfTerminate !== undefined
       ? { onSelfTerminate: opts.onSelfTerminate }
+      : {}),
+    ...(opts.onSuspensionRelease !== undefined
+      ? { onSuspensionRelease: opts.onSuspensionRelease }
       : {}),
   });
   const supervisor = createWorkflowSupervisor(bindings);
@@ -883,6 +892,50 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     first.crash();
 
     expect(await tombstoneAtSelfTermination.promise).toBe(true);
+  });
+
+  test("the latch releases the run's registers before it commits its RunFailed tombstone", async () => {
+    const baseDir = await makeTempDir("crash-loop-release-");
+    const ipcKeypair = await generateKeyPair();
+    const tracker = createSpawnTracker();
+    const writeRecorder = createWriteRecorder();
+    const releases: { release: SuspensionRelease; tombstoned: boolean }[] = [];
+    const latched = Promise.withResolvers<undefined>();
+    await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus: createMockMailBus(),
+      ipcKeypair,
+      inboxPrimitives: createMemoryInboxPrimitives(),
+      crashLoopMaxCount: 1,
+      writeRecorder,
+      onSuspensionRelease: (release) => {
+        releases.push({
+          release,
+          tombstoned: writeRecorder
+            .prefixes()
+            .includes("runs/run_deployment-x/events/"),
+        });
+      },
+      onSelfTerminate: () => {
+        latched.resolve(undefined);
+      },
+    });
+
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    first.crash();
+    await latched.promise;
+
+    expect(releases).toStrictEqual([
+      {
+        release: {
+          runId: "run_deployment-x",
+          agentAddress: "run_deployment-x@example.com",
+        },
+        tombstoned: false,
+      },
+    ]);
   });
 
   test("a stable run resets the crash counter so a later crash does not latch", async () => {

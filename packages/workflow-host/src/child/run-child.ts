@@ -80,6 +80,7 @@ import type {
   Scheduler,
   PersistRecoveredPark,
   ReadParkedApprovalOps,
+  RepoStore,
   StepInvokeRequest,
   StepInvokeResult,
   StepInvoker,
@@ -169,6 +170,7 @@ import {
 } from "../workflow-definition-loader";
 import { discoverInFlightRuns } from "./self-discovery";
 import { collectParkedApprovalCorrelations } from "./parked-correlations";
+import { createParkReleases, type ParkReleases } from "./park-releases";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 import type { ChildMailComposeBridge } from "./mail-compose-bridge";
 import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
@@ -461,7 +463,7 @@ export interface RunWorkflowChildBindings {
   }>;
 }
 
-export interface RunWorkflowChildOpts {
+interface RunWorkflowChildBaseOpts {
   /** Parsed spawn-time env. */
   env: SpawnTimeEnv;
   /**
@@ -491,18 +493,6 @@ export interface RunWorkflowChildOpts {
   eventWriter: FrameWriter;
   /** Bindings the binary or test harness owns. */
   bindings: RunWorkflowChildBindings;
-  /**
-   * Optional pre-built upstream control sender the child uses to emit
-   * `ready` and (today) `pack.push.request` frames. Defaults to a
-   * sender minted internally against the child's own Ed25519 keypair.
-   * The process-shaped wrapper `runWorkflowChildFromProcessEnv`
-   * supplies a pre-built sender so the same Ed25519-signed surface is
-   * shared with the pack-push bridge it constructs against the
-   * substrate factory. The sender holds every frame until the child has
-   * sent `ready` and `resumed.runs`, so a due timer or a resumed run that
-   * writes during startup cannot send ahead of them.
-   */
-  upstreamSender?: HeldControlChannelSender;
   /**
    * Optional substrate-write bridge whose `handleMergeRequest`,
    * `handleDeltaRequest` and `handleWriteResponse` the child's control
@@ -574,6 +564,42 @@ export interface RunWorkflowChildOpts {
    */
   mailboxWatchRegistry?: MailboxWatchRegistry;
 }
+
+/**
+ * The upstream control sender and the park releases over it, given together
+ * or not at all. A sender given alone would get releases of its own, apart
+ * from the ones its builder shared with the substrate factory, and a release
+ * the scheduler's store sends would then be missing from a re-registration.
+ */
+type RunWorkflowChildUpstreamOpts =
+  | {
+      /**
+       * A pre-built upstream control sender the child uses to emit `ready`
+       * and (today) `pack.push.request` frames. The process-shaped wrapper
+       * `runWorkflowChildFromProcessEnv` supplies one so the same
+       * Ed25519-signed surface is shared with the pack-push bridge it
+       * constructs against the substrate factory. The sender holds every
+       * frame until the child has sent `ready` and `resumed.runs`, so a due
+       * timer or a resumed run that writes during startup cannot send ahead
+       * of them.
+       */
+      upstreamSender: HeldControlChannelSender;
+      /**
+       * The park releases over `upstreamSender`. The process-shaped wrapper
+       * shares them with the substrate factory, so the scheduler's store
+       * sends releases through the tracker the re-registration read consults.
+       */
+      parkReleases: ParkReleases;
+    }
+  | {
+      /** Absent: the child mints a sender against its own Ed25519 keypair. */
+      upstreamSender?: undefined;
+      /** Absent: the child mints releases over the sender it minted. */
+      parkReleases?: undefined;
+    };
+
+export type RunWorkflowChildOpts = RunWorkflowChildBaseOpts &
+  RunWorkflowChildUpstreamOpts;
 
 /**
  * Narrow interface the child's control loop calls when downstream
@@ -664,13 +690,6 @@ export async function runWorkflowChild(
     opts.mailComposeBridge ?? unavailableMailSigner;
   const clock = opts.bindings.clock ?? defaultClock;
   const newId = opts.bindings.newId ?? defaultNewId;
-
-  const runtimeRepoStore = createWorkflowRunRepoStore({
-    substrate: opts.bindings.substrate,
-    repoId: opts.bindings.workflowRunRepoId,
-    principal: opts.bindings.principal,
-    ref: opts.bindings.workflowRunRef,
-  });
 
   const eventSender = createEventChannelSender({
     hmacKey: opts.env.hmacKey,
@@ -887,6 +906,15 @@ export async function runWorkflowChild(
         writer: opts.controlWriter,
       }),
     );
+  const parkReleases = opts.parkReleases ?? createParkReleases(upstreamSender);
+  const runtimeRepoStore = parkReleases.wrap(
+    createWorkflowRunRepoStore({
+      substrate: opts.bindings.substrate,
+      repoId: opts.bindings.workflowRunRepoId,
+      principal: opts.bindings.principal,
+      ref: opts.bindings.workflowRunRef,
+    }),
+  );
 
   // Control channel. The receiver iterator yields one verified payload
   // per call; any signature/channelId/seq violation crashes the
@@ -1052,6 +1080,7 @@ export async function runWorkflowChild(
           bindings: opts.bindings,
           credentialsRef,
           runtimeRepoStore,
+          parkReleases,
           definition,
           authorize,
           directors,
@@ -1183,7 +1212,7 @@ function stopHostScheduler(bindings: RunWorkflowChildBindings): void {
 async function answerQuiet(
   ctx: {
     bindings: RunWorkflowChildBindings;
-    runtimeRepoStore: ReturnType<typeof createWorkflowRunRepoStore>;
+    runtimeRepoStore: RepoStore;
     upstreamSender: ControlChannelSender;
     quietCheck: { current: AbortController | null };
   },
@@ -1255,7 +1284,8 @@ async function handleControlPayload(
   ctx: {
     bindings: RunWorkflowChildBindings;
     credentialsRef: CredentialsSnapshotRef;
-    runtimeRepoStore: ReturnType<typeof createWorkflowRunRepoStore>;
+    runtimeRepoStore: RepoStore;
+    parkReleases: ParkReleases;
     definition: WorkflowDefinition;
     authorize: WorkflowAuthorizeFn;
     directors: DirectorRegistry;
@@ -1691,6 +1721,11 @@ async function handleControlPayload(
         "workflow-child received a `park.notify` frame on its inbound control channel; this is a child-only upstream payload",
       );
     }
+    case "park.release": {
+      throw new Error(
+        "workflow-child received a `park.release` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
     case "outbound.message": {
       // `outbound.message` is the child->supervisor outbound-mail
       // request frame; receiving one on the child's downstream side is a
@@ -1845,6 +1880,7 @@ async function handleControlPayload(
       // binding to recover one) throws out of the loop like the other
       // invariant-violation arms rather than dropping a correlation the hub
       // is waiting to register.
+      const read = ctx.parkReleases.beginRead();
       const parked = await collectParkedApprovalCorrelations({
         substrate: ctx.bindings.substrate,
         repoId: ctx.bindings.workflowRunRepoId,
@@ -1856,9 +1892,15 @@ async function handleControlPayload(
           ? { readParkedApprovalOps: ctx.bindings.readParkedApprovalOps }
           : {}),
       });
+      // The read is committed history, which can still show a wait this
+      // child released ahead of a write that has not landed. A register for
+      // it would go out after its release and nothing would stop its
+      // resends. The filter and the send run without yielding, so a release
+      // after the filter reaches the supervisor after this answer.
+      const current = read.leaveOutReleased(parked);
       await ctx.upstreamSender.send({
         type: "parked-correlations.response",
-        data: { requestId: payload.data.requestId, parked },
+        data: { requestId: payload.data.requestId, parked: current },
       });
       return false;
     }
@@ -1931,7 +1973,7 @@ function unwiredMailPartReader(): MailPartReader {
 function buildRuntimeEnv(args: {
   runId: string;
   bindings: RunWorkflowChildBindings;
-  runtimeRepoStore: ReturnType<typeof createWorkflowRunRepoStore>;
+  runtimeRepoStore: RepoStore;
   authorize: WorkflowAuthorizeFn;
   directors: DirectorRegistry;
   suspendableChildHost: HostSpawnSuspendableChild | undefined;

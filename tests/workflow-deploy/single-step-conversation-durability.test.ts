@@ -79,6 +79,7 @@ import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
   sendAuthoritySet,
+  waitForUpstreamPayload,
 } from "@intx/workflow-host/testing";
 import {
   createControlChannelSender,
@@ -630,6 +631,15 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       };
     };
 
+    // The child reports a run's end once that end is durable. Other frames
+    // name the run earlier, such as the release it sends ahead of that write.
+    const runEnded = (child: ReturnType<typeof startChild>, runId: string) =>
+      waitForUpstreamPayload(
+        child.childToSupervisor,
+        "terminal.event",
+        (payload) => payload.data.runId === runId,
+      );
+
     // --- Child #1: two-turn conversation (local store under baseDir) ---
     const child1 = startChild(await generateKeyPair(), baseDir);
     await waitUntil(() => child1.childToSupervisor.flushed().length > 0);
@@ -643,9 +653,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         payload: textMail("alpha"),
       },
     });
-    await waitUntil(() =>
-      child1.childToSupervisor.flushed().some((l) => l.includes("run-1")),
-    );
+    await runEnded(child1, "run-1");
 
     await child1.supervisorSender.send({
       type: "trigger.fire",
@@ -656,9 +664,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         payload: textMail("bravo"),
       },
     });
-    await waitUntil(() =>
-      child1.childToSupervisor.flushed().some((l) => l.includes("run-2")),
-    );
+    await runEnded(child1, "run-2");
 
     // The warm agent was built once across the two messages.
     expect(child1.builds()).toBe(1);
@@ -729,9 +735,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         payload: textMail("charlie"),
       },
     });
-    await waitUntil(() =>
-      child2.childToSupervisor.flushed().some((l) => l.includes("run-3")),
-    );
+    await runEnded(child2, "run-3");
 
     // The rebuilt warm agent was built fresh (cache was empty on
     // respawn) -- there is no in-memory carry-over between the two child

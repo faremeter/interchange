@@ -56,12 +56,18 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { commitBuffered, dropChain } from "@intx/workflow/runtime";
+import { waitForEvent } from "@intx/workflow/testing";
 import {
   createDurableConversationStore,
   readStepState,
 } from "@intx/workflow-host";
 
+import { createWorkflowRunRepoStore } from "../adapters/repo-store";
+import type { ControlChannelSender } from "../ipc/control-sender";
+import { createParkReleases } from "./park-releases";
 import {
+  createDeploymentHostScheduler,
   createParkedApprovalHooks,
   persistColdRecoveredPark,
   readColdParkedApprovalSnapshot,
@@ -1008,5 +1014,92 @@ describe("toParkedApprovalOps", () => {
     const first = got[0];
     if (first === undefined) throw new Error("unreachable");
     expect("timeoutAtMs" in first).toBe(false);
+  });
+});
+
+describe("createDeploymentHostScheduler", () => {
+  test("a retire the scheduler flushes sends park.release", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const runId = "run_scheduler_flush";
+    const at = "2026-01-01T00:00:00.000Z";
+    const history = createWorkflowRunRepoStore({
+      substrate,
+      repoId: WORKFLOW_RUN_REPO_ID,
+      principal: PRINCIPAL,
+      ref: WORKFLOW_RUN_REF,
+    });
+    await history.appendBatch(runId, [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId,
+        definitionHash: "definition",
+        trigger: { type: "manual", payload: null },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "ask",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 3,
+        at,
+        stepId: "ask",
+        signalName: signalName("corr-1"),
+        parkKind: "approval",
+      },
+      // Already due, so the scheduler fires it as it starts.
+      { kind: "TimerSet", seq: 4, at, timerId: "t-due", fireAt: at },
+    ]);
+    // The run buffers a retire that nothing has flushed when the scheduler
+    // commits the timer.
+    await commitBuffered({ repoStore: history }, runId, {
+      kind: "SignalAwaitAbandoned",
+      seq: 0,
+      at,
+      stepId: "ask",
+      signalName: signalName("corr-1"),
+    });
+    const releases: unknown[] = [];
+    const sender: ControlChannelSender = {
+      seq: 0,
+      send: (payload) => {
+        if (payload.type === "park.release") releases.push(payload.data);
+        return Promise.resolve();
+      },
+    };
+    const scheduler = createDeploymentHostScheduler({
+      substrate,
+      principal: PRINCIPAL,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      parkReleases: createParkReleases(sender),
+    });
+    try {
+      await scheduler.start();
+      await waitForEvent(
+        history,
+        runId,
+        (event) => event.kind === "TimerFired",
+      );
+
+      expect(releases).toEqual([{ runId, correlationId: "corr-1" }]);
+      expect((await history.read(runId)).map((event) => event.kind)).toEqual([
+        "RunStarted",
+        "StepStarted",
+        "SignalAwaited",
+        "TimerSet",
+        "SignalAwaitAbandoned",
+        "TimerFired",
+      ]);
+    } finally {
+      await scheduler.stop();
+      dropChain(runId);
+    }
   });
 });

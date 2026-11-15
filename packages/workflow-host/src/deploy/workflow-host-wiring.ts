@@ -81,6 +81,7 @@ import type {
   RecordedStandby,
   SubprocessSpawner,
   SuspensionRegistration,
+  SuspensionRelease,
 } from "../supervisor/types";
 import type {
   MultistepDrainRouter,
@@ -455,6 +456,12 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * deployment registers no suspensions.
    */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
+  /**
+   * Release sink forwarded to the supervisor's `onSuspensionRelease`
+   * binding. Production wiring routes it to the hub link, which stops
+   * resending the run's registers. Absent means nothing is released.
+   */
+  onSuspensionRelease?: (release: SuspensionRelease) => void;
   /**
    * Self-termination sink forwarded to the supervisor's `onSelfTerminate`
    * binding. The supervisor invokes it when it drives itself to a terminal
@@ -880,6 +887,15 @@ export function createSidecarDeployRouter<
     approvalSnapshot?: ApprovalSnapshot;
   }) => void;
   /**
+   * Callback the supervisor invokes when a child reports that a run is about
+   * to stop waiting on approvals it registered (`park.release`). The router
+   * stamps the incarnation's generation before invoking it. Defaults to a
+   * no-op; production wiring supplies the hub-link-backed publisher.
+   */
+  publishWorkflowSuspensionRelease?: (
+    release: SuspensionRelease & { generation: number },
+  ) => void;
+  /**
    * Per-deployment-address mail handler registry the hub-link's
    * `mail.inbound` path consults. The multi-step branch registers
    * `wired.routeInbound` against the deployment's mail address once
@@ -1150,6 +1166,11 @@ export function createSidecarDeployRouter<
     }): void => {
       /* no-op default: tests and production-without-a-publisher
          deployments do not register suspensions. */
+    });
+  const publishSuspensionRelease =
+    deps.publishWorkflowSuspensionRelease ??
+    ((_release: SuspensionRelease & { generation: number }): void => {
+      /* no-op default: nothing registered, so nothing to release. */
     });
   const multistepSubstrateEnv = deps.multistepSubstrateEnv ?? {};
   // Sidecar data dir the deployment's per-step scratch is rooted under
@@ -1881,6 +1902,12 @@ export function createSidecarDeployRouter<
         // reaches the hub for the parked run.
         onSuspensionRegister: (registration) => {
           publishSuspension({ ...registration, generation: spec.generation });
+        },
+        onSuspensionRelease: (release) => {
+          publishSuspensionRelease({
+            ...release,
+            generation: spec.generation,
+          });
         },
         // Hold the deployment as stopped when the supervisor drives itself to
         // a terminal phase (crash-loop latch, channel crash, recycle failure),
@@ -3195,6 +3222,9 @@ export function createSidecarWorkflowSupervisor(
       : {}),
     ...(opts.onSuspensionRegister !== undefined
       ? { onSuspensionRegister: opts.onSuspensionRegister }
+      : {}),
+    ...(opts.onSuspensionRelease !== undefined
+      ? { onSuspensionRelease: opts.onSuspensionRelease }
       : {}),
     ...(opts.onSelfTerminate !== undefined
       ? { onSelfTerminate: opts.onSelfTerminate }
