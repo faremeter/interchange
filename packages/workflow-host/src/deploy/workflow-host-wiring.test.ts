@@ -898,6 +898,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     publishDeploymentStopped?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["publishDeploymentStopped"];
+    publishWorkflowSuspensionRelease?: Parameters<
+      typeof createSidecarDeployRouter
+    >[0]["publishWorkflowSuspensionRelease"];
     publishDeploymentWoken?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["publishDeploymentWoken"];
@@ -1023,6 +1026,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         : {}),
       ...(opts.publishDeploymentStopped !== undefined
         ? { publishDeploymentStopped: opts.publishDeploymentStopped }
+        : {}),
+      ...(opts.publishWorkflowSuspensionRelease !== undefined
+        ? {
+            publishWorkflowSuspensionRelease:
+              opts.publishWorkflowSuspensionRelease,
+          }
         : {}),
       multistepSubprocessSpawner: opts.spawner,
       ...(opts.multistepBinaryPath !== undefined
@@ -6846,6 +6855,88 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       await supervisorToChild.nextWrite();
     }
     expect(parkedRequestCount()).toBeGreaterThan(baseline);
+  });
+
+  test("a child's park.release reaches the release publisher with the deployment's address and generation", async () => {
+    const childIpcKeyPair = await generateKeyPair();
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
+    const spawnObserver = createSpawnObserver();
+    const spawner: SubprocessSpawner = ({ env }) => {
+      spawnObserver.record(env);
+      const handle: SubprocessHandle = {
+        pid: 10510,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+      return handle;
+    };
+    const released = Promise.withResolvers<unknown>();
+    const { router } = await buildMultistepFixture({
+      spawner,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-release-data-"),
+      },
+      publishWorkflowSuspensionRelease: (release) => {
+        released.resolve(release);
+      },
+    });
+    const frame = makeMultistepFrame({
+      definition: {
+        id: "wf-release",
+        triggers: [{ type: "manual" }],
+        stepOrder: ["step-1"],
+        steps: { "step-1": { kind: "step" } },
+      },
+      sources: defaultMultistepSources(),
+    });
+
+    const deployPromise = router.deploy(frame);
+    const observedEnv = await spawnObserver.first();
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+          return Promise.resolve();
+        },
+      },
+    });
+    await sendDefinitionFor(childSender, observedEnv, {
+      childPid: 10510,
+      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+    });
+    await childSender.send({ type: "ready" });
+    await deployPromise;
+
+    await childSender.send({
+      type: "park.release",
+      data: { runId: "run-parked", correlationId: "corr-1" },
+    });
+
+    expect(await released.promise).toEqual({
+      runId: "run-parked",
+      correlationId: "corr-1",
+      agentAddress: frame.agentAddress,
+      generation: frame.generation,
+    });
   });
 
   test("reEmitParkedCorrelations for an address with no active supervisor is a no-op", async () => {

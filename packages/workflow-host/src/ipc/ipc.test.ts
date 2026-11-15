@@ -1634,6 +1634,33 @@ describe("park.notify snapshot validation", () => {
   });
 });
 
+describe("park.release validation", () => {
+  test("accepts a release of one approval wait", () => {
+    const validated = ControlPayload({
+      type: "park.release",
+      data: { runId: "run-1", correlationId: "corr-1" },
+    });
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test("accepts a release with no correlation, for a run that ends", () => {
+    const validated = ControlPayload({
+      type: "park.release",
+      data: { runId: "run-1" },
+    });
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
+  test.each([
+    { correlationId: "corr-1" },
+    { runId: "", correlationId: "corr-1" },
+    { runId: "run-1", correlationId: "" },
+  ])("rejects a release with data %j", (data) => {
+    const validated = ControlPayload({ type: "park.release", data });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+});
+
 describe("parked-correlations frames", () => {
   const validSnapshot = {
     name: "charge_card",

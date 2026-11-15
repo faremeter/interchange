@@ -1057,6 +1057,22 @@ const controlPayloadFactories = defineControlPayloadFactories({
         "snapshot?": BoundedApprovalSnapshot,
       },
     }),
+  "park.release": () =>
+    type({
+      // Child-initiated notice that a run is about to stop waiting on its
+      // approvals: it retires the wait on `correlationId`, or, with no
+      // `correlationId`, the run ends. The child sends it before the write
+      // that records the change, on the channel that write's request takes,
+      // so the supervisor stops resending the register before that history
+      // can be committed and pushed. A resend after the push could reach the
+      // hub after the pack that retired the wait and leave its approval
+      // pending.
+      type: "'park.release'",
+      data: {
+        runId: "string > 0",
+        "correlationId?": "string > 0",
+      },
+    }),
   "parked-correlations.request": () =>
     type({
       // Supervisor-initiated request: enumerate the child's currently-parked

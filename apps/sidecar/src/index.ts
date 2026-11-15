@@ -606,6 +606,7 @@ const orchestrator = createSidecarOrchestrator({
     keyStore,
     publishWorkflowInferenceEvent,
     publishWorkflowSuspension,
+    publishWorkflowSuspensionRelease,
     publishDeploymentStopped,
     publishDeploymentWoken,
   }) => {
@@ -661,6 +662,7 @@ const orchestrator = createSidecarOrchestrator({
       sourceAssetGitDir,
       publishWorkflowInferenceEvent,
       publishWorkflowSuspension,
+      publishWorkflowSuspensionRelease,
       ...(onDispatchTiming !== undefined ? { onDispatchTiming } : {}),
       ...(repackEveryMessages !== undefined ? { repackEveryMessages } : {}),
       ...(consumedRetentionMs !== undefined ? { consumedRetentionMs } : {}),

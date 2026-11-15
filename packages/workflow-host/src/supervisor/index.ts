@@ -68,6 +68,7 @@ export type {
   SubprocessHandle,
   SubprocessSpawner,
   SuspensionRegistration,
+  SuspensionRelease,
   TerminalEventSource,
   TerminalRunEvent,
   WorkflowSupervisorBindings,

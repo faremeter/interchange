@@ -59,10 +59,12 @@ import {
   type RunWorkflowChildBindings,
 } from "./index";
 import type { MailboxEvent } from "@intx/types/runtime";
+import { createParkReleases } from "./park-releases";
 import { emitParkNotify, emitTerminalEvent } from "./run-child";
 import type {
   RunResult,
   WorkflowDefinition,
+  WorkflowEvent,
   WorkflowPark,
 } from "@intx/workflow";
 import {
@@ -2508,6 +2510,7 @@ describe("runWorkflowChild", () => {
     // A frame the child's own sender sends before the child starts, as a
     // due timer or a resumed run does during startup.
     earlyFrame?: ControlPayload,
+    bindingOverrides: Partial<RunWorkflowChildBindings> = {},
   ) {
     const baseDir = await makeTempDir(prefix);
     const supervisorKeyPair = await generateKeyPair();
@@ -2545,14 +2548,20 @@ describe("runWorkflowChild", () => {
     );
     const earlySent =
       earlyFrame === undefined ? undefined : upstreamSender.send(earlyFrame);
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      ...bindingOverrides,
+    };
+    const parkReleases = createParkReleases(upstreamSender);
     const runPromise = runWorkflowChild({
       env,
       definition,
       controlReader: supervisorToChild.reader,
       controlWriter: childToSupervisor.writer,
       eventWriter: eventStream.writer,
-      bindings: buildBindings({ baseDir, childKeyPair }),
+      bindings,
       upstreamSender,
+      parkReleases,
     });
     return {
       channelId,
@@ -2562,6 +2571,8 @@ describe("runWorkflowChild", () => {
       childToSupervisor,
       runPromise,
       earlySent,
+      bindings,
+      parkReleases,
     };
   }
 
@@ -2590,6 +2601,100 @@ describe("runWorkflowChild", () => {
     expect(types).toEqual(["ready", "resumed.runs", "recycle.request"]);
     await child.earlySent;
 
+    await child.supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    child.supervisorToChild.close();
+    await child.runPromise;
+  });
+
+  test("a parked-correlations answer leaves out a wait released ahead of its write", async () => {
+    const child = await startChildWithoutAuthority(
+      "child-parked-released-",
+      undefined,
+      {
+        loadParkedApproval: async () => ({
+          name: "charge_card",
+          description: "Charge the customer's card",
+          inputSchema: { type: "object" },
+          arguments: { amount: 100 },
+        }),
+      },
+    );
+    await sendAuthoritySet(child.supervisorSender, {
+      snapshot: AUTHORITY_SNAPSHOT,
+    });
+    // The child has listed the runs it resumes by now, so it answers for the
+    // run written below without driving it.
+    await waitForUpstreamPayload(child.childToSupervisor, "resumed.runs");
+    const history = createWorkflowRunRepoStore({
+      substrate: child.bindings.substrate,
+      repoId: child.bindings.workflowRunRepoId,
+      principal: child.bindings.principal,
+      ref: child.bindings.workflowRunRef,
+    });
+    const at = "2026-01-01T00:00:00.000Z";
+    const runId = "run-parked";
+    await history.appendBatch(runId, [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId,
+        definitionHash: "definition-hash-abc",
+        trigger: { type: "manual", payload: null },
+      },
+      ...["kept", "released"].map(
+        (stepId, index): WorkflowEvent => ({
+          kind: "StepStarted",
+          seq: 2 + index,
+          at,
+          stepId,
+          attempt: 1,
+          input: { ref: "inline:null" },
+        }),
+      ),
+      ...["kept", "released"].map(
+        (stepId, index): WorkflowEvent => ({
+          kind: "SignalAwaited",
+          seq: 4 + index,
+          at,
+          stepId,
+          signalName: signalName(`corr-${stepId}`),
+          parkKind: "approval",
+        }),
+      ),
+    ]);
+    // A retire whose write has not landed: its release is out, and committed
+    // history still shows the wait.
+    const landed = Promise.withResolvers<undefined>();
+    const retiring = child.parkReleases
+      .wrap({ ...history, appendBatch: () => landed.promise })
+      .appendBatch(runId, [
+        {
+          kind: "SignalAwaitAbandoned",
+          seq: 6,
+          at,
+          stepId: "released",
+          signalName: signalName("corr-released"),
+        },
+      ]);
+
+    await child.supervisorSender.send({
+      type: "parked-correlations.request",
+      data: { requestId: "parked-1" },
+    });
+    const answer = await waitForUpstreamPayload(
+      child.childToSupervisor,
+      "parked-correlations.response",
+    );
+    expect(answer.data.parked.map((park) => park.correlationId)).toEqual([
+      "corr-kept",
+    ]);
+
+    landed.resolve(undefined);
+    await retiring;
     await child.supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },

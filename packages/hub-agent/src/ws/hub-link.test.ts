@@ -3552,6 +3552,202 @@ describe("initial handshake on connect", () => {
       await server.stop(true);
     }
   });
+
+  test("a released register is not resent", async () => {
+    const allFrames: string[] = [];
+    let frameArrived = (): void => undefined;
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        // Never ack, so every register that is not released is resent.
+        onMessage(evt, ws) {
+          if (typeof evt.data !== "string") return;
+          allFrames.push(evt.data);
+          frameArrived();
+          const frame: { type: string } = JSON.parse(evt.data);
+          if (frame.type === "hello") {
+            ws.send(JSON.stringify({ type: "welcome", routed: [] }));
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const armedRetries = new Set<() => void>();
+    const fireArmedRetries = () => {
+      for (const retry of [...armedRetries]) {
+        armedRetries.delete(retry);
+        retry();
+      }
+    };
+
+    const welcomed = Promise.withResolvers<undefined>();
+    const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-register-release",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () => [],
+      registerAckMaxAttempts: 3,
+      scheduleRegisterRetry: (retry) => {
+        armedRetries.add(retry);
+        return () => armedRetries.delete(retry);
+      },
+      onWorkflowAddressesRoutable: () => {
+        welcomed.resolve(undefined);
+      },
+    });
+
+    const agentAddress = "run_reg_release@integration.interchange";
+    const registersFor = (correlationId: string): number =>
+      allFrames.filter((s) => {
+        const frame: { type: string; correlationId?: string } = JSON.parse(s);
+        return (
+          frame.type === "signal.correlation.register" &&
+          frame.correlationId === correlationId
+        );
+      }).length;
+    const untilRegisters = async (correlationId: string, count: number) => {
+      while (registersFor(correlationId) < count) {
+        const arrived = Promise.withResolvers<undefined>();
+        frameArrived = () => {
+          arrived.resolve(undefined);
+        };
+        if (registersFor(correlationId) >= count) break;
+        await arrived.promise;
+      }
+    };
+    const register = (
+      correlationId: string,
+      runId: string,
+      generation: number,
+    ): void => {
+      client.sendSignalCorrelationRegister({
+        correlationId,
+        runId,
+        anchorRunId: "dep-1",
+        agentAddress,
+        generation,
+        kind: "approval",
+        approvalSnapshot: {
+          name: "charge_card",
+          description: "Charge the customer's card",
+          inputSchema: { type: "object" },
+          arguments: { amount: 100 },
+        },
+      });
+    };
+
+    client.connect();
+    try {
+      await welcomed.promise;
+      register("corr-retired", "run-1", 1);
+      register("corr-ended", "run-2", 1);
+      register("corr-other-generation", "run-2", 2);
+      // Sent last, so its frames arrive after every other register's.
+      register("corr-held", "run-1", 1);
+      client.releaseSignalCorrelationRegisters({
+        runId: "run-1",
+        correlationId: "corr-retired",
+        agentAddress,
+        generation: 1,
+      });
+      client.releaseSignalCorrelationRegisters({
+        runId: "run-2",
+        agentAddress,
+        generation: 1,
+      });
+
+      fireArmedRetries();
+      fireArmedRetries();
+      await untilRegisters("corr-held", 3);
+
+      expect(registersFor("corr-retired")).toBe(1);
+      expect(registersFor("corr-ended")).toBe(1);
+      expect(registersFor("corr-other-generation")).toBe(3);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
+  test("a register released while it waits for the link is not sent", async () => {
+    const registers: string[] = [];
+    const heldArrived = Promise.withResolvers<undefined>();
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onMessage(evt, ws) {
+          if (typeof evt.data !== "string") return;
+          const frame: { type: string; correlationId?: string } = JSON.parse(
+            evt.data,
+          );
+          if (frame.type === "hello") {
+            ws.send(JSON.stringify({ type: "welcome", routed: [] }));
+          }
+          if (frame.type !== "signal.correlation.register") return;
+          registers.push(String(frame.correlationId));
+          if (frame.correlationId === "corr-held") {
+            heldArrived.resolve(undefined);
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-register-release-queued",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () => [],
+      // No retry fires, so a register reaches the Hub only from the queue.
+      scheduleRegisterRetry: () => () => undefined,
+    });
+    const agentAddress = "run_reg_release_queued@integration.interchange";
+    const register = (correlationId: string): void => {
+      client.sendSignalCorrelationRegister({
+        correlationId,
+        runId: "run-1",
+        anchorRunId: "dep-1",
+        agentAddress,
+        generation: 1,
+        kind: "approval",
+        approvalSnapshot: {
+          name: "charge_card",
+          description: "Charge the customer's card",
+          inputSchema: { type: "object" },
+          arguments: { amount: 100 },
+        },
+      });
+    };
+
+    // Both are queued: the link has not connected yet. The queue goes out in
+    // order, so the released one would arrive before the held one.
+    register("corr-retired");
+    register("corr-held");
+    client.releaseSignalCorrelationRegisters({
+      runId: "run-1",
+      correlationId: "corr-retired",
+      agentAddress,
+      generation: 1,
+    });
+    client.connect();
+    try {
+      await heldArrived.promise;
+
+      expect(registers).toEqual(["corr-held"]);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
 });
 
 describe("answerMalformedRequestFrame", () => {

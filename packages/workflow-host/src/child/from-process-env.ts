@@ -47,6 +47,7 @@ import {
   type ChildMailboxCallBridge,
 } from "./mailbox-call-bridge";
 import { createChildMailComposeBridge } from "./mail-compose-bridge";
+import { createParkReleases, type ParkReleases } from "./park-releases";
 import {
   createControlChannelSender,
   holdControlChannelSender,
@@ -150,6 +151,13 @@ export interface SubstrateFactoryEnv {
    * it, and those methods fail as unwired.
    */
   readonly mailboxCallBridge: ChildMailboxCallBridge;
+  /**
+   * The child's park releases, shared with `runWorkflowChild`. The factory
+   * wraps the store its scheduler flushes the deployment's own runs through,
+   * so a retire or run end it flushes sends `park.release` first. Its stores
+   * for child and body runs stay bare: those runs register no approval.
+   */
+  readonly parkReleases: ParkReleases;
 }
 
 /**
@@ -294,6 +302,7 @@ export async function runWorkflowChildFromProcessEnv(
   const mailComposeBridge = createChildMailComposeBridge({
     upstreamSender,
   });
+  const parkReleases = createParkReleases(upstreamSender);
   const bindings = await factory({
     spawn,
     definition,
@@ -303,6 +312,7 @@ export async function runWorkflowChildFromProcessEnv(
     mailSigner: mailComposeBridge,
     mailboxMutationBridge,
     mailboxCallBridge,
+    parkReleases,
   });
   return runWorkflowChild({
     env: spawn,
@@ -312,6 +322,7 @@ export async function runWorkflowChildFromProcessEnv(
     eventWriter,
     bindings,
     upstreamSender,
+    parkReleases,
     substrateWriteBridge,
     outboundMailBridge,
     mailboxMutationBridge,

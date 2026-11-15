@@ -143,6 +143,7 @@ import {
 import type { SubstrateFactory, SubstrateFactoryEnv } from "./from-process-env";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
+import type { ParkReleases } from "./park-releases";
 import { createProxyWorkflowRunRepoStore } from "./proxy-repo-store";
 import {
   createCredentialsBackedAuthorize,
@@ -2365,6 +2366,36 @@ function defaultNewId(prefix: string): string {
 }
 
 /**
+ * The host scheduler over one deployment's run history. Its commits and
+ * barriers can flush the runtime's buffered events for the deployment's own
+ * runs, a retire or run end among them, so its runtime store sends
+ * `park.release` first.
+ */
+export function createDeploymentHostScheduler(args: {
+  substrate: RepoStore;
+  principal: WorkflowRunWorkflowProcessPrincipal;
+  workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  parkReleases: ParkReleases;
+}): ReturnType<typeof createWorkflowHostScheduler> {
+  return createWorkflowHostScheduler({
+    repoStore: args.substrate,
+    runtimeStore: args.parkReleases.wrap(
+      createWorkflowRunRepoStore({
+        substrate: args.substrate,
+        principal: args.principal,
+        repoId: args.workflowRunRepoId,
+        ref: args.workflowRunRef,
+      }),
+    ),
+    principal: args.principal,
+    listActiveDeployments: () => [args.workflowRunRepoId],
+    ref: args.workflowRunRef,
+    clock: () => new Date(),
+  });
+}
+
+/**
  * Build a `SubstrateFactory` closed over the supplied dependencies.
  * The sidecar binding passes the grant cap.
  *
@@ -2472,18 +2503,12 @@ export function createSidecarSubstrateFactory(
       callBridge: env.mailboxCallBridge,
     };
 
-    const hostScheduler = createWorkflowHostScheduler({
-      repoStore: substrate,
-      runtimeStore: createWorkflowRunRepoStore({
-        substrate,
-        principal,
-        repoId: workflowRunRepoId,
-        ref: validated.WORKFLOW_RUN_REF,
-      }),
+    const hostScheduler = createDeploymentHostScheduler({
+      substrate,
       principal,
-      listActiveDeployments: () => [workflowRunRepoId],
-      ref: validated.WORKFLOW_RUN_REF,
-      clock: () => new Date(),
+      workflowRunRepoId,
+      workflowRunRef: validated.WORKFLOW_RUN_REF,
+      parkReleases: env.parkReleases,
     });
     await hostScheduler.start();
     const scheduler = adaptHostScheduler(hostScheduler);

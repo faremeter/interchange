@@ -161,6 +161,7 @@ import type {
   InboxPrimitives,
   RecordedStandby,
   SubprocessHandle,
+  SuspensionRelease,
   TerminalEventSource,
   TerminalRunEvent,
   WorkflowSupervisorBindings,
@@ -1584,12 +1585,16 @@ export function createWorkflowSupervisor(
           // the two ids differ (the repo slug carries a domain suffix), so
           // writing the tombstone under the repo slug would strand it in a run
           // subtree no reader consults.
+          const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
+          // The supervisor writes this end itself, so it releases the run's
+          // registers as the child does before a write that ends a run.
+          releaseSuspensions({ runId });
           await commitRunFailed({
             substrate: bindings.repoStore,
             repoId: bindings.workflowRunRepoId,
             ref: bindings.workflowRunRef,
             anchorRunId: bindings.anchorRunId,
-            runId: deriveWorkflowRunId(bindings.deploymentMailAddress),
+            runId,
             at: new Date(nowMs).toISOString(),
             message: `workflow-process crash-looped: ${String(crashCount)} unexpected exits within ${String(crashLoopWindowMs)}ms`,
           });
@@ -2129,6 +2134,28 @@ export function createWorkflowSupervisor(
         takenInputs.delete(payload.data.runId);
         continue;
       }
+      if (
+        (payload.type === "park.release" || payload.type === "park.notify") &&
+        cohortReplaced(cohortBroadcaster)
+      ) {
+        // The replacement speaks for these runs' waits now: it registers what
+        // is still parked and releases what it retires. A late release would
+        // stop the resends for a wait that is still open, since its write
+        // cannot land without the child that sent it. A late park would
+        // register a wait the replacement has retired.
+        continue;
+      }
+      if (payload.type === "park.release") {
+        // Handled before the pump takes the next payload, so the write the
+        // child sent after this release cannot commit first.
+        releaseSuspensions({
+          runId: payload.data.runId,
+          ...(payload.data.correlationId !== undefined
+            ? { correlationId: payload.data.correlationId }
+            : {}),
+        });
+        continue;
+      }
       if (payload.type === "park.notify") {
         // The workflow-process child reported a control-plane suspension: an
         // agent step parked on a reserved `signalName(correlationId)` channel.
@@ -2458,6 +2485,20 @@ export function createWorkflowSupervisor(
     }
   }
 
+  function releaseSuspensions(
+    release: Omit<SuspensionRelease, "agentAddress">,
+  ): void {
+    try {
+      bindings.onSuspensionRelease?.({
+        ...release,
+        agentAddress: bindings.deploymentMailAddress,
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`onSuspensionRelease sink threw for runId=${release.runId}: ${message}`;
+    }
+  }
+
   // Pending `reEmitParkedCorrelations` queries keyed by the supervisor-minted
   // `requestId`. The driver installs an entry, sends `parked-correlations.
   // request`, and awaits; the matching `parked-correlations.response` resolves
@@ -2477,6 +2518,7 @@ export function createWorkflowSupervisor(
   // rejection the moment a teardown aborts an in-flight auto-emit.
   type PendingParkedQuery = {
     settle: (parked: ParkedCorrelations | null) => void;
+    onParked: ((parked: ParkedCorrelations) => void) | undefined;
   };
   const pendingParkedQueries = new Map<string, PendingParkedQuery>();
   let parkedQuerySeq = 0;
@@ -2505,6 +2547,7 @@ export function createWorkflowSupervisor(
       return;
     }
     pendingParkedQueries.delete(data.requestId);
+    entry.onParked?.(data.parked);
     entry.settle(data.parked);
   }
 
@@ -2527,9 +2570,14 @@ export function createWorkflowSupervisor(
       logger.info`reEmitParkedCorrelations: child not addressable (phase=${state.phase}); skipping`;
       return;
     }
-    const outcome = await queryParkedCorrelations(state.controlSender);
-    // A failed query is re-driven by the next re-establishment.
-    if (typeof outcome !== "string") registerParkedCorrelations(outcome);
+    // Registered from the pump as the answer lands, before it reads the
+    // child's next payload: a `park.release` the child sent after its answer
+    // then finds these registers to cancel. A failed query is re-driven by
+    // the next re-establishment.
+    await queryParkedCorrelations(
+      state.controlSender,
+      registerParkedCorrelations,
+    );
   }
 
   // Ask the child which correlations its runs are parked on: `timeout` when it
@@ -2537,10 +2585,11 @@ export function createWorkflowSupervisor(
   // is torn down before it answers.
   async function queryParkedCorrelations(
     controlSender: ControlChannelSender,
+    onParked?: (parked: ParkedCorrelations) => void,
   ): Promise<ParkedCorrelations | "timeout" | "unreachable"> {
     const requestId = `pc-${String((parkedQuerySeq += 1))}`;
     const responded = new Promise<ParkedCorrelations | null>((resolve) => {
-      pendingParkedQueries.set(requestId, { settle: resolve });
+      pendingParkedQueries.set(requestId, { settle: resolve, onParked });
     });
     // Watchdog: a wedged-but-alive child never tears its cohort down, so the
     // cohort-abort settle would never fire and this await would hang the
@@ -3416,6 +3465,13 @@ export function createWorkflowSupervisor(
 
   function activeControlSender(): ControlChannelSender | null {
     return activeCohort()?.controlSender ?? null;
+  }
+
+  // Whether another child has taken over from the cohort `broadcaster`
+  // belongs to. A cohort that was only shut down has no successor.
+  function cohortReplaced(broadcaster: TerminalBroadcaster): boolean {
+    const live = activeCohort();
+    return live !== null && live.terminalBroadcaster !== broadcaster;
   }
 
   async function wireChild(args: {

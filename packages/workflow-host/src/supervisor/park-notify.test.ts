@@ -6,7 +6,9 @@
 // (`anchorRunId` + the deployment's mail address as `agentAddress`) onto the
 // child-supplied `runId`/`correlationId`/`kind` and hands the stamped
 // registration to the host's `onSuspensionRegister` sink -- the seam the
-// sidecar wires to the hub's `signal.correlation.register` frame.
+// sidecar wires to the hub's `signal.correlation.register` frame. A later
+// `park.release` reaches the host's `onSuspensionRelease` sink with the same
+// address stamped on it.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -30,6 +32,7 @@ import {
   createWorkflowSupervisor,
   type InboxPrimitives,
   type SuspensionRegistration,
+  type SuspensionRelease,
 } from "./index";
 import { wrapHubTransportAsMailBus } from "../mail-bus/index";
 import {
@@ -61,7 +64,7 @@ function createNoopInboxPrimitives(): InboxPrimitives {
   };
 }
 
-describe("supervisor park.notify arm", () => {
+describe("supervisor park.notify and park.release arms", () => {
   test("stamps identity onto the registration and forwards an approval snapshot when present", async () => {
     const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "park-notify-"));
 
@@ -87,6 +90,8 @@ describe("supervisor park.notify arm", () => {
     // `onSuspensionRegister` is the signal the supervisor already hands this
     // test: report each arrival rather than re-reading the array on a tick.
     const registered = createChangeNotifier();
+    const releases: SuspensionRelease[] = [];
+    const released = createChangeNotifier();
 
     let observedEnv: Record<string, string> | undefined;
     // Scoped here, not to the file: `first()` must resolve with THIS
@@ -102,6 +107,10 @@ describe("supervisor park.notify arm", () => {
       onSuspensionRegister: (registration) => {
         registrations.push(registration);
         registered.notify();
+      },
+      onSuspensionRelease: (release) => {
+        releases.push(release);
+        released.notify();
       },
       subprocessSpawner: ({ env }) => {
         observedEnv = env;
@@ -217,6 +226,25 @@ describe("supervisor park.notify arm", () => {
       agentAddress: AGENT_ADDRESS,
       approvalSnapshot: snapshot,
     });
+
+    // A release for one retired wait, then one for a run that ends.
+    await childSender.send({
+      type: "park.release",
+      data: { runId: "run-parked", correlationId: "corr-99" },
+    });
+    await childSender.send({
+      type: "park.release",
+      data: { runId: "run-parked-2" },
+    });
+    await released.until(() => releases.length === 2);
+    expect(releases).toStrictEqual([
+      {
+        runId: "run-parked",
+        correlationId: "corr-99",
+        agentAddress: AGENT_ADDRESS,
+      },
+      { runId: "run-parked-2", agentAddress: AGENT_ADDRESS },
+    ]);
 
     await supervisor.shutdown();
     await fs.rm(baseDir, { recursive: true, force: true });

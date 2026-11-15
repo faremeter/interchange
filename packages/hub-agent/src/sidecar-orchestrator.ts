@@ -97,6 +97,12 @@ export type CreateDeployRouter = (deps: {
     approvalSnapshot?: ApprovalSnapshot;
   }) => void;
   /**
+   * Sink for a run that is about to stop waiting on approvals it registered.
+   * Wired to the hub-link's `releaseSignalCorrelationRegisters`, like
+   * `publishWorkflowSuspension`.
+   */
+  publishWorkflowSuspensionRelease: HubLink["releaseSignalCorrelationRegisters"];
+  /**
    * Sink for a deployment that stopped though the Hub did not stop it. Wired
    * to the hub-link's `sendDeploymentStopped`, like
    * `publishWorkflowSuspension`.
@@ -331,6 +337,11 @@ export function createSidecarOrchestrator(
     /* replaced after HubLink construction */
   };
 
+  let dispatchSuspensionRelease: HubLink["releaseSignalCorrelationRegisters"] =
+    () => {
+      /* replaced after HubLink construction */
+    };
+
   let dispatchDeploymentStopped: (
     report: Omit<DeploymentStoppedFrame, "type">,
   ) => void = () => {
@@ -377,6 +388,9 @@ export function createSidecarOrchestrator(
     // closure reads it lazily so the post-construction swap is observed.
     publishWorkflowSuspension: (registration) => {
       dispatchSuspension(registration);
+    },
+    publishWorkflowSuspensionRelease: (release) => {
+      dispatchSuspensionRelease(release);
     },
     publishDeploymentStopped: (report) => {
       dispatchDeploymentStopped(report);
@@ -425,6 +439,7 @@ export function createSidecarOrchestrator(
 
   dispatchEvent = hubLink.sendEvent;
   dispatchSuspension = hubLink.sendSignalCorrelationRegister;
+  dispatchSuspensionRelease = hubLink.releaseSignalCorrelationRegisters;
   dispatchDeploymentStopped = hubLink.sendDeploymentStopped;
   dispatchDeploymentWoken = hubLink.sendDeploymentWoken;
 
