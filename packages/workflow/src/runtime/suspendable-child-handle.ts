@@ -29,9 +29,10 @@ import { runtimeRun } from "./run";
 
 /**
  * A handle that has already reached a terminal. `next` returns that same
- * terminal on every call, matching a live handle after `complete` settles.
- * `resume` and `deliverSignal` reject: this handle has no channel, and a
- * delivery after settle is a caller bug.
+ * terminal on every call, matching a live handle after `complete` settles,
+ * and so does every read or watch of a park. `resume` and `deliverSignal`
+ * reject: this handle has no channel, and a delivery after settle is a
+ * caller bug.
  */
 export function createTerminalChildHandle(
   terminalStatus: "completed" | "failed" | "cancelled",
@@ -51,6 +52,11 @@ export function createTerminalChildHandle(
     },
     resume: () => rejectSettled(),
     deliverSignal: () => rejectSettled(),
+    readParkRelease: () => Promise.resolve(terminal),
+    waitForParkRelease: (_name, _abort, onWake) => {
+      onWake();
+      return Promise.resolve(terminal);
+    },
   };
 }
 

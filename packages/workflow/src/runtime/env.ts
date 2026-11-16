@@ -485,10 +485,8 @@ export type SuspendableChildHandle = {
    * name. A signal already waiting on the caller must not be relayed once
    * the read is `released` or `terminal`: `next` can still return the park
    * event after the gate has moved on.
-   *
-   * Present on the same handles as {@link waitForParkRelease}.
    */
-  readParkRelease?(name: string): Promise<
+  readParkRelease(name: string): Promise<
     | { kind: "open" }
     | { kind: "released" }
     | {
@@ -501,11 +499,12 @@ export type SuspendableChildHandle = {
    * or the child run has reached a terminal. A sibling park does not
    * resolve it and is left queued for a later `next`. Abort rejects.
    *
-   * Present on a handle whose caller can have several parks live at once:
-   * a childWorkflow, and a loop iteration or onTrigger body on resume, where
-   * the parks already in the body's log are relayed one at a time.
+   * A caller that can have several parks live at once watches this instead
+   * of `next`: a childWorkflow, and a loop iteration or onTrigger body on
+   * resume, where the parks already in the body's log are relayed one at a
+   * time.
    */
-  waitForParkRelease?(
+  waitForParkRelease(
     name: string,
     abort: AbortSignal,
     onWake: () => void,

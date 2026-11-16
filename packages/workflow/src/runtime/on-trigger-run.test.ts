@@ -45,6 +45,7 @@ import {
 } from "@intx/workflow";
 import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
+import { noParkReleases } from "./suspendable-child-handle.test-helpers";
 
 const at = new Date().toISOString();
 
@@ -271,6 +272,7 @@ function startGateBesideSection(runId: string): {
           pending();
         }
       },
+      ...noParkReleases,
     };
   };
   const run = runtimeRun(
@@ -510,6 +512,7 @@ function recordingBody(
         throw new Error("resume on a body that does not park");
       },
       deliverSignal: async () => undefined,
+      ...noParkReleases,
     };
   };
 }
@@ -578,6 +581,7 @@ describe("runOnTrigger", () => {
           throw new Error("resume on a non-suspending body");
         },
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -645,6 +649,7 @@ describe("runOnTrigger", () => {
           resumedDecision = decision;
         },
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -689,6 +694,7 @@ describe("runOnTrigger", () => {
       next: async () => ({ kind: "terminal", terminalStatus: "failed" }),
       resume: async () => undefined,
       deliverSignal: async () => undefined,
+      ...noParkReleases,
     });
     const def = sectionWorkflow();
     const run = runtimeRun(
@@ -784,6 +790,7 @@ describe("runOnTrigger", () => {
         next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
 
@@ -834,6 +841,7 @@ describe("runOnTrigger", () => {
         next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
 
@@ -941,6 +949,7 @@ describe("runOnTrigger", () => {
         next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
 
@@ -994,6 +1003,7 @@ describe("runOnTrigger", () => {
       },
       resume: async () => undefined,
       deliverSignal: async () => undefined,
+      ...noParkReleases,
     });
 
     const def = sectionWorkflow({ onBodyFailure: "tolerate" });
@@ -1139,7 +1149,11 @@ describe("runOnTrigger", () => {
         },
         resume: async () => undefined,
         deliverSignal: async () => undefined,
-        // No way to watch the park, so the relay cannot start.
+        // The park cannot be read, so the relay cannot go on.
+        readParkRelease: () =>
+          Promise.reject(new Error("the park cannot be read")),
+        waitForParkRelease: () =>
+          Promise.reject(new Error("the park cannot be watched")),
       };
     };
 
@@ -1300,6 +1314,7 @@ describe("runOnTrigger", () => {
           throw new Error("no resume expected");
         },
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -1416,6 +1431,7 @@ describe("runOnTrigger", () => {
           throw new Error("no resume expected");
         },
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -1496,6 +1512,7 @@ describe("runOnTrigger", () => {
         },
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const run = runtimeRun(
@@ -1713,6 +1730,7 @@ describe("runOnTrigger", () => {
             release();
           }
         },
+        ...noParkReleases,
       };
     };
     const run = runtimeRun(
@@ -1815,6 +1833,7 @@ describe("runOnTrigger", () => {
             r();
           }
         },
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -1892,6 +1911,7 @@ describe("runOnTrigger", () => {
         deliverSignal: async () => {
           deliveredCount += 1;
         },
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -2525,6 +2545,7 @@ describe("runOnTrigger", () => {
         },
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -2583,6 +2604,7 @@ describe("runOnTrigger", () => {
         next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -2670,6 +2692,7 @@ describe("runOnTrigger", () => {
         next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -2755,6 +2778,7 @@ describe("runOnTrigger", () => {
         next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -2811,6 +2835,7 @@ describe("runOnTrigger", () => {
         next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = sectionWorkflow();
@@ -3225,6 +3250,7 @@ describe("runOnTrigger onBodyFailure: tolerate", () => {
         },
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = toleratingSection();
@@ -3357,6 +3383,7 @@ describe("runOnTrigger onBodyFailure: tolerate", () => {
         next: async () => ({ kind: "terminal", terminalStatus }),
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = toleratingSection();
@@ -3398,6 +3425,7 @@ describe("runOnTrigger onBodyFailure: tolerate", () => {
       next: async () => ({ kind: "terminal", terminalStatus: "cancelled" }),
       resume: async () => undefined,
       deliverSignal: async () => undefined,
+      ...noParkReleases,
     });
     const def = toleratingSection();
     const run = runtimeRun(
@@ -3481,6 +3509,7 @@ describe("runOnTrigger onBodyFailure: tolerate", () => {
         },
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = toleratingSection();

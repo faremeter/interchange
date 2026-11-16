@@ -295,6 +295,8 @@ async function trial(
               next: () => new Promise(() => undefined),
               resume: async () => undefined,
               deliverSignal: async () => undefined,
+              readParkRelease: () => new Promise(() => undefined),
+              waitForParkRelease: () => new Promise(() => undefined),
             };
           },
         }

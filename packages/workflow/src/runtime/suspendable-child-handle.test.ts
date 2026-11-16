@@ -181,10 +181,8 @@ describe("createSuspendableChildHandle", () => {
     const { handle, stop } = await parkedBody(env);
     const endParent = beginWork();
     holding = true;
-    const watching = waitIdle<unknown>(
-      (resume) =>
-        handle.waitForParkRelease?.("go", stop.signal, resume) ??
-        Promise.resolve(),
+    const watching = waitIdle<unknown>((resume) =>
+      handle.waitForParkRelease("go", stop.signal, resume),
     )
       .catch(() => undefined)
       .finally(endParent);

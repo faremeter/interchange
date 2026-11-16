@@ -40,6 +40,7 @@ import {
 } from "@intx/workflow";
 import { waitForEvent } from "@intx/workflow/testing";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
+import { noParkReleases } from "./suspendable-child-handle.test-helpers";
 
 const noopInvokeStep: StepInvoker = () => {
   throw new Error("test: invokeStep must not be called");
@@ -109,6 +110,7 @@ describe("tolerate section on a parent-abort local teardown", () => {
         },
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
 
@@ -201,6 +203,7 @@ describe("tolerate section on a parent-abort local teardown", () => {
         next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
         resume: async () => undefined,
         deliverSignal: async () => undefined,
+        ...noParkReleases,
       };
     };
     const def = toleratingSection();
