@@ -45,7 +45,10 @@ import {
 } from "@intx/workflow";
 import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
-import { noParkReleases } from "./suspendable-child-handle.test-helpers";
+import {
+  bodyLeavingApprovalUnderRelay,
+  noParkReleases,
+} from "./suspendable-child-handle.test-helpers";
 
 const at = new Date().toISOString();
 
@@ -649,7 +652,17 @@ describe("runOnTrigger", () => {
           resumedDecision = decision;
         },
         deliverSignal: async () => undefined,
-        ...noParkReleases,
+        readParkRelease: async () => ({ kind: "open" }),
+        waitForParkRelease: (_name, abort) =>
+          new Promise((_resolve, reject) => {
+            abort.addEventListener(
+              "abort",
+              () => {
+                reject(abort.reason);
+              },
+              { once: true },
+            );
+          }),
       };
     };
     const def = sectionWorkflow();
@@ -681,6 +694,53 @@ describe("runOnTrigger", () => {
       log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "approval"),
     ).toBe(true);
     expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("a decision taken after the body left its approval is not handed to the body", async () => {
+    const runId = "sec-decision-after-leave";
+    const repoStore = createInMemoryRepoStore();
+    const channel = createInMemorySignalChannel();
+    const body = bodyLeavingApprovalUnderRelay("body-corr-left", {
+      name: "charge_card",
+      description: "Charge the customer",
+      inputSchema: {},
+      arguments: { amount: 100 },
+    });
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild: body.spawn,
+      }),
+      { runId, triggerPayload: { text: "event-0" } },
+    );
+    // A run that ends instead of going on says why.
+    const ended = run.complete.then((result) => {
+      const failed = result.events.find((e) => e.kind === "StepFailed");
+      throw new Error(
+        `the run ended ${result.terminalStatus}: ${failed?.kind === "StepFailed" ? failed.error.message : "no step failed"}`,
+      );
+    });
+    void ended.catch(() => undefined);
+
+    const approvalChannel = await waitForPark(repoStore, runId, "approval", 1);
+    await channel.deliver(approvalChannel, { approved: true }, "grant-1");
+
+    // The section goes on to the body's end and waits for the next event.
+    await Promise.race([waitForPark(repoStore, runId, "input", 1), ended]);
+    expect(body.resumed()).toBe(false);
+    const log = await repoStore.read(runId);
+    expect(log.filter((e) => e.kind === "ChildCompleted")).toMatchObject([
+      { terminalStatus: "completed" },
+    ]);
+    // The decision closed the wait, so there is none left to retire.
+    expect(log.some((e) => e.kind === "SignalAwaitAbandoned")).toBe(false);
 
     await run.cancel("supervisor-operator", "test done");
     await run.complete.catch(() => undefined);
@@ -2918,7 +2978,29 @@ describe("runOnTrigger queued body parks", () => {
       },
     });
 
-  function storingApprovals(): {
+  // A body whose timed approval step retries, so each attempt asks for a new
+  // approval once the deadline leaves the one before it.
+  const retryingBody = (
+    timeout: number,
+    maxAttempts: number,
+  ): WorkflowDefinition =>
+    defineWorkflow({
+      id: "retrying-approval-section-body",
+      trigger: { type: "manual" },
+      steps: {
+        timed: step({
+          agent,
+          timeout,
+          retry: { maxAttempts, initialBackoffMs: 1, maxBackoffMs: 1 },
+        }),
+      },
+    });
+
+  function storingApprovals(
+    correlationOf: (ask: { stepId?: string; attempt?: number }) => string = (
+      ask,
+    ) => `corr-${String(ask.stepId)}`,
+  ): {
     invokeStep: StepInvoker;
     loadParkedApproval: LoadParkedApproval;
   } {
@@ -2944,7 +3026,7 @@ describe("runOnTrigger queued body parks", () => {
             },
           };
         }
-        const correlationId = `corr-${String(req.authzContext.stepId)}`;
+        const correlationId = correlationOf(req.authzContext);
         const approvalSnapshot: ApprovalSnapshot = {
           name: "gate",
           description: "gate",
@@ -2962,6 +3044,55 @@ describe("runOnTrigger queued body parks", () => {
       loadParkedApproval: async (args) => stored.get(key(args)),
     };
   }
+
+  test("retires an approval the body leaves and relays the one a retry asks for", async () => {
+    const runId = "sec-leaves-live";
+    const def = sectionWorkflow();
+    const repoStore = createInMemoryRepoStore();
+    const run = runtimeRun(
+      def,
+      realBodyEnv({
+        def,
+        repoStore,
+        signalChannel: createInMemorySignalChannel(),
+        // Every attempt has the step's deadline, so an approval can time out
+        // before the container relays it. The step retries often enough that
+        // the container relays one and, once the body left it, another,
+        // whatever the machine's speed. Neither is expected to be a
+        // particular attempt's.
+        body: retryingBody(20, 1_000),
+        ...storingApprovals((ask) => `corr-${String(ask.attempt)}`),
+      }),
+      { runId, triggerPayload: { text: "event-0" } },
+    );
+    const ended = run.complete.then((result) => {
+      const failed = result.events.find((e) => e.kind === "StepFailed");
+      throw new Error(
+        `the run ended ${result.terminalStatus}: ${failed?.kind === "StepFailed" ? failed.error.message : "no step failed"}`,
+      );
+    });
+    void ended.catch(() => undefined);
+
+    const left = await Promise.race([
+      waitForPark(repoStore, runId, "approval", 1),
+      ended,
+    ]);
+    const relaysAnother = (e: WorkflowEvent): boolean =>
+      e.kind === "SignalAwaited" &&
+      e.stepId === "section" &&
+      e.parkKind === "approval" &&
+      e.signalName !== left;
+    await Promise.race([waitForEvent(repoStore, runId, relaysAnother), ended]);
+    const log = await repoStore.read(runId);
+    const retired = log.findIndex(
+      (e) => e.kind === "SignalAwaitAbandoned" && e.signalName === left,
+    );
+    expect(retired).not.toBe(-1);
+    expect(log.findIndex(relaysAnother)).toBeGreaterThan(retired);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
 
   test("retires an approval the body left before a restart and relays the one it holds", async () => {
     const runId = "sec-left-approval";
@@ -2989,7 +3120,14 @@ describe("runOnTrigger queued body parks", () => {
       bodyRunId,
       (e) => e.kind === "SignalAwaited" && e.signalName === held,
     );
-    const parentLog = [...(await repoStore1.read(runId))];
+    // A crash before the container saw the body leave the first approval.
+    const parentEvents = await repoStore1.read(runId);
+    const parentLog = parentEvents.slice(
+      0,
+      parentEvents.findIndex(
+        (e) => e.kind === "SignalAwaited" && e.signalName === left,
+      ) + 1,
+    );
     const childLog = [...(await repoStore1.read(bodyRunId))];
     await run1.cancel("supervisor-operator", "crash");
     await run1.complete.catch(() => undefined);

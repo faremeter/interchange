@@ -502,7 +502,8 @@ export type SuspendableChildHandle = {
    * A caller that can have several parks live at once watches this instead
    * of `next`: a childWorkflow, and a loop iteration or onTrigger body on
    * resume, where the parks already in the body's log are relayed one at a
-   * time.
+   * time. A loop iteration or onTrigger body relaying an approval watches it
+   * too, to retire the approval when the body leaves it.
    */
   waitForParkRelease(
     name: string,

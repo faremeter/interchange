@@ -56,6 +56,7 @@ import {
 
 import { resolveDrainBehavior, type DrainController } from "./drain";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
+import { bodyLeavingApprovalUnderRelay } from "./suspendable-child-handle.test-helpers";
 
 const loopFns = (ref: string): LoopFn => {
   // Converge after the first iteration; `carry` is unused but must resolve.
@@ -1230,7 +1231,10 @@ const twoApprovalParent = defineWorkflow({
 
 // A loop whose timed approval step retries, so its next attempt parks on a new
 // approval once the deadline leaves the first.
-const timedApprovalParent = (timeout: number): WorkflowDefinition =>
+const timedApprovalParent = (
+  timeout: number,
+  maxAttempts = 2,
+): WorkflowDefinition =>
   defineWorkflow({
     id: "timed-approval-loop-parent",
     trigger: { type: "manual" },
@@ -1243,7 +1247,7 @@ const timedApprovalParent = (timeout: number): WorkflowDefinition =>
             timed: step({
               agent: approvalAgent,
               timeout,
-              retry: { maxAttempts: 2, initialBackoffMs: 1 },
+              retry: { maxAttempts, initialBackoffMs: 1, maxBackoffMs: 1 },
             }),
           },
         }),
@@ -1258,6 +1262,114 @@ const timedApprovalParent = (timeout: number): WorkflowDefinition =>
   });
 
 describe("loop iteration approval crash-resume", () => {
+  test("retires an approval the body leaves and relays the one a retry asks for", async () => {
+    const runId = "leaves-approval-run";
+    const invokeStep: StepInvoker = async (req) => {
+      if (req.resume !== undefined) {
+        return { output: { reply: "done", turn: replyTurn } };
+      }
+      return {
+        suspend: {
+          correlationId: `corr-${String(req.authzContext.attempt)}`,
+          kind: "approval",
+          approvalSnapshot: {
+            name: "gate",
+            description: "gate",
+            inputSchema: { type: "object" },
+            arguments: {},
+          },
+        },
+      };
+    };
+    // Every attempt has the step's deadline, so an approval can time out
+    // before the container relays it. The step retries often enough that the
+    // container relays one and, once the body left it, another, whatever the
+    // machine's speed. Neither is expected to be a particular attempt's.
+    const def = timedApprovalParent(20, 1_000);
+    const repoStore = createInMemoryRepoStore();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        parentDef: def,
+        repoStore,
+        blobs: createInMemoryBlobSubstrate(),
+        signalChannel: createInMemorySignalChannel(),
+        invokeAction: async ({ handler }) => {
+          if (handler === "escalate") return { output: "escalated" };
+          throw new Error(`unknown handler ${handler}`);
+        },
+        invokeStep,
+      }),
+      { runId },
+    );
+    const ended = run.complete.then((result) => {
+      const failed = result.events.find((e) => e.kind === "StepFailed");
+      throw new Error(
+        `the run ended ${result.terminalStatus}: ${failed?.kind === "StepFailed" ? failed.error.message : "no step failed"}`,
+      );
+    });
+    void ended.catch(() => undefined);
+
+    const left = await Promise.race([
+      waitForContainerPark(repoStore, runId, "approval", 1),
+      ended,
+    ]);
+    const relaysAnother = (e: WorkflowEvent): boolean =>
+      e.kind === "SignalAwaited" &&
+      e.stepId === "rework" &&
+      e.signalName !== left;
+    await Promise.race([waitForEvent(repoStore, runId, relaysAnother), ended]);
+    const log = await repoStore.read(runId);
+    const retired = log.findIndex(
+      (e) => e.kind === "SignalAwaitAbandoned" && e.signalName === left,
+    );
+    expect(retired).not.toBe(-1);
+    expect(log.findIndex(relaysAnother)).toBeGreaterThan(retired);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("a decision taken after the body left its approval is not handed to the body", async () => {
+    const runId = "decision-after-leave-run";
+    const repoStore = createInMemoryRepoStore();
+    const channel = createInMemorySignalChannel();
+    const body = bodyLeavingApprovalUnderRelay("corr-left", {
+      name: "gate",
+      description: "gate",
+      inputSchema: { type: "object" },
+      arguments: {},
+    });
+    const env = buildEnv({
+      parentDef: approvalParent,
+      repoStore,
+      blobs: createInMemoryBlobSubstrate(),
+      signalChannel: channel,
+      invokeAction: async ({ handler }) => {
+        throw new Error(`unknown handler ${handler}`);
+      },
+    });
+    env.spawnLoopIteration = body.spawn;
+    const run = runtimeRun(approvalParent, env, { runId });
+
+    const approval = await waitForContainerPark(
+      repoStore,
+      runId,
+      "approval",
+      1,
+    );
+    await channel.deliver(approval, { approved: true }, "grant-1");
+
+    // The loop goes on to the body's end.
+    const result = await run.complete;
+    expect(result.terminalStatus).toBe("completed");
+    expect(body.resumed()).toBe(false);
+    // The decision closed the wait, so there is none left to retire.
+    expect(result.events.some((e) => e.kind === "SignalAwaitAbandoned")).toBe(
+      false,
+    );
+  });
+
   test("retires an approval the body left before a restart and relays the one it holds", async () => {
     const runId = "left-approval-run";
     const blobs = createInMemoryBlobSubstrate();
@@ -1315,7 +1427,14 @@ describe("loop iteration approval crash-resume", () => {
       bodyRunId,
       (e) => e.kind === "SignalAwaited" && e.signalName === held,
     );
-    const parentLog = [...(await repoStore1.read(runId))];
+    // A crash before the container saw the body leave the first approval.
+    const parentEvents = await repoStore1.read(runId);
+    const parentLog = parentEvents.slice(
+      0,
+      parentEvents.findIndex(
+        (e) => e.kind === "SignalAwaited" && e.signalName === left,
+      ) + 1,
+    );
     const childLog = [...(await repoStore1.read(bodyRunId))];
     await run1.cancel("supervisor-operator", "crash");
     await run1.complete.catch(() => undefined);
