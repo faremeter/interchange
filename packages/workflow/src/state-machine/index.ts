@@ -31,6 +31,7 @@ export {
 export {
   controlParkKindOf,
   decideTerminalRunFlip,
+  isApprovalPark,
   emptyState,
   isTerminalRunPhase,
   isTerminalStepPhase,

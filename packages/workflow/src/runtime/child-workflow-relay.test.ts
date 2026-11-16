@@ -23,6 +23,7 @@ import { correlationIdFromSignalName, signalName } from "@intx/types";
 import type { ApprovalSnapshot } from "@intx/types/runtime";
 
 import {
+  action,
   awaitSignal,
   childWorkflow,
   createInMemoryBlobSubstrate,
@@ -868,6 +869,52 @@ describe("childWorkflow signal relay", () => {
       (event) => event.kind === "StepFailed" && event.stepId === "spawn",
     );
     expect(failed).toBeDefined();
+  });
+
+  test("a child that dies during an approval relay retires the approval when the spawn step's failure routes", async () => {
+    // The run goes on to the handler, so nothing but the retire says the
+    // approval the spawn step relayed is no longer wanted.
+    const child = defineWorkflow({
+      id: "timeout-child-routed",
+      trigger: { type: "manual" },
+      steps: { hold: step({ agent, timeout: 40 }) },
+    });
+    const parent = defineWorkflow({
+      id: "timeout-parent-routed",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({ definition: child, onFailure: "handler" }),
+        handler: action({ handler: "recover", after: ["spawn"] }),
+      },
+    });
+    const invokeStep: StepInvoker = async () => ({
+      suspend: {
+        correlationId: "corr-timeout-routed",
+        kind: "approval",
+        approvalSnapshot: snapshot,
+      },
+    });
+    const result = await runLocal(parent, {
+      runId: "run-timeout-approval-routed",
+      authorize: allowAll,
+      hasUpstreamSignalResolver: true,
+      invokeStep,
+      invokeAction: async () => ({ output: "recovered" }),
+    }).complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    const failed = result.events.findIndex(
+      (event) => event.kind === "StepFailed" && event.stepId === "spawn",
+    );
+    expect(result.events[failed]).toMatchObject({ routedTo: "handler" });
+    const retired = result.events.findIndex(
+      (event) =>
+        event.kind === "SignalAwaitAbandoned" &&
+        event.stepId === "spawn" &&
+        event.signalName === signalName("corr-timeout-routed"),
+    );
+    expect(retired).not.toBe(-1);
+    expect(retired).toBeLessThan(failed);
   });
 
   test("relays an approval inside a loop inside the child onto the spawn step", async () => {

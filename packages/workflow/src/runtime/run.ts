@@ -92,6 +92,7 @@ import {
   controlParkKindOf,
   decideTerminalRunFlip,
   emptyState,
+  isApprovalPark,
   isTerminalRunPhase,
   isTerminalStepPhase,
   resumeFromLog,
@@ -99,6 +100,7 @@ import {
   type ConsumedMailIdentity,
   type RunStarted,
   type RunState,
+  type StepFailed,
   type WorkflowEvent,
 } from "../state-machine/index";
 
@@ -1714,7 +1716,7 @@ async function runPrimitiveSafe(
           !abort.aborted &&
           !(cause instanceof SuccessTerminalizationError)
         ) {
-          state = await commitFrom(
+          state = await commitFailure(
             env,
             runId,
             await buildFailureTerminal(
@@ -1726,12 +1728,13 @@ async function runPrimitiveSafe(
               stepState.currentAttempt,
               message,
             ),
+            false,
           );
           await flushParkedChildWorkflowFailure(env, runId, primitive.kind);
           if (state.steps.get(primitive.id)?.phase !== "routed") throw cause;
           return { failed: true, stepId: primitive.id, error: { message } };
         }
-        const failed: WorkflowEvent = {
+        const failed: StepFailed = {
           kind: "StepFailed",
           seq: state.lastSeq + 1,
           at: env.clock().toISOString(),
@@ -2133,7 +2136,7 @@ async function runStep(
         // verdict; a resume re-drives under the at-most-once contract. The
         // handler branch is skipped by `skipUnroutedHandlerBranches` once this
         // failure lands, as for every failure that does not route.
-        const failed: WorkflowEvent = {
+        const failed: StepFailed = {
           kind: "StepFailed",
           seq: after.lastSeq + 1,
           at: env.clock().toISOString(),
@@ -2159,7 +2162,7 @@ async function runStep(
         // stepOutputs (via the drive loop's `.then`), so the handler reads
         // steps.<unit>.output.error.message. There is no StepCompleted for a
         // routed unit, so that output is live-path only.
-        after = await commitFrom(
+        after = await commitFailure(
           env,
           runId,
           await buildFailureTerminal(
@@ -2171,12 +2174,13 @@ async function runStep(
             attempt,
             message,
           ),
+          false,
         );
         if (after.steps.get(step.id)?.phase !== "routed") throw cause;
         return { failed: true, stepId: step.id, error: { message } };
       }
       const final = exhausted || stopped;
-      const failed: WorkflowEvent = {
+      const failed: StepFailed = {
         kind: "StepFailed",
         seq: after.lastSeq + 1,
         at: env.clock().toISOString(),
@@ -2226,7 +2230,12 @@ async function runStep(
                 stepId: step.id,
               },
             ]
-          : [failed, timerSet, scheduled],
+          : [
+              ...retireOpenApproval(env, fresh, step.id),
+              failed,
+              timerSet,
+              scheduled,
+            ],
       );
       if (retrying.phase === "cancelling") throw cause;
       // Wait for the scheduler to commit TimerFired before looping
@@ -5296,6 +5305,37 @@ async function recordHandlerSkips(
   return skips;
 }
 
+/**
+ * The retire of the approval `stepId` waits on, if it waits on one. A step
+ * that fails while it waits leaves that approval with no one to take the
+ * decision, and the run can go on without it: to a retry, to a handler, or on
+ * its other branches. The failure names only the step, so the retire names
+ * the approval for whoever offers it for a decision. It lands in the batch
+ * that fails the step.
+ */
+function retireOpenApproval(
+  env: WorkflowRuntimeEnv,
+  fresh: RunState,
+  stepId: string,
+): WorkflowEvent[] {
+  const step = fresh.steps.get(stepId);
+  const awaiting =
+    step?.phase === "awaiting-signal" ? step.awaitingSignal : undefined;
+  if (awaiting === undefined || !isApprovalPark(awaiting)) return [];
+  return [
+    {
+      kind: "SignalAwaitAbandoned",
+      seq: fresh.lastSeq + 1,
+      at: env.clock().toISOString(),
+      stepId,
+      signalName: awaiting.name,
+      ...(awaiting.correlationId !== undefined
+        ? { correlationId: awaiting.correlationId }
+        : {}),
+    },
+  ];
+}
+
 // Blob recording can yield to another branch's skip or to cancellation.
 // Decide the route under the commit lock, and only include its skips if the
 // handler is still available. No partially pruned route becomes observable.
@@ -5330,6 +5370,7 @@ async function buildFailureTerminal(
     }
     const routed = canRouteTo(fresh, handlerId);
     return [
+      ...retireOpenApproval(env, fresh, unitId),
       ...(routed
         ? skips.flatMap((skip) => skipEvents(env, definition, fresh, skip))
         : []),
@@ -5477,17 +5518,43 @@ async function commitInvocationCompleted(
     : commitFrom(env, runId, build));
 }
 
+// Commit the batch that fails a unit. One that retires an approval lands
+// durably whatever the caller asked: the run's other steps can stay parked
+// and write nothing more, and the retire is read from the durable log.
+async function commitFailure(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  build: (fresh: RunState) => readonly WorkflowEvent[],
+  durable: boolean,
+): Promise<ReturnType<typeof resumeFromLog>> {
+  let retires = false;
+  const tracked = (fresh: RunState): readonly WorkflowEvent[] => {
+    const events = build(fresh);
+    retires = events.some((event) => event.kind === "SignalAwaitAbandoned");
+    return events;
+  };
+  if (durable) return commitDurableFrom(env, runId, tracked);
+  const state = await commitFrom(env, runId, tracked);
+  if (retires) await flush(env, runId);
+  return state;
+}
+
 // A failure that does not route, of a unit a resume would route were it left
 // in flight, lands durably: lost to a crash, the failure would become a route.
+// Other branches can keep the run going past it, so the retire of an approval
+// the unit waits on lands with it.
 function commitUnroutedFailure(
   env: WorkflowRuntimeEnv,
   runId: string,
-  failed: WorkflowEvent,
+  failed: StepFailed,
   routedOnResume: boolean,
 ): Promise<ReturnType<typeof resumeFromLog>> {
-  return routedOnResume
-    ? commitDurable(env, runId, failed)
-    : commit(env, runId, failed);
+  return commitFailure(
+    env,
+    runId,
+    (fresh) => [...retireOpenApproval(env, fresh, failed.stepId), failed],
+    routedOnResume,
+  );
 }
 
 /**

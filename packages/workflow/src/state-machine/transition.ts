@@ -50,6 +50,7 @@ import type {
 } from "./events";
 import {
   controlParkKindOf,
+  isApprovalPark,
   isTerminalRunPhase,
   isTerminalStepPhase,
   type RunPhase,
@@ -550,9 +551,10 @@ function consumeAwaiter(
 }
 
 /**
- * Retire a step's relay await without delivering a payload. Emitted by the
+ * Retire a step's await without delivering a payload. Emitted by the
  * onTrigger and loop drivers when the proxied body progressed by another exit
- * before the external signal arrived, or ended under its relayed approval.
+ * before the external signal arrived, or ended under its relayed approval,
+ * and for a step that fails while it waits on an approval.
  *
  * Race with `SignalReceived`: the abandon and a delivery can be committed
  * concurrently for the same await. If the delivery won -- the step is no longer
@@ -560,9 +562,10 @@ function consumeAwaiter(
  * as the signal left it). If the await is still live, retire it: clear the
  * awaiter and drop the step to `in-flight`.
  *
- * Scope is strict. It touches ONLY a matching `signal-relay` park, or the
+ * Scope is strict. It touches ONLY a matching `signal-relay` park, the
  * approval park of a step that spawned a child and so relays that child's
- * approval: any other approval or input park, a name mismatch, or a
+ * approval, or a step's own approval park on its reserved channel: an input
+ * park, a plain gate on an author's name, a name mismatch, or a
  * correlation-id mismatch is a producer bug or a mis-target and is rejected,
  * never silently cleared. It never
  * touches either unconsumed queue, `observedSignalIds`, or
@@ -591,7 +594,9 @@ function handleSignalAwaitAbandoned(
     [...state.children.values()].some((c) => c.spawnedBy === e.stepId);
   if (
     awaiting === undefined ||
-    (kind !== "signal-relay" && !relaysChildApproval) ||
+    (kind !== "signal-relay" &&
+      !relaysChildApproval &&
+      !isApprovalPark(awaiting)) ||
     awaiting.name !== e.signalName ||
     correlationMismatch
   ) {
