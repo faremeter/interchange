@@ -1416,14 +1416,11 @@ describe("park-release watch", () => {
       (event) => event.kind === "SignalAwaited" && event.signalName === "go",
     );
     armStale = true;
-    const watch = handle.waitForParkRelease?.(
+    const watch = handle.waitForParkRelease(
       "go",
       new AbortController().signal,
       () => undefined,
     );
-    if (watch === undefined) {
-      throw new Error("handle does not watch a park release");
-    }
     await readStarted;
     // The tail has to be attached while this read is still open. A
     // pull that starts after the read returns misses the commit.

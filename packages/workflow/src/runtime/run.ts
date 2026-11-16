@@ -3251,7 +3251,7 @@ async function driveContainerSignalRelay(
       );
     }
     if (bodyLeg === "park-release") {
-      const snapshot = await readChildPark(child, containerStepId, name);
+      const snapshot = await child.readParkRelease(name);
       if (snapshot.kind !== "open") {
         return closeChildRelayWithoutDelivery(
           env,
@@ -3371,33 +3371,8 @@ async function settleStaleSignalRelay(
 }
 
 type ChildParkSnapshot = Awaited<
-  ReturnType<NonNullable<SuspendableChildHandle["readParkRelease"]>>
+  ReturnType<SuspendableChildHandle["readParkRelease"]>
 >;
-
-function childParkReader(
-  child: SuspendableChildHandle,
-  containerStepId: string,
-  name: string,
-): NonNullable<SuspendableChildHandle["readParkRelease"]> {
-  const read = child.readParkRelease;
-  if (read === undefined) {
-    throw new Error(
-      `step ${containerStepId} cannot relay signal ${name}: the child ` +
-        `handle does not read a park release, so a signal already waiting ` +
-        `would be relayed after the gate moved on`,
-    );
-  }
-  return read;
-}
-
-async function readChildPark(
-  child: SuspendableChildHandle,
-  containerStepId: string,
-  name: string,
-): Promise<ChildParkSnapshot> {
-  const read = childParkReader(child, containerStepId, name);
-  return read(name);
-}
 
 /**
  * The named child gate is no longer open. Retire the parent's relay await
@@ -3422,7 +3397,7 @@ async function closeChildRelayWithoutDelivery(
 }
 
 type ChildParkRelease = Awaited<
-  ReturnType<NonNullable<SuspendableChildHandle["waitForParkRelease"]>>
+  ReturnType<SuspendableChildHandle["waitForParkRelease"]>
 >;
 
 /**
@@ -3447,19 +3422,11 @@ async function raceChildSignalRelease(
   pull: ChildRelayPull,
   onWaiting?: () => void,
 ): Promise<ChildDriveResult> {
-  const watch = child.waitForParkRelease;
-  if (watch === undefined) {
-    throw new Error(
-      `step ${containerStepId} cannot relay signal ${name}: the child ` +
-        `handle does not watch a park release, so a sibling park would look ` +
-        `like this one ended`,
-    );
-  }
   // A signal already on the channel resolves before the watch's first
   // read. Snapshot first, and do not start the wait when the gate has
   // already moved on, so that signal stays queued instead of being recorded
   // as relayed.
-  const before = await readChildPark(child, containerStepId, name);
+  const before = await child.readParkRelease(name);
   if (before.kind !== "open") {
     return closeChildRelayWithoutDelivery(
       env,
@@ -3481,10 +3448,9 @@ async function raceChildSignalRelease(
   const signalWait = env.signalChannel
     .awaitNext(name, onSignal, raceAbort.signal, correlationId)
     .then((r) => ({ tag: "signal" as const, r }));
-  const releaseWait = watch(name, raceAbort.signal, onRelease).then((rel) => ({
-    tag: "release" as const,
-    rel,
-  }));
+  const releaseWait = child
+    .waitForParkRelease(name, raceAbort.signal, onRelease)
+    .then((rel) => ({ tag: "release" as const, rel }));
   // An abort during the read below rejects both waits before anything else
   // handles them.
   void signalWait.catch(() => undefined);
@@ -3516,7 +3482,7 @@ async function raceChildSignalRelease(
     detachRaceAbort();
     await signalWait.catch(() => undefined);
     await releaseWait.catch(() => undefined);
-    const again = await readChildPark(child, containerStepId, name);
+    const again = await child.readParkRelease(name);
     if (again.kind !== "open") {
       return closeChildRelayWithoutDelivery(
         env,
@@ -3556,7 +3522,7 @@ async function raceChildSignalRelease(
     // that said it was open, and the channel has already taken the signal.
     raceAbort.abort();
     await releaseWait.catch(() => undefined);
-    const again = await readChildPark(child, containerStepId, name);
+    const again = await child.readParkRelease(name);
     if (again.kind !== "open") {
       return closeChildRelayWithoutDelivery(
         env,
@@ -6632,24 +6598,8 @@ async function awaitChildPark(
   pull: ChildRelayPull = "next",
   handDown: "at-once" | "after-rearm" = "at-once",
 ): Promise<ChildDriveResult> {
-  const watch = handle.waitForParkRelease;
-  if (watch === undefined) {
-    throw new Error(
-      `step ${stepId} cannot relay a ${parkKind} park: the child handle ` +
-        `does not watch a park release, so a sibling park would look like ` +
-        `this one ended`,
-    );
-  }
-  const readPark = handle.readParkRelease;
-  if (readPark === undefined) {
-    throw new Error(
-      `step ${stepId} cannot relay a ${parkKind} park: the child handle ` +
-        `does not read a park release, so a decision already waiting would ` +
-        `be resumed after the gate moved on`,
-    );
-  }
   const name = signalName(correlationId);
-  const before = await readPark(name);
+  const before = await handle.readParkRelease(name);
   if (before.kind === "terminal") {
     return { kind: "terminal", terminalStatus: before.terminalStatus };
   }
@@ -6683,7 +6633,7 @@ async function awaitChildPark(
     parkRearm,
     parkAbort.signal,
   );
-  const release = watch(name, watchAbort.signal, onRelease);
+  const release = handle.waitForParkRelease(name, watchAbort.signal, onRelease);
   let outcome:
     | { tag: "decision"; payload: unknown }
     | { tag: "release"; rel: ChildParkRelease };
@@ -6719,7 +6669,7 @@ async function awaitChildPark(
   // the await.
   watchAbort.abort();
   await release.catch(() => undefined);
-  const again = await readPark(name);
+  const again = await handle.readParkRelease(name);
   if (again.kind === "terminal") {
     return { kind: "terminal", terminalStatus: again.terminalStatus };
   }
@@ -6730,13 +6680,7 @@ async function awaitChildPark(
   // so the decision waits until the body waits on it again.
   const whenAwaiter = handle.whenSignalAwaiter;
   if (handDown === "after-rearm" && whenAwaiter !== undefined) {
-    const rearm = await awaitChildRearm(
-      handle,
-      stepId,
-      name,
-      whenAwaiter,
-      abort,
-    );
+    const rearm = await awaitChildRearm(handle, name, whenAwaiter, abort);
     if (rearm.kind === "terminal") {
       return { kind: "terminal", terminalStatus: rearm.terminalStatus };
     }
@@ -7412,18 +7356,10 @@ async function planChildWorkflowResume(
  */
 async function awaitChildRearm(
   handle: SuspendableChildHandle,
-  stepId: string,
   name: string,
   whenAwaiter: NonNullable<SuspendableChildHandle["whenSignalAwaiter"]>,
   abort: AbortSignal,
 ): Promise<{ kind: "rearmed" } | ChildParkRelease> {
-  const watch = handle.waitForParkRelease;
-  if (watch === undefined) {
-    throw new Error(
-      `step ${stepId} cannot hand ${name} down: the child handle does not ` +
-        `watch a park release, so a park that ended would be waited on forever`,
-    );
-  }
   const watchAbort = new AbortController();
   const detachWatchAbort = bridgeAbort(abort, () => {
     watchAbort.abort();
@@ -7431,7 +7367,11 @@ async function awaitChildRearm(
   const idle = createIdleWait();
   const onRearm = idle.waker();
   const onRelease = idle.waker();
-  const released = watch(name, watchAbort.signal, onRelease);
+  const released = handle.waitForParkRelease(
+    name,
+    watchAbort.signal,
+    onRelease,
+  );
   // The awaiter rejects once the body ends, and the watch then reads how.
   const rearmed = whenAwaiter(name, onRearm).then(
     () => ({ kind: "rearmed" as const }),
@@ -7487,7 +7427,7 @@ async function drivePlannedChildRelay(
       );
     }
     case "signal-deliver": {
-      const snapshot = await readChildPark(handle, stepId, relay.name);
+      const snapshot = await handle.readParkRelease(relay.name);
       if (snapshot.kind === "terminal") {
         return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
       }
@@ -7496,7 +7436,6 @@ async function drivePlannedChildRelay(
       if (whenAwaiter !== undefined) {
         const rearm = await awaitChildRearm(
           handle,
-          stepId,
           relay.name,
           whenAwaiter,
           abort,
@@ -7513,7 +7452,7 @@ async function drivePlannedChildRelay(
       if (relay.timeout === undefined && !env.hasUpstreamSignalResolver) {
         throw new Error(unanswerableParkMessage(stepId, relay.name));
       }
-      const snapshot = await readChildPark(handle, stepId, relay.name);
+      const snapshot = await handle.readParkRelease(relay.name);
       if (snapshot.kind === "terminal") {
         return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
       }
@@ -7547,20 +7486,14 @@ async function drivePlannedChildRelay(
       );
     case "control-deliver": {
       const name = signalName(relay.correlationId);
-      const snapshot = await readChildPark(handle, stepId, name);
+      const snapshot = await handle.readParkRelease(name);
       if (snapshot.kind === "terminal") {
         return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
       }
       if (snapshot.kind === "released") return { kind: "held" };
       const whenAwaiter = handle.whenSignalAwaiter;
       if (whenAwaiter !== undefined) {
-        const rearm = await awaitChildRearm(
-          handle,
-          stepId,
-          name,
-          whenAwaiter,
-          abort,
-        );
+        const rearm = await awaitChildRearm(handle, name, whenAwaiter, abort);
         if (rearm.kind === "terminal") {
           return { kind: "terminal", terminalStatus: rearm.terminalStatus };
         }
@@ -7571,7 +7504,7 @@ async function drivePlannedChildRelay(
     }
     case "input-fresh": {
       const name = signalName(relay.correlationId);
-      const snapshot = await readChildPark(handle, stepId, name);
+      const snapshot = await handle.readParkRelease(name);
       if (snapshot.kind === "terminal") {
         return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
       }
@@ -7592,7 +7525,7 @@ async function drivePlannedChildRelay(
     }
     case "approval-fresh": {
       const name = signalName(relay.correlationId);
-      const snapshot = await readChildPark(handle, stepId, name);
+      const snapshot = await handle.readParkRelease(name);
       if (snapshot.kind === "terminal") {
         return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
       }

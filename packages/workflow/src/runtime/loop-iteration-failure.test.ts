@@ -42,6 +42,7 @@ import {
 } from "@intx/workflow";
 import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
+import { noParkReleases } from "./suspendable-child-handle.test-helpers";
 
 const allowAll: WorkflowAuthorizeFn = async () => ({
   effect: "allow",
@@ -413,6 +414,7 @@ describe("loop onIterationFailure resume and abort", () => {
           next: async () => ({ kind: "terminal", terminalStatus: "failed" }),
           resume: async () => undefined,
           deliverSignal: async () => undefined,
+          ...noParkReleases,
         };
       }
       return realSpawn1(input);
