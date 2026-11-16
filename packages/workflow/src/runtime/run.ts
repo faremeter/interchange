@@ -2839,23 +2839,24 @@ async function driveSuspendableOccurrence(
       // deployment-runId approval path (registerSuspension/hub/deliver) is
       // reused unchanged and the approver sees the body step's real
       // snapshot; then relay the granted decision back into the child so the
-      // body continues.
-      const parkRearm = await reloadState(env, runId);
-      const decision = await parkOnSignal(
-        env,
-        runId,
-        {
-          stepId: containerStepId,
-          signalName: signalName(bodyEvent.park.correlationId),
-          parkKind: "approval",
-          ...(bodyEvent.park.approvalSnapshot !== undefined
-            ? { approvalSnapshot: bodyEvent.park.approvalSnapshot }
-            : {}),
-        },
-        parkRearm,
-        abort,
-      );
-      await child.resume(bodyEvent.park.correlationId, decision);
+      // body continues. A body that leaves the approval first, as a timed
+      // step does, retires the container's wait so it can relay the next.
+      try {
+        pending = await awaitChildPark(
+          env,
+          runId,
+          containerStepId,
+          child,
+          bodyEvent.park.correlationId,
+          "approval",
+          bodyEvent.park.approvalSnapshot,
+          abort,
+          new Set(),
+        );
+      } catch (cause) {
+        if (!(cause instanceof ChildRelayRetiredError)) throw cause;
+        await abandonRelayIfOpen(env, runId, containerStepId, cause.parkName);
+      }
       continue;
     }
     if (bodyEvent.kind === "input-park") {
