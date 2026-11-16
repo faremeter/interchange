@@ -1470,6 +1470,52 @@ describe("SidecarRouter allocation control protocols", () => {
     expect(called).toBe(false);
   });
 
+  // A register that passed its connection check is still running when the
+  // sidecar reconnects. The lookup reads the connection under the lock that
+  // orders it against packs, so it must see the close.
+  test("a register still running when its connection is replaced sees the close and is not acknowledged", async () => {
+    const started = Promise.withResolvers<() => boolean>();
+    const lockTaken = Promise.withResolvers<undefined>();
+    const finished = Promise.withResolvers<undefined>();
+    const router = createAllocatedRouter({
+      lookups: {
+        async registerSignalCorrelation({ connectionOpen }) {
+          started.resolve(connectionOpen);
+          await lockTaken.promise;
+          finished.resolve(undefined);
+        },
+      },
+    });
+    const replaced = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      replaced,
+      JSON.stringify({
+        type: "signal.correlation.register",
+        correlationId: "corr-in-flight",
+        runId: "run-1",
+        anchorRunId: TEST_IDENTITY.anchorRunId,
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
+        kind: "approval",
+        snapshot: approvalSnapshot,
+      }),
+    );
+    const connectionOpen = await started.promise;
+    expect(connectionOpen()).toBe(true);
+
+    await connectAllocated(router, [TEST_IDENTITY.workflowRunAddress]);
+    expect(connectionOpen()).toBe(false);
+    lockTaken.resolve(undefined);
+    await finished.promise;
+    await tick();
+
+    expect(framesOfType(replaced, "signal.correlation.register.ack")).toEqual(
+      [],
+    );
+  });
+
   test("sends drain control only to the sidecar owning the deployment", async () => {
     const router = createAllocatedRouter();
     const ws = await connectAllocated(router, [
