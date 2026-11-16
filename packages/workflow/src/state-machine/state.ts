@@ -6,6 +6,7 @@
 // in-memory state across process restart.
 
 import type { ControlParkKind } from "@intx/types/runtime";
+import { correlationIdFromSignalName } from "@intx/types/signals";
 
 import type {
   RunId,
@@ -70,6 +71,22 @@ export function controlParkKindOf(awaitingSignal: {
   if (awaitingSignal.parkKind === "input") return "input";
   if (awaitingSignal.parkKind === "signal-relay") return "signal-relay";
   return "approval";
+}
+
+/**
+ * Whether an awaited signal is an approval park. An approval is parked on a
+ * reserved `signalName(correlationId)` channel. A plain `awaitSignal` gate on
+ * an author's name records no kind either, so the kind alone would read it
+ * as an approval.
+ */
+export function isApprovalPark(awaitingSignal: {
+  name: string;
+  parkKind?: ControlParkKind;
+}): boolean {
+  return (
+    controlParkKindOf(awaitingSignal) === "approval" &&
+    correlationIdFromSignalName(awaitingSignal.name) !== undefined
+  );
 }
 
 export interface ChildState {

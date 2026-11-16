@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
+import { signalName } from "@intx/types/signals";
+
 import {
   applyEvent,
   emptyState,
@@ -1429,6 +1431,103 @@ describe("applyEvent: SignalAwaitAbandoned", () => {
     const state = events.reduce(applyEvent, fresh());
     expect(state.steps.get("sec")?.phase).toBe("in-flight");
     expect(state.steps.get("sec")?.awaitingSignal).toBeUndefined();
+  });
+
+  // A step that fails while it waits on an approval, with the run going on,
+  // retires the approval by name: the failure names only the step.
+  test("retires a step's own approval park on its reserved channel", () => {
+    const events: WorkflowEvent[] = [
+      startRun(),
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at: T,
+        stepId: "ask",
+        attempt: 1,
+        input: { ref: "i" },
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 3,
+        at: T,
+        stepId: "ask",
+        signalName: signalName("corr-1"),
+        parkKind: "approval",
+      },
+      {
+        kind: "SignalAwaitAbandoned",
+        seq: 4,
+        at: T,
+        stepId: "ask",
+        signalName: signalName("corr-1"),
+      },
+    ];
+    const state = events.reduce(applyEvent, fresh());
+    expect(state.steps.get("ask")?.phase).toBe("in-flight");
+    expect(state.steps.get("ask")?.awaitingSignal).toBeUndefined();
+  });
+
+  test("rejects an abandon that names an input park", () => {
+    expectThrowsAt(
+      [
+        startRun(),
+        {
+          kind: "StepStarted",
+          seq: 2,
+          at: T,
+          stepId: "ask",
+          attempt: 1,
+          input: { ref: "i" },
+        },
+        {
+          kind: "SignalAwaited",
+          seq: 3,
+          at: T,
+          stepId: "ask",
+          signalName: signalName("corr-input"),
+          parkKind: "input",
+        },
+        {
+          kind: "SignalAwaitAbandoned",
+          seq: 4,
+          at: T,
+          stepId: "ask",
+          signalName: signalName("corr-input"),
+        },
+      ],
+      /does not match an active relay park/,
+    );
+  });
+
+  test("rejects an abandon that names a plain gate on an author's name", () => {
+    expectThrowsAt(
+      [
+        startRun(),
+        {
+          kind: "StepStarted",
+          seq: 2,
+          at: T,
+          stepId: "gate",
+          attempt: 1,
+          input: { ref: "i" },
+        },
+        {
+          kind: "SignalAwaited",
+          seq: 3,
+          at: T,
+          stepId: "gate",
+          signalName: "wake",
+        },
+        {
+          kind: "SignalAwaitAbandoned",
+          seq: 4,
+          at: T,
+          stepId: "gate",
+          signalName: "wake",
+        },
+      ],
+      /does not match an active relay park/,
+    );
   });
 
   test("rejects an abandon that names an approval park", () => {

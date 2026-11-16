@@ -1235,7 +1235,16 @@ describe("runOnTrigger", () => {
     expect(log.filter((e) => e.kind === "ChildCompleted")).toMatchObject([
       { terminalStatus: "failed" },
     ]);
-    expect(log.at(-1)?.kind).toBe("RunFailed");
+    // The section fails while it relays the approval, so it retires it.
+    expect(log.slice(-3)).toMatchObject([
+      {
+        kind: "SignalAwaitAbandoned",
+        stepId: "section",
+        signalName: signalName("body-corr-unusable"),
+      },
+      { kind: "StepFailed", stepId: "section" },
+      { kind: "RunFailed" },
+    ]);
   });
 
   test.each([

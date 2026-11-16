@@ -172,6 +172,10 @@ export interface SignalReceived extends EventBase {
  * longer waits on. Distinct from `SignalReceived`: nothing is delivered, the
  * await is simply torn down. A container also commits this for an approval it
  * was relaying when the body ended, so the await cannot swallow its next park.
+ * A step that fails while it waits on an approval commits it for that
+ * approval: the failure names only the step, the run can go on without the
+ * step, and whoever offers the approval for a decision needs its name to
+ * withdraw it.
  */
 export interface SignalAwaitAbandoned extends EventBase {
   kind: "SignalAwaitAbandoned";
