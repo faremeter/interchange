@@ -19,6 +19,7 @@ import {
 } from "@intx/db";
 import {
   approval,
+  sidecarAllocation,
   signalCorrelation,
   workflowDefinition,
   workflowRun,
@@ -438,6 +439,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: WF_ADDR,
         kind: "approval",
         approvalSnapshot: SNAPSHOT,
+        connectionOpen: () => true,
       });
 
       const correlations = await h.db.select().from(signalCorrelation);
@@ -612,6 +614,35 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(approvals).toHaveLength(0);
     });
 
+    test("a registration for a run that has ended writes nothing and is acknowledged", async () => {
+      // The run's end expired its approvals. A registration that arrives after
+      // it would stay pending with no run left to take the decision, so it
+      // writes nothing. It is still acknowledged, so the sidecar stops
+      // resending it.
+      const kp = await generateKeyPair();
+      await seedDeployment(hexEncode(kp.publicKey));
+      await seedWorkflowRun(h.db, {
+        id: "run-1",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        status: "cancelled",
+      });
+      const router = buildRouter();
+      const ws = createMockWs();
+      await reconnectAndVerify(router, ws, kp.privateKey);
+
+      router.handleMessage(ws, registerFrame());
+      await drain(router, ws);
+
+      expect(await h.db.select().from(signalCorrelation)).toHaveLength(0);
+      expect(await h.db.select().from(approval)).toHaveLength(0);
+      expect(
+        ws.sent.filter((raw) =>
+          raw.includes('"type":"signal.correlation.register.ack"'),
+        ),
+      ).toHaveLength(1);
+    });
+
     test("a teardown interleaved mid-register never orphans a correlation pair", async () => {
       // The window the row lock closes: an anchor-run teardown that flips the
       // run off "running" while a register is in flight. The register resolves
@@ -666,6 +697,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               agentAddress: WF_ADDR,
               kind: "approval",
               approvalSnapshot: SNAPSHOT,
+              connectionOpen: () => true,
             })
             .then(() => null)
             .catch((err: unknown) => err)
@@ -727,6 +759,103 @@ describe.skipIf(!harnessDbEnvAvailable())(
       } finally {
         await registerHandle.close();
         await teardownHandle.close();
+      }
+    });
+
+    test("a register waits for a pack and writes nothing once its connection has closed", async () => {
+      // Pack ingestion settles approvals while it holds the deployment's
+      // allocation row. A register that was still running when its connection
+      // closed must not write a pending approval after the new connection's
+      // pack retired the wait, so it takes the same lock and reads its
+      // connection only once it holds it.
+      //
+      // One single-connection handle holds the allocation row as a receive
+      // does, the other runs the register that must wait on it.
+      const kp = await generateKeyPair();
+      await seedDeployment(hexEncode(kp.publicKey));
+      await h.db.insert(sidecarAllocation).values({
+        id: "allocation-test",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        provisionerId: "test",
+        provisionerApiVersion: 2,
+        provisionerBindingFingerprint: "test:v1",
+        adapterManifestDigest: "1".repeat(64),
+        maxDisconnectedMs: 900_000,
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
+      });
+
+      const config = loadHarnessDbConfig();
+      const registerHandle = createDB({ ...config, schema: h.schema, max: 1 });
+      const packHandle = createDB({ ...config, schema: h.schema, max: 1 });
+      try {
+        const registerPid = await backendPid(registerHandle);
+        const packPid = await backendPid(packHandle);
+        const lookups = createHubSessionLookups({
+          db: registerHandle.db,
+          agentRepoStore: stubRepoStore,
+          historyReceives: createWorkflowHistoryReceiveTracker(),
+        });
+
+        let connectionOpen = true;
+        let outcome: unknown;
+        let settled = false;
+        let sawBlock = false;
+        let registerPromise: Promise<unknown> = Promise.resolve();
+
+        await packHandle.transaction(async (txP) => {
+          await txP
+            .select({ id: sidecarAllocation.id })
+            .from(sidecarAllocation)
+            .where(eq(sidecarAllocation.anchorRunId, DEPLOYMENT))
+            .for("update");
+
+          registerPromise = lookups
+            .registerSignalCorrelation({
+              correlationId: "corr-1",
+              runId: "run-1",
+              anchorRunId: DEPLOYMENT_SLUG,
+              agentAddress: WF_ADDR,
+              kind: "approval",
+              approvalSnapshot: SNAPSHOT,
+              connectionOpen: () => connectionOpen,
+            })
+            .catch((err: unknown) => err)
+            .then((res) => {
+              settled = true;
+              outcome = res;
+              return res;
+            });
+
+          // As in the teardown interleave above: the lock state lives in
+          // PostgreSQL, the block persists until this transaction commits, and
+          // `settled` ends the loop for a register that did not wait.
+          for (;;) {
+            const blocked = await h.db.execute(
+              sql`SELECT pg_blocking_pids(${registerPid}) @> ARRAY[${packPid}]::int[] AS blocked`,
+            );
+            if (blocked[0]?.["blocked"] === true) {
+              sawBlock = true;
+              break;
+            }
+            if (settled) break;
+            await new Promise((res) => setTimeout(res, 12));
+          }
+          // The connection closes while the register waits for the pack.
+          connectionOpen = false;
+        });
+
+        await registerPromise;
+
+        expect(sawBlock).toBe(true);
+        expect(outcome).toBeUndefined();
+        expect(await h.db.select().from(signalCorrelation)).toHaveLength(0);
+        expect(await h.db.select().from(approval)).toHaveLength(0);
+      } finally {
+        await registerHandle.close();
+        await packHandle.close();
       }
     });
 

@@ -332,7 +332,11 @@ export type SidecarLookups = {
    * redelivered frame (reconnect, workflow-log replay, supervisor restart
    * re-emitting) is a no-op, not an error. The wire layer does not carry
    * `signalName`; the host derives it from `correlationId`. Resolves the
-   * tenancy from the workflow deployment the address names. */
+   * tenancy from the workflow deployment the address names.
+   *
+   * `connectionOpen` says whether the connection that carried the frame is
+   * still open. The host reads it once it holds the lock that orders the
+   * write against pack ingestion, and writes nothing when it had closed. */
   registerSignalCorrelation?: (args: {
     correlationId: string;
     runId: string;
@@ -340,6 +344,7 @@ export type SidecarLookups = {
     agentAddress: string;
     kind: SignalKind;
     approvalSnapshot: ApprovalSnapshot;
+    connectionOpen: () => boolean;
   }) => Promise<void>;
 
   /** Reserves a mail-triggered workflow run's grants from the receiving

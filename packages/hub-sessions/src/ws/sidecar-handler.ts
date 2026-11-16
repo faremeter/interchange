@@ -3967,13 +3967,20 @@ export function createSidecarRouter(
         agentAddress: frame.agentAddress,
         kind: frame.kind,
         approvalSnapshot: frame.snapshot,
+        connectionOpen: () => !closedSockets.has(ws),
       });
-      // The co-write resolves only when a row exists -- freshly inserted or
-      // already present (both stores are idempotent on the correlationId). Ack
-      // so the sidecar's link stops retrying a register whose frame may have
-      // been lost on an open socket. A thrown co-write (undeployed deployment,
-      // id mismatch) means no row, so no ack: the sidecar keeps retrying and
-      // the reconnect re-emit remains the ultimate backstop.
+      // A closed connection has no one to acknowledge, and the co-write may
+      // have written nothing for it. The sidecar registers its parked
+      // approvals again on its next connection.
+      if (closedSockets.has(ws)) return;
+      // On an open connection the co-write resolves when a row exists --
+      // freshly inserted or already present (both stores are idempotent on the
+      // correlationId) -- or when the run has already ended and nothing was
+      // written for it. Either way the sidecar has nothing more to send, so
+      // ack: its link stops retrying a register whose frame may have been
+      // lost on an open socket. A thrown co-write (undeployed deployment, id
+      // mismatch) means no row, so no ack: the sidecar keeps retrying and the
+      // reconnect re-emit remains the ultimate backstop.
       conn.send({
         type: "signal.correlation.register.ack",
         agentAddress: frame.agentAddress,

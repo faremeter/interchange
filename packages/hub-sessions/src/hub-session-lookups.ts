@@ -329,6 +329,7 @@ export function createHubSessionLookups(
       agentAddress,
       kind,
       approvalSnapshot,
+      connectionOpen,
     }) {
       // Resolve tenancy and co-write both rows in one transaction so a resolver
       // never sees a correlation without its approval or vice versa. Both
@@ -339,6 +340,28 @@ export function createHubSessionLookups(
       // null: an agent-step suspend holds indefinitely (`parkOnSignal` is called
       // with no timeout), so no deadline reaches this co-write.
       await db.transaction(async (tx) => {
+        // A pack settles approvals while it holds the deployment's allocation
+        // row, so this write is ordered against every pack. The connection is
+        // checked under that lock: a register still running after its
+        // connection closed would otherwise write a pending approval after the
+        // new connection's pack retired its wait. The lock comes before the
+        // anchor's, as for every other writer.
+        await tx
+          .select({ id: sidecarAllocation.id })
+          .from(sidecarAllocation)
+          .innerJoin(
+            workflowRun,
+            eq(workflowRun.id, sidecarAllocation.anchorRunId),
+          )
+          .where(
+            and(
+              eq(workflowRun.address, agentAddress),
+              inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+            ),
+          )
+          .for("update", { of: sidecarAllocation });
+        if (!connectionOpen()) return;
+
         // Resolve tenancy and the run's definition from the deployment's anchor
         // run -- the workflow_run whose id is the deployment id, which the
         // address names. The anchor is the tenancy origin every approval needs
@@ -409,6 +432,15 @@ export function createHubSessionLookups(
           },
           tx,
         );
+        // A run that has ended waits on nothing, and its end has expired its
+        // approvals. A registration written after it would stay pending with
+        // no run left to take the decision.
+        const [target] = await tx
+          .select({ status: workflowRun.status })
+          .from(workflowRun)
+          .where(eq(workflowRun.id, runId));
+        if (target === undefined || !isLiveWorkflowRunStatus(target.status))
+          return;
 
         await signalCorrelationStore.registerIfAbsent(
           {
@@ -594,9 +626,9 @@ export function createHubSessionLookups(
           const committed = await prepared.commit();
           // Settled while this lock is still held, so two packs settle their
           // approvals in the order their commits reached Git, whichever
-          // connection carried each. A failed update rolls back only its
-          // savepoint: failing the transaction would reject a pack Git
-          // already holds.
+          // connection carried each, and a registration lands wholly before
+          // or after a pack. A failed update rolls back only its savepoint:
+          // failing the transaction would reject a pack Git already holds.
           let approvalsSettled = true;
           if (
             committed.kind === "applied" &&
