@@ -1327,7 +1327,7 @@ type RunPartEntry = {
  * exactly as it does for blobs.
  */
 async function enumerateRunParts(
-  listDir: (path: string) => Promise<string[]>,
+  listing: TreeListing,
   scopeRunIds?: ReadonlySet<string>,
 ): Promise<
   { ok: true; parts: RunPartEntry[] } | { ok: false; reason: string }
@@ -1338,15 +1338,13 @@ async function enumerateRunParts(
   // byte-identical and were validated when written.
   const runIds =
     scopeRunIds === undefined
-      ? await listDir(WORKFLOW_RUN_RUNS_PREFIX)
+      ? Array.from((await listing(WORKFLOW_RUN_RUNS_PREFIX)).keys())
       : Array.from(scopeRunIds);
   for (const runId of runIds) {
     const runDirPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
-    const runChildren = await listDir(runDirPath);
-    if (!runChildren.includes(WORKFLOW_RUN_PARTS_DIR)) continue;
+    if (!(await listing(runDirPath)).has(WORKFLOW_RUN_PARTS_DIR)) continue;
     const partsDirPath = `${runDirPath}/${WORKFLOW_RUN_PARTS_DIR}`;
-    const messageSegments = await listDir(partsDirPath);
-    for (const messageSegment of messageSegments) {
+    for (const messageSegment of (await listing(partsDirPath)).keys()) {
       const roundTrip = checkUrlSegmentRoundTrip(messageSegment);
       if (!roundTrip.ok) {
         return {
@@ -1364,19 +1362,19 @@ async function enumerateRunParts(
         };
       }
       const messageDirPath = `${partsDirPath}/${messageSegment}`;
-      const filenames = await listDir(messageDirPath);
+      const files = await listing(messageDirPath);
       // A message segment must be a directory carrying at least one
       // mail part file. An empty listing means either a dangling blob
       // committed directly at `parts/<segment>` (the substrate lists a
       // blob path as empty) or an empty directory; both are rejected so
       // untrusted inbound content has no silent-accept path.
-      if (filenames.length === 0) {
+      if (files.size === 0) {
         return {
           ok: false,
           reason: `mail part message segment ${JSON.stringify(messageSegment)} under ${partsDirPath} is not a directory carrying mail part files`,
         };
       }
-      for (const filename of filenames) {
+      for (const [filename, file] of files) {
         if (!PART_FILENAME_RE.test(filename)) {
           return {
             ok: false,
@@ -1397,12 +1395,9 @@ async function enumerateRunParts(
         // named e.g. `0-foo` would otherwise pass and admit an arbitrarily
         // nested subtree, breaking the one-file-per-mail-part invariant and
         // driving the immutability resolver to a tree path, which it
-        // refuses by a throw. A blob lists as empty; a directory lists its
-        // children. An empty directory also lists as empty, so this check
-        // passes it; at a path the prior tree holds, the resolver's own
-        // blob check refuses it.
+        // refuses by a throw.
         const filePath = `${messageDirPath}/${filename}`;
-        if ((await listDir(filePath)).length > 0) {
+        if (file.type !== "blob") {
           return {
             ok: false,
             reason: `mail part ${filePath} is a directory; each mail part must be a single file`,
@@ -1434,15 +1429,16 @@ async function enumerateRunParts(
  * a violation. Structural shape is enforced by `enumerateRunParts`.
  */
 async function validateRunPartsSubtree(args: {
-  listDir: (path: string) => Promise<string[]>;
-  priorListDir: (path: string) => Promise<string[]>;
   prospectiveListing: TreeListing;
   priorListing: TreeListing;
   scopeRunIds: ReadonlySet<string> | undefined;
 }): Promise<ValidatePushResult> {
-  const prospective = await enumerateRunParts(args.listDir, args.scopeRunIds);
+  const prospective = await enumerateRunParts(
+    args.prospectiveListing,
+    args.scopeRunIds,
+  );
   if (!prospective.ok) return prospective;
-  const prior = await enumerateRunParts(args.priorListDir, args.scopeRunIds);
+  const prior = await enumerateRunParts(args.priorListing, args.scopeRunIds);
   if (!prior.ok) {
     return {
       ok: false,
@@ -3060,25 +3056,24 @@ async function enforceWorkflowProcessPathScope(
  * entry permitted directly under `mailbox/` is the `INBOX/` directory;
  * the only entries permitted under `mailbox/INBOX/` are the mutable
  * `index.json` file and `<uid>.eml` message files. Each entry must be a
- * leaf blob rather than a nested directory (a blob lists as empty, a
- * directory lists its children -- the same discrimination the mail-parts
- * walk uses). Returns the flat set of `<uid>.eml` blob
+ * leaf blob rather than a nested directory. Returns the flat set of
+ * `<uid>.eml` blob
  * paths so the caller can hold retained messages immutable against the
  * prior tree, plus `indexPresent` -- whether `index.json` exists under
  * the INBOX -- so the caller can enforce index continuity. An absent
  * `mailbox/` subtree lists as empty and contributes no message paths.
  */
 async function enumerateMailboxInbox(
-  listDir: (path: string) => Promise<string[]>,
+  listing: TreeListing,
 ): Promise<
   | { ok: true; emlPaths: Set<string>; indexPresent: boolean }
   | { ok: false; reason: string }
 > {
   const emlPaths = new Set<string>();
   let indexPresent = false;
-  const mailboxChildren = await listDir(WORKFLOW_RUN_MAILBOX_PREFIX);
-  if (mailboxChildren.length === 0) return { ok: true, emlPaths, indexPresent };
-  for (const child of mailboxChildren) {
+  const mailboxChildren = await listing(WORKFLOW_RUN_MAILBOX_PREFIX);
+  if (mailboxChildren.size === 0) return { ok: true, emlPaths, indexPresent };
+  for (const child of mailboxChildren.keys()) {
     if (child !== WORKFLOW_RUN_MAILBOX_INBOX_DIR) {
       return {
         ok: false,
@@ -3087,21 +3082,23 @@ async function enumerateMailboxInbox(
     }
   }
   const inboxPath = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}`;
-  const inboxEntries = await listDir(inboxPath);
-  // A `mailbox/` top-level whose `INBOX` child carries no entries is a
-  // dangling blob committed directly at `mailbox/INBOX` (a blob lists as
-  // empty), not the required directory. Git never records an empty
-  // directory, so a present-but-empty listing is always the blob case.
-  if (inboxEntries.length === 0) {
+  if (mailboxChildren.get(WORKFLOW_RUN_MAILBOX_INBOX_DIR)?.type !== "tree") {
     return {
       ok: false,
       reason: `mailbox ${inboxPath} is a blob, not a directory carrying "${WORKFLOW_RUN_MAILBOX_INDEX_FILE}" and <uid>.eml message files`,
     };
   }
-  for (const entry of inboxEntries) {
+  const inboxEntries = await listing(inboxPath);
+  if (inboxEntries.size === 0) {
+    return {
+      ok: false,
+      reason: `mailbox ${inboxPath} is an empty directory; it must carry "${WORKFLOW_RUN_MAILBOX_INDEX_FILE}" and <uid>.eml message files`,
+    };
+  }
+  for (const [entry, info] of inboxEntries) {
     const entryPath = `${inboxPath}/${entry}`;
     if (entry === WORKFLOW_RUN_MAILBOX_INDEX_FILE) {
-      if ((await listDir(entryPath)).length > 0) {
+      if (info.type !== "blob") {
         return {
           ok: false,
           reason: `mailbox ${entryPath} is a directory; the mailbox index must be a single file`,
@@ -3116,7 +3113,7 @@ async function enumerateMailboxInbox(
         reason: `mailbox entry ${entryPath} does not match "${WORKFLOW_RUN_MAILBOX_INDEX_FILE}" or <uid>.eml (uid a decimal integer >= 1)`,
       };
     }
-    if ((await listDir(entryPath)).length > 0) {
+    if (info.type !== "blob") {
       return {
         ok: false,
         reason: `mailbox message ${entryPath} is a directory; each message must be a single .eml file`,
@@ -3148,17 +3145,15 @@ async function enumerateMailboxInbox(
  * `runs/<runId>/blobs/` subtree uses, minus the deletion direction.
  */
 async function validateMailboxSubtree(
-  listDir: (path: string) => Promise<string[]>,
   readBlob: (path: string) => Promise<Uint8Array>,
-  priorListDir: (path: string) => Promise<string[]>,
   priorReadBlob: (path: string) => Promise<Uint8Array | null>,
   prospectiveListing: TreeListing,
   priorListing: TreeListing,
   cache: ParseCache,
 ): Promise<ValidatePushResult> {
-  const prospective = await enumerateMailboxInbox(listDir);
+  const prospective = await enumerateMailboxInbox(prospectiveListing);
   if (!prospective.ok) return prospective;
-  const prior = await enumerateMailboxInbox(priorListDir);
+  const prior = await enumerateMailboxInbox(priorListing);
   if (!prior.ok) {
     return {
       ok: false,
@@ -3395,9 +3390,7 @@ export const workflowRunKindHandler: KindHandler = {
       // `index.json` (a message-only expunge is legal; dropping the whole
       // mailbox is not).
       const mailboxCheck = await validateMailboxSubtree(
-        listDir,
         readBlob,
-        priorListDir,
         priorReadBlob,
         prospectiveListing,
         priorListing,
@@ -3659,8 +3652,6 @@ export const workflowRunKindHandler: KindHandler = {
     }
 
     const partsCheck = await validateRunPartsSubtree({
-      listDir,
-      priorListDir,
       prospectiveListing,
       priorListing,
       scopeRunIds,
