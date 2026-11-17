@@ -801,6 +801,7 @@ describe("deployCodeSourcedWorkflow", () => {
         const controller = new AbortController();
         const deploySent = Promise.withResolvers<boolean>();
         const mailParked = Promise.withResolvers<boolean>();
+        const mailDelivered = Promise.withResolvers<boolean>();
         const publicationFinished = Promise.withResolvers<boolean>();
         const publicationResponse = Promise.withResolvers<boolean>();
         const recoveryRead = Promise.withResolvers<boolean>();
@@ -830,13 +831,10 @@ describe("deployCodeSourcedWorkflow", () => {
         ws.send = (data) => {
           send(data);
           const frame: unknown = JSON.parse(data);
-          if (
-            typeof frame === "object" &&
-            frame !== null &&
-            "type" in frame &&
-            frame.type === "agent.deploy"
-          )
-            deploySent.resolve(true);
+          if (typeof frame !== "object" || frame === null || !("type" in frame))
+            return;
+          if (frame.type === "agent.deploy") deploySent.resolve(true);
+          if (frame.type === "mail.inbound") mailDelivered.resolve(true);
         };
         const transaction = async (
           run: (tx: ReturnType<typeof transactionHandle>) => Promise<unknown>,
@@ -1049,6 +1047,10 @@ describe("deployCodeSourcedWorkflow", () => {
               );
             }
           }
+          // Delivery derives the mail's delivery key first, and Bun digests
+          // an input that long on a work queue, so no number of event-loop
+          // turns says the mail has arrived.
+          if (committed) await mailDelivered.promise;
           await tick();
           const frames: unknown[] = ws.sent.map((data) => JSON.parse(data));
           expect(
