@@ -205,6 +205,21 @@ describe("AgentDeployFrame", () => {
     expect(result instanceof type.errors).toBe(false);
   });
 
+  test("accepts only a whole, positive wait before standby", () => {
+    const deploy = (standbyAfterMs: number) =>
+      AgentDeployFrame({
+        ...frameWithoutWorkflow,
+        workflow: {
+          sources: { plan: [stepSource] },
+          sourceRef: validSourceRef,
+          standbyAfterMs,
+        },
+      });
+    expect(deploy(1_000) instanceof type.errors).toBe(false);
+    expect(deploy(0) instanceof type.errors).toBe(true);
+    expect(deploy(1.5) instanceof type.errors).toBe(true);
+  });
+
   test("rejects a workflow frame with no source-ref pin", () => {
     // Source-ref is the only deploy lineage; without the pin the sidecar has
     // no closure to evaluate the definition from, so the frame is rejected.
@@ -1078,6 +1093,35 @@ describe("deployments in standby", () => {
     expect(SidecarFrame(hello("stopped")) instanceof type.errors).toBe(true);
   });
 
+  test("a hello names only an incarnation in standby as one the idle rule put there", () => {
+    const hello = (incarnation: Record<string, unknown>) => ({
+      type: "hello",
+      sidecarId: "sc-1",
+      token: "token",
+      capacity: { maxActiveDeployments: 1, maxRetainedDeployments: 0 },
+      incarnations: [
+        {
+          address: "wf@example.test",
+          generation: 1,
+          state: "live",
+          ...incarnation,
+        },
+      ],
+    });
+    const idleStandby = crypto.randomUUID();
+    expect(
+      SidecarFrame(hello({ inStandby: true, idleStandby })) instanceof
+        type.errors,
+    ).toBe(false);
+    expect(SidecarFrame(hello({ idleStandby })) instanceof type.errors).toBe(
+      true,
+    );
+    expect(
+      SidecarFrame(hello({ inStandby: true, idleStandby: true })) instanceof
+        type.errors,
+    ).toBe(true);
+  });
+
   test("a control answer's error fits the bound on sidecar text", () => {
     const ack = (error: string) => ({
       type: "workflow.control.ack",
@@ -1119,6 +1163,22 @@ describe("deployments in standby", () => {
     expect(SidecarFrame({ ...frame, reason: "" }) instanceof type.errors).toBe(
       true,
     );
+  });
+
+  test("a workflow control command carries confirm only with standby", () => {
+    const control = (action: string) => ({
+      type: "workflow.control",
+      requestId: "control-1",
+      agentAddress: "wf@example.test",
+      generation: 1,
+      runId: "run_1",
+      action,
+      reason: "test",
+      confirm: true,
+    });
+    expect(HubFrame(control("standby")) instanceof type.errors).toBe(false);
+    for (const action of ["cancel", "stop", "retain", "wake"])
+      expect(HubFrame(control(action)) instanceof type.errors).toBe(true);
   });
 });
 

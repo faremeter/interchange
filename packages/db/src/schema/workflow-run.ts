@@ -149,18 +149,25 @@ export const workflowRun = pgTable(
     cancellationReason: text("cancellation_reason"),
     cancellationDeadline: timestamp("cancellation_deadline"),
     // Where a deployment anchor's workflow child stands on the way into or out
-    // of standby: `entering` until its sidecar stops the child, `standby` once
-    // the Hub holds the history the child left, `waking` until the child runs
-    // again. Null while the child runs and no standby is asked for.
+    // of standby: `entering` until its sidecar has stopped the child and the
+    // Hub holds the history it left, `confirming` the same for a standby the
+    // sidecar began by itself, `standby` after, and `waking` until the
+    // sidecar answers the wake request. Null while the child runs and no
+    // standby is asked for.
     standbyState: text("standby_state").$type<WorkflowStandbyState>(),
     standbyStateAt: timestamp("standby_state_at"),
     // The earliest pending timer a child in standby is woken for.
     standbyWakeAt: timestamp("standby_wake_at"),
+    // The standby the sidecar began by itself that a `standby` state was
+    // recorded from, so a later report of that same standby leaves it as it
+    // is. Null in any other state.
+    standbyIdleId: text("standby_idle_id"),
     // Why the standby state last changed other than as requested: the
     // sidecar refused a standby or wake request, something other than a wake
     // request woke the child in standby, the sidecar reported the child
-    // running or in standby though none was asked for, the deployment is
-    // being cancelled, or it moved to replacement capacity.
+    // running or in standby though none was asked for, the sidecar put it in
+    // standby by itself, the deployment is being cancelled, or it moved to
+    // replacement capacity.
     standbyReason: text("standby_reason"),
     capacityReleaseAt: timestamp("capacity_release_at"),
     // When unrecoverable capacity loss happened while accepted history could

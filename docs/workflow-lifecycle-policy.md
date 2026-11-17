@@ -390,12 +390,15 @@ runs the child again or abandons a standby request in progress. An answer
 applies only to the request it carried out, and the Hub takes up the sidecar's
 reports and answers in the order the sidecar sent them, so a report never ends a
 later standby. A child in standby that its sidecar reports though no standby is
-asked for is recorded `waking` and woken the same way, and a `hello` finding
-the child running ends a recorded standby but leaves a pending request to
-its command. The lifecycle status's `standby` field shows the state, when
-it last changed, the earliest timer a child in standby wakes for by itself
-(`wakeAt`), and the reason for a refused standby or wake request, for an
-input that woke the child, or for a cancellation or replacement capacity that
+asked for is recorded `waking` and woken the same way, unless the sidecar put it
+in standby by itself. A report that the child runs again, in a `hello` or when
+an input woke it, ends a recorded standby but leaves a pending standby or wake
+request to its command: the child can be in standby again by the time an older
+report arrives, so only the sidecar's answer settles a request. The lifecycle
+status's `standby` field shows the state, when it last changed, the earliest
+timer a child in standby wakes for by itself (`wakeAt`), and the reason for a
+refused standby or wake request, for an input that woke the child, for a standby
+the sidecar began by itself, or for a cancellation or replacement capacity that
 ended the standby. A command that gets no answer goes out again after a
 wait that doubles up to 30 seconds, and the reason says why, unless all it waits
 for is history still on its way. The sidecar refuses a standby request while mail

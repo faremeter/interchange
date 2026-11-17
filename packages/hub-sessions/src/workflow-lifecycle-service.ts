@@ -7,7 +7,9 @@ import {
   inArray,
   isNotNull,
   isNull,
+  like,
   lte,
+  ne,
   notInArray,
   or,
   sql,
@@ -47,6 +49,7 @@ import {
   isSidecarAllocationDispatchable,
   type WorkflowStandbyState,
 } from "@intx/types";
+import type { IdleStandbyId } from "@intx/types/sidecar";
 
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
 import type { SidecarEventMap } from "./ws/sidecar-events";
@@ -113,6 +116,8 @@ const STOP_FAILED_RELEASE = {
 const REPORTED_RUNNING_REASON =
   "The sidecar reported the workflow child running";
 const CANCELLED_STANDBY_REASON = "The deployment is being cancelled";
+const IDLE_STANDBY_REASON =
+  "Every run of the deployment waited on input from outside long enough for its sidecar to put it in standby";
 
 type Run = ReturnType<typeof parseWorkflowRunRow>;
 type Allocation = typeof sidecarAllocation.$inferSelect;
@@ -134,7 +139,22 @@ type ReleaseStoppedCleanupResult =
 // while the sweep is backing off; `stop` and `sweep` respect the backoff, and
 // only `sweep` leaves young rows to the receive that wrote them.
 type RecoveryTrigger = "request" | "stop" | "sweep";
-type StandbyAction = "standby" | "wake";
+// `confirm` reads the history of a standby the sidecar began by itself.
+type StandbyAction = "standby" | "confirm" | "wake";
+// The state a run is in while each command is pending.
+const STANDBY_PENDING_STATE = {
+  standby: "entering",
+  confirm: "confirming",
+  wake: "waking",
+} as const satisfies Record<StandbyAction, WorkflowStandbyState>;
+const STANDBY_COMMAND_GOAL = {
+  standby: "put the deployment in standby",
+  confirm: "confirm the deployment's standby",
+  wake: "wake the deployment",
+} as const satisfies Record<StandbyAction, string>;
+// A wake report replaces a refused confirm's reason, as it does the generic
+// running one, since the child can be running again.
+const REFUSED_CONFIRM_REASON = `The sidecar refused to ${STANDBY_COMMAND_GOAL.confirm}: `;
 
 export type WorkflowLifecycleServiceDeps = {
   db: DB["db"];
@@ -160,7 +180,10 @@ export type WorkflowLifecycleServiceDeps = {
   sendControl?: SidecarAllocationRouter["sendWorkflowControl"];
   standbyRouter: Pick<
     SidecarAllocationRouter,
-    "putAllocationInStandby" | "wakeAllocation" | "holdsAllocatedBinding"
+    | "putAllocationInStandby"
+    | "confirmAllocationInStandby"
+    | "wakeAllocation"
+    | "holdsAllocatedBinding"
   >;
   /** Called after each standby or wake command ends, answered or not. */
   onStandbyCommandSettled?: (runId: string) => void;
@@ -578,7 +601,10 @@ export function createWorkflowLifecycleService({
       capacityReleaseAt: run.capacityReleaseAt?.toISOString() ?? null,
       standby: isLiveWorkflowRunStatus(run.status)
         ? {
-            state: run.standbyState ?? ("awake" as const),
+            state:
+              run.standbyState === "confirming"
+                ? ("entering" as const)
+                : (run.standbyState ?? ("awake" as const)),
             changedAt: run.standbyStateAt?.toISOString() ?? null,
             wakeAt:
               run.standbyState === "standby"
@@ -702,6 +728,7 @@ export function createWorkflowLifecycleService({
             standbyState: null,
             standbyStateAt: at,
             standbyWakeAt: null,
+            standbyIdleId: null,
             standbyReason: CANCELLED_STANDBY_REASON,
           };
     await tx
@@ -840,6 +867,7 @@ export function createWorkflowLifecycleService({
             standbyState: pending,
             standbyStateAt: now(),
             standbyWakeAt: null,
+            standbyIdleId: null,
             standbyReason: null,
           })
           .where(eq(workflowRun.id, runId));
@@ -946,8 +974,9 @@ export function createWorkflowLifecycleService({
       );
     if (row === undefined) return;
     const run = parseWorkflowRunRow(row.run);
+    const action = pendingStandbyAction(run);
     if (
-      (run.standbyState !== "entering" && run.standbyState !== "waking") ||
+      action === null ||
       run.standbyStateAt === null ||
       !isLiveWorkflowRunStatus(run.status) ||
       run.cancellationRequestedAt !== null ||
@@ -955,8 +984,6 @@ export function createWorkflowLifecycleService({
       row.sidecarId === null
     )
       return;
-    const action: StandbyAction =
-      run.standbyState === "entering" ? "standby" : "wake";
     const target = {
       allocationId: row.allocationId,
       generation: row.generation,
@@ -984,25 +1011,29 @@ export function createWorkflowLifecycleService({
     try {
       let change: Parameters<typeof settleStandbyCommand>[1];
       try {
-        if (command.action === "standby") {
-          const { wakeAt } = await standbyRouter.putAllocationInStandby(
-            command.target,
-            STANDBY_CONTROL_TIMEOUT_MS,
-            onAnswered,
-          );
-          change = {
-            standbyState: "standby",
-            standbyWakeAt: wakeAt === undefined ? null : new Date(wakeAt),
-            // It went as requested, so no earlier reason stands.
-            standbyReason: null,
-          };
-        } else {
+        if (command.action === "wake") {
           await standbyRouter.wakeAllocation(
             command.target,
             STANDBY_CONTROL_TIMEOUT_MS,
             onAnswered,
           );
           change = { standbyState: null };
+        } else {
+          const answer = await (
+            command.action === "confirm"
+              ? standbyRouter.confirmAllocationInStandby
+              : standbyRouter.putAllocationInStandby
+          )(command.target, STANDBY_CONTROL_TIMEOUT_MS, onAnswered);
+          change = {
+            standbyState: "standby",
+            standbyWakeAt:
+              answer.wakeAt === undefined ? null : new Date(answer.wakeAt),
+            standbyIdleId: answer.idleStandby ?? null,
+            // A standby that went as requested leaves no earlier reason
+            // standing. A confirmed one keeps the reason that says the idle
+            // rule began it.
+            ...(command.action === "standby" ? { standbyReason: null } : {}),
+          };
         }
       } catch (error) {
         await turn?.ready;
@@ -1020,7 +1051,7 @@ export function createWorkflowLifecycleService({
         clearStandbyRetry(command);
         await settleStandbyCommand(command, {
           standbyState: null,
-          standbyReason: `The sidecar refused to ${command.action === "standby" ? "put the deployment in standby" : "wake the deployment"}: ${message}`,
+          standbyReason: `The sidecar refused to ${STANDBY_COMMAND_GOAL[command.action]}: ${message}`,
         }).catch((cause: unknown) => {
           logger.error`Could not record the refused ${command.action} for ${command.runId}: ${cause instanceof Error ? cause.message : String(cause)}`;
         });
@@ -1064,7 +1095,7 @@ export function createWorkflowLifecycleService({
       note:
         error instanceof WorkflowControlHistoryPendingError
           ? (previous?.note ?? null)
-          : `The Hub could not ${command.action === "standby" ? "put the deployment in standby" : "wake the deployment"} yet and keeps asking${saysWhyStandbyWaits(error) ? `: ${message}` : ""}`,
+          : `The Hub could not ${STANDBY_COMMAND_GOAL[command.action]} yet and keeps asking${saysWhyStandbyWaits(error) ? `: ${message}` : ""}`,
     });
   }
 
@@ -1091,16 +1122,27 @@ export function createWorkflowLifecycleService({
     return retry !== undefined && now().getTime() < retry.nextAt;
   }
 
+  // The command that carries out the request a run has pending.
+  function pendingStandbyAction(run: Run): StandbyAction | null {
+    switch (run.standbyState) {
+      case "entering":
+        return "standby";
+      case "confirming":
+        return "confirm";
+      case "waking":
+        return "wake";
+      case "standby":
+      case null:
+        return null;
+    }
+  }
+
   // Why the request a run has pending got no answer yet, if this Hub knows.
   function standbyRetryNote(run: Run): string | null {
-    const pending =
-      run.standbyState === "entering"
-        ? "standby"
-        : run.standbyState === "waking"
-          ? "wake"
-          : null;
     const retry = standbyRetries.get(run.id);
-    return retry !== undefined && retry.action === pending ? retry.note : null;
+    return retry !== undefined && retry.action === pendingStandbyAction(run)
+      ? retry.note
+      : null;
   }
 
   // Records an answer while the request it carried out still stands.
@@ -1109,20 +1151,23 @@ export function createWorkflowLifecycleService({
     change: {
       standbyState: WorkflowStandbyState | null;
       standbyWakeAt?: Date | null;
+      standbyIdleId?: IdleStandbyId | null;
       standbyReason?: string | null;
     },
   ): Promise<void> {
     await withReportingGeneration(command.target, (tx, runId) =>
       tx
         .update(workflowRun)
-        .set({ standbyWakeAt: null, ...change, standbyStateAt: now() })
+        .set({
+          standbyWakeAt: null,
+          standbyIdleId: null,
+          ...change,
+          standbyStateAt: now(),
+        })
         .where(
           and(
             eq(workflowRun.id, runId),
-            eq(
-              workflowRun.standbyState,
-              command.action === "standby" ? "entering" : "waking",
-            ),
+            eq(workflowRun.standbyState, STANDBY_PENDING_STATE[command.action]),
             eq(workflowRun.standbyStateAt, command.stateAt),
           ),
         ),
@@ -1198,39 +1243,59 @@ export function createWorkflowLifecycleService({
     if (anchor === undefined) return;
     await earlier;
     if (report.inStandby) {
-      // A child in standby that no standby request stands for is woken; a
-      // pending standby request is recorded from its command's answer.
+      // A standby the sidecar began by its idle rule is confirmed, and any
+      // other that no standby request stands for is woken. A pending standby
+      // request is recorded from its command's answer. An idle report on a
+      // recorded standby is confirmed again unless the recorded standby was
+      // read from that same one: the child can have woken and stopped since,
+      // and the report that it woke can be lost.
+      const idle = report.idleStandby;
       let unrequested = false;
       await withReportingGeneration(report, async (tx, runId) => {
-        const woken = await tx
+        const noted = await tx
           .update(workflowRun)
           .set({
-            standbyState: "waking",
+            standbyState: idle !== undefined ? "confirming" : "waking",
             standbyStateAt: now(),
             standbyWakeAt: null,
+            standbyIdleId: null,
             standbyReason:
-              "The sidecar reported the workflow child in standby, and no standby was asked for",
+              idle !== undefined
+                ? IDLE_STANDBY_REASON
+                : "The sidecar reported the workflow child in standby, and no standby was asked for",
           })
           .where(
             and(
               eq(workflowRun.id, runId),
-              isNull(workflowRun.standbyState),
+              idle !== undefined
+                ? or(
+                    isNull(workflowRun.standbyState),
+                    and(
+                      eq(workflowRun.standbyState, "standby"),
+                      or(
+                        isNull(workflowRun.standbyIdleId),
+                        ne(workflowRun.standbyIdleId, idle),
+                      ),
+                    ),
+                  )
+                : isNull(workflowRun.standbyState),
               inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
               isNull(workflowRun.cancellationRequestedAt),
             ),
           )
           .returning({ id: workflowRun.id });
-        unrequested = woken.length > 0;
-        if (unrequested) standbyRetries.delete(runId);
+        if (noted.length > 0) standbyRetries.delete(runId);
+        unrequested = noted.length > 0 && idle === undefined;
       });
       if (unrequested)
         logger.warn`Waking the workflow child of ${anchor.id}: its sidecar reports it in standby, and no standby is asked for`;
       await driveStandbyState(anchor.id);
       return;
     }
-    // A running child ends a recorded standby, and an input that woke it
-    // also carried out a pending wake. A pending standby request stands: the
-    // sidecar carries it out next.
+    // A running child ends a recorded standby and one the Hub was confirming.
+    // A pending request stands, a wake as much as a standby: the sidecar can
+    // have stopped the child again since an older report, so only its answer
+    // to the command settles the request.
     await withReportingGeneration(report, async (tx, runId) => {
       await tx
         .update(workflowRun)
@@ -1238,14 +1303,13 @@ export function createWorkflowLifecycleService({
           standbyState: null,
           standbyStateAt: now(),
           standbyWakeAt: null,
+          standbyIdleId: null,
           standbyReason: report.reason ?? REPORTED_RUNNING_REASON,
         })
         .where(
           and(
             eq(workflowRun.id, runId),
-            report.reason === undefined
-              ? eq(workflowRun.standbyState, "standby")
-              : inArray(workflowRun.standbyState, ["standby", "waking"]),
+            inArray(workflowRun.standbyState, ["standby", "confirming"]),
           ),
         );
       // After a reconnect the `hello` can end the standby request before the
@@ -1259,7 +1323,10 @@ export function createWorkflowLifecycleService({
             and(
               eq(workflowRun.id, runId),
               isNull(workflowRun.standbyState),
-              eq(workflowRun.standbyReason, REPORTED_RUNNING_REASON),
+              or(
+                eq(workflowRun.standbyReason, REPORTED_RUNNING_REASON),
+                like(workflowRun.standbyReason, `${REFUSED_CONFIRM_REASON}%`),
+              ),
             ),
           );
       }
@@ -1744,21 +1811,24 @@ export function createWorkflowLifecycleService({
   // A command whose binding is gone, or that a newer request replaced, does
   // not hold its run back.
   function standbyCommandsInFlight() {
-    const enterStandby: string[] = [];
-    const wake: string[] = [];
+    const inFlight: Record<StandbyAction, string[]> = {
+      standby: [],
+      confirm: [],
+      wake: [],
+    };
     for (const [runId, { action, target }] of standbyCommands) {
       if (!standbyRouter.holdsAllocatedBinding(target)) continue;
-      (action === "standby" ? enterStandby : wake).push(runId);
+      inFlight[action].push(runId);
     }
     const at = now().getTime();
     for (const [runId, retry] of standbyRetries) {
       if (at < retry.nextAt) {
-        (retry.action === "standby" ? enterStandby : wake).push(runId);
+        inFlight[retry.action].push(runId);
       } else if (at - retry.nextAt > STANDBY_RETRY_FORGET_MS) {
         standbyRetries.delete(runId);
       }
     }
-    return { enterStandby, wake };
+    return inFlight;
   }
 
   async function reconcileNext(): Promise<boolean> {
@@ -1815,10 +1885,7 @@ export function createLifecycleSweepQueries(
   db: DB["db"],
   now: () => Date,
   getRetentionCandidates: SidecarAllocationRouter["getRetentionCandidates"],
-  getStandbyCommandsInFlight: () => {
-    enterStandby: string[];
-    wake: string[];
-  },
+  getStandbyCommandsInFlight: () => Record<StandbyAction, string[]>,
 ): AnchorRunSweepQueries<{ id: string; tenantId: string }> {
   // Selection runs once per candidate of every pass, so it is built once.
   function prepareBranches(afterCursor: boolean) {
@@ -1933,6 +2000,7 @@ export function createLifecycleSweepQueries(
               sql.param(sql.placeholder("now"), workflowRun.expiresAt),
             ),
             sql`(${workflowRun.standbyState} = 'entering' and ${workflowRun.id} <> all(${sql.placeholder("standbyInFlight")}::text[]))`,
+            sql`(${workflowRun.standbyState} = 'confirming' and ${workflowRun.id} <> all(${sql.placeholder("confirmsInFlight")}::text[]))`,
             sql`(${workflowRun.standbyState} = 'waking' and ${workflowRun.id} <> all(${sql.placeholder("wakesInFlight")}::text[]))`,
           ),
           inPass(workflowRun.id),
@@ -2039,7 +2107,8 @@ export function createLifecycleSweepQueries(
         activeRunIds,
         retentionIds,
         retentionGenerations,
-        standbyInFlight: inFlight.enterStandby,
+        standbyInFlight: inFlight.standby,
+        confirmsInFlight: inFlight.confirm,
         wakesInFlight: inFlight.wake,
         now: at,
         pendingCutoff: new Date(at.getTime() - PENDING_PROJECTION_GRACE_MS),

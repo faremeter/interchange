@@ -21,12 +21,14 @@ import {
   type SessionErrorFrame,
   type AgentUndeployFrame,
   type DeploymentStoppedFrame,
+  type DeploymentStandbyFrame,
   type DeploymentWokenFrame,
   type DeploymentRetention,
   type WorkflowControlFrame,
   type WorkflowControlAckFrame,
   type WorkflowRunRefTips,
   type HostedIncarnation,
+  type IdleStandbyId,
   type IncarnationStamp,
   type MailInboundFrame,
   type PackPushFrame,
@@ -388,6 +390,8 @@ export type WorkflowControlOutcome = {
   refTips?: WorkflowRunRefTips;
   /** The earliest pending timer of the child in standby. */
   wakeAt?: string;
+  /** The standby the sidecar began by itself whose history `refTips` carries. */
+  idleStandby?: IdleStandbyId;
 };
 
 /**
@@ -852,6 +856,13 @@ export type HubLink = {
    * `welcome`.
    */
   sendDeploymentWoken: (report: Omit<DeploymentWokenFrame, "type">) => void;
+  /**
+   * Report that the sidecar put a deployment in standby by itself. Held like
+   * a wake report, and sent after the wake it followed.
+   */
+  sendDeploymentInStandby: (
+    report: Omit<DeploymentStandbyFrame, "type">,
+  ) => void;
 };
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -1031,23 +1042,36 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     );
   }
 
-  // Wake reports owed while the link is not welcomed, one per incarnation:
-  // the next `hello` can predate the wake. Kept out of the queue, so they never
-  // crowd out mail, and bounded by the deployments the sidecar holds.
-  const pendingWakes = new Map<string, Omit<DeploymentWokenFrame, "type">>();
+  // Wake and standby reports owed while the link is not welcomed, per
+  // incarnation: the next `hello` can predate them. A wake ends the standby
+  // reported before it, so at most the last wake and a standby after it are
+  // owed. Kept out of the queue, so they never crowd out mail, and bounded by
+  // the deployments the sidecar holds.
+  const pendingStandbyReports = new Map<
+    string,
+    {
+      woken?: Omit<DeploymentWokenFrame, "type">;
+      inStandby?: Omit<DeploymentStandbyFrame, "type">;
+    }
+  >();
 
-  function sendPendingWakes(socket: WebSocket): void {
+  function sendPendingStandbyReports(socket: WebSocket): void {
     const held = new Set(
       getIncarnations().map(
         (incarnation) =>
           `${incarnation.address}\n${String(incarnation.generation)}`,
       ),
     );
-    for (const [key, woken] of pendingWakes) {
-      if (held.has(key))
+    for (const [key, { woken, inStandby }] of pendingStandbyReports) {
+      if (!held.has(key)) continue;
+      if (woken !== undefined)
         socket.send(JSON.stringify({ type: "deployment.woken", ...woken }));
+      if (inStandby !== undefined)
+        socket.send(
+          JSON.stringify({ type: "deployment.standby", ...inStandby }),
+        );
     }
-    pendingWakes.clear();
+    pendingStandbyReports.clear();
   }
 
   function welcomedSocket(): WebSocket | null {
@@ -1974,12 +1998,14 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     let refTips: WorkflowRunRefTips | undefined;
     let retention: DeploymentRetention | undefined;
     let wakeAt: string | undefined;
+    let idleStandby: IdleStandbyId | undefined;
     try {
       if (deployRouter.control === undefined)
         throw new Error("Workflow control is not supported by this sidecar");
-      ({ refTips, retention, wakeAt } = await deployRouter.control(frame, {
-        signal,
-      }));
+      ({ refTips, retention, wakeAt, idleStandby } = await deployRouter.control(
+        frame,
+        { signal },
+      ));
     } catch (cause) {
       error = fitDeploymentError(
         cause instanceof Error ? cause.message : String(cause),
@@ -1992,6 +2018,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       ...(refTips !== undefined ? { refTips } : {}),
       ...(retention !== undefined ? { retention } : {}),
       ...(wakeAt !== undefined ? { wakeAt } : {}),
+      ...(idleStandby !== undefined ? { idleStandby } : {}),
     });
   }
 
@@ -2016,7 +2043,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     welcomed = true;
     stopWelcomeTimer();
     const socket = welcomedSocket();
-    if (socket !== null) sendPendingWakes(socket);
+    if (socket !== null) sendPendingStandbyReports(socket);
     flush();
     if (onWorkflowAddressesRoutable === undefined) return;
     const held = new Map(
@@ -2446,10 +2473,25 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       socket.send(JSON.stringify({ type: "deployment.woken", ...woken }));
       return;
     }
-    pendingWakes.set(
+    pendingStandbyReports.set(
       `${woken.agentAddress}\n${String(woken.generation)}`,
-      woken,
+      { woken },
     );
+  };
+
+  const sendDeploymentInStandby: HubLink["sendDeploymentInStandby"] = (
+    inStandby,
+  ) => {
+    const socket = welcomedSocket();
+    if (socket !== null) {
+      socket.send(JSON.stringify({ type: "deployment.standby", ...inStandby }));
+      return;
+    }
+    const key = `${inStandby.agentAddress}\n${String(inStandby.generation)}`;
+    pendingStandbyReports.set(key, {
+      ...pendingStandbyReports.get(key),
+      inStandby,
+    });
   };
 
   return {
@@ -2461,5 +2503,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     pushWorkflowRunPack,
     sendDeploymentStopped,
     sendDeploymentWoken,
+    sendDeploymentInStandby,
   };
 }

@@ -904,6 +904,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     publishDeploymentWoken?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["publishDeploymentWoken"];
+    publishDeploymentInStandby?: Parameters<
+      typeof createSidecarDeployRouter
+    >[0]["publishDeploymentInStandby"];
     assertSourceBuildable?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["assertSourceBuildable"];
@@ -1023,6 +1026,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         opts.reportDeploymentRefTips ?? (async () => ({})),
       ...(opts.publishDeploymentWoken !== undefined
         ? { publishDeploymentWoken: opts.publishDeploymentWoken }
+        : {}),
+      ...(opts.publishDeploymentInStandby !== undefined
+        ? { publishDeploymentInStandby: opts.publishDeploymentInStandby }
         : {}),
       ...(opts.publishDeploymentStopped !== undefined
         ? { publishDeploymentStopped: opts.publishDeploymentStopped }
@@ -2754,9 +2760,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           data: { requestId: query.data.requestId, ...answer },
         });
       },
-      // Answer a standby attempt as the real child does: quiet for the wait and
-      // the final check, no parked correlations, then exit on `shutdown`.
-      async putChildInStandby(index: number): Promise<void> {
+      // Answer a standby attempt as the real child does: quiet for both of its
+      // checks, no parked correlations, then exit on `shutdown`. The idle
+      // rule's attempt is told the child has been quiet for `quietForMs`.
+      async putChildInStandby(
+        index: number,
+        idle?: { quietForMs: number },
+      ): Promise<void> {
         const spawn = spawns[index];
         const sender = spawn?.childSender;
         if (spawn === undefined || sender === undefined) {
@@ -2778,7 +2788,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
             data: {
               requestId: query.data.requestId,
               quiet: true,
-              quietForMs: 0,
+              quietForMs: idle?.quietForMs ?? 0,
             },
           });
         }
@@ -2939,6 +2949,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     opts: {
       historyTip: string;
       publishDeploymentWoken?: (report: { reason: string }) => void;
+      idle?: string;
     },
   ) {
     const frame = singleStepFrame(head, `wf-${head.split("@")[0] ?? head}`);
@@ -2962,7 +2973,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await markWorkflowRunRecordInStandby(
       dataDir,
       deriveWorkflowRunRepoId(head),
-      { parked: [], tip: HISTORY_TIP, definition },
+      {
+        parked: [],
+        tip: HISTORY_TIP,
+        definition,
+        ...(opts.idle !== undefined ? { idle: opts.idle } : {}),
+      },
     );
 
     const second = makeReadyDrivingSpawner(pidBase + 100);
@@ -3014,6 +3030,23 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       definition,
     });
     expect(reports).toEqual([]);
+  });
+
+  test("a record of a standby the idle rule began restores it reported as such", async () => {
+    const dataDir = await createTempBaseDir("sidecar-idle-standby-restore-");
+    const head = "run_idlestandbyrestore@example.com";
+    const idle = crypto.randomUUID();
+    const { router, restoring } = await restoreRecordedStandby(
+      dataDir,
+      head,
+      9130,
+      { historyTip: HISTORY_TIP, idle },
+    );
+    await restoring;
+
+    expect(
+      router.incarnations().find((incarnation) => incarnation.address === head),
+    ).toMatchObject({ inStandby: true, idleStandby: idle });
   });
 
   test("a record in standby over history written since restores the child awake, clears the mark and reports it woken", async () => {
@@ -3083,13 +3116,34 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     head: string,
     pidBase: number,
     reportDeploymentRefTips: () => Promise<WorkflowRunRefTips>,
+    idleRule?: {
+      standbyAfterMs: number;
+      publishDeploymentInStandby: (report: {
+        agentAddress: string;
+        generation: number;
+        idleStandby: string;
+      }) => void;
+    },
   ) {
-    const frame = singleStepFrame(head, `wf-${head.split("@")[0] ?? head}`);
+    const plain = singleStepFrame(head, `wf-${head.split("@")[0] ?? head}`);
+    const frame =
+      idleRule === undefined
+        ? plain
+        : {
+            ...plain,
+            workflow: {
+              ...plain.workflow,
+              standbyAfterMs: idleRule.standbyAfterMs,
+            },
+          };
     const spawned = makeReadyDrivingSpawner(pidBase);
     const { router, substrateEnv } = await buildMultistepFixture({
       spawner: spawned.spawner,
       reportDeploymentRefTips,
       historyTip: HISTORY_TIP,
+      ...(idleRule !== undefined
+        ? { publishDeploymentInStandby: idleRule.publishDeploymentInStandby }
+        : {}),
     });
     const deployPromise = router.deploy(frame);
     await spawned.driveReadyFor(0);
@@ -3101,7 +3155,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       frame,
       spawned,
       dataDir: substrateEnv["SIDECAR_DATA_DIR"],
-      control: (action: "standby" | "wake", requestId: string) =>
+      control: (
+        action: "standby" | "wake",
+        requestId: string,
+        confirm?: true,
+      ) =>
         control({
           type: "workflow.control",
           requestId,
@@ -3110,9 +3168,136 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           runId: deriveWorkflowRunId(head),
           action,
           reason: `${action === "standby" ? "Put the deployment's workflow child in standby" : "Wake the deployment's workflow child"}`,
+          ...(confirm === true ? { confirm } : {}),
         }),
     };
   }
+
+  test("a standby the idle rule began is reported, named in the hello and the record, and confirmed without another attempt", async () => {
+    const head = "run_idlestandby@example.com";
+    const tips = { "refs/heads/main": "1".repeat(40) };
+    const reported = Promise.withResolvers<{
+      agentAddress: string;
+      generation: number;
+      idleStandby: string;
+    }>();
+    const { router, frame, spawned, control, dataDir } = await deployForStandby(
+      head,
+      9410,
+      async () => tips,
+      {
+        standbyAfterMs: 1,
+        publishDeploymentInStandby: (report) => reported.resolve(report),
+      },
+    );
+    if (dataDir === undefined) throw new Error("the fixture has no data dir");
+
+    // Nobody asks: the supervisor makes the attempt once the wait has passed.
+    await spawned.putChildInStandby(0, { quietForMs: 1 });
+    const report = await reported.promise;
+    expect(report).toEqual({
+      agentAddress: head,
+      generation: frame.generation,
+      idleStandby: expect.any(String),
+    });
+    const idle = report.idleStandby;
+    expect(
+      router.incarnations().find((incarnation) => incarnation.address === head),
+    ).toMatchObject({ inStandby: true, idleStandby: idle });
+    // The mark is on disk before the supervisor reports the standby.
+    const record = await waitForRecord(
+      dataDir,
+      deriveWorkflowRunRepoId(head),
+      () => true,
+    );
+    expect(record).toMatchObject({
+      standbyAfterMs: 1,
+      standby: { idle },
+    });
+
+    expect(await control("standby", "confirm-idle", true)).toEqual({
+      refTips: tips,
+      idleStandby: idle,
+    });
+    expect(spawned.spawnCount()).toBe(1);
+    expect(
+      router.incarnations().find((incarnation) => incarnation.address === head),
+    ).toMatchObject({ inStandby: true, idleStandby: idle });
+  });
+
+  test("a confirm whose child woke and stopped again during its read reads again and names the new standby", async () => {
+    const head = "run_idlestandbyagain@example.com";
+    const tips = { "refs/heads/main": "1".repeat(40) };
+    const laterTips = { "refs/heads/main": "2".repeat(40) };
+    const readStarted = Promise.withResolvers<undefined>();
+    const read = Promise.withResolvers<WorkflowRunRefTips>();
+    const firstReport = Promise.withResolvers<string>();
+    const secondReport = Promise.withResolvers<string>();
+    let reports = 0;
+    let reads = 0;
+    const { router, spawned, control } = await deployForStandby(
+      head,
+      9450,
+      async () => {
+        reads += 1;
+        if (reads > 1) return laterTips;
+        readStarted.resolve(undefined);
+        return read.promise;
+      },
+      {
+        standbyAfterMs: 1,
+        publishDeploymentInStandby: (report) => {
+          (reports++ === 0 ? firstReport : secondReport).resolve(
+            report.idleStandby,
+          );
+        },
+      },
+    );
+
+    await spawned.putChildInStandby(0, { quietForMs: 1 });
+    const first = await firstReport.promise;
+    const confirming = control("standby", "confirm-first", true);
+    await readStarted.promise;
+    const woken = control("wake", "wake-during-read");
+    await spawned.driveReadyFor(1);
+    await spawned.answerParkedQuery(1, 1);
+    expect(await woken).toEqual({});
+    await spawned.putChildInStandby(1, { quietForMs: 1 });
+    const second = await secondReport.promise;
+    expect(second).not.toBe(first);
+
+    read.resolve(tips);
+    expect(await confirming).toEqual({
+      refTips: laterTips,
+      idleStandby: second,
+    });
+    expect(reads).toBe(2);
+    expect(
+      router.incarnations().find((incarnation) => incarnation.address === head),
+    ).toMatchObject({ inStandby: true, idleStandby: second });
+  });
+
+  test("a confirm for a deployment whose child runs is refused, and leaves the child running", async () => {
+    const head = "run_confirmrunning@example.com";
+    const { router, spawned, control } = await deployForStandby(
+      head,
+      9430,
+      async () => ({
+        "refs/heads/main": "1".repeat(40),
+      }),
+    );
+
+    await expect(control("standby", "confirm-running", true)).rejects.toThrow(
+      "The deployment is not in standby",
+    );
+    expect(
+      router.incarnations().find((incarnation) => incarnation.address === head)
+        ?.inStandby,
+    ).toBeUndefined();
+    expect(
+      spawned.controlFramesFor(0).map((frame) => frame.type),
+    ).not.toContain("quiet.request");
+  });
 
   test("a deployment stopped in standby says so in no hello", async () => {
     const head = "run_standbystopped@example.com";

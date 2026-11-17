@@ -200,6 +200,9 @@ function createMockAllocationRouter(
     async putAllocationInStandby() {
       throw new Error("mock standby is not used by session service");
     },
+    async confirmAllocationInStandby() {
+      throw new Error("mock standby is not used by session service");
+    },
     async wakeAllocation() {
       throw new Error("mock wake is not used by session service");
     },

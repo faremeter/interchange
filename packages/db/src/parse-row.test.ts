@@ -320,6 +320,7 @@ function makeWorkflowRunRow(
     standbyState: null,
     standbyStateAt: null,
     standbyWakeAt: null,
+    standbyIdleId: null,
     standbyReason: null,
     capacityReleaseAt: null,
     infrastructureFailedAt: null,

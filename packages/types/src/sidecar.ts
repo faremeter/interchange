@@ -202,6 +202,9 @@ export const HostedIncarnation = type({
   // A live incarnation whose workflow child is in standby: stopped while every
   // run waits, and respawned for its next input.
   "inStandby?": "true",
+  // The sidecar began that standby by itself, once the runs had waited for
+  // the deployment's `standbyAfterMs`.
+  "idleStandby?": IdleStandbyId,
   "retention?": DeploymentRetention,
   // Why a stopped incarnation stopped when the Hub did not stop it: its
   // workflow child ended itself, or the sidecar could not restore it. The Hub
@@ -220,6 +223,12 @@ export const HostedIncarnation = type({
       incarnation.inStandby === undefined ||
       incarnation.state === "live" ||
       ctx.mustBe("live to be in standby"),
+  )
+  .narrow(
+    (incarnation, ctx) =>
+      incarnation.idleStandby === undefined ||
+      incarnation.inStandby === true ||
+      ctx.mustBe("in standby for the standby to be an idle one"),
   );
 export type HostedIncarnation = typeof HostedIncarnation.infer;
 
@@ -816,6 +825,10 @@ export const AgentDeployWorkflow = type({
   // an asset-sourced deploy carries it; a registry-sourced pin fetches its
   // tarballs over HTTP and delivers none.
   "assets?": WorkflowSourceAssetMount.array(),
+  // How many milliseconds every run must have waited on input from outside
+  // before the sidecar puts the workflow child in standby by itself. Optional:
+  // without it only a `standby` control does.
+  "standbyAfterMs?": "number.integer > 0",
 });
 export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
 
@@ -874,7 +887,16 @@ export const WorkflowControlFrame = type({
   runId: "string",
   action: "'cancel' | 'stop' | 'retain' | 'standby' | 'wake'",
   reason: "string",
-});
+  // Only with `standby`: answer only for a child already in standby, and
+  // refuse when it runs. The Hub sets it to read the history of a standby the
+  // sidecar reported with `deployment.standby`.
+  "confirm?": "true",
+}).narrow(
+  (frame, ctx) =>
+    frame.confirm === undefined ||
+    frame.action === "standby" ||
+    ctx.mustBe("a standby command when it carries confirm"),
+);
 export type WorkflowControlFrame = typeof WorkflowControlFrame.infer;
 
 export const WORKFLOW_CONTROL_INITIALIZING_ERROR = "workflow_initializing";
@@ -916,6 +938,10 @@ export const WorkflowControlAckFrame = type({
    * The earliest pending timer of the child in standby, which wakes it.
    */
   "wakeAt?": WakeAtTime,
+  /**
+   * The standby the sidecar began by itself whose history `refTips` carries.
+   */
+  "idleStandby?": IdleStandbyId,
 });
 export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
 
@@ -950,6 +976,20 @@ export const DeploymentWokenFrame = type({
   reason: type("string > 0").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
 });
 export type DeploymentWokenFrame = typeof DeploymentWokenFrame.infer;
+
+/**
+ * Reports a deployment whose workflow child the sidecar put in standby by
+ * itself, once every run had waited for the deployment's `standbyAfterMs`.
+ * The Hub answers with a `standby` control marked `confirm`. Like
+ * `deployment.woken`, it is queued while no connection is welcomed.
+ */
+export const DeploymentStandbyFrame = type({
+  type: "'deployment.standby'",
+  agentAddress: type("string").atMostLength(MAX_DEPLOYMENT_ADDRESS_LENGTH),
+  generation: Generation,
+  idleStandby: IdleStandbyId,
+});
+export type DeploymentStandbyFrame = typeof DeploymentStandbyFrame.infer;
 
 /**
  * The Hub's answer to `hello`, sent once it has reconciled the reported
@@ -1236,6 +1276,7 @@ export const SidecarFrame = type.or(
   WorkflowControlAckFrame,
   DeploymentStoppedFrame,
   DeploymentWokenFrame,
+  DeploymentStandbyFrame,
 );
 export type SidecarFrame = typeof SidecarFrame.infer;
 

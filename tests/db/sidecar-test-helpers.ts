@@ -35,5 +35,7 @@ export function createMockWs(): WsHandle & {
 export const NO_STANDBY_ROUTER = {
   holdsAllocatedBinding: () => false,
   putAllocationInStandby: () => Promise.reject(new Error("no standby here")),
+  confirmAllocationInStandby: () =>
+    Promise.reject(new Error("no standby here")),
   wakeAllocation: () => Promise.reject(new Error("no standby here")),
 };

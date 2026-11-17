@@ -4064,9 +4064,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     describe("standby", () => {
       type StandbyCall = {
-        action: "standby" | "wake";
+        action: "standby" | "confirm" | "wake";
         target: { allocationId: string; generation: number };
-        answer: PromiseWithResolvers<{ wakeAt?: string }>;
+        answer: PromiseWithResolvers<{ wakeAt?: string; idleStandby?: string }>;
         answered: () => void;
       };
 
@@ -4094,7 +4094,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           target: StandbyCall["target"],
           answered: (() => void) | undefined,
         ) => {
-          const answer = Promise.withResolvers<{ wakeAt?: string }>();
+          const answer = Promise.withResolvers<{
+            wakeAt?: string;
+            idleStandby?: string;
+          }>();
           calls.push({
             action,
             target,
@@ -4109,6 +4112,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           standbyRouter: {
             putAllocationInStandby: (target, _timeoutMs, answered) =>
               call("standby", target, answered),
+            confirmAllocationInStandby: (target, _timeoutMs, answered) =>
+              call("confirm", target, answered),
             wakeAllocation: async (target, _timeoutMs, answered) => {
               await call("wake", target, answered);
             },
@@ -4217,7 +4222,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
 
       async function setStandby(
-        state: "entering" | "standby" | "waking" | null,
+        state: "entering" | "confirming" | "standby" | "waking" | null,
       ) {
         await h.db
           .update(workflowRun)
@@ -5119,10 +5124,52 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       });
 
+      test("replacement capacity carries out a standby request in progress", async () => {
+        await setStandby("entering");
+        expect((await beginReplacement())?.status).toBe("replacing");
+        expect((await standby())?.state).toBe("entering");
+      });
+
       test("replacement capacity starts awake: a pending wake has nothing left to do", async () => {
         await setStandby("waking");
         expect((await beginReplacement())?.status).toBe("replacing");
         expect((await standby())?.state).toBe("awake");
+      });
+
+      test("replacement capacity starts awake: a standby the Hub was confirming is asked of it", async () => {
+        const { lifecycle } = standbyService();
+        await lifecycle.noteDeploymentInStandby({
+          allocationId,
+          generation: 1,
+          inStandby: true,
+          idleStandby: crypto.randomUUID(),
+        });
+        expect((await beginReplacement())?.status).toBe("replacing");
+        expect(await standby()).toMatchObject({
+          state: "entering",
+          reason: expect.stringContaining("replacement capacity"),
+        });
+      });
+
+      test("replacement capacity starts awake: a confirmed standby the sidecar began by itself is asked of it, with no idle standby of the replaced copy", async () => {
+        await h.db
+          .update(workflowRun)
+          .set({
+            standbyState: "standby",
+            standbyStateAt: current,
+            standbyIdleId: crypto.randomUUID(),
+          })
+          .where(eq(workflowRun.id, runId));
+        expect((await beginReplacement())?.status).toBe("replacing");
+        expect(await standby()).toMatchObject({
+          state: "entering",
+          reason: expect.stringContaining("replacement capacity"),
+        });
+        const [row] = await h.db
+          .select({ idle: workflowRun.standbyIdleId })
+          .from(workflowRun)
+          .where(eq(workflowRun.id, runId));
+        expect(row?.idle).toBeNull();
       });
 
       test("cancellation ends a standby request, and a stopping or ended run refuses one", async () => {
@@ -5187,6 +5234,219 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await setStandby("waking");
         await lifecycle.noteDeploymentInStandby(report);
         expect(actions()).toEqual(["wake", "wake", "standby", "wake"]);
+      });
+
+      const firstIdleStandby = crypto.randomUUID();
+      const idleStandby = {
+        allocationId,
+        generation: 1,
+        inStandby: true,
+        idleStandby: firstIdleStandby,
+      } as const;
+      const idleReason =
+        "Every run of the deployment waited on input from outside long enough for its sidecar to put it in standby";
+
+      test("a standby the sidecar began by its idle rule is confirmed, and keeps the reason that says so", async () => {
+        const { lifecycle, calls, actions, answer } = standbyService();
+
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+        expect(await standby()).toMatchObject({
+          state: "entering",
+          reason: idleReason,
+        });
+        expect(actions()).toEqual(["confirm"]);
+        // The Hub does not hold the child's history yet, so it asks again.
+        await answer(() =>
+          calls[0]?.answer.reject(
+            new WorkflowControlHistoryPendingError("refs/heads/main is behind"),
+          ),
+        );
+        expect(await standby()).toMatchObject({
+          state: "entering",
+          reason: idleReason,
+        });
+        current = new Date(current.getTime() + 1_000);
+        await nextPass(lifecycle);
+        expect(actions()).toEqual(["confirm", "confirm"]);
+        await answer(() =>
+          calls[1]?.answer.resolve({
+            wakeAt: "2026-10-02T00:00:00.000Z",
+            idleStandby: firstIdleStandby,
+          }),
+        );
+        expect(await standby()).toMatchObject({
+          state: "standby",
+          wakeAt: "2026-10-02T00:00:00.000Z",
+          reason: idleReason,
+        });
+
+        // A hello after a reconnect reports the standby the Hub confirmed.
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+        expect(await standby()).toMatchObject({
+          state: "standby",
+          wakeAt: "2026-10-02T00:00:00.000Z",
+        });
+        expect(actions()).toEqual(["confirm", "confirm"]);
+
+        // The child can have woken and stopped again with its wake report lost,
+        // so an idle report of another standby is confirmed again.
+        const secondIdleStandby = crypto.randomUUID();
+        await lifecycle.noteDeploymentInStandby({
+          ...idleStandby,
+          idleStandby: secondIdleStandby,
+        });
+        expect(await standby()).toMatchObject({
+          state: "entering",
+          wakeAt: null,
+          reason: idleReason,
+        });
+        expect(actions()).toEqual(["confirm", "confirm", "confirm"]);
+        await answer(() =>
+          calls[2]?.answer.resolve({
+            wakeAt: "2026-10-03T00:00:00.000Z",
+            idleStandby: secondIdleStandby,
+          }),
+        );
+        expect(await standby()).toMatchObject({
+          state: "standby",
+          wakeAt: "2026-10-03T00:00:00.000Z",
+          reason: idleReason,
+        });
+      });
+
+      test("a standby is confirmed again when the answer that recorded it named no idle standby, and a restarted Hub keeps what it confirmed", async () => {
+        const { lifecycle, calls, actions, answer } = standbyService();
+        await setStandby("entering");
+        await lifecycle.noteDeploymentInStandby({
+          allocationId,
+          generation: 1,
+          inStandby: true,
+        });
+        expect(actions()).toEqual(["standby"]);
+        await answer(() => calls[0]?.answer.resolve({}));
+        expect((await standby())?.state).toBe("standby");
+
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+        expect((await standby())?.state).toBe("entering");
+        expect(actions()).toEqual(["standby", "confirm"]);
+        await answer(() =>
+          calls[1]?.answer.resolve({ idleStandby: firstIdleStandby }),
+        );
+        expect((await standby())?.state).toBe("standby");
+
+        const restarted = standbyService();
+        await restarted.lifecycle.noteDeploymentInStandby(idleStandby);
+        expect((await standby())?.state).toBe("standby");
+        expect(restarted.actions()).toEqual([]);
+      });
+
+      test("an idle report on a requested standby confirms it, and a refusal records the child awake", async () => {
+        const { lifecycle, calls, actions, answer } = standbyService();
+        await setStandby("standby");
+
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+        expect(await standby()).toMatchObject({
+          state: "entering",
+          reason: idleReason,
+        });
+        expect(actions()).toEqual(["confirm"]);
+        await answer(() =>
+          calls[0]?.answer.reject(
+            new WorkflowControlRejectedError("The workflow child is running"),
+          ),
+        );
+        expect(await standby()).toMatchObject({
+          state: "awake",
+          reason: expect.stringContaining("The workflow child is running"),
+        });
+      });
+
+      test("a child that runs again ends a standby the Hub is confirming, and its late answer changes nothing", async () => {
+        const { lifecycle, calls, actions, answer } = standbyService();
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+        expect(actions()).toEqual(["confirm"]);
+
+        await lifecycle.noteDeploymentInStandby({
+          allocationId,
+          generation: 1,
+          inStandby: false,
+          reason: "Woken by mail",
+        });
+        expect(await standby()).toMatchObject({
+          state: "awake",
+          reason: "Woken by mail",
+        });
+        await answer(() => calls[0]?.answer.resolve({}));
+        expect(await standby()).toMatchObject({
+          state: "awake",
+          reason: "Woken by mail",
+        });
+        await nextPass(lifecycle);
+        expect(actions()).toEqual(["confirm"]);
+      });
+
+      test("a confirm the sidecar refuses says why, until a wake report says what woke the child", async () => {
+        const { lifecycle, calls, actions, answer } = standbyService();
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+
+        await answer(() =>
+          calls[0]?.answer.reject(
+            new WorkflowControlRejectedError(
+              "The deployment changed while it was entering standby",
+            ),
+          ),
+        );
+        expect(await standby()).toMatchObject({
+          state: "awake",
+          reason:
+            "The sidecar refused to confirm the deployment's standby: The deployment changed while it was entering standby",
+        });
+        await lifecycle.noteDeploymentInStandby({
+          allocationId,
+          generation: 1,
+          inStandby: false,
+          reason: "Woken by mail",
+        });
+        expect(await standby()).toMatchObject({
+          state: "awake",
+          reason: "Woken by mail",
+        });
+        await nextPass(lifecycle);
+        expect(actions()).toEqual(["confirm"]);
+      });
+
+      test("a standby request made while the Hub confirms one is carried out as asked", async () => {
+        const { lifecycle, calls, actions, answer } = standbyService();
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+
+        expect(await lifecycle.requestStandby(tenantId, runId)).toBe("pending");
+        expect(await standby()).toMatchObject({
+          state: "entering",
+          reason: null,
+        });
+        await nextPass(lifecycle);
+        expect(actions()).toEqual(["confirm", "standby"]);
+        await answer(() => calls[1]?.answer.resolve({}));
+        expect(await standby()).toMatchObject({
+          state: "standby",
+          reason: null,
+        });
+      });
+
+      test("an idle standby reported while a standby or wake request is pending leaves the request to its command", async () => {
+        const { lifecycle, actions } = standbyService();
+        await setStandby("waking");
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+        expect((await standby())?.state).toBe("waking");
+        expect(actions()).toEqual(["wake"]);
+
+        await setStandby("entering");
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+        expect(await standby()).toMatchObject({
+          state: "entering",
+          reason: null,
+        });
+        expect(actions()).toEqual(["wake", "standby"]);
       });
 
       // The cancellation's stop ends the child, standby or not.
@@ -5344,7 +5604,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       });
 
-      test("an input's report ends a recorded standby or a pending wake, and leaves a pending standby request standing", async () => {
+      test("an input's report ends a recorded standby, and leaves a pending standby or wake request standing", async () => {
         const lifecycle = service();
         const woken = {
           allocationId,
@@ -5353,18 +5613,43 @@ describe.skipIf(!harnessDbEnvAvailable())(
           reason: "Woken by mail",
         };
 
-        await setStandby("entering");
-        await lifecycle.noteDeploymentInStandby(woken);
-        expect((await standby())?.state).toBe("entering");
-
-        for (const ended of ["standby", "waking"] as const) {
-          await setStandby(ended);
+        for (const pending of ["entering", "waking"] as const) {
+          await setStandby(pending);
           await lifecycle.noteDeploymentInStandby(woken);
-          expect(await standby()).toMatchObject({
-            state: "awake",
-            reason: "Woken by mail",
-          });
+          expect((await standby())?.state).toBe(pending);
         }
+
+        await setStandby("standby");
+        await lifecycle.noteDeploymentInStandby(woken);
+        expect(await standby()).toMatchObject({
+          state: "awake",
+          reason: "Woken by mail",
+        });
+      });
+
+      // The sidecar held both reports while it was disconnected: the child
+      // woke for a timer, and stopped again once its runs had waited.
+      test("a wake requested during an outage is still sent when older reports of a wake and an idle standby arrive", async () => {
+        const { lifecycle, calls, actions, answer, binding } = standbyService();
+        await setStandby("standby");
+        binding.held = false;
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("pending");
+        await nextPass(lifecycle);
+        expect(actions()).toEqual([]);
+
+        binding.held = true;
+        await lifecycle.noteDeploymentInStandby({
+          allocationId,
+          generation: 1,
+          inStandby: false,
+          reason: "Woken by timer",
+        });
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+        expect((await standby())?.state).toBe("waking");
+        await nextPass(lifecycle);
+        expect(actions()).toEqual(["wake"]);
+        await answer(() => calls[0]?.answer.resolve({}));
+        expect((await standby())?.state).toBe("awake");
       });
     });
   },

@@ -78,7 +78,15 @@ export type ResolvedWorkflowLifecyclePolicy = {
   >;
 };
 
-export const workflowStandbyStates = ["entering", "standby", "waking"] as const;
+// `confirming` is the Hub's own state: the sidecar reported a standby it began
+// by itself, and the Hub does not hold the history the child left yet. The
+// lifecycle status shows it as `entering`.
+export const workflowStandbyStates = [
+  "entering",
+  "confirming",
+  "standby",
+  "waking",
+] as const;
 export type WorkflowStandbyState = (typeof workflowStandbyStates)[number];
 
 export const WorkflowLifecycleResponse = type({
@@ -91,14 +99,14 @@ export const WorkflowLifecycleResponse = type({
   cancellationReason: "string | null",
   capacityReleaseAt: "string | null",
   standby: type({
-    state: type.enumerated("awake", ...workflowStandbyStates),
+    state: "'awake' | 'entering' | 'standby' | 'waking'",
     changedAt: "string | null",
     wakeAt: "string | null",
     reason: "string | null",
   })
     .or("null")
     .describe(
-      "Null once the run is terminal. `state` is `awake` while the workflow child runs and no standby is asked for, `entering` until the sidecar stops the child, `standby` once the Hub holds the history it left, and `waking` until the child runs again. `wakeAt` is the earliest timer a child in standby wakes for by itself. `reason` says why the state last changed other than as requested: the sidecar refused a standby or wake request, something other than a wake request woke the child in standby, such as mail or a restart that found new history, the sidecar reported the child running, it reported the child in standby though no standby was asked for, a cancellation ended the standby, or the deployment moved to replacement capacity. While a request is pending it says why the Hub's last attempt was put off. It is null when none was, which includes a sidecar that is not connected and history still on its way to the Hub, and a request stays pending for as long as that takes.",
+      "Null once the run is terminal. `state` is `awake` while the workflow child runs and no standby is asked for, `entering` until the sidecar has stopped the child and the Hub holds the history it left, `standby` after, and `waking` until the sidecar answers the wake request. `wakeAt` is the earliest timer a child in standby wakes for by itself. `reason` says why the state last changed other than as requested: the sidecar refused a standby or wake request, something other than a wake request woke the child in standby, such as mail or a restart that found new history, the sidecar reported the child running, it reported the child in standby though no standby was asked for, a cancellation ended the standby, or the deployment moved to replacement capacity. While a request is pending it says why the Hub's last attempt was put off. It is null when none was, which includes a sidecar that is not connected and history still on its way to the Hub, and a request stays pending for as long as that takes.",
     ),
   allocation: type({
     id: "string",

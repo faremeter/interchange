@@ -748,6 +748,95 @@ describe("SidecarRouter allocation control protocols", () => {
     );
   });
 
+  test("asks a sidecar to confirm a standby it reported, marking the command as a confirm", async () => {
+    const router = createAllocatedRouter({
+      lookups: { readWorkflowRunRefTips: async () => TEST_REF_TIPS },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.confirmAllocationInStandby(
+      TEST_IDENTITY,
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    expect(frame).toMatchObject({ action: "standby", confirm: true });
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        refTips: TEST_REF_TIPS,
+        wakeAt: "2026-10-02T00:00:00.000Z",
+      }),
+    );
+    expect(await pending).toEqual({ wakeAt: "2026-10-02T00:00:00.000Z" });
+
+    const asked = router.putAllocationInStandby(
+      TEST_IDENTITY,
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    const request = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    expect(request.confirm).toBeUndefined();
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: request.requestId,
+        refTips: TEST_REF_TIPS,
+      }),
+    );
+    await asked;
+  });
+
+  test("a standby answer names the idle standby whose history it read", async () => {
+    const router = createAllocatedRouter({
+      lookups: { readWorkflowRunRefTips: async () => TEST_REF_TIPS },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const idleStandby = crypto.randomUUID();
+    const answer = (requestId: string) =>
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "workflow.control.ack",
+          requestId,
+          refTips: TEST_REF_TIPS,
+          idleStandby,
+        }),
+      );
+
+    const confirming = router.confirmAllocationInStandby(
+      TEST_IDENTITY,
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    answer(
+      WorkflowControlFrame.assert(framesOfType(ws, "workflow.control").at(-1))
+        .requestId,
+    );
+    expect(await confirming).toEqual({ idleStandby });
+
+    const asked = router.putAllocationInStandby(
+      TEST_IDENTITY,
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    answer(
+      WorkflowControlFrame.assert(framesOfType(ws, "workflow.control").at(-1))
+        .requestId,
+    );
+    expect(await asked).toEqual({ idleStandby });
+  });
+
   test("an invalid answer to a standby request fails it at once", async () => {
     const router = createAllocatedRouter();
     const ws = await connectAllocated(router, [
@@ -987,6 +1076,66 @@ describe("SidecarRouter allocation control protocols", () => {
     expect(reports).toEqual([
       { inStandby: true },
       { inStandby: false, reason: "Woken by mail" },
+    ]);
+  });
+
+  test("reports a standby the sidecar began by itself, on hello and when it happens", async () => {
+    const router = createAllocatedRouter();
+    const idleStandby = crypto.randomUUID();
+    const staleStandby = crypto.randomUUID();
+    const laterStandby = crypto.randomUUID();
+    const reports: { inStandby: boolean; idleStandby?: string }[] = [];
+    const current = Promise.withResolvers<undefined>();
+    router.events.on("deployment.standby", (report) => {
+      reports.push({
+        inStandby: report.inStandby,
+        ...(report.idleStandby !== undefined
+          ? { idleStandby: report.idleStandby }
+          : {}),
+      });
+      if (report.idleStandby === laterStandby) current.resolve(undefined);
+    });
+    const ws = createMockWs();
+    router.handleOpen(ws);
+    router.handleMessage(
+      ws,
+      helloFrame(TEST_IDENTITY.sidecarId, [
+        {
+          address: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_IDENTITY.generation,
+          state: "live",
+          inStandby: true,
+          idleStandby,
+        },
+      ]),
+    );
+    await tick();
+    const report = {
+      type: "deployment.standby",
+      agentAddress: TEST_IDENTITY.workflowRunAddress,
+    };
+    // Another generation's report is not this deployment's. Reports are taken
+    // up in the order they arrive, so it is dropped before the current one.
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        ...report,
+        generation: TEST_IDENTITY.generation + 1,
+        idleStandby: staleStandby,
+      }),
+    );
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        ...report,
+        generation: TEST_IDENTITY.generation,
+        idleStandby: laterStandby,
+      }),
+    );
+    await current.promise;
+    expect(reports).toEqual([
+      { inStandby: true, idleStandby },
+      { inStandby: true, idleStandby: laterStandby },
     ]);
   });
 
