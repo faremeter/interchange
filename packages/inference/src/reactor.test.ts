@@ -4589,14 +4589,10 @@ describe("createReactor — approval resume re-dispatch", () => {
     expect(cell.pendingOperations).toHaveLength(0);
   });
 
-  test("the re-dispatched approved call re-infers exactly once and leaves no outstanding results", async () => {
-    // This guards the pendingToolResults counter trap. A re-dispatch driven
-    // from the correlation path never passes through inference.done, so unless
-    // the director seeds its outstanding-result count off resume.execute_tools,
-    // the count sits at zero and the re-dispatched call's tool.done drives an
-    // accidental re-inference off a negative count. The seed makes the
-    // continuation deterministic: exactly one re-inference after exactly one
-    // re-dispatched result.
+  test("the re-dispatched approved call re-infers exactly once", async () => {
+    // A re-dispatch driven from the correlation path never passes through
+    // inference.done. Its tool.done must answer the parked call exactly once:
+    // exactly one re-inference after exactly one re-dispatched result.
     const cell: PersistedCell = {
       turns: [],
       pendingOperations: [],
@@ -4626,19 +4622,101 @@ describe("createReactor — approval resume re-dispatch", () => {
     await waitForEvent(events, (e) => e.type === "connector.reply");
 
     // Two inferences total: the initial tool-call inference and exactly one
-    // continuation re-inference after the re-dispatched tool completed. A
-    // counter left unseeded would either hang (no re-infer) or, once the
-    // negative-count accident is removed, fail to continue at all.
+    // continuation re-inference after the re-dispatched tool completed.
     const inferenceDones = events.filter((e) => e.type === "inference.done");
     expect(inferenceDones).toHaveLength(2);
 
-    // Exactly one tool ran and one result was produced, so the director's
-    // outstanding count returned to zero (a re-infer fires only at zero).
+    // Exactly one tool ran and one result was produced.
     const toolDones = events.filter((e) => e.type === "tool.done");
     expect(toolDones).toHaveLength(1);
 
     // A conversational reply returns the reactor to idle rather than shutting
     // it down; abort so the test does not leak the reactor.
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an approved call does not re-infer while a sibling call of its batch is parked", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    let inferences = 0;
+    const batchTurn: AssistantTurn = {
+      role: "assistant",
+      content: [
+        { type: "tool_call", id: "call-a", name: "charge_card", arguments: {} },
+        { type: "tool_call", id: "call-b", name: "charge_card", arguments: {} },
+      ],
+      model: "test-model",
+      timestamp: 1000,
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner: async function* (opts) {
+        inferences += 1;
+        const turn: AssistantTurn =
+          inferences === 1
+            ? batchTurn
+            : {
+                role: "assistant",
+                content: [{ type: "text", text: "done charging" }],
+                model: "test-model",
+                timestamp: 2000,
+              };
+        yield {
+          type: "inference.done",
+          seq: opts.nextSeq(),
+          data: { turn, usage: emptyUsage(), source: TEST_SOURCE },
+        };
+      },
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    await waitUntil(
+      () =>
+        events.filter((e) => e.type === "reactor.gate.blocked").length === 2,
+    );
+    const correlationIds = events.flatMap((e) =>
+      e.type === "reactor.gate.blocked" && e.data.correlationId !== undefined
+        ? [e.data.correlationId]
+        : [],
+    );
+    expect(correlationIds).toHaveLength(2);
+    const [first, second] = correlationIds;
+    if (first === undefined || second === undefined) {
+      throw new Error("expected two correlation ids");
+    }
+
+    reactor.deliver(makeApprovalMessage(first));
+    await waitForEvent(events, (e) => e.type === "tool.done");
+    reactor.deliver(makeApprovalMessage(second));
+    const reply = await waitForEvent(
+      events,
+      (e) => e.type === "connector.reply",
+    );
+
+    // A resume waits until the running cycle settles, so a re-infer after the
+    // first call's result would finish its reply before the second call runs.
+    // The reply must therefore follow both results.
+    const replyAt = events.indexOf(reply);
+    const doneAt = events.flatMap((e, index) =>
+      e.type === "tool.done" ? [index] : [],
+    );
+    expect(doneAt).toHaveLength(2);
+    expect(doneAt.every((index) => index < replyAt)).toBe(true);
+    expect(inferences).toBe(2);
+
     reactor.abort("admin_kill");
     await waitFor("reactor.done");
   });

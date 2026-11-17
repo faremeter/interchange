@@ -361,7 +361,7 @@ Event arrives → Director decides → Reactor executes → Next event
 - `tool.done` — A tool execution completed (with result)
 - `reactor.gate.cleared` — A suspension condition resolved (with gate result)
 - `resume.execute_tools` — An approval resolved and a parked tool call is being re-run (carries the calls the reactor is about to dispatch)
-- `resume.tool_result` — A parked call is answered with a synthesized result and the run re-infers once (an approval was rejected or timed out; carries the error tool result). It does NOT seed the outstanding-tool-result count — the result is injected, not executed
+- `resume.tool_result` — A parked call is answered with a synthesized result (an approval was rejected or timed out; carries the error tool result). The result is injected, not executed, so no `tool.done` follows
 - `abort` — The reactor should shut down (with reason)
 
 **Actions** (things the reactor can do, as directed by the director):
@@ -456,9 +456,11 @@ Sender identity and signature verification belong to that validator and to nothi
 
 **On match.** The reactor clears the corresponding gate, resumes the operation, and emits a `message.correlated` event. How it resumes depends on what parked. A pending marker awaiting an inbound response (the async-tool path) resumes by injecting the response as a resolution into the message history and letting the gate-cleared event drive the director to re-infer. An approval ask that parked a specific tool call carries that call on its pending operation; an `approved` decision resumes by re-running that exact call — the reactor grants a one-shot bypass so the re-run skips the ask gate, dispatches the call, and answers it with a real tool result. The parked call, not a fresh re-inference, is the authorized unit that runs. In both cases the director sees the correlated event flow but does not participate in the matching itself.
 
-For the approval re-run, the reactor raises a `resume.execute_tools` event carrying the re-dispatched call so the director seeds its outstanding-tool-result count before the call's `tool.done` arrives. The reactor drives the execution; the director counts the results, so the count returns to zero after the single re-run and the director re-infers exactly once with the real result in history.
+For the approval re-run, the reactor raises a `resume.execute_tools` event carrying the re-dispatched call, and the reactor drives the execution. The two rails are distinct. `execute_tools` re-runs the approved call, and its real `tool.done` answers the call. `resume.tool_result` is the reject/timeout path: the reactor injects a synthetic error result that answers the parked call, and no `tool.done` follows.
 
-The two rails are deliberately distinct. `execute_tools` re-runs the approved call: it seeds the outstanding-tool-result count, and a real `tool.done` drives the re-infer. `resume.tool_result` is the reject/timeout path: the reactor injects a synthetic error result answering the parked call and the director re-infers once off it, with no `tool.done` and no count involvement. Keeping `resume.tool_result` off the counter is load-bearing — routing it through the outstanding-tool-result count would decrement past the injected result and re-infer twice.
+The default director tracks the outstanding calls of each tool batch (the calls of one `inference.done`) as a set of call ids. A `tool.done` or a `resume.tool_result` answers one call, and the director re-infers once when the last call of that batch is answered. A parked call stays outstanding until the re-run's `tool.done` or the `resume.tool_result` answers it, so a batch with a parked call does not re-infer, and a different batch never waits on it.
+
+A director built after a respawn holds no batches. When a resumed call's batch is unknown, the director rebuilds it from history and the pending operations: the call that is answered or resumed now, plus each call of the assistant turn that holds it that no `tool_result` answers and that a pending operation still parks. An unanswered call with no pending operation was running when the process stopped. Nothing answers it, so the batch does not wait on it. A re-run call that history does not hold opens a batch of its own, and a `resume.tool_result` for such a call re-infers at once. The rebuild takes the first assistant turn that holds the call. The reactor checks that tool call ids are unique only in the assembled prompt (after the context transforms) at each inference, not across the full history.
 
 **Duplicate responses** (same correlation ID, already resolved) are delivered to the director as regular uncorrelated events. The reactor does not deduplicate — the director decides whether to process or ignore.
 
@@ -634,8 +636,8 @@ The core director is a decision function. It receives an event and returns actio
 - On `inference.error` — Decide: retry, compact, switch model, or fail.
 - On `tool.done` — Decide: infer again, execute more tools, wait, or done.
 - On `reactor.gate.cleared` — Resume the suspended action, or take a different action based on the gate result.
-- On `resume.execute_tools` — Seed the outstanding-tool-result count and execute the re-dispatched calls the reactor supplies (an approved approval re-running its parked call).
-- On `resume.tool_result` — Re-infer once off the synthetic tool result the reactor already appended (an approval rejected or timed out), leaving the outstanding-tool-result count untouched — no tool ran, so the counter stays out of it.
+- On `resume.execute_tools` — Execute the re-dispatched calls the reactor supplies (an approved approval re-running its parked call).
+- On `resume.tool_result` — Count the synthetic tool result the reactor already appended (an approval rejected or timed out) as the answer to its call, and re-infer when that answer completes the call's batch.
 - On `message.received` while suspended — Decide: queue, fork, or ignore.
 
 The director also provides:

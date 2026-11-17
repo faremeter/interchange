@@ -3,6 +3,7 @@ import { describe, test, expect } from "bun:test";
 import { createInboundMessage } from "@intx/mime";
 import type {
   AssistantTurn,
+  ConversationTurn,
   InferenceError,
   LastCycleSource,
   PartialMessage,
@@ -313,83 +314,266 @@ describe("DefaultDirector — afterInferenceDone firing boundary", () => {
 });
 
 // ---------------------------------------------------------------------------
-// resume.execute_tools seeds the outstanding-result counter
+// Outstanding tool calls are tracked per batch
 //
-// The re-dispatch path never passes through inference.done, which is the only
-// place the tool batch's count is seeded. Without a seed off resume.execute_
-// tools the count stays zero and the re-dispatched call's tool.done decrements
-// to -1 and re-infers off a negative count by accident. These tests drive one
-// director instance across the event sequence so the seed-then-decrement math
-// is exercised against real state, not asserted per fresh instance.
+// A batch is the set of tool calls one inference.done emitted. The director
+// re-infers once per batch, only when every call of the batch is answered: by
+// its tool.done, or by the resume.tool_result that answers a parked call. One
+// director instance drives each event sequence so the batch state is
+// exercised across events, not asserted per fresh instance.
 // ---------------------------------------------------------------------------
 
-describe("DefaultDirector — resume.execute_tools counter seeding", () => {
+describe("DefaultDirector — outstanding tool calls per batch", () => {
   function makeToolCall(id: string): ToolCall {
     return { id, name: "charge_card", arguments: {} };
+  }
+
+  function makeBatchDone(...ids: string[]): ReactorInboundEvent {
+    return makeInferenceDoneEvent({
+      role: "assistant",
+      content: ids.map((id) => ({
+        type: "tool_call" as const,
+        id,
+        name: "charge_card",
+        arguments: {},
+      })),
+      model: "claude-test",
+      timestamp: 1000,
+    });
+  }
+
+  function toolDone(callId: string): ReactorInboundEvent {
+    return { type: "tool.done", result: { callId, content: "ok" } };
+  }
+
+  function rejected(callId: string): ReactorInboundEvent {
+    return {
+      type: "resume.tool_result",
+      result: { callId, content: "rejected", isError: true },
+    };
   }
 
   async function decideOn(
     director: ReturnType<typeof createDefaultDirector>,
     event: ReactorInboundEvent,
+    state: ReactorState = makeState(),
   ): Promise<ReactorAction[]> {
-    const result = await director.decide(
-      event,
-      makeState(),
-      createCapabilities(),
-    );
+    const result = await director.decide(event, state, createCapabilities());
     return Array.isArray(result) ? result : [result];
   }
 
-  test("seeds the count to the number of re-dispatched calls and re-infers only at zero", async () => {
-    const director = createDefaultDirector("test agent", []);
+  function types(actions: ReactorAction[]): string[] {
+    return actions.map((action) => action.type);
+  }
 
-    // Two calls are about to run. The director must return the execute_tools
-    // action and seed its outstanding count to two.
+  // History as a respawned reactor loads it: one assistant turn holds the
+  // batch, a tool_result turn answers each listed call, and a pending
+  // operation parks each parked call.
+  function historyState(
+    batchIds: string[],
+    answeredIds: string[] = [],
+    parkedIds: string[] = [],
+  ): ReactorState {
+    const turns: ConversationTurn[] = [
+      {
+        role: "assistant",
+        content: batchIds.map((id) => ({
+          type: "tool_call" as const,
+          id,
+          name: "charge_card",
+          arguments: {},
+        })),
+        model: "claude-test",
+        timestamp: 1000,
+      },
+    ];
+    for (const id of answeredIds) {
+      turns.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            callId: id,
+            content: [{ type: "text", text: "rejected" }],
+            isError: true,
+          },
+        ],
+        timestamp: 1001,
+      });
+    }
+    const pendingOperations = parkedIds.map((id) => ({
+      correlationId: `corr-${id}`,
+      kind: "approval" as const,
+      registeredAt: 1000,
+      gateId: `gate-${id}`,
+      suspendedCall: makeToolCall(id),
+    }));
+    return makeState({ turns, pendingOperations });
+  }
+
+  test("an approved call does not re-infer while a sibling call is parked", async () => {
+    const director = createDefaultDirector("test agent", []);
+    await decideOn(director, makeBatchDone("a", "b"));
+
     const dispatch = await decideOn(director, {
       type: "resume.execute_tools",
-      calls: [makeToolCall("a"), makeToolCall("b")],
+      calls: [makeToolCall("a")],
     });
     expect(dispatch).toEqual([
       {
         type: "execute_tools",
-        calls: [makeToolCall("a"), makeToolCall("b")],
+        calls: [makeToolCall("a")],
         parallel: false,
         addToHistory: true,
       },
     ]);
+    expect(await decideOn(director, toolDone("a"))).toEqual([]);
 
-    // First result: count 2 -> 1, no re-inference yet. An unseeded count would
-    // have gone 0 -> -1 and re-inferred here.
-    const afterFirst = await decideOn(director, {
-      type: "tool.done",
-      result: { callId: "a", content: "ok" },
+    await decideOn(director, {
+      type: "resume.execute_tools",
+      calls: [makeToolCall("b")],
     });
-    expect(afterFirst).toEqual([]);
-
-    // Second result: count 1 -> 0, re-infer exactly once.
-    const afterSecond = await decideOn(director, {
-      type: "tool.done",
-      result: { callId: "b", content: "ok" },
-    });
-    expect(afterSecond.map((action) => action.type)).toEqual([
+    expect(types(await decideOn(director, toolDone("b")))).toEqual([
       "checkpoint",
       "infer",
     ]);
   });
 
-  test("a single re-dispatched call re-infers exactly once", async () => {
+  test("a rejected call does not re-infer while a sibling call is parked", async () => {
+    const director = createDefaultDirector("test agent", []);
+    await decideOn(director, makeBatchDone("a", "b"));
+
+    expect(await decideOn(director, rejected("a"))).toEqual([]);
+    expect(types(await decideOn(director, rejected("b")))).toEqual([
+      "checkpoint",
+      "infer",
+    ]);
+  });
+
+  test("a batch re-infers when it completes while an earlier batch's call stays parked", async () => {
+    const director = createDefaultDirector("test agent", []);
+    await decideOn(director, makeBatchDone("a"));
+
+    await decideOn(director, makeBatchDone("x", "y"));
+    expect(await decideOn(director, toolDone("x"))).toEqual([]);
+    expect(types(await decideOn(director, toolDone("y")))).toEqual([
+      "checkpoint",
+      "infer",
+    ]);
+
+    expect(types(await decideOn(director, rejected("a")))).toEqual([
+      "checkpoint",
+      "infer",
+    ]);
+  });
+
+  test("after a respawn, an approved call does not re-infer while a sibling call is parked", async () => {
+    const director = createDefaultDirector("test agent", []);
+
+    // The reactor appends each result to history before the director sees
+    // its tool.done, so each step passes the history as it stands then.
+    await decideOn(
+      director,
+      { type: "resume.execute_tools", calls: [makeToolCall("a")] },
+      historyState(["a", "b"], [], ["b"]),
+    );
+    expect(
+      await decideOn(
+        director,
+        toolDone("a"),
+        historyState(["a", "b"], ["a"], ["b"]),
+      ),
+    ).toEqual([]);
+
+    await decideOn(
+      director,
+      { type: "resume.execute_tools", calls: [makeToolCall("b")] },
+      historyState(["a", "b"], ["a"]),
+    );
+    expect(
+      types(
+        await decideOn(
+          director,
+          toolDone("b"),
+          historyState(["a", "b"], ["a", "b"]),
+        ),
+      ),
+    ).toEqual(["checkpoint", "infer"]);
+  });
+
+  test("after a respawn, a rejected call does not re-infer while a sibling call is parked", async () => {
+    const director = createDefaultDirector("test agent", []);
+
+    expect(
+      await decideOn(
+        director,
+        rejected("a"),
+        historyState(["a", "b"], ["a"], ["b"]),
+      ),
+    ).toEqual([]);
+    expect(
+      types(
+        await decideOn(
+          director,
+          rejected("b"),
+          historyState(["a", "b"], ["a", "b"]),
+        ),
+      ),
+    ).toEqual(["checkpoint", "infer"]);
+  });
+
+  // A sibling that was running at the crash has no result and no pending
+  // operation. Nothing answers it, so the director does not wait on it.
+  test("after a respawn, an approved call re-infers when its sibling was running at the crash", async () => {
+    const director = createDefaultDirector("test agent", []);
+
+    await decideOn(
+      director,
+      { type: "resume.execute_tools", calls: [makeToolCall("a")] },
+      historyState(["a", "b"], [], ["a"]),
+    );
+    expect(
+      types(
+        await decideOn(
+          director,
+          toolDone("a"),
+          historyState(["a", "b"], ["a"]),
+        ),
+      ),
+    ).toEqual(["checkpoint", "infer"]);
+  });
+
+  test("after a respawn, a rejected call re-infers when its sibling was running at the crash", async () => {
+    const director = createDefaultDirector("test agent", []);
+
+    expect(
+      types(
+        await decideOn(
+          director,
+          rejected("a"),
+          historyState(["a", "b"], ["a"], ["a"]),
+        ),
+      ),
+    ).toEqual(["checkpoint", "infer"]);
+  });
+
+  test("resumed calls that history does not hold re-infer once after both results", async () => {
     const director = createDefaultDirector("test agent", []);
 
     await decideOn(director, {
       type: "resume.execute_tools",
-      calls: [makeToolCall("a")],
+      calls: [makeToolCall("a"), makeToolCall("b")],
     });
+    expect(await decideOn(director, toolDone("a"))).toEqual([]);
+    expect(types(await decideOn(director, toolDone("b")))).toEqual([
+      "checkpoint",
+      "infer",
+    ]);
+  });
 
-    const afterResult = await decideOn(director, {
-      type: "tool.done",
-      result: { callId: "a", content: "ok" },
-    });
-    expect(afterResult.map((action) => action.type)).toEqual([
+  test("a rejection that history does not place in a batch re-infers", async () => {
+    const director = createDefaultDirector("test agent", []);
+    expect(types(await decideOn(director, rejected("a")))).toEqual([
       "checkpoint",
       "infer",
     ]);

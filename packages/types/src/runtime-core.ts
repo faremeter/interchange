@@ -1530,17 +1530,15 @@ export type ReactorCapabilities = {
  *
  * `resume.execute_tools` is raised by the reactor when an approval resolves
  * and a parked tool call must be re-run on resume. It carries the calls the
- * reactor is about to dispatch so the director can seed its outstanding
- * tool-result count before those calls' `tool.done` events arrive — the
- * reactor drives the execution, the director counts the results. Without this
- * seed the count would sit at zero and the first `tool.done` would drive an
- * accidental re-inference off a negative count.
+ * reactor is about to dispatch, before those calls' `tool.done` events
+ * arrive. The reactor drives the execution; the director decides what follows
+ * the results.
  *
  * `resume.tool_result` is raised by the reactor when a parked approval ends
  * without running its tool — a rejected decision or a gate timeout. It carries
  * a synthetic error tool result that answers the parked call so history stays
- * well-formed; the director appends it and re-infers exactly once. No tool
- * runs, so it seeds no outstanding-result count.
+ * well-formed. The reactor appends it to history before the director decides.
+ * No tool runs, so no `tool.done` follows it.
  *
  * (INFERENCE.md § Agent Reactor › Reactor Structure)
  */
