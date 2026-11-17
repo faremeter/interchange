@@ -378,6 +378,18 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return readsWith(dir, fs, () => cacheFor(dir));
   }
 
+  // Reads that keep each parsed commit and tree for the life of the
+  // returned object, so path lookups that each walk from the root parse
+  // every tree once. An oid's object never changes, so it cannot go stale.
+  function memoizedDirReads(dir: string): ObjectReads {
+    const raw = dirReads(dir);
+    return {
+      ...raw,
+      readCommit: windowedMemo(raw.readCommit).get,
+      readTree: windowedMemo(raw.readTree).get,
+    };
+  }
+
   // One isomorphic-git cache for a span of reads: a step of a pack
   // receive, or a walk that numbers a ref update or seeds a
   // subscriber. The span loads and SHA-1-verifies each pack once,
@@ -1471,6 +1483,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // an empty root tree when the whole repo empties).
   async function assembleTree(
     dir: string,
+    reads: ObjectReads,
     baseTreeOid: string | null,
     prefix: string,
     puts: ReadonlyMap<string, string>,
@@ -1484,13 +1497,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       { mode: string; oid: string; type: TreeEntry["type"] }
     >();
     if (baseTreeOid !== null && !cleared) {
-      const { tree } = await git.readTree({
-        fs,
-        dir,
-        cache: cacheFor(dir),
-        oid: baseTreeOid,
-      });
-      for (const e of tree) {
+      for (const e of (await reads.readTree(baseTreeOid)).entries) {
         baseEntries.set(e.path, { mode: e.mode, oid: e.oid, type: e.type });
       }
     }
@@ -1603,6 +1610,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           base !== undefined && base.type === "tree" ? base.oid : null;
         const childOid = await assembleTree(
           dir,
+          reads,
           baseChildOid,
           `${full}/`,
           puts,
@@ -1684,6 +1692,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
+    // Shared by every read of this write: the caller's reads of the
+    // parent, the tree splice, and both sides of validation.
+    reads: ObjectReads,
     w: {
       files: Record<string, string | Uint8Array>;
       deletes: ReadonlySet<string>;
@@ -1731,13 +1742,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const commitParentSha = parentCommitSha ?? (await initialCommit(dir));
     let baseRootTreeOid: string | null = null;
     if (parentCommitSha !== null) {
-      const { commit } = await git.readCommit({
-        fs,
-        dir,
-        cache: cacheFor(dir),
-        oid: parentCommitSha,
-      });
-      baseRootTreeOid = commit.tree;
+      baseRootTreeOid = (await reads.readCommit(parentCommitSha)).tree;
     }
 
     // Write the put blobs, then splice them and `w.deletes` onto the
@@ -1754,6 +1759,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     }
     const assembled = await assembleTree(
       dir,
+      reads,
       baseRootTreeOid,
       "",
       puts,
@@ -1768,8 +1774,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // the handler's scoping hint — the prefixes this write may have
     // touched — and stays undefined for an unbounded (validate-all) write.
     const { priorReadBlob, priorListDir, priorListDirOids } =
-      buildPriorTreeClosures(dirReads(dir), parentCommitSha);
-    const prospective = buildTreeReadClosures(dirReads(dir), newRootTreeOid);
+      buildPriorTreeClosures(reads, parentCommitSha);
+    const prospective = buildTreeReadClosures(reads, newRootTreeOid);
     const changedPathPrefixes = w.changedPathPrefixes;
     // No disallowed-mode (symlink/submodule) gate here on purpose: the
     // substrate mode gate lives on the pack-receive path. This write path
@@ -1871,12 +1877,18 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // the lock through onRefUpdated keeps post-update consumers
     // serialized against the same ref's next writer.
     return withRepoLock(repoId, () =>
-      writeTreeUnderLock(principal, repoId, ref, {
-        files: content.files,
-        deletes: new Set<string>(),
-        changedPathPrefixes: undefined,
-        message: content.message,
-      }),
+      writeTreeUnderLock(
+        principal,
+        repoId,
+        ref,
+        memoizedDirReads(repoDir(repoId)),
+        {
+          files: content.files,
+          deletes: new Set<string>(),
+          changedPathPrefixes: undefined,
+          message: content.message,
+        },
+      ),
     );
   }
 
@@ -1887,6 +1899,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // prefix-preserving primitive.
   async function readPrefixBlobs(
     repoId: RepoId,
+    reads: ObjectReads,
     ref: string,
     prefix: string,
   ): Promise<Map<string, Uint8Array>> {
@@ -1895,7 +1908,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     if (!(await repoHasGitDir(dir))) return out;
     const commitSha = await resolveRefSha(dir, ref);
     if (commitSha === null) return out;
-    const reads = dirReads(dir);
     const treeOid = await resolveTreeEntry(
       reads,
       commitSha,
@@ -1927,7 +1939,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       // other's commits in serial order — no lost-update window
       // between the read and the writeTree.
       await storageInitRepo(repoDir(repoId), storageOptsFor(repoId, undefined));
-      const existing = await readPrefixBlobs(repoId, ref, args.preservePrefix);
+      const reads = memoizedDirReads(repoDir(repoId));
+      const existing = await readPrefixBlobs(
+        repoId,
+        reads,
+        ref,
+        args.preservePrefix,
+      );
       const files = await args.merge(existing);
       const outside = Object.keys(files).find(
         (filepath) =>
@@ -1939,7 +1957,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           `preserve_prefix_out_of_scope: merge returned ${JSON.stringify(outside)}, which is not a file path under ${JSON.stringify(args.preservePrefix)}`,
         );
       }
-      return writeTreeUnderLock(principal, repoId, ref, {
+      return writeTreeUnderLock(principal, repoId, ref, reads, {
         files,
         deletes: new Set([args.preservePrefix]),
         changedPathPrefixes: new Set([args.preservePrefix]),
@@ -1975,8 +1993,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       // it is committed against — no lost-update window, no second
       // resolve that could (in principle) observe a different tip.
       const parentCommitSha = await resolveRefSha(dir, ref);
+      const reads = memoizedDirReads(dir);
       const { priorListDirOids, readBlobByOid } = buildPriorTreeClosures(
-        dirReads(dir),
+        reads,
         parentCommitSha,
       );
       const delta = await args.computeDelta(parentCommitSha, {
@@ -1991,6 +2010,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         principal,
         repoId,
         ref,
+        reads,
         {
           files: delta.puts,
           deletes: new Set(delta.deletes),
@@ -2786,15 +2806,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // (`openCommittedReadsAtCommit`) entrypoints, which differ only in how
   // they obtain and validate the commit SHA.
   function committedReadsAt(dir: string, commitSha: string): CommittedReads {
-    // Every path walk starts at the root, so a walk of `runs/` would parse
-    // that tree again for each run. A snapshot's objects never change, so
-    // one window holds each parsed commit and tree for its whole life.
-    const raw = dirReads(dir);
-    const reads: ObjectReads = {
-      ...raw,
-      readCommit: windowedMemo(raw.readCommit).get,
-      readTree: windowedMemo(raw.readTree).get,
-    };
+    const reads = memoizedDirReads(dir);
     const { readBlobByOid } = buildPriorTreeClosures(reads, commitSha);
     const treeOid = async (relPath: string): Promise<string | null> => {
       // "." and "" both name the root tree; resolveTreeEntry treats the
