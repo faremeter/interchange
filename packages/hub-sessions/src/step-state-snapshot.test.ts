@@ -54,6 +54,7 @@ const PENDING: PendingOperation = {
   registeredAt: 0,
   gateId: "gate-1",
   turnId: "turn-1",
+  gated: true,
 };
 
 const turn = (text: string): ConversationTurn => ({

@@ -408,6 +408,7 @@ describe("DefaultDirector — outstanding tool calls per batch", () => {
       gateId: `gate-${id}`,
       suspendedCall: makeToolCall(id),
       turnId: "turn-batch",
+      gated: true,
     }));
     return makeState({ turns, pendingOperations });
   }
