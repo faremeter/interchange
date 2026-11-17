@@ -107,7 +107,7 @@ connector.reply           — Agent reply sent to the conversation (carries cont
 
 reactor.start             — Reactor initialized
 reactor.gate.blocked      — Reactor suspended (reason, gate type, turn ID)
-reactor.gate.cleared      — Suspension resolved, reactor resuming
+reactor.gate.cleared      — Suspension resolved, reactor resuming (reason `resolved`, `timeout` or `shutdown`). Emitted for every gate that `reactor.gate.blocked` announced, after that event. For an ask-flow approval (approved, rejected or timed out) it is emitted only; the director gets the resume event instead
 reactor.turn.started      — The reactor starts work for a turn in this process (turn ID, resumed flag, message ID)
 reactor.turn.ended        — A turn ended (turn ID, outcome, joined turn ID or error)
 reactor.done              — Reactor completed normally
@@ -702,6 +702,8 @@ When a gate times out:
 1. The reactor emits `reactor.gate.cleared` with a `reason: "timeout"` field
 2. The director receives the event and decides the response — retry, fail, switch to a different strategy
 3. The timed-out gate is removed from the active gates list
+
+An ask-flow approval that times out is the exception to step 2: the director gets a `resume.tool_result` with the error result `approval timed out`, not the `reactor.gate.cleared`.
 
 Gates without timeouts are resource leaks. The reactor prevents them.
 

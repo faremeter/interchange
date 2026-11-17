@@ -1,6 +1,10 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { inferenceTurn, turnPart } from "@intx/db/schema";
+import { createReactor, type ReactorEmittedEvent } from "@intx/inference";
+import { createDefaultDependencies } from "@intx/inference/providers";
+import { createInboundMessage } from "@intx/mime";
 import type { InferenceEvent } from "@intx/types/runtime";
+import { waitUntil } from "@intx/types/testing";
 
 import {
   createEventCollector,
@@ -9,6 +13,7 @@ import {
   type TurnUsage,
 } from "./event-collector";
 import { createEventCollectorRegistry } from "./event-collector-registry";
+import { emptyStore, testSource } from "./event-collector.test-helpers";
 
 // ---------------------------------------------------------------------------
 // Test helpers: fake DB that records insert/update calls
@@ -1753,5 +1758,370 @@ describe("EventCollector onUsage", () => {
 
     expect(usages).toHaveLength(1);
     expect(at(usages, 0).usage).toEqual(fullUsage(100, 25));
+  });
+});
+
+describe("EventCollector — reactor turn end", () => {
+  let fakeDB: ReturnType<typeof createFakeDB>;
+  let collector: EventCollector;
+
+  beforeEach(() => {
+    fakeDB = createFakeDB();
+    collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      runId: "run_test",
+      tenantId: "tnt_test",
+    });
+  });
+
+  function rowStatuses(): unknown[] {
+    return fakeDB.updates
+      .filter((u) => u.table === "inference_turn")
+      .map((u) => u.set.status);
+  }
+
+  async function start(reactorTurnId: string): Promise<void> {
+    await collector.onEvent(
+      event("inference.start", 1, { model: "gpt-4", turnId: reactorTurnId }),
+    );
+  }
+
+  test("an unanswered end of the row's turn finalizes the row completed", async () => {
+    await start("turn-a");
+    await collector.onEvent(
+      event("reactor.turn.ended", 2, {
+        turnId: "turn-a",
+        outcome: "unanswered",
+      }),
+    );
+    expect(rowStatuses()).toEqual(["completed"]);
+  });
+
+  test("a failed end of the row's turn finalizes the row failed", async () => {
+    await start("turn-a");
+    await collector.onEvent(
+      event("reactor.turn.ended", 2, {
+        turnId: "turn-a",
+        outcome: "failed",
+        error: { message: "boom", kind: "reactor_fatal" },
+      }),
+    );
+    expect(rowStatuses()).toEqual(["failed"]);
+  });
+
+  test("a replied end after the reply does not finalize the row again", async () => {
+    await start("turn-a");
+    await collector.onEvent(
+      event("connector.reply", 2, { content: "hi", turnId: "turn-a" }),
+    );
+    await collector.onEvent(
+      event("reactor.turn.ended", 3, { turnId: "turn-a", outcome: "replied" }),
+    );
+    expect(rowStatuses()).toEqual(["completed"]);
+  });
+
+  test("the end of another turn does not finalize the row", async () => {
+    await start("turn-a");
+    await collector.onEvent(
+      event("reactor.turn.ended", 2, {
+        turnId: "turn-x",
+        outcome: "unanswered",
+      }),
+    );
+    expect(rowStatuses()).toEqual([]);
+  });
+
+  test("a joined end does not finalize the row", async () => {
+    await start("turn-a");
+    await collector.onEvent(
+      event("reactor.turn.ended", 2, {
+        turnId: "turn-a",
+        outcome: "joined",
+        joinedTurnId: "turn-p",
+      }),
+    );
+    expect(rowStatuses()).toEqual([]);
+  });
+
+  test("another turn's inference leaves a parked turn's row open until that turn ends", async () => {
+    await start("turn-a");
+    await collector.onEvent(
+      event("reactor.gate.blocked", 2, {
+        reason: "approval",
+        gateId: "g-a",
+        correlationId: "corr-a",
+        turnId: "turn-a",
+      }),
+    );
+    await start("turn-b");
+    await collector.onEvent(
+      event("reactor.turn.ended", 4, { turnId: "turn-b", outcome: "replied" }),
+    );
+    expect(rowStatuses()).toEqual(["completed"]);
+    await collector.onEvent(
+      event("reactor.turn.ended", 5, {
+        turnId: "turn-a",
+        outcome: "failed",
+        error: { message: "boom", kind: "reactor_fatal" },
+      }),
+    );
+    expect(rowStatuses()).toEqual(["completed", "failed"]);
+  });
+
+  test("a new inference of the same turn finalizes that turn's previous row", async () => {
+    await start("turn-a");
+    await start("turn-a");
+    expect(rowStatuses()).toEqual(["completed"]);
+    expect(
+      fakeDB.inserts.filter((i) => i.table === "inference_turn"),
+    ).toHaveLength(2);
+  });
+
+  test("a reply finalizes the row of the turn it names", async () => {
+    await start("turn-a");
+    await start("turn-b");
+    await collector.onEvent(
+      event("connector.reply", 3, { content: "hi", turnId: "turn-a" }),
+    );
+    expect(rowStatuses()).toEqual(["completed"]);
+    // B's row is still the open one, and its end finalizes it.
+    await collector.onEvent(
+      event("reactor.turn.ended", 4, {
+        turnId: "turn-b",
+        outcome: "unanswered",
+      }),
+    );
+    expect(rowStatuses()).toEqual(["completed", "completed"]);
+  });
+});
+
+describe("EventCollector — a tool result of a parked turn", () => {
+  const usage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    thinking: 0,
+  };
+  const source = { sourceId: "s", provider: "anthropic", model: "m" };
+
+  function callTurn(callId: string) {
+    return {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_call",
+          id: callId,
+          name: `tool_${callId}`,
+          arguments: {},
+        },
+      ],
+      model: "m",
+    };
+  }
+
+  function rowIds(fakeDB: ReturnType<typeof createFakeDB>): string[] {
+    return fakeDB.inserts
+      .filter((i) => i.table === "inference_turn")
+      .map((i) => String(i.values.id));
+  }
+
+  function resultPartRow(
+    fakeDB: ReturnType<typeof createFakeDB>,
+  ): unknown | undefined {
+    return fakeDB.inserts.find((i) => {
+      if (i.table !== "turn_part") return false;
+      const metadata = i.values.metadata;
+      return (
+        typeof metadata === "object" &&
+        metadata !== null &&
+        "kind" in metadata &&
+        metadata.kind === "result"
+      );
+    })?.values.turnId;
+  }
+
+  // Turn A asks for call-a and parks on its approval.
+  function parkA(): InferenceEvent[] {
+    return [
+      event("reactor.turn.started", 1, { turnId: "turn-a", resumed: false }),
+      event("inference.start", 2, { model: "m", turnId: "turn-a" }),
+      event("inference.done", 3, {
+        turn: callTurn("call-a"),
+        usage,
+        source,
+        turnId: "turn-a",
+      }),
+      event("reactor.gate.blocked", 4, {
+        reason: "approval",
+        gateId: "g-a",
+        correlationId: "corr-a",
+        turnId: "turn-a",
+      }),
+    ];
+  }
+
+  test("a resumed call's result goes to its own turn's row, not to another parked turn's row", async () => {
+    const fakeDB = createFakeDB();
+    const finalized: TurnFinalized[] = [];
+    const collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      runId: "run_test",
+      tenantId: "tnt_test",
+      onTurnFinalized: (turn) => finalized.push(turn),
+    });
+    for (const e of [
+      ...parkA(),
+      event("reactor.turn.started", 5, { turnId: "turn-b", resumed: false }),
+      event("inference.start", 6, { model: "m", turnId: "turn-b" }),
+      event("inference.done", 7, {
+        turn: callTurn("call-b"),
+        usage,
+        source,
+        turnId: "turn-b",
+      }),
+      event("reactor.gate.blocked", 8, {
+        reason: "approval",
+        gateId: "g-b",
+        correlationId: "corr-b",
+        turnId: "turn-b",
+      }),
+      event("reactor.gate.cleared", 9, { gateId: "g-a", reason: "resolved" }),
+      event("tool.start", 10, {
+        call: { id: "call-a", name: "tool_call-a", arguments: {} },
+      }),
+      event("tool.done", 11, { result: { callId: "call-a", content: "ok" } }),
+      event("reactor.turn.ended", 12, {
+        turnId: "turn-a",
+        outcome: "unanswered",
+      }),
+    ]) {
+      await collector.onEvent(e);
+    }
+
+    const [rowA] = rowIds(fakeDB);
+    expect(resultPartRow(fakeDB)).toBe(rowA);
+    // A's end finalizes A's row, with A's call under its own name.
+    expect(finalized.map((f) => f.turnId)).toEqual(rowIds(fakeDB).slice(0, 1));
+    expect(finalized[0]?.toolCalls).toEqual([
+      { name: "tool_call-a", arguments: {}, result: "ok", isError: false },
+    ]);
+  });
+
+  test("a resumed call's result after another turn replied and ended goes to its turn's open row", async () => {
+    const fakeDB = createFakeDB();
+    const collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      runId: "run_test",
+      tenantId: "tnt_test",
+    });
+    for (const e of [
+      ...parkA(),
+      event("reactor.turn.started", 5, { turnId: "turn-b", resumed: false }),
+      event("inference.start", 6, { model: "m", turnId: "turn-b" }),
+      event("inference.done", 7, {
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: "hi" }],
+          model: "m",
+        },
+        usage,
+        source,
+        turnId: "turn-b",
+      }),
+      event("connector.reply", 8, { content: "hi", turnId: "turn-b" }),
+      event("reactor.turn.ended", 9, { turnId: "turn-b", outcome: "replied" }),
+      event("reactor.gate.cleared", 10, { gateId: "g-a", reason: "resolved" }),
+      event("tool.done", 11, { result: { callId: "call-a", content: "ok" } }),
+    ]) {
+      await collector.onEvent(e);
+    }
+
+    const [rowA] = rowIds(fakeDB);
+    expect(resultPartRow(fakeDB)).toBe(rowA);
+  });
+});
+
+describe("EventCollector — a row opened by a non-fatal reactor.error", () => {
+  test("is finalized at the end of the reactor turn that started it", async () => {
+    // Turn H parks on a correlation. Turn T's director suspends on the same
+    // correlation, which the reactor refuses with a non-fatal
+    // reactor.error. T runs no inference, so that error opens T's row.
+    const fakeDB = createFakeDB();
+    const finalized: TurnFinalized[] = [];
+    const collector = createEventCollector({
+      db: fakeDB.db,
+      sessionId: "ses_test",
+      runId: "run_test",
+      tenantId: "tnt_test",
+      onTurnFinalized: (turn) => finalized.push(turn),
+    });
+    const events: ReactorEmittedEvent[] = [];
+    let persisted: Promise<void> = Promise.resolve();
+    const reactor = createReactor({
+      sessionId: "nonfatal-row",
+      director: {
+        async decide(e, _s, caps) {
+          if (e.type === "message.received") {
+            return caps.suspend({
+              type: "message_response",
+              gateId: `gate-${e.message.content ?? ""}`,
+              timeoutMs: 60_000,
+              correlationId: "corr-held",
+            });
+          }
+          return caps.wait();
+        },
+      },
+      source: testSource,
+      toolRunner: {
+        async run(call) {
+          return { callId: call.id, content: "ok" };
+        },
+      },
+      contextStore: emptyStore(),
+      deps: createDefaultDependencies(),
+      shutdownTimeoutMs: 100,
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type !== "message.received") {
+          persisted = persisted.then(() => collector.onEvent(e));
+        }
+      },
+    });
+    reactor.start();
+    reactor.deliver(
+      createInboundMessage({ from: "a@local", to: "b@local", content: "hold" }),
+      { turnId: "turn-h" },
+    );
+    await waitUntil(() =>
+      events.some((e) => e.type === "reactor.gate.blocked"),
+    );
+    reactor.deliver(
+      createInboundMessage({ from: "a@local", to: "b@local", content: "go" }),
+      { turnId: "turn-t" },
+    );
+    await waitUntil(() =>
+      events.some(
+        (e) => e.type === "reactor.turn.ended" && e.data.turnId === "turn-t",
+      ),
+    );
+    await persisted;
+    const statusesAtTurnEnd = fakeDB.updates
+      .filter((u) => u.table === "inference_turn")
+      .map((u) => u.set.status);
+    const finalizedAtTurnEnd = finalized.length;
+
+    reactor.abort("admin_kill");
+    await waitUntil(() => events.some((e) => e.type === "reactor.done"));
+
+    expect(
+      fakeDB.inserts.filter((i) => i.table === "inference_turn"),
+    ).toHaveLength(1);
+    expect(statusesAtTurnEnd).toEqual(["completed"]);
+    expect(finalizedAtTurnEnd).toBe(1);
   });
 });
