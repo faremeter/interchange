@@ -1603,8 +1603,14 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       expect(dropped).toHaveLength(1);
       expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
 
-      router.noteSenderDeploySettled(next, { recorded: KEY });
+      // An old callback that delivered the mail would have bound KEY, and
+      // that delivery can arrive after the check above.
+      const nextKey = "cd".repeat(32);
+      router.noteSenderDeploySettled(next, { recorded: nextKey });
       expect(await deliveredMail(recipientWs, 1)).toHaveLength(1);
+      expect(
+        framesOfType(recipientWs, "run.grants")[0]?.senderIdentities,
+      ).toEqual([{ address: SENDER, publicKey: nextKey }]);
       expect(dropped).toHaveLength(1);
     });
   }
@@ -1745,6 +1751,11 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
     router.noteSenderDeploySettled(next, { recorded: KEY });
     expect(await deliveredMail(recipientWs, 1)).toHaveLength(1);
+    // A cleared attempt would have delivered the mail with no key, and that
+    // delivery can arrive after the check above.
+    expect(
+      framesOfType(recipientWs, "run.grants")[0]?.senderIdentities,
+    ).toEqual([{ address: SENDER, publicKey: KEY }]);
   });
 
   test("a settle only wakes mail parked under its own deploy attempt", async () => {
@@ -1771,11 +1782,12 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
 
     // The key is now recorded. A settle for a DIFFERENT allocation matches no
     // open attempt, so the sender's mail stays parked even though its key would
-    // now resolve -- proving the wake is keyed on the exact attempt.
+    // now resolve -- proving the wake is keyed on the exact attempt. It records
+    // another key, so a mail it woke would not carry KEY below.
     recordedKey = KEY;
     router.noteSenderDeploySettled(
       { ...ATTEMPT, allocationId: "alloc-recipient" },
-      { recorded: KEY },
+      { recorded: "cd".repeat(32) },
     );
     await tick();
     expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
