@@ -4862,6 +4862,192 @@ describe("workflowRunKindHandler — scoped vs validate-all byte-identity", () =
   });
 });
 
+// Write `files` (flat path -> content) as nested trees, with an empty tree
+// at each path in `emptyTrees`, and return the root tree's entries.
+async function writeEntries(
+  dir: string,
+  files: Record<string, string>,
+  emptyTrees: readonly string[],
+): Promise<TreeEntry[]> {
+  const blobs = new Map<string, string>();
+  const subtrees = new Map<
+    string,
+    { files: Record<string, string>; emptyTrees: string[] }
+  >();
+  const subtree = (name: string) => {
+    let nested = subtrees.get(name);
+    if (nested === undefined) {
+      nested = { files: {}, emptyTrees: [] };
+      subtrees.set(name, nested);
+    }
+    return nested;
+  };
+  for (const [filePath, content] of Object.entries(files)) {
+    const slash = filePath.indexOf("/");
+    if (slash === -1) {
+      blobs.set(filePath, content);
+      continue;
+    }
+    subtree(filePath.slice(0, slash)).files[filePath.slice(slash + 1)] =
+      content;
+  }
+  for (const treePath of emptyTrees) {
+    const slash = treePath.indexOf("/");
+    if (slash === -1) {
+      subtree(treePath);
+      continue;
+    }
+    subtree(treePath.slice(0, slash)).emptyTrees.push(
+      treePath.slice(slash + 1),
+    );
+  }
+  const entries: TreeEntry[] = [];
+  for (const [name, content] of blobs) {
+    const oid = await git.writeBlob({
+      fs,
+      dir,
+      blob: new TextEncoder().encode(content),
+    });
+    entries.push({ mode: "100644", path: name, oid, type: "blob" });
+  }
+  for (const [name, nested] of subtrees) {
+    const oid = await git.writeTree({
+      fs,
+      dir,
+      tree: await writeEntries(dir, nested.files, nested.emptyTrees),
+    });
+    entries.push({ mode: "040000", path: name, oid, type: "tree" });
+  }
+  return entries;
+}
+
+// Receive a parent holding `files`, then a tip whose root tree holds the
+// entries `tipEntries` returns, and return the tip receive's error.
+async function receiveTip(
+  files: Record<string, string>,
+  tipEntries: (dir: string, parentEntries: TreeEntry[]) => Promise<TreeEntry[]>,
+): Promise<{ error: unknown; parent: string; tipRef: string | null }> {
+  const srcDir = await makeClaimCheckTempDir("wfr-tip-src-");
+  await git.init({ fs, dir: srcDir, defaultBranch: "events" });
+  const author = { name: "probe", email: "probe@example.com" };
+  const parentEntries = await writeEntries(srcDir, files, []);
+  const parent = await git.commit({
+    fs,
+    dir: srcDir,
+    message: "parent",
+    author,
+    tree: await git.writeTree({ fs, dir: srcDir, tree: parentEntries }),
+    parent: [],
+    ref: REF,
+  });
+  const tip = await git.commit({
+    fs,
+    dir: srcDir,
+    message: "tip",
+    author,
+    tree: await git.writeTree({
+      fs,
+      dir: srcDir,
+      tree: await tipEntries(srcDir, parentEntries),
+    }),
+    parent: [parent],
+    ref: REF,
+  });
+
+  const store = createRepoStore({
+    dataDir: await makeClaimCheckTempDir("wfr-tip-tgt-"),
+    signingKey: claimCheckSigningKey,
+    handlers: { "workflow-run": workflowRunKindHandler },
+    authorize: () => ({ allowed: true }),
+  });
+  const repoId: RepoId = {
+    kind: "workflow-run",
+    id: `dep-${Math.random().toString(36).slice(2, 10)}`,
+  };
+  await store.initRepo(repoId);
+  await store.receivePack(
+    HUB_PRINCIPAL,
+    repoId,
+    REF,
+    await packOids(srcDir, [parent]),
+    parent,
+    null,
+  );
+  let error: unknown;
+  try {
+    await store.receivePack(
+      HUB_PRINCIPAL,
+      repoId,
+      REF,
+      await packOids(srcDir, [tip]),
+      tip,
+      parent,
+    );
+  } catch (cause) {
+    error = cause;
+  }
+  return {
+    error,
+    parent,
+    tipRef: await store.resolveRef(HUB_PRINCIPAL, repoId, REF),
+  };
+}
+
+describe("workflow-run substrate — an empty tree in the mailbox", () => {
+  const inbox = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}`;
+  const index = JSON.stringify({
+    version: MAILBOX_INDEX_VERSION,
+    uidValidity: 1,
+    uidNext: 1,
+    highestModSeq: 0,
+    messages: [],
+    expunged: [],
+  });
+
+  // Receive a parent holding `files`, then a tip that adds an empty tree
+  // at each path in `emptyTrees`, and return the receive's error.
+  function receiveWithEmptyTrees(
+    files: Record<string, string>,
+    emptyTrees: readonly string[],
+  ) {
+    return receiveTip(files, (dir) => writeEntries(dir, files, emptyTrees));
+  }
+
+  test("an empty tree in place of a message is rejected", async () => {
+    const { error, parent, tipRef } = await receiveWithEmptyTrees(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${inbox}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]: index,
+      },
+      [`${inbox}/1.eml`],
+    );
+    expect(String(error)).toContain(
+      `mailbox message ${inbox}/1.eml is a directory; each message must be a single .eml file`,
+    );
+    expect(tipRef).toBe(parent);
+  });
+
+  test("an empty tree in place of the index is rejected", async () => {
+    const { error, parent, tipRef } = await receiveWithEmptyTrees(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+      [`${inbox}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`],
+    );
+    expect(String(error)).toContain(
+      `mailbox ${inbox}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE} is a directory; the mailbox index must be a single file`,
+    );
+    expect(tipRef).toBe(parent);
+  });
+
+  test("an empty INBOX is rejected as an empty directory", async () => {
+    const { error, parent, tipRef } = await receiveWithEmptyTrees(
+      { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+      [inbox],
+    );
+    expect(String(error)).toContain(`mailbox ${inbox} is an empty directory`);
+    expect(tipRef).toBe(parent);
+  });
+});
+
 // B3.3 pack-path per-run scope completeness. The byte-identity test
 // above drives single-run writeTree commits; production writes one run
 // per commit today, so the multi-run *pack* path -- where
@@ -5064,12 +5250,9 @@ describe("workflow-run substrate — pack-path per-run scope completeness", () =
     expect(reason).not.toContain("is not a directory");
   });
 
-  test("a tree kept at a mail part path is rejected although its OID is unchanged", async () => {
-    // The pack path hands the handler tree listings with OIDs. An empty
-    // tree at a mail part path lists as empty, as a blob does, so the
-    // structural walk admits it. When the next commit keeps it, the
-    // immutability check must refuse the tree instead of passing it as a
-    // byte-unchanged blob by its equal OID.
+  test("an empty tree at a mail part path is rejected", async () => {
+    // An empty tree lists as empty, as a blob does, so only the listing's
+    // entry type tells them apart.
     type TreeSpec = { [name: string]: string | TreeSpec };
     async function writeSpecTree(dir: string, spec: TreeSpec): Promise<string> {
       const entries: TreeEntry[] = [];
@@ -5116,18 +5299,10 @@ describe("workflow-run substrate — pack-path per-run scope completeness", () =
     });
     const srcDir = await makeClaimCheckTempDir("wfr-tree-part-src-");
     await git.init({ fs, dir: srcDir, defaultBranch: "events" });
-    const parent = await commitSpec(
+    const tip = await commitSpec(
       srcDir,
       runA({ "0.json": eventBody(0, "RunStarted") }),
       [],
-    );
-    const tip = await commitSpec(
-      srcDir,
-      runA({
-        "0.json": eventBody(0, "RunStarted"),
-        "1.json": eventBody(1, "StepCompleted"),
-      }),
-      [parent],
     );
 
     const store = createRepoStore({
@@ -5138,15 +5313,6 @@ describe("workflow-run substrate — pack-path per-run scope completeness", () =
     });
     const { repoId } = makeTargetStore();
     await store.initRepo(repoId);
-    await store.receivePack(
-      HUB_PRINCIPAL,
-      repoId,
-      REF,
-      await packOids(srcDir, [parent]),
-      parent,
-      null,
-    );
-
     await expect(
       store.receivePack(
         HUB_PRINCIPAL,
@@ -5154,10 +5320,10 @@ describe("workflow-run substrate — pack-path per-run scope completeness", () =
         REF,
         await packOids(srcDir, [tip]),
         tip,
-        parent,
+        null,
       ),
-    ).rejects.toThrow(/tree listing has no OID .*runs\/run-a\/parts\//);
-    expect(await store.resolveRef(HUB_PRINCIPAL, repoId, REF)).toBe(parent);
+    ).rejects.toThrow(/mail part runs\/run-a\/parts\/.* is a directory/);
+    expect(await store.resolveRef(HUB_PRINCIPAL, repoId, REF)).toBe(null);
   });
 });
 
