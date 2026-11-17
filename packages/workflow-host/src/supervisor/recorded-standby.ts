@@ -1,6 +1,9 @@
 import { type } from "arktype";
 
-import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import {
+  IdleStandbyId,
+  WorkflowProjectionDefinition,
+} from "@intx/types/sidecar";
 
 import { ParkedCorrelation } from "../ipc/control-payloads";
 
@@ -10,12 +13,14 @@ import { ParkedCorrelation } from "../ipc/control-payloads";
  * `parked` is what the stopped child's runs were parked on, `wakeAt` the
  * earliest timer it had queued, `tip` the run's history tip, read before the
  * child reported its parks, and `definition` the one the first child verified,
- * which lays the steps out again with no child to report it.
+ * which lays the steps out again with no child to report it. `idle` names a
+ * standby the supervisor began unasked, once the runs had waited long enough.
  */
 export const RecordedStandby = type({
   parked: ParkedCorrelation.array(),
   "wakeAt?": "string.date.iso",
   tip: "string | null",
   definition: WorkflowProjectionDefinition,
+  "idle?": IdleStandbyId,
 });
 export type RecordedStandby = typeof RecordedStandby.infer;

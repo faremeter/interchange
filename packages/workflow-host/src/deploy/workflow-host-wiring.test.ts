@@ -2729,7 +2729,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       async answerQuiet(
         index: number,
         count: number,
-        answer: { quiet: boolean; ended?: true },
+        answer:
+          | { ended: true }
+          | { quiet: true; quietForMs: number }
+          | { quiet: false },
       ): Promise<void> {
         const spawn = spawns[index];
         const sender = spawn?.childSender;
@@ -2772,7 +2775,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           if (query === undefined) throw new Error("quiet query missing");
           await sender.send({
             type: "quiet.response",
-            data: { requestId: query.data.requestId, quiet: true },
+            data: {
+              requestId: query.data.requestId,
+              quiet: true,
+              quietForMs: 0,
+            },
           });
         }
         // The first correlation query is the one the child's start asks.
@@ -3215,7 +3222,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     );
 
     const inStandby = control("standby", "standby-crash");
-    await spawned.answerQuiet(0, 1, { quiet: true });
+    await spawned.answerQuiet(0, 1, { quiet: true, quietForMs: 0 });
     const toChild = spawned.controlFor(0);
     if (toChild === undefined) throw new Error("spawn 0 missing");
     await waitForUpstreamPayloads(toChild, "quiet.request", 2);

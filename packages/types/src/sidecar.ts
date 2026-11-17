@@ -191,6 +191,10 @@ export type IncarnationState = typeof IncarnationState.infer;
 export const DeploymentRetention = type.enumerated("kept", "refused");
 export type DeploymentRetention = typeof DeploymentRetention.infer;
 
+/** Names one standby a sidecar began by itself, and no other. */
+export const IdleStandbyId = type("string.uuid");
+export type IdleStandbyId = typeof IdleStandbyId.infer;
+
 export const HostedIncarnation = type({
   address: type("string").atMostLength(MAX_DEPLOYMENT_ADDRESS_LENGTH),
   generation: Generation,

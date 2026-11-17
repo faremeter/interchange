@@ -674,11 +674,12 @@ ChannelSender` writes against; the event channel is the
      run has just read as parked.
    - `quiet.request` -> make every buffered event durable and answer
      whether every run only waits on input from outside, with the
-     earliest timer the scheduler has queued; with `wait`, answer once
-     that holds. A run that has ended answers `ended`, and a check that
-     fails answers with its error; either refuses the standby request.
-     A check still waiting when the next one arrives is dropped
-     unanswered, since the supervisor gave up on it.
+     earliest timer the scheduler has queued and how long the process
+     has been quiet; with `wait`, answer once that holds. A run that
+     has ended answers `ended`, and a check that fails answers with its
+     error; either refuses the standby request. A check still waiting
+     when the next one arrives is dropped unanswered, since the
+     supervisor gave up on it.
    - `shutdown` -> stop accepting new triggers and exit the loop.
 
 #### Trust Anchors

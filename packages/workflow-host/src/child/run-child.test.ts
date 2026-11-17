@@ -935,7 +935,12 @@ describe("runWorkflowChild", () => {
     });
     expect(
       (await waitForUpstreamPayload(childToSupervisor, "quiet.response")).data,
-    ).toEqual({ requestId: "quiet-1", quiet: true, wakeAt });
+    ).toEqual({
+      requestId: "quiet-1",
+      quiet: true,
+      quietForMs: expect.any(Number),
+      wakeAt,
+    });
 
     await supervisorSender.send({
       type: "trigger.fire",

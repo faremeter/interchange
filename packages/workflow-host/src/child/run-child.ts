@@ -108,6 +108,7 @@ import {
   beginDelivery,
   flushAllBuffers,
   isQuiet,
+  quietFor,
   whenDelivered,
   whenQuiet,
 } from "@intx/workflow/runtime";
@@ -1224,6 +1225,7 @@ async function answerQuiet(
   const superseded = new AbortController();
   ctx.quietCheck.current = superseded;
   let quiet = false;
+  let quietForMs = 0;
   let ended = false;
   let wakeAt: Date | undefined;
   let error: string | undefined;
@@ -1242,6 +1244,7 @@ async function answerQuiet(
       await flushAllBuffers();
       await whenDelivered();
       quiet = isQuiet();
+      quietForMs = quietFor();
       // Read with `quiet`: a timer that leaves the queue after the decision
       // is still reported, and wakes the deployment at once.
       wakeAt = ctx.bindings.earliestQueuedTimer();
@@ -1267,9 +1270,13 @@ async function answerQuiet(
       ? { requestId: data.requestId, ended: true }
       : {
           requestId: data.requestId,
-          quiet,
+          ...(quiet
+            ? { quiet: true as const, quietForMs }
+            : {
+                quiet: false as const,
+                ...(error !== undefined ? { error } : {}),
+              }),
           ...(wakeAt !== undefined ? { wakeAt: wakeAt.toISOString() } : {}),
-          ...(error !== undefined ? { error } : {}),
         },
   });
 }

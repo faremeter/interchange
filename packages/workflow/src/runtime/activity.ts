@@ -17,9 +17,13 @@ let delivering = 0;
 // Every start of work or of a delivery, so a check can tell that something
 // began since it last looked, even work that has already ended again.
 let starts = 0;
+// When this process last went quiet, on the monotonic clock. A process that
+// has not worked yet has been quiet since it loaded.
+let quietSince = performance.now();
 const waiters = new Set<() => void>();
 
 function lowered(): void {
+  if (isQuiet()) quietSince = performance.now();
   for (const wake of [...waiters]) wake();
 }
 
@@ -144,6 +148,14 @@ export function activityStarts(): number {
 /** Whether nothing in this process works or delivers input. */
 export function isQuiet(): boolean {
   return working === 0 && delivering === 0;
+}
+
+/**
+ * How many milliseconds nothing in this process has worked or delivered
+ * input, and 0 while something does.
+ */
+export function quietFor(): number {
+  return isQuiet() ? performance.now() - quietSince : 0;
 }
 
 /** Whether a run loop or a step in this process is working. */

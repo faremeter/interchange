@@ -370,10 +370,31 @@ export interface WorkflowSupervisorBindings {
   /**
    * Called once a standby attempt has stopped the child and before anything can
    * wake it, so a wake's record of the child running lands after it. A
-   * rejection runs the child again and refuses the standby attempt. What it
-   * records is what `restoreInStandby` takes after a restart.
+   * rejection runs the child again and refuses the standby attempt. With
+   * `standbyAfterMs` set, it also holds the idle rule's next check back, and
+   * the third rejection in a row stops the rule until a standby is recorded,
+   * whoever asked for the ones that failed. What it records is what
+   * `restoreInStandby` takes after a restart.
    */
   recordStandby?: (standby: RecordedStandby) => Promise<void>;
+  /**
+   * How many milliseconds every run must have waited on input from outside
+   * before the supervisor puts the child in standby unasked. The wait starts
+   * over when a child starts, on `wake`, and when a standby attempt fails. A
+   * check that finds the child quiet, but not for long enough, waits only for
+   * the time still missing, and a run that has ended stops the rule. A
+   * standby `recordStandby` fails to record holds the next check back, and
+   * the third in a row stops the rule until one is recorded. Unset, only
+   * `enterStandby` puts the child in standby.
+   */
+  standbyAfterMs?: number;
+  /**
+   * Called once the supervisor has put the child in standby unasked and the
+   * attempt has settled, after `recordStandby`, when set, recorded it with
+   * `idle`. Not called for one called off after the child stopped: a wake or
+   * a cancellation runs the child again, and a shutdown keeps it stopped.
+   */
+  onIdleStandby?: () => void;
   /**
    * Test seam, unset in production. Called each time a standby attempt makes
    * something wait: `input` when mail or a signal waits out the final quiet

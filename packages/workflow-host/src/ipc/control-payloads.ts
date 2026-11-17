@@ -1127,18 +1127,26 @@ const controlPayloadFactories = defineControlPayloadFactories({
     type({
       // `ended` alone when the deployment's run has ended, so there is
       // nothing to stop it for. Otherwise `wakeAt` is the earliest timer the
-      // child has queued, and `error` says the child could not check, which
-      // refuses the standby attempt.
+      // child has queued, `quietForMs` how long a quiet child has been quiet,
+      // and `error` says the child could not check, which refuses the standby
+      // attempt.
       type: "'quiet.response'",
       data: type({
         requestId: "string > 0",
         ended: "true",
-      }).or({
-        requestId: "string > 0",
-        quiet: "boolean",
-        "wakeAt?": "string.date.iso",
-        "error?": "string",
-      }),
+      })
+        .or({
+          requestId: "string > 0",
+          quiet: "true",
+          quietForMs: "number >= 0",
+          "wakeAt?": "string.date.iso",
+        })
+        .or({
+          requestId: "string > 0",
+          quiet: "false",
+          "wakeAt?": "string.date.iso",
+          "error?": "string",
+        }),
     }),
   "resumed.runs": () =>
     type({

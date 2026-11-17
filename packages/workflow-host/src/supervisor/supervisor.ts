@@ -254,6 +254,10 @@ export const DEFAULT_PARKED_QUERY_WATCHDOG_MS = 30_000;
 // The wake reason of a respawn `wake()` asked for.
 const REQUESTED_WAKE = "wake";
 
+// Standbys in a row that could not be recorded before the idle rule stops:
+// each one stopped and restarted the child for nothing.
+const MAX_UNRECORDED_STANDBYS = 3;
+
 // A standby attempt's final check holds dispatch and signals back, and a signal
 // holds its address's frames behind it, a forced stop among them. A check that
 // does not finish within this bound counts the child as working and they go on.
@@ -429,18 +433,25 @@ export interface WorkflowSupervisor {
    * the child is stopped. Rejects with `StandbyAbandonedError` when `wake`,
    * `abandonStandby`, a cancellation or a shutdown calls it off, and with
    * `StandbyRefusedError` when the child restarts, the run ends, or mail
-   * waits in the inbox.
+   * waits in the inbox. A standby attempt already under way, such as one the
+   * idle rule began, is joined instead: before its stop begins it goes on as
+   * this request's, and after that this request shares its standby.
    *
    * A supervisor in standby respawns its child for mail, a signal, a
    * cancellation, its earliest pending timer, or `wake`.
    */
   enterStandby(): Promise<StandbyOutcome>;
-  /** Abandon a standby attempt in progress, or respawn a child in standby. */
+  /**
+   * Abandon a standby attempt in progress, or respawn a child in standby.
+   * Either way the idle rule's wait starts over.
+   */
   wake(): Promise<void>;
   /**
-   * Abandon a standby attempt in progress for `reason`. One whose stop has
-   * begun runs the child again; a child an earlier standby attempt stopped
-   * stays in standby.
+   * Abandon the standby attempt in progress for `reason`, one the host took
+   * over from the idle rule included. One whose stop has begun runs the child
+   * again; a child an earlier standby attempt stopped stays in standby. An
+   * attempt the idle rule still owns, which the host joined only once its
+   * stop began, goes on.
    */
   abandonStandby(reason: string): void;
 }
@@ -476,6 +487,35 @@ export class StandbyDeferredError extends StandbyRefusedError {
 /** A standby attempt called off by a wake, a cancellation, a shutdown or its caller. */
 export class StandbyAbandonedError extends StandbyRefusedError {
   override name = "StandbyAbandonedError";
+}
+
+/** A standby attempt refused because the deployment's run has ended. */
+class StandbyRunEndedError extends StandbyRefusedError {
+  override name = "StandbyRunEndedError";
+}
+
+/**
+ * A standby attempt refused because mail still waits for the child, such as
+ * mail behind a run that waits on an approval.
+ */
+class StandbyMailWaitingError extends StandbyRefusedError {
+  override name = "StandbyMailWaitingError";
+}
+
+/** A standby attempt that stopped the child but could not record it. */
+class StandbyNotRecordedError extends StandbyRefusedError {
+  override name = "StandbyNotRecordedError";
+}
+
+/**
+ * An idle check that found the runs have not waited long enough yet. They
+ * cannot have before `retryInMs` passes.
+ */
+class StandbyNotIdleError extends StandbyDeferredError {
+  override name = "StandbyNotIdleError";
+  constructor(readonly retryInMs: number) {
+    super("its runs have not waited long enough");
+  }
 }
 
 /** A dispatch gave up waiting for its run to park or end. */
@@ -1282,8 +1322,27 @@ export function createWorkflowSupervisor(
     // What the child reported it is parked on, before the stop. A hub
     // re-establishment while the child stops re-registers these.
     correlations: ParkedCorrelations | null;
+    // Started by the idle rule: it checks once whether every run has waited
+    // `standbyAfterMs`, and gives up when one has not. Cleared when the host
+    // asks for standby before the stop begins, which makes it the host's
+    // attempt.
+    idle: boolean;
   };
   let standbyAttempt: StandbyAttempt | null = null;
+  const standbyAfterMs = bindings.standbyAfterMs;
+  // Armed while the idle rule waits: when it fires, a standby attempt checks
+  // whether every run has waited `standbyAfterMs`.
+  let idleStandbyTimer: unknown = null;
+  // The wait ended while the respawn or wake that started this child was
+  // still finishing, so its check runs once that has.
+  let idleCheckDue = false;
+  // The deployment's run has ended, so nothing is left to wait.
+  let idleRuleOver = false;
+  // Standbys in a row that could not be recorded, and the soonest the idle
+  // rule checks again after the last of them. At the most allowed, the rule
+  // waits for a standby that is recorded.
+  let unrecordedStandbys = 0;
+  let idleCheckNotBefore = 0;
   // While in standby: the correlations the stopped child was parked on, re-sent
   // on a hub re-establishment, and the timer for its earliest pending timer.
   let inStandby: {
@@ -1482,6 +1541,7 @@ export function createWorkflowSupervisor(
   function armChildForRunning(handle: SubprocessHandle): void {
     childGeneration += 1;
     const generation = childGeneration;
+    armIdleStandby(standbyAfterMs);
     void handle.exited
       .then(() => {
         onChildExited(generation, "workflow-process child exited");
@@ -5437,6 +5497,7 @@ export function createWorkflowSupervisor(
       if (inStandby.wakeTimer !== null) readyClearTimer(inStandby.wakeTimer);
       inStandby = null;
     }
+    clearIdleStandby();
     for (const retry of ownedConsumeRetries) readyClearTimer(retry);
     ownedConsumeRetries.clear();
     // shutdownInternal is designed to be TOTAL: when a child is up it must
@@ -5830,13 +5891,18 @@ export function createWorkflowSupervisor(
     if (standbyAttempt !== null) {
       // An abandoned attempt refuses with its own reason, which is not this
       // request's; asked again once it settles, a fresh attempt starts.
-      return standbyAttempt.abandon.signal.aborted
-        ? Promise.reject(
-            new StandbyDeferredError(
-              "an abandoned standby attempt is still settling",
-            ),
-          )
-        : standbyAttempt.outcome;
+      if (standbyAttempt.abandon.signal.aborted) {
+        return Promise.reject(
+          new StandbyDeferredError(
+            "an abandoned standby attempt is still settling",
+          ),
+        );
+      }
+      // The idle rule's check would give up on a child that has not been
+      // quiet long enough, which this request does not wait for. A check
+      // already stopping the child is past that.
+      if (state.phase === "running") standbyAttempt.idle = false;
+      return standbyAttempt.outcome;
     }
     if (state.phase === "standby" && inStandby !== null) {
       return Promise.resolve(inStandby.outcome);
@@ -5847,6 +5913,10 @@ export function createWorkflowSupervisor(
         new StandbyDeferredError("the workflow child is restarting"),
       );
     }
+    return beginStandbyAttempt(false);
+  }
+
+  function beginStandbyAttempt(idle: boolean): Promise<StandbyOutcome> {
     const done = Promise.withResolvers<StandbyOutcome>();
     const attempt: StandbyAttempt = {
       generation: childGeneration,
@@ -5862,28 +5932,163 @@ export function createWorkflowSupervisor(
       wakeIfStopped: false,
       childExited: false,
       correlations: null,
+      idle,
     };
     standbyAttempt = attempt;
     void (async () => {
       let outcome: StandbyOutcome | undefined;
       let failure: unknown;
-      try {
-        outcome = await runStandbyAttempt(attempt);
-      } catch (cause) {
-        failure = cause;
+      for (;;) {
+        try {
+          outcome = await runStandbyAttempt(attempt);
+        } catch (cause) {
+          // The host asked for standby while the idle check was giving up,
+          // so the attempt goes on as the host's.
+          if (cause instanceof StandbyNotIdleError && !attempt.idle) continue;
+          failure = cause;
+        }
+        break;
       }
       // Cleared before the outcome settles, so the dispatch loop that wakes
       // on it sees no standby attempt.
       if (standbyAttempt === attempt) standbyAttempt = null;
       wakeDispatch();
-      if (outcome !== undefined) done.resolve(outcome);
-      else done.reject(failure);
+      if (outcome === undefined) {
+        if (attempt.idle) logIdleRefusal(failure);
+        done.reject(failure);
+        restartIdleWaitAfter(failure);
+        return;
+      }
+      done.resolve(outcome);
+      if (!attempt.idle) return;
+      try {
+        bindings.onIdleStandby?.();
+      } catch (cause) {
+        logger.error`onIdleStandby sink threw: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
     })();
     return done.promise;
   }
 
+  function clearIdleStandby(): void {
+    idleCheckDue = false;
+    if (idleStandbyTimer === null) return;
+    readyClearTimer(idleStandbyTimer);
+    idleStandbyTimer = null;
+  }
+
+  // Start the idle wait over: in `ms`, the soonest every run can have waited
+  // `standbyAfterMs`, a standby attempt checks whether they have.
+  function armIdleStandby(ms: number | undefined): void {
+    clearIdleStandby();
+    if (ms === undefined || idleRuleOver || idleRuleStopped()) return;
+    idleStandbyTimer = armIdleStandbyTimer(
+      Math.max(drainNow() + ms, idleCheckNotBefore),
+    );
+  }
+
+  function idleRuleStopped(): boolean {
+    return unrecordedStandbys >= MAX_UNRECORDED_STANDBYS;
+  }
+
+  // A standby that could not be recorded stopped and restarts the child for
+  // nothing, so each one doubles how long the idle rule waits before its next
+  // check, and the last one allowed stops the rule.
+  function noteUnrecordedStandby(cause: string): void {
+    const stoppedAlready = idleRuleStopped();
+    unrecordedStandbys += 1;
+    if (standbyAfterMs === undefined || idleRuleOver || stoppedAlready) {
+      logger.error`the standby could not be recorded: ${cause}`;
+      return;
+    }
+    const tries = `${String(unrecordedStandbys)} of ${String(MAX_UNRECORDED_STANDBYS)}`;
+    if (idleRuleStopped()) {
+      clearIdleStandby();
+      logger.error`the standby could not be recorded (${tries}), so the idle rule stops until one is: ${cause}`;
+      return;
+    }
+    const waitMs = standbyAfterMs * 2 ** unrecordedStandbys;
+    idleCheckNotBefore = drainNow() + waitMs;
+    logger.error`the standby could not be recorded (${tries}), so the idle rule waits ${String(waitMs)} ms before it checks again: ${cause}`;
+  }
+
+  // Why an idle attempt was refused, unless that is how such an attempt
+  // usually ends, which mail still waiting for the child can be for as long
+  // as its run waits, or it was logged already.
+  function logIdleRefusal(failure: unknown): void {
+    if (
+      failure instanceof StandbyDeferredError ||
+      failure instanceof StandbyAbandonedError ||
+      failure instanceof StandbyRunEndedError ||
+      failure instanceof StandbyMailWaitingError ||
+      failure instanceof StandbyNotRecordedError
+    )
+      return;
+    logger.warn`the idle rule's standby attempt was refused: ${failure instanceof Error ? failure.message : String(failure)}`;
+  }
+
+  function armIdleStandbyTimer(dueAt: number): unknown {
+    const delay = Math.max(0, dueAt - drainNow());
+    return readySetTimer(
+      () => {
+        if (delay > MAX_TIMER_MS) {
+          idleStandbyTimer = armIdleStandbyTimer(dueAt);
+          return;
+        }
+        idleStandbyTimer = null;
+        beginIdleCheck();
+      },
+      Math.min(delay, MAX_TIMER_MS),
+    );
+  }
+
+  // The idle wait has ended, so a standby attempt checks whether every run
+  // has waited long enough.
+  function beginIdleCheck(): void {
+    // A child that is not running gets a new wait when the next one starts,
+    // and a standby attempt in progress when it fails.
+    if (
+      state.phase !== "running" ||
+      standbyAttempt !== null ||
+      exitedGeneration === childGeneration
+    )
+      return;
+    // The respawn or wake that started this child holds its latch until its
+    // own work is done, and no later child start would arm the wait again.
+    if (waking !== null || respawnInProgress) {
+      idleCheckDue = true;
+      return;
+    }
+    void beginStandbyAttempt(true);
+  }
+
+  // Called as a respawn or a wake lets go of its latch.
+  function runDueIdleCheck(): void {
+    if (!idleCheckDue) return;
+    idleCheckDue = false;
+    beginIdleCheck();
+  }
+
+  // A failed standby attempt starts the idle wait over. A child that is not
+  // running gets its wait when the next one starts.
+  function restartIdleWaitAfter(failure: unknown): void {
+    if (failure instanceof StandbyRunEndedError) {
+      idleRuleOver = true;
+      clearIdleStandby();
+      return;
+    }
+    if (state.phase !== "running") return;
+    armIdleStandby(
+      failure instanceof StandbyNotIdleError
+        ? failure.retryInMs
+        : standbyAfterMs,
+    );
+  }
+
   function abandonCurrentStandby(reason: string): void {
-    if (standbyAttempt === null) return;
+    // Still the idle rule's: the host joined it only once its stop began, so
+    // it shares that standby and has none of its own to call off.
+    if (standbyAttempt === null || standbyAttempt.idle) return;
     standbyAttempt.wakeIfStopped = true;
     abandonStandby(standbyAttempt, reason);
   }
@@ -5894,6 +6099,9 @@ export function createWorkflowSupervisor(
       abandonStandby(attempt, "the deployment was woken");
       await attempt.settled;
     }
+    // A wake of a running child still starts its idle wait over. An attempt
+    // it called off arms a wait of its own as it fails, so this comes after.
+    if (state.phase === "running") armIdleStandby(standbyAfterMs);
     // A standby attempt past its final check stops the child anyway.
     await wakeFromStandby(REQUESTED_WAKE);
   }
@@ -5903,38 +6111,116 @@ export function createWorkflowSupervisor(
   ): Promise<StandbyOutcome> {
     const runId = deriveWorkflowRunId(bindings.deploymentMailAddress);
     try {
+      if (attempt.idle) return await stopChildIfIdle(attempt, runId);
       for (;;) {
         await untilStandbyQuiet(attempt);
         // Wait for the child to report it is quiet while it still takes input.
         const idle = await askChildQuiet(attempt, runId);
         if (!idle.quiet) continue;
-        freezeStandby(attempt);
-        const deadline = waitDeadline(readySetTimer, QUIET_CHECK_WATCHDOG_MS);
-        try {
-          if (!(await untilStandbyQuiet(attempt, deadline.promise))) continue;
-          const final = await askChildQuiet(attempt, runId, deadline.promise);
-          if (!final.quiet) continue;
-          attempt.fence = [];
-          if (
-            !(await untilDetachedWritesLand(deadline.promise)) ||
-            childWrites !== final.writes ||
-            !isStandbyQuiet()
-          ) {
-            releaseStandbyFence(attempt);
-            continue;
-          }
-          return await stopChildForStandby(
-            attempt,
-            final.wakeAt === undefined ? {} : { wakeAt: final.wakeAt },
-          );
-        } finally {
-          readyClearTimer(deadline.handle);
-          thawStandby(attempt);
-        }
+        const outcome = await stopChildIfQuiet(attempt, runId);
+        if (outcome !== null) return outcome;
       }
     } catch (cause) {
       releaseStandbyFence(attempt);
       throw cause;
+    }
+  }
+
+  // The idle rule's check. It does not wait for the child to go quiet: a
+  // child that works has runs that have not waited, and the soonest they can
+  // have is `standbyAfterMs` from now. It asks first with nothing held back,
+  // so a child that is not idle yet takes its input without delay.
+  async function stopChildIfIdle(
+    attempt: StandbyAttempt,
+    runId: string,
+  ): Promise<StandbyOutcome> {
+    if (standbyAfterMs === undefined) {
+      throw new Error("an idle standby attempt started with no idle rule set");
+    }
+    await untilStandbyQuiet(attempt);
+    // Refused before anything is held back or asked, since mail behind a run
+    // that waits on an approval stays for as long as the run waits.
+    if (attempt.idle) refuseForHeldMail();
+    const deadline = waitDeadline(readySetTimer, QUIET_CHECK_WATCHDOG_MS);
+    try {
+      const first = await askChildQuiet(attempt, runId, deadline.promise);
+      if (!first.quiet) throw new StandbyNotIdleError(standbyAfterMs);
+      throwUnlessIdleLongEnough(attempt, first.quietForMs, standbyAfterMs);
+    } finally {
+      readyClearTimer(deadline.handle);
+    }
+    const outcome = await stopChildIfQuiet(attempt, runId, standbyAfterMs);
+    if (outcome === null) throw new StandbyNotIdleError(standbyAfterMs);
+    return outcome;
+  }
+
+  // Mail the dispatch cannot hand over yet, such as mail behind a run that
+  // waits on an approval or a signal. Nothing would wake a stopped child for
+  // mail the dispatch took that the child has not committed.
+  function refuseForHeldMail(): void {
+    if (untakenMail !== null) {
+      throw new StandbyMailWaitingError(
+        "mail the dispatch took is still waiting for the child",
+      );
+    }
+    if (unsettledMail.size > 0 || unansweredMail.size > 0) {
+      throw new StandbyMailWaitingError(
+        "mail a failed dispatch left in processing/ is not back in the inbox or with its run yet",
+      );
+    }
+    if (replayLeftMail) {
+      throw new StandbyMailWaitingError(
+        "mail a failed replay left waits in processing/ for the child to restart",
+      );
+    }
+  }
+
+  // An attempt still the idle rule's gives up on a child quiet for less than
+  // `idleMs`, and checks again once it can have been.
+  function throwUnlessIdleLongEnough(
+    attempt: StandbyAttempt,
+    quietForMs: number,
+    idleMs: number,
+  ): void {
+    if (attempt.idle && quietForMs < idleMs) {
+      throw new StandbyNotIdleError(Math.ceil(idleMs - quietForMs));
+    }
+  }
+
+  // The final check, with dispatch and signals held back: stop the child if it
+  // and the supervisor are still quiet, or return null when either works
+  // again. With `idleMs`, an attempt that is still the idle rule's also needs
+  // the child to have been quiet for that long.
+  async function stopChildIfQuiet(
+    attempt: StandbyAttempt,
+    runId: string,
+    idleMs?: number,
+  ): Promise<StandbyOutcome | null> {
+    freezeStandby(attempt);
+    const deadline = waitDeadline(readySetTimer, QUIET_CHECK_WATCHDOG_MS);
+    try {
+      if (!(await untilStandbyQuiet(attempt, deadline.promise))) return null;
+      const final = await askChildQuiet(attempt, runId, deadline.promise);
+      if (!final.quiet) return null;
+      if (idleMs !== undefined) {
+        throwUnlessIdleLongEnough(attempt, final.quietForMs, idleMs);
+      }
+      attempt.fence = [];
+      if (
+        !(await untilDetachedWritesLand(deadline.promise)) ||
+        childWrites !== final.writes ||
+        !isStandbyQuiet()
+      ) {
+        releaseStandbyFence(attempt);
+        return null;
+      }
+      return await stopChildForStandby(
+        attempt,
+        final.wakeAt === undefined ? {} : { wakeAt: final.wakeAt },
+      );
+    } finally {
+      readyClearTimer(deadline.handle);
+      thawStandby(attempt);
     }
   }
 
@@ -5992,7 +6278,10 @@ export function createWorkflowSupervisor(
     attempt: StandbyAttempt,
     runId: string,
     deadline?: Promise<void>,
-  ): Promise<{ quiet: boolean; wakeAt?: string; writes: number }> {
+  ): Promise<
+    | { quiet: true; quietForMs: number; wakeAt?: string; writes: number }
+    | { quiet: false; writes: number }
+  > {
     const cohort = currentStandbyCohort(attempt);
     const requestId = `quiet-${String((quietQuerySeq += 1))}`;
     const answered = new Promise<QuietAnswer | null>((resolve) => {
@@ -6030,9 +6319,9 @@ export function createWorkflowSupervisor(
         );
       }
       if ("ended" in answer) {
-        throw new StandbyRefusedError("the workflow run has ended");
+        throw new StandbyRunEndedError("the workflow run has ended");
       }
-      if (answer.error !== undefined) {
+      if (!answer.quiet && answer.error !== undefined) {
         throw new StandbyRefusedError(
           `the workflow child could not check that it is quiet: ${answer.error}`,
         );
@@ -6143,25 +6432,8 @@ export function createWorkflowSupervisor(
       );
     }
     attempt.correlations = correlations;
-    // Mail the dispatch cannot hand over yet, such as mail behind a run that
-    // waits on an approval or a signal. Mail still in the inbox would wake the
-    // child as soon as it stopped, and nothing would wake it for mail the
-    // dispatch took that the child has not committed.
-    if (untakenMail !== null) {
-      throw new StandbyRefusedError(
-        "mail the dispatch took is still waiting for the child",
-      );
-    }
-    if (unsettledMail.size > 0 || unansweredMail.size > 0) {
-      throw new StandbyRefusedError(
-        "mail a failed dispatch left in processing/ is not back in the inbox or with its run yet",
-      );
-    }
-    if (replayLeftMail) {
-      throw new StandbyRefusedError(
-        "mail a failed replay left waits in processing/ for the child to restart",
-      );
-    }
+    // Mail still in the inbox would wake the child as soon as it stopped.
+    refuseForHeldMail();
     const mailQueued = await inboxHoldsMail().catch((cause: unknown) => {
       throw new StandbyRefusedError(
         `the deployment's inbox could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -6169,13 +6441,14 @@ export function createWorkflowSupervisor(
       );
     });
     if (mailQueued) {
-      throw new StandbyRefusedError(
+      throw new StandbyMailWaitingError(
         "mail is waiting in the deployment's inbox",
       );
     }
     const live = currentStandbyCohort(attempt);
     // From here the child's exit is planned, not a crash.
     state = { ...live, phase: "standby", restored: false };
+    clearIdleStandby();
     stopRecyclePolicy();
     // A drain deadline does not carry across standby, as it does not across
     // a recycle. One that already passed wakes the child for its cancel.
@@ -6230,9 +6503,17 @@ export function createWorkflowSupervisor(
           ...(outcome.wakeAt !== undefined ? { wakeAt: outcome.wakeAt } : {}),
           tip,
           definition: verifiedDefinition,
+          ...(attempt.idle ? { idle: crypto.randomUUID() } : {}),
         });
+        if (idleRuleStopped() && standbyAfterMs !== undefined) {
+          logger.info`a standby was recorded, so the idle rule starts again`;
+        }
+        unrecordedStandbys = 0;
+        idleCheckNotBefore = 0;
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
+        // Before the wake, so the child it starts waits as long as it must.
+        noteUnrecordedStandby(message);
         if (state.phase === "standby") {
           inStandby = { correlations, outcome, wakeTimer: null };
           void wakeFromStandby("a standby that was not recorded").catch(
@@ -6241,7 +6522,7 @@ export function createWorkflowSupervisor(
             },
           );
         }
-        throw new StandbyRefusedError(
+        throw new StandbyNotRecordedError(
           `the standby could not be recorded: ${message}`,
           { cause },
         );
@@ -6364,6 +6645,7 @@ export function createWorkflowSupervisor(
     });
     waking = woken.finally(() => {
       waking = null;
+      runDueIdleCheck();
     });
     return waking;
   }
@@ -6741,6 +7023,7 @@ export function createWorkflowSupervisor(
       // deferred (respawnInProgress was set); handle it now that the latch
       // is clear. A pending exit for a superseded generation drops as stale.
       maybeHandleChildExit();
+      runDueIdleCheck();
     }
     return attempt;
   }
