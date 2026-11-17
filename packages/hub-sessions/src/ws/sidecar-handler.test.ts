@@ -1398,6 +1398,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       SidecarLookups["materializeMailTriggeredRunGrants"]
     > = async () => ({ outcome: "materialized", stepGrants: [] }),
   ) {
+    let keyRead = Promise.withResolvers<boolean>();
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
       ...sidecarAuth((sidecarId) => {
@@ -1411,14 +1412,19 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       // the deferred-mail TTL firing.
       mailHoldTTLMs: 60_000,
       lookups: {
-        resolveSenderKey,
+        resolveSenderKey: (address) => {
+          const read = keyRead;
+          keyRead = Promise.withResolvers<boolean>();
+          read.resolve(true);
+          return resolveSenderKey(address);
+        },
         materializeMailTriggeredRunGrants,
         authorizeMailSend: permitAllMailSend,
       },
     });
     router.fenceAllocation("alloc-sender", 1);
     router.fenceAllocation("alloc-recipient", 1);
-    return router;
+    return Object.assign(router, { nextKeyRead: () => keyRead.promise });
   }
 
   async function connectAs(
@@ -1461,6 +1467,32 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     return ws.sent
       .map((raw): Record<string, unknown> => JSON.parse(raw))
       .filter((f) => f.type === type);
+  }
+
+  // A parked mail is held before the router reads the sender's key, so that
+  // read says it is parked, whatever the router awaits before it. Nothing
+  // after a null read leaves the event loop, so one turn lets the handler
+  // that made it return.
+  async function sendMailAndAwaitKeyRead(
+    router: ReturnType<typeof createInterlockRouter>,
+    senderWs: ReturnType<typeof createMockWs>,
+    rawMessage = RAW_MESSAGE,
+  ): Promise<void> {
+    const read = router.nextKeyRead();
+    sendMail(router, senderWs, rawMessage);
+    await read;
+    await tick();
+  }
+
+  // routeMail derives the delivery key before it sends, and Bun digests an
+  // input of 64 bytes or more (85 here) on a work queue, so no number of
+  // event-loop turns says a mail has arrived.
+  async function deliveredMail(
+    ws: ReturnType<typeof createMockWs>,
+    count: number,
+  ): Promise<Record<string, unknown>[]> {
+    await waitUntil(() => framesOfType(ws, "mail.inbound").length >= count);
+    return framesOfType(ws, "mail.inbound");
   }
 
   test("delivers once, promptly, with the sender key when the key is recorded mid-resolve", async () => {
@@ -1530,8 +1562,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     // mark the allocated key-record mid-flight so a null resolve parks rather than
     // delivering keyless.
     router.noteSenderDeployStarted(SENDER, ATTEMPT);
-    sendMail(router, senderWs);
-    await tick();
+    await sendMailAndAwaitKeyRead(router, senderWs);
     // The mail is parked, not delivered.
     expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
 
@@ -1556,8 +1587,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
         dropped.push(mail);
       });
       router.noteSenderDeployStarted(SENDER, ATTEMPT);
-      sendMail(router, senderWs);
-      await tick();
+      await sendMailAndAwaitKeyRead(router, senderWs);
       router.noteSenderDeploySettled(
         { allocationId: ATTEMPT.allocationId, generation: ATTEMPT.generation },
         { failed: "previous initialization did not commit" },
@@ -1566,8 +1596,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
 
       const next = { ...ATTEMPT, generation, leaseId: "next-initializer" };
       router.noteSenderDeployStarted(SENDER, next);
-      sendMail(router, senderWs);
-      await tick();
+      await sendMailAndAwaitKeyRead(router, senderWs);
       router.noteSenderDeploySettled(ATTEMPT, { recorded: KEY });
       router.noteSenderDeploySettled(ATTEMPT, { failed: "late failure" });
       await tick();
@@ -1575,8 +1604,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
 
       router.noteSenderDeploySettled(next, { recorded: KEY });
-      await tick();
-      expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(1);
+      expect(await deliveredMail(recipientWs, 1)).toHaveLength(1);
       expect(dropped).toHaveLength(1);
     });
   }
@@ -1586,23 +1614,20 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     const senderWs = await connectAs(router, "sc-sender", SENDER);
     const recipientWs = await connectAs(router, "sc-recipient", RECIPIENT);
     router.noteSenderDeployStarted(SENDER, ATTEMPT);
-    sendMail(router, senderWs);
-    await tick();
+    await sendMailAndAwaitKeyRead(router, senderWs);
 
     router.noteSenderDeploySettled(ATTEMPT, { recorded: KEY });
     const next = { ...ATTEMPT, leaseId: "next-initializer" };
     router.noteSenderDeployStarted(SENDER, next);
-    sendMail(router, senderWs);
-    await tick();
-    expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(1);
+    await sendMailAndAwaitKeyRead(router, senderWs);
+    expect(await deliveredMail(recipientWs, 1)).toHaveLength(1);
     expect(
       framesOfType(recipientWs, "run.grants")[0]?.senderIdentities,
     ).toEqual([{ address: SENDER, publicKey: KEY }]);
 
     const nextKey = "cd".repeat(32);
     router.noteSenderDeploySettled(next, { recorded: nextKey });
-    await tick();
-    expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(2);
+    expect(await deliveredMail(recipientWs, 2)).toHaveLength(2);
     expect(
       framesOfType(recipientWs, "run.grants")[1]?.senderIdentities,
     ).toEqual([{ address: SENDER, publicKey: nextKey }]);
@@ -1628,17 +1653,16 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       for (const [index, key] of keys.entries()) {
         const attempt = { ...ATTEMPT, leaseId: `initializer-${String(index)}` };
         router.noteSenderDeployStarted(SENDER, attempt);
-        sendMail(
+        await sendMailAndAwaitKeyRead(
           router,
           senderWs,
           btoa(`Message-ID: <message-${String(index)}>\r\n\r\nhello`),
         );
-        await tick();
         router.noteSenderDeploySettled(attempt, { recorded: key });
       }
       await bothMaterializing.promise;
       materialize.resolve(true);
-      await tick();
+      await deliveredMail(recipientWs, 2);
 
       const frames = recipientWs.sent
         .map((raw): Record<string, unknown> => JSON.parse(raw))
@@ -1687,8 +1711,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       dropped.push(mail);
     });
     router.noteSenderDeployStarted(SENDER, ATTEMPT);
-    sendMail(router, senderWs);
-    await tick();
+    await sendMailAndAwaitKeyRead(router, senderWs);
     router.fenceAllocation(ATTEMPT.allocationId, 2);
     expect(dropped).toHaveLength(1);
     expect(() =>
@@ -1713,18 +1736,15 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       router.noteSenderDeployStarted(SENDER, next);
     });
     router.noteSenderDeployStarted(SENDER, ATTEMPT);
-    sendMail(router, senderWs);
-    await tick();
+    await sendMailAndAwaitKeyRead(router, senderWs);
     router.noteSenderDeploySettled(
       { allocationId: ATTEMPT.allocationId, generation: ATTEMPT.generation },
       { failed: "previous initialization did not commit" },
     );
-    sendMail(router, senderWs);
-    await tick();
+    await sendMailAndAwaitKeyRead(router, senderWs);
     expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
     router.noteSenderDeploySettled(next, { recorded: KEY });
-    await tick();
-    expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(1);
+    expect(await deliveredMail(recipientWs, 1)).toHaveLength(1);
   });
 
   test("a settle only wakes mail parked under its own deploy attempt", async () => {
@@ -1747,8 +1767,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     // mark the allocated key-record mid-flight so a null resolve parks rather than
     // delivering keyless.
     router.noteSenderDeployStarted(SENDER, ATTEMPT);
-    sendMail(router, senderWs);
-    await tick();
+    await sendMailAndAwaitKeyRead(router, senderWs);
 
     // The key is now recorded. A settle for a DIFFERENT allocation matches no
     // open attempt, so the sender's mail stays parked even though its key would
@@ -1884,7 +1903,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
         delivered: false,
       }),
     );
-    await tick();
+    await waitUntil(() => undelivered.length > 0);
 
     // The mail took the normal path immediately: the external recipient is
     // reported undelivered for host relay rather than being held for a settle.
