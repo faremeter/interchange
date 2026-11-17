@@ -345,8 +345,8 @@ async function invokeColdStep(
   //
   // `message.received` is the single intentional exclusion: it is an
   // assembly-internal dequeue signal, and the hub-facing audit chain
-  // expresses per-message work through the `message.run.started` /
-  // `message.run.ended` bracket pair instead. The filter is an
+  // expresses per-turn work through the `reactor.turn.started` /
+  // `reactor.turn.ended` events instead. The filter is an
   // allowlist-of-everything-except, so new `InferenceEvent` members
   // flow through by default.
   const eventForward = subscribeAgentEvents(agent, opts.onEvent);
@@ -611,8 +611,8 @@ async function buildStepAgent(
  * The message sent depends on `req.resume` and its kind. A first invocation
  * sends the synthesized `req.input` content. An `"approval"` resume sends the
  * full correlated `InboundMessage` built from `req.resume`, whose
- * `headers.interchangeCorrelationId` routes through the reactor's
- * `tryCorrelate` to match the rehydrated gate and resume the parked cycle --
+ * `headers.interchangeCorrelationId` is correlated by the reactor with the
+ * rehydrated gate and resumes the parked cycle --
  * no second inference cycle. An `"input"` resume sends the decision as plain
  * synthesized content, exactly like a first invocation: it is the step's next
  * turn, with no gate to correlate. Because every path goes through
@@ -805,7 +805,7 @@ function stepResultFromSend(result: SendResult): StepInvokeResult {
  *
  * - `"approval"` resume: the reactor is parked mid-turn on a tool/authz gate.
  *   Build the full `InboundMessage` stamped with `resume.correlationId` so the
- *   header reaches the reactor's `tryCorrelate` and matches the rehydrated
+ *   header reaches the reactor, which correlates it with the rehydrated
  *   gate. The object form is load-bearing -- a plain string would drop the
  *   correlation id and the resumed cycle would never match. An approval
  *   decision is never a mail-derived `Mail`, so it stays on this branch.

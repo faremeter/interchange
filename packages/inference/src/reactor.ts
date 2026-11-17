@@ -39,6 +39,8 @@ import type {
   TransformRecord,
   StrategyContext,
   StrategyResult,
+  TurnEndedData,
+  TurnFailureKind,
 } from "@intx/types/runtime";
 
 import { getLogger } from "@intx/log";
@@ -48,9 +50,10 @@ import type { CredentialMaterialResolver } from "@intx/types";
 import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import { type } from "arktype";
 import { runInference } from "./harness";
+import { classifyAbortError } from "./errors";
 import type { Dependencies, InferenceHarnessOptions } from "./harness";
 import { createCapabilities } from "./director";
-import { createGateManager } from "./gates";
+import { createGateManager, type GateRecord } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
 import { createStateManager } from "./state";
 import { validateActions } from "./actions";
@@ -93,7 +96,7 @@ export function mergeInferenceOptions(
  * Copy only the keys a send may set. A structurally wider bag still
  * type-checks as `PerCallInferenceOptions`; without this copy,
  * `systemPrompt`, `tools`, and `providerOptions` would enter the
- * message-run slot and displace the deployed agent definition. The key
+ * turn's options and displace the deployed agent definition. The key
  * set is the arktype declaration itself, so a key added there is copied
  * without a matching edit here. The declaration also checks the values,
  * so an out-of-range option is rejected here rather than at the provider.
@@ -176,11 +179,12 @@ export type ReactorConfig = {
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
   /**
-   * Number of consecutive identical tool-call turns that trips doom-loop
-   * detection. A turn's identity is its batch of executed tool calls; a
-   * runaway model repeating the same call burns inference cost with no
-   * progress. On the Nth consecutive identical turn the reactor emits a fatal
-   * `reactor.error` and shuts the run down. Must be a positive integer.
+   * Number of consecutive identical tool batches in one turn that trips
+   * doom-loop detection. A batch's identity is its set of executed tool
+   * calls; a runaway model repeating the same call burns inference cost with
+   * no progress. On the Nth consecutive identical batch the reactor emits a
+   * fatal `reactor.error`, ends the turn `failed` with kind `doom_loop`, and
+   * shuts down. Must be a positive integer.
    * Pass `false` to disable doom-loop detection entirely. Defaults to
    * `DEFAULT_DOOM_LOOP_THRESHOLD`.
    */
@@ -202,9 +206,10 @@ export type Reactor = {
   start(): void;
   /**
    * Inject an inbound message into the reactor. `opts.inference` applies to
-   * every inference call of the message run the delivery opens, or of the
-   * parked run it resumes, beneath any option the director names; it is
-   * never retained past that run. `opts.turnId` names the delivery's turn;
+   * every later inference call of the turn the delivery starts, or of the
+   * parked turn it resumes, beneath any option the director names; it is
+   * never retained past that turn. A resume with no options keeps the
+   * options the turn has. `opts.turnId` names the delivery's turn;
    * the reactor stamps it on the `inference.start`, `inference.done`,
    * `connector.reply` and `reactor.gate.blocked` events of the cycles the
    * delivery starts. A delivery with no `turnId` gets a fresh one. A
@@ -212,6 +217,13 @@ export type Reactor = {
    * operation's turn instead. A director gate on an existing pending
    * operation with no live gate moves that operation to the turn that
    * suspends.
+   *
+   * Throws when `opts.turnId` names a turn that already ended. A delivery
+   * after the reactor is done ends its turn `failed` at once, unless that
+   * turn is open in this process (started and not ended, parked on a
+   * pending operation, or with a queued event): such a turn survives for
+   * the restart, and the reactor drops the delivery with no event. A caller
+   * that names another live turn as `opts.turnId` misuses the reactor.
    */
   deliver(message: InboundMessage, opts?: DeliverOptions): void;
   /** Initiate graceful shutdown with a reason. */
@@ -317,8 +329,50 @@ export function createReactor(config: ReactorConfig): Reactor {
     return ++seq;
   }
 
+  // Set once `reactor.done` is emitted.
+  let doneEmitted = false;
+
+  // Two rules hold for every event, so the one place that sees every event
+  // enforces them:
+  //
+  // - No event that carries a turn's id follows its `reactor.turn.ended`. A
+  //   turn can end while work of it is still in flight: a correlation-
+  //   dispatch failure ends the running turn during its inference, its tool
+  //   batch, or its suspend commit, and each of those paths would emit for
+  //   the turn when it settles. Events that carry no turn id (such as
+  //   `tool.start`, `tool.done`, the inference deltas, `inference.error` and
+  //   `reactor.gate.cleared`) are not dropped here, so during that fatal
+  //   shutdown they can still follow the turn's failed end, up to
+  //   `reactor.done`.
+  // - Only `reactor.turn.ended` follows `reactor.done`. Work that the
+  //   shutdown does not wait for, such as a director suspend whose commit
+  //   outlives the shutdown, can still settle after it. A delivery after done
+  //   still ends its turn, so that one event passes.
+  //
+  // A dropped event already took its sequence number, so a drop can leave a
+  // gap in the sequence numbers. A drop happens only on a fatal-failure path,
+  // right before or after `reactor.done`.
   function emit(event: ReactorEmittedEvent): void {
+    if (doneEmitted && event.type !== "reactor.turn.ended") return;
+    const eventTurnId = turnIdOf(event);
+    if (eventTurnId !== undefined && endedTurns.has(eventTurnId)) return;
     onEvent(event);
+    if (event.type === "reactor.done") doneEmitted = true;
+  }
+
+  // The turn id an event carries, except on `reactor.turn.ended`, which is
+  // the end itself.
+  function turnIdOf(event: ReactorEmittedEvent): string | undefined {
+    switch (event.type) {
+      case "inference.start":
+      case "inference.done":
+      case "connector.reply":
+      case "reactor.gate.blocked":
+      case "reactor.turn.started":
+        return event.data.turnId;
+      default:
+        return undefined;
+    }
   }
 
   // Inbound event queue. Events are pushed here and drained by the loop. Each
@@ -365,6 +419,17 @@ export function createReactor(config: ReactorConfig): Reactor {
   function enqueue(event: AbortEvent, turnId: null): void;
   function enqueue(event: TurnEvent, turnId: string): void;
   function enqueue(event: ReactorInboundEvent, turnId: string | null): void {
+    // No event is queued for an ended turn. After done this is routine: in-
+    // flight work settles after a fatal path ended its turn. While the
+    // reactor runs, delivery admission never queues for an ended turn, so a
+    // hit here is a bug; it is reported and the event is dropped.
+    if (turnId !== null && endedTurns.has(turnId)) {
+      if (!done) {
+        logger.error`Event ${event.type} queued for ended turn ${turnId}`;
+        emitError(`Event ${event.type} for ended turn ${turnId}`, false);
+      }
+      return;
+    }
     if (CYCLE_EVENT_TYPES.has(event.type)) {
       pendingContinuations += 1;
     }
@@ -411,7 +476,8 @@ export function createReactor(config: ReactorConfig): Reactor {
     return queue.shift();
   }
 
-  const gates = createGateManager();
+  // Gate timeouts run on the injected scheduler, so a test can fire them.
+  const gates = createGateManager(deps.scheduler);
   const correlations = createCorrelationRegistry();
   const capabilities = createCapabilities();
 
@@ -422,8 +488,13 @@ export function createReactor(config: ReactorConfig): Reactor {
   // Correlation state is empty until context loading and gate rehydration
   // finish. Hold early deliveries so a resumed approval cannot be mistaken
   // for a new conversation message during that startup window.
-  let startupDeliveries: { message: InboundMessage; turnId: string }[] | null =
-    [];
+  let startupDeliveries:
+    | {
+        message: InboundMessage;
+        turnId: string;
+        inference: PerCallInferenceOptions | undefined;
+      }[]
+    | null = [];
 
   // The turn of the event the loop is handling now. It is set from each
   // dequeued entry and is null while the loop waits for an event, so a read
@@ -437,91 +508,118 @@ export function createReactor(config: ReactorConfig): Reactor {
     return cycleTurnId;
   }
 
-  // Per-message run-bracket state. Set when the loop dequeues a
-  // message.received and begins per-message work; cleared at the
-  // terminal point (wait/reply/done) or at a reactor-fatal abandon.
-  // `messageRunId` is reactor-minted per dequeue via crypto.randomUUID
-  // so a crash-and-replay that re-delivers the same messageId still
-  // produces unambiguous start/end pairs downstream.
-  let currentMessageRunId: string | null = null;
-  let currentMessageId: string | null = null;
-  // Per-send inference options, keyed by the delivered message until it is
-  // dequeued (or correlated), then held for the message run it drives.
-  const deliveredInference = new WeakMap<
-    InboundMessage,
-    PerCallInferenceOptions
-  >();
-  let messageRunInference: PerCallInferenceOptions | undefined;
-  // Correlation ids the currently open message run suspended on, cleared
-  // whenever that run closes. This is what tells a late correlated response
-  // apart from one that correlates to an operation some earlier, already-
-  // closed run left registered: `gates` itself never expires an entry on run
-  // close (only on clear/timeout), so a stale gate can outlive the run that
-  // opened it and still answer `gates.has`. The key is the correlation id,
-  // not the gate id, because a director may suspend under its own gate id
-  // while the tool's pending marker registered the operation under
-  // `pending-<correlationId>`; the correlation id is what both share, and it
-  // is also how `tryCorrelate` finds the gate to resume. Rehydrated gates
-  // (`rehydrateGates`) are deliberately not added here -- they predate any
-  // run this process has opened, so they can never be "this run's own".
-  const openRunCorrelationIds = new Set<string>();
+  // The state of each live or staged turn. A delivery stages a turn's state
+  // before the loop starts it, so the per-send options wait there. A parked
+  // turn keeps its state, also its doom-loop counters, until it ends. The
+  // counters are not persisted, so a restart resets them to zero.
+  type TurnState = {
+    started: boolean;
+    inference: PerCallInferenceOptions | undefined;
+    replied: boolean;
+    lastToolBatchSignature: string | null;
+    toolBatchRepeatCount: number;
+    lastToolBatchNames: string[];
+  };
+  const turnStates = new Map<string, TurnState>();
+  // The turns that ended in this process. The reactor emits at most one
+  // `reactor.turn.ended` for each turn, and an event of an ended turn is
+  // never handled again. The set grows by one id for each turn for the life
+  // of the process.
+  const endedTurns = new Set<string>();
 
-  // Doom-loop detection state, scoped to the current message run. Each executed
-  // tool-call turn is reduced to a batch signature; consecutive identical
-  // signatures accumulate here, and the run is broken when the count reaches
-  // `doomLoopThreshold`. This is run-scoped, not cycle-scoped: it resets only in
-  // `openMessageRun`, never in `resetCycleAccumulators`. It is also deliberately
-  // ephemeral (closure state, not persisted) -- a mid-run restart resets it to
-  // zero and the loop simply re-accumulates and trips a few turns later.
-  let lastToolBatchSignature: string | null = null;
-  let toolBatchRepeatCount = 0;
-  let lastToolBatchNames: string[] = [];
+  function turnState(turnId: string): TurnState {
+    let s = turnStates.get(turnId);
+    if (s === undefined) {
+      s = {
+        started: false,
+        inference: undefined,
+        replied: false,
+        lastToolBatchSignature: null,
+        toolBatchRepeatCount: 0,
+        lastToolBatchNames: [],
+      };
+      turnStates.set(turnId, s);
+    }
+    return s;
+  }
 
-  function openMessageRun(messageId: string | undefined): void {
-    currentMessageRunId = crypto.randomUUID();
-    currentMessageId = messageId ?? null;
-    lastToolBatchSignature = null;
-    toolBatchRepeatCount = 0;
-    lastToolBatchNames = [];
-    const data: {
-      messageId?: string;
-      messageRunId: string;
-      receivedAt: number;
-    } = {
-      messageRunId: currentMessageRunId,
-      receivedAt: Date.now(),
-    };
-    if (messageId !== undefined) data.messageId = messageId;
+  function requireTurnState(turnId: string): TurnState {
+    const s = turnStates.get(turnId);
+    if (s === undefined) {
+      throw new Error(`Turn ${turnId} has no state`);
+    }
+    return s;
+  }
+
+  // Emit `reactor.turn.started` the first time the loop handles an event of
+  // a turn in this process. A resume during the first cycle of a turn emits
+  // no second start.
+  function startTurn(event: TurnEvent, turnId: string): void {
+    if (endedTurns.has(turnId)) {
+      throw new Error(`Event ${event.type} for ended turn ${turnId}`);
+    }
+    const s = turnState(turnId);
+    if (s.started) return;
+    if (CYCLE_EVENT_TYPES.has(event.type)) {
+      throw new Error(
+        `Event ${event.type} for turn ${turnId} before its start`,
+      );
+    }
+    s.started = true;
+    const messageId =
+      event.type === "message.received"
+        ? event.message.headers.messageId
+        : undefined;
     emit({
-      type: "message.run.started",
+      type: "reactor.turn.started",
       seq: nextSeq(),
-      data,
+      data: {
+        turnId,
+        resumed: event.type !== "message.received",
+        ...(messageId !== undefined ? { messageId } : {}),
+      },
     });
   }
 
-  function closeMessageRun(
-    status: "completed" | "failed",
-    error?: { message: string; kind?: string },
+  // End a started turn that has no live gate and no queued event. A turn
+  // with either still has work, and a later cycle settles it again.
+  function settleTurn(turnId: string): void {
+    const s = turnStates.get(turnId);
+    if (s === undefined || !s.started) return;
+    if (gates.hasTurn(turnId) || queue.some((e) => e.turnId === turnId)) {
+      return;
+    }
+    endTurn(
+      s.replied
+        ? { turnId, outcome: "replied" }
+        : { turnId, outcome: "unanswered" },
+    );
+  }
+
+  function endTurn(data: TurnEndedData): void {
+    if (endedTurns.has(data.turnId)) return;
+    endedTurns.add(data.turnId);
+    turnStates.delete(data.turnId);
+    emit({ type: "reactor.turn.ended", seq: nextSeq(), data });
+  }
+
+  function failTurn(
+    turnId: string,
+    message: string,
+    kind: TurnFailureKind,
   ): void {
-    messageRunInference = undefined;
-    openRunCorrelationIds.clear();
-    // Gated on the run id alone: a message that named no id still has to
-    // close its bracket, or the run stays open for the rest of the session.
-    if (currentMessageRunId === null) return;
-    const data: {
-      messageRunId: string;
-      messageId?: string;
-      status: "completed" | "failed";
-      error?: { message: string; kind?: string };
-    } = {
-      messageRunId: currentMessageRunId,
-      status,
-    };
-    if (currentMessageId !== null) data.messageId = currentMessageId;
-    if (error !== undefined) data.error = error;
-    emit({ type: "message.run.ended", seq: nextSeq(), data });
-    currentMessageRunId = null;
-    currentMessageId = null;
+    endTurn({ turnId, outcome: "failed", error: { message, kind } });
+  }
+
+  // The turn whose cycle runs now. Between two events the loop holds no
+  // turn, but a dispatched operation that settled has queued its cycle event
+  // under the turn it runs for.
+  function runningTurn(): string | null {
+    return (
+      cycleTurnId ??
+      queue.find((e) => CYCLE_EVENT_TYPES.has(e.event.type))?.turnId ??
+      null
+    );
   }
 
   // Per-cycle accumulator of TransformRecord entries produced by every
@@ -565,9 +663,12 @@ export function createReactor(config: ReactorConfig): Reactor {
   // Correlation helper
   // -------------------------------------------------------------------------
 
-  // Guard against concurrent tryCorrelate calls for the same correlationId.
-  // deliver() is fire-and-forget async, so two rapid delivers can interleave
-  // across an await boundary in the validator, causing double-correlation.
+  // The correlation ids whose delivery is in progress. verifyCorrelation
+  // adds an id; a rejected validation releases it at once, and a matched id
+  // stays until processDelivery's finally, after the admission is applied.
+  // deliver() is fire-and-forget async: two deliveries for one correlation
+  // can interleave across the validator's await, and with no validator both
+  // can verify in the same tick, so the id must stay held until the apply.
   const correlatingIds = new Set<string>();
 
   // How the reactor resumes a correlated pending operation.
@@ -660,16 +761,58 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
   }
 
-  async function tryCorrelate(message: InboundMessage): Promise<boolean> {
-    const correlationId = message.headers.interchangeCorrelationId;
-    if (correlationId === undefined) return false;
+  // Delivery admission. A delivery awaits once, in verifyCorrelation, and
+  // changes no state before that await, except that it marks its
+  // correlation as in progress (correlatingIds). After it, admitDelivery
+  // reads the current state and returns one decision, and applyAdmission
+  // carries it out, both in the same synchronous step. No other code on the delivery
+  // path changes state. A correlation ends the delivered turn only when this
+  // process has not seen it: the turn has not ended and this process does
+  // not hold it open (see turnPhase).
+  type Verdict =
+    | { kind: "uncorrelated" }
+    | { kind: "matched"; correlationId: string };
 
-    if (correlatingIds.has(correlationId)) return false;
+  // "ended": the turn ended in this process. "open": not ended, and started,
+  // or owns a registered pending operation, or has a queued event (after a
+  // restart, a parked turn whose rehydrated gate fired before it started).
+  // "unseen": neither.
+  type TurnPhase = "unseen" | "open" | "ended";
+
+  type Admission = { deliveredPhase: TurnPhase } & (
+    | { kind: "after-done" }
+    | { kind: "message"; turnId: string }
+    | {
+        kind: "consume";
+        correlationId: string;
+        op: PendingOperation | undefined;
+        appendHistory: boolean;
+        endDelivered: TurnEndedData | null;
+      }
+    | {
+        kind: "resume";
+        correlationId: string;
+        op: PendingOperation;
+        gate: GateRecord;
+        // The turn the resume continues.
+        resumedTurnId: string;
+        endDelivered: TurnEndedData | null;
+      }
+  );
+
+  // The only await of the delivery path. Apart from the in-progress guard
+  // it reads and never writes: it returns "matched" when an operation is
+  // registered for the message's correlation id, no other delivery for that
+  // id is in progress, and the validator accepts. The id stays in
+  // correlatingIds from here until the matched delivery is applied.
+  async function verifyCorrelation(message: InboundMessage): Promise<Verdict> {
+    const correlationId = message.headers.interchangeCorrelationId;
+    if (correlationId === undefined) return { kind: "uncorrelated" };
+    if (correlatingIds.has(correlationId)) return { kind: "uncorrelated" };
     const pending = correlations.lookup(correlationId);
-    if (pending === undefined) return false;
+    if (pending === undefined) return { kind: "uncorrelated" };
 
     correlatingIds.add(correlationId);
-
     if (correlationValidator !== undefined) {
       let valid: boolean;
       try {
@@ -677,101 +820,206 @@ export function createReactor(config: ReactorConfig): Reactor {
       } catch (cause) {
         logger.warn`Correlation validator threw for ${correlationId}: ${cause}`;
         correlatingIds.delete(correlationId);
-        return false;
+        return { kind: "uncorrelated" };
       }
       if (!valid) {
         correlatingIds.delete(correlationId);
-        return false;
+        return { kind: "uncorrelated" };
       }
     }
+    // A matched verdict keeps the id in correlatingIds. processDelivery
+    // releases it after the admission is applied, so a second delivery for
+    // the same correlation, even one made in the same tick, finds it in
+    // progress and becomes a regular message.
+    return { kind: "matched", correlationId };
+  }
 
-    // Capture the operation before removal so the resume dispatch can read its
-    // kind and suspended call. Removal happens only after the dispatch is
-    // decided, all inside this correlatingIds-guarded critical section so a
-    // double-deliver early-returns rather than double-dispatching.
-    const op = pending;
-
-    let dispatch: ResumeDispatch;
-    try {
-      dispatch = resumePendingOperation(op, message);
-    } catch (cause) {
-      correlatingIds.delete(correlationId);
-      throw cause;
+  function turnPhase(turnId: string): TurnPhase {
+    if (endedTurns.has(turnId)) return "ended";
+    if (
+      turnStates.get(turnId)?.started === true ||
+      correlations.all().some((op) => op.turnId === turnId) ||
+      queue.some((e) => e.turnId === turnId)
+    ) {
+      return "open";
     }
+    return "unseen";
+  }
 
+  // Decide what a delivery does, from the state at this moment. The
+  // operation can have timed out, resumed through another path, or moved to
+  // the turn that now waits for it while the validator ran; the decision
+  // uses the operation registered now, under its current turn.
+  function admitDelivery(deliveredTurnId: string, verdict: Verdict): Admission {
+    const deliveredPhase = turnPhase(deliveredTurnId);
+    if (done) return { deliveredPhase, kind: "after-done" };
+    if (verdict.kind === "uncorrelated") {
+      // A delivery that does not correlate is a new message under its
+      // turn. When that turn ended while the validator ran, the message gets
+      // a new turn, as a delivery that names no turn does.
+      return {
+        deliveredPhase,
+        kind: "message",
+        turnId:
+          deliveredPhase === "ended" ? crypto.randomUUID() : deliveredTurnId,
+      };
+    }
+    const { correlationId } = verdict;
+    const unanswered: TurnEndedData | null =
+      deliveredPhase === "unseen"
+        ? { turnId: deliveredTurnId, outcome: "unanswered" }
+        : null;
+    const op = correlations.lookup(correlationId);
+    if (op === undefined) {
+      return {
+        deliveredPhase,
+        kind: "consume",
+        correlationId,
+        op: undefined,
+        appendHistory: false,
+        endDelivered: unanswered,
+      };
+    }
     const gate = gates.findByCorrelationId(correlationId);
-    switch (dispatch.mode) {
-      case "redispatch": {
-        // Clear the gate WITHOUT enqueuing gate.cleared: the re-dispatched call
-        // is the resumption, so a gate.cleared-driven re-infer would double the
-        // continuation. The re-dispatch's own tool.done answers the call.
-        if (gate !== undefined) {
-          gates.clearSilently(gate.gateId);
-          if (stateManager !== null) {
-            stateManager.setGatesSnapshot(gates.snapshot());
-          }
+    if (gate === undefined) {
+      // An approval with no gate timed out during its suspend's commit; the
+      // deferred clear answers its call when the suspend completes, so the
+      // operation is left to it. An async response with no gate lands in
+      // history and resumes nothing.
+      const isAsync = op.suspendedCall === undefined;
+      return {
+        deliveredPhase,
+        kind: "consume",
+        correlationId,
+        op,
+        appendHistory: isAsync,
+        endDelivered: unanswered,
+      };
+    }
+    // An approval resumes on the operation's turn (re-run or denied
+    // result). An async response clears the gate, and the gate's
+    // gate.cleared resumes the gate's turn. The two differ when a director
+    // suspended on a correlation before any operation existed and a later
+    // turn's marker registered it.
+    const resumedTurnId =
+      op.suspendedCall !== undefined ? op.turnId : gate.turnId;
+    return {
+      deliveredPhase,
+      kind: "resume",
+      correlationId,
+      op,
+      gate,
+      resumedTurnId,
+      endDelivered:
+        deliveredPhase === "unseen"
+          ? {
+              turnId: deliveredTurnId,
+              outcome: "joined",
+              joinedTurnId: resumedTurnId,
+            }
+          : null,
+    };
+  }
+
+  // Carry out an admission. This is the only code on the delivery path that
+  // changes state. A malformed approval decision throws from
+  // resumePendingOperation before any change (a correlation-dispatch
+  // failure).
+  function applyAdmission(
+    admission: Admission,
+    message: InboundMessage,
+    deliveredTurnId: string,
+    inference: PerCallInferenceOptions | undefined,
+  ): void {
+    switch (admission.kind) {
+      case "after-done":
+        // A turn this process holds open survives for the restart, and an
+        // ended turn already has its end, so only an unseen turn ends here.
+        if (admission.deliveredPhase === "unseen") {
+          failTurn(deliveredTurnId, "The reactor is done", "reactor_done");
         }
-        correlations.remove(correlationId);
-        if (stateManager !== null) {
-          stateManager.removePendingOperation(correlationId);
+        return;
+      case "message": {
+        const turnId = admission.turnId;
+        if (turnId !== deliveredTurnId) {
+          logger.warn`Delivery named turn ${deliveredTurnId}, which ended while its correlation was validated; it runs under new turn ${turnId}`;
         }
-        // The grant is already recorded (synchronously, in
-        // resumePendingOperation) with no await since; enqueue the re-dispatch
-        // so it runs on the loop with normal event ordering. The director sees
-        // this event before the call's tool.done arrives.
-        enqueue(
-          { type: "resume.execute_tools", calls: dispatch.calls },
-          op.turnId,
-        );
-        break;
+        if (inference !== undefined) turnState(turnId).inference = inference;
+        emit({ type: "message.received", seq: nextSeq(), data: { message } });
+        enqueue({ type: "message.received", message }, turnId);
+        return;
       }
-      case "error_result": {
-        // The approver denied the call. Clear the gate SILENTLY (like the
-        // approved redispatch) so it cannot also trip onGateCleared and enqueue
-        // a second continuation. The synthetic error result answers the parked
-        // call; the loop appends it to history before the director decides.
-        if (gate !== undefined) {
-          gates.clearSilently(gate.gateId);
+      case "consume": {
+        const { correlationId, op } = admission;
+        if (op !== undefined && admission.appendHistory) {
+          correlations.remove(correlationId);
           if (stateManager !== null) {
-            stateManager.setGatesSnapshot(gates.snapshot());
+            stateManager.removePendingOperation(correlationId);
+            const msg = createInboundTurn(message);
+            if (msg !== null) stateManager.appendTurn(msg);
           }
         }
-        correlations.remove(correlationId);
-        if (stateManager !== null) {
-          stateManager.removePendingOperation(correlationId);
-        }
-        enqueue(
-          { type: "resume.tool_result", result: dispatch.result },
-          op.turnId,
-        );
-        break;
+        emit({
+          type: "message.correlated",
+          seq: nextSeq(),
+          data: { message, correlationId },
+        });
+        if (admission.endDelivered !== null) endTurn(admission.endDelivered);
+        return;
       }
-      case "gate-cleared": {
-        // Async-tool resumption: clear the gate normally so the director
-        // re-infers, and append the correlated response to history so the model
-        // sees the content it was waiting on.
-        if (gate !== undefined) {
-          gates.clear(gate.gateId);
+      case "resume": {
+        const { correlationId, op, gate } = admission;
+        const dispatch = resumePendingOperation(op, message);
+        // A resume's options apply to the turn it continues, and a resume
+        // with no options keeps the options that turn has.
+        if (inference !== undefined) {
+          turnState(admission.resumedTurnId).inference = inference;
         }
-        correlations.remove(correlationId);
-        if (stateManager !== null) {
-          stateManager.removePendingOperation(correlationId);
-          const msg = createInboundTurn(message);
-          if (msg !== null) {
-            stateManager.appendTurn(msg);
-          }
+        switch (dispatch.mode) {
+          case "redispatch":
+          case "error_result":
+            // Clear the gate WITHOUT its gate.cleared: the re-dispatched
+            // call, or the synthetic error result of a denied call, is the
+            // resumption, so a gate.cleared-driven re-infer would double the
+            // continuation.
+            gates.clearSilently(gate.gateId);
+            correlations.remove(correlationId);
+            if (stateManager !== null) {
+              stateManager.setGatesSnapshot(gates.snapshot());
+              stateManager.removePendingOperation(correlationId);
+            }
+            // The one-shot grant is already recorded (synchronously, in
+            // resumePendingOperation) with no await since. The director sees
+            // this event before the re-dispatched call's tool.done.
+            enqueue(
+              dispatch.mode === "redispatch"
+                ? { type: "resume.execute_tools", calls: dispatch.calls }
+                : { type: "resume.tool_result", result: dispatch.result },
+              op.turnId,
+            );
+            break;
+          case "gate-cleared":
+            // Async-tool resumption: clear the gate normally, so its
+            // gate.cleared resumes the gate's turn, and append the response
+            // to history so the model sees the content it was waiting on.
+            gates.clear(gate.gateId);
+            correlations.remove(correlationId);
+            if (stateManager !== null) {
+              stateManager.removePendingOperation(correlationId);
+              const msg = createInboundTurn(message);
+              if (msg !== null) stateManager.appendTurn(msg);
+            }
+            break;
         }
-        break;
+        emit({
+          type: "message.correlated",
+          seq: nextSeq(),
+          data: { message, correlationId },
+        });
+        if (admission.endDelivered !== null) endTurn(admission.endDelivered);
+        return;
       }
     }
-
-    emit({
-      type: "message.correlated",
-      seq: nextSeq(),
-      data: { message, correlationId },
-    });
-
-    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -818,7 +1066,19 @@ export function createReactor(config: ReactorConfig): Reactor {
         };
         signal.addEventListener("abort", onAbort, { once: true });
       });
-      if (signal.aborted) return;
+      // Every dispatched inference queues exactly one terminal event, so an
+      // abort finds the turn this inference runs for.
+      if (signal.aborted) {
+        enqueue(
+          {
+            type: "inference.error",
+            error: classifyAbortError(),
+            partial: { text: "" },
+          },
+          turnId,
+        );
+        return;
+      }
     }
 
     // Run the context transform chain to produce the materialized prompt.
@@ -854,10 +1114,12 @@ export function createReactor(config: ReactorConfig): Reactor {
       resetToPreferredSource();
 
       for (;;) {
+        // A correlation-dispatch failure can end the turn while this cycle
+        // runs. Its state is then gone, and the aborted call needs no options.
         const harnessOpts = buildHarnessOpts(
           prompt,
           config.source,
-          mergeInferenceOptions(messageRunInference, options),
+          mergeInferenceOptions(turnStates.get(turnId)?.inference, options),
           signal,
           nextSeq,
           config.readMaterial,
@@ -1091,19 +1353,27 @@ export function createReactor(config: ReactorConfig): Reactor {
     // their outcome by index (both the parallel and serial paths above keep
     // `outcomes` in `calls` order). A parked call contributes nothing, so a
     // suspend-then-redispatch cycle counts its one real execution once. The
-    // loop reads `toolBatchRepeatCount` after this returns and breaks the run
-    // when it reaches the threshold. A `null` threshold means detection is
-    // disabled, so the accounting is skipped entirely.
+    // counters belong to the turn, so another turn's batches between two of
+    // this turn's batches do not reset them. The loop reads the count after
+    // this returns and ends the turn when it reaches the threshold. A `null`
+    // threshold means detection is disabled, so the accounting is skipped
+    // entirely. A turn that a correlation-dispatch failure ended while the
+    // batch ran has no state left to count in.
     const ranCalls = calls.filter((_call, i) => outcomes[i] !== SUSPENDED);
-    if (doomLoopThreshold !== null && ranCalls.length > 0) {
+    const doom = turnStates.get(turnId);
+    if (
+      doomLoopThreshold !== null &&
+      ranCalls.length > 0 &&
+      doom !== undefined
+    ) {
       const signature = toolBatchSignature(ranCalls);
-      if (signature === lastToolBatchSignature) {
-        toolBatchRepeatCount += 1;
+      if (signature === doom.lastToolBatchSignature) {
+        doom.toolBatchRepeatCount += 1;
       } else {
-        lastToolBatchSignature = signature;
-        toolBatchRepeatCount = 1;
+        doom.lastToolBatchSignature = signature;
+        doom.toolBatchRepeatCount = 1;
       }
-      lastToolBatchNames = ranCalls.map((call) => call.name);
+      doom.lastToolBatchNames = ranCalls.map((call) => call.name);
     }
 
     cycleToolCallsExecuted += results.length;
@@ -1369,12 +1639,6 @@ export function createReactor(config: ReactorConfig): Reactor {
       onGateCleared,
       turnId,
     );
-    // Mark this correlation as belonging to the currently open run so a late
-    // correlated response can tell it apart from one an earlier, already-
-    // closed run left registered (see `openRunCorrelationIds`).
-    if (currentMessageRunId !== null && correlationId !== undefined) {
-      openRunCorrelationIds.add(correlationId);
-    }
 
     if (stateManager !== null) {
       stateManager.setGatesSnapshot(gates.snapshot());
@@ -1434,10 +1698,7 @@ export function createReactor(config: ReactorConfig): Reactor {
   // effective timeout the director-suspend fallback uses — rather than a
   // silent zero. This does not run through `suspendOnGate`: rehydration must
   // not re-emit `reactor.gate.blocked` (the suspension already happened before
-  // the restart) and must not commit (nothing changed). It also must not add
-  // to `openRunCorrelationIds`: a rehydrated gate predates any run this
-  // process has opened, so it can never be mistaken for the currently open
-  // run's own suspension.
+  // the restart) and must not commit (nothing changed).
   function rehydrateGates(ops: PendingOperation[]): void {
     for (const op of ops) {
       const timeoutMs =
@@ -1466,6 +1727,9 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
 
     while (!done) {
+      // The previous event's actions are dispatched. Its turn ends here when
+      // it holds no gate and has no queued event.
+      if (cycleTurnId !== null) settleTurn(cycleTurnId);
       cycleTurnId = null;
       await waitForEvent();
 
@@ -1483,22 +1747,24 @@ export function createReactor(config: ReactorConfig): Reactor {
         pendingContinuations -= 1;
       }
 
-      // Handle abort events: initiate shutdown regardless of director.
+      // Handle abort events: initiate shutdown regardless of director. The
+      // running turn ends failed. A parked or queued turn gets no end: it
+      // survives a restart.
       if (event.type === "abort") {
         if (!shutdownStarted) {
           done = true;
+          const running = runningTurn();
+          if (running !== null) {
+            failTurn(running, `Reactor aborted: ${event.reason}`, "aborted");
+          }
           await initiateShutdown();
         }
         break;
       }
 
+      startTurn(event, requireCycleTurnId());
+
       // Append inbound messages to conversation history so the provider sees them.
-      // Each dequeued message.received opens a fresh per-message run bracket.
-      // An uncorrelated message can arrive while an earlier run is still
-      // parked on a gate (that run left no way to reject or supersede it), so
-      // finding a prior bracket still open here is a routine path, not a
-      // defensive fallback: close it as completed first so the new bracket
-      // starts cleanly.
       if (event.type === "message.received") {
         if (stateManager !== null) {
           const msg = createInboundTurn(event.message);
@@ -1506,12 +1772,6 @@ export function createReactor(config: ReactorConfig): Reactor {
             stateManager.appendTurn(msg);
           }
         }
-        if (currentMessageRunId !== null) {
-          closeMessageRun("completed");
-        }
-        openMessageRun(event.message.headers.messageId);
-        messageRunInference = deliveredInference.get(event.message);
-        deliveredInference.delete(event.message);
       }
 
       // A parked approval that ended without running its tool (rejected or
@@ -1538,22 +1798,29 @@ export function createReactor(config: ReactorConfig): Reactor {
 
         logger.error`Director threw during decide: ${cause}`;
         emitError(`Director exception: ${msg}`, true);
-        closeMessageRun("failed", {
-          message: `Director exception: ${msg}`,
-          kind: "reactor_fatal",
-        });
+        failTurn(
+          requireCycleTurnId(),
+          `Director exception: ${msg}`,
+          "reactor_fatal",
+        );
         done = true;
         await initiateShutdown();
         break;
       }
 
+      // A correlation-dispatch failure can end the running turn and stop the
+      // reactor while the director decides. No action of that turn may
+      // follow its end.
+      if (done) break;
+
       const validation = validateActions(actions);
       if (!validation.ok) {
         emitError(`Invalid action set: ${validation.error}`, true);
-        closeMessageRun("failed", {
-          message: `Invalid action set: ${validation.error}`,
-          kind: "reactor_fatal",
-        });
+        failTurn(
+          requireCycleTurnId(),
+          `Invalid action set: ${validation.error}`,
+          "reactor_fatal",
+        );
         done = true;
         await initiateShutdown();
         break;
@@ -1598,19 +1865,17 @@ export function createReactor(config: ReactorConfig): Reactor {
         // Flush the cycle (in case the director paired done with checkpoint
         // or other work) before shutting down.
         await commitCycle();
-        closeMessageRun("completed");
+        settleTurn(requireCycleTurnId());
         done = true;
         await initiateShutdown();
         break;
       }
 
       // Handle wait: commit the cycle (if work happened) and return to the
-      // event loop without shutting down. Wait is a per-message terminal:
-      // the reactor has nothing more to do for the message and is returning
-      // to idle.
+      // event loop without shutting down. The turn ends at the top of the
+      // loop unless it has queued work.
       if (normalized.some((a) => a.type === "wait")) {
         await commitCycle();
-        closeMessageRun("completed");
         continue;
       }
 
@@ -1636,7 +1901,9 @@ export function createReactor(config: ReactorConfig): Reactor {
         // earlier turn registered (an async pending marker) that has no live
         // gate. The running turn now waits for that operation, so the
         // operation, its gate and its resume belong to the turn that waits.
-        // The commit in suspendOnGate persists the move.
+        // The earlier turn can also have ended, and a gate under an ended
+        // turn would resume a turn that cannot end again. The commit in
+        // suspendOnGate persists the move.
         const waitedOn =
           gate.correlationId !== undefined
             ? correlations.lookup(gate.correlationId)
@@ -1665,6 +1932,9 @@ export function createReactor(config: ReactorConfig): Reactor {
         // Flush any pending cycle work before signaling the reply so the
         // emitted checkpointHash matches the visible state.
         await commitCycle();
+        // A correlation-dispatch failure during the commit ends this turn and
+        // stops the reactor; a reply must not follow the turn's end.
+        if (done) break;
         emit({
           type: "connector.reply",
           seq: nextSeq(),
@@ -1676,10 +1946,7 @@ export function createReactor(config: ReactorConfig): Reactor {
             turnId: requireCycleTurnId(),
           },
         });
-        // Reply is a per-message terminal point: close the bracket so the
-        // next inbound message opens a fresh run.
-        closeMessageRun("completed");
-        // After replying, wait for the next inbound message.
+        requireTurnState(requireCycleTurnId()).replied = true;
         continue;
       }
 
@@ -1693,10 +1960,11 @@ export function createReactor(config: ReactorConfig): Reactor {
           const msg = cause instanceof Error ? cause.message : String(cause);
           logger.error`Compaction failed: ${cause}`;
           emitError(`Compaction failed: ${msg}`, true);
-          closeMessageRun("failed", {
-            message: `Compaction failed: ${msg}`,
-            kind: "reactor_fatal",
-          });
+          failTurn(
+            requireCycleTurnId(),
+            `Compaction failed: ${msg}`,
+            "reactor_fatal",
+          );
           done = true;
           await initiateShutdown();
           break;
@@ -1718,16 +1986,19 @@ export function createReactor(config: ReactorConfig): Reactor {
         const parallel = toolsAction.parallel !== false;
         const addToHistory = toolsAction.addToHistory !== false;
         await executeTools(toolsAction.calls, parallel, addToHistory);
+        const turnId = requireCycleTurnId();
+        const doom = turnStates.get(turnId);
         if (
           doomLoopThreshold !== null &&
-          toolBatchRepeatCount >= doomLoopThreshold
+          doom !== undefined &&
+          doom.toolBatchRepeatCount >= doomLoopThreshold
         ) {
-          const tools = lastToolBatchNames.join(", ");
+          const tools = doom.lastToolBatchNames.join(", ");
           const message =
             `Doom loop detected: an identical tool batch (${tools}) executed ` +
             `${String(doomLoopThreshold)} times consecutively`;
           emitError(message, true);
-          closeMessageRun("failed", { message, kind: "doom_loop" });
+          failTurn(turnId, message, "doom_loop");
           done = true;
           await initiateShutdown();
           break;
@@ -1737,7 +2008,8 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       // No infer/tools/reply/suspend/wait/compact action — if a checkpoint
       // override was set on its own (or alongside emit/fork), the next event
-      // will pick it up. Nothing to flush here.
+      // will pick it up. Nothing to flush here. The turn ends at the top of
+      // the loop unless it has queued work.
     }
   }
 
@@ -1853,8 +2125,8 @@ export function createReactor(config: ReactorConfig): Reactor {
         const bufferedDeliveries = startupDeliveries;
         startupDeliveries = null;
         if (bufferedDeliveries !== null) {
-          for (const { message, turnId } of bufferedDeliveries) {
-            processDelivery(message, turnId);
+          for (const { message, turnId, inference } of bufferedDeliveries) {
+            processDelivery(message, turnId, inference);
           }
         }
 
@@ -1865,10 +2137,15 @@ export function createReactor(config: ReactorConfig): Reactor {
         startupDeliveries = null;
         logger.error`Reactor loop threw unexpectedly: ${cause}`;
         emitError(`Internal reactor error: ${msg}`, true);
-        closeMessageRun("failed", {
-          message: `Internal reactor error: ${msg}`,
-          kind: "reactor_fatal",
-        });
+        // A throw from rehydrateGates comes before any turn runs, and the
+        // startup deliveries it holds are dropped with no end.
+        if (cycleTurnId !== null) {
+          failTurn(
+            cycleTurnId,
+            `Internal reactor error: ${msg}`,
+            "reactor_fatal",
+          );
+        }
         if (!shutdownStarted) {
           await initiateShutdown();
         }
@@ -1876,73 +2153,71 @@ export function createReactor(config: ReactorConfig): Reactor {
     })();
   }
 
-  function processDelivery(message: InboundMessage, turnId: string): void {
+  function processDelivery(
+    message: InboundMessage,
+    turnId: string,
+    inference: PerCallInferenceOptions | undefined,
+  ): void {
     void (async () => {
-      // A correlated resume continues the parked run rather than opening a
-      // new one, and the loop may re-infer before tryCorrelate settles, so
-      // the resume's options are adopted up front whenever this message's
-      // correlation ID is one the currently open run suspended on
-      // (`openRunCorrelationIds`). `gates.has` alone is not enough: a gate an
-      // earlier, already-closed run left registered is still live there, and
-      // a late correlated response for it must not overwrite the run open
-      // now. An uncorrelated message either finds no run open yet (harmless
-      // to set now — opening its own run in the message.received handler
-      // sets the same value) or arrives while an unrelated run is still
-      // open, in which case it must not touch that run's options and
-      // instead overwrites them when its own run opens.
-      const inference = deliveredInference.get(message);
-      if (inference !== undefined) {
-        const correlationId = message.headers.interchangeCorrelationId;
-        const correlatesToOpenRun =
-          correlationId !== undefined &&
-          openRunCorrelationIds.has(correlationId);
-        if (correlatesToOpenRun || currentMessageRunId === null) {
-          messageRunInference = inference;
-        }
-      }
-      let correlated: boolean;
+      const verdict = await verifyCorrelation(message);
+      const admission = admitDelivery(turnId, verdict);
+      let failed = false;
       try {
-        correlated = await tryCorrelate(message);
+        applyAdmission(admission, message, turnId, inference);
       } catch (cause) {
+        failed = true;
         // A correlation-path invariant failed (e.g. a malformed approval
         // decision). Surface it as a fatal reactor error rather than a silent
         // unhandled rejection, and stop the run — the resume cannot proceed on
-        // a decision the reactor cannot trust.
+        // a decision the reactor cannot trust. The delivered turn ends failed
+        // only when this process had not seen it (a parked or queued turn
+        // gets no end on a failure path), and the running turn ends failed.
         const msg = cause instanceof Error ? cause.message : String(cause);
         logger.error`Correlation dispatch failed: ${cause}`;
         emitError(`Correlation dispatch failed: ${msg}`, true);
-        closeMessageRun("failed", {
-          message: `Correlation dispatch failed: ${msg}`,
-          kind: "reactor_fatal",
-        });
-        done = true;
-        if (!shutdownStarted) {
-          await initiateShutdown();
+        const error = `Correlation dispatch failed: ${msg}`;
+        if (admission.deliveredPhase === "unseen") {
+          failTurn(turnId, error, "reactor_fatal");
         }
-        return;
+        const running = runningTurn();
+        if (running !== null) failTurn(running, error, "reactor_fatal");
+        done = true;
+      } finally {
+        // A matched verdict holds its correlation as in progress until the
+        // admission is applied, whatever the outcome.
+        if (verdict.kind === "matched") {
+          correlatingIds.delete(verdict.correlationId);
+        }
       }
-      if (!correlated) {
-        emit({
-          type: "message.received",
-          seq: nextSeq(),
-          data: { message },
-        });
-        enqueue({ type: "message.received", message }, turnId);
+      if (failed && !shutdownStarted) {
+        await initiateShutdown();
       }
     })();
   }
 
   function deliver(message: InboundMessage, opts?: DeliverOptions): void {
-    if (done) return;
-    if (opts?.inference !== undefined) {
-      deliveredInference.set(message, perCallInference(opts.inference));
+    const inference =
+      opts?.inference !== undefined
+        ? perCallInference(opts.inference)
+        : undefined;
+    if (opts?.turnId !== undefined && endedTurns.has(opts.turnId)) {
+      throw new Error(`Turn ${opts.turnId} has already ended`);
     }
     const turnId = opts?.turnId ?? crypto.randomUUID();
-    if (startupDeliveries !== null) {
-      startupDeliveries.push({ message, turnId });
+    if (done) {
+      applyAdmission(
+        admitDelivery(turnId, { kind: "uncorrelated" }),
+        message,
+        turnId,
+        inference,
+      );
       return;
     }
-    processDelivery(message, turnId);
+    if (startupDeliveries !== null) {
+      startupDeliveries.push({ message, turnId, inference });
+      return;
+    }
+    processDelivery(message, turnId, inference);
   }
 
   function abort(reason: AbortReason): void {

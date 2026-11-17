@@ -799,10 +799,13 @@ describe("createReactorAssembly", () => {
     expect(error.data.fatal).toBe(true);
 
     const ended = events.events.find(
-      (e): e is Extract<ReactorEmittedEvent, { type: "message.run.ended" }> =>
-        e.type === "message.run.ended",
+      (e): e is Extract<ReactorEmittedEvent, { type: "reactor.turn.ended" }> =>
+        e.type === "reactor.turn.ended",
     );
-    if (ended === undefined) throw new Error("expected message.run.ended");
-    expect(ended.data.error?.kind).toBe("doom_loop");
+    if (ended === undefined) throw new Error("expected reactor.turn.ended");
+    expect(ended.data).toMatchObject({
+      outcome: "failed",
+      error: { kind: "doom_loop" },
+    });
   });
 });

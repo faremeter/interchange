@@ -108,6 +108,8 @@ connector.reply           — Agent reply sent to the conversation (carries cont
 reactor.start             — Reactor initialized
 reactor.gate.blocked      — Reactor suspended (reason, gate type, turn ID)
 reactor.gate.cleared      — Suspension resolved, reactor resuming
+reactor.turn.started      — The reactor starts work for a turn in this process (turn ID, resumed flag, message ID)
+reactor.turn.ended        — A turn ended (turn ID, outcome, joined turn ID or error)
 reactor.done              — Reactor completed normally
 reactor.error             — Reactor failed
 
@@ -322,6 +324,12 @@ This document uses "context" in three distinct senses:
 
 When the distinction matters, this document uses the specific term. When it doesn't, "context" refers to the message history.
 
+This document uses these terms for the work the reactor does:
+
+- **Turn** — One inbound request. A turn spans every cycle and every resume of that request, also across a restart. See [Turn IDs](#turn-ids) and [Turn Lifecycle](#turn-lifecycle).
+- **Cycle** — One model call and the actions that follow it. The hub's `inference_turn` row records one cycle, not one turn.
+- **Conversation turn** — One message in the message history (`ConversationTurn`), for example an assistant turn or a tool-result turn.
+
 ### Relationship to the Harness
 
 The harness (described in ARCHITECTURE.md) is the agent's runtime. The inference package is a library the harness uses. The harness:
@@ -409,7 +417,7 @@ It returns one or more actions. Multiple actions execute concurrently where poss
 
 **If the director throws an exception**, the reactor catches it, emits `reactor.error` with the exception details, and initiates graceful shutdown. The director is user-provided code and must not be able to crash the reactor without a clean terminal event.
 
-**If the model drives a doom loop** — the same tool-call turn (identical tool names and, by exact match, arguments) executed `doomLoopThreshold` times in a row, default 3 — the reactor emits a fatal `reactor.error` and initiates graceful shutdown, ending the run with `message.run.ended` carrying `kind: "doom_loop"`. This guards against a runaway model that repeats an identical call: it makes no progress but keeps paying for an inference every turn. Passing `doomLoopThreshold: false` disables the guard entirely.
+**If the model drives a doom loop** — the same tool batch (identical tool names and, by exact match, arguments) executed `doomLoopThreshold` times in a row in one turn, default 3 — the reactor emits a fatal `reactor.error`, ends the turn with `reactor.turn.ended` (outcome `failed`, `error.kind: "doom_loop"`), and initiates graceful shutdown. This guards against a runaway model that repeats an identical call: it makes no progress but keeps paying for an inference every cycle. Each turn has its own count, so the batches of another turn do not change it. A parked turn keeps its count in memory until it resumes. The count is not persisted, so a restart resets it. Passing `doomLoopThreshold: false` disables the guard entirely.
 
 ### Action Validation
 
@@ -419,7 +427,7 @@ The reactor validates the action set returned by the director before executing:
 - **Fork is composable** — `fork` can appear alongside `infer` or `execute_tools` (fork happens concurrently).
 - **Multiple tool executions collapse** — Multiple `execute_tools` actions are merged into a single parallel batch.
 - **Suspend is exclusive** — `suspend` cannot appear alongside `infer` or `execute_tools`. You either do work or you wait.
-- **Reply is terminal for the cycle** — At most one `reply` action. It carries a `content` string. The reactor flushes any pending cycle work, emits a `connector.reply` event carrying the content (and the current checkpoint hash, when one exists), then returns to the event loop to await the next inbound message. Because `reply` ends the turn by handing content back to the connector, it cannot appear alongside `infer`, `execute_tools`, `done`, `suspend`, or `wait` — the reactor will not both reply and continue doing work or terminate in the same set. It composes with the always-composable actions (`fork`, `emit`, `checkpoint`), which fire before the reply is emitted.
+- **Reply is terminal for the cycle** — At most one `reply` action. It carries a `content` string. The reactor flushes any pending cycle work, emits a `connector.reply` event carrying the content (and the current checkpoint hash, when one exists), then returns to the event loop to await the next inbound message. Because `reply` ends the cycle by handing content back to the connector, it cannot appear alongside `infer`, `execute_tools`, `done`, `suspend`, or `wait` — the reactor will not both reply and continue doing work or terminate in the same set. It composes with the always-composable actions (`fork`, `emit`, `checkpoint`), which fire before the reply is emitted.
 - **Checkpoint is composable** — At most one `checkpoint` per action set; it can appear alongside any other action (it fires before the other action executes). The checkpoint carries a `message` string used as the git commit message.
 - **Compact selects a registered compactor** — The `compact` action carries a `compactor` name (resolved against the reactor's compactor registry) and a `reason` string recorded in the manifest. Composition rules with other actions are defined in [Context Transforms and Compactors](#context-transforms-and-compactors). The reactor executes it via `executeCompact`, which runs the selected compactor and overwrites the durable turns (`turns.jsonl`, via `ContextStore.writeTurns`) with its output.
 - **Wait is exclusive** — `wait` returns to the event loop immediately. It cannot appear alongside `infer` or `execute_tools`.
@@ -444,12 +452,89 @@ A turn is one inbound request. Its turn ID spans every cycle and every resume of
 
 A caller names the turn with `reactor.deliver(message, { turnId })`. When the caller gives no `turnId`, the reactor mints a fresh ID for the delivery. The reactor records the turn ID of each event it queues, and it holds the turn ID of the event that it is handling now. It stamps that ID on `inference.start`, `inference.done`, `connector.reply`, and `reactor.gate.blocked`. The harness does not know turns, so the reactor stamps `inference.start` and `inference.done` as it passes them through.
 
-A gate and the pending operation it parks carry the turn ID of the turn that parked them. A director can suspend on the correlation of a pending operation that an earlier turn registered (an async pending marker). When the operation has no live gate, that gate moves the operation to the turn that suspends: the running turn now waits for the operation, so the operation, its gate and its resume belong to the turn that waits. When the correlation already has a live gate, of any turn, the reactor refuses the suspend with a non-fatal `reactor.error`, registers no gate and changes nothing. The pending operation persists its turn ID. A resume continues the parked turn, not the turn that runs when the resume happens:
+A gate and the pending operation it parks carry the turn ID of the turn that parked them. A director can suspend on the correlation of a pending operation that an earlier turn registered (an async pending marker). When the operation has no live gate, that gate moves the operation to the turn that suspends: the running turn now waits for the operation, so the operation, its gate and its resume belong to the turn that waits. The earlier turn can also have ended (see [Turn Lifecycle](#turn-lifecycle)), and a gate under an ended turn would resume a turn that cannot end again. When the correlation already has a live gate, of any turn, the reactor refuses the suspend with a non-fatal `reactor.error`, registers no gate and changes nothing. The pending operation persists its turn ID. A resume continues the parked turn, not the turn that runs when the resume happens:
 
 - An approved or rejected approval continues the pending operation's turn. The turn ID of the correlated delivery does not apply to the resume.
 - A gate that clears or times out continues the gate's turn.
 
 A pending operation persisted before turn IDs existed has no turn ID. When the reactor loads it, the reactor gives it the ID `legacy:<correlationId>`, and its rehydrated gate takes the same ID.
+
+### Turn Lifecycle
+
+The reactor gives each turn one lifecycle in a process: at most one `reactor.turn.started` and at most one `reactor.turn.ended`.
+
+**Start.** The reactor emits `reactor.turn.started` the first time it handles an event of a turn in this process:
+
+- On the dequeue of a new message, with `resumed: false` and the message's `messageId` when it has one.
+- On the first resume of a parked turn, with `resumed: true` and no `messageId`. A resume after a restart is a first resume in the new process.
+
+A resume that arrives while the turn's first cycle still runs emits no second start.
+
+**End.** A turn ends when one of its cycles settles and the turn has no live gate and no queued event. The outcome tells why:
+
+| Outcome      | Cause                                                                                                                                                                  |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replied`    | The turn settled after it emitted a `connector.reply`.                                                                                                                 |
+| `unanswered` | The turn settled with no reply: `wait`, an empty action set, emit or checkpoint only, `compact` alone, or `done`.                                                      |
+| `joined`     | A correlated delivery continued another turn. `joinedTurnId` names the turn it continued: the operation's turn for an approval, the gate's turn for an async response. |
+| `failed`     | A fatal path stopped the turn. `error` carries a message and a kind.                                                                                                   |
+
+`infer` and `execute_tools` do not end a turn, because they queue the turn's next cycle event. `suspend` does not end a turn, because the turn then holds a live gate. A gate that clears or times out queues its resume in the same step that removes the gate, so its turn does not settle in between.
+
+**Correlated deliveries.** The delivered turn is the turn the caller named on `deliver`, or the turn the reactor minted for it. A delivery awaits once, for the correlation validator, and changes no state before that await, except that it marks its correlation as in progress until its outcome is applied. After it, the reactor reads the current state once and does one thing, from this table. It uses the operation that is registered for the correlation now, under that operation's current turn: a director suspend can have moved the operation to the turn that waits for it while the validator ran.
+
+A correlation ends the delivered turn only when this process has not seen it: the turn has not ended and this process does not hold it open.
+
+| Reactor | Validation                                                                                                                                                | Operation and gate now                                                    | Outcome                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Done    | Any                                                                                                                                                       | Any                                                                       | The delivered turn ends `failed` (`reactor_done`) when this process has not seen it. Nothing else happens.                                                                                                                                                                                                                                                                                                 |
+| Running | Does not correlate (no correlation ID, no registered operation, a delivery for the same correlation in progress, the validator returns `false` or throws) | Any                                                                       | A new message under the delivered turn. When that turn ended while the validator ran, the delivery becomes a new message under a new turn ID, and the reactor logs a warning that names both IDs.                                                                                                                                                                                                          |
+| Running | Correlates                                                                                                                                                | No operation (for example, its gate timed out)                            | `message.correlated`; the delivered turn ends `unanswered`.                                                                                                                                                                                                                                                                                                                                                |
+| Running | Correlates                                                                                                                                                | An approval whose gate is gone (it timed out during its suspend's commit) | As above. The deferred timeout answers the parked call.                                                                                                                                                                                                                                                                                                                                                    |
+| Running | Correlates                                                                                                                                                | An approval with a live gate                                              | The approval resumes the operation's turn (re-run or denied result), and the delivery's options apply to that turn; `message.correlated`; the delivered turn ends `joined`, naming that turn.                                                                                                                                                                                                              |
+| Running | Correlates                                                                                                                                                | An async operation with a live gate                                       | The gate clears, and its `reactor.gate.cleared` resumes the gate's turn; the response lands in history; the operation is removed; the delivery's options apply to the gate's turn; `message.correlated`; the delivered turn ends `joined`, naming the gate's turn. That turn can differ from the operation's turn when a director suspended on the correlation before a later turn's marker registered it. |
+| Running | Correlates                                                                                                                                                | An async operation with no gate                                           | The response lands in history; the operation is removed; nothing is queued; `message.correlated`; the delivered turn ends `unanswered`.                                                                                                                                                                                                                                                                    |
+
+Each "ends" in the table applies only to a delivered turn that this process has not seen. A malformed approval decision is a correlation-dispatch failure (see Failures). A caller that names another live turn on `deliver` misuses the reactor.
+
+A turn that **this process holds open** has not ended and is one of these:
+
+- A started turn.
+- A turn that owns a registered pending operation.
+- A turn with an event in the queue. After a restart, this covers a parked turn whose rehydrated gate fired and queued its resume before the turn started in this process.
+
+**Failures.** These paths end turns `failed`. Each path except `deliver()` after done then shuts the reactor down; `deliver()` after done runs when the reactor is already done:
+
+| Path                         | Turns that end `failed`                                                                         | `error.kind`    |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- | --------------- |
+| Director throw               | The running turn                                                                                | `reactor_fatal` |
+| Invalid action set           | The running turn                                                                                | `reactor_fatal` |
+| Compaction failure           | The running turn                                                                                | `reactor_fatal` |
+| Doom loop                    | The running turn                                                                                | `doom_loop`     |
+| Loop throw                   | The running turn, if one runs                                                                   | `reactor_fatal` |
+| External `abort`             | The turn whose cycle event is queued, if any                                                    | `aborted`       |
+| Correlation-dispatch failure | The delivered turn unless this process holds it open or it already ended, then the running turn | `reactor_fatal` |
+| `deliver()` after done       | The delivered turn, at once, unless this process holds it open                                  | `reactor_done`  |
+
+A parked or queued turn gets no end on these paths. A running turn that also holds a gate still ends `failed`; after a restart, that gate can still resume it. A `deliver()` after done that names a turn this process holds open (see Correlated deliveries) ends nothing: the reactor drops the delivery, and the turn survives for the restart. A `deliver()` that names a turn that already ended throws, also after done (see Ended turns). A correlated delivery whose validator settles after the reactor is done follows the same rules, except that a turn that ended while the validator ran gets nothing: it already has its end.
+
+No event that carries a turn's ID follows its `reactor.turn.ended`. A turn can end while work of it is still in flight, for example when a correlation-dispatch failure ends the running turn during its inference or its suspend commit. The reactor drops any later event that carries the ended turn's ID. Events that carry no turn ID (for example `tool.start`, `tool.done`, the inference deltas, `inference.error` and `reactor.gate.cleared`) are not dropped by this rule. During the fatal shutdown that follows such a failure, they can still follow the turn's failed end, up to `reactor.done`. The reactor also queues no event for an ended turn. After done it drops the event. Before done it emits a non-fatal `reactor.error` and drops the event.
+
+Only `reactor.turn.ended` follows `reactor.done`. Work that the shutdown does not wait for, for example a director suspend whose commit outlives the shutdown, can settle after `reactor.done`, and the reactor drops its events. A delivery after done still ends its turn, so that event passes.
+
+A dropped event already has its sequence number, so a drop can leave a gap in the sequence numbers. Drops happen only on a fatal-failure path, right before or after `reactor.done`.
+
+**Turns that end with no start.** These turns get `reactor.turn.ended` with no `reactor.turn.started`: a `joined` turn, a correlated delivery that resumes nothing, a delivery after done, and the delivered turn of a correlation-dispatch failure.
+
+**Turns that never end in this process.** These turns get no `reactor.turn.ended`, by design:
+
+- A turn parked at shutdown. It survives the restart.
+- A started turn whose resume is queued, but is not yet a cycle event, at an abort or at `done`. The turn is parked.
+- A queued turn that never ran before shutdown.
+- A turn this process holds open that a `deliver()` after done names.
+- A delivery held for startup when the context load or the gate rehydration fails.
+
+**Ended turns.** The reactor records each ended turn ID for the life of the process, so the set grows by one ID for each turn. `deliver()` throws when its `turnId` names a turn that already ended. A turn can also end while a delivery that names it waits for the validator; that delivery does not throw. If it does not correlate, it becomes a new message under a new turn ID (see Correlated deliveries).
 
 ### INBOX Consumption
 
@@ -463,7 +548,7 @@ Correlation connects outbound async tool calls to inbound responses. The reactor
 
 **Registration.** When a tool returns a pending marker, the reactor registers the correlation ID in its async state. The correlation ID is the marker's only matching criterion, and the registered operation records no expected responder. The operation records the turn ID of the turn that ran the tool (see Turn IDs). A sender requirement is not carried on the marker: the marker comes from a tool running on the model's behalf, so an expectation stated there is asserted by the same trust domain that wants the gate cleared.
 
-**Matching.** When an inbound event carries a correlation ID, the reactor checks it against registered correlations before delivering it to the director. When a correlation validator is wired, the reactor calls it with the registered operation and the inbound message; the validator returns whether the match is authentic, and a `false` (or a throw) delivers the event to the director as a regular uncorrelated event. When none is wired, a registered correlation ID is sufficient on its own.
+**Matching.** When an inbound event carries a correlation ID, the reactor checks it against registered correlations before delivering it to the director. When a correlation validator is wired, the reactor calls it with the registered operation and the inbound message; the validator returns whether the match is authentic, and a `false` (or a throw) delivers the event to the director as a regular uncorrelated event, under the delivered turn, or under a new turn when that turn ended during validation. When none is wired, a registered correlation ID is sufficient on its own.
 
 Sender identity and signature verification belong to that validator and to nothing else. The reactor performs neither: it does not know which channel a message arrived over, nor which signer is authoritative for an address, and the `From` it can see is a value the message asserts about itself. A composition that requires those checks supplies a validator. See MESSAGE.md (Correlation Security) for which of them the shipped composition runs today.
 
@@ -475,7 +560,7 @@ The default director tracks the outstanding calls of each tool batch (the calls 
 
 A director built after a respawn holds no batches. When a resumed call's batch is unknown, the director rebuilds it from history and the pending operations: the call that is answered or resumed now, plus each call of the assistant turn that holds it that no `tool_result` answers and that a pending operation still parks. An unanswered call with no pending operation was running when the process stopped. Nothing answers it, so the batch does not wait on it. A re-run call that history does not hold opens a batch of its own, and a `resume.tool_result` for such a call re-infers at once. The rebuild takes the first assistant turn that holds the call. The reactor checks that tool call ids are unique only in the assembled prompt (after the context transforms) at each inference, not across the full history.
 
-**Duplicate responses** (same correlation ID, already resolved) are delivered to the director as regular uncorrelated events. The reactor does not deduplicate — the director decides whether to process or ignore.
+**Duplicate responses** (same correlation ID, already resolved, or still in progress) are delivered to the director as regular uncorrelated events. A correlation stays in progress from its validation until its outcome is applied, so a duplicate that arrives in the same tick is a regular message too. The reactor does not deduplicate — the director decides whether to process or ignore.
 
 **Orphaned correlations** (pending operations whose responses never arrive) are cleaned up by gate timeouts.
 
@@ -659,7 +744,7 @@ The director also provides:
 - **Gate definitions** — Which gates to check before which actions. Can be static or dynamic.
 - **Model selection** — Which model for each inference call. Per-call, not per-session. Enables cost-based routing, fallback, and capability matching.
 - **Fork policy** — How to initialize a new fork's director state. Called when a fork action is executed.
-- **Commit policy** — When to auto-commit to the context store. Default: lifecycle boundaries (suspension, compaction, shutdown). Can be configured to per-turn or per-message for agents that need more granularity.
+- **Commit policy** — When to auto-commit to the context store. Default: lifecycle boundaries (suspension, compaction, shutdown). Can be configured to per-cycle or per-message for agents that need more granularity.
 
 ### Extension Hooks
 
@@ -726,7 +811,7 @@ Examples: a language server (LSP) validating code, a JSON schema validator check
 
 ### Tool Result Lifecycle
 
-Tool results enter the message history and stay there. Over a long session, old tool results accumulate — file contents that have since changed, search results that are no longer relevant, error messages from issues that were resolved turns ago. This has two costs: token spend (every old result is re-sent on each inference call) and context degradation (model performance measurably worsens as context grows — see Context Window Tracking for measurements). Old tool results sitting in the middle of a long conversation are in the worst position for both cost and retrieval quality.
+Tool results enter the message history and stay there. Over a long session, old tool results accumulate — file contents that have since changed, search results that are no longer relevant, error messages from issues that were resolved cycles ago. This has two costs: token spend (every old result is re-sent on each inference call) and context degradation (model performance measurably worsens as context grows — see Context Window Tracking for measurements). Old tool results sitting in the middle of a long conversation are in the worst position for both cost and retrieval quality.
 
 **Tool result clearing.**
 
@@ -742,7 +827,7 @@ Clearing strategy: prioritize clearing the oldest and largest tool results first
 
 When a tool fails and the model retries, the failure sequence (error result, model apology, retry call, success result) pollutes the conversation. After a successful retry, the failure sequence can be collapsed into a compact annotation on the successful result: "Applied successfully. 2 prior attempts failed: missing required field, invalid reference format." The model retains the lesson without the verbose error/retry/apology turns consuming context.
 
-Collapse should happen before the next inference call so the collapsed form becomes part of the stable cache prefix. The alternative — leaving the full failure sequence — gives better immediate cache hits (the prefix is unchanged) but worse long-term cost (the verbose sequence is re-sent on every future turn at 10% of base price per cached token).
+Collapse should happen before the next inference call so the collapsed form becomes part of the stable cache prefix. The alternative — leaving the full failure sequence — gives better immediate cache hits (the prefix is unchanged) but worse long-term cost (the verbose sequence is re-sent on every future cycle at 10% of base price per cached token).
 
 **Cache invalidation from collapse.** All current providers use prefix-based caching. Modifying content at position N in the conversation invalidates the cache from position N through the end of the request — including content after the collapsed region that is byte-identical to its previous version. The tokens are at different offsets in the sequence, so the KV-cache entries are invalid. This is a fundamental property of how attention-based caching works, not a provider limitation.
 
@@ -771,7 +856,7 @@ Transaction granularity is the tool's decision. Per-call transactions maximize s
 
 ### Inference Trace Storage
 
-Inference activity is stored separately from mail. Each inference cycle produces one `inference_turn` row, with its streaming parts stored in `turn_part` rows ordered by `ordinal`. The turn captures the model, status, and time bounds of the cycle. Parts capture individual content blocks: text, reasoning, tool calls, tool results, and step markers.
+Inference activity is stored separately from mail. Each inference cycle produces one `inference_turn` row, with its streaming parts stored in `turn_part` rows ordered by `ordinal`. The row captures the model, status, and time bounds of the cycle. Parts capture individual content blocks: text, reasoning, tool calls, tool results, and step markers.
 
 This separation means mail records are pure RFC 5322 MIME objects, and inference traces are queryable independently. The `/turns` endpoint serves these records to UI clients.
 
@@ -811,7 +896,7 @@ The message history is stored in the agent's git-backed local storage. This is n
 
 During active operation, the reactor works with an in-memory representation of the message history for performance. Git captures snapshots at commit points. On resume after suspension, the reactor reconstructs state from the last git commit.
 
-Commit frequency is controlled by the director's commit policy. The default commits on lifecycle boundaries (suspension, compaction, shutdown), matching the commit policy described in ARCHITECTURE.md's Change History section. Directors can configure more frequent commits (per-turn, per-message) when durability requirements are higher.
+Commit frequency is controlled by the director's commit policy. The default commits on lifecycle boundaries (suspension, compaction, shutdown), matching the commit policy described in ARCHITECTURE.md's Change History section. Directors can configure more frequent commits (per-cycle, per-message) when durability requirements are higher.
 
 ### Context Window Tracking
 
@@ -934,7 +1019,7 @@ Token accounting is per-reactor. When a reactor forks, each fork tracks its own 
 
 ## Prompt Caching
 
-Prompt caching is a provider-level optimization where identical prefixes of the request (tools, system prompt, message history) are cached and reused across turns. The inference layer must structure requests to maximize cache hits, because caching dominates the cost profile of multi-turn agent sessions.
+Prompt caching is a provider-level optimization where identical prefixes of the request (tools, system prompt, message history) are cached and reused across cycles. The inference layer must structure requests to maximize cache hits, because caching dominates the cost profile of multi-turn agent sessions.
 
 ### Provider Mechanics
 
@@ -954,25 +1039,25 @@ Stable content goes first, variable content goes last. This is a hard constraint
 
 1. **Tool definitions** — Most stable. Change rarely or never during a session. Place cache breakpoints on the last tool in the array.
 2. **System prompt** — Stable for the session duration. Do not inject per-request data (timestamps, mode flags, dynamic context) into the system prompt. Put variable context into messages instead.
-3. **Message history** — Grows each turn. The existing prefix is cached; new messages extend it. Modifications to earlier messages (compaction, collapse, clearing) invalidate the cache from the modification point forward.
+3. **Message history** — Grows each cycle. The existing prefix is cached; new messages extend it. Modifications to earlier messages (compaction, collapse, clearing) invalidate the cache from the modification point forward.
 
 The reactor should not inject ephemeral data (pending status, dynamic context) into the system prompt. The context transform chain handles ephemeral injection by modifying the message array, leaving the system prompt cache intact.
 
 ### Tool Definition Stability
 
-Tool definitions are part of the cached prefix. Their token cost compounds: a set of 15 tools with moderately complex parameters consumes roughly 5,000-6,000 tokens, sent and cached on every turn.
+Tool definitions are part of the cached prefix. Their token cost compounds: a set of 15 tools with moderately complex parameters consumes roughly 5,000-6,000 tokens, sent and cached on every cycle.
 
 For agents with dynamic capabilities (tools from remote registries, extension-provided tools), the mitigation is a stable core with deferred loading: a small, fixed set of always-available tools lives in the tool definition array (stable, always cached). Tools that are not always needed are excluded from the array entirely. When the model needs a deferred tool, it discovers it through a search/discovery tool in the core set, and the discovered tool's definition is injected inline as a tool reference in the message history. The tool prefix stays stable; discovered tools are part of the message stream, not the tool array.
 
-The cost of dynamic tool sets without these mitigations is severe. Each MCP server adds 1,500-12,000 tokens to the tool prefix. Three to four servers can add 10,000-18,000 tokens of overhead per turn. Every connect/disconnect event invalidates the entire cache.
+The cost of dynamic tool sets without these mitigations is severe. Each MCP server adds 1,500-12,000 tokens to the tool prefix. Three to four servers can add 10,000-18,000 tokens of overhead per cycle. Every connect/disconnect event invalidates the entire cache.
 
 ### Cache-Aware Compaction
 
 Compaction (described in Context Management) replaces older messages with a summary. Because caching is strictly prefix-based, any modification to the message history invalidates the cache from the modification point through the end of the request. Content after the compacted region is rebuilt even if it is unchanged — it now sits at different token offsets. The cost of compaction is not just the summarization inference call — it includes a full cache rebuild of everything from the compaction point forward.
 
-For compaction to be worthwhile, the tokens saved per turn must recoup the one-time cache rebuild cost within the remaining session. The rebuild cost depends on the tail: everything from the compaction point forward must be re-cached, regardless of whether it changed. At Anthropic's pricing, each re-cached token costs 1.25x base price instead of the 0.1x it would have cost as a cache read — a per-token premium of 1.15x base price for the rebuild turn.
+For compaction to be worthwhile, the tokens saved per cycle must recoup the one-time cache rebuild cost within the remaining session. The rebuild cost depends on the tail: everything from the compaction point forward must be re-cached, regardless of whether it changed. At Anthropic's pricing, each re-cached token costs 1.25x base price instead of the 0.1x it would have cost as a cache read — a per-token premium of 1.15x base price for the rebuild cycle.
 
-Consider a conversation at 60,000 tokens where compaction at the midpoint removes 10,000 tokens. The post-compaction conversation is 50,000 tokens. The tail from the compaction point is 25,000 tokens (the second half minus the removed content plus the summary). Rebuild premium: 25,000 tokens at 1.15x base price. Per-turn savings: 10,000 fewer cached tokens at 0.1x base price = 1,000 base-price-equivalents per turn. Break-even depends on the ratio of tail size to tokens removed — the larger the tail relative to the savings, the longer until break-even. Compaction near the end of the conversation (small tail) pays back quickly. Compaction near the beginning (large tail) takes many turns to recoup.
+Consider a conversation at 60,000 tokens where compaction at the midpoint removes 10,000 tokens. The post-compaction conversation is 50,000 tokens. The tail from the compaction point is 25,000 tokens (the second half minus the removed content plus the summary). Rebuild premium: 25,000 tokens at 1.15x base price. Per-cycle savings: 10,000 fewer cached tokens at 0.1x base price = 1,000 base-price-equivalents per cycle. Break-even depends on the ratio of tail size to tokens removed — the larger the tail relative to the savings, the longer until break-even. Compaction near the end of the conversation (small tail) pays back quickly. Compaction near the beginning (large tail) takes many cycles to recoup.
 
 The failure collapse pattern (described in Tool Interaction Patterns) is the favorable case: the failure sequence is typically near the end of the conversation, so the tail is small. The stable prefix before the failure point is preserved; only the collapsed region and whatever follows it are rebuilt.
 
@@ -999,7 +1084,7 @@ The budget is a ceiling, not a target. The provider adapter translates the on/of
 
 The reactor director can override reasoning configuration per-call if needed (for example, enabling reasoning for a complex planning step and disabling it for simple tool result processing). But the default comes from the agent definition, not from the inference package.
 
-A caller can also pass per-send options (`agent.send(content, { inference })`, which a workflow step's `inference` selector feeds). They apply to every inference call of that message run only and sit beneath the director: a key the director sets wins over the per-send value for that same key.
+A caller can also pass per-send options (`agent.send(content, { inference })`, which a workflow step's `inference` selector feeds). They belong to the turn the send starts, or to the parked turn it resumes, and apply to every later inference call of that turn only. A resume with no options keeps the options the turn has. They sit beneath the director: a key the director sets wins over the per-send value for that same key.
 
 **Effort.** `InferenceOptions.effort` (`low | medium | high | max`) is a provider-neutral name. No provider accepts every name as a wire value, and the accepted values differ by model, so each adapter maps the name onto what its model accepts. Effort and `thinking.budgetTokens` are two spellings of one intent: an effort with no `thinking` setting turns thinking on, and an explicit `thinking.budgetTokens` wins over the budget an effort maps to.
 
@@ -1019,7 +1104,7 @@ The adapter drops an effort, with a warning logged once per process, where the m
 
 None of these effort values has a provider capture; the adapter tests pin the request bodies.
 
-**Cache interaction.** Changing the thinking budget between turns invalidates the message cache. Tool and system prompt caches survive, but all message-level cache entries are rebuilt. If the director toggles reasoning on and off per-call, each toggle pays a cache rebuild cost. For cost-sensitive agents, holding a consistent thinking budget across the session is preferable to dynamic adjustment. If variable reasoning depth is needed, achieve it through prompt engineering (instructing the model to think briefly vs. deeply) rather than through the API parameter, preserving the cache.
+**Cache interaction.** Changing the thinking budget between cycles invalidates the message cache. Tool and system prompt caches survive, but all message-level cache entries are rebuilt. If the director toggles reasoning on and off per-call, each toggle pays a cache rebuild cost. For cost-sensitive agents, holding a consistent thinking budget across the session is preferable to dynamic adjustment. If variable reasoning depth is needed, achieve it through prompt engineering (instructing the model to think briefly vs. deeply) rather than through the API parameter, preserving the cache.
 
 ### Thinking Content
 

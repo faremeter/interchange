@@ -198,7 +198,7 @@ export interface StepInvokeRequest {
    * Present only on a resume re-invocation of a step that previously
    * suspended. `kind` carries the park kind the step suspended on, so the
    * invoker synthesizes the right inbound: an `"approval"` resume delivers a
-   * body stamped with `correlationId` so the reactor's `tryCorrelate` matches
+   * body stamped with `correlationId` so the reactor correlates it with
    * the rehydrated gate; an `"input"` resume delivers the `decision` as a
    * plain next user turn (there is no gate to match). Absent on the first
    * invocation, where the invoker drives a plain `agent.send`.
