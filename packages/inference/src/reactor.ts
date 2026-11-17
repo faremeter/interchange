@@ -649,7 +649,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       case "redispatch": {
         // Clear the gate WITHOUT enqueuing gate.cleared: the re-dispatched call
         // is the resumption, so a gate.cleared-driven re-infer would double the
-        // continuation. The re-dispatch's own tool.done drives the re-infer.
+        // continuation. The re-dispatch's own tool.done answers the call.
         if (gate !== undefined) {
           gates.clearSilently(gate.gateId);
           if (stateManager !== null) {
@@ -662,9 +662,8 @@ export function createReactor(config: ReactorConfig): Reactor {
         }
         // The grant is already recorded (synchronously, in
         // resumePendingOperation) with no await since; enqueue the re-dispatch
-        // so it runs on the loop with normal event ordering. The director seeds
-        // its outstanding-result count off this event before the call's
-        // tool.done arrives.
+        // so it runs on the loop with normal event ordering. The director sees
+        // this event before the call's tool.done arrives.
         enqueue({ type: "resume.execute_tools", calls: dispatch.calls });
         break;
       }
@@ -672,7 +671,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         // The approver denied the call. Clear the gate SILENTLY (like the
         // approved redispatch) so it cannot also trip onGateCleared and enqueue
         // a second continuation. The synthetic error result answers the parked
-        // call; the director appends it and re-infers once.
+        // call; the loop appends it to history before the director decides.
         if (gate !== undefined) {
           gates.clearSilently(gate.gateId);
           if (stateManager !== null) {
@@ -1422,8 +1421,8 @@ export function createReactor(config: ReactorConfig): Reactor {
       // timed out) carries a synthetic error result answering the parked call.
       // Land it in history before the director decides so the tool_result turn
       // closes the dangling tool_use and the re-inference the director returns
-      // sees a well-formed sequence. No tool ran, so no tool.done and no
-      // counter change accompany it.
+      // sees a well-formed sequence. No tool ran, so no tool.done accompanies
+      // it.
       if (event.type === "resume.tool_result") {
         if (stateManager !== null) {
           stateManager.appendTurn(createToolResultTurn([event.result]));

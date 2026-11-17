@@ -203,8 +203,77 @@ export class DefaultDirector implements ReactorDirector {
   private readonly toolDefinitions: ToolDefinition[];
   private readonly policy: DefaultDirectorPolicy;
 
-  // Track outstanding tool results so we only re-infer once per batch.
-  private pendingToolResults = 0;
+  // Outstanding call ids per tool batch, so the director re-infers once per
+  // batch, only when every call of that batch is answered. A parked call stays
+  // outstanding until its resume answers it, and one batch never waits on
+  // another. Each call id maps to its batch's shared set.
+  private readonly outstanding = new Map<string, Set<string>>();
+
+  private openBatch(calls: ToolCall[]): void {
+    const batch = new Set(calls.map((call) => call.id));
+    for (const id of batch) this.outstanding.set(id, batch);
+  }
+
+  // A director built after a respawn holds no batches, but a parked call's
+  // batch survives in history and in the pending operations: the calls of
+  // the assistant turn that holds the call that no tool_result answers and
+  // that a pending operation still parks, plus the call answered or resumed
+  // now. Rebuilding it from there keeps a resumed call from re-inferring
+  // while a sibling of its batch stays parked. An unanswered call with no
+  // pending operation was running at the crash; nothing will answer it, so
+  // the batch does not wait on it.
+  // History alone cannot replace the in-memory set: a fresh batch lands all
+  // of its results in one turn before its tool.done events arrive, so each of
+  // those events would see a complete batch. The first turn that holds the
+  // call is taken as its owner. The reactor checks that call ids are unique
+  // in the assembled prompt (after the context transforms) at each
+  // inference, not across the full history.
+  private recoverBatch(
+    callId: string,
+    state: ReactorState,
+  ): Set<string> | undefined {
+    const owner = state.turns.find(
+      (turn) =>
+        turn.role === "assistant" &&
+        turn.content.some(
+          (block) => block.type === "tool_call" && block.id === callId,
+        ),
+    );
+    if (owner === undefined) return undefined;
+    const answered = new Set<string>();
+    for (const turn of state.turns) {
+      for (const block of turn.content) {
+        if (block.type === "tool_result") answered.add(block.callId);
+      }
+    }
+    const parked = new Set<string>();
+    for (const op of state.pendingOperations) {
+      if (op.suspendedCall !== undefined) parked.add(op.suspendedCall.id);
+    }
+    const batch = new Set<string>([callId]);
+    for (const block of owner.content) {
+      if (
+        block.type === "tool_call" &&
+        !answered.has(block.id) &&
+        parked.has(block.id)
+      ) {
+        batch.add(block.id);
+      }
+    }
+    for (const id of batch) this.outstanding.set(id, batch);
+    return batch;
+  }
+
+  // Answers one call. Returns true when its batch has no call left. A call
+  // that neither memory nor history places in a batch has nothing to wait on.
+  private answer(callId: string, state: ReactorState): boolean {
+    const batch =
+      this.outstanding.get(callId) ?? this.recoverBatch(callId, state);
+    if (batch === undefined) return true;
+    this.outstanding.delete(callId);
+    batch.delete(callId);
+    return batch.size === 0;
+  }
 
   constructor(
     systemPrompt: string,
@@ -271,7 +340,7 @@ export class DefaultDirector implements ReactorDirector {
 
         const toolCalls = extractToolCalls(event.turn);
         if (toolCalls.length > 0) {
-          this.pendingToolResults = toolCalls.length;
+          this.openBatch(toolCalls);
           return [
             capabilities.checkpoint("tool-execution"),
             capabilities.executeTools(toolCalls, true),
@@ -302,22 +371,25 @@ export class DefaultDirector implements ReactorDirector {
       }
 
       case "resume.execute_tools": {
-        // A resumed approval re-runs its parked tool call. The reactor drives
-        // the execution; this director owns the outstanding-result count, so
-        // seed it to the number of calls about to run — exactly as the
-        // inference.done branch seeds it for a fresh tool batch. Without this
-        // seed the count stays zero and the re-dispatched call's tool.done
-        // would decrement to -1 and re-infer off a negative count by accident.
-        this.pendingToolResults = event.calls.length;
+        // A resumed approval re-runs its parked tool call. The call is still
+        // outstanding in its batch, and its tool.done answers it. A call this
+        // director does not know gets its batch back from history, or a batch
+        // of its own when history holds none.
+        const unplaced = event.calls.filter(
+          (call) =>
+            !this.outstanding.has(call.id) &&
+            this.recoverBatch(call.id, state) === undefined,
+        );
+        if (unplaced.length > 0) this.openBatch(unplaced);
         return capabilities.executeTools(event.calls, false, true);
       }
 
       case "resume.tool_result": {
         // A parked approval ended without running its tool (rejected or timed
         // out). The reactor appends the synthetic error result that answers the
-        // parked call, then this re-infers once so the model sees the failure
-        // and continues. No tool ran, so pendingToolResults is untouched — the
-        // counter only gates batches of real executions.
+        // parked call. Re-infer only when that answer completes its batch, so
+        // the model sees every result of the batch at once.
+        if (!this.answer(event.result.callId, state)) return [];
         return [
           capabilities.checkpoint("resume-tool-result"),
           capabilities.infer({
@@ -328,8 +400,7 @@ export class DefaultDirector implements ReactorDirector {
       }
 
       case "tool.done": {
-        this.pendingToolResults--;
-        if (this.pendingToolResults > 0) {
+        if (!this.answer(event.result.callId, state)) {
           return [];
         }
         if (this.policy.mode === "reactive") {
