@@ -963,6 +963,12 @@ snapshot comes from the parked step's stored state, through the env's
 `loadParkedApproval`, and a resume without one fails the spawn step. The
 child stays unaddressable; the parent is the resume root.
 
+A step parks on one correlation at a time. Its reactor holds each turn to
+one gate of any type and refuses a second suspend in the same turn
+(INFERENCE.md § Gates). The runtime parking of a step, the correlation
+that `send()` reports, and the connector router's map of parked turns by
+correlation ID all depend on that limit.
+
 #### Recycle
 
 Recycle is the supervisor's "same definition, fresh process" path,

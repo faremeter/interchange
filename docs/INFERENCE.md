@@ -452,7 +452,7 @@ A turn is one inbound request. Its turn ID spans every cycle and every resume of
 
 A caller names the turn with `reactor.deliver(message, { turnId })`. When the caller gives no `turnId`, the reactor mints a fresh ID for the delivery. The reactor records the turn ID of each event it queues, and it holds the turn ID of the event that it is handling now. It stamps that ID on `inference.start`, `inference.done`, `connector.reply`, and `reactor.gate.blocked`. The harness does not know turns, so the reactor stamps `inference.start` and `inference.done` as it passes them through.
 
-A gate and the pending operation it parks carry the turn ID of the turn that parked them. A director can suspend on the correlation of a pending operation that an earlier turn registered (an async pending marker). When the operation has no live gate, that gate moves the operation to the turn that suspends: the running turn now waits for the operation, so the operation, its gate and its resume belong to the turn that waits. The earlier turn can also have ended (see [Turn Lifecycle](#turn-lifecycle)), and a gate under an ended turn would resume a turn that cannot end again. When the correlation already has a live gate, of any turn, the reactor refuses the suspend with a non-fatal `reactor.error`, registers no gate and changes nothing. The pending operation persists its turn ID. A resume continues the parked turn, not the turn that runs when the resume happens:
+A gate and the pending operation it parks carry the turn ID of the turn that parked them. A director can suspend on the correlation of a pending operation that an earlier turn registered (an async pending marker). When the operation has no live gate, that gate moves the operation to the turn that suspends: the running turn now waits for the operation, so the operation, its gate and its resume belong to the turn that waits. The earlier turn can also have ended (see [Turn Lifecycle](#turn-lifecycle)), and a gate under an ended turn would resume a turn that cannot end again. When the correlation already has a live gate, of any turn, the reactor refuses the suspend with a non-fatal `reactor.error`, registers no gate and moves no operation. It still commits the cycle (see [Gates](#gates)). The pending operation persists its turn ID. A resume continues the parked turn, not the turn that runs when the resume happens:
 
 - An approved or rejected approval continues the pending operation's turn. The turn ID of the correlated delivery does not apply to the resume.
 - A gate that clears or times out continues the gate's turn.
@@ -653,6 +653,27 @@ When a gate blocks, the reactor emits `reactor.gate.blocked` and suspends. It re
 - **Budget** — Cost/turn/token threshold exceeded. Director decides: compact, pause, or terminate.
 - **Child completion** — Parent waiting for a child fork to finish.
 - **Message response** — Waiting for a correlated response from another agent or human. The gate holds a correlation ID; when a `message.received` event matches, the gate clears with the response.
+
+**One gate per turn.** A turn holds at most one gate at a time (`MAX_GATES_PER_TURN = 1`). The limit counts gates of every type, not only approvals. The reactor checks it when a suspend starts, before the suspend changes any state. The check refuses the suspend when the turn holds a gate, or when another suspend is still in flight (between its gate registration and its `reactor.gate.blocked`). The check and the gate registration run with no await between them, so a sibling call of a parallel batch sees the first call's gate while that gate's commit is still in flight. The in-flight condition covers a gate that times out during its suspend's commit: the gate manager has already removed that gate, so the gate count alone would admit a second suspend.
+
+- **A refused before-tool suspend** answers its call with an error result: "Another call in this turn is waiting on a gate. Request this call again after that decision." The call gets no gate, no pending operation and no `reactor.gate.blocked`. The result goes into history and queues its own `tool.done`, like a blocked call, so the director sees the call answered while the parked sibling keeps the batch open.
+- **A refused director suspend** registers no gate and emits a non-fatal `reactor.error`. It still commits the cycle, as a suspend does, so a pending operation that an earlier event of the cycle registered, for example an async pending marker, survives a restart while the turn stays parked. The operation that the refused suspend named, which can be that same marker or one of an earlier turn, stays registered under its own turn with no gate, so a later delivery for it resumes nothing (see [Turn Lifecycle](#turn-lifecycle)). The default director never suspends, so only a custom director reaches this path.
+
+A refusal never changes when the turn ends:
+
+- The gate-limit refusal happens only while the turn holds a gate, which keeps the turn open, or while a suspend of the turn is in flight. A gate that times out during that in-flight commit has its clear deferred until after `reactor.gate.blocked`, and the deferred clear then queues the turn's resume, so the turn does not settle in between.
+- The refusal of a director suspend on a correlation that already has a live gate (see [Turn IDs](#turn-ids)) can happen while the running turn holds no gate. The turn then settles as it would after any action set that leaves it no gate and no queued event.
+
+**Effect on doom-loop detection.** A refused call did not run, so it does not count toward doom-loop detection. When a batch holds N identical gated calls and the model asks again for each refused call, the same single call runs N times in a row: one park, approval and re-run at a time, each time as the only call that runs in its batch. Three such runs trip the default `doomLoopThreshold` of 3, which ends the turn `failed` with kind `doom_loop`.
+
+To raise the limit, the reactor and its consumers need:
+
+- `commitCycle` serialized across concurrent suspends.
+- A per-gate in-flight map in place of the single in-flight suspend slot.
+- Every parked correlation reported to `send()`, not only one.
+- A rule for a director suspend while the turn holds a gate.
+- Runtime parking of several correlations for one step.
+- A connector router that stores parked turns by more than the correlation ID, because that map stops being one-to-one.
 
 ### Gate Timeouts
 

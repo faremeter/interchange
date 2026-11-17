@@ -235,6 +235,20 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 const DEFAULT_DOOM_LOOP_THRESHOLD = 3;
 
 /**
+ * The number of gates one turn can hold at a time. The limit counts gates of
+ * every type, not only approvals: the single in-flight suspend slot, the one
+ * correlation that `send()` reports, the runtime parking of one correlation,
+ * and the connector router's map of parked turns by correlation id all hold
+ * one gate per turn, whatever its type (INFERENCE.md § Gates).
+ */
+const MAX_GATES_PER_TURN = 1;
+
+// The error result of a before-tool suspend that the gate limit refuses. It
+// names no gate type, because the gate the turn holds can be of any type.
+const GATE_LIMIT_REFUSAL =
+  "Another call in this turn is waiting on a gate. Request this call again after that decision.";
+
+/**
  * The turn id of a pending operation that was persisted before turn ids
  * existed. The id is stable across restarts because it derives from the
  * operation's correlation id.
@@ -586,7 +600,10 @@ export function createReactor(config: ReactorConfig): Reactor {
   function settleTurn(turnId: string): void {
     const s = turnStates.get(turnId);
     if (s === undefined || !s.started) return;
-    if (gates.hasTurn(turnId) || queue.some((e) => e.turnId === turnId)) {
+    if (
+      gates.countForTurn(turnId) > 0 ||
+      queue.some((e) => e.turnId === turnId)
+    ) {
       return;
     }
     endTurn(
@@ -633,7 +650,8 @@ export function createReactor(config: ReactorConfig): Reactor {
   let cycleCompactorName: string | null = null;
   // A suspension registers a gate and may persist a pending operation. That is
   // a durable state change even when the cycle ran no inference and completed
-  // no tool call, so it must force the cycle commit.
+  // no tool call, so it must force the cycle commit. A refused director
+  // suspend forces it too (see `commitRefusedSuspend`).
   let cycleSuspended = false;
 
   // Director-supplied checkpoint message override; consumed exactly once.
@@ -1244,13 +1262,26 @@ export function createReactor(config: ReactorConfig): Reactor {
 
     const signal = operationController.signal;
     const turnId = requireCycleTurnId();
+    // Calls whose suspend the gate limit refused. They did not run, so the
+    // doom-loop accounting leaves them out.
+    const refusedIds = new Set<string>();
+
+    // Answer a call that does not run with an error result: no tool.start and
+    // no result transforms.
+    const answerWithError = (call: ToolCall, content: string): ToolResult => {
+      const result: ToolResult = { callId: call.id, content, isError: true };
+      emit({ type: "tool.done", seq: nextSeq(), data: { result } });
+      return result;
+    };
 
     const runOne = async (
       call: ToolCall,
     ): Promise<ToolResult | typeof SUSPENDED> => {
       // Run before-tool extensions. The first non-allow decision terminates
       // the chain: `block` answers the call with an error result, `suspend`
-      // parks it (no result, no tool.done).
+      // parks it (no result, no tool.done). A suspend that the gate limit
+      // refuses is answered with an error result like a block: the call gets
+      // no gate, no pending operation and no `reactor.gate.blocked`.
       for (const ext of beforeToolExtensions) {
         let decision: BeforeToolDecision;
         try {
@@ -1269,29 +1300,22 @@ export function createReactor(config: ReactorConfig): Reactor {
           // snapshot, and commit. The call is neither run nor answered — no
           // tool.start, no tool.done, no tool-result turn. The gate clears
           // when the correlated external decision is delivered.
-          await suspendOnGate({
+          const admitted = await suspendOnGate({
             gateType: decision.gate.type,
             gateId: decision.gate.gateId,
             timeoutMs: Math.max(1, decision.gate.timeoutAt - Date.now()),
             correlationId: decision.gate.correlationId,
             pendingOp: decision.pendingOp,
+            takeOver: undefined,
             turnId,
           });
-          return SUSPENDED;
+          if (admitted === "parked") return SUSPENDED;
+          refusedIds.add(call.id);
+          return answerWithError(call, GATE_LIMIT_REFUSAL);
         }
 
         if (decision.type === "block") {
-          const blocked: ToolResult = {
-            callId: call.id,
-            content: decision.reason,
-            isError: true,
-          };
-          emit({
-            type: "tool.done",
-            seq: nextSeq(),
-            data: { result: blocked },
-          });
-          return blocked;
+          return answerWithError(call, decision.reason);
         }
       }
 
@@ -1352,14 +1376,21 @@ export function createReactor(config: ReactorConfig): Reactor {
     // Doom-loop accounting keys off the calls that actually ran, aligned to
     // their outcome by index (both the parallel and serial paths above keep
     // `outcomes` in `calls` order). A parked call contributes nothing, so a
-    // suspend-then-redispatch cycle counts its one real execution once. The
+    // suspend-then-redispatch cycle counts its one real execution once. A
+    // call the gate limit refused did not run and contributes nothing too.
+    // When a batch holds N identical gated calls and the model asks again
+    // for each refused one, the same single call therefore runs N times in
+    // a row (park, approve, redispatch), and the default threshold of 3
+    // trips on the third run (INFERENCE.md § Gates). The
     // counters belong to the turn, so another turn's batches between two of
     // this turn's batches do not reset them. The loop reads the count after
     // this returns and ends the turn when it reaches the threshold. A `null`
     // threshold means detection is disabled, so the accounting is skipped
     // entirely. A turn that a correlation-dispatch failure ended while the
     // batch ran has no state left to count in.
-    const ranCalls = calls.filter((_call, i) => outcomes[i] !== SUSPENDED);
+    const ranCalls = calls.filter(
+      (call, i) => outcomes[i] !== SUSPENDED && !refusedIds.has(call.id),
+    );
     const doom = turnStates.get(turnId);
     if (
       doomLoopThreshold !== null &&
@@ -1446,6 +1477,15 @@ export function createReactor(config: ReactorConfig): Reactor {
     cycleToolCallsExecuted = 0;
     cycleCompactorName = null;
     cycleSuspended = false;
+  }
+
+  // A refused director suspend registers no gate, but an earlier event of
+  // the cycle can have registered a pending operation, such as an async
+  // marker. The turn can stay parked on its gate across a restart, so the
+  // cycle commits as a suspend does, also when it looks like it did no work.
+  async function commitRefusedSuspend(): Promise<void> {
+    cycleSuspended = true;
+    await commitCycle();
   }
 
   async function commitCycle(): Promise<void> {
@@ -1605,17 +1645,49 @@ export function createReactor(config: ReactorConfig): Reactor {
   // its pending operation (via the tool's pending marker), so it passes none.
   // `turnId` is the turn that parks. The gate, any pending operation and the
   // blocked event all carry it.
+  //
+  // Admission: a turn holds at most `MAX_GATES_PER_TURN` gates. The check
+  // runs before any state changes, and everything from it to the gate
+  // registration is synchronous, so a sibling call of a parallel batch sees
+  // this gate while its commit is still in flight. A gate whose timeout fired
+  // during that commit is gone from the gate manager, so the in-flight slot
+  // also counts: only the running turn suspends. A refused suspend changes
+  // nothing and returns "refused".
+  //
+  // `takeOver` is an operation of another turn, with no live gate, that the
+  // running turn now waits for. It moves to this turn only after admission,
+  // so a refused suspend leaves it on its original turn.
   async function suspendOnGate(args: {
     gateType: GateType;
     gateId: string;
     timeoutMs: number;
     correlationId: string | undefined;
     pendingOp: Omit<PendingOperation, "turnId"> | undefined;
+    takeOver: PendingOperation | undefined;
     turnId: string;
-  }): Promise<void> {
+  }): Promise<"parked" | "refused"> {
     const { gateType, gateId, timeoutMs, correlationId, turnId } = args;
+    if (
+      suspendingGate !== null ||
+      gates.countForTurn(turnId) >= MAX_GATES_PER_TURN
+    ) {
+      return "refused";
+    }
+
     const pendingOp =
       args.pendingOp !== undefined ? { ...args.pendingOp, turnId } : undefined;
+
+    if (args.takeOver !== undefined) {
+      // Remove before the register: the registry throws on a duplicate
+      // correlation id.
+      const moved: PendingOperation = { ...args.takeOver, turnId };
+      correlations.remove(moved.correlationId);
+      correlations.register(moved);
+      if (stateManager !== null) {
+        stateManager.removePendingOperation(moved.correlationId);
+        stateManager.addPendingOperation(moved);
+      }
+    }
 
     if (pendingOp !== undefined) {
       correlations.register(pendingOp);
@@ -1685,6 +1757,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     if (inFlightSuspend.deferredClear !== null) {
       onGateCleared(gateId, inFlightSuspend.deferredClear.reason, turnId);
     }
+    return "parked";
   }
 
   // Re-registers a live gate and correlation for each pending operation loaded
@@ -1886,11 +1959,12 @@ export function createReactor(config: ReactorConfig): Reactor {
         const turnId = requireCycleTurnId();
         // A correlation resumes through one gate. A second gate on a
         // correlation that already has a live gate would never clear, so the
-        // reactor refuses the suspend and changes nothing.
+        // reactor refuses the suspend and registers no gate.
         if (
           gate.correlationId !== undefined &&
           gates.findByCorrelationId(gate.correlationId) !== undefined
         ) {
+          await commitRefusedSuspend();
           emitError(
             `Director suspend on gate ${gate.gateId} refused: correlation ${gate.correlationId} already has a live gate`,
             false,
@@ -1902,27 +1976,36 @@ export function createReactor(config: ReactorConfig): Reactor {
         // gate. The running turn now waits for that operation, so the
         // operation, its gate and its resume belong to the turn that waits.
         // The earlier turn can also have ended, and a gate under an ended
-        // turn would resume a turn that cannot end again. The commit in
-        // suspendOnGate persists the move.
+        // turn would resume a turn that cannot end again. suspendOnGate moves
+        // the operation only after admission, and its commit persists the
+        // move.
         const waitedOn =
           gate.correlationId !== undefined
             ? correlations.lookup(gate.correlationId)
             : undefined;
-        if (waitedOn !== undefined && waitedOn.turnId !== turnId) {
-          const moved: PendingOperation = { ...waitedOn, turnId };
-          correlations.remove(moved.correlationId);
-          correlations.register(moved);
-          stateManager.removePendingOperation(moved.correlationId);
-          stateManager.addPendingOperation(moved);
-        }
-        await suspendOnGate({
+        const admitted = await suspendOnGate({
           gateType: gate.type,
           gateId: gate.gateId,
           timeoutMs: gate.timeoutMs > 0 ? gate.timeoutMs : gateTimeout,
           correlationId: gate.correlationId,
           pendingOp: undefined,
+          takeOver:
+            waitedOn !== undefined && waitedOn.turnId !== turnId
+              ? waitedOn
+              : undefined,
           turnId,
         });
+        // A refused director suspend registers no gate. An operation it named
+        // stays registered under its own turn with no gate, so a later
+        // delivery for it resumes nothing. The turn holds its gate, so it does
+        // not end here.
+        if (admitted === "refused") {
+          await commitRefusedSuspend();
+          emitError(
+            `Director suspend on gate ${gate.gateId} refused: turn ${turnId} already holds a gate`,
+            false,
+          );
+        }
         continue;
       }
 
