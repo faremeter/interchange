@@ -241,12 +241,17 @@ describe("workflow-run pack receive cost", () => {
       for (const n of [SHORT, LONG]) {
         const cost = await receiveCost(fixture, n);
         // Per commit: two commit reads; the new trees on each changed
-        // path, about four on average for this mix; and one blob for
+        // path, about 3.6 on average for this mix; and one blob for
         // each new event, inbox entry, processing entry and mailbox
         // index. A retained queue entry is parsed once per receive, and
-        // a retained message is proven unchanged by its blob OID.
+        // a retained message is proven unchanged by its blob OID. The
+        // check that skips a claim-check or mailbox subtree the parent
+        // holds unchanged reads the parent's trees on that path, about
+        // 1.7 more per commit here. The receive already parses each
+        // retained entry once, so here the skip saves no blob reads;
+        // the gain is on a single write, which would parse them all.
         expect(cost.readCommit).toBeLessThanOrEqual(2 * n + 10);
-        expect(cost.readTree).toBeLessThanOrEqual(4 * n + 20);
+        expect(cost.readTree).toBeLessThanOrEqual(6 * n + 20);
         expect(cost.readBlob).toBeLessThanOrEqual(2 * n + 10);
       }
     },
@@ -364,5 +369,55 @@ describe("workflow-run write cost", () => {
         message: "append",
       }),
     );
+  });
+
+  test("an append's reads do not grow with the claim-check queue or the mailbox", async () => {
+    async function appendReads(queued: number): Promise<number> {
+      const { store, repoId } = await freshStore();
+      const seed: Record<string, string> = {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${events}/0.json`]: eventBody(0, "RunStarted"),
+        [`${MAILBOX_INBOX}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]: JSON.stringify(
+          {
+            version: MAILBOX_INDEX_VERSION,
+            uidValidity: 1,
+            uidNext: queued + 1,
+            highestModSeq: 0,
+            messages: [],
+            expunged: [],
+          },
+        ),
+      };
+      for (let i = 1; i <= queued; i++) {
+        seed[`${MAILBOX_INBOX}/${String(i)}.eml`] =
+          `Subject: message ${String(i)}\r\n\r\nbody\r\n`;
+        seed[
+          `${ADDRESS_DIR}/${WORKFLOW_RUN_INBOX_DIR}/${String(i)}-m${String(i)}.json`
+        ] = JSON.stringify({
+          messageId: `m${String(i)}`,
+          receivedAt: i,
+          address: ADDRESS,
+        });
+      }
+      await store.writeTree(HUB, repoId, REF, { files: seed, message: "seed" });
+
+      const readTree = spyOn(git, "readTree");
+      const readBlob = spyOn(git, "readBlob");
+      try {
+        await store.writeTreeDelta(HUB, repoId, REF, {
+          computeDelta: async () => ({
+            puts: { [`${events}/1.json`]: eventBody(1, "StepCompleted") },
+            deletes: [],
+          }),
+          changedPathPrefixes: new Set([`${WORKFLOW_RUN_RUNS_PREFIX}/run-1/`]),
+          message: "append",
+        });
+        return readTree.mock.calls.length + readBlob.mock.calls.length;
+      } finally {
+        readTree.mockRestore();
+        readBlob.mockRestore();
+      }
+    }
+    expect(await appendReads(100)).toBe(await appendReads(5));
   });
 });

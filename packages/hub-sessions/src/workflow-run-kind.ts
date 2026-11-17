@@ -3354,16 +3354,27 @@ export const workflowRunKindHandler: KindHandler = {
       return scopingCheck;
     }
 
-    const priorTopLevels = await priorListDir("");
-    const addressesPresent =
-      topLevelTreePaths.includes(WORKFLOW_RUN_ADDRESSES_PREFIX) ||
-      priorTopLevels.includes(WORKFLOW_RUN_ADDRESSES_PREFIX);
-    if (addressesPresent) {
-      // Enter claim-check validation when the prospective OR prior
-      // tree carries an `addresses/` subtree. A prospective tree that
-      // omits `addresses/` while the prior tree had consumed or
-      // processing entries must still go through the subtree walk so
-      // those prior entries' deletion-direction invariants fire.
+    // A subtree with the parent's tree OID is byte-identical to the
+    // parent's, which passed these walks when it was written, and each
+    // walk reads nothing outside its own subtree. The OIDs come from the
+    // two trees, so the skip trusts no caller's claim about what the
+    // commit touched. Only two trees with one OID, or no entry on either
+    // side, count as unchanged: an entry that keeps the OID but turns
+    // into a file lists as absent, so it must reach the deletion checks.
+    const prospectiveTop = await prospectiveListing("");
+    const priorTop = await priorListing("");
+    const subtreeChanged = (name: string): boolean => {
+      const next = prospectiveTop.get(name);
+      const before = priorTop.get(name);
+      if (next === undefined || before === undefined) return next !== before;
+      return (
+        next.type !== "tree" ||
+        before.type !== "tree" ||
+        next.oid !== before.oid
+      );
+    };
+
+    if (subtreeChanged(WORKFLOW_RUN_ADDRESSES_PREFIX)) {
       const claimCheck = await validateClaimCheckSubtree(
         listDir,
         readBlob,
@@ -3379,13 +3390,8 @@ export const workflowRunKindHandler: KindHandler = {
       }
     }
 
-    const mailboxPresent =
-      topLevelTreePaths.includes(WORKFLOW_RUN_MAILBOX_PREFIX) ||
-      priorTopLevels.includes(WORKFLOW_RUN_MAILBOX_PREFIX);
-    if (mailboxPresent) {
-      // Enter mailbox validation when the prospective OR prior tree
-      // carries a `mailbox/` subtree. A prospective tree that drops the
-      // subtree while the prior tree held one must still go through the
+    if (subtreeChanged(WORKFLOW_RUN_MAILBOX_PREFIX)) {
+      // A prospective tree that drops the subtree still goes through the
       // walk so the index-continuity guard fires on the vanished
       // `index.json` (a message-only expunge is legal; dropping the whole
       // mailbox is not).
@@ -3404,7 +3410,7 @@ export const workflowRunKindHandler: KindHandler = {
 
     const runsPresent =
       topLevelTreePaths.includes(WORKFLOW_RUN_RUNS_PREFIX) ||
-      priorTopLevels.includes(WORKFLOW_RUN_RUNS_PREFIX);
+      priorTop.has(WORKFLOW_RUN_RUNS_PREFIX);
     if (!runsPresent) {
       // A workflow-run repo without any `runs/` directory in either
       // the prior or the prospective tree is a genesis state for the
