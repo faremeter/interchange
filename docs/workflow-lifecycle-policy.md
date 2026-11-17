@@ -2,7 +2,8 @@
 
 A lifecycle policy releases capacity when a workflow finishes, keeps a failed
 environment around for inspection, stops deployments that have lived too long,
-and fails deployments whose sidecar has been out of contact too long. Tenant
+fails deployments whose sidecar has been out of contact too long, and can put a
+deployment in standby once its runs have waited long enough. Tenant
 and installed-workflow policy decide when those things happen. These settings
 belong to the deployment configuration, outside the workflow's executable
 definition.
@@ -15,6 +16,7 @@ type LifecycleDuration = `${number}${"s" | "m" | "h" | "d"}`;
 type WorkflowLifecyclePolicy = {
   maxLifetime?: LifecycleDuration;
   maxDisconnected?: LifecycleDuration;
+  standbyAfter?: LifecycleDuration;
   capacityRetention?: {
     completed?: LifecycleDuration;
     failed?: LifecycleDuration;
@@ -26,10 +28,12 @@ type WorkflowLifecyclePolicy = {
 Both tenants and installed workflows accept a `lifecycle` field with this
 shape. The API validates durations as non-negative whole numbers with a unit,
 at most `36500d` (the same limit applies in seconds, minutes, or hours);
-`maxLifetime` and `maxDisconnected` must be greater than zero. This fixed range leaves headroom when
-a duration is added to a deployment or terminal timestamp. Omit a field to
-inherit it, or to take the platform default when it is absent throughout the
-hierarchy.
+`maxLifetime`, `maxDisconnected`, and `standbyAfter` must be greater than
+zero. This fixed range leaves headroom when a duration is added to a
+deployment or terminal timestamp. Omit a field to inherit it, or to take the
+platform default when it is absent throughout the hierarchy. `standbyAfter`
+has no platform default: absent throughout, the deployment is never put in
+standby unasked.
 
 A tenant config can contain:
 
@@ -100,6 +104,30 @@ valid duration or the maximum lifetime or disconnect limit is zero:
 
 The platform default is not a ceiling: a tenant or installed workflow may set a
 longer duration. To effectively disable an action, set its field to `36500d`.
+
+`standbyAfter` puts a deployment in standby, as `POST .../standby` does, once
+every run has only waited on input from outside for that long. Its sidecar
+measures the wait, since only the workflow child can tell that every run
+waits: the Hub sends the duration with the deployment, and a replacement gets
+the same one. Any work starts the wait over, and so does a wake request, a
+sidecar restart, a move to replacement capacity, and a standby attempt that
+fails, such as one the sidecar refuses because mail waits for the child.
+Whatever keeps an explicit standby request waiting, such as a map or a step with
+a timeout, also keeps the wait from ending. The standby is recorded like an
+explicit one: the sidecar reports it, the lifecycle status shows `entering`
+until the Hub holds the history the child left and `standby` after, and
+`standby.reason` says the runs waited for `standbyAfter`. A child that runs
+again before then ends it, with what woke it as the reason. Mail, a signal, an
+approval decision, a due timer, a wake request, or a cancellation wakes the
+child as from any standby, and the wait starts over. A deployment in standby or
+entering it when it moves to replacement capacity is put in standby again there,
+as after a request; one whose standby the Hub had not heard of yet waits again.
+A short `standbyAfter` on a run that sleeps on a repeating timer stops and
+starts the child each time. A sidecar that cannot record a standby starts the
+child again and logs an error, waits longer before it tries again, and stops
+putting the deployment in standby by itself after the third in a row, until a
+standby it records, such as one `POST .../standby` asks for, or a restart of
+the sidecar.
 
 `maxLifetime` measures wall-clock time from creation of the deployment's anchor
 run. Provisioning, waiting, and standby count; restarts do not reset the
@@ -408,16 +436,20 @@ child in standby stays so across a sidecar restart: the sidecar restores it
 without starting the child while the run's history is where the stopped child
 left it and the recorded definition still hashes to the approved one, and
 reports it in standby. History written since starts the child,
-which the sidecar reports as a wake. Replacement capacity starts awake: a deployment in standby or entering it is put in standby again
-there once it is deployed and every run waits, and a pending wake has nothing
-left to do.
-Cancellation and expiry end standby. Both routes need `manage` on the
-run and return `202` while the change is pending, `204` when the deployment is
-already in the requested state, and `409` for a terminal or cancelling run,
-or one whose allocation no sidecar can carry the request out on. Like DELETE,
-a request takes only the anchor run's row lock and reads no history, so it
-does not wait for a pack receive; one for a run whose accepted history has
-ended returns `202`, and the sweep records the run's own outcome instead.
+which the sidecar reports as a wake. Replacement capacity starts awake: a
+deployment in standby or entering it, whether a request or `standbyAfter` put
+it there, is put in standby again there once it is deployed and every run
+waits, and a pending wake has nothing left to do.
+Cancellation and expiry end standby. Both routes need `manage` on the run and
+return `202` while the change is pending, `204` when the deployment is already
+in the requested state, and `409` for a terminal or cancelling run, or one
+whose allocation no sidecar can carry the request out on. A wake request for a
+deployment with `standbyAfter` is always recorded and sent, even when the Hub
+records the child running: its sidecar may have put it in standby before the
+Hub heard of it, and the request starts that wait over. Like DELETE, a request
+takes only the anchor run's row lock and reads no history, so it does not wait
+for a pack receive; one for a run whose accepted history has ended returns
+`202`, and the sweep records the run's own outcome instead.
 
 Beginning release removes workflow routes. The allocation reaches `released`
 only after the provider's hold is released and deployment cleanup is

@@ -232,6 +232,7 @@ export {
   parsePrincipalKeyRow,
   parseSignalCorrelationRow,
   parseWorkflowRunRow,
+  parseWorkflowRunLifecyclePolicy,
   parseWorkflowRunDispatchRow,
   parseWorkflowRunLaunchSpecRow,
   parseWorkflowDefinitionRow,

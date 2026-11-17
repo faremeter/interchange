@@ -73,8 +73,9 @@ async function seedAllocation(
   });
 }
 
-// A lifecycle service for one deployment, whose allocation this records, and
-// the sweep that carries out its standby and wake requests.
+// A lifecycle service for one deployment, whose allocation this records, the
+// sweep that carries out its standby and wake requests, and the commands it
+// has sent the sidecar for them.
 export async function startStandbySweep(
   env: DeployFlowEnv,
   db: TestDb["db"],
@@ -89,12 +90,28 @@ export async function startStandbySweep(
   let commandSettled = Promise.withResolvers<undefined>();
   // The sweep pauses between passes on this clock, which the sweep moves.
   let nowMs = Date.now();
+  const sent: ("standby" | "confirm" | "wake")[] = [];
+  const router = env.hub.router;
   const lifecycle = createWorkflowLifecycleService({
     db,
-    retentionRouter: env.hub.router,
+    retentionRouter: router,
     runReader: createWorkflowRunReader(env.hub.agentRepoStore.repoStore),
     historyReceives: createWorkflowHistoryReceiveTracker(),
-    standbyRouter: env.hub.router,
+    standbyRouter: {
+      putAllocationInStandby: (...args) => {
+        sent.push("standby");
+        return router.putAllocationInStandby(...args);
+      },
+      confirmAllocationInStandby: (...args) => {
+        sent.push("confirm");
+        return router.confirmAllocationInStandby(...args);
+      },
+      wakeAllocation: (...args) => {
+        sent.push("wake");
+        return router.wakeAllocation(...args);
+      },
+      holdsAllocatedBinding: (target) => router.holdsAllocatedBinding(target),
+    },
     onStandbyCommandSettled: (runId) => {
       if (runId === deploymentId) commandSettled.resolve(undefined);
     },
@@ -126,5 +143,11 @@ export async function startStandbySweep(
       throw new Error(`standby was refused: ${String(current.reason)}`);
     }
   };
-  return { lifecycle, standby, settled, untilInStandby };
+  return {
+    lifecycle,
+    standby,
+    settled,
+    untilInStandby,
+    commands: () => [...sent],
+  };
 }

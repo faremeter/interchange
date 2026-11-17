@@ -221,6 +221,12 @@ export function parseSignalCorrelationRow(
   };
 }
 
+export function parseWorkflowRunLifecyclePolicy(
+  raw: unknown,
+): WorkflowLifecyclePolicy | null {
+  return raw == null ? null : WorkflowLifecyclePolicy.assert(raw);
+}
+
 export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
   return {
     ...row,
@@ -229,10 +235,7 @@ export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
       row.standbyState === null
         ? null
         : WorkflowStandbyStateValidator.assert(row.standbyState),
-    lifecyclePolicy:
-      row.lifecyclePolicy == null
-        ? null
-        : WorkflowLifecyclePolicy.assert(row.lifecyclePolicy),
+    lifecyclePolicy: parseWorkflowRunLifecyclePolicy(row.lifecyclePolicy),
     modelPreferences:
       row.modelPreferences !== null
         ? InvokerModelPreferences.assert(row.modelPreferences)

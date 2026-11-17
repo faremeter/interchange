@@ -171,6 +171,8 @@ export type DeployPreparedCodeSourcedWorkflowParams = {
   reconciliation: SidecarReconciliationContext;
   /** Cipher for the definition's tenant-owned credential bindings, if any. */
   credentialCipher?: CredentialCipher;
+  /** The `standbyAfter` of the anchor run's saved lifecycle policy, if set. */
+  standbyAfterMs?: number;
 };
 
 export type PreparedWorkflowDeployer = {
@@ -287,6 +289,12 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
    * are fetched over HTTP).
    */
   assets?: readonly WorkflowSourceAssetMount[];
+  /**
+   * How long every run must wait on input from outside before the sidecar
+   * puts the workflow child in standby by itself. Absent when the deployment
+   * has no `standbyAfter`.
+   */
+  standbyAfterMs?: number;
 };
 
 export type SendMultiStepDeployFrameArgs = SourceRefDeployFrameArgs;
@@ -327,6 +335,9 @@ export async function sendMultiStepDeployFrame(
       : {}),
     ...(args.assets !== undefined && args.assets.length > 0
       ? { assets: [...args.assets] }
+      : {}),
+    ...(args.standbyAfterMs !== undefined
+      ? { standbyAfterMs: args.standbyAfterMs }
       : {}),
   };
   return args.sidecarAllocationRouter.sendAgentDeployToAllocation(
@@ -374,6 +385,8 @@ type DeployCodeSourcedCommonArgs = DeployFrameCommonArgs & {
    * neither.
    */
   credentialCipher?: CredentialCipher;
+  /** The deployment's `standbyAfter`, sent on the deploy frame as given. */
+  standbyAfterMs?: number;
 };
 
 /** Deploy a definition published to an npm registry: the sidecar fetches its
@@ -654,6 +667,9 @@ async function prepareSourceRefDeploy(
       : {}),
     ...(referencedDefinitions.length > 0 ? { referencedDefinitions } : {}),
     ...(assets.length > 0 ? { assets } : {}),
+    ...(args.standbyAfterMs !== undefined
+      ? { standbyAfterMs: args.standbyAfterMs }
+      : {}),
   };
 
   return {
@@ -1443,6 +1459,9 @@ export function createSessionService(
       deploymentDomain: params.deploymentDomain,
       ...(params.credentialCipher !== undefined
         ? { credentialCipher: params.credentialCipher }
+        : {}),
+      ...(params.standbyAfterMs !== undefined
+        ? { standbyAfterMs: params.standbyAfterMs }
         : {}),
     };
     // Branch on the source discriminant so the emit args match the asset/registry

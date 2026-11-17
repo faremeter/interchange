@@ -857,7 +857,13 @@ export function createWorkflowLifecycleService({
         !isSidecarAllocationDispatchable(allocation.status)
       )
         return "unallocated" as const;
-      if (run.standbyState === settled) return "settled" as const;
+      // A sidecar with a `standbyAfter` rule can have stopped the child
+      // before the Hub hears of it, and a wake also starts that wait over.
+      // So such a deployment's wake is sent even when it is recorded awake.
+      const wakeUnheardStandby =
+        wanted === "awake" && run.lifecyclePolicy?.standbyAfter !== undefined;
+      if (run.standbyState === settled && !wakeUnheardStandby)
+        return "settled" as const;
       if (run.standbyState !== pending) {
         // A JS date, since an answer is matched against this value read back,
         // which drops microseconds.

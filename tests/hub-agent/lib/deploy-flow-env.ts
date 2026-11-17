@@ -1960,6 +1960,12 @@ export type DeployWorkflowSourceForTestOpts = {
 
   /** Credential delivery for a credential-consuming fixture. */
   credentialCipher?: CredentialCipher;
+
+  /**
+   * How long every run must wait before the sidecar puts the deployment in
+   * standby by itself, as a lifecycle policy's `standbyAfter` sets it.
+   */
+  standbyAfterMs?: number;
 };
 
 /**
@@ -2215,6 +2221,9 @@ export async function deployWorkflowSourceForTest(
     // seeded secrets are plaintext, so default to the noop cipher unless a test
     // supplies its own.
     credentialCipher: opts.credentialCipher ?? createNoopCredentialCipher(),
+    ...(opts.standbyAfterMs !== undefined
+      ? { standbyAfterMs: opts.standbyAfterMs }
+      : {}),
   });
   if (opts.sourceAuthorityPrincipalId !== undefined) {
     await seedWorkflowRunLaunchSpec(opts.db, {

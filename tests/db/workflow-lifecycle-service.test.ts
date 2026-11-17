@@ -5415,6 +5415,42 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(actions()).toEqual(["confirm"]);
       });
 
+      test("a wake request for a deployment with a standbyAfter rule is sent even when it is recorded awake", async () => {
+        const { lifecycle, calls, actions, answer } = standbyService();
+        // Without the rule the Hub's record is the last word.
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("settled");
+        await h.db
+          .update(workflowRun)
+          .set({ lifecyclePolicy: { standbyAfter: "20m" } })
+          .where(eq(workflowRun.id, runId));
+
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("pending");
+        expect((await standby())?.state).toBe("waking");
+        // The sidecar had already stopped the child, and its report was held
+        // up behind the request. The wake still stands.
+        await lifecycle.noteDeploymentInStandby(idleStandby);
+        expect((await standby())?.state).toBe("waking");
+        expect(actions()).toEqual(["wake"]);
+        await answer(() => calls[0]?.answer.resolve({}));
+        expect(await standby()).toMatchObject({ state: "awake", reason: null });
+      });
+
+      test("a wake for a deployment with a standbyAfter rule recorded awake is sent by the sweep alone", async () => {
+        const { lifecycle, calls, actions, answer } = standbyService();
+        await h.db
+          .update(workflowRun)
+          .set({ lifecyclePolicy: { standbyAfter: "20m" } })
+          .where(eq(workflowRun.id, runId));
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("pending");
+        expect(await lifecycle.requestWake(tenantId, runId)).toBe("pending");
+        expect(actions()).toEqual([]);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        expect(await nextPass(lifecycle)).toBe(false);
+        expect(actions()).toEqual(["wake"]);
+        await answer(() => calls[0]?.answer.resolve({}));
+        expect(await standby()).toMatchObject({ state: "awake", reason: null });
+      });
+
       test("a standby request made while the Hub confirms one is carried out as asked", async () => {
         const { lifecycle, calls, actions, answer } = standbyService();
         await lifecycle.noteDeploymentInStandby(idleStandby);

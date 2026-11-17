@@ -554,6 +554,83 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(fences).toEqual([ALLOC_GENERATION + 1]);
     });
 
+    test("a prepared deploy sends the wait before standby it was given on the frame", async () => {
+      await seedWorkflowRun(h.db, {
+        id: ANCHOR_RUN_ID,
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
+        address: DEPLOY_ADDRESS,
+        status: "deployed",
+      });
+      await seedAllocation();
+      const allocations = createSidecarAllocationStore(h.db);
+      await allocations.wakeReconciliation(ALLOC_ID, ALLOC_GENERATION);
+      const leaseId = "standby-after-attempt";
+      expect(
+        await allocations.claimNextReconcilable({
+          leaseId,
+          leaseDurationMs: 60_000,
+        }),
+      ).not.toBeNull();
+      const router = createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
+        authenticateSidecar: async () => null,
+        validateSidecarIdentity: async () => false,
+        resolveSidecarBindings: async () => [],
+      });
+      // The frame is all this test reads, so the deploy ends there.
+      const captured = new Error("Deploy frame captured");
+      const sent: (number | undefined)[] = [];
+      router.sendAgentDeployToAllocation = async (
+        _target,
+        _address,
+        _config,
+        workflow,
+      ) => {
+        sent.push(workflow.standbyAfterMs);
+        throw captured;
+      };
+      const dataDir = await fs.promises.mkdtemp(
+        path.join(os.tmpdir(), "prepared-standby-after-"),
+      );
+      tempDirs.push(dataDir);
+      const service = createSessionService({
+        loadRunCredentials: async () => null,
+        db: h.db,
+        sidecarRouter: router,
+        sidecarAllocationRouter: router,
+        agentRepoStore: createAgentRepoStore({ dataDir, signingKey }),
+      });
+      const approved = await makeApproveBundle();
+      approved.approval.approvedSurface = createApprovalSet([
+        "inference.source:anthropic:mock-model",
+      ]);
+      await seedInferenceCredentials(h.db, TENANT_ID, SOURCES, CONFIG);
+      await expect(
+        service.deployPreparedCodeSourcedWorkflow({
+          tenantId: TENANT_ID,
+          anchorRunId: ANCHOR_RUN_ID,
+          deploymentDomain: DEPLOYMENT_DOMAIN,
+          agentAddress: DEPLOY_ADDRESS,
+          source: { kind: "registry", registry: "npm" },
+          approved,
+          config: CONFIG,
+          allocationTarget: {
+            allocationId: ALLOC_ID,
+            generation: ALLOC_GENERATION,
+          },
+          reconciliation: {
+            leaseId,
+            signal: new AbortController().signal,
+          },
+          credentialCipher: createNoopCredentialCipher(),
+          standbyAfterMs: 1_200_000,
+        }),
+      ).rejects.toThrow("Deploy frame captured");
+      expect(sent).toEqual([1_200_000]);
+    });
+
     test("an anchor insert collision fails closed before the frame with no leak", async () => {
       // A row already owns this anchor id, so the pre-emit INSERT collides. The
       // frame never goes out; the pre-existing row must be left untouched.

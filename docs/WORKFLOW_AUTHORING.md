@@ -707,7 +707,8 @@ they end: a step with a `timeout`, from its start to its end, even while it
 is parked on an approval; a `map`, until it ends; and a step waiting to
 retry. A fresh child could not keep the step's deadline, continue the map,
 or continue the retry wait. An `awaitSignal` gate's `timeout` does not
-count, because it is a timer in the run's log.
+count, because it is a timer in the run's log. The same holds for the standby
+a `standbyAfter` lifecycle policy asks for.
 
 Where it lives today: the standby paragraph of
 `docs/workflow-lifecycle-policy.md`; `beginWork`,
