@@ -257,8 +257,16 @@ export function legacyTurnId(correlationId: string): string {
   return `legacy:${correlationId}`;
 }
 
-function withTurnId(op: PersistedPendingOperation): PendingOperation {
-  return { ...op, turnId: op.turnId ?? legacyTurnId(op.correlationId) };
+// A pending operation as the reactor loads it. Older state can lack two
+// fields. An operation persisted before turn ids existed gets a legacy turn
+// id. An operation persisted before `gated` existed counts as gated, because
+// that state re-armed a gate for every operation.
+function loadedOperation(op: PersistedPendingOperation): PendingOperation {
+  return {
+    ...op,
+    turnId: op.turnId ?? legacyTurnId(op.correlationId),
+    gated: op.gated ?? true,
+  };
 }
 
 /**
@@ -653,6 +661,9 @@ export function createReactor(config: ReactorConfig): Reactor {
   // no tool call, so it must force the cycle commit. A refused director
   // suspend forces it too (see `commitRefusedSuspend`).
   let cycleSuspended = false;
+  // Set when a pending operation changed outside a suspend (a gate timed out
+  // and its operation is no longer gated). The next commit persists it.
+  let operationsChanged = false;
 
   // Director-supplied checkpoint message override; consumed exactly once.
   let pendingMessage: string | null = null;
@@ -916,9 +927,9 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
     // An approval resumes on the operation's turn (re-run or denied
     // result). An async response clears the gate, and the gate's
-    // gate.cleared resumes the gate's turn. The two differ when a director
-    // suspended on a correlation before any operation existed and a later
-    // turn's marker registered it.
+    // gate.cleared resumes the gate's turn. A marker registered while a
+    // director gate already waits on its correlation takes that gate's
+    // turn, so the operation's turn and the gate's turn are the same.
     const resumedTurnId =
       op.suspendedCall !== undefined ? op.turnId : gate.turnId;
     return {
@@ -1325,7 +1336,12 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       if (rawResult.pendingMarker !== undefined && stateManager !== null) {
         const marker = rawResult.pendingMarker;
-        const gateId = `pending-${marker.correlationId}`;
+        // A director can suspend on a correlation before its marker exists.
+        // That live gate already waits on the marker, so the operation is
+        // gated under that gate and its turn, and a restart re-arms it.
+        // Otherwise no turn waits on the marker yet, and a later director
+        // suspend on its correlation gives it a gate.
+        const waiting = gates.findByCorrelationId(marker.correlationId);
         const op: PendingOperation = {
           correlationId: marker.correlationId,
           // Placeholder: async markers should carry their own SignalKind. The
@@ -1333,8 +1349,9 @@ export function createReactor(config: ReactorConfig): Reactor {
           // interim discriminator instead of on kind.
           kind: "approval",
           registeredAt: Date.now(),
-          gateId,
-          turnId,
+          gateId: waiting?.gateId ?? `pending-${marker.correlationId}`,
+          turnId: waiting?.turnId ?? turnId,
+          gated: waiting !== undefined,
         };
         correlations.register(op);
         stateManager.addPendingOperation(op);
@@ -1477,6 +1494,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     cycleToolCallsExecuted = 0;
     cycleCompactorName = null;
     cycleSuspended = false;
+    operationsChanged = false;
   }
 
   // A refused director suspend registers no gate, but an earlier event of
@@ -1498,7 +1516,8 @@ export function createReactor(config: ReactorConfig): Reactor {
       cycleInferred ||
       cycleToolCallsExecuted > 0 ||
       cycleCompactorName !== null ||
-      cycleSuspended;
+      cycleSuspended ||
+      operationsChanged;
     const hasOverride = pendingMessage !== null;
     if (!hasWork && !hasOverride) {
       resetCycleAccumulators();
@@ -1626,6 +1645,9 @@ export function createReactor(config: ReactorConfig): Reactor {
         );
         return;
       }
+      // The gate timed out, but its operation (an async marker) stays
+      // registered: no live gate parks it any more.
+      ungateOperation(gateId);
     }
 
     emit({
@@ -1634,6 +1656,24 @@ export function createReactor(config: ReactorConfig): Reactor {
       data: { gateId, reason },
     });
     enqueue({ type: "reactor.gate.cleared", gateId, reason }, turnId);
+  }
+
+  // Keep the rule "gated: a live gate parks the operation": when a gate goes
+  // away and its operation stays registered, mark the operation not gated
+  // and persist that at the next commit. A restart then re-arms no gate for
+  // it, and a later delivery for it resumes nothing. A shutdown keeps the
+  // operation gated, so its parked turn resumes after the restart.
+  function ungateOperation(gateId: string): void {
+    const op = correlations.findByGateId(gateId);
+    if (op === undefined || !op.gated) return;
+    const ungated: PendingOperation = { ...op, gated: false };
+    correlations.remove(op.correlationId);
+    correlations.register(ungated);
+    if (stateManager !== null) {
+      stateManager.removePendingOperation(op.correlationId);
+      stateManager.addPendingOperation(ungated);
+    }
+    operationsChanged = true;
   }
 
   // Parks the reactor on a gate. Shared by the director's `suspend` action and
@@ -1654,15 +1694,16 @@ export function createReactor(config: ReactorConfig): Reactor {
   // also counts: only the running turn suspends. A refused suspend changes
   // nothing and returns "refused".
   //
-  // `takeOver` is an operation of another turn, with no live gate, that the
-  // running turn now waits for. It moves to this turn only after admission,
-  // so a refused suspend leaves it on its original turn.
+  // `takeOver` is an operation with no live gate that the running turn now
+  // waits for, of this turn or of another one. Only after admission does it
+  // move to this turn and take this gate (`gateId`, `gated`), so a refused
+  // suspend leaves it unchanged.
   async function suspendOnGate(args: {
     gateType: GateType;
     gateId: string;
     timeoutMs: number;
     correlationId: string | undefined;
-    pendingOp: Omit<PendingOperation, "turnId"> | undefined;
+    pendingOp: Omit<PendingOperation, "turnId" | "gated"> | undefined;
     takeOver: PendingOperation | undefined;
     turnId: string;
   }): Promise<"parked" | "refused"> {
@@ -1675,12 +1716,19 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
 
     const pendingOp =
-      args.pendingOp !== undefined ? { ...args.pendingOp, turnId } : undefined;
+      args.pendingOp !== undefined
+        ? { ...args.pendingOp, turnId, gated: true }
+        : undefined;
 
     if (args.takeOver !== undefined) {
       // Remove before the register: the registry throws on a duplicate
       // correlation id.
-      const moved: PendingOperation = { ...args.takeOver, turnId };
+      const moved: PendingOperation = {
+        ...args.takeOver,
+        turnId,
+        gateId,
+        gated: true,
+      };
       correlations.remove(moved.correlationId);
       correlations.register(moved);
       if (stateManager !== null) {
@@ -1771,14 +1819,17 @@ export function createReactor(config: ReactorConfig): Reactor {
   // effective timeout the director-suspend fallback uses — rather than a
   // silent zero. This does not run through `suspendOnGate`: rehydration must
   // not re-emit `reactor.gate.blocked` (the suspension already happened before
-  // the restart) and must not commit (nothing changed).
+  // the restart) and must not commit (nothing changed). Every operation is
+  // registered, so a later director suspend still finds a marker, but only an
+  // operation that had a gate gets one back.
   function rehydrateGates(ops: PendingOperation[]): void {
     for (const op of ops) {
+      correlations.register(op);
+      if (!op.gated) continue;
       const timeoutMs =
         op.timeoutAt !== undefined
           ? Math.max(1, op.timeoutAt - Date.now())
           : gateTimeout;
-      correlations.register(op);
       void gates.register(
         op.gateId,
         signalKindToGateType(op.kind),
@@ -1971,14 +2022,14 @@ export function createReactor(config: ReactorConfig): Reactor {
           );
           continue;
         }
-        // A director may suspend on the correlation of an operation an
-        // earlier turn registered (an async pending marker) that has no live
-        // gate. The running turn now waits for that operation, so the
+        // A director may suspend on the correlation of an operation that has
+        // no live gate (an async pending marker), of this turn or of an
+        // earlier one. The running turn now waits for that operation, so the
         // operation, its gate and its resume belong to the turn that waits.
         // The earlier turn can also have ended, and a gate under an ended
         // turn would resume a turn that cannot end again. suspendOnGate moves
-        // the operation only after admission, and its commit persists the
-        // move.
+        // the operation and gives it this gate only after admission, and its
+        // commit persists the change, so a restart re-arms this gate.
         const waitedOn =
           gate.correlationId !== undefined
             ? correlations.lookup(gate.correlationId)
@@ -1989,16 +2040,13 @@ export function createReactor(config: ReactorConfig): Reactor {
           timeoutMs: gate.timeoutMs > 0 ? gate.timeoutMs : gateTimeout,
           correlationId: gate.correlationId,
           pendingOp: undefined,
-          takeOver:
-            waitedOn !== undefined && waitedOn.turnId !== turnId
-              ? waitedOn
-              : undefined,
+          takeOver: waitedOn,
           turnId,
         });
         // A refused director suspend registers no gate. An operation it named
-        // stays registered under its own turn with no gate, so a later
-        // delivery for it resumes nothing. The turn holds its gate, so it does
-        // not end here.
+        // stays registered under its own turn with no gate, also after a
+        // restart, so a later delivery for it resumes nothing. The turn holds
+        // its gate, so it does not end here.
         if (admitted === "refused") {
           await commitRefusedSuspend();
           emitError(
@@ -2160,10 +2208,10 @@ export function createReactor(config: ReactorConfig): Reactor {
       try {
         const loaded = await contextStore.load();
         initialTurns = loaded.turns;
-        // An operation persisted before turn ids existed gets a legacy id
-        // here, so the state manager and the rehydrated gates see one turn
-        // id for each operation.
-        initialOps = loaded.pendingOperations.map(withTurnId);
+        // An operation from older state gets its missing fields here, so
+        // the state manager and the rehydrated gates see one turn id and one
+        // `gated` value for each operation.
+        initialOps = loaded.pendingOperations.map(loadedOperation);
         initialUsage = loaded.tokenUsage;
       } catch (cause) {
         done = true;

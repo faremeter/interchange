@@ -1802,6 +1802,7 @@ describe("connector thread state", () => {
         arguments: { target: "prod" },
       },
       turnId: "turn-1",
+      gated: true,
     };
 
     await store.writeTurns([]);

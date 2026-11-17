@@ -469,6 +469,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
         registeredAt: 1,
         gateId: "g1",
         turnId: "t1",
+        gated: true,
       };
       const usage: TokenUsage = {
         input: 7,

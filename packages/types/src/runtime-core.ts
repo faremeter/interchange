@@ -1389,13 +1389,22 @@ export type PendingOperation = {
    * this operation continues this turn.
    */
   turnId: string;
+  /**
+   * Whether a live gate parks this operation. An ask-rail approval and an
+   * operation a director suspend waits on have a gate (`gateId`); an async
+   * pending marker that no turn waits on has none. A restart re-arms a gate
+   * only for a gated operation, so a marker comes back with no gate.
+   */
+  gated: boolean;
 };
 
 /**
  * Validator for a {@link PendingOperation} read back from an agent's durable
  * state, by the agent's own store and by the Hub's copy of it. `turnId` is
  * optional here because state written before turn ids existed has none; the
- * reactor gives such an operation a legacy id when it loads it.
+ * reactor gives such an operation a legacy id when it loads it. `gated` is
+ * optional because older state has none; the reactor treats such an
+ * operation as gated, which is how that state was rehydrated.
  */
 export const PersistedPendingOperation = type({
   correlationId: "string",
@@ -1406,6 +1415,7 @@ export const PersistedPendingOperation = type({
   "suspendedCall?": ToolCall,
   "approvalSnapshot?": ApprovalSnapshot,
   "turnId?": "string",
+  "gated?": "boolean",
 });
 export type PersistedPendingOperation = typeof PersistedPendingOperation.infer;
 
@@ -1439,6 +1449,17 @@ const _persistedTurnId = (
 void _persistedTurnId;
 const _pendingTurnId = (op: PendingOperation): string => op.turnId;
 void _pendingTurnId;
+
+// Same lockstep guard for `gated`: the persisted schema must keep carrying
+// it so a restart re-arms a gate only for an operation that had one. The
+// second projection errors under `tsc` if the in-memory type stops
+// requiring the field.
+const _persistedGated = (
+  op: typeof PersistedPendingOperation.infer,
+): boolean | undefined => op.gated;
+void _persistedGated;
+const _pendingGated = (op: PendingOperation): boolean => op.gated;
+void _pendingGated;
 
 /**
  * Complete reactor state visible to the director decision function.
@@ -1628,7 +1649,7 @@ export type BeforeToolDecision =
         correlationId: string;
         timeoutAt: number;
       };
-      pendingOp: Omit<PendingOperation, "turnId">;
+      pendingOp: Omit<PendingOperation, "turnId" | "gated">;
     };
 
 /**
