@@ -1,7 +1,8 @@
 // The cost of one workflow-run pack receive as its commit count grows.
 // The receive validates every commit against its parent, and each commit
 // carries the whole history before it. These tests pin that the reads
-// and parses of one receive grow linearly with its commit count.
+// and parses of one receive grow linearly with its commit count, and
+// that one write reads each object it needs once.
 
 import { describe, test, expect, afterAll, beforeAll, spyOn } from "bun:test";
 import fs from "node:fs";
@@ -20,7 +21,12 @@ import {
   WORKFLOW_RUN_MAILBOX_PREFIX,
   WORKFLOW_RUN_PROCESSING_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
+  workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
+import {
+  serializeStepStateWalEntry,
+  stepStateWalEntryPath,
+} from "./step-state";
 import { MAILBOX_INDEX_VERSION } from "./mailbox-index";
 import { createRepoStore } from "./repo-store";
 import type { Principal, RepoId } from "./repo-store";
@@ -246,4 +252,117 @@ describe("workflow-run pack receive cost", () => {
     },
     RECEIVE_TIMEOUT_MS,
   );
+});
+
+describe("workflow-run write cost", () => {
+  const events = `${WORKFLOW_RUN_RUNS_PREFIX}/run-1/events`;
+
+  async function seededStore() {
+    const { store, repoId } = await freshStore();
+    const seed: Record<string, string> = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${MAILBOX_INBOX}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]: JSON.stringify({
+        version: MAILBOX_INDEX_VERSION,
+        uidValidity: 1,
+        uidNext: 4,
+        highestModSeq: 0,
+        messages: [],
+        expunged: [],
+      }),
+    };
+    for (let seq = 0; seq < 10; seq++) {
+      seed[`${events}/${String(seq)}.json`] = eventBody(
+        seq,
+        seq === 0 ? "RunStarted" : "StepCompleted",
+      );
+    }
+    for (let uid = 1; uid <= 3; uid++) {
+      seed[`${MAILBOX_INBOX}/${String(uid)}.eml`] =
+        `Subject: message ${String(uid)}\r\n\r\nbody\r\n`;
+    }
+    seed[`${ADDRESS_DIR}/${WORKFLOW_RUN_INBOX_DIR}/1-m1.json`] = JSON.stringify(
+      { messageId: "m1", receivedAt: 1, address: ADDRESS },
+    );
+    seed[stepStateWalEntryPath(workflowRunStepStatePrefix("run-1", "s"), 0)] =
+      serializeStepStateWalEntry(0, [], {
+        pendingOperations: [],
+        tokenUsage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          thinking: 0,
+        },
+        connectorState: null,
+      });
+    await store.writeTree(HUB, repoId, REF, {
+      files: seed,
+      message: "seed",
+    });
+    return { store, repoId };
+  }
+
+  async function expectEachObjectReadOnce(
+    write: () => Promise<unknown>,
+  ): Promise<void> {
+    const readCommit = spyOn(git, "readCommit");
+    const readTree = spyOn(git, "readTree");
+    try {
+      await write();
+      const repeated = (calls: { oid: string }[][]): string[] => {
+        const seen = new Set<string>();
+        const again: string[] = [];
+        for (const [args] of calls) {
+          if (args === undefined) continue;
+          if (seen.has(args.oid)) again.push(args.oid);
+          seen.add(args.oid);
+        }
+        return again;
+      };
+      expect(readTree.mock.calls.length).toBeGreaterThan(0);
+      expect(repeated(readCommit.mock.calls)).toEqual([]);
+      expect(repeated(readTree.mock.calls)).toEqual([]);
+    } finally {
+      readCommit.mockRestore();
+      readTree.mockRestore();
+    }
+  }
+
+  test("a delta append reads each commit and tree at most once", async () => {
+    const { store, repoId } = await seededStore();
+    await expectEachObjectReadOnce(() =>
+      store.writeTreeDelta(HUB, repoId, REF, {
+        computeDelta: async () => ({
+          puts: { [`${events}/10.json`]: eventBody(10, "StepCompleted") },
+          deletes: [],
+        }),
+        changedPathPrefixes: new Set([`${WORKFLOW_RUN_RUNS_PREFIX}/run-1/`]),
+        message: "append",
+      }),
+    );
+  });
+
+  test("a tree write reads each commit and tree at most once", async () => {
+    const { store, repoId } = await seededStore();
+    await expectEachObjectReadOnce(() =>
+      store.writeTree(HUB, repoId, REF, {
+        files: { [`${events}/10.json`]: eventBody(10, "StepCompleted") },
+        message: "append",
+      }),
+    );
+  });
+
+  test("a prefix-preserving write reads each commit and tree at most once", async () => {
+    const { store, repoId } = await seededStore();
+    await expectEachObjectReadOnce(() =>
+      store.writeTreePreservingPrefix(HUB, repoId, REF, {
+        preservePrefix: `${events}/`,
+        merge: async (existing) => ({
+          ...Object.fromEntries(existing),
+          [`${events}/10.json`]: eventBody(10, "StepCompleted"),
+        }),
+        message: "append",
+      }),
+    );
+  });
 });
