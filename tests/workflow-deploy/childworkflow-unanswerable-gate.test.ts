@@ -181,26 +181,21 @@ afterAll(async () => {
 });
 
 /**
- * The top-level container run: not the child, whose run id is the child's
- * workflow id. Polled, because firing the trigger only queues the run.
+ * The top-level container run, which is the deployment's own run and
+ * carries its anchor id. Polled, because firing the trigger only queues
+ * the run. The child's run id is generated, so it cannot be told apart
+ * from the parent by name, and it can reach the hub first.
  */
 async function topLevelRunId(
   workflowRunRepoId: RepoId,
-  childWorkflowId: string,
+  anchorRunId: string,
 ): Promise<string> {
-  let found: string | undefined;
   await waitFor(
-    async () => {
-      found = (await listRunIds(env, workflowRunRepoId)).find(
-        (id) => !id.includes("__") && id !== childWorkflowId,
-      );
-      return found !== undefined;
-    },
+    async () =>
+      (await listRunIds(env, workflowRunRepoId)).includes(anchorRunId),
     { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
   );
-  if (found === undefined)
-    throw new Error("no top-level run after the trigger");
-  return found;
+  return anchorRunId;
 }
 
 /** The child's run id, as the parent recorded it when it spawned the child. */
@@ -228,7 +223,7 @@ async function deployGateWorkflow(opts: {
   anchorRunId: string;
   timedGate: boolean;
   askTool?: boolean;
-}): Promise<{ workflowRunRepoId: RepoId; childWorkflowId: string }> {
+}): Promise<{ workflowRunRepoId: RepoId }> {
   const { anchorRunId } = opts;
   const childWorkflowId = `wf_child_${anchorRunId}`;
   const deploymentMailAddress = deriveRunAddress({
@@ -289,7 +284,7 @@ async function deployGateWorkflow(opts: {
     ...(opts.askTool === true ? { grants: [ASK_GRANT] } : {}),
   });
 
-  return { workflowRunRepoId: handle.workflowRunRepoId, childWorkflowId };
+  return { workflowRunRepoId: handle.workflowRunRepoId };
 }
 
 function notImpl(name: string): never {
@@ -439,12 +434,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "a childWorkflow park relayed onto the deployment run",
   () => {
     test("delivers an author signal on the deployment run into the child", async () => {
-      const { workflowRunRepoId, childWorkflowId } = await deployGateWorkflow({
+      const { workflowRunRepoId } = await deployGateWorkflow({
         anchorRunId: UNANSWERABLE_ANCHOR,
         timedGate: false,
       });
 
-      const runId = await topLevelRunId(workflowRunRepoId, childWorkflowId);
+      const runId = await topLevelRunId(workflowRunRepoId, UNANSWERABLE_ANCHOR);
       await waitFor(
         async () => {
           const events = await readWorkflowRunEvents(
@@ -476,13 +471,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }, 120_000);
 
     test("registers the child's approval on the deployment run", async () => {
-      const { workflowRunRepoId, childWorkflowId } = await deployGateWorkflow({
+      const { workflowRunRepoId } = await deployGateWorkflow({
         anchorRunId: ASK_ANCHOR,
         timedGate: false,
         askTool: true,
       });
 
-      const runId = await topLevelRunId(workflowRunRepoId, childWorkflowId);
+      const runId = await topLevelRunId(workflowRunRepoId, ASK_ANCHOR);
       await waitFor(
         async () => {
           const rows = await h.db
@@ -554,12 +549,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }, 120_000);
 
     test("still runs a timed gate, which resolves on its own timer", async () => {
-      const { workflowRunRepoId, childWorkflowId } = await deployGateWorkflow({
+      const { workflowRunRepoId } = await deployGateWorkflow({
         anchorRunId: TIMED_ANCHOR,
         timedGate: true,
       });
 
-      const runId = await topLevelRunId(workflowRunRepoId, childWorkflowId);
+      const runId = await topLevelRunId(workflowRunRepoId, TIMED_ANCHOR);
 
       const terminal = await waitForWorkflowRunComplete(
         env,
