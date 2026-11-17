@@ -1007,11 +1007,21 @@ export function createReactor(config: ReactorConfig): Reactor {
         switch (dispatch.mode) {
           case "redispatch":
           case "error_result":
-            // Clear the gate WITHOUT its gate.cleared: the re-dispatched
-            // call, or the synthetic error result of a denied call, is the
-            // resumption, so a gate.cleared-driven re-infer would double the
-            // continuation.
+            // Clear the gate WITHOUT enqueuing its gate.cleared: the
+            // re-dispatched call, or the synthetic error result of a denied
+            // call, is the resumption, so a gate.cleared-driven re-infer would
+            // double the continuation. The gate.cleared is still emitted for
+            // observers, after the gate's blocked (see InFlightSuspend).
             gates.clearSilently(gate.gateId);
+            if (suspendingGate?.gateId === gate.gateId) {
+              suspendingGate.clearedOnAdmission = true;
+            } else {
+              emit({
+                type: "reactor.gate.cleared",
+                seq: nextSeq(),
+                data: { gateId: gate.gateId, reason: "resolved" },
+              });
+            }
             correlations.remove(correlationId);
             if (stateManager !== null) {
               stateManager.setGatesSnapshot(gates.snapshot());
@@ -1579,9 +1589,15 @@ export function createReactor(config: ReactorConfig): Reactor {
   // send-awaiter both assume a gate's `blocked` precedes any effect of its
   // clearing, so the in-flight suspend is tracked here and such a clear is
   // deferred until `blocked` has fired.
+  //
+  // An approval can also be admitted while its own suspend commits. Its
+  // admission clears the gate silently at once, but the `reactor.gate.cleared`
+  // it announces is held here (`clearedOnAdmission`) and emitted right after
+  // `blocked`.
   type InFlightSuspend = {
     gateId: string;
     deferredClear: { reason: "resolved" | "timeout" | "shutdown" } | null;
+    clearedOnAdmission: boolean;
   };
   let suspendingGate: InFlightSuspend | null = null;
 
@@ -1600,7 +1616,9 @@ export function createReactor(config: ReactorConfig): Reactor {
   // A delivered `resolved` never reaches here on the ask rail — the redispatch
   // and reject paths clear the gate silently (no onCleared) — so the timeout
   // branch is gated on `reason === "timeout"` and shutdown stays on the plain
-  // path: a shutting-down reactor must not manufacture tool results.
+  // path: a shutting-down reactor must not manufacture tool results. The
+  // timeout branch still emits `reactor.gate.cleared` (emitted only, not
+  // enqueued), so an observer sees every gate that `blocked` announced clear.
   //
   // `turnId` is the cleared gate's turn. Each enqueued resume continues the
   // parked turn, not the turn that runs when the gate clears.
@@ -1632,6 +1650,11 @@ export function createReactor(config: ReactorConfig): Reactor {
         if (stateManager !== null) {
           stateManager.removePendingOperation(op.correlationId);
         }
+        emit({
+          type: "reactor.gate.cleared",
+          seq: nextSeq(),
+          data: { gateId, reason: "timeout" },
+        });
         enqueue(
           {
             type: "resume.tool_result",
@@ -1746,7 +1769,11 @@ export function createReactor(config: ReactorConfig): Reactor {
 
     // Track this suspend as in flight so a clear racing the commit below is
     // deferred until `reactor.gate.blocked` has been emitted.
-    const inFlightSuspend: InFlightSuspend = { gateId, deferredClear: null };
+    const inFlightSuspend: InFlightSuspend = {
+      gateId,
+      deferredClear: null,
+      clearedOnAdmission: false,
+    };
     suspendingGate = inFlightSuspend;
 
     // Register the gate. onGateCleared enqueues the cleared event so the loop
@@ -1802,6 +1829,13 @@ export function createReactor(config: ReactorConfig): Reactor {
     // now, in order. The deferred clear belongs to this suspend's gate, so it
     // carries this suspend's turn.
     suspendingGate = null;
+    if (inFlightSuspend.clearedOnAdmission) {
+      emit({
+        type: "reactor.gate.cleared",
+        seq: nextSeq(),
+        data: { gateId, reason: "resolved" },
+      });
+    }
     if (inFlightSuspend.deferredClear !== null) {
       onGateCleared(gateId, inFlightSuspend.deferredClear.reason, turnId);
     }
