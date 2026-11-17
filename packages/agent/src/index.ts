@@ -85,6 +85,8 @@ export {
   type SendResult,
   AgentClosedError,
   GateSuspendedWithoutCorrelationError,
+  TurnEndedWithoutReplyError,
+  TurnFailedError,
   createAgent,
 } from "./agent";
 export {

@@ -16,9 +16,16 @@ import type {
   ReactorState,
 } from "@intx/types/runtime";
 
+import type { ReactorEmittedEvent } from "@intx/inference";
+import { waitUntil } from "@intx/types/testing";
+
 import {
+  AgentClosedError,
   createAgent,
   GateSuspendedWithoutCorrelationError,
+  TurnEndedWithoutReplyError,
+  TurnFailedError,
+  type Agent,
   type SendResult,
 } from "./agent";
 import { defineAgent } from "./definition";
@@ -608,12 +615,10 @@ describe("createAgent send() on reactor suspend", () => {
     // `corr-2` proves the send did not ride the first park's stale
     // event.
     //
-    // This pins the observable end-to-end attribution, not the
-    // `activeCycle !== null` guard in handleEvent directly: that guard
-    // is belt-and-suspenders, because the send queue sets its active
-    // cycle synchronously with delivery and a settle is a no-op when no
-    // send is active, so a bare park cannot reach a queued send in the
-    // first place.
+    // This pins the observable end-to-end attribution. The agent settles
+    // a send only on events of the turn it follows, so the bare park's
+    // `reactor.gate.blocked`, which carries another turn's id, cannot
+    // settle it.
     const director = makeSuspendingDirector({
       correlationId: "corr",
       distinctPerPark: true,
@@ -635,6 +640,577 @@ describe("createAgent send() on reactor suspend", () => {
         throw new Error(`expected suspended outcome, got ${result.type}`);
       }
       expect(result.correlationId).toBe("corr-2");
+    } finally {
+      await agent.close();
+    }
+  });
+});
+
+describe("createAgent send() follows its own turn", () => {
+  // These tests run a real reactor with a scripted director and no model
+  // call. The director answers a message by its content:
+  //   "T"  parks on an approval for a charge_card call (ask)
+  //   "M"  runs a tool whose result carries an async pending marker
+  //   "W"  waits, "E" returns no action, "D" ends the reactor
+  //   "X"  throws
+  //   any other content replies "<content> done"
+  // A resumed charge_card call parks again on `call-2` when it is `call-1`
+  // and the director was asked to repark, else it replies "charged".
+  const TURN_SOURCE: InferenceSource = {
+    id: "anthropic:turn-test",
+    provider: "anthropic",
+    baseURL: "http://localhost:1",
+    credentialId: "test-key",
+    model: "claude-test",
+  };
+
+  let workDir: string;
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "agent-turns-"));
+  });
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  function scriptedDirector(opts: { repark?: boolean } = {}): ReactorDirector {
+    let parks = 0;
+    return {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          const content = event.message.content ?? "";
+          if (content === "T") {
+            parks += 1;
+            return caps.executeTools([
+              {
+                id: `call-${String(parks)}`,
+                name: "charge_card",
+                arguments: {},
+              },
+            ]);
+          }
+          if (content === "M") {
+            return caps.executeTools([
+              { id: "call-marker", name: "send_note", arguments: {} },
+            ]);
+          }
+          if (content === "W") return caps.wait();
+          if (content === "E") return [];
+          if (content === "D") return caps.done();
+          if (content === "X") throw new Error("director blew up");
+          return caps.reply(`${content} done`);
+        }
+        if (event.type === "resume.execute_tools") {
+          return caps.executeTools(event.calls, false, true);
+        }
+        if (event.type === "tool.done") {
+          if (event.result.callId === "call-marker") return caps.reply("sent");
+          if (opts.repark === true && event.result.callId === "call-1") {
+            parks += 1;
+            return caps.executeTools([
+              { id: "call-2", name: "charge_card", arguments: {} },
+            ]);
+          }
+          return caps.reply("charged");
+        }
+        return caps.wait();
+      },
+    };
+  }
+
+  const toolsFactory = defineTool<BaseEnv>({
+    id: "@intx-test/agent/turn-tools",
+    definitions: [
+      { name: "charge_card" },
+      { name: "send_note" },
+      { name: "note" },
+    ],
+    factory: () => ({
+      definitions: [
+        {
+          name: "charge_card",
+          description: "Charge the card",
+          inputSchema: { type: "object", properties: {} },
+        },
+        {
+          name: "send_note",
+          description: "Send a note and wait for its answer",
+          inputSchema: { type: "object", properties: {} },
+        },
+        {
+          name: "note",
+          description: "Write a note",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+      async run(call) {
+        if (call.name === "send_note") {
+          return {
+            callId: call.id,
+            content: "sent",
+            pendingMarker: { status: "pending", correlationId: "corr-note" },
+          };
+        }
+        return { callId: call.id, content: "charged" };
+      },
+    }),
+  });
+
+  async function buildAgent(director: ReactorDirector) {
+    const defined = defineDirector({
+      id: "@intx-test/agent/turn-probe",
+      configSchema: type({}),
+      factory: () => director,
+    });
+    const storage = await createIsogitStore(workDir);
+    const env: BaseEnv = {
+      sources: [TURN_SOURCE],
+      defaultSource: TURN_SOURCE.id,
+      readCurrentMaterial: (credentialId) => ({ secret: credentialId }),
+      storage,
+      workdir: workDir,
+      audit: noopAuditStore(),
+      authorize: async (resource) =>
+        resource === "tool:charge_card"
+          ? { effect: "ask", matchingGrants: [], resolvedBy: null }
+          : { effect: "allow", matchingGrants: [], resolvedBy: null },
+      directors: createDirectorRegistry({
+        factories: [defined.factory],
+        defaultId: defined.factory.id,
+      }),
+    };
+    const def = defineAgent({
+      id: "turn-agent",
+      systemPrompt: "test",
+      tools: [toolsFactory],
+      capabilities: [],
+      inference: {
+        sources: [{ provider: TURN_SOURCE.provider, model: TURN_SOURCE.model }],
+      },
+    });
+    return createAgent(def, env);
+  }
+
+  function message(
+    content: string,
+    correlationId?: string,
+  ): ReturnType<typeof createInboundMessage> {
+    return createInboundMessage({
+      from: "user@local",
+      to: "agent@local",
+      content,
+      interchangeType: "conversation.message",
+      ...(correlationId !== undefined ? { correlationId } : {}),
+    });
+  }
+
+  function approval(
+    correlationId: string,
+  ): ReturnType<typeof createInboundMessage> {
+    return createInboundMessage({
+      from: "signal@local",
+      to: "agent@local",
+      content: JSON.stringify({ outcome: "approved" }),
+      correlationId,
+    });
+  }
+
+  // Collect every event of the agent's stream in the background.
+  function collect(agent: Agent): ReactorEmittedEvent[] {
+    const events: ReactorEmittedEvent[] = [];
+    void (async () => {
+      for await (const event of agent.stream()) events.push(event);
+    })();
+    return events;
+  }
+
+  async function firstGate(
+    events: ReactorEmittedEvent[],
+  ): Promise<{ correlationId: string; turnId: string }> {
+    let found: { correlationId: string; turnId: string } | undefined;
+    await waitUntil(() => {
+      for (const e of events) {
+        if (
+          e.type === "reactor.gate.blocked" &&
+          e.data.correlationId !== undefined &&
+          e.data.turnId !== undefined
+        ) {
+          found = {
+            correlationId: e.data.correlationId,
+            turnId: e.data.turnId,
+          };
+          return true;
+        }
+      }
+      return false;
+    });
+    if (found === undefined) throw new Error("unreachable");
+    return found;
+  }
+
+  async function rejection(promise: Promise<unknown>): Promise<unknown> {
+    try {
+      await promise;
+    } catch (err) {
+      return err;
+    }
+    throw new Error("expected the promise to reject");
+  }
+
+  test("a foreign park does not settle the send", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    try {
+      // T's message is queued ahead of the send's, so T parks while the
+      // send is active.
+      agent.deliver(message("T"));
+      const result = await agent.send(message("S"));
+      if (result.type !== "reply") {
+        throw new Error(`expected a reply, got ${result.type}`);
+      }
+      expect(result.reply).toBe("S done");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a joined send whose resumed turn parks again settles suspended with the new correlation", async () => {
+    const agent = await buildAgent(scriptedDirector({ repark: true }));
+    const events = collect(agent);
+    try {
+      agent.deliver(message("T"));
+      const parked = await firstGate(events);
+
+      const result = await agent.send(approval(parked.correlationId));
+      if (result.type !== "suspended") {
+        throw new Error(`expected suspended, got ${result.type}`);
+      }
+      expect(result.correlationId).not.toBe(parked.correlationId);
+      expect(result.turnId).toBe(parked.turnId);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a send whose turn ends unanswered rejects with TurnEndedWithoutReplyError", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    try {
+      for (const content of ["W", "E"]) {
+        const err = await rejection(
+          agent.send(message(content), { turnId: `turn-${content}` }),
+        );
+        if (!(err instanceof TurnEndedWithoutReplyError)) {
+          throw new Error(`expected TurnEndedWithoutReplyError for ${content}`);
+        }
+        expect(err.turnId).toBe(`turn-${content}`);
+        // The agent stays usable.
+        const next = await agent.send(message("R"));
+        expect(next.type === "reply" && next.reply).toBe("R done");
+      }
+      const done = await rejection(
+        agent.send(message("D"), { turnId: "turn-D" }),
+      );
+      if (!(done instanceof TurnEndedWithoutReplyError)) {
+        throw new Error("expected TurnEndedWithoutReplyError for done");
+      }
+      expect(done.turnId).toBe("turn-D");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a correlated send that resumes nothing rejects with TurnEndedWithoutReplyError", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    try {
+      const sent = await agent.send(message("M"));
+      expect(sent.type === "reply" && sent.reply).toBe("sent");
+
+      // The marker has no live gate, so its answer resumes nothing.
+      const err = await rejection(
+        agent.send(message("answer", "corr-note"), { turnId: "turn-answer" }),
+      );
+      if (!(err instanceof TurnEndedWithoutReplyError)) {
+        throw new Error("expected TurnEndedWithoutReplyError");
+      }
+      expect(err.turnId).toBe("turn-answer");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a fatal shutdown rejects the active send, the queued send, and a later send", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    const events = collect(agent);
+    try {
+      const fatal = agent.send(message("X"));
+      const queued = agent.send(message("Q"));
+      const fatalErr = await rejection(fatal);
+      expect(fatalErr).toBeInstanceOf(Error);
+      expect(String(fatalErr)).toContain("director blew up");
+      // The fatal error settles the active send, so the queue starts the
+      // next one while the reactor shuts down. Its delivery reaches a done
+      // reactor and ends its turn failed.
+      const queuedErr = await rejection(queued);
+      if (!(queuedErr instanceof TurnFailedError)) {
+        throw new Error(`expected TurnFailedError, got ${String(queuedErr)}`);
+      }
+      expect(queuedErr.kind).toBe("reactor_done");
+      await waitUntil(() => events.some((e) => e.type === "reactor.done"));
+      expect(await rejection(agent.send(message("L")))).toBeInstanceOf(
+        AgentClosedError,
+      );
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("sends queued behind a fatal shutdown all reject, none hang", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    try {
+      const fatal = agent.send(message("X"));
+      const queued = [
+        agent.send(message("Q1")),
+        agent.send(message("Q2")),
+        agent.send(message("Q3")),
+      ];
+      await rejection(fatal);
+      for (const send of queued) {
+        const err = await rejection(send);
+        if (!(err instanceof TurnFailedError)) {
+          throw new Error(`expected TurnFailedError, got ${String(err)}`);
+        }
+        expect(err.kind).toBe("reactor_done");
+      }
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("reactor.done rejects the active send and a send still in the queue", async () => {
+    // A delivered message holds the director until both sends are made:
+    // the first is active with its message queued behind the held one, the
+    // second waits in the send queue. The held message then ends the
+    // reactor without a fatal error, so neither send's turn ever runs.
+    const holdDecision = Promise.withResolvers<boolean>();
+    const deciding = Promise.withResolvers<boolean>();
+    const director: ReactorDirector = {
+      async decide(event, _state, caps) {
+        if (
+          event.type === "message.received" &&
+          event.message.content === "H"
+        ) {
+          deciding.resolve(true);
+          await holdDecision.promise;
+          return caps.done();
+        }
+        return caps.reply("unexpected");
+      },
+    };
+    const agent = await buildAgent(director);
+    try {
+      agent.deliver(message("H"));
+      await deciding.promise;
+      const active = agent.send(message("S1"));
+      const waiting = agent.send(message("S2"));
+      holdDecision.resolve(true);
+      expect(await rejection(active)).toBeInstanceOf(AgentClosedError);
+      expect(await rejection(waiting)).toBeInstanceOf(AgentClosedError);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a queued send behind one naming an ended turn still runs", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    try {
+      await agent.send(message("A"), { turnId: "turn-a" });
+      const named = agent.send(message("B"), { turnId: "turn-a" });
+      const next = agent.send(message("C"));
+      expect(String(await rejection(named))).toContain("already ended");
+      const result = await next;
+      expect(result.type === "reply" && result.reply).toBe("C done");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a send that names the parked turn and carries its approval settles on it", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    const events = collect(agent);
+    try {
+      agent.deliver(message("T"));
+      const parked = await firstGate(events);
+      const result = await agent.send(approval(parked.correlationId), {
+        turnId: parked.turnId,
+      });
+      if (result.type !== "reply") {
+        throw new Error(`expected a reply, got ${result.type}`);
+      }
+      expect(result.reply).toBe("charged");
+      expect(result.turnId).toBe(parked.turnId);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a joined send whose turn replied before it parked rejects with TurnEndedWithoutReplyError", async () => {
+    // One batch runs a plain call and parks a charge_card call. The plain
+    // call's result replies at once, so the turn has replied before the
+    // send joins it. The resumed call ends the turn with no new reply.
+    const director: ReactorDirector = {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          return caps.executeTools([
+            { id: "call-note", name: "note", arguments: {} },
+            { id: "call-charge", name: "charge_card", arguments: {} },
+          ]);
+        }
+        if (event.type === "resume.execute_tools") {
+          return caps.executeTools(event.calls, false, true);
+        }
+        if (event.type === "tool.done" && event.result.callId === "call-note") {
+          return caps.reply("early");
+        }
+        return caps.wait();
+      },
+    };
+    const agent = await buildAgent(director);
+    const events = collect(agent);
+    try {
+      agent.deliver(message("P"));
+      const parked = await firstGate(events);
+      await waitUntil(() => events.some((e) => e.type === "connector.reply"));
+
+      const err = await rejection(agent.send(approval(parked.correlationId)));
+      if (!(err instanceof TurnEndedWithoutReplyError)) {
+        throw new Error(
+          `expected TurnEndedWithoutReplyError, got ${String(err)}`,
+        );
+      }
+      expect(err.turnId).toBe(parked.turnId);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("each send gets its own turn, and a send that names an ended turn rejects", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    try {
+      const first = await agent.send(message("A"));
+      const second = await agent.send(message("B"));
+      if (first.type !== "reply" || second.type !== "reply") {
+        throw new Error("expected replies");
+      }
+      expect(first.turnId).not.toBe(second.turnId);
+
+      const named = await agent.send(message("C"), { turnId: "turn-c" });
+      expect(named.type === "reply" && named.turnId).toBe("turn-c");
+      const err = await rejection(
+        agent.send(message("C2"), { turnId: "turn-c" }),
+      );
+      expect(String(err)).toContain("turn-c has already ended");
+
+      const after = await agent.send(message("D2"));
+      expect(after.type === "reply" && after.reply).toBe("D2 done");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a stream consumer holds the reply when the send resolves", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    const it = agent.stream()[Symbol.asyncIterator]();
+    try {
+      const result = await agent.send(message("S"));
+      expect(result.type).toBe("reply");
+      // The agent settles the send in the same synchronous step that
+      // pushes the reply onto every consumer, so the reply is already in
+      // this consumer's buffer. A buffered event resolves `next()` at
+      // once, ahead of the already-resolved sentinel it races.
+      const empty = Symbol("empty");
+      const buffered: string[] = [];
+      for (;;) {
+        const next = await Promise.race([it.next(), Promise.resolve(empty)]);
+        if (next === empty || next.done === true) break;
+        buffered.push(next.value.type);
+      }
+      expect(buffered).toContain("connector.reply");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a send whose own turn parks on the correlation its message carries settles suspended", async () => {
+    // The message carries a correlation that no operation has, so it runs
+    // under the send's own turn. That turn then parks on the same
+    // correlation. The park is the send's own, so it settles the send.
+    const director: ReactorDirector = {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          const correlationId = event.message.headers.interchangeCorrelationId;
+          if (correlationId !== undefined) {
+            return caps.suspend({
+              type: "message_response",
+              gateId: "gate-thread",
+              timeoutMs: 60_000,
+              correlationId,
+            });
+          }
+          return caps.reply("plain");
+        }
+        return caps.wait();
+      },
+    };
+    const agent = await buildAgent(director);
+    try {
+      const result = await agent.send(message("N", "corr-thread"), {
+        turnId: "turn-n",
+      });
+      expect(result).toEqual({
+        type: "suspended",
+        correlationId: "corr-thread",
+        turnId: "turn-n",
+      });
+      // The queue is free: the next send runs.
+      const next = await agent.send(message("P"));
+      expect(next.type === "reply" && next.reply).toBe("plain");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a queued send that names the same turn as the send before it rejects, and its message runs under a fresh turn", async () => {
+    // Naming another live turn is misuse. The second send starts when the
+    // first send's reply settles it, before that turn ends, so the reactor
+    // admits its message under a fresh turn and the named turn's end
+    // rejects the second send.
+    const agent = await buildAgent(scriptedDirector());
+    const events = collect(agent);
+    try {
+      const first = agent.send(message("A"), { turnId: "turn-a" });
+      const second = agent.send(message("B"), { turnId: "turn-a" });
+      const third = agent.send(message("C"), { turnId: "turn-c" });
+
+      const a = await first;
+      expect(a.type === "reply" && a.reply).toBe("A done");
+      expect(await rejection(second)).toBeInstanceOf(
+        TurnEndedWithoutReplyError,
+      );
+      const c = await third;
+      expect(c.type === "reply" && c.reply).toBe("C done");
+
+      await waitUntil(() =>
+        events.some(
+          (e) => e.type === "connector.reply" && e.data.content === "B done",
+        ),
+      );
+      const bReply = events.find(
+        (e) => e.type === "connector.reply" && e.data.content === "B done",
+      );
+      const bTurn =
+        bReply?.type === "connector.reply" ? bReply.data.turnId : "";
+      expect(bTurn).not.toBe("turn-a");
+      expect(bTurn).not.toBe("turn-c");
     } finally {
       await agent.close();
     }

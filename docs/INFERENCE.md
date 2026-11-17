@@ -538,6 +538,22 @@ A dropped event already has its sequence number, so a drop can leave a gap in th
 
 **Ended turns.** The reactor records each ended turn ID for the life of the process, so the set grows by one ID for each turn. `deliver()` throws when its `turnId` names a turn that already ended. A turn can also end while a delivery that names it waits for the validator; that delivery does not throw. If it does not correlate, it becomes a new message under a new turn ID (see Correlated deliveries).
 
+### Agent Sends
+
+`agent.send()` in `@intx/agent` delivers one message with a turn ID (`SendOptions.turnId`, or a fresh ID the agent mints) and settles only on the events of the turn it follows. Another turn's `connector.reply` or `reactor.gate.blocked` never settles it.
+
+- A `connector.reply` of the turn resolves the send with the reply, the last assistant turn of that turn's inferences, and the turn ID.
+- A `reactor.gate.blocked` of the turn resolves it as `suspended`, with the correlation ID and the turn ID. After the send joins a parked turn, a `reactor.gate.blocked` whose correlation ID is the one the send's own message carries does not settle it. That happens when the send arrives while the park's commit runs: the send resumes the turn and joins it before the park's `reactor.gate.blocked` is emitted, so that park is already over. A send that did not join settles on its own turn's park, also when the park is on the correlation its message carries.
+- A `joined` end means that the send resumed a parked turn. The send then follows that turn and settles on its reply or its next park. The result carries that turn's ID.
+- An `unanswered` end rejects the send with `TurnEndedWithoutReplyError`. This covers a director that waits, returns no action, or ends the reactor, and a correlated send that resumes nothing.
+- A `replied` end can reach a send that is still waiting: the send joined a parked turn that had replied before it parked, and the turn then ends with no new reply. That reply was not the send's, so the send rejects with `TurnEndedWithoutReplyError` too.
+- A `failed` end with no fatal `reactor.error` before it (for example a delivery after the reactor is done) rejects the send with `TurnFailedError`. A fatal `reactor.error` rejects the active send at once, whatever its turn. The queue then starts the next send while the reactor shuts down; its delivery reaches a done reactor, so it rejects with `TurnFailedError` (`reactor_done`).
+- `reactor.done` rejects the active send and every send still in the queue with `AgentClosedError`, and every later send rejects the same way.
+- A send that names a turn that already ended rejects, and the next send still runs.
+- Naming another live turn is misuse. For example, a queued send that names the same turn as the send before it starts when the first send's reply settles it, before that turn ends. The reactor then admits its message under a fresh turn, and the named turn's end rejects the second send with `TurnEndedWithoutReplyError`.
+
+A workflow step resumes an approval by a send that carries the approval. When the approval's operation is still registered but its gate is gone, the send resumes nothing, so it rejects with `TurnEndedWithoutReplyError` and the step fails.
+
 ### INBOX Consumption
 
 The harness consumes messages from the agent's INBOX after delivering them to the reactor. Messages that belong to the active connector thread or that are responses to agent-initiated outbound sends are fetched, delivered via `reactor.deliver()`, and then flagged as deleted and expunged from the INBOX. Unsolicited messages (new threads, untracked threads) remain in the INBOX for the agent to discover via mail tools.
@@ -672,7 +688,7 @@ To raise the limit, the reactor and its consumers need:
 
 - `commitCycle` serialized across concurrent suspends.
 - A per-gate in-flight map in place of the single in-flight suspend slot.
-- Every parked correlation reported to `send()`, not only one.
+- A `send()` result that reports every parked correlation of its turn, not only one.
 - A rule for a director suspend while the turn holds a gate.
 - Runtime parking of several correlations for one step.
 - A connector router that stores parked turns by more than the correlation ID, because that map stops being one-to-one.

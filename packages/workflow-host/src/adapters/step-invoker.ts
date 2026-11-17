@@ -545,7 +545,9 @@ async function invokeWarmStep(
       // await the barrier (that reply never arrives and the wait would hang).
       // Fail the turn rather than return a step result claiming a reply that
       // never went out. The mail is still consumed, because a replay would fail
-      // to compose the same reply again.
+      // to compose the same reply again. The barrier counts replies, so it
+      // waits on this turn's reply only if no reply of another turn (such as
+      // a resume after a gate timeout) settles after the snapshot.
       if (replyDrive !== null && sendResult.type === "reply") {
         const settlement =
           await replyDrive.waitForReplyAfter(replySeqBeforeSend);
