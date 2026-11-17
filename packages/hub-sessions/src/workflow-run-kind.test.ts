@@ -4993,6 +4993,56 @@ async function receiveTip(
   };
 }
 
+describe("workflow-run substrate — a subtree that keeps its OID but turns into a file", () => {
+  // Receive a parent holding `files`, then a tip that records `retyped`
+  // as a file with the parent's tree OID, and return the receive's error.
+  function receiveRetyped(files: Record<string, string>, retyped: string) {
+    return receiveTip(files, async (_dir, parentEntries) =>
+      parentEntries.map((e) =>
+        e.path === retyped ? { ...e, mode: "100644", type: "blob" } : e,
+      ),
+    );
+  }
+
+  test("a mailbox kept as a file is rejected as a dropped index", async () => {
+    const { error, parent, tipRef } = await receiveRetyped(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]:
+          JSON.stringify({
+            version: MAILBOX_INDEX_VERSION,
+            uidValidity: 1,
+            uidNext: 2,
+            highestModSeq: 0,
+            messages: [],
+            expunged: [],
+          }),
+        [`${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/1.eml`]:
+          "Subject: one\r\n\r\nbody\r\n",
+      },
+      WORKFLOW_RUN_MAILBOX_PREFIX,
+    );
+    expect(String(error)).toContain(
+      `${WORKFLOW_RUN_MAILBOX_INDEX_FILE} present in the prior tree is missing`,
+    );
+    expect(tipRef).toBe(parent);
+  });
+
+  test("an addresses subtree kept as a file is rejected as dropped pending mail", async () => {
+    const { error, parent, tipRef } = await receiveRetyped(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [inboxPathFor(ADDRESS_SEG, 1, "m1")]: inboxBody("m1", 1),
+      },
+      WORKFLOW_RUN_ADDRESSES_PREFIX,
+    );
+    expect(String(error)).toContain(
+      "present in the prior tree is missing from the prospective tree without a matching processing or consumed transition",
+    );
+    expect(tipRef).toBe(parent);
+  });
+});
+
 describe("workflow-run substrate — an empty tree in the mailbox", () => {
   const inbox = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}`;
   const index = JSON.stringify({
