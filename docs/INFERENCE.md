@@ -83,7 +83,7 @@ All inference activity — streaming tokens, tool execution, reactor state chang
 ### Event Types
 
 ```
-inference.start           — Model call begins (carries model ID)
+inference.start           — Model call begins (carries model ID and turn ID)
 inference.thinking.delta  — Reasoning token
 inference.text.delta      — Output token
 inference.refusal.delta   — Refusal token (OpenAI strict-mode structured outputs)
@@ -91,7 +91,7 @@ inference.tool_call.start — Tool call detected (name, partial args)
 inference.tool_call.delta — Tool call argument fragment
 inference.tool_call.end   — Tool call complete (full args)
 inference.usage           — Token accounting for this call (fires before inference.done)
-inference.done            — Model call completed normally (carries final message and usage summary)
+inference.done            — Model call completed normally (carries final message, usage summary and turn ID)
 inference.error           — Model call failed (carries error classification and partial message)
 inference.retry           — Retry-policy decision between attempts (carries failed attempt #, chosen delayMs, previous error)
 
@@ -103,10 +103,10 @@ message.received          — Inbound message arrived (reactor-internal; not for
 message.queued            — Inbound message queued for later processing
 message.correlated        — Inbound message matched to pending outbound
 
-connector.reply           — Agent reply sent to the conversation (turn complete)
+connector.reply           — Agent reply sent to the conversation (carries content, checkpoint hash and turn ID)
 
 reactor.start             — Reactor initialized
-reactor.gate.blocked      — Reactor suspended (reason, gate type)
+reactor.gate.blocked      — Reactor suspended (reason, gate type, turn ID)
 reactor.gate.cleared      — Suspension resolved, reactor resuming
 reactor.done              — Reactor completed normally
 reactor.error             — Reactor failed
@@ -438,6 +438,19 @@ Inbound messages arrive at the reactor regardless of current state. Correlated m
 
 **Ignore** — Drop the message. Use case: duplicate delivery, irrelevant system notification.
 
+### Turn IDs
+
+A turn is one inbound request. Its turn ID spans every cycle and every resume of that request, also across a restart.
+
+A caller names the turn with `reactor.deliver(message, { turnId })`. When the caller gives no `turnId`, the reactor mints a fresh ID for the delivery. The reactor records the turn ID of each event it queues, and it holds the turn ID of the event that it is handling now. It stamps that ID on `inference.start`, `inference.done`, `connector.reply`, and `reactor.gate.blocked`. The harness does not know turns, so the reactor stamps `inference.start` and `inference.done` as it passes them through.
+
+A gate and the pending operation it parks carry the turn ID of the turn that parked them. A director can suspend on the correlation of a pending operation that an earlier turn registered (an async pending marker). When the operation has no live gate, that gate moves the operation to the turn that suspends: the running turn now waits for the operation, so the operation, its gate and its resume belong to the turn that waits. When the correlation already has a live gate, of any turn, the reactor refuses the suspend with a non-fatal `reactor.error`, registers no gate and changes nothing. The pending operation persists its turn ID. A resume continues the parked turn, not the turn that runs when the resume happens:
+
+- An approved or rejected approval continues the pending operation's turn. The turn ID of the correlated delivery does not apply to the resume.
+- A gate that clears or times out continues the gate's turn.
+
+A pending operation persisted before turn IDs existed has no turn ID. When the reactor loads it, the reactor gives it the ID `legacy:<correlationId>`, and its rehydrated gate takes the same ID.
+
 ### INBOX Consumption
 
 The harness consumes messages from the agent's INBOX after delivering them to the reactor. Messages that belong to the active connector thread or that are responses to agent-initiated outbound sends are fetched, delivered via `reactor.deliver()`, and then flagged as deleted and expunged from the INBOX. Unsolicited messages (new threads, untracked threads) remain in the INBOX for the agent to discover via mail tools.
@@ -448,7 +461,7 @@ This means messages routed through the connector or matched as agent-initiated r
 
 Correlation connects outbound async tool calls to inbound responses. The reactor owns correlation matching — it is mechanical protocol behavior, not a policy decision.
 
-**Registration.** When a tool returns a pending marker, the reactor registers the correlation ID in its async state. The correlation ID is the marker's only matching criterion, and the registered operation records no expected responder. A sender requirement is not carried on the marker: the marker comes from a tool running on the model's behalf, so an expectation stated there is asserted by the same trust domain that wants the gate cleared.
+**Registration.** When a tool returns a pending marker, the reactor registers the correlation ID in its async state. The correlation ID is the marker's only matching criterion, and the registered operation records no expected responder. The operation records the turn ID of the turn that ran the tool (see Turn IDs). A sender requirement is not carried on the marker: the marker comes from a tool running on the model's behalf, so an expectation stated there is asserted by the same trust domain that wants the gate cleared.
 
 **Matching.** When an inbound event carries a correlation ID, the reactor checks it against registered correlations before delivering it to the director. When a correlation validator is wired, the reactor calls it with the registered operation and the inbound message; the validator returns whether the match is authentic, and a `false` (or a throw) delivers the event to the director as a regular uncorrelated event. When none is wired, a registered correlation ID is sufficient on its own.
 
@@ -589,7 +602,7 @@ When the reactor suspends, its resumable state is:
 - The pending action (what was about to happen when the gate blocked)
 - Active gates and their context (including timeouts)
 - Active forks and their state
-- Async operations (pending ops list)
+- Async operations (pending ops list, each with the turn ID of the turn that parked it)
 - Token accounting
 
 If this state has been checkpointed, the harness process can restart and the reactor can resume from the checkpoint. This supports the lifecycle patterns in ARCHITECTURE.md — agents that survive restarts, migrate between harnesses, or hibernate when idle.

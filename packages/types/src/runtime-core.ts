@@ -1383,11 +1383,19 @@ export type PendingOperation = {
    * markers. Threaded through the suspend hops to the hub co-write.
    */
   approvalSnapshot?: ApprovalSnapshot;
+  /**
+   * The turn that parked this operation. A turn is one inbound request, and
+   * its id spans every cycle and every resume of that request. The resume of
+   * this operation continues this turn.
+   */
+  turnId: string;
 };
 
 /**
  * Validator for a {@link PendingOperation} read back from an agent's durable
- * state, by the agent's own store and by the Hub's copy of it.
+ * state, by the agent's own store and by the Hub's copy of it. `turnId` is
+ * optional here because state written before turn ids existed has none; the
+ * reactor gives such an operation a legacy id when it loads it.
  */
 export const PersistedPendingOperation = type({
   correlationId: "string",
@@ -1397,7 +1405,9 @@ export const PersistedPendingOperation = type({
   "timeoutAt?": "number",
   "suspendedCall?": ToolCall,
   "approvalSnapshot?": ApprovalSnapshot,
+  "turnId?": "string",
 });
+export type PersistedPendingOperation = typeof PersistedPendingOperation.infer;
 
 // The persisted schema and the in-memory PendingOperation type are two
 // separate declarations kept in lockstep. arktype passes undeclared keys
@@ -1418,6 +1428,17 @@ const _persistedApprovalSnapshot = (
   op: typeof PersistedPendingOperation.infer,
 ): ApprovalSnapshot | undefined => op.approvalSnapshot;
 void _persistedApprovalSnapshot;
+
+// Same lockstep guard for the turn id: the persisted schema must keep
+// carrying `turnId` so a rehydrated pending operation resumes its own turn.
+// The second projection errors under `tsc` if the in-memory type stops
+// requiring the field.
+const _persistedTurnId = (
+  op: typeof PersistedPendingOperation.infer,
+): string | undefined => op.turnId;
+void _persistedTurnId;
+const _pendingTurnId = (op: PendingOperation): string => op.turnId;
+void _pendingTurnId;
 
 /**
  * Complete reactor state visible to the director decision function.
@@ -1593,7 +1614,8 @@ export interface ReactorDirector {
  *   is neither run nor error-completed. `gate.timeoutAt` is the absolute
  *   deadline (epoch ms) so the reactor can compute the remaining time; the
  *   `correlationId` on both `gate` and `pendingOp` ties an inbound resolution
- *   back to the suspension.
+ *   back to the suspension. `pendingOp` has no `turnId`: the extension does
+ *   not know the turn, so the reactor adds the running turn's id.
  */
 export type BeforeToolDecision =
   | { type: "allow" }
@@ -1606,7 +1628,7 @@ export type BeforeToolDecision =
         correlationId: string;
         timeoutAt: number;
       };
-      pendingOp: PendingOperation;
+      pendingOp: Omit<PendingOperation, "turnId">;
     };
 
 /**
@@ -2285,7 +2307,7 @@ export interface ContextStore {
    */
   load(signal?: AbortSignal): Promise<{
     turns: ConversationTurn[];
-    pendingOperations: PendingOperation[];
+    pendingOperations: PersistedPendingOperation[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
   }>;
@@ -2382,11 +2404,12 @@ export interface ContextStore {
    * restart: pending async operations and cumulative token usage. The store
    * combines this with the most recently buffered connector state (from
    * `setConnectorState`) and writes the merged payload. Staged at the next
-   * `commit({ message })`.
+   * `commit({ message })`. It takes the persisted shape that `load` returns,
+   * so a caller can write back the operations it loaded without a change.
    */
   writeMetadata(
     metadata: {
-      pendingOperations: PendingOperation[];
+      pendingOperations: PersistedPendingOperation[];
       tokenUsage: TokenUsage;
     },
     signal?: AbortSignal,

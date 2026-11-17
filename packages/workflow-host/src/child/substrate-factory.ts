@@ -36,7 +36,7 @@ import type {
   ContextStore,
   ConversationTurn,
   MessageTransport,
-  PendingOperation,
+  PersistedPendingOperation,
 } from "@intx/types/runtime-core";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 import type { MailSigner } from "@intx/types/mail-signer";
@@ -552,7 +552,7 @@ function warmStepStorageRoot(args: {
 }
 
 function findApprovalSnapshot(
-  pendingOperations: readonly PendingOperation[],
+  pendingOperations: readonly PersistedPendingOperation[],
   correlationId: string,
 ): ApprovalSnapshot | undefined {
   return pendingOperations.find((op) => op.correlationId === correlationId)
@@ -579,7 +579,7 @@ export async function readColdParkedPendingOperations(args: {
   runId: string;
   stepId: string;
   attempt: number;
-}): Promise<PendingOperation[]> {
+}): Promise<PersistedPendingOperation[]> {
   const committed = await readStepState(args);
   const own =
     committed !== null && committed.attempt === args.attempt ? committed : null;
@@ -658,7 +658,7 @@ export async function persistColdRecoveredPark(args: {
 }
 
 function holdsPendingOperation(
-  state: { pendingOperations: readonly PendingOperation[] } | null,
+  state: { pendingOperations: readonly PersistedPendingOperation[] } | null,
   correlationId: string,
 ): boolean {
   return (
@@ -683,7 +683,7 @@ async function readLocalColdState(args: {
   attempt: number;
 }): Promise<{
   turns: ConversationTurn[];
-  pendingOperations: PendingOperation[];
+  pendingOperations: PersistedPendingOperation[];
 } | null> {
   const storeDir = stepStorageRoot(args);
   if (!(await directoryExists(storeDir))) return null;
@@ -738,7 +738,7 @@ export async function readWarmParkedPendingOperations(args: {
   principal: Principal;
   runId: string;
   stepId: string;
-}): Promise<PendingOperation[]> {
+}): Promise<PersistedPendingOperation[]> {
   const reconstructed = await readStepState(args);
   if (reconstructed === null) return [];
   return reconstructed.pendingOperations;
@@ -767,7 +767,7 @@ export async function readWarmParkedApprovalSnapshot(args: {
  * those alone, and must not see the reactor's pending-operation internals.
  */
 export function toParkedApprovalOps(
-  pendingOperations: PendingOperation[],
+  pendingOperations: PersistedPendingOperation[],
 ): ParkedApprovalOp[] {
   return pendingOperations
     .filter((op) => op.kind === "approval")

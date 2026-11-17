@@ -31,6 +31,7 @@ import type {
   BeforeToolExtension,
   GateType,
   PendingOperation,
+  PersistedPendingOperation,
   ReactorAction,
   ToolResultTransform,
   ContextTransform,
@@ -188,6 +189,12 @@ export type ReactorConfig = {
 
 export type DeliverOptions = {
   inference?: PerCallInferenceOptions;
+  /**
+   * The id of the turn this delivery belongs to. A turn is one inbound
+   * request; its id spans every cycle and every resume of that request.
+   * When omitted, the reactor mints a fresh id for the delivery.
+   */
+  turnId?: string;
 };
 
 export type Reactor = {
@@ -197,7 +204,14 @@ export type Reactor = {
    * Inject an inbound message into the reactor. `opts.inference` applies to
    * every inference call of the message run the delivery opens, or of the
    * parked run it resumes, beneath any option the director names; it is
-   * never retained past that run.
+   * never retained past that run. `opts.turnId` names the delivery's turn;
+   * the reactor stamps it on the `inference.start`, `inference.done`,
+   * `connector.reply` and `reactor.gate.blocked` events of the cycles the
+   * delivery starts. A delivery with no `turnId` gets a fresh one. A
+   * correlated delivery that resumes a parked operation continues the
+   * operation's turn instead. A director gate on an existing pending
+   * operation with no live gate moves that operation to the turn that
+   * suspends.
    */
   deliver(message: InboundMessage, opts?: DeliverOptions): void;
   /** Initiate graceful shutdown with a reason. */
@@ -207,6 +221,19 @@ export type Reactor = {
 const DEFAULT_GATE_TIMEOUT_MS = 3_600_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 const DEFAULT_DOOM_LOOP_THRESHOLD = 3;
+
+/**
+ * The turn id of a pending operation that was persisted before turn ids
+ * existed. The id is stable across restarts because it derives from the
+ * operation's correlation id.
+ */
+export function legacyTurnId(correlationId: string): string {
+  return `legacy:${correlationId}`;
+}
+
+function withTurnId(op: PersistedPendingOperation): PendingOperation {
+  return { ...op, turnId: op.turnId ?? legacyTurnId(op.correlationId) };
+}
 
 /**
  * Resolve the caller-facing `doomLoopThreshold` into the reactor's internal
@@ -294,8 +321,15 @@ export function createReactor(config: ReactorConfig): Reactor {
     onEvent(event);
   }
 
-  // Inbound event queue. Events are pushed here and drained by the loop.
-  const queue: ReactorInboundEvent[] = [];
+  // Inbound event queue. Events are pushed here and drained by the loop. Each
+  // entry carries the id of the turn its event belongs to. Only `abort`
+  // belongs to no turn.
+  type AbortEvent = Extract<ReactorInboundEvent, { type: "abort" }>;
+  type TurnEvent = Exclude<ReactorInboundEvent, AbortEvent>;
+  type QueuedEvent =
+    | { event: AbortEvent; turnId: null }
+    | { event: TurnEvent; turnId: string };
+  const queue: QueuedEvent[] = [];
   let queueResolve: (() => void) | null = null;
 
   // A tool cycle spans from the moment the reactor dispatches an inference or
@@ -328,11 +362,19 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   let pendingContinuations = 0;
 
-  function enqueue(event: ReactorInboundEvent): void {
+  function enqueue(event: AbortEvent, turnId: null): void;
+  function enqueue(event: TurnEvent, turnId: string): void;
+  function enqueue(event: ReactorInboundEvent, turnId: string | null): void {
     if (CYCLE_EVENT_TYPES.has(event.type)) {
       pendingContinuations += 1;
     }
-    queue.push(event);
+    if (event.type === "abort") {
+      queue.push({ event, turnId: null });
+    } else if (turnId !== null) {
+      queue.push({ event, turnId });
+    } else {
+      throw new Error(`Event ${event.type} enqueued without a turn`);
+    }
     if (queueResolve !== null) {
       const resolve = queueResolve;
       queueResolve = null;
@@ -347,11 +389,11 @@ export function createReactor(config: ReactorConfig): Reactor {
     });
   }
 
-  function dequeueNext(): ReactorInboundEvent | undefined {
+  function dequeueNext(): QueuedEvent | undefined {
     if (queue.length === 0) return undefined;
 
     // Always process abort immediately.
-    const abortIdx = queue.findIndex((e) => e.type === "abort");
+    const abortIdx = queue.findIndex((e) => e.event.type === "abort");
     if (abortIdx !== -1) {
       return queue.splice(abortIdx, 1)[0];
     }
@@ -360,7 +402,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     // outstanding inference or tool batch completes before new mail can start
     // an overlapping inference.
     if (pendingContinuations > 0) {
-      const idx = queue.findIndex((e) => CYCLE_EVENT_TYPES.has(e.type));
+      const idx = queue.findIndex((e) => CYCLE_EVENT_TYPES.has(e.event.type));
       if (idx !== -1) {
         return queue.splice(idx, 1)[0];
       }
@@ -380,7 +422,20 @@ export function createReactor(config: ReactorConfig): Reactor {
   // Correlation state is empty until context loading and gate rehydration
   // finish. Hold early deliveries so a resumed approval cannot be mistaken
   // for a new conversation message during that startup window.
-  let startupDeliveries: InboundMessage[] | null = [];
+  let startupDeliveries: { message: InboundMessage; turnId: string }[] | null =
+    [];
+
+  // The turn of the event the loop is handling now. It is set from each
+  // dequeued entry and is null while the loop waits for an event, so a read
+  // outside the handling of a turn's event fails at once.
+  let cycleTurnId: string | null = null;
+
+  function requireCycleTurnId(): string {
+    if (cycleTurnId === null) {
+      throw new Error("No turn is running in the reactor");
+    }
+    return cycleTurnId;
+  }
 
   // Per-message run-bracket state. Set when the loop dequeues a
   // message.received and begins per-message work; cleared at the
@@ -664,7 +719,10 @@ export function createReactor(config: ReactorConfig): Reactor {
         // resumePendingOperation) with no await since; enqueue the re-dispatch
         // so it runs on the loop with normal event ordering. The director sees
         // this event before the call's tool.done arrives.
-        enqueue({ type: "resume.execute_tools", calls: dispatch.calls });
+        enqueue(
+          { type: "resume.execute_tools", calls: dispatch.calls },
+          op.turnId,
+        );
         break;
       }
       case "error_result": {
@@ -682,7 +740,10 @@ export function createReactor(config: ReactorConfig): Reactor {
         if (stateManager !== null) {
           stateManager.removePendingOperation(correlationId);
         }
-        enqueue({ type: "resume.tool_result", result: dispatch.result });
+        enqueue(
+          { type: "resume.tool_result", result: dispatch.result },
+          op.turnId,
+        );
         break;
       }
       case "gate-cleared": {
@@ -741,6 +802,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     if (stateManager === null) return;
 
     const signal = operationController.signal;
+    const turnId = requireCycleTurnId();
 
     // Proactive pacing: if the previous inference response indicated we are
     // at the rate limit, wait before sending the next request.
@@ -810,7 +872,14 @@ export function createReactor(config: ReactorConfig): Reactor {
           | undefined;
 
         for await (const event of inferenceRunner(harnessOpts)) {
-          emit(event);
+          // The harness knows no turns; the reactor stamps the turn id here.
+          if (event.type === "inference.start") {
+            emit({ ...event, data: { ...event.data, turnId } });
+          } else if (event.type === "inference.done") {
+            emit({ ...event, data: { ...event.data, turnId } });
+          } else {
+            emit(event);
+          }
           if (event.type === "inference.done") lastDone = event;
           else if (event.type === "inference.error") lastError = event;
         }
@@ -837,25 +906,31 @@ export function createReactor(config: ReactorConfig): Reactor {
           }
           const u = lastDone.data.usage;
           logger.info`Inference usage: input=${String(u.input)} output=${String(u.output)} cacheRead=${String(u.cacheRead)} cacheWrite=${String(u.cacheWrite)}${lastDone.data.pacingDelayMs !== undefined ? ` pacing=${String(lastDone.data.pacingDelayMs)}ms` : ""}`;
-          enqueue({
-            type: "inference.done",
-            turn: lastDone.data.turn,
-            usage: lastDone.data.usage,
-            source: lastDone.data.source,
-          });
+          enqueue(
+            {
+              type: "inference.done",
+              turn: lastDone.data.turn,
+              usage: lastDone.data.usage,
+              source: lastDone.data.source,
+            },
+            turnId,
+          );
           return;
         }
 
         if (lastError === undefined) {
           emitError("Inference runner returned without a terminal event", true);
-          enqueue({
-            type: "inference.error",
-            error: {
-              category: "fatal",
-              message: "Inference runner returned without a terminal event",
+          enqueue(
+            {
+              type: "inference.error",
+              error: {
+                category: "fatal",
+                message: "Inference runner returned without a terminal event",
+              },
+              partial: { text: "" },
             },
-            partial: { text: "" },
-          });
+            turnId,
+          );
           return;
         }
 
@@ -869,7 +944,7 @@ export function createReactor(config: ReactorConfig): Reactor {
           err.category === "fatal" ||
           err.category === "aborted"
         ) {
-          enqueue({ type: "inference.error", error: err, partial });
+          enqueue({ type: "inference.error", error: err, partial }, turnId);
           return;
         }
 
@@ -888,7 +963,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         }
 
         // No further source to fail over to: surface the last error.
-        enqueue({ type: "inference.error", error: err, partial });
+        enqueue({ type: "inference.error", error: err, partial }, turnId);
         return;
       }
     })();
@@ -906,6 +981,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     const state = stateManager;
 
     const signal = operationController.signal;
+    const turnId = requireCycleTurnId();
 
     const runOne = async (
       call: ToolCall,
@@ -937,6 +1013,7 @@ export function createReactor(config: ReactorConfig): Reactor {
             timeoutMs: Math.max(1, decision.gate.timeoutAt - Date.now()),
             correlationId: decision.gate.correlationId,
             pendingOp: decision.pendingOp,
+            turnId,
           });
           return SUSPENDED;
         }
@@ -971,6 +1048,7 @@ export function createReactor(config: ReactorConfig): Reactor {
           kind: "approval",
           registeredAt: Date.now(),
           gateId,
+          turnId,
         };
         correlations.register(op);
         stateManager.addPendingOperation(op);
@@ -1035,7 +1113,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
 
     for (const result of results) {
-      enqueue({ type: "tool.done", result });
+      enqueue({ type: "tool.done", result }, turnId);
     }
   }
 
@@ -1194,9 +1272,13 @@ export function createReactor(config: ReactorConfig): Reactor {
   // and reject paths clear the gate silently (no onCleared) — so the timeout
   // branch is gated on `reason === "timeout"` and shutdown stays on the plain
   // path: a shutting-down reactor must not manufacture tool results.
+  //
+  // `turnId` is the cleared gate's turn. Each enqueued resume continues the
+  // parked turn, not the turn that runs when the gate clears.
   function onGateCleared(
     gateId: string,
     reason: "resolved" | "timeout" | "shutdown",
+    turnId: string,
   ): void {
     // A clear that fires while this gate's suspend is still committing must not
     // take effect before `reactor.gate.blocked` is emitted. Record it and let
@@ -1221,14 +1303,17 @@ export function createReactor(config: ReactorConfig): Reactor {
         if (stateManager !== null) {
           stateManager.removePendingOperation(op.correlationId);
         }
-        enqueue({
-          type: "resume.tool_result",
-          result: {
-            callId: op.suspendedCall.id,
-            content: "approval timed out",
-            isError: true,
+        enqueue(
+          {
+            type: "resume.tool_result",
+            result: {
+              callId: op.suspendedCall.id,
+              content: "approval timed out",
+              isError: true,
+            },
           },
-        });
+          op.turnId,
+        );
         return;
       }
     }
@@ -1238,7 +1323,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       seq: nextSeq(),
       data: { gateId, reason },
     });
-    enqueue({ type: "reactor.gate.cleared", gateId, reason });
+    enqueue({ type: "reactor.gate.cleared", gateId, reason }, turnId);
   }
 
   // Parks the reactor on a gate. Shared by the director's `suspend` action and
@@ -1248,14 +1333,19 @@ export function createReactor(config: ReactorConfig): Reactor {
   // durable across restart. When `pendingOp` is supplied its correlation is
   // registered and it is persisted; the director path has already persisted
   // its pending operation (via the tool's pending marker), so it passes none.
+  // `turnId` is the turn that parks. The gate, any pending operation and the
+  // blocked event all carry it.
   async function suspendOnGate(args: {
     gateType: GateType;
     gateId: string;
     timeoutMs: number;
     correlationId: string | undefined;
-    pendingOp: PendingOperation | undefined;
+    pendingOp: Omit<PendingOperation, "turnId"> | undefined;
+    turnId: string;
   }): Promise<void> {
-    const { gateType, gateId, timeoutMs, correlationId, pendingOp } = args;
+    const { gateType, gateId, timeoutMs, correlationId, turnId } = args;
+    const pendingOp =
+      args.pendingOp !== undefined ? { ...args.pendingOp, turnId } : undefined;
 
     if (pendingOp !== undefined) {
       correlations.register(pendingOp);
@@ -1277,6 +1367,7 @@ export function createReactor(config: ReactorConfig): Reactor {
       timeoutMs,
       correlationId,
       onGateCleared,
+      turnId,
     );
     // Mark this correlation as belonging to the currently open run so a late
     // correlated response can tell it apart from one an earlier, already-
@@ -1318,15 +1409,17 @@ export function createReactor(config: ReactorConfig): Reactor {
         ...(pendingOp?.approvalSnapshot !== undefined
           ? { approvalSnapshot: pendingOp.approvalSnapshot }
           : {}),
+        turnId,
       },
     });
 
     // The suspension is announced. If the gate cleared while the commit was in
     // flight, its handler was deferred to keep it after `blocked`; replay it
-    // now, in order.
+    // now, in order. The deferred clear belongs to this suspend's gate, so it
+    // carries this suspend's turn.
     suspendingGate = null;
     if (inFlightSuspend.deferredClear !== null) {
-      onGateCleared(gateId, inFlightSuspend.deferredClear.reason);
+      onGateCleared(gateId, inFlightSuspend.deferredClear.reason, turnId);
     }
   }
 
@@ -1358,6 +1451,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         timeoutMs,
         op.correlationId,
         onGateCleared,
+        op.turnId,
       );
     }
   }
@@ -1372,12 +1466,15 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
 
     while (!done) {
+      cycleTurnId = null;
       await waitForEvent();
 
       if (done) break;
 
-      const event = dequeueNext();
-      if (event === undefined) continue;
+      const entry = dequeueNext();
+      if (entry === undefined) continue;
+      const { event } = entry;
+      cycleTurnId = entry.turnId;
 
       // A dequeued cycle event is one fewer in-flight continuation. Pairs with
       // the increment in enqueue(); both key off CYCLE_EVENT_TYPES so they
@@ -1521,12 +1618,43 @@ export function createReactor(config: ReactorConfig): Reactor {
       const suspendAction = normalized.find((a) => a.type === "suspend");
       if (suspendAction !== undefined && suspendAction.type === "suspend") {
         const { gate } = suspendAction;
+        const turnId = requireCycleTurnId();
+        // A correlation resumes through one gate. A second gate on a
+        // correlation that already has a live gate would never clear, so the
+        // reactor refuses the suspend and changes nothing.
+        if (
+          gate.correlationId !== undefined &&
+          gates.findByCorrelationId(gate.correlationId) !== undefined
+        ) {
+          emitError(
+            `Director suspend on gate ${gate.gateId} refused: correlation ${gate.correlationId} already has a live gate`,
+            false,
+          );
+          continue;
+        }
+        // A director may suspend on the correlation of an operation an
+        // earlier turn registered (an async pending marker) that has no live
+        // gate. The running turn now waits for that operation, so the
+        // operation, its gate and its resume belong to the turn that waits.
+        // The commit in suspendOnGate persists the move.
+        const waitedOn =
+          gate.correlationId !== undefined
+            ? correlations.lookup(gate.correlationId)
+            : undefined;
+        if (waitedOn !== undefined && waitedOn.turnId !== turnId) {
+          const moved: PendingOperation = { ...waitedOn, turnId };
+          correlations.remove(moved.correlationId);
+          correlations.register(moved);
+          stateManager.removePendingOperation(moved.correlationId);
+          stateManager.addPendingOperation(moved);
+        }
         await suspendOnGate({
           gateType: gate.type,
           gateId: gate.gateId,
           timeoutMs: gate.timeoutMs > 0 ? gate.timeoutMs : gateTimeout,
           correlationId: gate.correlationId,
           pendingOp: undefined,
+          turnId,
         });
         continue;
       }
@@ -1545,6 +1673,7 @@ export function createReactor(config: ReactorConfig): Reactor {
             ...(lastCheckpointHash !== undefined
               ? { checkpointHash: lastCheckpointHash }
               : {}),
+            turnId: requireCycleTurnId(),
           },
         });
         // Reply is a per-message terminal point: close the bracket so the
@@ -1671,12 +1800,15 @@ export function createReactor(config: ReactorConfig): Reactor {
 
     void (async () => {
       let initialTurns: ConversationTurn[];
-      let initialOps;
+      let initialOps: PendingOperation[];
       let initialUsage: TokenUsage;
       try {
         const loaded = await contextStore.load();
         initialTurns = loaded.turns;
-        initialOps = loaded.pendingOperations;
+        // An operation persisted before turn ids existed gets a legacy id
+        // here, so the state manager and the rehydrated gates see one turn
+        // id for each operation.
+        initialOps = loaded.pendingOperations.map(withTurnId);
         initialUsage = loaded.tokenUsage;
       } catch (cause) {
         done = true;
@@ -1721,8 +1853,8 @@ export function createReactor(config: ReactorConfig): Reactor {
         const bufferedDeliveries = startupDeliveries;
         startupDeliveries = null;
         if (bufferedDeliveries !== null) {
-          for (const message of bufferedDeliveries) {
-            processDelivery(message);
+          for (const { message, turnId } of bufferedDeliveries) {
+            processDelivery(message, turnId);
           }
         }
 
@@ -1744,7 +1876,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     })();
   }
 
-  function processDelivery(message: InboundMessage): void {
+  function processDelivery(message: InboundMessage, turnId: string): void {
     void (async () => {
       // A correlated resume continues the parked run rather than opening a
       // new one, and the loop may re-infer before tryCorrelate settles, so
@@ -1795,7 +1927,7 @@ export function createReactor(config: ReactorConfig): Reactor {
           seq: nextSeq(),
           data: { message },
         });
-        enqueue({ type: "message.received", message });
+        enqueue({ type: "message.received", message }, turnId);
       }
     })();
   }
@@ -1805,11 +1937,12 @@ export function createReactor(config: ReactorConfig): Reactor {
     if (opts?.inference !== undefined) {
       deliveredInference.set(message, perCallInference(opts.inference));
     }
+    const turnId = opts?.turnId ?? crypto.randomUUID();
     if (startupDeliveries !== null) {
-      startupDeliveries.push(message);
+      startupDeliveries.push({ message, turnId });
       return;
     }
-    processDelivery(message);
+    processDelivery(message, turnId);
   }
 
   function abort(reason: AbortReason): void {
@@ -1818,7 +1951,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     // settle and return control to the loop, where the queued abort retains
     // its priority over every other event.
     operationController.abort();
-    enqueue({ type: "abort", reason });
+    enqueue({ type: "abort", reason }, null);
   }
 
   return { start, deliver, abort };

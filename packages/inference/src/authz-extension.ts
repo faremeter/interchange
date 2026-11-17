@@ -251,7 +251,7 @@ export function createAuthzExtension<Ctx = unknown>(
           };
         }
 
-        const pendingOp: PendingOperation = {
+        const pendingOp: Omit<PendingOperation, "turnId"> = {
           correlationId,
           kind: "approval",
           registeredAt: Date.now(),

@@ -41,7 +41,6 @@ import {
   ParkedReplyTargets,
   PersistedPendingOperation,
   TokenUsage,
-  type PendingOperation,
 } from "@intx/types/runtime-core";
 
 import type { CommittedReads, CommittedTreeEntry } from "./repo-store/types";
@@ -89,7 +88,7 @@ export const StepStateWalEntry = type({
 
 export type StepStateContent = {
   turns: ConversationTurn[];
-  pendingOperations: PendingOperation[];
+  pendingOperations: PersistedPendingOperation[];
   tokenUsage: TokenUsage;
   connectorState: ConnectorThreadState | null;
   parkedReplyTargets: ParkedReplyTargets;
