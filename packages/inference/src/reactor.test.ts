@@ -4,7 +4,7 @@ import { validateActions } from "./actions";
 import { createAuthzExtension } from "./authz-extension";
 import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
-import { createReactor, mergeInferenceOptions } from "./reactor";
+import { createReactor, legacyTurnId, mergeInferenceOptions } from "./reactor";
 import { createDefaultDependencies } from "./providers";
 import { createDefaultDirector } from "./default-director";
 import { assertWellFormedToolSequence } from "./turns";
@@ -25,6 +25,7 @@ import type {
   InboundMessage,
   ConversationTurn,
   PendingOperation,
+  PersistedPendingOperation,
   TokenUsage,
   ContextCommit,
   AssistantTurn,
@@ -749,7 +750,8 @@ describe("createGateManager", () => {
       "approval",
       5000,
       undefined,
-      (id, reason) => cleared.push(`${id}:${reason}`),
+      (id, reason, turnId) => cleared.push(`${id}:${reason}:${turnId}`),
+      "turn-1",
     );
 
     const didClear = manager.clear("gate-1");
@@ -757,7 +759,7 @@ describe("createGateManager", () => {
 
     const reason = await promise;
     expect(reason).toBe("resolved");
-    expect(cleared).toEqual(["gate-1:resolved"]);
+    expect(cleared).toEqual(["gate-1:resolved:turn-1"]);
   });
 
   test("clearSilently resolves and removes the gate without invoking onCleared", async () => {
@@ -770,6 +772,7 @@ describe("createGateManager", () => {
       5000,
       undefined,
       (id, reason) => cleared.push(`${id}:${reason}`),
+      "turn-1",
     );
 
     const didClear = manager.clearSilently("gate-silent");
@@ -800,12 +803,13 @@ describe("createGateManager", () => {
       "approval",
       50,
       undefined,
-      (id, reason) => cleared.push(`${id}:${reason}`),
+      (id, reason, turnId) => cleared.push(`${id}:${reason}:${turnId}`),
+      "turn-2",
     );
 
     const reason = await promise;
     expect(reason).toBe("timeout");
-    expect(cleared).toEqual(["gate-2:timeout"]);
+    expect(cleared).toEqual(["gate-2:timeout:turn-2"]);
   });
 
   test("shutdown clears all gates with reason=shutdown", async () => {
@@ -817,14 +821,16 @@ describe("createGateManager", () => {
       "approval",
       60000,
       undefined,
-      (id, reason) => cleared.push(`${id}:${reason}`),
+      (id, reason, turnId) => cleared.push(`${id}:${reason}:${turnId}`),
+      "t1",
     );
     const p2 = manager.register(
       "g2",
       "payment",
       60000,
       undefined,
-      (id, reason) => cleared.push(`${id}:${reason}`),
+      (id, reason, turnId) => cleared.push(`${id}:${reason}:${turnId}`),
+      "t2",
     );
 
     manager.shutdown();
@@ -832,7 +838,7 @@ describe("createGateManager", () => {
     const [r1, r2] = await Promise.all([p1, p2]);
     expect(r1).toBe("shutdown");
     expect(r2).toBe("shutdown");
-    expect(cleared.sort()).toEqual(["g1:shutdown", "g2:shutdown"].sort());
+    expect(cleared.sort()).toEqual(["g1:shutdown:t1", "g2:shutdown:t2"].sort());
   });
 
   test("clearing a nonexistent gate returns false", () => {
@@ -843,29 +849,57 @@ describe("createGateManager", () => {
   test("zero timeout throws", () => {
     const manager = createGateManager();
     expect(() =>
-      manager.register("g", "approval", 0, undefined, () => {
-        /* noop */
-      }),
+      manager.register(
+        "g",
+        "approval",
+        0,
+        undefined,
+        () => {
+          /* noop */
+        },
+        "t",
+      ),
     ).toThrow();
   });
 
   test("duplicate gate ID throws", () => {
     const manager = createGateManager();
-    void manager.register("g", "approval", 5000, undefined, () => {
-      /* noop */
-    });
-    expect(() =>
-      manager.register("g", "approval", 5000, undefined, () => {
+    void manager.register(
+      "g",
+      "approval",
+      5000,
+      undefined,
+      () => {
         /* noop */
-      }),
+      },
+      "t",
+    );
+    expect(() =>
+      manager.register(
+        "g",
+        "approval",
+        5000,
+        undefined,
+        () => {
+          /* noop */
+        },
+        "t",
+      ),
     ).toThrow();
   });
 
   test("findByCorrelationId returns the gate", () => {
     const manager = createGateManager();
-    void manager.register("g-corr", "message_response", 5000, "corr-42", () => {
-      /* noop */
-    });
+    void manager.register(
+      "g-corr",
+      "message_response",
+      5000,
+      "corr-42",
+      () => {
+        /* noop */
+      },
+      "t",
+    );
     const found = manager.findByCorrelationId("corr-42");
     expect(found?.gateId).toBe("g-corr");
 
@@ -885,6 +919,7 @@ describe("createCorrelationRegistry", () => {
       kind: "approval",
       registeredAt: Date.now(),
       gateId: `g-${id}`,
+      turnId: `t-${id}`,
     };
   }
 
@@ -4040,7 +4075,7 @@ describe("createReactor — beforeToolExtensions", () => {
 // stateless makeContextStore cannot.
 type PersistedCell = {
   turns: ConversationTurn[];
-  pendingOperations: PendingOperation[];
+  pendingOperations: PersistedPendingOperation[];
   tokenUsage: TokenUsage;
 };
 
@@ -5141,7 +5176,7 @@ describe("createReactor — corrupt persisted state", () => {
     // must surface as reactor.error plus reactor.done, exactly like a load
     // failure, rather than bricking the reactor with no lifecycle events.
     const now = Date.now();
-    const duplicate: PendingOperation[] = [
+    const duplicate: PersistedPendingOperation[] = [
       {
         correlationId: "dup-corr",
         kind: "approval",
@@ -5438,14 +5473,17 @@ function makeRecordingContextStore(): {
   store: ContextStore;
   commits: { message: string; turns: ConversationTurn[] }[];
   manifests: TransformRecord[][];
-  metadata: { pendingOperations: PendingOperation[]; tokenUsage: TokenUsage }[];
+  metadata: {
+    pendingOperations: PersistedPendingOperation[];
+    tokenUsage: TokenUsage;
+  }[];
   blobs: { key: string; bytes: Uint8Array; contentType?: string }[];
   lastWrittenTurns: ConversationTurn[];
 } {
   const commits: { message: string; turns: ConversationTurn[] }[] = [];
   const manifests: TransformRecord[][] = [];
   const metadata: {
-    pendingOperations: PendingOperation[];
+    pendingOperations: PersistedPendingOperation[];
     tokenUsage: TokenUsage;
   }[] = [];
   const blobs: { key: string; bytes: Uint8Array; contentType?: string }[] = [];
@@ -7329,5 +7367,720 @@ describe("createReactor — per-send inference options", () => {
       effort: "high",
     });
     reactor.abort("admin_kill");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Turn ids: a turn is one inbound request, and its id spans every cycle and
+// every resume of that request
+// ---------------------------------------------------------------------------
+
+describe("createReactor — turn ids", () => {
+  // The turn id the reactor stamped on an event, or undefined for an event
+  // that carries none.
+  function stampedTurnId(e: ReactorEmittedEvent): string | undefined {
+    switch (e.type) {
+      case "inference.start":
+      case "inference.done":
+      case "connector.reply":
+      case "reactor.gate.blocked":
+        return e.data.turnId;
+      default:
+        return undefined;
+    }
+  }
+
+  function turnIdsOf(
+    events: ReactorEmittedEvent[],
+    type:
+      | "inference.start"
+      | "inference.done"
+      | "connector.reply"
+      | "reactor.gate.blocked",
+  ): (string | undefined)[] {
+    return events.filter((e) => e.type === type).map(stampedTurnId);
+  }
+
+  // The turn id of each reply, keyed by the reply's content.
+  function replyTurnIds(
+    events: ReactorEmittedEvent[],
+  ): Map<string, string | undefined> {
+    const byContent = new Map<string, string | undefined>();
+    for (const e of events) {
+      if (e.type !== "connector.reply") continue;
+      byContent.set(e.data.content, e.data.turnId);
+    }
+    return byContent;
+  }
+
+  function countOf(
+    events: ReactorEmittedEvent[],
+    type: ReactorEmittedEvent["type"],
+  ): number {
+    return events.filter((e) => e.type === type).length;
+  }
+
+  function makeTurnMessage(content: string): InboundMessage {
+    return createInboundMessage({
+      from: "test@example.com",
+      to: "agent@example.com",
+      content,
+    });
+  }
+
+  // The body of the last turn's text. An inbound turn puts an envelope of
+  // headers before the body, separated by a blank line.
+  function lastText(turns: ConversationTurn[]): string {
+    const last = turns.at(-1);
+    if (last === undefined) return "";
+    const text = last.content
+      .map((b) => (b.type === "text" ? b.text : ""))
+      .join("");
+    const bodyStart = text.lastIndexOf("\n\n");
+    return bodyStart === -1 ? text : text.slice(bodyStart + 2);
+  }
+
+  // A runner that answers by the prompt: the message "park" gets the tool
+  // call that parks on the ask gate, a tool result gets "A done", and any
+  // other message gets "<text> done". Each call emits inference.start before
+  // `hold`, so a test can keep a call open while it acts.
+  function turnRunner(
+    hold: (text: string) => Promise<unknown> = async () => true,
+  ) {
+    return async function* (
+      opts: InferenceHarnessOptions,
+    ): AsyncGenerator<InferenceEvent> {
+      yield {
+        type: "inference.start",
+        seq: opts.nextSeq(),
+        data: { model: "test-model" },
+      };
+      const text = lastText(opts.turns);
+      await hold(text);
+      const answersResult =
+        opts.turns.at(-1)?.content.some((b) => b.type === "tool_result") ===
+        true;
+      let turn = suspendToolCallTurn;
+      if (answersResult) turn = makeAssistantTurn("A done");
+      else if (text !== "park") turn = makeAssistantTurn(`${text} done`);
+      yield {
+        type: "inference.done",
+        seq: opts.nextSeq(),
+        data: { turn, usage: emptyUsage(), source: TEST_SOURCE },
+      };
+    };
+  }
+
+  // Infers on every message and resume, runs the tool calls of a model turn,
+  // and replies with the text of a model turn. The message "suspend" parks
+  // on a director gate that times out.
+  function turnDirector(): ReactorDirector {
+    return directorFromTable(
+      {
+        "message.received": (e, _s, caps) =>
+          e.message.content === "suspend"
+            ? caps.suspend({
+                type: "approval",
+                gateId: "director-gate",
+                timeoutMs: 50,
+              })
+            : caps.infer(),
+        "inference.done": (e, _s, caps) => {
+          const calls: ToolCall[] = [];
+          let text = "";
+          for (const block of e.turn.content) {
+            if (block.type === "tool_call") {
+              calls.push({
+                id: block.id,
+                name: block.name,
+                arguments: block.arguments,
+              });
+            } else if (block.type === "text") {
+              text += block.text;
+            }
+          }
+          return calls.length > 0 ? caps.executeTools(calls) : caps.reply(text);
+        },
+        "resume.execute_tools": (e, _s, caps) =>
+          caps.executeTools(e.calls, false, true),
+        "resume.tool_result": (_e, _s, caps) => caps.infer(),
+        "tool.done": (_e, _s, caps) => caps.infer(),
+        "reactor.gate.cleared": (_e, _s, caps) => caps.infer(),
+      },
+      "wait",
+    );
+  }
+
+  function askExtension(timeoutMs = 60_000) {
+    return createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: timeoutMs,
+    });
+  }
+
+  function chargeRunner() {
+    return makeToolRunner(async (call) => ({
+      callId: call.id,
+      content: "charged",
+    }));
+  }
+
+  test("inference.start, inference.done, connector.reply and gate.blocked carry the delivered turn id", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    expect(blocked.data.turnId).toBe("turn-a");
+    expect(turnIdsOf(events, "inference.start")).toEqual(["turn-a"]);
+    expect(turnIdsOf(events, "inference.done")).toEqual(["turn-a"]);
+    expect(cell.pendingOperations[0]?.turnId).toBe("turn-a");
+
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+    reactor.deliver(makeApprovalMessage(correlationId));
+
+    const reply = await waitFor("connector.reply");
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.content).toBe("A done");
+    expect(reply.data.turnId).toBe("turn-a");
+    expect(turnIdsOf(events, "inference.start")).toEqual(["turn-a", "turn-a"]);
+    expect(turnIdsOf(events, "inference.done")).toEqual(["turn-a", "turn-a"]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an untagged delivery gets one minted turn id shared by all its events", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+    });
+
+    reactor.start();
+    reactor.deliver(makeTurnMessage("first"));
+    await waitFor("connector.reply");
+    reactor.deliver(makeTurnMessage("second"));
+    await waitUntil(() => countOf(events, "connector.reply") >= 2);
+
+    const replies = replyTurnIds(events);
+    const first = replies.get("first done");
+    const second = replies.get("second done");
+    if (first === undefined || second === undefined) {
+      throw new Error("expected a turn id on each reply");
+    }
+    expect(first).not.toBe(second);
+    expect(turnIdsOf(events, "inference.start")).toEqual([first, second]);
+    expect(turnIdsOf(events, "inference.done")).toEqual([first, second]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a parked operation persists its turn id and its resume after a restart continues that turn", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+
+    const first = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+    first.reactor.start();
+    first.reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const blocked = await first.waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+    first.reactor.abort("admin_kill");
+    await first.waitFor("reactor.done");
+
+    expect(cell.pendingOperations).toHaveLength(1);
+    expect(cell.pendingOperations[0]?.turnId).toBe("turn-a");
+
+    // The approval names a turn of its own. The resume continues the parked
+    // turn, so each event of the resume carries the parked turn's id.
+    const second = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+    second.reactor.start();
+    second.reactor.deliver(makeApprovalMessage(correlationId), {
+      turnId: "turn-approval",
+    });
+
+    const reply = await second.waitFor("connector.reply");
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.content).toBe("A done");
+    expect(reply.data.turnId).toBe("turn-a");
+    expect(turnIdsOf(second.events, "inference.start")).toEqual(["turn-a"]);
+    expect(turnIdsOf(second.events, "inference.done")).toEqual(["turn-a"]);
+
+    second.reactor.abort("admin_kill");
+    await second.waitFor("reactor.done");
+  });
+
+  test("an operation persisted without a turn id resumes under its legacy id", async () => {
+    const correlationId = "legacy-correlation";
+    const cell: PersistedCell = {
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "park" }],
+          timestamp: 1000,
+        },
+        suspendToolCallTurn,
+      ],
+      pendingOperations: [
+        {
+          correlationId,
+          kind: "approval",
+          registeredAt: Date.now(),
+          gateId: `pending-${correlationId}`,
+          timeoutAt: Date.now() + 60_000,
+          suspendedCall: { id: "call-ask", name: "charge_card", arguments: {} },
+        },
+      ],
+      tokenUsage: emptyUsage(),
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeApprovalMessage(correlationId), {
+      turnId: "turn-approval",
+    });
+
+    const reply = await waitFor("connector.reply");
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(legacyTurnId(correlationId)).toBe(`legacy:${correlationId}`);
+    expect(reply.data.turnId).toBe(`legacy:${correlationId}`);
+    expect(turnIdsOf(events, "inference.start")).toEqual([
+      `legacy:${correlationId}`,
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a rehydrated gate of a legacy operation continues the legacy turn when it times out", async () => {
+    const correlationId = "legacy-marker";
+    const cell: PersistedCell = {
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "marker" }],
+          timestamp: 1000,
+        },
+      ],
+      pendingOperations: [
+        {
+          correlationId,
+          kind: "approval",
+          registeredAt: 0,
+          gateId: `pending-${correlationId}`,
+          // A deadline in the past fires the rehydrated gate at once.
+          timeoutAt: 0,
+        },
+      ],
+      tokenUsage: emptyUsage(),
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+    });
+    reactor.start();
+
+    const reply = await waitFor("connector.reply");
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.content).toBe("marker done");
+    expect(reply.data.turnId).toBe(legacyTurnId(correlationId));
+    expect(turnIdsOf(events, "inference.start")).toEqual([
+      legacyTurnId(correlationId),
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a parked turn resumed while another turn's cycle runs keeps its own turn id", async () => {
+    // Turn B's inference stays open until turn A's approval has correlated,
+    // so A's resume is queued while B's cycle runs.
+    const releaseB = Promise.withResolvers<boolean>();
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(async (text) =>
+        text === "B" ? releaseB.promise : true,
+      ),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+    await waitUntil(() => countOf(events, "inference.start") >= 2);
+    reactor.deliver(makeApprovalMessage(correlationId), {
+      turnId: "turn-approval",
+    });
+    await waitFor("message.correlated");
+    releaseB.resolve(true);
+
+    await waitUntil(() => countOf(events, "connector.reply") >= 2);
+    const replies = replyTurnIds(events);
+    expect(replies.get("B done")).toBe("turn-b");
+    expect(replies.get("A done")).toBe("turn-a");
+    expect(turnIdsOf(events, "inference.start")).toEqual([
+      "turn-a",
+      "turn-b",
+      "turn-a",
+    ]);
+    expect(turnIdsOf(events, "inference.done")).toEqual([
+      "turn-a",
+      "turn-b",
+      "turn-a",
+    ]);
+    expect(events.some((e) => stampedTurnId(e) === "turn-approval")).toBe(
+      false,
+    );
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a parked turn whose gate times out while another turn's cycle runs keeps its own turn id", async () => {
+    // Turn B's inference stays open until turn A's director gate has timed
+    // out. A gate that times out before B's message is dequeued runs A first;
+    // the assertions hold for both orders.
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(async (text) =>
+        text === "B" ? waitFor("reactor.gate.cleared") : true,
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeTurnMessage("suspend"), { turnId: "turn-a" });
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    expect(blocked.data.turnId).toBe("turn-a");
+
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+
+    await waitUntil(() => countOf(events, "connector.reply") >= 2);
+    const replies = replyTurnIds(events);
+    // A's reply text depends on the order, so A's reply is the other one.
+    expect(replies.get("B done")).toBe("turn-b");
+    const otherReplies = [...replies]
+      .filter(([content]) => content !== "B done")
+      .map(([, turnId]) => turnId);
+    expect(otherReplies).toEqual(["turn-a"]);
+    expect(turnIdsOf(events, "inference.start").sort()).toEqual([
+      "turn-a",
+      "turn-b",
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a parked call whose approval times out after a later delivery keeps its own turn id", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      beforeToolExtensions: [askExtension(50)],
+    });
+
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    await waitFor("reactor.gate.blocked");
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+
+    await waitUntil(() => countOf(events, "connector.reply") >= 2);
+    const replies = replyTurnIds(events);
+    expect(replies.get("B done")).toBe("turn-b");
+    expect(replies.get("A done")).toBe("turn-a");
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a rejected approval continues the parked turn, not the approval's turn", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    reactor.deliver(makeApprovalMessage(correlationId, "rejected"), {
+      turnId: "turn-approval",
+    });
+    const reply = await waitFor("connector.reply");
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.content).toBe("A done");
+    expect(reply.data.turnId).toBe("turn-a");
+    expect(events.some((e) => stampedTurnId(e) === "turn-approval")).toBe(
+      false,
+    );
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an async pending marker parks under the tool's turn and its correlated response continues that turn", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const director = directorFromTable(
+      {
+        "message.received": (_e, _s, caps) => caps.infer(),
+        "inference.done": (e, _s, caps) => {
+          const calls: ToolCall[] = [];
+          let text = "";
+          for (const block of e.turn.content) {
+            if (block.type === "tool_call") {
+              calls.push({
+                id: block.id,
+                name: block.name,
+                arguments: block.arguments,
+              });
+            } else if (block.type === "text") {
+              text += block.text;
+            }
+          }
+          return calls.length > 0 ? caps.executeTools(calls) : caps.reply(text);
+        },
+        "tool.done": (_e, _s, caps) =>
+          caps.suspend({
+            type: "message_response",
+            gateId: "marker-gate",
+            timeoutMs: 60_000,
+            correlationId: "corr-marker",
+          }),
+        "reactor.gate.cleared": (_e, _s, caps) => caps.infer(),
+      },
+      "wait",
+    );
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director,
+      inferenceRunner: turnRunner(),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "sent",
+        pendingMarker: {
+          status: "pending" as const,
+          correlationId: "corr-marker",
+        },
+      })),
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    expect(blocked.data.turnId).toBe("turn-a");
+    expect(cell.pendingOperations[0]?.turnId).toBe("turn-a");
+
+    reactor.deliver(
+      createInboundMessage({
+        from: "peer@example.com",
+        to: "agent@example.com",
+        content: "resp",
+        correlationId: "corr-marker",
+      }),
+      { turnId: "turn-resp" },
+    );
+    const reply = await waitFor("connector.reply");
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.turnId).toBe("turn-a");
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a director gate on an earlier turn's pending marker moves it to the running turn", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    let messages = 0;
+    const director = directorFromTable(
+      {
+        // The first message runs the marker tool; the second waits on the
+        // marker's correlation from a turn of its own.
+        "message.received": (_e, _s, caps) => {
+          messages += 1;
+          if (messages === 1) return caps.infer();
+          return caps.suspend({
+            type: "message_response",
+            gateId: "wait-gate",
+            timeoutMs: 60_000,
+            correlationId: "corr-marker",
+          });
+        },
+        "inference.done": (e, _s, caps) => {
+          const calls: ToolCall[] = [];
+          for (const block of e.turn.content) {
+            if (block.type === "tool_call") {
+              calls.push({
+                id: block.id,
+                name: block.name,
+                arguments: block.arguments,
+              });
+            }
+          }
+          return caps.executeTools(calls);
+        },
+        "tool.done": (_e, _s, caps) => caps.reply("sent"),
+      },
+      "wait",
+    );
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director,
+      inferenceRunner: turnRunner(),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "sent",
+        pendingMarker: {
+          status: "pending" as const,
+          correlationId: "corr-marker",
+        },
+      })),
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    await waitFor("connector.reply");
+    expect(cell.pendingOperations[0]?.turnId).toBe("turn-a");
+
+    reactor.deliver(makeTurnMessage("wait"), { turnId: "turn-b" });
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    expect(blocked.data.correlationId).toBe("corr-marker");
+    expect(blocked.data.turnId).toBe("turn-b");
+    expect(cell.pendingOperations).toHaveLength(1);
+    expect(cell.pendingOperations[0]?.turnId).toBe("turn-b");
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a director gate on a correlation that already has a live gate is refused and changes nothing", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    // The message "B" makes the director wait on the parked approval of
+    // turn A from a turn of its own.
+    const inner = turnDirector();
+    const director: ReactorDirector = {
+      async decide(event, state, caps) {
+        if (
+          event.type === "message.received" &&
+          event.message.content === "B"
+        ) {
+          const op = state.pendingOperations[0];
+          if (op === undefined) throw new Error("expected a parked operation");
+          return caps.suspend({
+            type: "approval",
+            gateId: "b-gate",
+            timeoutMs: 60_000,
+            correlationId: op.correlationId,
+          });
+        }
+        return inner.decide(event, state, caps);
+      },
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director,
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+    const refused = await waitFor("reactor.error");
+    if (refused.type !== "reactor.error") throw new Error("unreachable");
+    expect(refused.data.fatal).toBe(false);
+    expect(refused.data.error).toContain("already has a live gate");
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+    expect(cell.pendingOperations).toHaveLength(1);
+    expect(cell.pendingOperations[0]?.turnId).toBe("turn-a");
+
+    reactor.deliver(makeApprovalMessage(correlationId));
+    const reply = await waitFor("connector.reply");
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.content).toBe("A done");
+    expect(reply.data.turnId).toBe("turn-a");
+    expect(cell.pendingOperations).toEqual([]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a delivery buffered before start keeps its caller turn id", async () => {
+    const { reactor, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+    });
+    reactor.deliver(makeTurnMessage("early"), { turnId: "turn-early" });
+    reactor.start();
+    const reply = await waitFor("connector.reply");
+    if (reply.type !== "connector.reply") throw new Error("unreachable");
+    expect(reply.data.content).toBe("early done");
+    expect(reply.data.turnId).toBe("turn-early");
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
   });
 });

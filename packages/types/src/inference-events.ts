@@ -54,7 +54,7 @@ export const InferenceEvent = type.or(
   {
     type: "'inference.start'",
     seq: "number",
-    data: { model: "string" },
+    data: { model: "string", "turnId?": "string" },
   },
   {
     type: "'inference.thinking.delta'",
@@ -137,6 +137,7 @@ export const InferenceEvent = type.or(
       usage: TokenUsage,
       source: LastCycleSource,
       "pacingDelayMs?": "number",
+      "turnId?": "string",
     },
   },
   {
@@ -263,7 +264,11 @@ export const InferenceEvent = type.or(
   {
     type: "'connector.reply'",
     seq: "number",
-    data: { content: "string", "checkpointHash?": "string" },
+    data: {
+      content: "string",
+      "checkpointHash?": "string",
+      "turnId?": "string",
+    },
   },
   {
     type: "'reactor.start'",
@@ -278,6 +283,7 @@ export const InferenceEvent = type.or(
       gateId: "string",
       "correlationId?": "string",
       "approvalSnapshot?": ApprovalSnapshot,
+      "turnId?": "string",
     },
   },
   {
@@ -332,7 +338,11 @@ export const InferenceEvent = type.or(
 // for that variant, preserving the narrowing behavior downstream code
 // relies on.
 export type InferenceEvent =
-  | { type: "inference.start"; seq: number; data: { model: string } }
+  | {
+      type: "inference.start";
+      seq: number;
+      data: { model: string; turnId?: string };
+    }
   | {
       type: "inference.thinking.delta";
       seq: number;
@@ -402,6 +412,7 @@ export type InferenceEvent =
         usage: TokenUsage;
         source: LastCycleSource;
         pacingDelayMs?: number;
+        turnId?: string;
       };
     }
   | {
@@ -532,7 +543,7 @@ export type InferenceEvent =
   | {
       type: "connector.reply";
       seq: number;
-      data: { content: string; checkpointHash?: string };
+      data: { content: string; checkpointHash?: string; turnId?: string };
     }
   | { type: "reactor.start"; seq: number; data: Record<string, never> }
   | {
@@ -543,6 +554,7 @@ export type InferenceEvent =
         gateId: string;
         correlationId?: string;
         approvalSnapshot?: ApprovalSnapshot;
+        turnId?: string;
       };
     }
   | {
@@ -601,6 +613,53 @@ const _tsGateBlockedApprovalSnapshot = (
   data: Extract<InferenceEvent, { type: "reactor.gate.blocked" }>["data"],
 ): ApprovalSnapshot | undefined => data.approvalSnapshot;
 void _tsGateBlockedApprovalSnapshot;
+
+// The same drift guards for the `turnId` the reactor stamps on these events.
+// Each pair errors under `tsc` if either mirror stops carrying the field.
+type ArkEventData<T extends string> = Extract<
+  typeof InferenceEvent.infer,
+  { type: T }
+>["data"];
+type TSEventData<T extends InferenceEvent["type"]> = Extract<
+  InferenceEvent,
+  { type: T }
+>["data"];
+
+const _arkInferenceStartTurnId = (
+  data: ArkEventData<"inference.start">,
+): string | undefined => data.turnId;
+void _arkInferenceStartTurnId;
+const _tsInferenceStartTurnId = (
+  data: TSEventData<"inference.start">,
+): string | undefined => data.turnId;
+void _tsInferenceStartTurnId;
+
+const _arkInferenceDoneTurnId = (
+  data: ArkEventData<"inference.done">,
+): string | undefined => data.turnId;
+void _arkInferenceDoneTurnId;
+const _tsInferenceDoneTurnId = (
+  data: TSEventData<"inference.done">,
+): string | undefined => data.turnId;
+void _tsInferenceDoneTurnId;
+
+const _arkConnectorReplyTurnId = (
+  data: ArkEventData<"connector.reply">,
+): string | undefined => data.turnId;
+void _arkConnectorReplyTurnId;
+const _tsConnectorReplyTurnId = (
+  data: TSEventData<"connector.reply">,
+): string | undefined => data.turnId;
+void _tsConnectorReplyTurnId;
+
+const _arkGateBlockedTurnId = (
+  data: ArkEventData<"reactor.gate.blocked">,
+): string | undefined => data.turnId;
+void _arkGateBlockedTurnId;
+const _tsGateBlockedTurnId = (
+  data: TSEventData<"reactor.gate.blocked">,
+): string | undefined => data.turnId;
+void _tsGateBlockedTurnId;
 
 /**
  * Validate unknown data as an InferenceEvent. ArkType's regex-based validator

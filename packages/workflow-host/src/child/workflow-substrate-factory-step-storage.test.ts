@@ -384,6 +384,7 @@ function approvalOp(
     kind: "approval",
     registeredAt: 0,
     gateId: `gate-${correlationId}`,
+    turnId: `turn-${correlationId}`,
     ...(opts.suspendedCall !== undefined
       ? { suspendedCall: opts.suspendedCall }
       : {}),

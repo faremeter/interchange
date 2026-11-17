@@ -23,7 +23,7 @@ import type {
   InferenceEvent,
   InboundMessage,
   ConversationTurn,
-  PendingOperation,
+  PersistedPendingOperation,
   TokenUsage,
   ContextCommit,
   BeforeToolExtension,
@@ -322,14 +322,17 @@ function makeRecordingContextStore(): {
   store: ContextStore;
   commits: { message: string; turns: ConversationTurn[] }[];
   manifests: TransformRecord[][];
-  metadata: { pendingOperations: PendingOperation[]; tokenUsage: TokenUsage }[];
+  metadata: {
+    pendingOperations: PersistedPendingOperation[];
+    tokenUsage: TokenUsage;
+  }[];
   blobs: { key: string; bytes: Uint8Array; contentType?: string }[];
   lastWrittenTurns: ConversationTurn[];
 } {
   const commits: { message: string; turns: ConversationTurn[] }[] = [];
   const manifests: TransformRecord[][] = [];
   const metadata: {
-    pendingOperations: PendingOperation[];
+    pendingOperations: PersistedPendingOperation[];
     tokenUsage: TokenUsage;
   }[] = [];
   const blobs: { key: string; bytes: Uint8Array; contentType?: string }[] = [];

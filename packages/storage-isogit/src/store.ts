@@ -12,7 +12,6 @@ import {
   type AuditStore,
   type ContextCommit,
   type ConnectorThreadState,
-  type PendingOperation,
 } from "@intx/types/runtime-core";
 import { type } from "arktype";
 import {
@@ -76,7 +75,7 @@ const MetadataSchema = type({
 });
 
 type MetadataData = {
-  pendingOperations: PendingOperation[];
+  pendingOperations: PersistedPendingOperation[];
   tokenUsage: TokenUsage;
   connectorState: ConnectorThreadState | null;
   parkedReplyTargets: ParkedReplyTargets;
@@ -294,7 +293,7 @@ export interface DurableMirrorReads {
    * pays. The mirror gets its turns from `peekTurns`.
    */
   loadMetadata(): Promise<{
-    pendingOperations: PendingOperation[];
+    pendingOperations: PersistedPendingOperation[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
     parkedReplyTargets: ParkedReplyTargets;
@@ -450,7 +449,7 @@ export class IsogitStore
 
   async load(_signal?: AbortSignal): Promise<{
     turns: ConversationTurn[];
-    pendingOperations: PendingOperation[];
+    pendingOperations: PersistedPendingOperation[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
   }> {
@@ -467,7 +466,7 @@ export class IsogitStore
   }
 
   async loadMetadata(): Promise<{
-    pendingOperations: PendingOperation[];
+    pendingOperations: PersistedPendingOperation[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
     parkedReplyTargets: ParkedReplyTargets;
@@ -729,7 +728,7 @@ export class IsogitStore
    */
   async writeMetadata(
     metadata: {
-      pendingOperations: PendingOperation[];
+      pendingOperations: PersistedPendingOperation[];
       tokenUsage: TokenUsage;
     },
     _signal?: AbortSignal,

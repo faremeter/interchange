@@ -13,13 +13,20 @@ export type GateRecord = {
   type: GateType;
   timeoutAt: number;
   correlationId: string | undefined;
+  /** The turn that holds this gate. */
+  turnId: string;
   resolve: (reason: "resolved" | "timeout" | "shutdown") => void;
-  onCleared: (
-    gateId: string,
-    reason: "resolved" | "timeout" | "shutdown",
-  ) => void;
+  onCleared: GateClearedHandler;
   timer: ReturnType<typeof setTimeout>;
 };
+
+// The manager deletes a gate before it calls this handler, so the handler
+// receives the gate's turn id instead of looking the gate up.
+export type GateClearedHandler = (
+  gateId: string,
+  reason: "resolved" | "timeout" | "shutdown",
+  turnId: string,
+) => void;
 
 export type GateSnapshot = {
   gateId: string;
@@ -38,10 +45,8 @@ export function createGateManager() {
     type: GateType,
     timeoutMs: number,
     correlationId: string | undefined,
-    onCleared: (
-      gateId: string,
-      reason: "resolved" | "timeout" | "shutdown",
-    ) => void,
+    onCleared: GateClearedHandler,
+    turnId: string,
   ): Promise<"resolved" | "timeout" | "shutdown"> {
     if (timeoutMs <= 0) {
       throw new Error(
@@ -66,7 +71,7 @@ export function createGateManager() {
       if (gates.has(gateId)) {
         gates.delete(gateId);
         resolveGate("timeout");
-        onCleared(gateId, "timeout");
+        onCleared(gateId, "timeout", turnId);
       }
     }, timeoutMs);
 
@@ -75,6 +80,7 @@ export function createGateManager() {
       type,
       timeoutAt,
       correlationId,
+      turnId,
       resolve: resolveGate,
       onCleared,
       timer,
@@ -89,7 +95,7 @@ export function createGateManager() {
     clearTimeout(gate.timer);
     gates.delete(gateId);
     gate.resolve("resolved");
-    gate.onCleared(gateId, "resolved");
+    gate.onCleared(gateId, "resolved", gate.turnId);
     return true;
   }
 
@@ -114,7 +120,7 @@ export function createGateManager() {
     for (const gate of entries) {
       clearTimeout(gate.timer);
       gate.resolve("shutdown");
-      gate.onCleared(gate.gateId, "shutdown");
+      gate.onCleared(gate.gateId, "shutdown", gate.turnId);
     }
   }
 
