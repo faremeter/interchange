@@ -31,9 +31,12 @@ import type {
   AssistantTurn,
   InferenceError,
   PartialMessage,
+  BeforeToolDecision,
   BeforeToolExtension,
   Compactor,
+  GateType,
   LastCycleSource,
+  ToolResult,
   TurnEndedData,
 } from "@intx/types/runtime";
 
@@ -457,6 +460,39 @@ function turnEnds(events: ReactorEmittedEvent[]): TurnEndedData[] {
   }
   return ends;
 }
+
+// Wraps a director and records each event it decides on, in order.
+function recordingDirector(inner: ReactorDirector): {
+  director: ReactorDirector;
+  decided: ReactorInboundEvent[];
+} {
+  const decided: ReactorInboundEvent[] = [];
+  return {
+    decided,
+    director: {
+      async decide(event, state, caps) {
+        decided.push(event);
+        return inner.decide(event, state, caps);
+      },
+    },
+  };
+}
+
+// The result of the emitted `tool.done` that answers `callId`.
+function toolResultOf(
+  events: ReactorEmittedEvent[],
+  callId: string,
+): ToolResult {
+  for (const e of events) {
+    if (e.type === "tool.done" && e.data.result.callId === callId) {
+      return e.data.result;
+    }
+  }
+  throw new Error(`No tool.done for ${callId}`);
+}
+
+// The error result of a gated call that a turn's one gate refuses.
+const GATE_REFUSAL = /waiting on a gate/;
 
 // ---------------------------------------------------------------------------
 // 1. Action validation
@@ -4770,7 +4806,7 @@ describe("createReactor — approval resume re-dispatch", () => {
     await waitFor("reactor.done");
   });
 
-  test("an approved call does not re-infer while a sibling call of its batch is parked", async () => {
+  test("the second gated call gets an error result and the batch re-infers once after the approval", async () => {
     const cell: PersistedCell = {
       turns: [],
       pendingOperations: [],
@@ -4786,10 +4822,13 @@ describe("createReactor — approval resume re-dispatch", () => {
       model: "test-model",
       timestamp: 1000,
     };
+    const { director, decided } = recordingDirector(
+      createDefaultDirector("test agent", []),
+    );
 
     const { reactor, events, waitFor } = createTestReactor({
       contextStore: makePersistingContextStore(cell),
-      director: createDefaultDirector("test agent", []),
+      director,
       inferenceRunner: async function* (opts) {
         inferences += 1;
         const turn: AssistantTurn =
@@ -4815,41 +4854,42 @@ describe("createReactor — approval resume re-dispatch", () => {
     });
 
     reactor.start();
-    reactor.deliver(makeInboundMessage());
+    reactor.deliver(makeInboundMessage(), { turnId: "turn-a" });
 
-    await waitUntil(
-      () =>
-        events.filter((e) => e.type === "reactor.gate.blocked").length === 2,
-    );
-    const correlationIds = events.flatMap((e) =>
-      e.type === "reactor.gate.blocked" && e.data.correlationId !== undefined
-        ? [e.data.correlationId]
-        : [],
-    );
-    expect(correlationIds).toHaveLength(2);
-    const [first, second] = correlationIds;
-    if (first === undefined || second === undefined) {
-      throw new Error("expected two correlation ids");
-    }
-
-    reactor.deliver(makeApprovalMessage(first));
-    await waitForEvent(events, (e) => e.type === "tool.done");
-    reactor.deliver(makeApprovalMessage(second));
-    const reply = await waitForEvent(
-      events,
-      (e) => e.type === "connector.reply",
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+    // The director has seen the refused call's result before the approval.
+    await waitUntil(() =>
+      decided.some(
+        (e) => e.type === "tool.done" && e.result.callId === "call-b",
+      ),
     );
 
-    // A resume waits until the running cycle settles, so a re-infer after the
-    // first call's result would finish its reply before the second call runs.
-    // The reply must therefore follow both results.
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+    const refused = toolResultOf(events, "call-b");
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toMatch(GATE_REFUSAL);
+    expect(cell.pendingOperations).toHaveLength(1);
+    expect(cell.pendingOperations[0]?.correlationId).toBe(correlationId);
+    expect(inferences).toBe(1);
+
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-a" });
+    const reply = await waitFor("connector.reply");
+    await waitFor("reactor.turn.ended");
+
     const replyAt = events.indexOf(reply);
-    const doneAt = events.flatMap((e, index) =>
-      e.type === "tool.done" ? [index] : [],
+    const approvedAt = events.findIndex(
+      (e) => e.type === "tool.done" && e.data.result.callId === "call-a",
     );
-    expect(doneAt).toHaveLength(2);
-    expect(doneAt.every((index) => index < replyAt)).toBe(true);
+    expect(approvedAt).toBeGreaterThan(-1);
+    expect(approvedAt).toBeLessThan(replyAt);
     expect(inferences).toBe(2);
+    expect(countOf(events, "connector.reply")).toBe(1);
+    expect(turnEnds(events)).toEqual([
+      { turnId: "turn-a", outcome: "replied" },
+    ]);
 
     reactor.abort("admin_kill");
     await waitFor("reactor.done");
@@ -10207,5 +10247,698 @@ describe("createReactor — turn lifecycle", () => {
     reactor.deliver(makeInboundMessage("corr-approval"), { turnId: "turn-a" });
     expect(endsOf(events, "turn-a")).toEqual([]);
     expect(startsOf(events, "turn-a")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One gate per turn: a turn holds at most one gate of any type
+// ---------------------------------------------------------------------------
+
+describe("createReactor — one gate per turn", () => {
+  function call(id: string, name = "charge_card"): ToolCall {
+    return { id, name, arguments: {} };
+  }
+
+  // Asks for approval of `charge_card` and allows every other tool.
+  function askForCharge(timeoutMs = 60_000) {
+    return createAuthzExtension({
+      authorize: async (resource) => ({
+        effect:
+          resource === "tool:charge_card"
+            ? ("ask" as const)
+            : ("allow" as const),
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: timeoutMs,
+    });
+  }
+
+  // A before-tool suspend decision on a gate of `gateType` for `call`.
+  function suspendDecision(
+    toolCall: ToolCall,
+    gateType: GateType,
+  ): BeforeToolDecision {
+    const correlationId = `corr-${toolCall.id}`;
+    const gateId = `gate-${toolCall.id}`;
+    return {
+      type: "suspend",
+      gate: {
+        type: gateType,
+        gateId,
+        correlationId,
+        timeoutAt: Date.now() + 60_000,
+      },
+      pendingOp: {
+        correlationId,
+        kind: "approval",
+        registeredAt: Date.now(),
+        gateId,
+        suspendedCall: toolCall,
+      },
+    };
+  }
+
+  function refusedCallIds(events: ReactorEmittedEvent[]): string[] {
+    return events.flatMap((e) =>
+      e.type === "tool.done" &&
+      e.data.result.isError === true &&
+      typeof e.data.result.content === "string" &&
+      GATE_REFUSAL.test(e.data.result.content)
+        ? [e.data.result.callId]
+        : [],
+    );
+  }
+
+  test("a serial batch parks the first gated call and refuses the second", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.executeTools([call("call-a"), call("call-b")], false),
+        },
+        "wait",
+      ),
+      beforeToolExtensions: [askForCharge()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await waitFor("reactor.gate.blocked");
+    await waitForEvent(
+      events,
+      (e) => e.type === "tool.done" && e.data.result.callId === "call-b",
+    );
+
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+    expect(refusedCallIds(events)).toEqual(["call-b"]);
+    expect(cell.pendingOperations.map((op) => op.correlationId)).toHaveLength(
+      1,
+    );
+    expect(countOf(events, "tool.start")).toBe(0);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a gated call is refused while the first gate's suspend still commits", async () => {
+    // The first call's suspend holds its commit open. The second call's
+    // decision arrives only after that commit has started.
+    const releaseCommit = Promise.withResolvers<boolean>();
+    const commitEntered = Promise.withResolvers<boolean>();
+    const base = makeContextStore();
+    const contextStore: ContextStore = {
+      ...base,
+      async writeMetadata(metadata, signal) {
+        commitEntered.resolve(true);
+        await releaseCommit.promise;
+        return base.writeMetadata(metadata, signal);
+      },
+    };
+    const extension: BeforeToolExtension = {
+      async beforeTool(toolCall) {
+        if (toolCall.id === "call-b") await commitEntered.promise;
+        return suspendDecision(toolCall, "approval");
+      },
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore,
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.executeTools([call("call-a"), call("call-b")]),
+        },
+        "wait",
+      ),
+      beforeToolExtensions: [extension],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await waitForEvent(
+      events,
+      (e) => e.type === "tool.done" && e.data.result.callId === "call-b",
+    );
+    expect(countOf(events, "reactor.gate.blocked")).toBe(0);
+
+    releaseCommit.resolve(true);
+    await waitFor("reactor.gate.blocked");
+
+    const refusedAt = events.findIndex(
+      (e) => e.type === "tool.done" && e.data.result.callId === "call-b",
+    );
+    const blockedAt = events.findIndex(
+      (e) => e.type === "reactor.gate.blocked",
+    );
+    expect(refusedAt).toBeLessThan(blockedAt);
+    expect(refusedCallIds(events)).toEqual(["call-b"]);
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+    const blocked = getEvent(events, "reactor.gate.blocked");
+    expect(blocked.data.gateId).toBe("gate-call-a");
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("the limit counts gates of every type", async () => {
+    const extension: BeforeToolExtension = {
+      async beforeTool(toolCall) {
+        return suspendDecision(
+          toolCall,
+          toolCall.id === "call-a" ? "approval" : "payment",
+        );
+      },
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.executeTools([call("call-a"), call("call-b")], false),
+        },
+        "wait",
+      ),
+      beforeToolExtensions: [extension],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await waitForEvent(
+      events,
+      (e) => e.type === "tool.done" && e.data.result.callId === "call-b",
+    );
+
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+    expect(getEvent(events, "reactor.gate.blocked").data.reason).toBe(
+      "approval",
+    );
+    expect(refusedCallIds(events)).toEqual(["call-b"]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a director suspend while the turn holds a gate is refused and the turn still ends once", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.executeTools([call("call-ask"), call("call-send", "send")]),
+          "tool.done": (e, _s, caps) =>
+            e.result.callId === "call-send"
+              ? caps.suspend({
+                  type: "message_response",
+                  gateId: "marker-gate",
+                  timeoutMs: 60_000,
+                  correlationId: "corr-marker",
+                })
+              : caps.reply("charged"),
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(e.calls, false, true),
+        },
+        "wait",
+      ),
+      toolRunner: makeToolRunner(async (toolCall) =>
+        toolCall.name === "send"
+          ? {
+              callId: toolCall.id,
+              content: "sent",
+              pendingMarker: {
+                status: "pending" as const,
+                correlationId: "corr-marker",
+              },
+            }
+          : { callId: toolCall.id, content: "charged" },
+      ),
+      beforeToolExtensions: [askForCharge()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    const correlationId = await (async () => {
+      const blocked = await waitFor("reactor.gate.blocked");
+      if (blocked.type !== "reactor.gate.blocked") {
+        throw new Error("unreachable");
+      }
+      if (blocked.data.correlationId === undefined) {
+        throw new Error("expected correlationId");
+      }
+      return blocked.data.correlationId;
+    })();
+    const refused = await waitFor("reactor.error");
+    if (refused.type !== "reactor.error") throw new Error("unreachable");
+    expect(refused.data.fatal).toBe(false);
+    expect(refused.data.error).toContain("already holds a gate");
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-a" });
+    await waitFor("reactor.turn.ended");
+    expect(turnEnds(events)).toEqual([
+      { turnId: "turn-a", outcome: "replied" },
+    ]);
+    // The marker's operation stays registered with no gate.
+    expect(cell.pendingOperations.map((op) => op.correlationId)).toEqual([
+      "corr-marker",
+    ]);
+    expect(cell.pendingOperations[0]?.turnId).toBe("turn-a");
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+    expect(turnEnds(events)).toHaveLength(1);
+  });
+
+  test("a refused director suspend on an earlier turn's marker leaves the marker on that turn", async () => {
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: directorFromTable(
+        {
+          "message.received": (e, _s, caps) =>
+            e.message.content === "A"
+              ? caps.executeTools([call("call-send", "send")])
+              : caps.executeTools([
+                  call("call-ask"),
+                  call("call-look", "lookup"),
+                ]),
+          "tool.done": (e, _s, caps) => {
+            if (e.result.callId === "call-send") return caps.reply("sent");
+            if (e.result.callId === "call-look") {
+              return caps.suspend({
+                type: "message_response",
+                gateId: "marker-gate",
+                timeoutMs: 60_000,
+                correlationId: "corr-marker",
+              });
+            }
+            return caps.wait();
+          },
+        },
+        "wait",
+      ),
+      toolRunner: makeToolRunner(async (toolCall) =>
+        toolCall.name === "send"
+          ? {
+              callId: toolCall.id,
+              content: "sent",
+              pendingMarker: {
+                status: "pending" as const,
+                correlationId: "corr-marker",
+              },
+            }
+          : { callId: toolCall.id, content: "ok" },
+      ),
+      beforeToolExtensions: [askForCharge()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("A"), { turnId: "turn-a" });
+    await waitFor("reactor.turn.ended");
+
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+    const refused = await waitFor("reactor.error");
+    if (refused.type !== "reactor.error") throw new Error("unreachable");
+    expect(refused.data.fatal).toBe(false);
+    expect(refused.data.error).toContain("already holds a gate");
+    const marker = cell.pendingOperations.find(
+      (op) => op.correlationId === "corr-marker",
+    );
+    expect(marker?.turnId).toBe("turn-a");
+
+    // The marker has no live gate, so its response resumes nothing.
+    reactor.deliver(
+      createInboundMessage({
+        from: "peer@example.com",
+        to: "agent@example.com",
+        content: "resp",
+        correlationId: "corr-marker",
+      }),
+      { turnId: "turn-d" },
+    );
+    await waitForEvent(
+      events,
+      (e) => e.type === "reactor.turn.ended" && e.data.turnId === "turn-d",
+    );
+    expect(countOf(events, "message.correlated")).toBe(1);
+    expect(turnEnds(events).filter((e) => e.turnId === "turn-d")).toEqual([
+      { turnId: "turn-d", outcome: "unanswered" },
+    ]);
+    expect(turnEnds(events).filter((e) => e.turnId === "turn-b")).toEqual([]);
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+    expect(countOf(events, "reactor.gate.cleared")).toBe(0);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("identical gated calls in one batch run one at a time and trip the doom loop at three", async () => {
+    // The model asks for the refused calls again after each approval, so
+    // the three identical calls run as three identical batches.
+    let inferences = 0;
+    const batches: string[][] = [["c1", "c2", "c3"], ["c4", "c5"], ["c6"]];
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      const ids = batches[inferences];
+      inferences += 1;
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn:
+            ids === undefined
+              ? makeAssistantTurn("done")
+              : {
+                  role: "assistant" as const,
+                  content: ids.map((id) => ({
+                    type: "tool_call" as const,
+                    id,
+                    name: "charge_card",
+                    arguments: {},
+                  })),
+                  model: "test-model",
+                  timestamp: 1000,
+                },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+    const { reactor, events } = createTestReactor({
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner,
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askForCharge()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+
+    // Approve each gate as it arrives until the reactor stops.
+    const approved = new Set<string>();
+    for (;;) {
+      const ev = await waitForEvent(
+        events,
+        (e) =>
+          e.type === "reactor.done" ||
+          (e.type === "reactor.gate.blocked" &&
+            e.data.correlationId !== undefined &&
+            !approved.has(e.data.correlationId)),
+      );
+      if (ev.type === "reactor.done") break;
+      if (ev.type !== "reactor.gate.blocked") throw new Error("unreachable");
+      const correlationId = ev.data.correlationId;
+      if (correlationId === undefined) throw new Error("expected id");
+      approved.add(correlationId);
+      reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-a" });
+    }
+
+    expect(refusedCallIds(events)).toEqual(["c2", "c3", "c5"]);
+    expect(countOf(events, "reactor.gate.blocked")).toBe(3);
+    expect(countOf(events, "tool.start")).toBe(3);
+    expect(turnEnds(events).find((e) => e.turnId === "turn-a")).toMatchObject({
+      outcome: "failed",
+      error: { kind: "doom_loop" },
+    });
+  });
+
+  test("a parked call that times out after a refusal resumes once and the turn ends once", async () => {
+    let inferences = 0;
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      inferences += 1;
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn:
+            inferences === 1
+              ? {
+                  role: "assistant" as const,
+                  content: [
+                    {
+                      type: "tool_call" as const,
+                      id: "call-a",
+                      name: "charge_card",
+                      arguments: {},
+                    },
+                    {
+                      type: "tool_call" as const,
+                      id: "call-b",
+                      name: "charge_card",
+                      arguments: {},
+                    },
+                  ],
+                  model: "test-model",
+                  timestamp: 1000,
+                }
+              : makeAssistantTurn("timed out"),
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+    const { director, decided } = recordingDirector(
+      createDefaultDirector("test agent", []),
+    );
+    const { reactor, events, waitFor } = createTestReactor({
+      director,
+      inferenceRunner,
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askForCharge(50)],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await waitFor("reactor.turn.ended");
+
+    expect(refusedCallIds(events)).toEqual(["call-b"]);
+    expect(decided.filter((e) => e.type === "resume.tool_result")).toHaveLength(
+      1,
+    );
+    expect(inferences).toBe(2);
+    expect(turnEnds(events)).toEqual([
+      { turnId: "turn-a", outcome: "replied" },
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+    expect(turnEnds(events)).toHaveLength(1);
+  });
+
+  test("a gated call is refused while the first suspend commits even after the first gate timed out", async () => {
+    // call-a's gate times out while its commit is held open. The gate
+    // manager has already deleted the gate, so only the in-flight suspend
+    // counts against call-b.
+    const releaseCommit = Promise.withResolvers<boolean>();
+    const commitEntered = Promise.withResolvers<boolean>();
+    const base = makeContextStore();
+    const contextStore: ContextStore = {
+      ...base,
+      async writeMetadata(metadata, signal) {
+        commitEntered.resolve(true);
+        await releaseCommit.promise;
+        return base.writeMetadata(metadata, signal);
+      },
+    };
+    const timers = manualTimers();
+    let gateATimedOutBeforeCallB = false;
+    const extension: BeforeToolExtension = {
+      async beforeTool(toolCall) {
+        if (toolCall.id === "call-a") {
+          return suspendDecision(toolCall, "approval");
+        }
+        await commitEntered.promise;
+        // call-a's gate was registered before its commit started. Its
+        // timeout fires now, while the commit is held.
+        expect(timers.pending()).toHaveLength(1);
+        timers.fire(timers.pending()[0]);
+        gateATimedOutBeforeCallB = timers.pending().length === 0;
+        return suspendDecision(toolCall, "approval");
+      },
+    };
+    const { director, decided } = recordingDirector(
+      directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.executeTools([call("call-a"), call("call-b")]),
+        },
+        "wait",
+      ),
+    );
+    const { reactor, events, waitFor } = createTestReactor({
+      deps: timers.deps,
+      contextStore,
+      director,
+      beforeToolExtensions: [extension],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await waitForEvent(
+      events,
+      (e) => e.type === "tool.done" && e.data.result.callId === "call-b",
+    );
+    // call-b was refused while call-a's commit was still held, after
+    // call-a's gate had timed out.
+    expect(countOf(events, "reactor.gate.blocked")).toBe(0);
+    expect(gateATimedOutBeforeCallB).toBe(true);
+    releaseCommit.resolve(true);
+    await waitFor("reactor.gate.blocked");
+
+    expect(refusedCallIds(events)).toEqual(["call-b"]);
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+
+    // call-a's gate timed out during its commit: the suspend replays the
+    // deferred timeout after `reactor.gate.blocked`, and that answers call-a
+    // with the timeout result.
+    await waitUntil(() => decided.some((e) => e.type === "resume.tool_result"));
+    const timedOut = decided.find((e) => e.type === "resume.tool_result");
+    if (timedOut?.type !== "resume.tool_result") {
+      throw new Error("unreachable");
+    }
+    expect(timedOut.result).toEqual({
+      callId: "call-a",
+      content: "approval timed out",
+      isError: true,
+    });
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+  });
+
+  test("a refused director suspend commits a marker that its cycle registered", async () => {
+    // A serial batch parks the ask call first, and its suspend commits
+    // before the marker call runs. The refused director suspend that follows
+    // must persist the marker while the ask call stays parked.
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.executeTools(
+              [call("call-ask"), call("call-send", "send")],
+              false,
+            ),
+          "tool.done": (_e, _s, caps) =>
+            caps.suspend({
+              type: "message_response",
+              gateId: "marker-gate",
+              timeoutMs: 60_000,
+              correlationId: "corr-marker",
+            }),
+        },
+        "wait",
+      ),
+      toolRunner: makeToolRunner(async (toolCall) => ({
+        callId: toolCall.id,
+        content: "sent",
+        pendingMarker: {
+          status: "pending" as const,
+          correlationId: "corr-marker",
+        },
+      })),
+      beforeToolExtensions: [askForCharge()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const refused = await waitFor("reactor.error");
+    if (refused.type !== "reactor.error") throw new Error("unreachable");
+    expect(refused.data.error).toContain("already holds a gate");
+
+    expect(
+      cell.pendingOperations.map((op) => [op.correlationId, op.turnId]).sort(),
+    ).toEqual(
+      [
+        [blocked.data.correlationId, "turn-a"],
+        ["corr-marker", "turn-a"],
+      ].sort(),
+    );
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+    expect(turnEnds(events)).toEqual([]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a director suspend refused for a live gate commits a marker that its cycle registered", async () => {
+    // Turn A parks an ask call. Turn B runs a marker call, then its director
+    // suspends on A's correlation, which already has a live gate. The
+    // refusal must persist B's marker.
+    const cell: PersistedCell = {
+      turns: [],
+      pendingOperations: [],
+      tokenUsage: emptyUsage(),
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: directorFromTable(
+        {
+          "message.received": (e, _s, caps) =>
+            caps.executeTools([
+              e.message.content === "A"
+                ? call("call-ask")
+                : call("call-send", "send"),
+            ]),
+          "tool.done": (_e, s, caps) => {
+            const parked = s.pendingOperations.find(
+              (op) => op.suspendedCall !== undefined,
+            );
+            if (parked === undefined) throw new Error("expected a parked op");
+            return caps.suspend({
+              type: "approval",
+              gateId: "b-gate",
+              timeoutMs: 60_000,
+              correlationId: parked.correlationId,
+            });
+          },
+        },
+        "wait",
+      ),
+      toolRunner: makeToolRunner(async (toolCall) => ({
+        callId: toolCall.id,
+        content: "sent",
+        pendingMarker: {
+          status: "pending" as const,
+          correlationId: "corr-b-marker",
+        },
+      })),
+      beforeToolExtensions: [askForCharge()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("A"), { turnId: "turn-a" });
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+    const refused = await waitFor("reactor.error");
+    if (refused.type !== "reactor.error") throw new Error("unreachable");
+    expect(refused.data.fatal).toBe(false);
+    expect(refused.data.error).toContain("already has a live gate");
+
+    expect(
+      cell.pendingOperations.map((op) => [op.correlationId, op.turnId]).sort(),
+    ).toEqual(
+      [
+        [blocked.data.correlationId, "turn-a"],
+        ["corr-b-marker", "turn-b"],
+      ].sort(),
+    );
+    expect(countOf(events, "reactor.gate.blocked")).toBe(1);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
   });
 });

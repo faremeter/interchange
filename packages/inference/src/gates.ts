@@ -152,11 +152,12 @@ export function createGateManager(
 
   // A gate counts from its registration. The reactor registers a suspend's
   // gate before it commits the suspend, so the gate counts during the commit.
-  function hasTurn(turnId: string): boolean {
+  function countForTurn(turnId: string): number {
+    let count = 0;
     for (const gate of gates.values()) {
-      if (gate.turnId === turnId) return true;
+      if (gate.turnId === turnId) count += 1;
     }
-    return false;
+    return count;
   }
 
   return {
@@ -167,7 +168,7 @@ export function createGateManager(
     findByCorrelationId,
     snapshot,
     has,
-    hasTurn,
+    countForTurn,
   };
 }
 
