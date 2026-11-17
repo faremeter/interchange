@@ -3427,6 +3427,7 @@ function buildWarmAgentSpy(): { agent: Agent; spy: WarmAgentSpy } {
       spy.changed.notify();
       return {
         type: "reply",
+        turnId: "turn-test",
         reply,
         turn: {
           role: "assistant",

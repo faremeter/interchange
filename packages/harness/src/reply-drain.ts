@@ -119,8 +119,10 @@ export interface ConnectorReplyDrain {
    * The count of replies that have SETTLED so far -- sent-and-acked or failed.
    * Monotonic. A per-turn caller captures this BEFORE the `agent.send` that may
    * produce a reply, then, for a turn that did produce a `connector.reply`,
-   * awaits `waitForReplyAfter(captured)` to block until THIS turn's reply
-   * settles. The capture-before-send ordering is required: the agent resolves
+   * awaits `waitForReplyAfter(captured)` to block until the next reply after
+   * the capture settles, which is this turn's reply only under the condition
+   * that `waitForReplyAfter` states. The capture-before-send ordering is
+   * required: the agent resolves
    * `agent.send` in the same synchronous step that pushes the `connector.reply`
    * onto this drain's stream, so the reply is not yet enqueued when `send`
    * resolves -- a post-send snapshot would miss it.
@@ -129,9 +131,11 @@ export interface ConnectorReplyDrain {
   /**
    * Resolve once more than `n` replies have settled -- i.e. the reply at index
    * `n` (the `(n + 1)`th reply the drain processed) has settled -- with that
-   * reply's settlement. Because the warm agent is strictly serial and the drain
-   * is FIFO, a turn that captured `n` from `replySeq()` before its send and
-   * produced exactly one reply awaits reply `n` here.
+   * reply's settlement. The drain is FIFO, so a turn that captured `n` from
+   * `replySeq()` before its send and produced exactly one reply awaits reply
+   * `n` here. That is correct only if no reply of another turn settles between
+   * the capture and this turn's reply. A resume after a gate timeout can reply
+   * in that window, and then this resolves with that other turn's reply.
    *
    * When the drain loop exits (stream end, `stop()`, or an abnormal
    * termination) before reply `n` settles, resolves with a failure settlement

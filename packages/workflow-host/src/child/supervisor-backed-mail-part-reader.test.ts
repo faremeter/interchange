@@ -272,6 +272,7 @@ describe("createSupervisorBackedMailPartReader", () => {
         captured.message = content;
         return {
           type: "reply",
+          turnId: "turn-test",
           reply: "ok",
           turn: {
             role: "assistant",

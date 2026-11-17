@@ -227,6 +227,7 @@ function buildStreamingStubAgent(
     async send(): Promise<SendResult> {
       return {
         type: "reply",
+        turnId: "turn-test",
         reply: "ok",
         turn: {
           role: "assistant",
@@ -404,7 +405,12 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     expect(authzCalls).toHaveLength(1);
     expect(authzCalls[0]?.stepId).toBe("step-1");
 
-    stub.resolveSend({ type: "reply", reply: "pong", turn });
+    stub.resolveSend({
+      type: "reply",
+      turnId: "turn-test",
+      reply: "pong",
+      turn,
+    });
     const result = await sendPromise;
     expect(expectOutput(result)).toEqual({ reply: "pong", turn });
     expect(stub.events[0]).toBe(`send:${JSON.stringify({ goal: "ping" })}`);
@@ -430,6 +436,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     await Promise.resolve();
     stub.resolveSend({
       type: "reply",
+      turnId: "turn-test",
       reply: "pong",
       turn: {
         role: "assistant",
@@ -465,6 +472,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     };
     stub.resolveSend({
       type: "suspended",
+      turnId: "turn-test",
       correlationId: "corr-1",
       approvalSnapshot,
     });
@@ -505,7 +513,11 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
 
     const sendPromise = invoker(buildRequest({ input: { goal: "ping" } }));
     await Promise.resolve();
-    stub.resolveSend({ type: "suspended", correlationId: "corr-1" });
+    stub.resolveSend({
+      type: "suspended",
+      turnId: "turn-test",
+      correlationId: "corr-1",
+    });
 
     await expect(sendPromise).rejects.toThrow(/no approval snapshot/);
   });
@@ -579,6 +591,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     await Promise.resolve();
     stub.resolveSend({
       type: "reply",
+      turnId: "turn-test",
       reply: "ok",
       turn: {
         role: "assistant",
@@ -701,7 +714,12 @@ describe("workflow-host StepInvoker adapter - output shape", () => {
     };
     const settled = invoker(buildRequest({ input: 42 }));
     await Promise.resolve();
-    stub.resolveSend({ type: "reply", reply: "hello", turn });
+    stub.resolveSend({
+      type: "reply",
+      turnId: "turn-test",
+      reply: "hello",
+      turn,
+    });
     const result = await settled;
     expect(expectOutput(result)).toEqual({ reply: "hello", turn });
   });
@@ -777,6 +795,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
     await Promise.resolve();
     stub.resolveSend({
       type: "reply",
+      turnId: "turn-test",
       reply: "ok",
       turn: {
         role: "assistant",
@@ -826,7 +845,12 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
       returned = true;
     });
     await Promise.resolve();
-    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+    stub.resolveSend({
+      type: "reply",
+      turnId: "turn-test",
+      reply: "ok",
+      turn: replyTurn,
+    });
     await settleEntered.promise;
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(returned).toBe(false);
@@ -872,7 +896,12 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
 
     const pending = invoker(buildRequest({ input: "turn" }));
     await Promise.resolve();
-    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+    stub.resolveSend({
+      type: "reply",
+      turnId: "turn-test",
+      reply: "ok",
+      turn: replyTurn,
+    });
     const failure = await pending.then(
       () => undefined,
       (cause: unknown) => cause,
@@ -910,7 +939,12 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
 
     const pending = invoker(buildRequest({ input: "turn" }));
     await Promise.resolve();
-    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+    stub.resolveSend({
+      type: "reply",
+      turnId: "turn-test",
+      reply: "ok",
+      turn: replyTurn,
+    });
     const failure = await pending.then(
       () => undefined,
       (cause: unknown) => cause,
@@ -934,7 +968,12 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
 
     const pending = invoker(buildRequest({ input: "turn" }));
     await Promise.resolve();
-    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+    stub.resolveSend({
+      type: "reply",
+      turnId: "turn-test",
+      reply: "ok",
+      turn: replyTurn,
+    });
 
     await expect(pending).rejects.toBeInstanceOf(StepOutcomeCommitError);
   });
@@ -1028,6 +1067,7 @@ function buildWarmStubAgent(): WarmStubControl {
       const reply = `reply${String(conversation.length)}:${conversation.join("|")}`;
       return {
         type: "reply",
+        turnId: "turn-test",
         reply,
         turn: {
           role: "assistant",
@@ -1145,6 +1185,7 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
         conversation.push(text);
         return {
           type: "reply",
+          turnId: "turn-test",
           reply: `ok:${conversation.join("|")}`,
           turn: {
             role: "assistant",
@@ -1423,6 +1464,7 @@ function buildBarrierStubAgent(result: SendResult): {
 function replySendResult(reply: string): SendResult {
   return {
     type: "reply",
+    turnId: "turn-test",
     reply,
     turn: {
       role: "assistant",
@@ -1636,6 +1678,7 @@ function buildScriptedAgent(script: ScriptedTurn[]): {
     if (turn.kind === "suspend") {
       return {
         type: "suspended",
+        turnId: "turn-test",
         correlationId: turn.correlationId,
         approvalSnapshot: {
           name: "tool_a",
@@ -2088,6 +2131,7 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     // await the barrier (that reply never arrives and the wait would hang).
     const { agent } = buildBarrierStubAgent({
       type: "suspended",
+      turnId: "turn-test",
       correlationId: "corr-1",
       approvalSnapshot: {
         name: "tool_a",
@@ -2219,7 +2263,12 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
     let sentContent: string | InboundMessage | undefined;
     const agent = buildResumeStubAgent((content) => {
       sentContent = content;
-      return { type: "reply", reply: "resumed reply", turn: resumeTurn };
+      return {
+        type: "reply",
+        turnId: "turn-test",
+        reply: "resumed reply",
+        turn: resumeTurn,
+      };
     });
 
     const invoker = createWorkflowStepInvoker({
@@ -2285,6 +2334,7 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
       sentContent = content;
       return {
         type: "suspended",
+        turnId: "turn-test",
         correlationId: "corr-B",
         approvalSnapshot: {
           name: "tool_b",
@@ -2353,7 +2403,12 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
     let sentContent: string | InboundMessage | undefined;
     const agent = buildResumeStubAgent((content) => {
       sentContent = content;
-      return { type: "reply", reply: "next turn reply", turn: nextTurn };
+      return {
+        type: "reply",
+        turnId: "turn-test",
+        reply: "next turn reply",
+        turn: nextTurn,
+      };
     });
 
     const invoker = createWorkflowStepInvoker({
@@ -2465,6 +2520,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
         captured.message = content;
         return {
           type: "reply",
+          turnId: "turn-test",
           reply: "ok",
           turn: {
             role: "assistant",
