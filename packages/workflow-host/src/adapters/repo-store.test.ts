@@ -8,6 +8,7 @@ import type { KeyPair } from "@intx/types/runtime";
 import {
   createRepoStore,
   workflowRunKindHandler,
+  WORKFLOW_RUN_EVENTS_FILE,
   WORKFLOW_RUN_GITIGNORE_PATH,
 } from "@intx/hub-sessions";
 import type {
@@ -20,7 +21,11 @@ import type {
 import type { WorkflowEvent } from "@intx/workflow";
 import { isQuiet, whenDelivered } from "@intx/workflow/runtime";
 
-import type { PriorRunEvent } from "./on-disk-event";
+import {
+  runEventPath,
+  workflowEventToOnDisk,
+  type PriorRunEvent,
+} from "./on-disk-event";
 import { createWorkflowRunRepoStore, readRunEventSummary } from "./repo-store";
 import { compactRunEvents } from "../supervisor/run-event-compaction";
 
@@ -672,6 +677,175 @@ describe("workflow-host RepoStore adapter — permissive handler smoke", () => {
     if (restored.kind !== "RunStarted") throw new Error("unreachable");
     expect(restored.runId).toBe(runId);
     expect(restored.definitionHash).toBe("definition-hash");
+  });
+});
+
+describe("workflow-host RepoStore adapter — read cache", () => {
+  const repoId: RepoId = { kind: "skill", id: "deployment-read-cache" };
+
+  // A substrate whose committed reads record every blob they read. The
+  // permissive handler lets a test rewrite or drop committed events.
+  async function countingSubstrate() {
+    const permissive: KindHandler = {
+      kind: "skill",
+      directoryPrefix: "read-cache",
+      validatePush: (): ValidatePushResult => ({ ok: true }),
+      onRefUpdated: () => undefined,
+    };
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-adapter-read-cache-"),
+      signingKey,
+      handlers: { skill: permissive },
+      authorize: allowAll,
+    });
+    const blobReads: string[] = [];
+    const substrate: typeof store = {
+      ...store,
+      openCommittedReads: async (...args) => {
+        const reads = await store.openCommittedReads(...args);
+        if (reads === null) return null;
+        return {
+          ...reads,
+          readBlobByOid: (oid) => {
+            blobReads.push(oid);
+            return reads.readBlobByOid(oid);
+          },
+        };
+      },
+    };
+    const adapter = createWorkflowRunRepoStore({
+      substrate,
+      repoId,
+      principal: { kind: "test" },
+      ref: REF,
+    });
+    return { store, adapter, blobReads };
+  }
+
+  test("a later read reads only the events added since the previous one", async () => {
+    const { adapter, blobReads } = await countingSubstrate();
+    const runId = "run-1";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    await adapter.append(runId, freshStepStarted(2));
+    expect(await adapter.read(runId)).toHaveLength(2);
+    expect(blobReads).toHaveLength(2);
+
+    blobReads.length = 0;
+    await adapter.append(runId, freshStepStarted(3));
+    expect((await adapter.read(runId)).map((e) => e.seq)).toEqual([1, 2, 3]);
+    expect(blobReads).toHaveLength(1);
+
+    blobReads.length = 0;
+    expect(await adapter.read(runId)).toHaveLength(3);
+    expect(blobReads).toHaveLength(0);
+  });
+
+  test("a read follows the listing when a committed event changes or goes", async () => {
+    const { store, adapter } = await countingSubstrate();
+    const runId = "run-2";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    await adapter.append(runId, freshStepStarted(2));
+    await adapter.append(runId, freshStepStarted(3));
+    expect(await adapter.read(runId)).toHaveLength(3);
+
+    const replaced = { ...freshStepStarted(2), stepId: "step-b" };
+    await store.writeTreeDelta({ kind: "test" }, repoId, REF, {
+      computeDelta: async () => ({
+        puts: {
+          [runEventPath(runId, 2)]: JSON.stringify(
+            workflowEventToOnDisk(replaced, 2),
+          ),
+        },
+        deletes: [runEventPath(runId, 3)],
+      }),
+      changedPathPrefixes: undefined,
+      message: "rewind",
+    });
+
+    const events = await adapter.read(runId);
+    expect(events.map((e) => e.seq)).toEqual([1, 2]);
+    const second = events[1];
+    if (second?.kind !== "StepStarted") throw new Error("unreachable");
+    expect(second.stepId).toBe("step-b");
+  });
+
+  test("a caller that changes a read event does not change a later read", async () => {
+    const { adapter } = await countingSubstrate();
+    const runId = "run-3";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    const [first] = await adapter.read(runId);
+    if (first?.kind !== "RunStarted") throw new Error("unreachable");
+    first.trigger.payload = { changed: true };
+
+    const [second] = await adapter.read(runId);
+    if (second?.kind !== "RunStarted") throw new Error("unreachable");
+    expect(second.trigger.payload).toEqual({});
+  });
+
+  test("an ended run keeps no cached log", async () => {
+    const { adapter, blobReads } = await countingSubstrate();
+    const runId = "run-4";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    await adapter.append(runId, freshRunCompleted(2));
+    for (let read = 0; read < 2; read++) {
+      blobReads.length = 0;
+      expect(await adapter.read(runId)).toHaveLength(2);
+      expect(blobReads).toHaveLength(2);
+    }
+  });
+
+  test("an append that ends a run drops its cached log", async () => {
+    const { adapter, blobReads } = await countingSubstrate();
+    const runId = "run-5";
+    await adapter.append(runId, freshRunStarted(runId, 1));
+    expect(await adapter.read(runId)).toHaveLength(1);
+
+    await adapter.append(runId, freshRunCompleted(2));
+    blobReads.length = 0;
+    expect(await adapter.read(runId)).toHaveLength(2);
+    expect(blobReads).toHaveLength(2);
+  });
+
+  test("a read that finds a run sealed drops its cached log", async () => {
+    const { store, adapter, blobReads } = await countingSubstrate();
+    const runId = "run-6";
+    const live = [freshRunStarted(runId, 1), freshStepStarted(2)];
+    for (const event of live) await adapter.append(runId, event);
+    expect(await adapter.read(runId)).toHaveLength(2);
+
+    const perEvent = Object.fromEntries(
+      live.map((e) => [
+        runEventPath(runId, e.seq),
+        JSON.stringify(workflowEventToOnDisk(e, e.seq)),
+      ]),
+    );
+    const combinedPath = `runs/${runId}/${WORKFLOW_RUN_EVENTS_FILE}`;
+    const combined = [
+      ...Object.values(perEvent),
+      JSON.stringify(workflowEventToOnDisk(freshRunCompleted(3), 3)),
+    ]
+      .map((line) => `${line}\n`)
+      .join("");
+    await store.writeTreeDelta({ kind: "test" }, repoId, REF, {
+      computeDelta: async () => ({
+        puts: { [combinedPath]: combined },
+        deletes: Object.keys(perEvent),
+      }),
+      changedPathPrefixes: undefined,
+      message: "seal",
+    });
+    expect(await adapter.read(runId)).toHaveLength(3);
+
+    // The restored files keep their old oids, so a log the sealed read
+    // kept would serve them without a read.
+    await store.writeTreeDelta({ kind: "test" }, repoId, REF, {
+      computeDelta: async () => ({ puts: perEvent, deletes: [combinedPath] }),
+      changedPathPrefixes: undefined,
+      message: "unseal",
+    });
+    blobReads.length = 0;
+    expect(await adapter.read(runId)).toHaveLength(2);
+    expect(blobReads).toHaveLength(2);
   });
 });
 

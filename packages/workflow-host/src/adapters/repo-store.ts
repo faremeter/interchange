@@ -205,7 +205,7 @@ async function readAllEventsForRun(
   const runDir = `${RUNS_PREFIX}/${runId}`;
   const runChildren = await reads.listDir(runDir);
   const decoder = new TextDecoder();
-  const entries: { seq: number; event: WorkflowEvent }[] = [];
+  const entries: ParsedRunEvent[] = [];
 
   // A terminated run is sealed into a single combined `events.jsonl`; an
   // in-flight run keeps per-event `events/<seq>.json` files. The two forms
@@ -218,6 +218,7 @@ async function readAllEventsForRun(
     (e) => e.type === "tree" && e.name === EVENTS_DIR,
   );
   if (combined !== undefined) {
+    forgetRunLog(opts.substrate, opts.repoId, runId);
     if (perEventDir !== undefined) {
       throw new Error(
         `workflow-runtime: run ${runId} carries both a combined ${WORKFLOW_RUN_EVENTS_FILE} and a per-event ${EVENTS_DIR}/ directory`,
@@ -237,34 +238,103 @@ async function readAllEventsForRun(
   }
 
   // Per-event form. `listDir` on an absent or non-tree path returns the
-  // empty array, so a run with no events reads as the empty log.
+  // empty array, so a run with no events reads as the empty log. The
+  // listing decides which events the log holds; the cache only saves
+  // reading and parsing a blob this store has parsed before.
   const eventBlobs = await reads.listDir(`${runDir}/${EVENTS_DIR}`);
+  const cached = takeRunLog(opts.substrate, opts.repoId, runId);
+  const parsed = new Map<string, ParsedRunEvent>();
   for (const child of eventBlobs) {
     if (child.type !== "blob") continue;
     const seqFromName = parseEventSeq(child.name);
     if (seqFromName === null) continue;
-    const raw = decoder.decode(await reads.readBlobByOid(child.oid));
     const source = `${opts.repoId.id}/${runId}/${EVENTS_DIR}/${child.name}`;
-    const entry = parseEventEnvelope(raw, source);
+    let entry = cached?.get(child.oid);
+    if (entry === undefined) {
+      const raw = decoder.decode(await reads.readBlobByOid(child.oid));
+      entry = parseEventEnvelope(raw, source);
+    }
     if (entry.seq !== seqFromName) {
       throw new Error(
         `workflow-runtime: read ${source} body.seq ${String(entry.seq)} does not match filename seq ${String(seqFromName)}`,
       );
     }
+    parsed.set(child.oid, entry);
     entries.push(entry);
   }
   entries.sort((a, b) => a.seq - b.seq);
-  return entries.map((e) => e.event);
+  const last = entries.at(-1);
+  if (last === undefined || !classifyTerminalEvent(last.event.kind).terminal) {
+    keepRunLog(opts.substrate, opts.repoId, runId, parsed);
+  }
+  // Each read owns its events, as it does without the cache, so a caller
+  // that changes one cannot change what a later read returns.
+  return entries.map((e) => structuredClone(e.event));
+}
+
+type ParsedRunEvent = { seq: number; event: WorkflowEvent };
+
+// A run's parsed events by blob oid, kept between reads so a long-lived
+// child that reloads its state several times per turn reads and parses
+// only the events added since its last read. A run's entry is dropped
+// when a read or an append on this store sees the run end, and the
+// least recently read runs beyond MAX_CACHED_RUN_LOGS are dropped.
+const MAX_CACHED_RUN_LOGS = 32;
+const runLogsByStore = new WeakMap<
+  object,
+  Map<string, ReadonlyMap<string, ParsedRunEvent>>
+>();
+
+function runLogsOf(
+  substrate: SubstrateRepoStore,
+): Map<string, ReadonlyMap<string, ParsedRunEvent>> {
+  let logs = runLogsByStore.get(substrate);
+  if (logs === undefined) {
+    logs = new Map();
+    runLogsByStore.set(substrate, logs);
+  }
+  return logs;
+}
+
+function takeRunLog(
+  substrate: SubstrateRepoStore,
+  repoId: RepoId,
+  runId: string,
+): ReadonlyMap<string, ParsedRunEvent> | undefined {
+  const logs = runLogsOf(substrate);
+  const key = runSummaryKey(repoId, runId);
+  const log = logs.get(key);
+  logs.delete(key);
+  return log;
+}
+
+function keepRunLog(
+  substrate: SubstrateRepoStore,
+  repoId: RepoId,
+  runId: string,
+  log: ReadonlyMap<string, ParsedRunEvent>,
+): void {
+  const logs = runLogsOf(substrate);
+  logs.set(runSummaryKey(repoId, runId), log);
+  for (const key of logs.keys()) {
+    if (logs.size <= MAX_CACHED_RUN_LOGS) break;
+    logs.delete(key);
+  }
+}
+
+function forgetRunLog(
+  substrate: SubstrateRepoStore,
+  repoId: RepoId,
+  runId: string,
+): void {
+  runLogsByStore.get(substrate)?.delete(runSummaryKey(repoId, runId));
 }
 
 // Parse one on-disk event envelope -- a per-event file's bytes or one line
 // of a combined `events.jsonl` (which holds the same bytes verbatim). The
 // per-event caller additionally cross-checks the seq against the filename;
 // the combined form carries the seq only in the body.
-function parseEventEnvelope(
-  raw: string,
-  source: string,
-): { seq: number; event: WorkflowEvent } {
+function parseEventEnvelope(raw: string, source: string): ParsedRunEvent {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -574,6 +644,7 @@ async function appendBatchEvents(
     events.some((event) => classifyTerminalEvent(event.kind).terminal)
   ) {
     forgetRunEventSummary(opts.substrate, opts.repoId, runId);
+    forgetRunLog(opts.substrate, opts.repoId, runId);
   }
   if (seqConflict !== null) {
     const conflict: { expected: number; supplied: number } = seqConflict;
