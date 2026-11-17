@@ -8,6 +8,8 @@
 
 import type { GateType } from "@intx/types/runtime";
 
+import { createDefaultScheduler, type Scheduler } from "./harness";
+
 export type GateRecord = {
   gateId: string;
   type: GateType;
@@ -17,7 +19,8 @@ export type GateRecord = {
   turnId: string;
   resolve: (reason: "resolved" | "timeout" | "shutdown") => void;
   onCleared: GateClearedHandler;
-  timer: ReturnType<typeof setTimeout>;
+  /** Cancels the gate's timeout timer. */
+  cancelTimer: () => void;
 };
 
 // The manager deletes a gate before it calls this handler, so the handler
@@ -35,9 +38,13 @@ export type GateSnapshot = {
 };
 
 /**
- * Manages active gates. All gates must have a positive timeout.
+ * Manages active gates. All gates must have a positive timeout. The timeout
+ * timers run on `scheduler`; the reactor passes its injected one, so a test
+ * can fire a gate's timeout when it chooses.
  */
-export function createGateManager() {
+export function createGateManager(
+  scheduler: Scheduler = createDefaultScheduler(),
+) {
   const gates = new Map<string, GateRecord>();
 
   function register(
@@ -67,7 +74,7 @@ export function createGateManager() {
       },
     );
 
-    const timer = setTimeout(() => {
+    const cancelTimer = scheduler.setTimeout(() => {
       if (gates.has(gateId)) {
         gates.delete(gateId);
         resolveGate("timeout");
@@ -83,7 +90,7 @@ export function createGateManager() {
       turnId,
       resolve: resolveGate,
       onCleared,
-      timer,
+      cancelTimer,
     });
 
     return promise;
@@ -92,7 +99,7 @@ export function createGateManager() {
   function clear(gateId: string): boolean {
     const gate = gates.get(gateId);
     if (gate === undefined) return false;
-    clearTimeout(gate.timer);
+    gate.cancelTimer();
     gates.delete(gateId);
     gate.resolve("resolved");
     gate.onCleared(gateId, "resolved", gate.turnId);
@@ -108,7 +115,7 @@ export function createGateManager() {
   function clearSilently(gateId: string): boolean {
     const gate = gates.get(gateId);
     if (gate === undefined) return false;
-    clearTimeout(gate.timer);
+    gate.cancelTimer();
     gates.delete(gateId);
     gate.resolve("resolved");
     return true;
@@ -118,7 +125,7 @@ export function createGateManager() {
     const entries = Array.from(gates.values());
     gates.clear();
     for (const gate of entries) {
-      clearTimeout(gate.timer);
+      gate.cancelTimer();
       gate.resolve("shutdown");
       gate.onCleared(gate.gateId, "shutdown", gate.turnId);
     }
@@ -143,6 +150,15 @@ export function createGateManager() {
     return gates.has(gateId);
   }
 
+  // A gate counts from its registration. The reactor registers a suspend's
+  // gate before it commits the suspend, so the gate counts during the commit.
+  function hasTurn(turnId: string): boolean {
+    for (const gate of gates.values()) {
+      if (gate.turnId === turnId) return true;
+    }
+    return false;
+  }
+
   return {
     register,
     clear,
@@ -151,6 +167,7 @@ export function createGateManager() {
     findByCorrelationId,
     snapshot,
     has,
+    hasTurn,
   };
 }
 

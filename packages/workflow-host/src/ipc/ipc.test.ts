@@ -949,9 +949,9 @@ describe("Event channel", () => {
       data: { model: "test" },
     });
     await sender.send({
-      type: "message.run.started",
+      type: "reactor.turn.started",
       seq: 2,
-      data: { messageId: "m1", messageRunId: "mr1", receivedAt: 100 },
+      data: { turnId: "t1", resumed: false, messageId: "m1" },
     });
     const custom: EventPayload = {
       type: "custom.progress",

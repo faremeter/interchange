@@ -1,8 +1,8 @@
 // Event channel: UNIX socketpair, HMAC-SHA256 authenticated.
 //
 // The workflow-process child sends InferenceEvents (high rate, plus
-// the per-message `message.run.started` / `message.run.ended`
-// brackets) to the supervisor. The supervisor verifies each frame's
+// the per-turn `reactor.turn.started` / `reactor.turn.ended`
+// lifecycle events) to the supervisor. The supervisor verifies each frame's
 // MAC and forwards into the hub via the existing `agent.event`
 // session-channel path. The shared 32-byte HMAC key is minted by the
 // supervisor at spawn time and passed to the child in spawn-time env.

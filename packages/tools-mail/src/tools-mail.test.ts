@@ -548,8 +548,8 @@ describe("mail_send handler", () => {
   test("stamps a correlation id onto the outbound message", async () => {
     // The correlation machinery is reachable only if the id survives the tool
     // boundary: the serializer reads OutboundMessage.correlationId to write
-    // Interchange-Correlation-ID, and the reactor's tryCorrelate matches an
-    // inbound response on that header alone. Declaring the key is not enough
+    // Interchange-Correlation-ID, and the reactor correlates an inbound
+    // response on that header alone. Declaring the key is not enough
     // -- the handler builds the outbound from named properties -- so assert on
     // the message the transport received, not on the accepted arguments.
     const transport = makeMockTransport();
@@ -1298,8 +1298,8 @@ describe("mail_reply handler", () => {
   });
 
   test("carries the parent's correlation id onto the reply", async () => {
-    // The reply half of a correlated exchange. The reactor's tryCorrelate
-    // matches a response on Interchange-Correlation-ID alone and derives
+    // The reply half of a correlated exchange. The reactor correlates a
+    // response on Interchange-Correlation-ID alone and derives
     // nothing from inReplyTo or References, so a reply that drops the id
     // leaves the requester's suspended operation unresolved forever. Assert on
     // the message the transport received: the serializer reads

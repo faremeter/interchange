@@ -42,6 +42,47 @@ const WireInboundMessage = type({
 });
 
 /**
+ * Why a turn ended `failed`:
+ * - `reactor_fatal`: an internal fault stopped the reactor.
+ * - `doom_loop`: the reactor broke a turn that repeated an identical tool
+ *   batch past the configured threshold. It is not an internal fault.
+ * - `aborted`: an external abort stopped the reactor while the turn ran.
+ * - `reactor_done`: the delivery arrived after the reactor finished.
+ */
+export const TurnFailureKind = type.enumerated(
+  "reactor_fatal",
+  "doom_loop",
+  "aborted",
+  "reactor_done",
+);
+export type TurnFailureKind = typeof TurnFailureKind.infer;
+
+/**
+ * The data of `reactor.turn.ended`. `joined` names the turn the delivery
+ * continued, and `failed` carries the error.
+ */
+export const TurnEndedData = type.or(
+  {
+    turnId: "string",
+    outcome: type.enumerated("replied", "unanswered"),
+  },
+  { turnId: "string", outcome: "'joined'", joinedTurnId: "string" },
+  {
+    turnId: "string",
+    outcome: "'failed'",
+    error: { message: "string", kind: TurnFailureKind },
+  },
+);
+export type TurnEndedData =
+  | { turnId: string; outcome: "replied" | "unanswered" }
+  | { turnId: string; outcome: "joined"; joinedTurnId: string }
+  | {
+      turnId: string;
+      outcome: "failed";
+      error: { message: string; kind: TurnFailureKind };
+    };
+
+/**
  * A single event in the inference event protocol. Every event carries a
  * monotonic session-scoped sequence number.
  *
@@ -235,28 +276,6 @@ export const InferenceEvent = type.or(
     data: { message: WireInboundMessage },
   },
   {
-    type: "'message.run.started'",
-    seq: "number",
-    data: {
-      "messageId?": "string",
-      messageRunId: "string",
-      receivedAt: "number",
-    },
-  },
-  {
-    type: "'message.run.ended'",
-    seq: "number",
-    data: {
-      messageRunId: "string",
-      "messageId?": "string",
-      status: type.enumerated("completed", "failed"),
-      "error?": {
-        message: "string",
-        "kind?": "string",
-      },
-    },
-  },
-  {
     type: "'message.correlated'",
     seq: "number",
     data: { message: WireInboundMessage, correlationId: "string" },
@@ -293,6 +312,16 @@ export const InferenceEvent = type.or(
       gateId: "string",
       reason: type.enumerated("resolved", "timeout", "shutdown"),
     },
+  },
+  {
+    type: "'reactor.turn.started'",
+    seq: "number",
+    data: { turnId: "string", resumed: "boolean", "messageId?": "string" },
+  },
+  {
+    type: "'reactor.turn.ended'",
+    seq: "number",
+    data: TurnEndedData,
   },
   {
     type: "'reactor.done'",
@@ -481,61 +510,6 @@ export type InferenceEvent =
       data: { message: InboundMessage };
     }
   | {
-      /**
-       * Per-message run-bracket open. Emitted by the reactor when it
-       * dequeues an inbound mail message and begins per-message work.
-       *
-       * `messageRunId` is reactor-minted, unique per dequeue. It is
-       * non-negotiable for crash-replay correlation: the reactor can
-       * legitimately dequeue the same `messageId` more than once across
-       * a crash + replay cycle, so two bracket-open events with the
-       * same `messageId` and no run-id cannot be unambiguously paired
-       * with their `message.run.ended` counterparts.
-       */
-      type: "message.run.started";
-      seq: number;
-      data: {
-        messageId?: string;
-        messageRunId: string;
-        receivedAt: number;
-      };
-    }
-  | {
-      /**
-       * Per-message run-bracket close. Pairs with `message.run.started`
-       * by `messageRunId`. `messageId` is carried redundantly so log
-       * readers can correlate without a join against the open event; it is
-       * absent for a message that named no id of its own.
-       *
-       * The `status` enum is `"completed" | "failed"` only.
-       * Cancellation lives in the workflow-runtime's
-       * `CancelRequested` -> `RunFailed` vocabulary, not on the
-       * reactor's bracket: the reactor does not run a state machine
-       * and what it observes when cancellation arrives is a harness
-       * abort, which is structurally `"failed"` with a specific
-       * `error.kind`.
-       *
-       * `error.kind` is documented as one of
-       * `"inference_error" | "tool_error" | "reactor_fatal" |
-       * "harness_aborted" | "doom_loop"` initially, extensible as new
-       * failure categories surface. `"doom_loop"` marks a protective
-       * break the reactor took on the agent's behalf when the agent
-       * repeated an identical tool batch past the configured threshold;
-       * unlike `"reactor_fatal"` it is not an internal fault.
-       */
-      type: "message.run.ended";
-      seq: number;
-      data: {
-        messageRunId: string;
-        messageId?: string;
-        status: "completed" | "failed";
-        error?: {
-          message: string;
-          kind?: string;
-        };
-      };
-    }
-  | {
       type: "message.correlated";
       seq: number;
       data: { message: InboundMessage; correlationId: string };
@@ -564,6 +538,26 @@ export type InferenceEvent =
         gateId: string;
         reason: "resolved" | "timeout" | "shutdown";
       };
+    }
+  | {
+      /**
+       * The reactor starts work for a turn in this process: on the dequeue
+       * of a new message (`resumed: false`, with the message's id when it
+       * has one), or on the first resume of a parked turn (`resumed: true`).
+       */
+      type: "reactor.turn.started";
+      seq: number;
+      data: { turnId: string; resumed: boolean; messageId?: string };
+    }
+  | {
+      /**
+       * The turn ended. The reactor emits at most one of these for each
+       * turn in a process. A turn can end with no `reactor.turn.started`
+       * (INFERENCE.md § Turn Lifecycle).
+       */
+      type: "reactor.turn.ended";
+      seq: number;
+      data: TurnEndedData;
     }
   | { type: "reactor.done"; seq: number; data: Record<string, never> }
   | {
@@ -660,6 +654,44 @@ const _tsGateBlockedTurnId = (
   data: TSEventData<"reactor.gate.blocked">,
 ): string | undefined => data.turnId;
 void _tsGateBlockedTurnId;
+
+// The same drift guards for the turn events. A turn event carries its turn id
+// as a required field, and each outcome of `reactor.turn.ended` carries its
+// own required fields.
+const _arkTurnStarted = (
+  data: ArkEventData<"reactor.turn.started">,
+): [string, boolean, string | undefined] => [
+  data.turnId,
+  data.resumed,
+  data.messageId,
+];
+void _arkTurnStarted;
+const _tsTurnStarted = (
+  data: TSEventData<"reactor.turn.started">,
+): [string, boolean, string | undefined] => [
+  data.turnId,
+  data.resumed,
+  data.messageId,
+];
+void _tsTurnStarted;
+
+const _arkTurnEndedJoined = (
+  data: Extract<ArkEventData<"reactor.turn.ended">, { outcome: "joined" }>,
+): string => data.joinedTurnId;
+void _arkTurnEndedJoined;
+const _tsTurnEndedJoined = (
+  data: Extract<TSEventData<"reactor.turn.ended">, { outcome: "joined" }>,
+): string => data.joinedTurnId;
+void _tsTurnEndedJoined;
+
+const _arkTurnEndedFailed = (
+  data: Extract<ArkEventData<"reactor.turn.ended">, { outcome: "failed" }>,
+): [string, TurnFailureKind] => [data.error.message, data.error.kind];
+void _arkTurnEndedFailed;
+const _tsTurnEndedFailed = (
+  data: Extract<TSEventData<"reactor.turn.ended">, { outcome: "failed" }>,
+): [string, TurnFailureKind] => [data.error.message, data.error.kind];
+void _tsTurnEndedFailed;
 
 /**
  * Validate unknown data as an InferenceEvent. ArkType's regex-based validator

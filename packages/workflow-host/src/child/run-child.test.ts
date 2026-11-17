@@ -3989,13 +3989,9 @@ describe("event channel writer wiring", () => {
       writer: stream.writer,
     });
     await sender.send({
-      type: "message.run.started",
+      type: "reactor.turn.started",
       seq: 1,
-      data: {
-        messageId: "m",
-        messageRunId: "r",
-        receivedAt: 1,
-      },
+      data: { turnId: "t", resumed: false, messageId: "m" },
     });
     stream.close();
     const crashes: string[] = [];
@@ -4010,7 +4006,7 @@ describe("event channel writer wiring", () => {
       firstType = payload.type;
       break;
     }
-    expect(firstType).toBe("message.run.started");
+    expect(firstType).toBe("reactor.turn.started");
     expect(crashes).toHaveLength(0);
   });
 });

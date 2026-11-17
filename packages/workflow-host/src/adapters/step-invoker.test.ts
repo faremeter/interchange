@@ -2243,7 +2243,7 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
     const result = await invoker(req);
 
     // The invoker sent a full InboundMessage (not a plain string) stamped
-    // with the correlation id so the reactor's tryCorrelate can match the
+    // with the correlation id so the reactor can correlate it with the
     // rehydrated gate, carrying the decision body as its content.
     if (typeof sentContent === "string" || sentContent === undefined) {
       throw new Error(
@@ -2343,7 +2343,7 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
     // mail), with no gate to re-correlate. The adapter must send the decision
     // as PLAIN synthesized content, NOT an InboundMessage stamped with the
     // correlationId (the approval path). A plain string is the tell: nothing
-    // for the reactor's `tryCorrelate` to match, just a fresh user turn.
+    // for the reactor to correlate, just a fresh user turn.
     const nextTurn = {
       role: "assistant" as const,
       content: [{ type: "text" as const, text: "next turn reply" }],
@@ -3030,7 +3030,8 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
    * authorization bypass. The correlation id on a delivered mail is a value its
    * sender chose, and the MIME decoder does carry such a header onto the `Mail`
    * (see `packages/mime/src/mail-decode.test.ts`), so the only thing keeping a
-   * sender's header out of `tryCorrelate` is that this projection drops it.
+   * sender's header out of the reactor's correlation is that this projection
+   * drops it.
    *
    * This asserts nothing about `createInboundMessage` refusing to stamp the
    * header: the resume-send-path suite above proves the workflow host's own
