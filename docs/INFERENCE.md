@@ -107,7 +107,7 @@ connector.reply           — Agent reply sent to the conversation (carries cont
 
 reactor.start             — Reactor initialized
 reactor.gate.blocked      — Reactor suspended (reason, gate type, turn ID)
-reactor.gate.cleared      — Suspension resolved, reactor resuming (reason `resolved`, `timeout` or `shutdown`). Emitted for every gate that `reactor.gate.blocked` announced, after that event. For an ask-flow approval (approved, rejected or timed out) it is emitted only; the director gets the resume event instead
+reactor.gate.cleared      — Suspension resolved, reactor resuming (reason `resolved`, `timeout`, `shutdown`, or `abandoned` when its turn was abandoned and nothing resumes). Emitted for every gate that `reactor.gate.blocked` announced, after that event. For an ask-flow approval (approved, rejected or timed out) and for an abandoned gate it is emitted only; the director gets the resume event, or nothing
 reactor.turn.started      — The reactor starts work for a turn in this process (turn ID, resumed flag, message ID)
 reactor.turn.ended        — A turn ended (turn ID, outcome, joined turn ID or error)
 reactor.done              — Reactor completed normally
@@ -393,6 +393,8 @@ The reactor enforces a priority invariant: when the last message in the conversa
 
 `abort` events are always processed immediately regardless of cycle state.
 
+An internal abandon event (see Abandoning a Turn) has its own place in that order. While cycle events are queued, an abandon of the turn that owns them goes first, because it drops them; an abandon of another turn waits until the cycle is quiescent, so its history append cannot land in the middle of another turn's tool batch. When the cycle is quiescent, the first queued abandon goes before FIFO order.
+
 ### The `emit` Action
 
 The director can emit custom events to session channel subscribers via the `emit` action. Custom events use a `custom.*` type namespace and carry arbitrary data. They receive sequence numbers like all other events. They are ephemeral — not persisted to the context store. Use cases: progress indicators, debug information, UI hints.
@@ -480,6 +482,7 @@ A resume that arrives while the turn's first cycle still runs emits no second st
 | `unanswered` | The turn settled with no reply: `wait`, an empty action set, emit or checkpoint only, `compact` alone, or `done`.                                                      |
 | `joined`     | A correlated delivery continued another turn. `joinedTurnId` names the turn it continued: the operation's turn for an approval, the gate's turn for an async response. |
 | `failed`     | A fatal path stopped the turn. `error` carries a message and a kind.                                                                                                   |
+| `abandoned`  | The turn's caller gave up (`abandonTurn`, see Abandoning a Turn).                                                                                                      |
 
 `infer` and `execute_tools` do not end a turn, because they queue the turn's next cycle event. `suspend` does not end a turn, because the turn then holds a live gate. A gate that clears or times out queues its resume in the same step that removes the gate, so its turn does not settle in between.
 
@@ -496,6 +499,8 @@ A correlation ends the delivered turn only when this process has not seen it: th
 | Running | Correlates                                                                                                                                                | An approval with a live gate                                              | The approval resumes the operation's turn (re-run or denied result), and the delivery's options apply to that turn; `message.correlated`; the delivered turn ends `joined`, naming that turn.                                                                                                                                                                                                                          |
 | Running | Correlates                                                                                                                                                | An async operation with a live gate                                       | The gate clears, and its `reactor.gate.cleared` resumes the gate's turn; the response lands in history; the operation is removed; the delivery's options apply to the gate's turn; `message.correlated`; the delivered turn ends `joined`, naming the gate's turn. A marker registered while a director gate already waits on its correlation takes that gate's turn, so the gate's turn is also the operation's turn. |
 | Running | Correlates                                                                                                                                                | An async operation with no gate                                           | The response lands in history; the operation is removed; nothing is queued; `message.correlated`; the delivered turn ends `unanswered`.                                                                                                                                                                                                                                                                                |
+
+Two rows come before the table, right after the done check. A delivery admitted while the abandon of the turn it names is pending is dropped with no event: no `message.received`, no history and no resume. Once the abandoned turn has ended, `deliver()` that names it throws, as for any ended turn. This covers an abort that lands while the delivery validates or waits for startup. When the delivery has its own turn ID, such an abort cancels the delivery and does not abandon the parked turn it would resume. When the delivery names the parked turn itself, the abort abandons that turn. A correlated delivery whose operation would resume a turn that is being abandoned (abandoned, not yet ended) resumes nothing: `message.correlated`; the delivered turn ends `unanswered`; the abandon removes the operation.
 
 Each "ends" in the table applies only to a delivered turn that this process has not seen. A malformed approval decision is a correlation-dispatch failure (see Failures). A caller that names another live turn on `deliver` misuses the reactor.
 
@@ -524,7 +529,9 @@ No event that carries a turn's ID follows its `reactor.turn.ended`. A turn can e
 
 Only `reactor.turn.ended` follows `reactor.done`. Work that the shutdown does not wait for, for example a director suspend whose commit outlives the shutdown, can settle after `reactor.done`, and the reactor drops its events. A delivery after done still ends its turn, so that event passes.
 
-A dropped event already has its sequence number, so a drop can leave a gap in the sequence numbers. Drops happen only on a fatal-failure path, right before or after `reactor.done`.
+No `connector.reply` or `reactor.gate.blocked` of an abandoned turn is emitted. A reply or suspend commit can be in flight when the abandon arrives; the reactor still commits, and drops the event. A reply emitted before the abandon is already out.
+
+A dropped event already has its sequence number, so a drop can leave a gap in the sequence numbers. Apart from the abandon rule, drops happen only on a fatal-failure path, right before or after `reactor.done`.
 
 **Turns that end with no start.** These turns get `reactor.turn.ended` with no `reactor.turn.started`: a `joined` turn, a correlated delivery that resumes nothing, a delivery after done, and the delivered turn of a correlation-dispatch failure.
 
@@ -536,7 +543,30 @@ A dropped event already has its sequence number, so a drop can leave a gap in th
 - A turn this process holds open that a `deliver()` after done names.
 - A delivery held for startup when the context load or the gate rehydration fails.
 
-**Ended turns.** The reactor records each ended turn ID for the life of the process, so the set grows by one ID for each turn. `deliver()` throws when its `turnId` names a turn that already ended. A turn can also end while a delivery that names it waits for the validator; that delivery does not throw. If it does not correlate, it becomes a new message under a new turn ID (see Correlated deliveries).
+**Ended turns.** The reactor records each ended turn ID for the life of the process, so the set grows by one ID for each turn. The record of abandoned turns and the record of joins (each `joined` turn and the turn it joined) also grow for the life of the process, by one entry for each abandon and each join. `deliver()` throws when its `turnId` names a turn that already ended. A turn can also end while a delivery that names it waits for the validator; that delivery does not throw. If it does not correlate, it becomes a new message under a new turn ID (see Correlated deliveries).
+
+### Abandoning a Turn
+
+`reactor.abandonTurn(turnId)` abandons a turn whose caller gave up. It follows a `joined` turn to the turn it joined. It is idempotent, never throws, does nothing for an ended turn or after the reactor is done, and emits no event during the call: it records the turn as abandoned, aborts the operation in flight when the turn runs (a fresh signal serves the next turn), and queues an internal abandon event under the turn. The director never sees that event. The loop handles it without a director call:
+
+1. It drops every queued event of the turn. An approval travels on its `resume.execute_tools` event, so a dropped re-dispatch takes its approval with it: nothing remains to revoke, and a later call that reuses the call ID still hits the ask gate.
+2. It clears each gate of the turn and emits `reactor.gate.cleared` with reason `abandoned` for each, and removes the gate's operation when it belongs to the turn. A gate whose `reactor.gate.blocked` was dropped, because the abandon landed while its suspend committed, gets no `reactor.gate.cleared` either.
+3. It answers each open call of the turn with an error result (`turn abandoned`) in one tool-result turn: the calls of its inferences that have no result, the calls that an approval re-dispatched (open from the admission), and the parked calls of its operations.
+4. It commits, then emits `reactor.turn.ended` with outcome `abandoned`.
+
+| Phase when abandoned                                     | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Not seen (an unknown ID, or a delivery still validating) | Nothing to remove; the turn ends `abandoned` with no `reactor.turn.started`. The delivery is dropped, and a later `deliver()` that names the turn throws.                                                                                                                                                                                                                                                                                                                                                             |
+| Queued, not started                                      | Its queued events are dropped, so its message never reaches history; it ends `abandoned` with no `reactor.turn.started`.                                                                                                                                                                                                                                                                                                                                                                                              |
+| Running                                                  | Its inference or tool batch gets the aborted signal; no provider call and no tool starts after the abandon. A call whose before-tool decision lands after the abandon is answered with `turn abandoned`, and the decision is not acted on: a suspend registers no gate and persists no operation. Tool results that arrive go into history, but the director gets no `tool.done`. The actions of a decision in flight are all dropped, `done` included. An abandoned batch does not count toward doom-loop detection. |
+| Parked                                                   | Its gates and their operations are removed, its parked call is answered, and the state is committed. Operations of the turn that have no gate stay: a later delivery for one resumes nothing.                                                                                                                                                                                                                                                                                                                         |
+| Ended                                                    | Nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Joined into another turn                                 | That turn is abandoned.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+
+The outcome is `abandoned` also when the turn replied earlier. Known limits:
+
+- An abandon of a parked turn leaves the hub's approval row pending. A later approval for it arrives as a new uncorrelated message, because the operation is gone. A correlated delivery that finds the operation before the abandon removes it is consumed and resumes nothing. This includes any delivery admitted after `abandonTurn()` and before the loop handles the abandon, and an approval that is still validating when the abandon lands.
+- An abandon that the loop has not handled when the reactor is done is lost, and the parked turn survives the restart.
 
 ### Agent Sends
 
@@ -551,6 +581,8 @@ A dropped event already has its sequence number, so a drop can leave a gap in th
 - `reactor.done` rejects the active send and every send still in the queue with `AgentClosedError`, and every later send rejects the same way.
 - A send that names a turn that already ended rejects, and the next send still runs.
 - Naming another live turn is misuse. For example, a queued send that names the same turn as the send before it starts when the first send's reply settles it, before that turn ends. The reactor then admits its message under a fresh turn, and the named turn's end rejects the second send with `TurnEndedWithoutReplyError`.
+- An `abandoned` end rejects the send with `TurnEndedWithoutReplyError` when another caller abandoned its turn.
+- An aborted send (`SendOptions.signal`) rejects with the signal's reason at once, and the agent abandons the turn the send follows: after a join, the joined turn. Before its delivery is admitted, that is the turn the send names. When the send names a parked turn (`SendOptions.turnId`), the abort abandons that turn. When the send uses its own fresh turn ID, the delivery is dropped and a parked turn it would resume stays parked. The next queued send starts once the abandoned turn has ended. A queued send that aborts never reaches the reactor.
 
 A workflow step resumes an approval by a send that carries the approval. When the approval's operation is still registered but its gate is gone, the send resumes nothing, so it rejects with `TurnEndedWithoutReplyError` and the step fails.
 

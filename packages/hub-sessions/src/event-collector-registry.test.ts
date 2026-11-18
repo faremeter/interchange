@@ -221,6 +221,26 @@ describe("session status from the turn lifecycle", () => {
     expect(s.send(...blocked("a", "g-pay", "payment"))).toEqual(busy);
   });
 
+  test("an abandoned turn's gate is dropped and the session goes idle", () => {
+    const s = session();
+    s.send(...start("a"));
+    expect(s.send(...blocked("a", "g-a"))).toEqual(waiting);
+    expect(
+      s.send("reactor.gate.cleared", { gateId: "g-a", reason: "abandoned" }),
+    ).toEqual(idle);
+    expect(s.send(...ended("a", "abandoned"))).toEqual(idle);
+  });
+
+  test("an abandoned parked turn does not hide another busy turn", () => {
+    const s = session();
+    s.send(...start("a"));
+    s.send(...blocked("a", "g-a"));
+    s.send(...start("b"));
+    s.send("reactor.gate.cleared", { gateId: "g-a", reason: "abandoned" });
+    expect(s.send(...ended("a", "abandoned"))).toEqual(busy);
+    expect(s.send(...ended("b", "replied"))).toEqual(idle);
+  });
+
   test("reactor.done and a fatal reactor.error leave the session idle", () => {
     const s = session();
     s.send(...start("a"));
@@ -291,6 +311,18 @@ describe("session status from the turn lifecycle", () => {
     ).toEqual(waiting);
   });
 
+  test("an abandon of a parked approval turn after another turn ended leaves the session idle", () => {
+    const s = session();
+    s.send(...start("a"));
+    s.send(...blocked("a", "g-a"));
+    s.send(...start("b"));
+    expect(s.send(...ended("b", "replied"))).toEqual(waiting);
+    expect(
+      s.send("reactor.gate.cleared", { gateId: "g-a", reason: "abandoned" }),
+    ).toEqual(idle);
+    expect(s.send(...ended("a", "abandoned"))).toEqual(idle);
+  });
+
   test("a failed end of a parked approval turn after another turn ended leaves the session idle", () => {
     const s = session();
     s.send(...start("a"));
@@ -303,6 +335,18 @@ describe("session status from the turn lifecycle", () => {
       error: { message: "boom", kind: "reactor_fatal" },
     };
     expect(s.send("reactor.turn.ended", failed)).toEqual(idle);
+  });
+
+  test("an abandon of a parked payment turn after another turn ended leaves the session idle", () => {
+    const s = session();
+    s.send(...start("a"));
+    s.send(...blocked("a", "g-pay", "payment"));
+    s.send(...start("b"));
+    expect(s.send(...ended("b", "replied"))).toEqual(idle);
+    expect(
+      s.send("reactor.gate.cleared", { gateId: "g-pay", reason: "abandoned" }),
+    ).toEqual(idle);
+    expect(s.send(...ended("a", "abandoned"))).toEqual(idle);
   });
 
   test("sessions at different addresses do not share a tracker", () => {

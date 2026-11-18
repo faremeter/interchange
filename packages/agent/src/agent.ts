@@ -15,8 +15,8 @@
 //   - `send()` enqueues into a FIFO `SendQueue` capped at
 //     `env.sendQueueMax`. Each send follows one turn and settles only on
 //     the events of that turn, so another turn's reply or park never
-//     settles it. Per-send `AbortSignal` removes queued items or rejects
-//     in-flight callers while letting the turn finish in the background.
+//     settles it. Per-send `AbortSignal` removes queued items, or rejects
+//     an in-flight caller and abandons its turn in the reactor.
 //   - `stream()` returns a bounded `StreamConsumer` iterator; consumers
 //     buffer independently and noisy backpressure poisons only the
 //     affected iterator.
@@ -108,11 +108,13 @@ export type SendOptions = {
   /**
    * Abort signal for this send. When the signal fires before processing
    * the call is dropped from the queue and the promise rejects with the
-   * signal's reason. When it fires mid-cycle the promise rejects
-   * immediately, but the underlying reactor cycle keeps running because
-   * the reactor does not expose per-cycle cancellation -- the next
-   * queued send waits for that cycle to finish before starting. The
-   * reply (if any) is still visible via `stream()` and `history()`.
+   * signal's reason. When it fires while the send is active the promise
+   * rejects immediately, and the agent abandons the turn the send follows
+   * (`Reactor.abandonTurn`): its operation in flight is aborted, the
+   * director sees none of its later events, its open tool calls get an
+   * error result, and it ends `abandoned`. The next queued send starts
+   * once that turn has ended. A reply emitted before the abort stays
+   * visible via `stream()` and `history()`.
    */
   signal?: AbortSignal;
   /** Override the default "from" header on the synthetic inbound message. */
@@ -750,11 +752,14 @@ export async function createAgent<EnvReq extends BaseEnv>(
               cycle.answeredCorrelationId = cycle.messageCorrelationId;
               return;
             case "unanswered":
+            case "abandoned":
             case "replied":
               // A `replied` end reaches a send that is still waiting only
               // when the send joined a parked turn that had replied before
               // it parked. That reply was not this send's, so the send got
-              // no reply of its own.
+              // no reply of its own. An `abandoned` end of an aborted send
+              // only frees its slot (the send already rejected with the
+              // abort reason); another caller's abandon rejects it here.
               rejectActive(new TurnEndedWithoutReplyError(ended.turnId));
               return;
             case "failed":
@@ -901,6 +906,15 @@ export async function createAgent<EnvReq extends BaseEnv>(
           activeCycle = null;
           throw cause;
         }
+      },
+      // An aborted send abandons the turn it follows: after a join, the
+      // turn it joined. Before its delivery is admitted, that is the turn
+      // the send names. A send that names a parked turn abandons that
+      // turn. A send with its own fresh turn id only drops its delivery,
+      // so a parked turn it would resume stays parked. The turn's end
+      // settles the send's slot.
+      abortActive: () => {
+        if (activeCycle !== null) reactor.abandonTurn(activeCycle.turnId);
       },
     });
 

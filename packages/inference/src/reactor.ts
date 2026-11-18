@@ -219,6 +219,7 @@ export type Reactor = {
    * suspends.
    *
    * Throws when `opts.turnId` names a turn that already ended. A delivery
+   * that names a turn whose abandon is still pending is dropped. A delivery
    * after the reactor is done ends its turn `failed` at once, unless that
    * turn is open in this process (started and not ended, parked on a
    * pending operation, or with a queued event): such a turn survives for
@@ -226,6 +227,20 @@ export type Reactor = {
    * that names another live turn as `opts.turnId` misuses the reactor.
    */
   deliver(message: InboundMessage, opts?: DeliverOptions): void;
+  /**
+   * Abandon a turn: its caller gave up. The reactor follows a `joined` turn
+   * to the turn it joined. It aborts the turn's operation in flight, drops
+   * the turn's queued events, removes its gates and their operations,
+   * answers its open tool calls with an error result, commits, and ends the
+   * turn `abandoned`, with no director call. The director never sees the
+   * turn again, and a later `connector.reply` or `reactor.gate.blocked` of
+   * the turn is suppressed. While the abandon is pending, a delivery that
+   * names the turn is dropped; once the turn has ended, `deliver()` that
+   * names it throws, as for any ended turn. The work runs on the loop, so
+   * this call emits no event. It is idempotent, does nothing for an ended
+   * turn or after the reactor is done, and never throws.
+   */
+  abandonTurn(turnId: string): void;
   /** Initiate graceful shutdown with a reason. */
   abort(reason: AbortReason): void;
 };
@@ -247,6 +262,12 @@ const MAX_GATES_PER_TURN = 1;
 // names no gate type, because the gate the turn holds can be of any type.
 const GATE_LIMIT_REFUSAL =
   "Another call in this turn is waiting on a gate. Request this call again after that decision.";
+
+// The result that answers each open call of an abandoned turn.
+const ABANDONED_CALL_RESULT = "turn abandoned";
+
+// The result of a call that did not start because the reactor was aborted.
+const ABORTED_CALL_RESULT = "reactor aborted";
 
 /**
  * The turn id of a pending operation that was persisted before turn ids
@@ -403,13 +424,26 @@ export function createReactor(config: ReactorConfig): Reactor {
   //   outlives the shutdown, can still settle after it. A delivery after done
   //   still ends its turn, so that one event passes.
   //
+  // - No `connector.reply` or `reactor.gate.blocked` of an abandoned turn is
+  //   emitted. A reply commit or a suspend commit can be in flight when the
+  //   abandon arrives; the turn's caller gave up, so its reply and park are
+  //   suppressed here, the one owner of that rule.
+  //
   // A dropped event already took its sequence number, so a drop can leave a
-  // gap in the sequence numbers. A drop happens only on a fatal-failure path,
-  // right before or after `reactor.done`.
+  // gap in the sequence numbers. Apart from the abandon rule, a drop happens
+  // only on a fatal-failure path, right before or after `reactor.done`.
   function emit(event: ReactorEmittedEvent): void {
     if (doneEmitted && event.type !== "reactor.turn.ended") return;
     const eventTurnId = turnIdOf(event);
     if (eventTurnId !== undefined && endedTurns.has(eventTurnId)) return;
+    if (
+      (event.type === "connector.reply" ||
+        event.type === "reactor.gate.blocked") &&
+      eventTurnId !== undefined &&
+      abandonedTurns.has(eventTurnId)
+    ) {
+      return;
+    }
     onEvent(event);
     if (event.type === "reactor.done") doneEmitted = true;
   }
@@ -434,9 +468,12 @@ export function createReactor(config: ReactorConfig): Reactor {
   // belongs to no turn.
   type AbortEvent = Extract<ReactorInboundEvent, { type: "abort" }>;
   type TurnEvent = Exclude<ReactorInboundEvent, AbortEvent>;
+  // An internal event that abandons its turn (see abandonTurn). The loop
+  // handles it itself, and the director never sees it.
+  type AbandonEvent = { type: "reactor.abandon" };
   type QueuedEvent =
     | { event: AbortEvent; turnId: null }
-    | { event: TurnEvent; turnId: string };
+    | { event: TurnEvent | AbandonEvent; turnId: string };
   const queue: QueuedEvent[] = [];
   let queueResolve: (() => void) | null = null;
 
@@ -462,7 +499,7 @@ export function createReactor(config: ReactorConfig): Reactor {
   // its tool.done events are consumed, flipping the last turn away from the
   // assistant tool_call turn while completion events are still queued, which
   // let inbound mail start an overlapping inference.
-  const CYCLE_EVENT_TYPES = new Set<ReactorInboundEvent["type"]>([
+  const CYCLE_EVENT_TYPES = new Set<QueuedEvent["event"]["type"]>([
     "inference.done",
     "inference.error",
     "tool.done",
@@ -471,8 +508,11 @@ export function createReactor(config: ReactorConfig): Reactor {
   let pendingContinuations = 0;
 
   function enqueue(event: AbortEvent, turnId: null): void;
-  function enqueue(event: TurnEvent, turnId: string): void;
-  function enqueue(event: ReactorInboundEvent, turnId: string | null): void {
+  function enqueue(event: TurnEvent | AbandonEvent, turnId: string): void;
+  function enqueue(
+    event: ReactorInboundEvent | AbandonEvent,
+    turnId: string | null,
+  ): void {
     // No event is queued for an ended turn. After done this is routine: in-
     // flight work settles after a fatal path ended its turn. While the
     // reactor runs, delivery admission never queues for an ended turn, so a
@@ -519,13 +559,26 @@ export function createReactor(config: ReactorConfig): Reactor {
 
     // Mid-cycle: drain inference-cycle events before anything else so the
     // outstanding inference or tool batch completes before new mail can start
-    // an overlapping inference.
+    // an overlapping inference. An abandon of the turn that owns those cycle
+    // events goes first: it purges them. An abandon of another turn waits
+    // until the cycle is quiescent, so its history append cannot land in the
+    // middle of another turn's tool batch.
     if (pendingContinuations > 0) {
       const idx = queue.findIndex((e) => CYCLE_EVENT_TYPES.has(e.event.type));
       if (idx !== -1) {
-        return queue.splice(idx, 1)[0];
+        const cycleTurn = queue[idx]?.turnId;
+        const abandonIdx = queue.findIndex(
+          (e) => e.event.type === "reactor.abandon" && e.turnId === cycleTurn,
+        );
+        return queue.splice(abandonIdx !== -1 ? abandonIdx : idx, 1)[0];
       }
     }
+
+    // Quiescent: the first abandon goes first, else FIFO.
+    const abandonIdx = queue.findIndex(
+      (e) => e.event.type === "reactor.abandon",
+    );
+    if (abandonIdx !== -1) return queue.splice(abandonIdx, 1)[0];
 
     return queue.shift();
   }
@@ -573,8 +626,25 @@ export function createReactor(config: ReactorConfig): Reactor {
     lastToolBatchSignature: string | null;
     toolBatchRepeatCount: number;
     lastToolBatchNames: string[];
+    // The ids of the turn's tool calls that history holds with no result
+    // yet: added when an inference appends its assistant turn, removed when
+    // a call gets its result. An abandon answers them. Not persisted.
+    openCalls: Set<string>;
   };
   const turnStates = new Map<string, TurnState>();
+  // The turns that abandonTurn abandoned. A turn stays here after its end,
+  // so a delivery that names it later is still discarded. Like endedTurns,
+  // the set grows by one id for each abandoned turn for the life of the
+  // process.
+  const abandonedTurns = new Set<string>();
+  // Gates of an abandoned turn whose gate.blocked was dropped because the
+  // abandon landed during the suspend's commit. The abandon clears each one
+  // with no gate.cleared, and removes it from this set.
+  const unannouncedGates = new Set<string>();
+  // For each turn that ended `joined`, the turn it joined. abandonTurn
+  // follows this chain to the turn that holds the work. Like endedTurns, the
+  // map grows by one entry for each join for the life of the process.
+  const joinedInto = new Map<string, string>();
   // The turns that ended in this process. The reactor emits at most one
   // `reactor.turn.ended` for each turn, and an event of an ended turn is
   // never handled again. The set grows by one id for each turn for the life
@@ -591,6 +661,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         lastToolBatchSignature: null,
         toolBatchRepeatCount: 0,
         lastToolBatchNames: [],
+        openCalls: new Set<string>(),
       };
       turnStates.set(turnId, s);
     }
@@ -657,6 +728,9 @@ export function createReactor(config: ReactorConfig): Reactor {
     if (endedTurns.has(data.turnId)) return;
     endedTurns.add(data.turnId);
     turnStates.delete(data.turnId);
+    if (data.outcome === "joined") {
+      joinedInto.set(data.turnId, data.joinedTurnId);
+    }
     emit({ type: "reactor.turn.ended", seq: nextSeq(), data });
   }
 
@@ -696,6 +770,9 @@ export function createReactor(config: ReactorConfig): Reactor {
   // Set when a pending operation changed outside a suspend (a gate timed out
   // and its operation is no longer gated). The next commit persists it.
   let operationsChanged = false;
+  // The turn an abandon removed state of in this cycle. It forces the cycle
+  // commit and names the commit.
+  let cycleAbandonedTurn: string | null = null;
 
   // Director-supplied checkpoint message override; consumed exactly once.
   let pendingMessage: string | null = null;
@@ -838,6 +915,7 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   type Admission = { deliveredPhase: TurnPhase } & (
     | { kind: "after-done" }
+    | { kind: "discard" }
     | { kind: "message"; turnId: string }
     | {
         kind: "consume";
@@ -910,6 +988,11 @@ export function createReactor(config: ReactorConfig): Reactor {
   function admitDelivery(deliveredTurnId: string, verdict: Verdict): Admission {
     const deliveredPhase = turnPhase(deliveredTurnId);
     if (done) return { deliveredPhase, kind: "after-done" };
+    // The caller of an abandoned turn gave up: a delivery that names it is
+    // dropped with no event, also one that would resume a parked turn.
+    if (abandonedTurns.has(deliveredTurnId)) {
+      return { deliveredPhase, kind: "discard" };
+    }
     if (verdict.kind === "uncorrelated") {
       // A delivery that does not correlate is a new message under its
       // turn. When that turn ended while the validator ran, the message gets
@@ -938,6 +1021,27 @@ export function createReactor(config: ReactorConfig): Reactor {
       };
     }
     const gate = gates.findByCorrelationId(correlationId);
+    // An approval resumes on the operation's turn (re-run or denied
+    // result). An async response clears the gate, and the gate's
+    // gate.cleared resumes the gate's turn. A marker registered while a
+    // director gate already waits on its correlation takes that gate's
+    // turn, so the operation's turn and the gate's turn are the same.
+    const resumedTurnId =
+      gate === undefined || op.suspendedCall !== undefined
+        ? op.turnId
+        : gate.turnId;
+    // A turn that is being abandoned resumes nothing: its abandon removes
+    // the operation and answers its call.
+    if (abandonedTurns.has(resumedTurnId) && !endedTurns.has(resumedTurnId)) {
+      return {
+        deliveredPhase,
+        kind: "consume",
+        correlationId,
+        op: undefined,
+        appendHistory: false,
+        endDelivered: unanswered,
+      };
+    }
     if (gate === undefined) {
       // An approval with no gate timed out during its suspend's commit; the
       // deferred clear answers its call when the suspend completes, so the
@@ -953,13 +1057,6 @@ export function createReactor(config: ReactorConfig): Reactor {
         endDelivered: unanswered,
       };
     }
-    // An approval resumes on the operation's turn (re-run or denied
-    // result). An async response clears the gate, and the gate's
-    // gate.cleared resumes the gate's turn. A marker registered while a
-    // director gate already waits on its correlation takes that gate's
-    // turn, so the operation's turn and the gate's turn are the same.
-    const resumedTurnId =
-      op.suspendedCall !== undefined ? op.turnId : gate.turnId;
     return {
       deliveredPhase,
       kind: "resume",
@@ -989,6 +1086,8 @@ export function createReactor(config: ReactorConfig): Reactor {
     inference: PerCallInferenceOptions | undefined,
   ): void {
     switch (admission.kind) {
+      case "discard":
+        return;
       case "after-done":
         // A turn this process holds open survives for the restart, and an
         // ended turn already has its end, so only an unseen turn ends here.
@@ -1055,6 +1154,14 @@ export function createReactor(config: ReactorConfig): Reactor {
               stateManager.setGatesSnapshot(gates.snapshot());
               stateManager.removePendingOperation(correlationId);
             }
+            // A call is open from the inference that asked it, or from the
+            // admission that resumes it, until its result. After a restart
+            // only this admission records the re-dispatched call, so an
+            // abandon before its result still answers it.
+            if (dispatch.mode === "redispatch") {
+              const open = turnState(op.turnId).openCalls;
+              for (const call of dispatch.calls) open.add(call.id);
+            }
             // The re-dispatch event carries the approved call. The director
             // sees this event before the re-dispatched call's tool.done.
             enqueue(
@@ -1110,6 +1217,19 @@ export function createReactor(config: ReactorConfig): Reactor {
     }
   }
 
+  // Queue the terminal event of an inference that an abort stopped before
+  // its provider call.
+  function queueAbortedInference(turnId: string): void {
+    enqueue(
+      {
+        type: "inference.error",
+        error: classifyAbortError(),
+        partial: { text: "" },
+      },
+      turnId,
+    );
+  }
+
   async function executeInfer(
     options: InferenceOptions | undefined,
   ): Promise<void> {
@@ -1120,29 +1240,28 @@ export function createReactor(config: ReactorConfig): Reactor {
 
     // Proactive pacing: if the previous inference response indicated we are
     // at the rate limit, wait before sending the next request.
+    // The wait runs on the injected scheduler. The delay is cleared only
+    // when the wait completes: an abort (an abandon of this turn) keeps it,
+    // so the next inference, of any turn, still waits.
     if (pendingPacingDelayMs > 0 && !signal.aborted) {
       const delayMs = pendingPacingDelayMs;
-      pendingPacingDelayMs = 0;
       logger.info`Pacing: waiting ${String(delayMs)}ms before next inference request`;
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, delayMs);
+      const completed = await new Promise<boolean>((resolve) => {
         const onAbort = () => {
-          clearTimeout(timer);
-          resolve();
+          cancel();
+          resolve(false);
         };
+        const cancel = deps.scheduler.setTimeout(() => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(true);
+        }, delayMs);
         signal.addEventListener("abort", onAbort, { once: true });
       });
+      if (completed) pendingPacingDelayMs = 0;
       // Every dispatched inference queues exactly one terminal event, so an
       // abort finds the turn this inference runs for.
       if (signal.aborted) {
-        enqueue(
-          {
-            type: "inference.error",
-            error: classifyAbortError(),
-            partial: { text: "" },
-          },
-          turnId,
-        );
+        queueAbortedInference(turnId);
         return;
       }
     }
@@ -1172,6 +1291,13 @@ export function createReactor(config: ReactorConfig): Reactor {
         `writePrompt failed: ${cause instanceof Error ? cause.message : String(cause)}`,
         false,
       );
+    }
+
+    // An abandon of this turn can land while the context transforms and the
+    // prompt write run. No provider call starts after it.
+    if (signal.aborted) {
+      queueAbortedInference(turnId);
+      return;
     }
 
     const p = (async () => {
@@ -1215,6 +1341,10 @@ export function createReactor(config: ReactorConfig): Reactor {
         if (lastDone !== undefined) {
           if (stateManager !== null) {
             stateManager.appendTurn(lastDone.data.turn);
+            const open = turnStates.get(turnId)?.openCalls;
+            for (const block of lastDone.data.turn.content) {
+              if (block.type === "tool_call") open?.add(block.id);
+            }
             stateManager.accumUsage(lastDone.data.usage);
             stateManager.setLastCycleUsage(lastDone.data.usage);
             stateManager.setLastCycleSource(lastDone.data.source);
@@ -1326,6 +1456,16 @@ export function createReactor(config: ReactorConfig): Reactor {
       return result;
     };
 
+    // The answer of a call that an abort stopped: an abandon of this turn,
+    // or the reactor's abort.
+    const abortedAnswer = (call: ToolCall): ToolResult =>
+      answerWithError(
+        call,
+        abandonedTurns.has(turnId)
+          ? ABANDONED_CALL_RESULT
+          : ABORTED_CALL_RESULT,
+      );
+
     const runOne = async (
       call: ToolCall,
     ): Promise<ToolResult | typeof SUSPENDED> => {
@@ -1348,6 +1488,11 @@ export function createReactor(config: ReactorConfig): Reactor {
           );
           decision = { type: "block", reason: msg };
         }
+
+        // An abandon of this turn can land while the extension decides. Its
+        // decision is then not acted on: no gate is registered, no
+        // operation is persisted, and the call is answered.
+        if (signal.aborted) return abortedAnswer(call);
 
         if (decision.type === "suspend") {
           // Park the call: register the gate, persist the pending operation,
@@ -1372,6 +1517,11 @@ export function createReactor(config: ReactorConfig): Reactor {
           return answerWithError(call, decision.reason);
         }
       }
+
+      // No tool starts after an abort, also with no extension or after the
+      // last one allowed the call: the call is answered with an error
+      // result, as the inference check does for a provider call.
+      if (signal.aborted) return abortedAnswer(call);
 
       emit({ type: "tool.start", seq: nextSeq(), data: { call } });
       const rawResult = await toolRunner.run(call, signal);
@@ -1469,6 +1619,9 @@ export function createReactor(config: ReactorConfig): Reactor {
 
     cycleToolCallsExecuted += results.length;
 
+    const open = turnStates.get(turnId)?.openCalls;
+    for (const result of results) open?.delete(result.callId);
+
     if (addToHistory && stateManager !== null && results.length > 0) {
       stateManager.appendTurn(createToolResultTurn(results));
     }
@@ -1520,6 +1673,10 @@ export function createReactor(config: ReactorConfig): Reactor {
       return `Cycle: compaction by ${cycleCompactorName}`;
     }
 
+    if (cycleAbandonedTurn !== null) {
+      return `Cycle: abandoned turn ${cycleAbandonedTurn}`;
+    }
+
     const parts: string[] = [];
     if (cycleInferred) parts.push("inferred");
     if (cycleToolCallsExecuted > 0) {
@@ -1538,6 +1695,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     cycleCompactorName = null;
     cycleSuspended = false;
     operationsChanged = false;
+    cycleAbandonedTurn = null;
   }
 
   // A refused director suspend registers no gate, but an earlier event of
@@ -1560,7 +1718,8 @@ export function createReactor(config: ReactorConfig): Reactor {
       cycleToolCallsExecuted > 0 ||
       cycleCompactorName !== null ||
       cycleSuspended ||
-      operationsChanged;
+      operationsChanged ||
+      cycleAbandonedTurn !== null;
     const hasOverride = pendingMessage !== null;
     if (!hasWork && !hasOverride) {
       resetCycleAccumulators();
@@ -1832,6 +1991,11 @@ export function createReactor(config: ReactorConfig): Reactor {
     // across restart.
     await commitCycle();
 
+    // An abandon of this turn that landed during the commit drops the
+    // gate.blocked below. Record the gate, so the abandon does not announce
+    // the clear of a gate no observer saw.
+    if (abandonedTurns.has(turnId)) unannouncedGates.add(gateId);
+
     // Emit `reactor.gate.blocked` only AFTER the commit. This event resolves
     // the `send()` awaiter as "suspended", and a downstream consumer (the warm
     // agent's run-boundary durability mirror) reads the pending operation back
@@ -1909,6 +2073,89 @@ export function createReactor(config: ReactorConfig): Reactor {
   }
 
   // -------------------------------------------------------------------------
+  // Abandon
+  // -------------------------------------------------------------------------
+
+  // Abandon a turn on the loop, with no director call. Whatever phase the
+  // turn is in, the effect is one rule: drop its queued events, remove its
+  // gates and their operations, answer each of its open calls once, commit,
+  // and end it `abandoned`. A dropped resume.tool_result answers its call
+  // with its own result (a denial or a timeout); every other call gets an
+  // error result. A turn this process has not seen has
+  // none of these, and only ends. An operation of the turn that has no gate
+  // stays; a later delivery for it resumes nothing.
+  async function handleAbandon(turnId: string): Promise<void> {
+    if (endedTurns.has(turnId)) return;
+    // Suspends run only on the loop, and so does this handler.
+    if (suspendingGate !== null) {
+      throw new Error(`Abandon of turn ${turnId} while a suspend commits`);
+    }
+
+    // The union of the turn's open calls and the calls of its parked
+    // operations (they cover a restart, since the open calls are not
+    // persisted). A re-dispatched call is open from its admission, so it is
+    // in the first set, and a dropped re-dispatch takes its approval with it.
+    const toAnswer = new Set<string>(turnStates.get(turnId)?.openCalls);
+    // The results of the dropped resume.tool_result events, in queue order.
+    const ownResults: ToolResult[] = [];
+    for (let i = queue.length - 1; i >= 0; i -= 1) {
+      const entry = queue[i];
+      if (entry?.turnId !== turnId) continue;
+      if (CYCLE_EVENT_TYPES.has(entry.event.type)) pendingContinuations -= 1;
+      if (entry.event.type === "resume.tool_result") {
+        ownResults.unshift(entry.event.result);
+      }
+      queue.splice(i, 1);
+    }
+
+    let changed = false;
+    for (const gate of gates.listForTurn(turnId)) {
+      gates.clearSilently(gate.gateId);
+      changed = true;
+      // A gate whose gate.blocked was dropped gets no gate.cleared either.
+      if (!unannouncedGates.delete(gate.gateId)) {
+        emit({
+          type: "reactor.gate.cleared",
+          seq: nextSeq(),
+          data: { gateId: gate.gateId, reason: "abandoned" },
+        });
+      }
+      const op =
+        gate.correlationId !== undefined
+          ? correlations.lookup(gate.correlationId)
+          : correlations.findByGateId(gate.gateId);
+      if (op !== undefined && op.turnId === turnId) {
+        correlations.remove(op.correlationId);
+        stateManager?.removePendingOperation(op.correlationId);
+        if (op.suspendedCall !== undefined) toAnswer.add(op.suspendedCall.id);
+      }
+    }
+
+    for (const result of ownResults) toAnswer.delete(result.callId);
+
+    if (stateManager !== null) {
+      stateManager.setGatesSnapshot(gates.snapshot());
+      const results: ToolResult[] = [
+        ...ownResults,
+        ...Array.from(toAnswer, (callId) => ({
+          callId,
+          content: ABANDONED_CALL_RESULT,
+          isError: true,
+        })),
+      ];
+      if (results.length > 0) {
+        stateManager.appendTurn(createToolResultTurn(results));
+        changed = true;
+      }
+    }
+
+    // Persist before the end settles, as a suspend does.
+    if (changed) cycleAbandonedTurn = turnId;
+    await commitCycle();
+    endTurn({ turnId, outcome: "abandoned" });
+  }
+
+  // -------------------------------------------------------------------------
   // Main loop
   // -------------------------------------------------------------------------
 
@@ -1953,6 +2200,13 @@ export function createReactor(config: ReactorConfig): Reactor {
         break;
       }
 
+      // An abandon is handled here, before the turn would start, and the
+      // director never sees it.
+      if (event.type === "reactor.abandon") {
+        await handleAbandon(requireCycleTurnId());
+        continue;
+      }
+
       startTurn(event, requireCycleTurnId());
 
       // Append inbound messages to conversation history so the provider sees them.
@@ -1975,6 +2229,9 @@ export function createReactor(config: ReactorConfig): Reactor {
         if (stateManager !== null) {
           stateManager.appendTurn(createToolResultTurn([event.result]));
         }
+        turnStates
+          .get(requireCycleTurnId())
+          ?.openCalls.delete(event.result.callId);
       }
 
       let actions;
@@ -2003,6 +2260,10 @@ export function createReactor(config: ReactorConfig): Reactor {
       // reactor while the director decides. No action of that turn may
       // follow its end.
       if (done) break;
+      // An abandon of this turn can land while the director decides. Every
+      // action of that decision is dropped, `done` included; the queued
+      // abandon ends the turn.
+      if (abandonedTurns.has(requireCycleTurnId())) continue;
 
       const validation = validateActions(actions);
       if (!validation.ok) {
@@ -2191,6 +2452,9 @@ export function createReactor(config: ReactorConfig): Reactor {
             : NO_APPROVALS;
         await executeTools(toolsAction.calls, parallel, addToHistory, approved);
         const turnId = requireCycleTurnId();
+        // A batch that ran while its turn was abandoned cannot trip the doom
+        // loop; the queued abandon ends the turn.
+        if (abandonedTurns.has(turnId)) continue;
         const doom = turnStates.get(turnId);
         if (
           doomLoopThreshold !== null &&
@@ -2424,6 +2688,24 @@ export function createReactor(config: ReactorConfig): Reactor {
     processDelivery(message, turnId, inference);
   }
 
+  function abandonTurn(turnId: string): void {
+    if (done) return;
+    let target = turnId;
+    for (
+      let next = joinedInto.get(target);
+      next !== undefined;
+      next = joinedInto.get(target)
+    ) {
+      target = next;
+    }
+    if (endedTurns.has(target) || abandonedTurns.has(target)) return;
+    abandonedTurns.add(target);
+    // The running turn's operation in flight is its own: abort it, and give
+    // the next turn a fresh signal.
+    if (runningTurn() === target) abortOperations();
+    enqueue({ type: "reactor.abandon" }, target);
+  }
+
   function abort(reason: AbortReason): void {
     // The loop cannot dequeue the abort event while it is awaiting an active
     // inference or tool batch. Signal that operation immediately so it can
@@ -2433,5 +2715,5 @@ export function createReactor(config: ReactorConfig): Reactor {
     enqueue({ type: "abort", reason }, null);
   }
 
-  return { start, deliver, abort };
+  return { start, deliver, abandonTurn, abort };
 }

@@ -11345,6 +11345,1441 @@ describe("createReactor — one gate per turn", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Abandon a turn: the caller gave up, and the reactor ends the turn
+// ---------------------------------------------------------------------------
+
+describe("createReactor — abandon a turn", () => {
+  function endsFor(
+    events: ReactorEmittedEvent[],
+    turnId: string,
+  ): TurnEndedData[] {
+    return turnEnds(events).filter((e) => e.turnId === turnId);
+  }
+
+  function startsFor(events: ReactorEmittedEvent[], turnId: string): number {
+    return events.filter(
+      (e) => e.type === "reactor.turn.started" && e.data.turnId === turnId,
+    ).length;
+  }
+
+  function indexOfEnd(events: ReactorEmittedEvent[], turnId: string): number {
+    return events.findIndex(
+      (e) => e.type === "reactor.turn.ended" && e.data.turnId === turnId,
+    );
+  }
+
+  function waitForTurnEnd(
+    events: ReactorEmittedEvent[],
+    turnId: string,
+  ): Promise<ReactorEmittedEvent> {
+    return waitForEvent(
+      events,
+      (e) => e.type === "reactor.turn.ended" && e.data.turnId === turnId,
+    );
+  }
+
+  async function parkedCorrelation(
+    waitFor: TestReactorHandle["waitFor"],
+  ): Promise<string> {
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+    return correlationId;
+  }
+
+  // The tool results that history holds for each call id.
+  function resultsByCall(turns: ConversationTurn[]): Map<string, string[]> {
+    const byCall = new Map<string, string[]>();
+    for (const turn of turns) {
+      for (const block of turn.content) {
+        if (block.type !== "tool_result") continue;
+        const text = block.content
+          .map((part) => (part.type === "text" ? part.text : ""))
+          .join("");
+        byCall.set(block.callId, [...(byCall.get(block.callId) ?? []), text]);
+      }
+    }
+    return byCall;
+  }
+
+  function emptyCell(): PersistedCell {
+    return { turns: [], pendingOperations: [], tokenUsage: emptyUsage() };
+  }
+
+  test("a parked turn ends abandoned with its call answered and its operation removed, with no director call", async () => {
+    const cell = emptyCell();
+    const { director, decided } = recordingDirector(turnDirector());
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director,
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    await parkedCorrelation(waitFor);
+    const decidedBefore = decided.length;
+
+    reactor.abandonTurn("turn-a");
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+    const clearedAt = events.findIndex(
+      (e) => e.type === "reactor.gate.cleared" && e.data.reason === "abandoned",
+    );
+    expect(clearedAt).toBeGreaterThan(-1);
+    expect(clearedAt).toBeLessThan(indexOfEnd(events, "turn-a"));
+    expect(decided.length).toBe(decidedBefore);
+    // The commit before the end persisted the removal and the answer.
+    expect(cell.pendingOperations).toEqual([]);
+    expect(resultsByCall(cell.turns).get("call-ask")).toEqual([
+      "turn abandoned",
+    ]);
+    expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+
+    // A reload finds no parked operation to rehydrate.
+    const reloaded = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+    });
+    reloaded.reactor.start();
+    await reloaded.waitFor("reactor.start");
+    expect(cell.pendingOperations).toEqual([]);
+    reloaded.reactor.abort("admin_kill");
+    await reloaded.waitFor("reactor.done");
+  });
+
+  test("a parked legacy operation rehydrated after a restart is abandoned under its legacy turn", async () => {
+    const correlationId = "legacy-abandon";
+    const cell: PersistedCell = {
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "park" }],
+          timestamp: 1000,
+        },
+        suspendToolCallTurn,
+      ],
+      pendingOperations: [
+        {
+          correlationId,
+          kind: "approval",
+          registeredAt: Date.now(),
+          gateId: `pending-${correlationId}`,
+          timeoutAt: Date.now() + 60_000,
+          suspendedCall: { id: "call-ask", name: "charge_card", arguments: {} },
+        },
+      ],
+      tokenUsage: emptyUsage(),
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+    });
+    reactor.start();
+    await waitFor("reactor.start");
+
+    const turnId = legacyTurnId(correlationId);
+    reactor.abandonTurn(turnId);
+    await waitForTurnEnd(events, turnId);
+
+    expect(endsFor(events, turnId)).toEqual([{ turnId, outcome: "abandoned" }]);
+    expect(startsFor(events, turnId)).toBe(0);
+    expect(cell.pendingOperations).toEqual([]);
+    expect(resultsByCall(cell.turns).get("call-ask")).toEqual([
+      "turn abandoned",
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an inference in flight is aborted, its error reaches no director, and the next turn gets a fresh signal", async () => {
+    const signals: AbortSignal[] = [];
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      const signal = opts.signal;
+      if (signal === undefined) throw new Error("expected a signal");
+      signals.push(signal);
+      const text = lastText(opts.turns);
+      if (text === "A") {
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        yield {
+          type: "inference.error" as const,
+          seq: opts.nextSeq(),
+          data: {
+            error: { category: "aborted" as const, message: "aborted" },
+            partial: { text: "" },
+          },
+        };
+        return;
+      }
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn: makeAssistantTurn(`${text} done`),
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+    const { director, decided } = recordingDirector(turnDirector());
+    const { reactor, events, waitFor } = createTestReactor({
+      director,
+      inferenceRunner,
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("A"), { turnId: "turn-a" });
+    await waitUntil(() => signals.length >= 1);
+
+    reactor.abandonTurn("turn-a");
+    await waitForTurnEnd(events, "turn-a");
+    expect(signals[0]?.aborted).toBe(true);
+    expect(decided.some((e) => e.type === "inference.error")).toBe(false);
+    expect(events.some((e) => e.type === "connector.reply")).toBe(false);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+    await waitForTurnEnd(events, "turn-b");
+    expect(signals[1]?.aborted).toBe(false);
+    expect(replyTurnIds(events).get("B done")).toBe("turn-b");
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a tool batch in flight keeps its results in history and drives no director call", async () => {
+    const cell = emptyCell();
+    const toolStarted = Promise.withResolvers<boolean>();
+    const { director, decided } = recordingDirector(
+      directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.executeTools([
+              { id: "call-slow", name: "slow", arguments: {} },
+            ]),
+          "tool.done": (_e, _s, caps) => caps.infer(),
+        },
+        "wait",
+      ),
+    );
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director,
+      inferenceRunner: turnRunner(),
+      toolRunner: {
+        async run(call, signal) {
+          toolStarted.resolve(true);
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return { callId: call.id, content: "stopped" };
+        },
+      },
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await toolStarted.promise;
+
+    reactor.abandonTurn("turn-a");
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(decided.some((e) => e.type === "tool.done")).toBe(false);
+    expect(countOf(events, "inference.start")).toBe(0);
+    expect(resultsByCall(cell.turns).get("call-slow")).toEqual(["stopped"]);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an abandon while the director decides drops the decision", async () => {
+    const holdDecision = Promise.withResolvers<boolean>();
+    const deciding = Promise.withResolvers<boolean>();
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable(
+        {
+          "message.received": async (_e, _s, caps) => {
+            deciding.resolve(true);
+            await holdDecision.promise;
+            return caps.infer();
+          },
+        },
+        "wait",
+      ),
+      inferenceRunner: turnRunner(),
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await deciding.promise;
+
+    reactor.abandonTurn("turn-a");
+    holdDecision.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(countOf(events, "inference.start")).toBe(0);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a queued inference.done with tool calls is dropped and every call is answered", async () => {
+    const cell = emptyCell();
+    const reactorRef: { current: Reactor | undefined } = { current: undefined };
+    const twoCalls: AssistantTurn = {
+      role: "assistant",
+      content: [
+        { type: "tool_call", id: "call-1", name: "lookup", arguments: {} },
+        { type: "tool_call", id: "call-2", name: "lookup", arguments: {} },
+      ],
+      model: "test-model",
+      timestamp: 1000,
+    };
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: { turn: twoCalls, usage: emptyUsage(), source: TEST_SOURCE },
+      };
+      // The abandon lands after the model answered and before the loop
+      // takes up that answer.
+      reactorRef.current?.abandonTurn("turn-a");
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner,
+    });
+    reactorRef.current = reactor;
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(countOf(events, "tool.start")).toBe(0);
+    const results = resultsByCall(cell.turns);
+    expect(results.get("call-1")).toEqual(["turn abandoned"]);
+    expect(results.get("call-2")).toEqual(["turn abandoned"]);
+    expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an abandon during the suspend commit emits no gate.blocked, no gate.cleared, and removes the operation", async () => {
+    const cell = emptyCell();
+    const base = makePersistingContextStore(cell);
+    const holdCommit = Promise.withResolvers<boolean>();
+    const commitHeld = Promise.withResolvers<boolean>();
+    let holding = true;
+    const contextStore: ContextStore = {
+      ...base,
+      async writeMetadata(metadata, signal) {
+        if (holding && metadata.pendingOperations.length > 0) {
+          holding = false;
+          commitHeld.resolve(true);
+          await holdCommit.promise;
+        }
+        return base.writeMetadata(metadata, signal);
+      },
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore,
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    await commitHeld.promise;
+
+    reactor.abandonTurn("turn-a");
+    holdCommit.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+
+    // The gate.blocked was dropped, so no gate.cleared announces the clear.
+    expect(countOf(events, "reactor.gate.blocked")).toBe(0);
+    expect(countOf(events, "reactor.gate.cleared")).toBe(0);
+    expect(cell.pendingOperations).toEqual([]);
+    expect(resultsByCall(cell.turns).get("call-ask")).toEqual([
+      "turn abandoned",
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a queued turn behind a running turn never starts, and the running turn completes", async () => {
+    const releaseA = Promise.withResolvers<boolean>();
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(async (text) =>
+        text === "A" ? releaseA.promise : true,
+      ),
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("A"), { turnId: "turn-a" });
+    await waitFor("inference.start");
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+    await waitUntil(() => countOf(events, "message.received") >= 2);
+
+    reactor.abandonTurn("turn-b");
+    releaseA.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+    await waitForTurnEnd(events, "turn-b");
+
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "replied" },
+    ]);
+    expect(endsFor(events, "turn-b")).toEqual([
+      { turnId: "turn-b", outcome: "abandoned" },
+    ]);
+    expect(startsFor(events, "turn-b")).toBe(0);
+
+    // The queue is quiet and correct: a later turn runs normally.
+    reactor.deliver(makeTurnMessage("C"), { turnId: "turn-c" });
+    await waitForTurnEnd(events, "turn-c");
+    expect(replyTurnIds(events).get("C done")).toBe("turn-c");
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a queued re-dispatch of an abandoned turn runs no tool and its call is answered", async () => {
+    const cell = emptyCell();
+    const releaseR = Promise.withResolvers<boolean>();
+    const toolCalls: string[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(async (text) =>
+        text === "R" ? releaseR.promise : true,
+      ),
+      toolRunner: makeToolRunner(async (call) => {
+        toolCalls.push(call.id);
+        return { callId: call.id, content: "charged" };
+      }),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelation(waitFor);
+
+    // R runs, so A's approval queues its re-dispatch behind R's cycle.
+    reactor.deliver(makeTurnMessage("R"), { turnId: "turn-r" });
+    await waitUntil(() => countOf(events, "inference.start") >= 2);
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-a" });
+    await waitFor("message.correlated");
+
+    reactor.abandonTurn("turn-a");
+    releaseR.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+    await waitForTurnEnd(events, "turn-r");
+
+    expect(toolCalls).toEqual([]);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+    expect(resultsByCall(cell.turns).get("call-ask")).toEqual([
+      "turn abandoned",
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("abandoning a joined turn abandons the turn it joined", async () => {
+    const releaseTool = Promise.withResolvers<boolean>();
+    const toolStarted = Promise.withResolvers<boolean>();
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: {
+        async run(call, signal) {
+          toolStarted.resolve(true);
+          await Promise.race([
+            releaseTool.promise,
+            new Promise<void>((resolve) => {
+              signal.addEventListener("abort", () => resolve(), {
+                once: true,
+              });
+            }),
+          ]);
+          return { callId: call.id, content: "charged" };
+        },
+      },
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelation(waitFor);
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-d" });
+    await waitForTurnEnd(events, "turn-d");
+    await toolStarted.promise;
+
+    reactor.abandonTurn("turn-d");
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(endsFor(events, "turn-d")).toEqual([
+      { turnId: "turn-d", outcome: "joined", joinedTurnId: "turn-a" },
+    ]);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+    expect(events.some((e) => e.type === "connector.reply")).toBe(false);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an abandon while a delivery validates discards it and leaves the parked turn parked", async () => {
+    const release = Promise.withResolvers<boolean>();
+    const validating = Promise.withResolvers<boolean>();
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+      correlationValidator: {
+        async validate() {
+          validating.resolve(true);
+          return release.promise;
+        },
+      },
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelation(waitFor);
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-d" });
+    await validating.promise;
+
+    reactor.abandonTurn("turn-d");
+    await waitForTurnEnd(events, "turn-d");
+    release.resolve(true);
+    // The admission runs in promise continuations after the validator
+    // settles, with no timer and no I/O; a task boundary follows them.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(endsFor(events, "turn-d")).toEqual([
+      { turnId: "turn-d", outcome: "abandoned" },
+    ]);
+    expect(countOf(events, "message.correlated")).toBe(0);
+    expect(countOf(events, "message.received")).toBe(1);
+    expect(endsFor(events, "turn-a")).toEqual([]);
+    expect(countOf(events, "reactor.gate.cleared")).toBe(0);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a reply emitted before the abandon stays out, and the turn ends abandoned", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.executeTools([
+              { id: "call-note", name: "note", arguments: {} },
+              { id: "call-ask", name: "charge_card", arguments: {} },
+            ]),
+          "tool.done": (e, _s, caps) =>
+            e.result.callId === "call-note" ? caps.reply("early") : caps.wait(),
+        },
+        "wait",
+      ),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [
+        createAuthzExtension({
+          authorize: async (resource) => ({
+            effect:
+              resource === "tool:charge_card"
+                ? ("ask" as const)
+                : ("allow" as const),
+            matchingGrants: [],
+            resolvedBy: null,
+          }),
+          approvalTimeoutMs: 60_000,
+        }),
+      ],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await parkedCorrelation(waitFor);
+    await waitFor("connector.reply");
+
+    reactor.abandonTurn("turn-a");
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(replyTurnIds(events).get("early")).toBe("turn-a");
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an abandon during the reply commit suppresses the reply", async () => {
+    const holdCommit = Promise.withResolvers<boolean>();
+    const commitHeld = Promise.withResolvers<boolean>();
+    let holding = false;
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      afterCheckpoint: async () => {
+        if (holding) {
+          holding = false;
+          commitHeld.resolve(true);
+          await holdCommit.promise;
+        }
+      },
+    });
+    reactor.start();
+    holding = true;
+    reactor.deliver(makeTurnMessage("hi"), { turnId: "turn-a" });
+    await commitHeld.promise;
+
+    reactor.abandonTurn("turn-a");
+    holdCommit.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(events.some((e) => e.type === "connector.reply")).toBe(false);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("abandonTurn is idempotent and does nothing for an ended turn or after done", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("hi"), { turnId: "turn-a" });
+    await waitForTurnEnd(events, "turn-a");
+
+    // An ended turn: nothing.
+    reactor.abandonTurn("turn-a");
+    // An unseen turn: it ends abandoned once, however often it is called.
+    reactor.abandonTurn("turn-x");
+    reactor.abandonTurn("turn-x");
+    await waitForTurnEnd(events, "turn-x");
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+    reactor.abandonTurn("turn-y");
+
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "replied" },
+    ]);
+    expect(endsFor(events, "turn-x")).toEqual([
+      { turnId: "turn-x", outcome: "abandoned" },
+    ]);
+    expect(endsFor(events, "turn-y")).toEqual([]);
+  });
+
+  test("a delivery that names an abandoned turn is dropped while it is pending and throws after its end", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+    });
+    reactor.start();
+    await waitFor("reactor.start");
+
+    reactor.abandonTurn("turn-x");
+    reactor.deliver(makeTurnMessage("late"), { turnId: "turn-x" });
+    await waitForTurnEnd(events, "turn-x");
+    // The delivery's admission runs in promise continuations, with no
+    // timer and no I/O; a task boundary follows them.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(countOf(events, "message.received")).toBe(0);
+    expect(() =>
+      reactor.deliver(makeTurnMessage("later"), { turnId: "turn-x" }),
+    ).toThrow(/turn-x has already ended/);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a correlated delivery for an operation whose turn is being abandoned is consumed", async () => {
+    const releaseR = Promise.withResolvers<boolean>();
+    const toolCalls: string[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(async (text) =>
+        text === "R" ? releaseR.promise : true,
+      ),
+      toolRunner: makeToolRunner(async (call) => {
+        toolCalls.push(call.id);
+        return { callId: call.id, content: "charged" };
+      }),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelation(waitFor);
+    reactor.deliver(makeTurnMessage("R"), { turnId: "turn-r" });
+    await waitUntil(() => countOf(events, "inference.start") >= 2);
+
+    // A's abandon waits behind R's cycle; the approval arrives meanwhile.
+    reactor.abandonTurn("turn-a");
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-d" });
+    await waitForTurnEnd(events, "turn-d");
+    releaseR.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(endsFor(events, "turn-d")).toEqual([
+      { turnId: "turn-d", outcome: "unanswered" },
+    ]);
+    expect(countOf(events, "message.correlated")).toBe(1);
+    expect(toolCalls).toEqual([]);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("with the default director, abandoning a parked turn lets another turn's batch complete and re-infer", async () => {
+    // J's model asks for a charge (parks); K's model asks for a lookup
+    // (allowed), then answers with text.
+    const releaseLookup = Promise.withResolvers<boolean>();
+    const lookupStarted = Promise.withResolvers<boolean>();
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      const last = opts.turns.at(-1);
+      const answersResult =
+        last?.content.some((b) => b.type === "tool_result") === true;
+      const text = lastText(opts.turns);
+      const turn: AssistantTurn = answersResult
+        ? makeAssistantTurn("K done")
+        : {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_call",
+                id: text === "J" ? "call-j" : "call-k",
+                name: text === "J" ? "charge_card" : "lookup",
+                arguments: {},
+              },
+            ],
+            model: "test-model",
+            timestamp: 1000,
+          };
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: { turn, usage: emptyUsage(), source: TEST_SOURCE },
+      };
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createDefaultDirector("test agent", []),
+      inferenceRunner,
+      toolRunner: makeToolRunner(async (call) => {
+        if (call.name === "lookup") {
+          lookupStarted.resolve(true);
+          await releaseLookup.promise;
+        }
+        return { callId: call.id, content: "ok" };
+      }),
+      beforeToolExtensions: [
+        createAuthzExtension({
+          authorize: async (resource) => ({
+            effect:
+              resource === "tool:charge_card"
+                ? ("ask" as const)
+                : ("allow" as const),
+            matchingGrants: [],
+            resolvedBy: null,
+          }),
+          approvalTimeoutMs: 60_000,
+        }),
+      ],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("J"), { turnId: "turn-j" });
+    await parkedCorrelation(waitFor);
+    reactor.deliver(makeTurnMessage("K"), { turnId: "turn-k" });
+    await lookupStarted.promise;
+
+    reactor.abandonTurn("turn-j");
+    releaseLookup.resolve(true);
+    await waitForTurnEnd(events, "turn-k");
+    await waitForTurnEnd(events, "turn-j");
+
+    expect(replyTurnIds(events).get("K done")).toBe("turn-k");
+    expect(endsFor(events, "turn-k")).toEqual([
+      { turnId: "turn-k", outcome: "replied" },
+    ]);
+    expect(endsFor(events, "turn-j")).toEqual([
+      { turnId: "turn-j", outcome: "abandoned" },
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an abandoned batch does not trip the doom loop", async () => {
+    const toolStarted = Promise.withResolvers<boolean>();
+    const { reactor, events, waitFor } = createTestReactor({
+      doomLoopThreshold: 1,
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.executeTools([
+              { id: "call-slow", name: "slow", arguments: {} },
+            ]),
+        },
+        "wait",
+      ),
+      toolRunner: {
+        async run(call, signal) {
+          toolStarted.resolve(true);
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return { callId: call.id, content: "stopped" };
+        },
+      },
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await toolStarted.promise;
+
+    reactor.abandonTurn("turn-a");
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+    expect(events.some((e) => e.type === "reactor.error")).toBe(false);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an abandon during the pacing wait keeps the pacing for the next turn", async () => {
+    // The pacing wait runs on the injected scheduler. Each wait is recorded
+    // and fires only when the test fires it, so no wall clock is involved.
+    const waits: { delayMs: number; fire: () => void }[] = [];
+    const deps: Dependencies = {
+      ...createDefaultDependencies(),
+      scheduler: {
+        setTimeout(callback, delayMs) {
+          waits.push({ delayMs, fire: callback });
+          return () => {
+            /* a cancelled wait never fires */
+          };
+        },
+        now: () => 0,
+      },
+    };
+    const PACING_MS = 400;
+    let aInferences = 0;
+    const replyText = (turn: AssistantTurn) =>
+      turn.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+    const { reactor, events, waitFor } = createTestReactor({
+      deps,
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (e, _s, caps) =>
+            replyText(e.turn) === "A1" ? caps.infer() : caps.reply("done"),
+        },
+        "wait",
+      ),
+      inferenceRunner: async function* (opts: InferenceHarnessOptions) {
+        let text = "B";
+        if (lastText(opts.turns) !== "B") {
+          aInferences += 1;
+          text = `A${String(aInferences)}`;
+        }
+        yield {
+          type: "inference.done" as const,
+          seq: opts.nextSeq(),
+          data: {
+            turn: makeAssistantTurn(text),
+            usage: emptyUsage(),
+            source: TEST_SOURCE,
+            pacingDelayMs: PACING_MS,
+          },
+        };
+      },
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("A"), { turnId: "turn-a" });
+    // A's first answer asks for pacing; A's second inference waits.
+    await waitUntil(() => waits.length === 1);
+
+    reactor.abandonTurn("turn-a");
+    await waitForTurnEnd(events, "turn-a");
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+    await waitUntil(
+      () => waits.length === 2 || endsFor(events, "turn-b").length > 0,
+    );
+
+    // B's inference waits for the delay the provider asked for.
+    expect(waits.map((w) => w.delayMs)).toEqual([PACING_MS, PACING_MS]);
+    expect(endsFor(events, "turn-b")).toEqual([]);
+    waits[1]?.fire();
+    await waitForTurnEnd(events, "turn-b");
+    expect(endsFor(events, "turn-b")).toEqual([
+      { turnId: "turn-b", outcome: "replied" },
+    ]);
+    expect(aInferences).toBe(1);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a tool whose before-tool decision lands after the abandon does not run", async () => {
+    const cell = emptyCell();
+    const slowStarted = Promise.withResolvers<boolean>();
+    const releaseSlow = Promise.withResolvers<boolean>();
+    const releaseDecision = Promise.withResolvers<boolean>();
+    let sideEffectRan = false;
+    const batch: ToolCall[] = [
+      { id: "call-slow", name: "slow", arguments: {} },
+      { id: "call-side", name: "side_effect", arguments: {} },
+    ];
+    const batchTurn: AssistantTurn = {
+      role: "assistant",
+      content: batch.map((c) => ({ type: "tool_call" as const, ...c })),
+      model: "test-model",
+      timestamp: 1000,
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (_e, _s, caps) => caps.executeTools(batch, true),
+          "tool.done": (_e, _s, caps) => caps.reply("done"),
+        },
+        "wait",
+      ),
+      inferenceRunner: async function* (opts: InferenceHarnessOptions) {
+        yield {
+          type: "inference.done" as const,
+          seq: opts.nextSeq(),
+          data: { turn: batchTurn, usage: emptyUsage(), source: TEST_SOURCE },
+        };
+      },
+      toolRunner: makeToolRunner(async (toolCall) => {
+        if (toolCall.name === "slow") {
+          slowStarted.resolve(true);
+          await releaseSlow.promise;
+        } else {
+          sideEffectRan = true;
+        }
+        return { callId: toolCall.id, content: "ok" };
+      }),
+      beforeToolExtensions: [
+        {
+          async beforeTool(toolCall) {
+            if (toolCall.name === "side_effect") await releaseDecision.promise;
+            return { type: "allow" as const };
+          },
+        },
+      ],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await slowStarted.promise;
+
+    reactor.abandonTurn("turn-a");
+    releaseDecision.resolve(true);
+    releaseSlow.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(sideEffectRan).toBe(false);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+    const results = resultsByCall(cell.turns);
+    expect(results.get("call-slow")).toHaveLength(1);
+    expect(results.get("call-side")).toEqual(["turn abandoned"]);
+    expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a gate timeout racing the abandon ends the turn once with a well-formed history", async () => {
+    const cell = emptyCell();
+    const releaseR = Promise.withResolvers<boolean>();
+    const timers = manualTimers();
+    const { reactor, events, waitFor } = createTestReactor({
+      deps: timers.deps,
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(async (text) =>
+        text === "R" ? releaseR.promise : true,
+      ),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    // R queues behind the park, so it runs after turn-a parks and holds
+    // the loop while the abandon and the timeout queue behind it.
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    reactor.deliver(makeTurnMessage("R"), { turnId: "turn-r" });
+    await waitFor("reactor.gate.blocked");
+
+    // The abandon queues first. The gate's timeout then fires while R
+    // holds the loop, so its resume.tool_result queues behind the abandon.
+    reactor.abandonTurn("turn-a");
+    await waitUntil(() => countOf(events, "inference.start") === 2);
+    expect(timers.pending()).toHaveLength(1);
+    timers.fire(timers.pending()[0]);
+    releaseR.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+    await waitForTurnEnd(events, "turn-r");
+
+    // The abandon purged the queued result and answered the call with it:
+    // turn-a did not resume and infer again.
+    expect(countOf(events, "inference.start")).toBe(2);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+    expect(resultsByCall(cell.turns).get("call-ask")).toEqual([
+      "approval timed out",
+    ]);
+    expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+    expect(endsFor(events, "turn-a")).toHaveLength(1);
+  });
+
+  test("an abandon while the director decides a rehydrated re-dispatch answers the call once", async () => {
+    // After a restart, turn A's approval re-dispatches call-ask. The abandon
+    // lands while the director decides that event, so no queued event names
+    // the call and the restart left no open-call record. The admission's
+    // open-call record makes the abandon answer it.
+    const correlationId = "corr-decide";
+    const cell: PersistedCell = {
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "park" }],
+          timestamp: 1000,
+        },
+        suspendToolCallTurn,
+      ],
+      pendingOperations: [
+        {
+          correlationId,
+          kind: "approval",
+          registeredAt: Date.now(),
+          gateId: `pending-${correlationId}`,
+          timeoutAt: Date.now() + 60_000,
+          suspendedCall: { id: "call-ask", name: "charge_card", arguments: {} },
+          turnId: "turn-a",
+          gated: true,
+        },
+      ],
+      tokenUsage: emptyUsage(),
+    };
+    const deciding = Promise.withResolvers<boolean>();
+    const hold = Promise.withResolvers<boolean>();
+    const inner = turnDirector();
+    const director: ReactorDirector = {
+      async decide(event, state, caps) {
+        if (event.type === "resume.execute_tools") {
+          deciding.resolve(true);
+          await hold.promise;
+        }
+        return inner.decide(event, state, caps);
+      },
+    };
+    const ran: string[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director,
+      inferenceRunner: turnRunner(),
+      toolRunner: makeToolRunner(async (toolCall) => {
+        ran.push(toolCall.id);
+        return { callId: toolCall.id, content: "charged" };
+      }),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    await waitFor("reactor.start");
+    reactor.deliver(makeApprovalMessage(correlationId, "approved"), {
+      turnId: "turn-d",
+    });
+    await deciding.promise;
+    reactor.abandonTurn("turn-a");
+    hold.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(ran).toEqual([]);
+    expect(resultsByCall(cell.turns).get("call-ask")).toEqual([
+      "turn abandoned",
+    ]);
+    expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
+
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-c" });
+    await waitUntil(
+      () =>
+        ran.length > 0 ||
+        events.some(
+          (e) =>
+            e.type === "reactor.gate.blocked" && e.data.turnId === "turn-c",
+        ),
+    );
+    expect(ran).toEqual([]);
+    expect(
+      events.some(
+        (e) => e.type === "reactor.gate.blocked" && e.data.turnId === "turn-c",
+      ),
+    ).toBe(true);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an abandon during the prompt write starts no provider call", async () => {
+    // The abandon lands while the inference writes its prompt, after the
+    // context transforms. The inference then stops before the provider.
+    const releaseWrite = Promise.withResolvers<boolean>();
+    let writing = false;
+    let providerCalls = 0;
+    const base = makeContextStore();
+    const contextStore: ContextStore = {
+      ...base,
+      async writePrompt(prompt) {
+        writing = true;
+        await releaseWrite.promise;
+        return base.writePrompt(prompt);
+      },
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore,
+      director: turnDirector(),
+      inferenceRunner: async function* (opts: InferenceHarnessOptions) {
+        providerCalls += 1;
+        yield* turnRunner()(opts);
+      },
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await waitUntil(() => writing);
+    reactor.abandonTurn("turn-a");
+    releaseWrite.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(providerCalls).toBe(0);
+    expect(countOf(events, "inference.start")).toBe(0);
+    expect(endsFor(events, "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "abandoned" },
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+    expect(endsFor(events, "turn-a")).toHaveLength(1);
+  });
+
+  test("a reactor abort that lands while a before-tool decision is held runs no tool and answers the call aborted", async () => {
+    // Not an abandon: the reactor itself aborts. The held decision then
+    // allows the call, but no tool starts after the abort.
+    const releaseDecision = Promise.withResolvers<boolean>();
+    let deciding = false;
+    const ran: string[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: makeToolRunner(async (toolCall) => {
+        ran.push(toolCall.id);
+        return { callId: toolCall.id, content: "charged" };
+      }),
+      beforeToolExtensions: [
+        {
+          async beforeTool() {
+            deciding = true;
+            await releaseDecision.promise;
+            return { type: "allow" as const };
+          },
+        },
+      ],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    await waitUntil(() => deciding);
+    reactor.abort("admin_kill");
+    releaseDecision.resolve(true);
+    await waitFor("reactor.done");
+
+    expect(ran).toEqual([]);
+    expect(
+      events.flatMap((e) =>
+        e.type === "tool.done"
+          ? [[e.data.result.callId, e.data.result.content]]
+          : [],
+      ),
+    ).toEqual([["call-ask", "reactor aborted"]]);
+  });
+
+  test("a before-tool suspend that returns after the abandon parks nothing", async () => {
+    const cell = emptyCell();
+    const held = Promise.withResolvers<boolean>();
+    let waiting = false;
+    const holdThenSuspend: BeforeToolExtension = {
+      async beforeTool(toolCall) {
+        waiting = true;
+        await held.promise;
+        return {
+          type: "suspend",
+          gate: {
+            type: "approval",
+            gateId: "g-hold",
+            correlationId: "corr-hold",
+            timeoutAt: Date.now() + 60_000,
+          },
+          pendingOp: {
+            correlationId: "corr-hold",
+            kind: "approval",
+            registeredAt: Date.now(),
+            gateId: "g-hold",
+            suspendedCall: toolCall,
+          },
+        };
+      },
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [holdThenSuspend],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    await waitUntil(() => waiting);
+    reactor.abandonTurn("turn-a");
+    held.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+
+    const gateEvents = events.filter(
+      (e) =>
+        (e.type === "reactor.gate.blocked" ||
+          e.type === "reactor.gate.cleared") &&
+        e.data.gateId === "g-hold",
+    );
+    expect(gateEvents).toEqual([]);
+    expect(cell.pendingOperations).toEqual([]);
+    expect(resultsByCall(cell.turns).get("call-ask")).toEqual([
+      "turn abandoned",
+    ]);
+    expect(() => assertWellFormedToolSequence(cell.turns)).not.toThrow();
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("after an abandon drops an approved re-dispatch, a later call with its id hits the ask gate", async () => {
+    // Turn A parks call-ask. B runs and holds the loop, so the approval's
+    // re-dispatch of call-ask queues behind B. The abandon drops that
+    // re-dispatch, and its approval with it. A later call with the same id
+    // must hit the ask gate.
+    const releaseB = Promise.withResolvers<boolean>();
+    let bHeld = false;
+    const ran: string[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(emptyCell()),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(async (text) => {
+        if (text !== "B") return true;
+        bHeld = true;
+        return releaseB.promise;
+      }),
+      toolRunner: makeToolRunner(async (toolCall) => {
+        ran.push(toolCall.id);
+        return { callId: toolCall.id, content: "charged" };
+      }),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelation(waitFor);
+
+    reactor.deliver(makeTurnMessage("B"), { turnId: "turn-b" });
+    await waitUntil(() => bHeld);
+    reactor.deliver(makeApprovalMessage(correlationId, "approved"), {
+      turnId: "turn-d",
+    });
+    await waitFor("message.correlated");
+    reactor.abandonTurn("turn-a");
+    releaseB.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+    expect(ran).toEqual([]);
+
+    // The same model turn asks for call-ask again under turn C.
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-c" });
+    await waitUntil(
+      () =>
+        ran.length > 0 ||
+        events.some(
+          (e) =>
+            e.type === "reactor.gate.blocked" && e.data.turnId === "turn-c",
+        ),
+    );
+    expect(ran).toEqual([]);
+    expect(
+      events.some(
+        (e) => e.type === "reactor.gate.blocked" && e.data.turnId === "turn-c",
+      ),
+    ).toBe(true);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a queued denied result of a rehydrated parked turn is answered when the turn is abandoned", async () => {
+    const correlationId = "legacy-deny";
+    const cell: PersistedCell = {
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "park" }],
+          timestamp: 1000,
+        },
+        suspendToolCallTurn,
+      ],
+      pendingOperations: [
+        {
+          correlationId,
+          kind: "approval",
+          registeredAt: Date.now(),
+          gateId: `pending-${correlationId}`,
+          timeoutAt: Date.now() + 60_000,
+          suspendedCall: { id: "call-ask", name: "charge_card", arguments: {} },
+        },
+      ],
+      tokenUsage: emptyUsage(),
+    };
+    const releaseR = Promise.withResolvers<boolean>();
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      director: turnDirector(),
+      inferenceRunner: turnRunner(async (text) =>
+        text === "R" ? releaseR.promise : true,
+      ),
+    });
+    reactor.start();
+    await waitFor("reactor.start");
+    const legacy = legacyTurnId(correlationId);
+
+    // R runs, so the denial's resume.tool_result queues behind R's cycle.
+    reactor.deliver(makeTurnMessage("R"), { turnId: "turn-r" });
+    await waitFor("inference.start");
+    reactor.deliver(makeApprovalMessage(correlationId, "rejected"), {
+      turnId: "turn-d",
+    });
+    await waitFor("message.correlated");
+
+    // turn-d joined the legacy turn; the abandon follows the join.
+    reactor.abandonTurn("turn-d");
+    releaseR.resolve(true);
+    await waitForTurnEnd(events, legacy);
+    await waitForTurnEnd(events, "turn-r");
+
+    expect(resultsByCall(cell.turns).get("call-ask")).toHaveLength(1);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an abandon of another turn waits until the running turn's cycle is quiescent", async () => {
+    const releaseTool = Promise.withResolvers<boolean>();
+    const toolStarted = Promise.withResolvers<boolean>();
+    let eventsAtToolDone = -1;
+    let eventsRef: ReactorEmittedEvent[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable(
+        {
+          "message.received": (e, _s, caps) =>
+            e.message.content === "park"
+              ? caps.executeTools([
+                  { id: "call-ask", name: "charge_card", arguments: {} },
+                ])
+              : caps.executeTools([
+                  { id: "call-slow", name: "slow", arguments: {} },
+                ]),
+          "tool.done": (e, _s, caps) => {
+            if (e.result.callId === "call-slow") {
+              eventsAtToolDone = eventsRef.length;
+              return caps.reply("A done");
+            }
+            return caps.wait();
+          },
+        },
+        "wait",
+      ),
+      toolRunner: makeToolRunner(async (call) => {
+        if (call.name === "slow") {
+          toolStarted.resolve(true);
+          await releaseTool.promise;
+        }
+        return { callId: call.id, content: "ok" };
+      }),
+      beforeToolExtensions: [
+        createAuthzExtension({
+          authorize: async (resource) => ({
+            effect:
+              resource === "tool:charge_card"
+                ? ("ask" as const)
+                : ("allow" as const),
+            matchingGrants: [],
+            resolvedBy: null,
+          }),
+          approvalTimeoutMs: 60_000,
+        }),
+      ],
+    });
+    eventsRef = events;
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-b" });
+    await parkedCorrelation(waitFor);
+    reactor.deliver(makeTurnMessage("go"), { turnId: "turn-a" });
+    await toolStarted.promise;
+
+    reactor.abandonTurn("turn-b");
+    releaseTool.resolve(true);
+    await waitForTurnEnd(events, "turn-b");
+
+    const clearedAt = events.findIndex(
+      (e) => e.type === "reactor.gate.cleared" && e.data.reason === "abandoned",
+    );
+    expect(eventsAtToolDone).toBeGreaterThan(-1);
+    expect(clearedAt).toBeGreaterThanOrEqual(eventsAtToolDone);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+});
+
 describe("createReactor — gate.cleared of an ask-flow gate", () => {
   function emptyCell(): PersistedCell {
     return { turns: [], pendingOperations: [], tokenUsage: emptyUsage() };

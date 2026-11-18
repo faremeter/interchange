@@ -969,6 +969,13 @@ one gate of any type and refuses a second suspend in the same turn
 that `send()` reports, and the connector router's map of parked turns by
 correlation ID all depend on that limit.
 
+A warm step that is aborted mid-turn passes the step's abort signal to
+`agent.send`, and the agent abandons the turn in the reactor
+(INFERENCE.md § Abandoning a Turn): the turn's model call or tool batch is
+aborted, its open calls are answered with an error result, and it ends
+`abandoned`. The hub's approval row of an abandoned parked turn stays
+pending.
+
 #### Recycle
 
 Recycle is the supervisor's "same definition, fresh process" path,
