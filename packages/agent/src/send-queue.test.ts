@@ -14,6 +14,7 @@ describe("createSendQueue", () => {
     const started: string[] = [];
     const q = createSendQueue<string, string>({
       maxDepth: 4,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -27,6 +28,7 @@ describe("createSendQueue", () => {
     const started: string[] = [];
     const q = createSendQueue<string, string>({
       maxDepth: 4,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -48,6 +50,7 @@ describe("createSendQueue", () => {
     const started: number[] = [];
     const q = createSendQueue<number, string>({
       maxDepth: 2,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -65,6 +68,7 @@ describe("createSendQueue", () => {
     const started: number[] = [];
     const q = createSendQueue<number, string>({
       maxDepth: 4,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -80,6 +84,7 @@ describe("createSendQueue", () => {
     const ctl = new AbortController();
     const q = createSendQueue<number, string>({
       maxDepth: 4,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -106,6 +111,7 @@ describe("createSendQueue", () => {
     const ctl = new AbortController();
     const q = createSendQueue<number, string>({
       maxDepth: 4,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -132,6 +138,7 @@ describe("createSendQueue", () => {
     const started: number[] = [];
     const q = createSendQueue<number, string>({
       maxDepth: 4,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -149,6 +156,7 @@ describe("createSendQueue", () => {
     const started: number[] = [];
     const q = createSendQueue<number, string>({
       maxDepth: 4,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -168,6 +176,7 @@ describe("createSendQueue", () => {
     const started: number[] = [];
     const q = createSendQueue<number, string>({
       maxDepth: 4,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -190,6 +199,7 @@ describe("createSendQueue", () => {
     const started: number[] = [];
     const q = createSendQueue<number, string>({
       maxDepth: 2,
+      abortActive: () => undefined,
       start: (item) => {
         started.push(item);
       },
@@ -203,5 +213,38 @@ describe("createSendQueue", () => {
     // Active slot still occupied (consumer has not advanced). Adding a
     // third would exceed maxDepth=2.
     expect(() => q.enqueue(3)).toThrow(SendQueueFullError);
+  });
+
+  test("abortActive runs once for the active job, not for a pending job or after a settle", async () => {
+    const aborted: number[] = [];
+    const q = createSendQueue<number, string>({
+      maxDepth: 4,
+      abortActive: (item) => {
+        aborted.push(item);
+      },
+      start: () => undefined,
+    });
+
+    const activeCtl = new AbortController();
+    const pendingCtl = new AbortController();
+    const settledCtl = new AbortController();
+    const p1 = q.enqueue(1, activeCtl.signal);
+    const p2 = q.enqueue(2, pendingCtl.signal);
+    const p3 = q.enqueue(3, settledCtl.signal);
+
+    pendingCtl.abort();
+    await expect(p2).rejects.toBeDefined();
+    activeCtl.abort();
+    activeCtl.abort();
+    await expect(p1).rejects.toBeDefined();
+    expect(aborted).toEqual([1]);
+
+    // The consumer reports the abandoned work done; the next job starts,
+    // settles, and its later abort does nothing.
+    q.rejectActive(new Error("abandoned"));
+    q.resolveActive("r3");
+    expect(await p3).toBe("r3");
+    settledCtl.abort();
+    expect(aborted).toEqual([1]);
   });
 });

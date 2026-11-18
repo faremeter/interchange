@@ -96,6 +96,17 @@ Both `reply` and `suspended` results carry `turnId`: the turn the send
 followed, which after a join is the parked turn. See INFERENCE.md § Agent
 Sends.
 
+An aborted send (`SendOptions.signal`) rejects with the signal's reason
+at once, and the agent abandons the turn the send follows: its model call
+or tool batch is aborted, the director sees no more of its events, its
+open tool calls get an error result, and it ends `abandoned`. The next
+send starts once that turn has ended. The turn the send follows is also
+a turn the send names (`SendOptions.turnId`): an abort abandons that
+turn, even a parked one. A turn stays parked only when the send uses its
+own fresh turn id and the abort lands before the delivery is admitted:
+the delivery is then dropped and resumes nothing. A send aborted while
+still queued never reaches the reactor.
+
 ## Compactors
 
 A compactor rewrites the conversation history when the director asks for

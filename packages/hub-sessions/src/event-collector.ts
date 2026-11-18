@@ -277,6 +277,9 @@ export function createEventCollector(
             await finalizeRow(row, "completed", true, false);
             break;
           case "failed":
+          case "abandoned":
+            // An abandoned turn's reply is not emitted, so its end is the
+            // only event that closes its row.
             await finalizeRow(row, "failed", true, false);
             break;
           default:

@@ -665,9 +665,12 @@ describe("createAgent send() follows its own turn", () => {
   };
 
   let workDir: string;
+  // The `slow` tool runs until the test resolves this.
+  let slowHold = Promise.withResolvers<boolean>();
 
   beforeEach(() => {
     workDir = mkdtempSync(join(tmpdir(), "agent-turns-"));
+    slowHold = Promise.withResolvers<boolean>();
   });
 
   afterEach(() => {
@@ -725,6 +728,7 @@ describe("createAgent send() follows its own turn", () => {
       { name: "charge_card" },
       { name: "send_note" },
       { name: "note" },
+      { name: "slow" },
     ],
     factory: () => ({
       definitions: [
@@ -743,8 +747,17 @@ describe("createAgent send() follows its own turn", () => {
           description: "Write a note",
           inputSchema: { type: "object", properties: {} },
         },
+        {
+          name: "slow",
+          description: "Run until the test releases it",
+          inputSchema: { type: "object", properties: {} },
+        },
       ],
       async run(call) {
+        if (call.name === "slow") {
+          await slowHold.promise;
+          return { callId: call.id, content: "slow done" };
+        }
         if (call.name === "send_note") {
           return {
             callId: call.id,
@@ -1135,6 +1148,226 @@ describe("createAgent send() follows its own turn", () => {
         buffered.push(next.value.type);
       }
       expect(buffered).toContain("connector.reply");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  // Runs one slow call, then a note call, then replies.
+  function slowThenNoteDirector(): ReactorDirector {
+    return {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          if (event.message.content === "S") {
+            return caps.executeTools([
+              { id: "call-slow", name: "slow", arguments: {} },
+            ]);
+          }
+          return caps.reply(`${event.message.content ?? ""} done`);
+        }
+        if (event.type === "tool.done") {
+          if (event.result.callId === "call-slow") {
+            return caps.executeTools([
+              { id: "call-note", name: "note", arguments: {} },
+            ]);
+          }
+          return caps.reply("after");
+        }
+        return caps.wait();
+      },
+    };
+  }
+
+  function turnEndedOf(
+    events: ReactorEmittedEvent[],
+    turnId: string,
+  ): ReactorEmittedEvent | undefined {
+    return events.find(
+      (e) => e.type === "reactor.turn.ended" && e.data.turnId === turnId,
+    );
+  }
+
+  test("an aborted send's turn runs no further tool call and ends abandoned", async () => {
+    const agent = await buildAgent(slowThenNoteDirector());
+    const events = collect(agent);
+    try {
+      const ctl = new AbortController();
+      const sent = agent.send(message("S"), {
+        signal: ctl.signal,
+        turnId: "turn-s",
+      });
+      await waitUntil(() => events.some((e) => e.type === "tool.start"));
+      ctl.abort(new Error("caller gave up"));
+      expect(String(await rejection(sent))).toContain("caller gave up");
+      slowHold.resolve(true);
+
+      // Without the abandon the turn runs the note call and replies; with
+      // it the turn ends abandoned and runs nothing more.
+      await waitUntil(
+        () =>
+          turnEndedOf(events, "turn-s") !== undefined ||
+          events.some(
+            (e) => e.type === "tool.start" && e.data.call.id === "call-note",
+          ),
+      );
+      expect(
+        events.some(
+          (e) => e.type === "tool.start" && e.data.call.id === "call-note",
+        ),
+      ).toBe(false);
+      const ended = turnEndedOf(events, "turn-s");
+      expect(ended?.type === "reactor.turn.ended" && ended.data).toEqual({
+        turnId: "turn-s",
+        outcome: "abandoned",
+      });
+      expect(events.some((e) => e.type === "connector.reply")).toBe(false);
+
+      // The next send starts only after the abandoned turn ended.
+      const next = await agent.send(message("R"), { turnId: "turn-r" });
+      expect(next.type === "reply" && next.reply).toBe("R done");
+      const endedAt = events.findIndex(
+        (e) => e.type === "reactor.turn.ended" && e.data.turnId === "turn-s",
+      );
+      const startedAt = events.findIndex(
+        (e) => e.type === "reactor.turn.started" && e.data.turnId === "turn-r",
+      );
+      expect(endedAt).toBeLessThan(startedAt);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("an aborted send that joined a parked turn abandons that turn", async () => {
+    // T parks; the send carries T's approval and joins T; T's resumed call
+    // then runs the slow tool, and the abort lands while it runs.
+    const director: ReactorDirector = {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          return caps.executeTools([
+            { id: "call-charge", name: "charge_card", arguments: {} },
+          ]);
+        }
+        if (event.type === "resume.execute_tools") {
+          return caps.executeTools([
+            ...event.calls,
+            { id: "call-slow", name: "slow", arguments: {} },
+          ]);
+        }
+        if (event.type === "tool.done") return caps.reply("done");
+        return caps.wait();
+      },
+    };
+    const agent = await buildAgent(director);
+    const events = collect(agent);
+    try {
+      agent.deliver(message("T"));
+      const parked = await firstGate(events);
+      const ctl = new AbortController();
+      const sent = agent.send(approval(parked.correlationId), {
+        signal: ctl.signal,
+        turnId: "turn-d",
+      });
+      await waitUntil(() =>
+        events.some(
+          (e) => e.type === "tool.start" && e.data.call.id === "call-slow",
+        ),
+      );
+      ctl.abort(new Error("caller gave up"));
+      expect(String(await rejection(sent))).toContain("caller gave up");
+      slowHold.resolve(true);
+      await waitUntil(() => turnEndedOf(events, parked.turnId) !== undefined);
+
+      const ended = turnEndedOf(events, parked.turnId);
+      expect(ended?.type === "reactor.turn.ended" && ended.data).toEqual({
+        turnId: parked.turnId,
+        outcome: "abandoned",
+      });
+      expect(events.some((e) => e.type === "connector.reply")).toBe(false);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("an abort before the send's delivery is admitted leaves the parked turn parked", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    const events = collect(agent);
+    try {
+      agent.deliver(message("T"));
+      const parked = await firstGate(events);
+      const ctl = new AbortController();
+      const sent = agent.send(approval(parked.correlationId), {
+        signal: ctl.signal,
+        turnId: "turn-d",
+      });
+      // The delivery is still being admitted when the abort lands.
+      ctl.abort(new Error("caller gave up"));
+      expect(String(await rejection(sent))).toContain("caller gave up");
+      await waitUntil(() => turnEndedOf(events, "turn-d") !== undefined);
+
+      // The parked turn did not resume and did not end; it still answers
+      // a later approval.
+      expect(turnEndedOf(events, parked.turnId)).toBeUndefined();
+      expect(events.some((e) => e.type === "message.correlated")).toBe(false);
+      const resumed = await agent.send(approval(parked.correlationId));
+      expect(resumed.type === "reply" && resumed.reply).toBe("charged");
+      expect(resumed.turnId).toBe(parked.turnId);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("an abort before admission of a send that names the parked turn abandons that turn", async () => {
+    const agent = await buildAgent(scriptedDirector());
+    const events = collect(agent);
+    try {
+      agent.deliver(message("T"));
+      const parked = await firstGate(events);
+      const ctl = new AbortController();
+      const sent = agent.send(approval(parked.correlationId), {
+        signal: ctl.signal,
+        turnId: parked.turnId,
+      });
+      // The delivery is still being admitted when the abort lands. The
+      // send follows the turn it names, so the abort abandons it.
+      ctl.abort(new Error("caller gave up"));
+      expect(String(await rejection(sent))).toContain("caller gave up");
+      await waitUntil(() => turnEndedOf(events, parked.turnId) !== undefined);
+
+      const ended = turnEndedOf(events, parked.turnId);
+      expect(ended?.type === "reactor.turn.ended" && ended.data).toEqual({
+        turnId: parked.turnId,
+        outcome: "abandoned",
+      });
+      expect(events.some((e) => e.type === "message.correlated")).toBe(false);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("a queued send that aborts never reaches the reactor", async () => {
+    const agent = await buildAgent(slowThenNoteDirector());
+    const events = collect(agent);
+    try {
+      const active = agent.send(message("S"), { turnId: "turn-s" });
+      const ctl = new AbortController();
+      const queued = agent.send(message("Q"), {
+        signal: ctl.signal,
+        turnId: "turn-q",
+      });
+      ctl.abort(new Error("caller gave up"));
+      expect(String(await rejection(queued))).toContain("caller gave up");
+      slowHold.resolve(true);
+      const result = await active;
+      expect(result.type === "reply" && result.reply).toBe("after");
+
+      expect(
+        events.some(
+          (e) =>
+            (e.type === "reactor.turn.started" ||
+              e.type === "reactor.turn.ended") &&
+            e.data.turnId === "turn-q",
+        ),
+      ).toBe(false);
     } finally {
       await agent.close();
     }

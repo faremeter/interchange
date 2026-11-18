@@ -64,7 +64,7 @@ export type TurnFailureKind = typeof TurnFailureKind.infer;
 export const TurnEndedData = type.or(
   {
     turnId: "string",
-    outcome: type.enumerated("replied", "unanswered"),
+    outcome: type.enumerated("replied", "unanswered", "abandoned"),
   },
   { turnId: "string", outcome: "'joined'", joinedTurnId: "string" },
   {
@@ -74,7 +74,7 @@ export const TurnEndedData = type.or(
   },
 );
 export type TurnEndedData =
-  | { turnId: string; outcome: "replied" | "unanswered" }
+  | { turnId: string; outcome: "replied" | "unanswered" | "abandoned" }
   | { turnId: string; outcome: "joined"; joinedTurnId: string }
   | {
       turnId: string;
@@ -310,7 +310,7 @@ export const InferenceEvent = type.or(
     seq: "number",
     data: {
       gateId: "string",
-      reason: type.enumerated("resolved", "timeout", "shutdown"),
+      reason: type.enumerated("resolved", "timeout", "shutdown", "abandoned"),
     },
   },
   {
@@ -536,7 +536,7 @@ export type InferenceEvent =
       seq: number;
       data: {
         gateId: string;
-        reason: "resolved" | "timeout" | "shutdown";
+        reason: "resolved" | "timeout" | "shutdown" | "abandoned";
       };
     }
   | {

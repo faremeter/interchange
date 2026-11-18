@@ -1810,6 +1810,17 @@ describe("EventCollector — reactor turn end", () => {
     expect(rowStatuses()).toEqual(["failed"]);
   });
 
+  test("an abandoned end of the row's turn finalizes the row failed", async () => {
+    await start("turn-a");
+    await collector.onEvent(
+      event("reactor.turn.ended", 2, {
+        turnId: "turn-a",
+        outcome: "abandoned",
+      }),
+    );
+    expect(rowStatuses()).toEqual(["failed"]);
+  });
+
   test("a replied end after the reply does not finalize the row again", async () => {
     await start("turn-a");
     await collector.onEvent(

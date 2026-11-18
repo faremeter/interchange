@@ -92,8 +92,9 @@ function statusOf(tracker: StatusTracker): SessionStatus {
  * - `reactor.gate.blocked` records the gate. Its turn is parked, so it no
  *   longer runs.
  * - `reactor.gate.cleared` of a known gate drops the gate (any reason) and
- *   makes its turn run again. The event carries no turn id, so one for a
- *   gate the tracker does not know changes nothing.
+ *   makes its turn run again, except for an abandoned turn's gate: nothing
+ *   resumes. The event carries no turn id, so one for a gate the tracker
+ *   does not know changes nothing.
  * - `reactor.turn.ended` stops the turn and drops its gates. A `joined` end
  *   changes nothing.
  * - `reactor.done` and a fatal `reactor.error` clear the state.
@@ -140,7 +141,9 @@ function deriveStatus(
       const gate = tracker.gates.get(event.data.gateId);
       if (gate === undefined) return null;
       tracker.gates.delete(event.data.gateId);
-      if (gate.turnId !== undefined) tracker.running.add(gate.turnId);
+      if (gate.turnId !== undefined && event.data.reason !== "abandoned") {
+        tracker.running.add(gate.turnId);
+      }
       return statusOf(tracker);
     }
     case "reactor.turn.ended": {

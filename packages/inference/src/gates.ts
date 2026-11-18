@@ -108,10 +108,12 @@ export function createGateManager(
 
   // Clear a gate without invoking its onCleared callback. The caller has
   // already decided how the reactor resumes and does not want the standard
-  // cleared-event enqueue that onCleared drives. Used by the approval
-  // re-dispatch path, which resumes by re-running the parked tool call rather
-  // than by re-inferring off a gate-cleared event: firing onCleared there
-  // would enqueue a second, spurious continuation.
+  // cleared-event enqueue that onCleared drives. Two paths use it:
+  // - The approval re-dispatch path. It resumes by re-running the parked
+  //   tool call, not by re-inferring off a gate-cleared event. onCleared
+  //   there would enqueue a second, spurious continuation.
+  // - The abandon of a turn (handleAbandon in reactor.ts). Nothing resumes,
+  //   so onCleared would enqueue a continuation for a turn that ends.
   function clearSilently(gateId: string): boolean {
     const gate = gates.get(gateId);
     if (gate === undefined) return false;
@@ -152,12 +154,12 @@ export function createGateManager(
 
   // A gate counts from its registration. The reactor registers a suspend's
   // gate before it commits the suspend, so the gate counts during the commit.
+  function listForTurn(turnId: string): GateRecord[] {
+    return Array.from(gates.values()).filter((gate) => gate.turnId === turnId);
+  }
+
   function countForTurn(turnId: string): number {
-    let count = 0;
-    for (const gate of gates.values()) {
-      if (gate.turnId === turnId) count += 1;
-    }
-    return count;
+    return listForTurn(turnId).length;
   }
 
   return {
@@ -168,6 +170,7 @@ export function createGateManager(
     findByCorrelationId,
     snapshot,
     has,
+    listForTurn,
     countForTurn,
   };
 }
