@@ -7,11 +7,17 @@ import {
 } from "./authz-extension";
 
 import type {
+  BeforeToolContext,
   ToolCall,
   ToolDefinition,
   ReactorState,
   TokenUsage,
 } from "@intx/types/runtime";
+
+// The before-tool context of a call no approver approved, and of a call
+// whose suspension an approver approved.
+const unapproved: BeforeToolContext = { approved: false };
+const approved: BeforeToolContext = { approved: true };
 
 function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
@@ -99,7 +105,12 @@ describe("createAuthzExtension", () => {
       onDecision: (d) => decisions.push(d),
     });
 
-    const result = await ext.beforeTool(makeCall(), makeState(), signal);
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      unapproved,
+    );
 
     expect(result.type).toBe("allow");
     const d = getDecision(decisions);
@@ -120,7 +131,12 @@ describe("createAuthzExtension", () => {
       onDecision: (d) => decisions.push(d),
     });
 
-    const result = await ext.beforeTool(makeCall(), makeState(), signal);
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      unapproved,
+    );
 
     expect(result.type).toBe("block");
     if (result.type !== "block") throw new Error("expected block");
@@ -148,7 +164,12 @@ describe("createAuthzExtension", () => {
     });
 
     const before = Date.now();
-    const result = await ext.beforeTool(makeCall(), makeState(), signal);
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      unapproved,
+    );
     const after = Date.now();
 
     expect(result.type).toBe("suspend");
@@ -192,7 +213,7 @@ describe("createAuthzExtension", () => {
       name: "bash",
       arguments: { cmd: "ls" },
     };
-    const result = await ext.beforeTool(call, makeState(), signal);
+    const result = await ext.beforeTool(call, makeState(), signal, unapproved);
 
     expect(result.type).toBe("suspend");
     if (result.type !== "suspend") throw new Error("expected suspend");
@@ -215,7 +236,12 @@ describe("createAuthzExtension", () => {
     });
 
     await expect(
-      ext.beforeTool(makeCall("stripe_charge"), makeState(), signal),
+      ext.beforeTool(
+        makeCall("stripe_charge"),
+        makeState(),
+        signal,
+        unapproved,
+      ),
     ).rejects.toThrow(/stripe_charge.*wiring defect/s);
   });
 
@@ -228,7 +254,12 @@ describe("createAuthzExtension", () => {
       }),
     });
 
-    const result = await ext.beforeTool(makeCall(), makeState(), signal);
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      unapproved,
+    );
     expect(result.type).toBe("suspend");
     if (result.type !== "suspend") throw new Error("expected suspend");
     expect(result.pendingOp.approvalSnapshot).toBeUndefined();
@@ -249,11 +280,11 @@ describe("createAuthzExtension", () => {
     });
 
     await expect(
-      ext.beforeTool(makeCall(), makeState(), signal),
+      ext.beforeTool(makeCall(), makeState(), signal, unapproved),
     ).rejects.toThrow(/bash.*wiring defect/s);
   });
 
-  test("a one-shot bypass allows a missing-definition call without throwing", async () => {
+  test("an approved call with a missing definition is allowed without throwing", async () => {
     const ext = createAuthzExtension({
       authorize: async () => ({
         effect: "ask" as const,
@@ -262,19 +293,16 @@ describe("createAuthzExtension", () => {
       }),
       toolDefinitions: [bashToolDef],
     });
-    if (ext.grantOneShot === undefined)
-      throw new Error("expected grantOneShot");
 
-    // A tool absent from the wired set throws at the ask branch, but the
-    // one-shot bypass returns allow before the snapshot is built, so a
+    // A tool absent from the wired set throws at the ask branch, but an
+    // approved call returns allow before the snapshot is built, so a
     // re-dispatched approved call is never blocked by the snapshot contract.
-    ext.grantOneShot("call-9");
     const call: ToolCall = {
       id: "call-9",
       name: "stripe_charge",
       arguments: {},
     };
-    const result = await ext.beforeTool(call, makeState(), signal);
+    const result = await ext.beforeTool(call, makeState(), signal, approved);
     expect(result.type).toBe("allow");
   });
 
@@ -290,7 +318,12 @@ describe("createAuthzExtension", () => {
       onDecision: (d) => decisions.push(d),
     });
 
-    const result = await ext.beforeTool(makeCall(), makeState(), signal);
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      unapproved,
+    );
 
     expect(result.type).toBe("block");
     if (result.type !== "block") throw new Error("expected block");
@@ -312,7 +345,7 @@ describe("createAuthzExtension", () => {
 
     let thrown: Error | undefined;
     try {
-      await ext.beforeTool(makeCall(), makeState(), signal);
+      await ext.beforeTool(makeCall(), makeState(), signal, unapproved);
     } catch (cause) {
       thrown = cause instanceof Error ? cause : new Error(String(cause));
     }
@@ -331,7 +364,12 @@ describe("createAuthzExtension", () => {
       authorize: async () => allowResult(),
     });
 
-    const result = await ext.beforeTool(makeCall(), makeState(), signal);
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      unapproved,
+    );
     expect(result.type).toBe("allow");
   });
 
@@ -345,7 +383,12 @@ describe("createAuthzExtension", () => {
       },
     });
 
-    await ext.beforeTool(makeCall("stripe_charge"), makeState(), signal);
+    await ext.beforeTool(
+      makeCall("stripe_charge"),
+      makeState(),
+      signal,
+      unapproved,
+    );
     expect(capturedResource).toBe("tool:stripe_charge");
   });
 
@@ -358,7 +401,7 @@ describe("createAuthzExtension", () => {
       onDecision: (d) => decisions.push(d),
     });
 
-    await ext.beforeTool(makeCall(), makeState(), signal);
+    await ext.beforeTool(makeCall(), makeState(), signal, unapproved);
 
     const d = getDecision(decisions);
     expect(d.matchingGrants.length).toBe(expectedGrants.length);
@@ -377,7 +420,12 @@ describe("createAuthzExtension", () => {
       },
     });
 
-    const result = await ext.beforeTool(makeCall(), makeState(), signal);
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      unapproved,
+    );
     expect(result.type).toBe("allow");
   });
 
@@ -393,7 +441,7 @@ describe("createAuthzExtension", () => {
 
     let thrown: Error | undefined;
     try {
-      await ext.beforeTool(makeCall(), makeState(), signal);
+      await ext.beforeTool(makeCall(), makeState(), signal, unapproved);
     } catch (cause) {
       thrown = cause instanceof Error ? cause : new Error(String(cause));
     }
@@ -404,51 +452,54 @@ describe("createAuthzExtension", () => {
     return { effect: "ask", matchingGrants: [], resolvedBy: null };
   }
 
-  test("grantOneShot lets a matching call bypass its ask gate once", async () => {
+  test("an approved call passes its ask gate", async () => {
     const ext = createAuthzExtension({ authorize: async () => askResult() });
-    if (ext.grantOneShot === undefined)
-      throw new Error("expected grantOneShot");
-
-    ext.grantOneShot("call-1");
-
-    const first = await ext.beforeTool(makeCall(), makeState(), signal);
-    expect(first.type).toBe("allow");
-
-    // The token is consumed on read: the same call re-hits the ask gate.
-    const second = await ext.beforeTool(makeCall(), makeState(), signal);
-    expect(second.type).toBe("suspend");
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      approved,
+    );
+    expect(result.type).toBe("allow");
   });
 
-  test("grantOneShot is keyed on call id, not the tool", async () => {
+  test("an unapproved call hits its ask gate", async () => {
     const ext = createAuthzExtension({ authorize: async () => askResult() });
-    if (ext.grantOneShot === undefined)
-      throw new Error("expected grantOneShot");
-
-    ext.grantOneShot("call-1");
-
-    const other = { id: "call-2", name: "bash", arguments: {} };
-    const result = await ext.beforeTool(other, makeState(), signal);
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      unapproved,
+    );
     expect(result.type).toBe("suspend");
   });
 
-  test("a stale one-shot token does not silently allow a denied call", async () => {
-    let effect: "deny" | "ask" = "deny";
-    const ext = createAuthzExtension({
-      authorize: async () => (effect === "deny" ? denyResult() : askResult()),
-    });
-    if (ext.grantOneShot === undefined)
-      throw new Error("expected grantOneShot");
+  test("an approved call is still blocked by a deny", async () => {
+    const ext = createAuthzExtension({ authorize: async () => denyResult() });
+    const result = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      approved,
+    );
+    expect(result.type).toBe("block");
+  });
 
-    ext.grantOneShot("call-1");
-
-    // The grant changed underneath the token: the call now resolves to deny,
-    // so the token must be dropped rather than bypassing the block.
-    const blocked = await ext.beforeTool(makeCall(), makeState(), signal);
-    expect(blocked.type).toBe("block");
-
-    // The dropped token must not survive to bypass a later ask on the same id.
-    effect = "ask";
-    const suspended = await ext.beforeTool(makeCall(), makeState(), signal);
-    expect(suspended.type).toBe("suspend");
+  test("an approval is not stored: a later unapproved run of the same id hits the gate", async () => {
+    const ext = createAuthzExtension({ authorize: async () => askResult() });
+    const first = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      approved,
+    );
+    expect(first.type).toBe("allow");
+    const second = await ext.beforeTool(
+      makeCall(),
+      makeState(),
+      signal,
+      unapproved,
+    );
+    expect(second.type).toBe("suspend");
   });
 });

@@ -324,7 +324,7 @@ All three are required under that design. A message that matches the correlation
 
 > **Planned / Not Yet Implemented.** Only condition 1 is enforced today, and the reactor enforces it itself by looking the correlation ID up in its registry. `CorrelationValidator` in `@intx/inference` is an interface and an optional reactor option with no production implementation behind it: nothing in the shipped composition supplies one, so the sender and signature checks in conditions 2 and 3 do not run. A message carrying a registered correlation ID is accepted on that ID alone.
 
-**Treat a correlation ID as a capability: anyone who learns one can answer it.** With no validator wired there is no check on `From`, no check on the signature, and no check that the responder is the party the correlation was issued to. Resolving a correlation is not inert bookkeeping — on the approval rail it clears the gate a tool call suspended on and grants that call a one-shot authorization bypass.
+**Treat a correlation ID as a capability: anyone who learns one can answer it.** With no validator wired there is no check on `From`, no check on the signature, and no check that the responder is the party the correlation was issued to. Resolving a correlation is not inert bookkeeping — on the approval rail it clears the gate a tool call suspended on and passes the approval to the re-run of that call, which then passes its ask gate.
 
 The guarantee that remains is scope: a correlation is resolved only by a message bearing an ID that same reactor registered, and the registry is per-reactor closure state. Whether the ID can be guessed depends on who minted it — the authz `ask` flow mints `crypto.randomUUID()` values, while an ID on a tool's pending marker is whatever the tool chose.
 

@@ -300,12 +300,44 @@ function resolveDoomLoopThreshold(
  * they run the same multiset of `(name, arguments)` pairs.
  */
 function toolBatchSignature(calls: ToolCall[]): string {
-  return calls
-    .map((call) =>
-      canonicalJsonStringify({ name: call.name, arguments: call.arguments }),
-    )
-    .sort()
-    .join("\n");
+  return calls.map(callSignature).sort().join("\n");
+}
+
+// A call's name and arguments in canonical form, without its id.
+function callSignature(call: ToolCall): string {
+  return canonicalJsonStringify({ name: call.name, arguments: call.arguments });
+}
+
+const NO_APPROVALS: ReadonlySet<ToolCall> = new Set();
+
+/**
+ * The calls of an `execute_tools` action that a `resume.execute_tools` event
+ * approved: each action call that matches an approved call on its id, name
+ * and arguments. Each approved call matches at most one action call, so a
+ * second action call with the same id gets no approval. A call the director
+ * changed gets none either, and hits its ask gate again (fails closed). The
+ * set holds the action's call objects, so two calls that share an id in one
+ * batch cannot share an approval.
+ */
+function approvedCallsOf(
+  approvedCalls: ToolCall[],
+  actionCalls: ToolCall[],
+): ReadonlySet<ToolCall> {
+  const unmatched = approvedCalls.map((call) => ({
+    id: call.id,
+    signature: callSignature(call),
+  }));
+  const approved = new Set<ToolCall>();
+  for (const call of actionCalls) {
+    const signature = callSignature(call);
+    const index = unmatched.findIndex(
+      (a) => a.id === call.id && a.signature === signature,
+    );
+    if (index === -1) continue;
+    unmatched.splice(index, 1);
+    approved.add(call);
+  }
+  return approved;
 }
 
 /**
@@ -703,7 +735,8 @@ export function createReactor(config: ReactorConfig): Reactor {
   // How the reactor resumes a correlated pending operation.
   //
   //   redispatch — an approved approval re-runs its parked tool call. The
-  //     reactor grants a one-shot bypass for the call and re-dispatches it;
+  //     queued resume.execute_tools carries the call, and the loop passes the
+  //     approval to the before-tool run of that exact call (approvedCallsOf);
   //     the resumed run answers the parked call with a real tool result. The
   //     correlated message body is the decision, not conversation content, so
   //     it is NOT appended to history.
@@ -716,9 +749,9 @@ export function createReactor(config: ReactorConfig): Reactor {
     | { mode: "gate-cleared" }
     | { mode: "error_result"; result: ToolResult };
 
-  // Decide how a correlated approval-kind pending operation resumes, granting
-  // any one-shot bypass synchronously so no delivery can interleave between the
-  // grant and the re-dispatch enqueued by the caller. An operation that carries
+  // Decide how a correlated approval-kind pending operation resumes. It
+  // changes no state; the approval itself travels on the queued event. An
+  // operation that carries
   // a `suspendedCall` is an ask-flow suspension: the approver's decision routes
   // it down the re-dispatch rail. An operation without one is an async-tool
   // pending marker, which resumes on the normal gate-cleared rail.
@@ -761,18 +794,13 @@ export function createReactor(config: ReactorConfig): Reactor {
       case "approval":
         switch (decision.outcome) {
           case "approved":
-            // Authorize the exact parked call to run once, then re-dispatch it.
-            // Grant on every before-tool extension: only the authz extension
-            // responds, but referencing it directly would re-couple the reactor
-            // to authz and break a deployment that runs without it.
-            for (const ext of beforeToolExtensions) {
-              ext.grantOneShot?.(suspendedCall.id);
-            }
+            // Re-dispatch the exact parked call. The loop passes the approval
+            // to its before-tool run.
             return { mode: "redispatch", calls: [suspendedCall] };
           case "rejected": {
             // The approver denied the call. Answer the parked call with a
-            // synthetic error result rather than re-running it — no one-shot
-            // bypass is granted, so the tool never executes. The approver's
+            // synthetic error result rather than re-running it, so the tool
+            // never executes. The approver's
             // reason, when present, is surfaced to the model verbatim.
             const content =
               "denied by approver" +
@@ -1027,9 +1055,8 @@ export function createReactor(config: ReactorConfig): Reactor {
               stateManager.setGatesSnapshot(gates.snapshot());
               stateManager.removePendingOperation(correlationId);
             }
-            // The one-shot grant is already recorded (synchronously, in
-            // resumePendingOperation) with no await since. The director sees
-            // this event before the re-dispatched call's tool.done.
+            // The re-dispatch event carries the approved call. The director
+            // sees this event before the re-dispatched call's tool.done.
             enqueue(
               dispatch.mode === "redispatch"
                 ? { type: "resume.execute_tools", calls: dispatch.calls }
@@ -1273,10 +1300,14 @@ export function createReactor(config: ReactorConfig): Reactor {
     await p;
   }
 
+  // `approved` holds the calls (by identity) whose suspension an approver
+  // approved and that this batch now runs; their before-tool runs get
+  // `approved: true`.
   async function executeTools(
     calls: ToolCall[],
     parallel: boolean,
-    addToHistory = true,
+    addToHistory: boolean,
+    approved: ReadonlySet<ToolCall>,
   ): Promise<void> {
     if (stateManager === null) return;
     const state = stateManager;
@@ -1306,7 +1337,9 @@ export function createReactor(config: ReactorConfig): Reactor {
       for (const ext of beforeToolExtensions) {
         let decision: BeforeToolDecision;
         try {
-          decision = await ext.beforeTool(call, state.snapshot(), signal);
+          decision = await ext.beforeTool(call, state.snapshot(), signal, {
+            approved: approved.has(call),
+          });
         } catch (cause) {
           const msg = cause instanceof Error ? cause.message : String(cause);
           emitError(
@@ -2150,7 +2183,13 @@ export function createReactor(config: ReactorConfig): Reactor {
       if (toolsAction !== undefined && toolsAction.type === "execute_tools") {
         const parallel = toolsAction.parallel !== false;
         const addToHistory = toolsAction.addToHistory !== false;
-        await executeTools(toolsAction.calls, parallel, addToHistory);
+        // A re-dispatch's approval applies only to the action the director
+        // returns for that event, in this cycle.
+        const approved =
+          event.type === "resume.execute_tools"
+            ? approvedCallsOf(event.calls, toolsAction.calls)
+            : NO_APPROVALS;
+        await executeTools(toolsAction.calls, parallel, addToHistory, approved);
         const turnId = requireCycleTurnId();
         const doom = turnStates.get(turnId);
         if (

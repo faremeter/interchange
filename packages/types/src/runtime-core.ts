@@ -1574,7 +1574,11 @@ export type ReactorCapabilities = {
  * and a parked tool call must be re-run on resume. It carries the calls the
  * reactor is about to dispatch, before those calls' `tool.done` events
  * arrive. The reactor drives the execution; the director decides what follows
- * the results.
+ * the results. The approval applies only to the `execute_tools` action that
+ * the director returns for this event, in this cycle, and only to a call with
+ * the same id, name and arguments. A call the director changes, defers to a
+ * later cycle or never runs loses the approval and hits its ask gate again.
+ * Nothing about the approval persists.
  *
  * `resume.tool_result` is raised by the reactor when a parked approval ends
  * without running its tool — a rejected decision or a gate timeout. It carries
@@ -1657,19 +1661,21 @@ export type BeforeToolDecision =
  * `BeforeToolDecision`: `allow` lets the call run, `block` answers it with an
  * error result, `suspend` parks it awaiting an external decision.
  *
- * `grantOneShot` registers a within-cycle bypass token keyed on a
- * `ToolCall.id`: the next `beforeTool` for that id skips a suspension it would
- * otherwise raise, consuming the token as it does so. It is optional because
- * only extensions that can suspend a call have anything to bypass; extensions
- * that never suspend omit it.
+ * `ctx.approved` is true only when an approver approved this exact call's
+ * suspension and the reactor now runs that call. An extension that can
+ * suspend lets an approved call through the gate it would raise. The reactor
+ * holds no approval state between runs, so a later call with the same id is
+ * not approved.
  */
+export type BeforeToolContext = { approved: boolean };
+
 export interface BeforeToolExtension {
   beforeTool(
     call: ToolCall,
     state: ReactorState,
     signal: AbortSignal,
+    ctx: BeforeToolContext,
   ): Promise<BeforeToolDecision>;
-  grantOneShot?(id: string): void;
 }
 
 /**
