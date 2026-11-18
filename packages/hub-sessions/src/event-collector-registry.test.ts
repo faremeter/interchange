@@ -459,7 +459,6 @@ describe("session status from a reactor", () => {
     const events: ReactorEmittedEvent[] = [];
     const releaseB = Promise.withResolvers<boolean>();
     const releaseAsk = Promise.withResolvers<boolean>();
-    let granted = false;
     let askStarted = false;
     let inferences = 0;
     const askCall: ToolCall = { id: "c-ask", name: "ask", arguments: {} };
@@ -489,8 +488,8 @@ describe("session status from a reactor", () => {
       },
       beforeToolExtensions: [
         {
-          async beforeTool(call) {
-            if (call.name !== "ask" || granted) return { type: "allow" };
+          async beforeTool(call, _state, _signal, ctx) {
+            if (call.name !== "ask" || ctx.approved) return { type: "allow" };
             return {
               type: "suspend",
               gate: {
@@ -507,9 +506,6 @@ describe("session status from a reactor", () => {
                 suspendedCall: call,
               },
             };
-          },
-          grantOneShot() {
-            granted = true;
           },
         },
       ],

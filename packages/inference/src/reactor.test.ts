@@ -8729,10 +8729,9 @@ describe("createReactor — turn lifecycle", () => {
       name: "spin",
       arguments: { q: 1 },
     });
-    const granted = new Set<string>();
     const parkThird: BeforeToolExtension = {
-      async beforeTool(call) {
-        if (call.id !== "a-3" || granted.delete(call.id)) {
+      async beforeTool(call, _state, _signal, ctx) {
+        if (call.id !== "a-3" || ctx.approved) {
           return { type: "allow" };
         }
         return {
@@ -8751,9 +8750,6 @@ describe("createReactor — turn lifecycle", () => {
             suspendedCall: call,
           },
         };
-      },
-      grantOneShot(id) {
-        granted.add(id);
       },
     };
     const { reactor, events, waitFor } = createTestReactor({
@@ -11504,6 +11500,178 @@ describe("createReactor — gate.cleared of an ask-flow gate", () => {
     expect(cleared[0]?.index).toBeGreaterThan(
       indexOfType(events, "reactor.gate.blocked"),
     );
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An approval passes, as data, to the run of the exact call it approved
+// ---------------------------------------------------------------------------
+
+describe("createReactor — an approval passed to the re-run", () => {
+  function blockedFor(events: ReactorEmittedEvent[], turnId: string): number {
+    return events.filter(
+      (e) => e.type === "reactor.gate.blocked" && e.data.turnId === turnId,
+    ).length;
+  }
+
+  async function parkedCorrelationOf(
+    waitFor: TestReactorHandle["waitFor"],
+  ): Promise<string> {
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+    return correlationId;
+  }
+
+  function recordingRunner(ran: string[]) {
+    return makeToolRunner(async (toolCall) => {
+      ran.push(toolCall.id);
+      return { callId: toolCall.id, content: "charged" };
+    });
+  }
+
+  test("an approved call runs once", async () => {
+    const ran: string[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: recordingRunner(ran),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelationOf(waitFor);
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-d" });
+    await waitUntil(() => turnEnds(events).some((e) => e.turnId === "turn-a"));
+
+    expect(ran).toEqual(["call-ask"]);
+    expect(turnEnds(events).filter((e) => e.turnId === "turn-a")).toEqual([
+      { turnId: "turn-a", outcome: "replied" },
+    ]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an approved call that the director runs in a later cycle parks again", async () => {
+    // The director answers the re-dispatch with no action and runs the
+    // same call later. The approval belonged to the re-dispatch's cycle.
+    const ran: string[] = [];
+    let deferred: ToolCall[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable(
+        {
+          "message.received": (e, _s, caps) =>
+            e.message.content === "retry"
+              ? caps.executeTools(deferred, false)
+              : caps.infer(),
+          "inference.done": (e, _s, caps) => {
+            const calls = e.turn.content.flatMap((b) =>
+              b.type === "tool_call"
+                ? [{ id: b.id, name: b.name, arguments: b.arguments }]
+                : [],
+            );
+            return caps.executeTools(calls);
+          },
+          "resume.execute_tools": (e) => {
+            deferred = e.calls;
+            return [];
+          },
+        },
+        "wait",
+      ),
+      inferenceRunner: turnRunner(),
+      toolRunner: recordingRunner(ran),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelationOf(waitFor);
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-d" });
+    await waitUntil(() => deferred.length > 0);
+    await waitUntil(() => turnEnds(events).some((e) => e.turnId === "turn-a"));
+
+    reactor.deliver(makeTurnMessage("retry"), { turnId: "turn-r" });
+    await waitUntil(() => ran.length > 0 || blockedFor(events, "turn-r") > 0);
+
+    expect(ran).toEqual([]);
+    expect(blockedFor(events, "turn-r")).toBe(1);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("a call that shares the approved call's id in the same batch parks", async () => {
+    // The director runs the approved call and a copy of it in one parallel
+    // batch. Only the approved call object gets the approval.
+    const ran: string[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (e, _s, caps) => {
+            const calls = e.turn.content.flatMap((b) =>
+              b.type === "tool_call"
+                ? [{ id: b.id, name: b.name, arguments: b.arguments }]
+                : [],
+            );
+            return calls.length > 0
+              ? caps.executeTools(calls)
+              : caps.reply("done");
+          },
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(
+              [...e.calls, ...e.calls.map((c) => ({ ...c }))],
+              true,
+              true,
+            ),
+          "tool.done": (_e, _s, caps) => caps.wait(),
+        },
+        "wait",
+      ),
+      inferenceRunner: turnRunner(),
+      toolRunner: recordingRunner(ran),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelationOf(waitFor);
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-d" });
+    await waitUntil(() => blockedFor(events, "turn-a") === 2);
+
+    expect(ran).toEqual(["call-ask"]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("after an approved re-run fails, a later call with the same id parks", async () => {
+    let attempts = 0;
+    const { reactor, events, waitFor } = createTestReactor({
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: makeToolRunner(async (toolCall) => {
+        attempts += 1;
+        return { callId: toolCall.id, content: "failed", isError: true };
+      }),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelationOf(waitFor);
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-d" });
+    await waitUntil(() => turnEnds(events).some((e) => e.turnId === "turn-a"));
+    expect(attempts).toBe(1);
+
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-c" });
+    await waitUntil(() => attempts > 1 || blockedFor(events, "turn-c") > 0);
+
+    expect(attempts).toBe(1);
+    expect(blockedFor(events, "turn-c")).toBe(1);
 
     reactor.abort("admin_kill");
     await waitFor("reactor.done");
