@@ -89,6 +89,7 @@ import type {
   WarmReplyDrive,
 } from "../child/warm-agent-cache";
 import { runBodyThenCleanup } from "../run-body-then-cleanup";
+import type { StepConversation } from "./step-conversation";
 
 const logger = getLogger(["workflow-host", "step-invoker"]);
 
@@ -178,23 +179,33 @@ export interface WorkflowStepInvokerOpts {
    */
   sourcesRef?: { current: Record<string, InferenceSource[]> };
   /**
-   * Run-boundary hook for the warm path (design §3c durability). When
-   * supplied, the adapter awaits it once per message, after the agent's
-   * send settles (whether it completed, aborted, or rejected). The sidecar
-   * wires this to flush the warm agent's conversation snapshot to the
-   * durable workflow-run substrate, so the conversation survives a child
-   * respawn between this message and the next. Awaited (not
-   * fire-and-forget) so a respawn landing immediately after the reply
-   * cannot lose this message's turns. A flush failure rejects the step
-   * with a `StepOutcomeCommitError`, which the runtime neither retries nor
-   * routes, unless the step already failed, in which case it is logged.
+   * Connector conversation for the warm path (design §3c). When supplied, the
+   * adapter calls it with the step identity (`authzContext.stepId`, the same
+   * key the warm cache uses) on every message and drives that message's turn
+   * through the returned conversation: `beginTurn` at the turn start (with the
+   * gate's correlation id on an `"approval"` resume), `seedInbound` before the
+   * send when the delivered input is a mail-derived `InboundMessage`, and
+   * `parkTurn` after a send that settles as `"suspended"`. A failure of any
+   * of these rejects the step.
    *
-   * The `key` is the step identity (`authzContext.stepId`), the same key
-   * the warm cache uses, so the hook resolves the right per-agent
-   * durable store. The cold path does not call it; `onColdStepSettled`
-   * commits a cold step's state instead.
+   * Only mail-derived inbound messages seed: an approval-resume inbound
+   * carries a synthetic sender and a correlation id, and a synthesized string
+   * input is not a message, so neither advances the connector thread.
+   *
+   * After the send settles (whether it completed, aborted, or rejected), the
+   * adapter awaits the conversation's `settle`, which the sidecar wires to
+   * mirror the warm agent's conversation snapshot to the durable workflow-run
+   * substrate, so the conversation survives a child respawn between this
+   * message and the next. Awaited (not fire-and-forget) so a respawn landing
+   * immediately after the reply cannot lose this message's turns. A settle
+   * failure rejects the step with a `StepOutcomeCommitError`, which the
+   * runtime neither retries nor routes, unless the step already failed, in
+   * which case it is logged.
+   *
+   * Omitted on the cold path, which has no durable connector state;
+   * `onColdStepSettled` commits a cold step's state instead.
    */
-  onRunBoundary?: (key: string) => Promise<void>;
+  warmConversation?: (key: string) => StepConversation;
   /**
    * Settle hook for the cold path. When supplied, the adapter awaits it after
    * each cold invocation's agent has closed, handing it the env `buildEnv`
@@ -209,55 +220,15 @@ export interface WorkflowStepInvokerOpts {
    * retries nor routes because the turn's work already happened, unless the
    * step already failed, in which case it is logged. A close that fails after
    * a turn that did not fail rejects the step the same way. The warm path does
-   * not call it; its run-boundary hook commits the warm agent's state instead.
+   * not call it; its conversation's `settle` commits the warm agent's state
+   * instead.
    */
   onColdStepSettled?: (env: StepEnvBase) => Promise<void>;
-  /**
-   * Seed hook for the warm path (design §3c threading). When supplied, the
-   * adapter calls it before `agent.send` on every message whose delivered
-   * input is a mail-derived `InboundMessage`, passing the step identity
-   * (`authzContext.stepId`, the same key `onRunBoundary` and the warm cache
-   * use) and that message. The sidecar wires this to the warm agent's
-   * durable conversation store, which routes the message onto the connector
-   * thread (seeding threadRoot / lastMessageId / replyTo) so the reply path
-   * can compose a threaded reply. Awaited before the send so the thread
-   * state is committed and durably flushed before the reply is produced; a
-   * seed failure surfaces by rejecting the step.
-   *
-   * Only mail-derived inbound messages seed: an approval-resume inbound
-   * carries a synthetic sender and a correlation id, and a synthesized
-   * string input is not a message, so neither advances the connector
-   * thread. Omitted on the cold path, which has no durable connector state
-   * to seed.
-   */
-  seedInbound?: (key: string, message: InboundMessage) => Promise<void>;
-  /**
-   * Turn-start hook for the warm path. When supplied, the adapter awaits it
-   * with the step identity at the start of every warm turn, before
-   * `seedInbound`. `turn.resume` is the correlation id of the gate an
-   * `"approval"` resume resumes, and is absent on every other turn. The
-   * sidecar wires this to the durable store's `beginTurn`: an approval
-   * resume takes the reply target its parked turn filed, and any other
-   * turn clears the reply target a passthrough seed set, so a turn that
-   * seeds no mail does not reply to an earlier turn's sender. Omitted on
-   * the cold path, which has no connector thread.
-   */
-  beginTurn?: (key: string, turn: { resume?: string }) => Promise<void>;
-  /**
-   * Park hook for the warm path. When supplied, the adapter awaits it with
-   * the step identity and the gate's correlation id after a send that
-   * settles as `"suspended"`, before `onRunBoundary`. The sidecar wires this
-   * to the durable store's `parkTurn`, which files the turn's reply target
-   * under that id so the run-boundary mirror persists it and the approval
-   * resume replies to the same target. A park failure rejects the step.
-   * Omitted on the cold path, which has no connector thread.
-   */
-  parkTurn?: (key: string, correlationId: string) => Promise<void>;
   /**
    * Connector reply-drain hook for the warm path (design §3c). When supplied,
    * the adapter invokes it ONCE -- at the warm agent's first-message build --
    * with the step identity (`authzContext.stepId`, the same key the warm
-   * cache, seed, and run-boundary hooks use) and the agent's lifetime event
+   * cache and `warmConversation` use) and the agent's lifetime event
    * stream. The sidecar wires this to the shared connector reply drain: on
    * every `connector.reply` the agent emits, the drain composes a threaded
    * reply from the durable store's connector thread and sends it through the
@@ -504,63 +475,15 @@ async function invokeWarmStep(
   if (opts.onEvent !== undefined) {
     warmCache.setEventSink(key, opts.onEvent);
   }
-  // Bind the seed hook to this step's identity so it resolves the same
-  // per-agent durable store the warm cache and run-boundary flush use.
-  const seedInbound = opts.seedInbound;
-  // Snapshot the reply barrier BEFORE the send. The agent resolves
-  // `agent.send` in the same synchronous step it pushes `connector.reply`
-  // onto the drain's stream, so the reply is not yet enqueued when the send
-  // resolves -- a snapshot taken after the send would miss this turn's reply.
+  const conversation = opts.warmConversation?.(key);
   const replyDrive = warmCache.getReplyDrive(key);
-  const replySeqBeforeSend = replyDrive !== null ? replyDrive.replySeq() : 0;
-  const beginTurn = opts.beginTurn;
-  const parkTurn = opts.parkTurn;
   return runBodyThenCleanup(
-    async () => {
-      if (beginTurn !== undefined) {
-        await beginTurn(
-          key,
-          req.resume?.kind === "approval"
-            ? { resume: req.resume.correlationId }
-            : {},
-        );
-      }
-      const sendResult = await sendWithAbort(agent, req, {
-        closeOnAbort: false,
+    () =>
+      runConversationTurn(agent, req, {
+        conversation,
+        replyDrive,
         mailPartReader: opts.mailPartReader,
-        seedInbound:
-          seedInbound !== undefined
-            ? (message) => seedInbound(key, message)
-            : undefined,
-      });
-      const stepResult = stepResultFromSend(sendResult);
-      if (parkTurn !== undefined && sendResult.type === "suspended") {
-        await parkTurn(key, sendResult.correlationId);
-      }
-      // Gate the step's return on THIS turn's reply being durably sent, so the
-      // run parks -- and the supervisor consumes the inbound mail -- only after
-      // the auto-reply reaches the transport. Only a reply turn produces a
-      // `connector.reply`; a suspended/gate turn produces none, so it must NOT
-      // await the barrier (that reply never arrives and the wait would hang).
-      // Fail the turn rather than return a step result claiming a reply that
-      // never went out. The mail is still consumed, because a replay would fail
-      // to compose the same reply again. The barrier counts replies, so it
-      // waits on this turn's reply only if no reply of another turn (such as
-      // a resume after a gate timeout) settles after the snapshot.
-      if (replyDrive !== null && sendResult.type === "reply") {
-        const settlement =
-          await replyDrive.waitForReplyAfter(replySeqBeforeSend);
-        if (!settlement.ok) {
-          throw new Error(
-            `workflow step invoker: ${describeReplyFailure(settlement.cause)}; ` +
-              "failing the turn, so the inbound mail is consumed without a " +
-              "reply rather than replayed",
-            { cause: settlement.cause },
-          );
-        }
-      }
-      return stepResult;
-    },
+      }),
     async () => {
       // Do NOT close the agent or drain its forwarder: both span
       // messages and are owned by the warm cache, torn down at eviction.
@@ -574,9 +497,9 @@ async function invokeWarmStep(
       // message resumes from this message's turns. Awaited so the
       // durability write completes (or surfaces its failure) before the
       // step result is observed.
-      if (opts.onRunBoundary !== undefined) {
+      if (conversation !== undefined) {
         try {
-          await opts.onRunBoundary(key);
+          await conversation.settle();
         } catch (cause) {
           // The turn's work already happened, so a retry would repeat it.
           throw new StepOutcomeCommitError(cause, "commit");
@@ -586,6 +509,76 @@ async function invokeWarmStep(
     (cause) =>
       logger.error`step invoker: ${describeStep(req)}: mirroring the warm step's state failed while unwinding a step error; surfacing the step error, mirror failure: ${cause instanceof Error ? cause.message : String(cause)}`,
   );
+}
+
+/**
+ * Drive one turn of a warm agent through its connector conversation, when the
+ * deployment has one, and return the step result.
+ *
+ * The turn begins a connector turn (taking the parked reply target on an
+ * `"approval"` resume), seeds a mail-derived inbound message onto the
+ * connector thread, sends, and on a `"suspended"` send files the turn's reply
+ * target under the gate. `replyDrive` is the reply drain the caller owns; a
+ * reply turn returns only once the drain settles this turn's reply, and a
+ * failed settlement rejects the turn. The abort signal is threaded into the
+ * send, so an abort cancels only this turn.
+ */
+async function runConversationTurn(
+  agent: Agent,
+  req: StepInvokeRequest,
+  turn: {
+    conversation: StepConversation | undefined;
+    replyDrive: WarmReplyDrive | null;
+    mailPartReader: MailPartReader | undefined;
+  },
+): Promise<StepInvokeResult> {
+  const { conversation, replyDrive } = turn;
+  // Snapshot the reply barrier BEFORE the send. The agent resolves
+  // `agent.send` in the same synchronous step it pushes `connector.reply`
+  // onto the drain's stream, so the reply is not yet enqueued when the send
+  // resolves -- a snapshot taken after the send would miss this turn's reply.
+  const replySeqBeforeSend = replyDrive !== null ? replyDrive.replySeq() : 0;
+  if (conversation !== undefined) {
+    await conversation.beginTurn(
+      req.resume?.kind === "approval"
+        ? { resume: req.resume.correlationId }
+        : {},
+    );
+  }
+  const sendResult = await sendWithAbort(agent, req, {
+    closeOnAbort: false,
+    mailPartReader: turn.mailPartReader,
+    seedInbound:
+      conversation !== undefined
+        ? (message) => conversation.seedInbound(message)
+        : undefined,
+  });
+  const stepResult = stepResultFromSend(sendResult);
+  if (conversation !== undefined && sendResult.type === "suspended") {
+    await conversation.parkTurn(sendResult.correlationId);
+  }
+  // Gate the step's return on THIS turn's reply being durably sent, so the
+  // run parks -- and the supervisor consumes the inbound mail -- only after
+  // the auto-reply reaches the transport. Only a reply turn produces a
+  // `connector.reply`; a suspended/gate turn produces none, so it must NOT
+  // await the barrier (that reply never arrives and the wait would hang).
+  // Fail the turn rather than return a step result claiming a reply that
+  // never went out. The mail is still consumed, because a replay would fail
+  // to compose the same reply again. The barrier counts replies, so it
+  // waits on this turn's reply only if no reply of another turn (such as
+  // a resume after a gate timeout) settles after the snapshot.
+  if (replyDrive !== null && sendResult.type === "reply") {
+    const settlement = await replyDrive.waitForReplyAfter(replySeqBeforeSend);
+    if (!settlement.ok) {
+      throw new Error(
+        `workflow step invoker: ${describeReplyFailure(settlement.cause)}; ` +
+          "failing the turn, so the inbound mail is consumed without a " +
+          "reply rather than replayed",
+        { cause: settlement.cause },
+      );
+    }
+  }
+  return stepResult;
 }
 
 /**

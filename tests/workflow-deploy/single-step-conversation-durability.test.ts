@@ -558,9 +558,23 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
           onEvent: (event) => onEvent(event),
           mailPartReader,
           ...(warmCache !== undefined ? { warmCache } : {}),
-          onRunBoundary: async (key) => {
-            await registry.get(key).mirrorToSubstrate();
-          },
+          warmConversation: (key) => ({
+            beginTurn: async () => undefined,
+            seedInbound: async () => undefined,
+            parkTurn: async () => undefined,
+            composeReply: () => {
+              throw new Error("composeReply() not used");
+            },
+            onReplySent: async () => {
+              throw new Error("onReplySent() not used");
+            },
+            send: async () => {
+              throw new Error("send() not used");
+            },
+            settle: async () => {
+              await registry.get(key).mirrorToSubstrate();
+            },
+          }),
         })(req);
 
       const bindings: RunWorkflowChildBindings = {

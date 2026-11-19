@@ -314,7 +314,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
   test("a turnless boundary still durably persists advanced metadata", async () => {
     // The regression the per-turn keying caused: a mirror boundary with NO
     // new turns dropped its metadata, so a respawn restored STALE metadata.
-    // onRunBoundary -> mirrorToSubstrate runs after the send settles even
+    // The run-boundary mirrorToSubstrate runs after the send settles even
     // when the send throws, so a turnless-but-metadata-mutating boundary is
     // reachable. Each boundary must commit its metadata UNCONDITIONALLY.
     const store = await makeStore(h, localDir);
@@ -843,7 +843,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
   });
 
   test("overlapping mirror runs serialize onto distinct boundaries and lose no turns", async () => {
-    // The dormant race this guards against: the awaited onRunBoundary mirror
+    // The dormant race this guards against: the awaited run-boundary mirror
     // and the fire-and-forget onStateChanged mirror share the mirrored-count
     // state with no serialization. Two overlapping runs both read the same
     // boundary seq AND the same mirroredTurnCount, so they collide on one

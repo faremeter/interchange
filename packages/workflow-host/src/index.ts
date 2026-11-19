@@ -34,6 +34,7 @@ export {
   type StepEnvBase,
   type WorkflowStepInvokerOpts,
 } from "./adapters/step-invoker";
+export type { StepConversation } from "./adapters/step-conversation";
 export {
   createInMemorySpawnChild,
   createInMemorySpawnSuspendableChild,

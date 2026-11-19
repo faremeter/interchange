@@ -16,7 +16,7 @@ import {
 import { noopAuditStore } from "@intx/agent/testing";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import { generateKeyPair } from "@intx/crypto";
-import { createConnectorRouter, driveConnectorReplies } from "@intx/harness";
+import { createConnectorRouter } from "@intx/harness";
 import {
   createRepoStore,
   workflowRunKindHandler,
@@ -47,6 +47,10 @@ import type {
 
 import { createChangeNotifier } from "@intx/workflow-host/testing";
 
+import {
+  driveStepConversationReplies,
+  type StepConversation,
+} from "./step-conversation";
 import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
 import { createDurableConversationRegistry } from "../conversation-state";
 import { createWarmConnectorHooks } from "../child/warm-connector-hooks";
@@ -76,6 +80,31 @@ function stubContextStore(): ContextStore {
 function stubBlobReader(): BlobReader {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; never read on the adapter path
   return {} as BlobReader;
+}
+
+/**
+ * A warm step conversation whose turn and settle members do nothing unless
+ * a test overrides them, and whose reply drain members are never used.
+ */
+function stubStepConversation(
+  overrides: Partial<StepConversation>,
+): StepConversation {
+  return {
+    beginTurn: async () => undefined,
+    seedInbound: async () => undefined,
+    parkTurn: async () => undefined,
+    composeReply: () => {
+      throw new Error("stub composeReply() not used");
+    },
+    onReplySent: async () => {
+      throw new Error("stub onReplySent() not used");
+    },
+    send: async () => {
+      throw new Error("stub send() not used");
+    },
+    settle: async () => undefined,
+    ...overrides,
+  };
 }
 
 function stubBuildEnv(): StepEnvBase {
@@ -1490,9 +1519,12 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
       buildEnv: async () => stubBuildEnv(),
       agentFactory: async () => stub.agent,
       warmCache,
-      onRunBoundary: async () => {
-        throw new Error("mirror boom");
-      },
+      warmConversation: () =>
+        stubStepConversation({
+          settle: async () => {
+            throw new Error("mirror boom");
+          },
+        }),
     });
 
     const failure = await invoker(buildRequest({ input: "turn" })).then(
@@ -1521,10 +1553,13 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
         },
       }),
       warmCache,
-      onRunBoundary: async () => {
-        boundaries += 1;
-        throw new Error("mirror boom");
-      },
+      warmConversation: () =>
+        stubStepConversation({
+          settle: async () => {
+            boundaries += 1;
+            throw new Error("mirror boom");
+          },
+        }),
     });
 
     await expect(invoker(buildRequest({ input: "turn" }))).rejects.toThrow(
@@ -1544,12 +1579,15 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
       buildEnv: async () => stubBuildEnv(),
       agentFactory: async () => stub.agent,
       warmCache,
-      beginTurn: async (key) => {
-        begun.push(key);
-      },
-      seedInbound: async (key) => {
-        seeded.push(key);
-      },
+      warmConversation: (key) =>
+        stubStepConversation({
+          beginTurn: async () => {
+            begun.push(key);
+          },
+          seedInbound: async () => {
+            seeded.push(key);
+          },
+        }),
     });
 
     await invoker(buildRequest({ input: "first" }));
@@ -1569,12 +1607,15 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
       buildEnv: async () => stubBuildEnv(),
       agentFactory: async () => stub.agent,
       warmCache,
-      beginTurn: async () => {
-        calls.push("begin");
-      },
-      seedInbound: async () => {
-        calls.push("seed");
-      },
+      warmConversation: () =>
+        stubStepConversation({
+          beginTurn: async () => {
+            calls.push("begin");
+          },
+          seedInbound: async () => {
+            calls.push("seed");
+          },
+        }),
     });
 
     await invoker(
@@ -1775,36 +1816,38 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     });
     const sent: OutboundMessage[] = [];
     const sentChanged = createChangeNotifier();
+    const conversation: StepConversation = {
+      beginTurn: async (turn) => {
+        router.beginTurn(turn);
+      },
+      parkTurn: async (correlationId) => {
+        router.parkTurn(correlationId);
+      },
+      seedInbound: async (message) => {
+        router.commit(router.route(message));
+      },
+      composeReply: () => router.composeReply(),
+      send: async (message) => {
+        sent.push(message);
+        sentChanged.notify();
+        return {
+          messageId: `<sent-${String(sent.length)}@agent.example.com>`,
+          status: "delivered",
+        };
+      },
+      onReplySent: async (receipt, references) => {
+        router.onReplySent(receipt, references);
+      },
+      settle: async () => undefined,
+    };
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
       buildEnv: async () => stubBuildEnv(),
       agentFactory: async () => scripted.agent,
       warmCache,
-      beginTurn: async (_key, turn) => {
-        router.beginTurn(turn);
-      },
-      parkTurn: async (_key, correlationId) => {
-        router.parkTurn(correlationId);
-      },
-      seedInbound: async (_key, message) => {
-        router.commit(router.route(message));
-      },
+      warmConversation: () => conversation,
       driveReplies: (_key, stream) =>
-        driveConnectorReplies({
-          stream,
-          composeReply: () => router.composeReply(),
-          send: async (message) => {
-            sent.push(message);
-            sentChanged.notify();
-            return {
-              messageId: `<sent-${String(sent.length)}@agent.example.com>`,
-              status: "delivered",
-            };
-          },
-          onReplySent: (receipt, references) => {
-            router.onReplySent(receipt, references);
-          },
-        }),
+        driveStepConversationReplies(conversation, stream),
     });
     return { warmCache, scripted, router, sent, sentChanged, invoker };
   }

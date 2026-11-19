@@ -94,13 +94,14 @@
 //
 // Timing (design §4 Phase D1, invariant 1). This is a STRUCTURE-only
 // change. The mirror is still `await`ed synchronously at the same run
-// boundary (`onRunBoundary` -> `mirrorToSubstrate`), so every turn is
-// still durably committed before the next message is processed. D1
-// changes WHAT the write does (O(1) append instead of O(N) whole-blob),
-// not WHEN it happens. The run log is NOT yet a durable backstop for the
-// turn (it carries a constant ref, design rev-2 FACT 1), so the
-// conversation copy here remains the sole durable copy of the agent's
-// per-turn output -- which is exactly why D1 keeps the write synchronous.
+// boundary (the step conversation's `settle` -> `mirrorToSubstrate`), so
+// every turn is still durably committed before the next message is
+// processed. D1 changes WHAT the write does (O(1) append instead of O(N)
+// whole-blob), not WHEN it happens. The run log is NOT yet a durable
+// backstop for the turn (it carries a constant ref, design rev-2 FACT 1),
+// so the conversation copy here remains the sole durable copy of the
+// agent's per-turn output -- which is exactly why D1 keeps the write
+// synchronous.
 // The async flusher, run-log enrichment, and crash reconciliation are
 // later, conditional phases (D2-D4), not done here.
 //
@@ -657,7 +658,7 @@ export async function createDurableConversationStore(
     // boundary; only the bounded metadata.json is read from disk. This
     // rests on a sequencing invariant the store cannot enforce: nothing
     // mutates the reactor's turn array between its last writeTurns and
-    // this read. The mirror runs at onRunBoundary after send() settles,
+    // this read. The mirror runs at the run boundary after send() settles,
     // and the reactor only appends inside a cycle (each ending in
     // writeTurns), so peekTurns() equals the on-disk state here.
     // Serializing the mirror entry points keeps two mirrors from
@@ -704,8 +705,8 @@ export async function createDurableConversationStore(
     // new turns were added since the last mirror. The entry carries the
     // 0-or-more new turns plus the freshest metadata snapshot, so a
     // turnless-but-metadata-mutating boundary (e.g. a throwing send that
-    // still advanced tokenUsage/pendingOperations, since onRunBoundary runs
-    // in a finally) still durably commits its metadata. The payload is the
+    // still advanced tokenUsage/pendingOperations, since the run boundary
+    // runs in a finally) still durably commits its metadata. The payload is the
     // turn DELTA plus bounded metadata -- never the whole conversation, so
     // the O(N^2) growth stays gone. This is the only synchronous write per
     // boundary on the reply path, except at a compaction boundary.
