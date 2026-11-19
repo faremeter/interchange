@@ -5981,13 +5981,9 @@ describe("IPC integration smoke", () => {
       writer: eventStream.writer,
     });
     await eventSender.send({
-      type: "message.run.started",
+      type: "reactor.turn.started",
       seq: 1,
-      data: {
-        messageId: "m",
-        messageRunId: "r",
-        receivedAt: 1,
-      },
+      data: { turnId: "t", resumed: false, messageId: "m" },
     });
     eventStream.close();
 

@@ -1383,11 +1383,28 @@ export type PendingOperation = {
    * markers. Threaded through the suspend hops to the hub co-write.
    */
   approvalSnapshot?: ApprovalSnapshot;
+  /**
+   * The turn that parked this operation. A turn is one inbound request, and
+   * its id spans every cycle and every resume of that request. The resume of
+   * this operation continues this turn.
+   */
+  turnId: string;
+  /**
+   * Whether a live gate parks this operation. An ask-rail approval and an
+   * operation a director suspend waits on have a gate (`gateId`); an async
+   * pending marker that no turn waits on has none. A restart re-arms a gate
+   * only for a gated operation, so a marker comes back with no gate.
+   */
+  gated: boolean;
 };
 
 /**
  * Validator for a {@link PendingOperation} read back from an agent's durable
- * state, by the agent's own store and by the Hub's copy of it.
+ * state, by the agent's own store and by the Hub's copy of it. `turnId` is
+ * optional here because state written before turn ids existed has none; the
+ * reactor gives such an operation a legacy id when it loads it. `gated` is
+ * optional because older state has none; the reactor treats such an
+ * operation as gated, which is how that state was rehydrated.
  */
 export const PersistedPendingOperation = type({
   correlationId: "string",
@@ -1397,7 +1414,10 @@ export const PersistedPendingOperation = type({
   "timeoutAt?": "number",
   "suspendedCall?": ToolCall,
   "approvalSnapshot?": ApprovalSnapshot,
+  "turnId?": "string",
+  "gated?": "boolean",
 });
+export type PersistedPendingOperation = typeof PersistedPendingOperation.infer;
 
 // The persisted schema and the in-memory PendingOperation type are two
 // separate declarations kept in lockstep. arktype passes undeclared keys
@@ -1418,6 +1438,28 @@ const _persistedApprovalSnapshot = (
   op: typeof PersistedPendingOperation.infer,
 ): ApprovalSnapshot | undefined => op.approvalSnapshot;
 void _persistedApprovalSnapshot;
+
+// Same lockstep guard for the turn id: the persisted schema must keep
+// carrying `turnId` so a rehydrated pending operation resumes its own turn.
+// The second projection errors under `tsc` if the in-memory type stops
+// requiring the field.
+const _persistedTurnId = (
+  op: typeof PersistedPendingOperation.infer,
+): string | undefined => op.turnId;
+void _persistedTurnId;
+const _pendingTurnId = (op: PendingOperation): string => op.turnId;
+void _pendingTurnId;
+
+// Same lockstep guard for `gated`: the persisted schema must keep carrying
+// it so a restart re-arms a gate only for an operation that had one. The
+// second projection errors under `tsc` if the in-memory type stops
+// requiring the field.
+const _persistedGated = (
+  op: typeof PersistedPendingOperation.infer,
+): boolean | undefined => op.gated;
+void _persistedGated;
+const _pendingGated = (op: PendingOperation): boolean => op.gated;
+void _pendingGated;
 
 /**
  * Complete reactor state visible to the director decision function.
@@ -1530,17 +1572,19 @@ export type ReactorCapabilities = {
  *
  * `resume.execute_tools` is raised by the reactor when an approval resolves
  * and a parked tool call must be re-run on resume. It carries the calls the
- * reactor is about to dispatch so the director can seed its outstanding
- * tool-result count before those calls' `tool.done` events arrive — the
- * reactor drives the execution, the director counts the results. Without this
- * seed the count would sit at zero and the first `tool.done` would drive an
- * accidental re-inference off a negative count.
+ * reactor is about to dispatch, before those calls' `tool.done` events
+ * arrive. The reactor drives the execution; the director decides what follows
+ * the results. The approval applies only to the `execute_tools` action that
+ * the director returns for this event, in this cycle, and only to a call with
+ * the same id, name and arguments. A call the director changes, defers to a
+ * later cycle or never runs loses the approval and hits its ask gate again.
+ * Nothing about the approval persists.
  *
  * `resume.tool_result` is raised by the reactor when a parked approval ends
  * without running its tool — a rejected decision or a gate timeout. It carries
  * a synthetic error tool result that answers the parked call so history stays
- * well-formed; the director appends it and re-infers exactly once. No tool
- * runs, so it seeds no outstanding-result count.
+ * well-formed. The reactor appends it to history before the director decides.
+ * No tool runs, so no `tool.done` follows it.
  *
  * (INFERENCE.md § Agent Reactor › Reactor Structure)
  */
@@ -1595,7 +1639,8 @@ export interface ReactorDirector {
  *   is neither run nor error-completed. `gate.timeoutAt` is the absolute
  *   deadline (epoch ms) so the reactor can compute the remaining time; the
  *   `correlationId` on both `gate` and `pendingOp` ties an inbound resolution
- *   back to the suspension.
+ *   back to the suspension. `pendingOp` has no `turnId`: the extension does
+ *   not know the turn, so the reactor adds the running turn's id.
  */
 export type BeforeToolDecision =
   | { type: "allow" }
@@ -1608,7 +1653,7 @@ export type BeforeToolDecision =
         correlationId: string;
         timeoutAt: number;
       };
-      pendingOp: PendingOperation;
+      pendingOp: Omit<PendingOperation, "turnId" | "gated">;
     };
 
 /**
@@ -1616,19 +1661,21 @@ export type BeforeToolDecision =
  * `BeforeToolDecision`: `allow` lets the call run, `block` answers it with an
  * error result, `suspend` parks it awaiting an external decision.
  *
- * `grantOneShot` registers a within-cycle bypass token keyed on a
- * `ToolCall.id`: the next `beforeTool` for that id skips a suspension it would
- * otherwise raise, consuming the token as it does so. It is optional because
- * only extensions that can suspend a call have anything to bypass; extensions
- * that never suspend omit it.
+ * `ctx.approved` is true only when an approver approved this exact call's
+ * suspension and the reactor now runs that call. An extension that can
+ * suspend lets an approved call through the gate it would raise. The reactor
+ * holds no approval state between runs, so a later call with the same id is
+ * not approved.
  */
+export type BeforeToolContext = { approved: boolean };
+
 export interface BeforeToolExtension {
   beforeTool(
     call: ToolCall,
     state: ReactorState,
     signal: AbortSignal,
+    ctx: BeforeToolContext,
   ): Promise<BeforeToolDecision>;
-  grantOneShot?(id: string): void;
 }
 
 /**
@@ -2287,7 +2334,7 @@ export interface ContextStore {
    */
   load(signal?: AbortSignal): Promise<{
     turns: ConversationTurn[];
-    pendingOperations: PendingOperation[];
+    pendingOperations: PersistedPendingOperation[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
   }>;
@@ -2384,11 +2431,12 @@ export interface ContextStore {
    * restart: pending async operations and cumulative token usage. The store
    * combines this with the most recently buffered connector state (from
    * `setConnectorState`) and writes the merged payload. Staged at the next
-   * `commit({ message })`.
+   * `commit({ message })`. It takes the persisted shape that `load` returns,
+   * so a caller can write back the operations it loaded without a change.
    */
   writeMetadata(
     metadata: {
-      pendingOperations: PendingOperation[];
+      pendingOperations: PersistedPendingOperation[];
       tokenUsage: TokenUsage;
     },
     signal?: AbortSignal,

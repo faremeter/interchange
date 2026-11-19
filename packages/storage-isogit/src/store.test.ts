@@ -1781,11 +1781,12 @@ describe("connector thread state", () => {
     expect((await store.loadMetadata()).parkedReplyTargets).toEqual({});
   });
 
-  test("a persisted suspendedCall survives commit and reload end-to-end", async () => {
+  test("a persisted suspendedCall and turnId survive commit and reload end-to-end", async () => {
     // End-to-end persistence check: write, commit, reload, compare. This
     // does not by itself pin the schema declaration (arktype passes
-    // undeclared keys through), so @intx/types carries a compile-time guard
-    // that keeps `PersistedPendingOperation.suspendedCall` load-bearing.
+    // undeclared keys through), so @intx/types carries compile-time guards
+    // that keep `PersistedPendingOperation.suspendedCall` and `turnId`
+    // load-bearing.
     const dir = await tempDir();
     const store = await createIsogitStore(dir);
 
@@ -1800,6 +1801,8 @@ describe("connector thread state", () => {
         name: "deploy",
         arguments: { target: "prod" },
       },
+      turnId: "turn-1",
+      gated: true,
     };
 
     await store.writeTurns([]);

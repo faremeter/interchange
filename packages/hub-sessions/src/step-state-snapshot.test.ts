@@ -53,6 +53,8 @@ const PENDING: PendingOperation = {
   kind: "approval",
   registeredAt: 0,
   gateId: "gate-1",
+  turnId: "turn-1",
+  gated: true,
 };
 
 const turn = (text: string): ConversationTurn => ({

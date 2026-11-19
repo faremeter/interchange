@@ -336,6 +336,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       kind: "approval",
       registeredAt: 0,
       gateId: "gate-1",
+      turnId: "turn-1",
+      gated: true,
     };
     await store.storage.writeTurns(turns);
     await store.storage.writeMetadata({
@@ -374,6 +376,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       kind: "approval",
       registeredAt: 0,
       gateId: "gate-1",
+      turnId: "turn-1",
+      gated: true,
     };
     const metadata = {
       pendingOperations: [pendingOp],
@@ -1204,6 +1208,8 @@ describe("durable conversation store attempt-scoped local store", () => {
       kind: "approval",
       registeredAt: 0,
       gateId: "gate-corr-seeded",
+      turnId: "turn-corr-seeded",
+      gated: true,
     };
     const crashed = await makeStore(h, localDir, attemptOne);
     await crashed.restoreFromSubstrate();

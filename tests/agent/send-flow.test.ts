@@ -363,8 +363,9 @@ describe("@intx/agent send-flow integration", () => {
   });
 
   test("abort signal on in-flight send rejects without blocking the agent", async () => {
-    harness.scenario.replyOnce("anthropic", { text: "abandoned reply" });
-
+    // The abort lands while the send's delivery is still being admitted, so
+    // the agent abandons its turn and the reactor drops the delivery: no
+    // model call is made for it.
     const agent = await createAgent(
       definition(),
       await envFor(join(workDir, "ctx"), harness),

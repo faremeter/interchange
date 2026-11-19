@@ -614,8 +614,8 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
       outbound.subject = parentHeaders.subject;
     }
 
-    // The reactor's tryCorrelate keys on Interchange-Correlation-ID alone, so a
-    // reply that drops it leaves the requester waiting.
+    // The reactor correlates on Interchange-Correlation-ID alone, so a reply
+    // that drops it leaves the requester waiting.
     if (parentHeaders.interchangeCorrelationId !== undefined) {
       outbound.correlationId = parentHeaders.interchangeCorrelationId;
     }

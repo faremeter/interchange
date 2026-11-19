@@ -41,23 +41,127 @@ export type EventCollectorRegistryConfig = {
   onUsage?: (agentAddress: string, usage: TurnUsage) => void;
 };
 
-export function deriveStatus(event: InferenceEvent): SessionStatus | null {
+/**
+ * The per-address state the session status is derived from: the turns that
+ * run now, and the gates that are open, with their turn.
+ */
+type StatusTracker = {
+  running: Set<string>;
+  gates: Map<string, { turnId: string | undefined; approval: boolean }>;
+};
+
+function createStatusTracker(): StatusTracker {
+  return { running: new Set(), gates: new Map() };
+}
+
+function dropGatesOf(tracker: StatusTracker, turnId: string): void {
+  for (const [gateId, gate] of tracker.gates) {
+    if (gate.turnId === turnId) tracker.gates.delete(gateId);
+  }
+}
+
+function holdsApproval(tracker: StatusTracker, turnId: string): boolean {
+  for (const gate of tracker.gates.values()) {
+    if (gate.turnId === turnId && gate.approval) return true;
+  }
+  return false;
+}
+
+// The status of the tracker's state: `busy` while a running turn holds no
+// open approval gate, else `waiting_approval` while any approval gate is
+// open, else `idle`.
+function statusOf(tracker: StatusTracker): SessionStatus {
+  for (const turnId of tracker.running) {
+    if (!holdsApproval(tracker, turnId)) return { status: "busy" };
+  }
+  for (const gate of tracker.gates.values()) {
+    if (gate.approval) return { status: "waiting_approval" };
+  }
+  return { status: "idle" };
+}
+
+/**
+ * Reduce one event into the tracker and return the session status it sets,
+ * or `null` for an event that does not change the tracker. After each event
+ * that changes it, the status is computed from the whole state, so one
+ * turn's events cannot hide another turn's work or its open approval.
+ *
+ * State: the running turns, and the open gates (gate id to turn and whether
+ * it is an approval).
+ * - `reactor.turn.started` and `inference.start` make their turn run.
+ * - `reactor.gate.blocked` records the gate. Its turn is parked, so it no
+ *   longer runs.
+ * - `reactor.gate.cleared` of a known gate drops the gate (any reason) and
+ *   makes its turn run again, except for an abandoned turn's gate: nothing
+ *   resumes. The event carries no turn id, so one for a gate the tracker
+ *   does not know changes nothing.
+ * - `reactor.turn.ended` stops the turn and drops its gates. A `joined` end
+ *   changes nothing.
+ * - `reactor.done` and a fatal `reactor.error` clear the state.
+ * - `connector.reply` and other events change nothing.
+ *
+ * Status: `busy` while any running turn holds no open approval gate; else
+ * `waiting_approval` while any approval gate is open; else `idle`. A turn
+ * that holds an open approval gate shows `waiting_approval` also while it
+ * infers: that turn cannot finish until a person decides, so
+ * `waiting_approval` is the actionable status. Another running turn still
+ * makes the session `busy`.
+ *
+ * Known gap: after a restart the tracker never sees `reactor.gate.blocked`
+ * for a rehydrated approval gate, so the status reads `idle`, not
+ * `waiting_approval`, until that gate clears.
+ */
+function deriveStatus(
+  tracker: StatusTracker,
+  event: InferenceEvent,
+): SessionStatus | null {
   switch (event.type) {
-    case "inference.start":
-      return { status: "busy" };
-    case "connector.reply":
-      return { status: "idle" };
-    case "reactor.gate.blocked":
-      if (event.data.reason === "approval")
-        return { status: "waiting_approval" };
-      return null;
-    case "reactor.gate.cleared":
-      return { status: "busy" };
+    case "inference.start": {
+      // The type allows an `inference.start` with no turn id: the inference
+      // harness emits it before the reactor stamps the turn id. The hub
+      // gets only stamped events. One with no turn id sets `busy` but
+      // changes no state, so no turn runs, and the next event that changes
+      // the state gives the status from it.
+      const turnId = event.data.turnId;
+      if (turnId === undefined) return { status: "busy" };
+      tracker.running.add(turnId);
+      return statusOf(tracker);
+    }
+    case "reactor.gate.blocked": {
+      const { turnId } = event.data;
+      const approval = event.data.reason === "approval";
+      tracker.gates.set(event.data.gateId, { turnId, approval });
+      if (turnId !== undefined) tracker.running.delete(turnId);
+      return statusOf(tracker);
+    }
+    case "reactor.turn.started":
+      tracker.running.add(event.data.turnId);
+      return statusOf(tracker);
+    case "reactor.gate.cleared": {
+      const gate = tracker.gates.get(event.data.gateId);
+      if (gate === undefined) return null;
+      tracker.gates.delete(event.data.gateId);
+      if (gate.turnId !== undefined && event.data.reason !== "abandoned") {
+        tracker.running.add(gate.turnId);
+      }
+      return statusOf(tracker);
+    }
+    case "reactor.turn.ended": {
+      const ended = event.data;
+      if (ended.outcome === "joined") return null;
+      tracker.running.delete(ended.turnId);
+      dropGatesOf(tracker, ended.turnId);
+      return statusOf(tracker);
+    }
     case "reactor.done":
-      return { status: "idle" };
+      tracker.running.clear();
+      tracker.gates.clear();
+      return statusOf(tracker);
     case "reactor.error":
-      if (event.data.fatal) return { status: "idle" };
-      return null;
+      if (!event.data.fatal) return null;
+      tracker.running.clear();
+      tracker.gates.clear();
+      return statusOf(tracker);
     default:
       return null;
   }
@@ -69,6 +173,7 @@ export function createEventCollectorRegistry(
   const { db, onTurnFinalized, onUsage } = config;
   const collectors = new Map<string, EventCollector>();
   const statuses = new Map<string, SessionStatus>();
+  const trackers = new Map<string, StatusTracker>();
   // Per-address tail promise: serializes onEvent/abandon work for one run
   // address so their DB writes cannot interleave. Reaped when it drains.
   const tails = new Map<string, Promise<void>>();
@@ -103,11 +208,13 @@ export function createEventCollectorRegistry(
     });
     collectors.set(agentAddress, collector);
     statuses.set(agentAddress, { status: "idle" });
+    trackers.set(agentAddress, createStatusTracker());
   }
 
   function removeCollector(agentAddress: string): void {
     collectors.delete(agentAddress);
     statuses.delete(agentAddress);
+    trackers.delete(agentAddress);
   }
 
   // Chain `work` onto the address's tail so per-address work runs in order and
@@ -137,11 +244,12 @@ export function createEventCollectorRegistry(
 
   function dispatch(agentAddress: string, event: InferenceEvent): void {
     const collector = collectors.get(agentAddress);
-    if (collector === undefined) {
+    const tracker = trackers.get(agentAddress);
+    if (collector === undefined || tracker === undefined) {
       return;
     }
 
-    const derived = deriveStatus(event);
+    const derived = deriveStatus(tracker, event);
     if (derived !== null) {
       statuses.set(agentAddress, derived);
     }

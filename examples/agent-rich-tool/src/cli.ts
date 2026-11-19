@@ -156,9 +156,8 @@ export async function main(
     stdout(`  action:        ${action}\n\n`);
 
     // Synthesise the approval message and hand it to the agent.
-    // `interchangeCorrelationId` is what the reactor's tryCorrelate
-    // routes on; the message body is opaque from the gate's
-    // perspective.
+    // `interchangeCorrelationId` is what the reactor correlates on; the
+    // message body is opaque from the gate's perspective.
     const approval = createInboundMessage({
       from: "approver@local",
       to: "agent@local",

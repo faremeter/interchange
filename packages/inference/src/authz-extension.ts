@@ -126,14 +126,6 @@ export function createAuthzExtension<Ctx = unknown>(
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the inference layer has no domain knowledge to construct a Ctx; callers that need a populated context use closure capture on the authorize function (see @intx/workflow's AuthorizeContext)
   const emptyContext = Object.freeze({}) as Ctx;
 
-  // One-shot bypass tokens, keyed on ToolCall.id. A token authorizes a single
-  // re-dispatch of an already-approved call to skip the `ask` gate it would
-  // otherwise re-hit. Held in memory only, within the resumed reactor cycle
-  // that grants and consumes it: a durable allow would outlive the cycle and
-  // defeat the one-shot intent, and a crash between grant and consume simply
-  // re-drives from the durable log and re-grants.
-  const approvedOnce = new Set<string>();
-
   // Name → definition lookup for building the approval snapshot at the `ask`
   // branch. `undefined` (not merely empty) means the caller wired no tool
   // definitions and wants no snapshot; a defined map means every authorizable
@@ -145,10 +137,7 @@ export function createAuthzExtension<Ctx = unknown>(
       : undefined;
 
   return {
-    grantOneShot(id) {
-      approvedOnce.add(id);
-    },
-    async beforeTool(call) {
+    async beforeTool(call, _state, _signal, ctx) {
       const resource = `tool:${call.name}`;
       const action = "invoke";
 
@@ -196,26 +185,16 @@ export function createAuthzExtension<Ctx = unknown>(
       };
       safeOnDecision(opts.onDecision, decision);
 
-      // A one-shot token only authorizes bypassing an `ask` gate. If the
-      // resolved effect is anything else, the grant changed underneath the
-      // token: drop it and let the normal path decide, rather than silently
-      // allowing a call the policy no longer parks.
-      if (approvedOnce.has(call.id) && result.effect !== "ask") {
-        approvedOnce.delete(call.id);
-      }
-
       if (blockReason !== undefined) {
         return { type: "block", reason: blockReason };
       }
 
       if (result.effect === "ask") {
-        // A prior approval authorized this exact call to run once. Consume the
-        // token (delete-on-read) and allow it through instead of suspending,
-        // so a re-dispatched approved call does not re-park on its own gate.
-        if (approvedOnce.has(call.id)) {
-          approvedOnce.delete(call.id);
-          return { type: "allow" };
-        }
+        // An approver approved this exact call's suspension, and the reactor
+        // now runs that call: let it through instead of suspending again. An
+        // approval only passes an `ask` gate; a `deny` or no grant still
+        // blocks above.
+        if (ctx.approved) return { type: "allow" };
 
         // Mint the correlationId once here so it is the single source of
         // identity for both the gate and the persisted operation. The
@@ -251,7 +230,7 @@ export function createAuthzExtension<Ctx = unknown>(
           };
         }
 
-        const pendingOp: PendingOperation = {
+        const pendingOp: Omit<PendingOperation, "turnId" | "gated"> = {
           correlationId,
           kind: "approval",
           registeredAt: Date.now(),

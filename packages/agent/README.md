@@ -65,6 +65,48 @@ const { reply } = await agent.send("hello");
 await agent.close();
 ```
 
+## Sends and turns
+
+Each `send()` belongs to one turn: one inbound request, which can span
+several model calls and resumes. Pass `SendOptions.turnId` to name the
+turn; without it the agent mints a fresh id. The send settles only on the
+events of the turn it follows, so another turn's reply or park never
+settles it.
+
+- A reply of the turn resolves the send as `reply`.
+- A park of the turn resolves it as `suspended`, with the correlation id
+  to resume against.
+- A send that carries a correlated decision for a parked turn joins that
+  turn: it then follows the parked turn and settles on its reply or its
+  next park.
+- A turn that ends with no reply for the send rejects it with
+  `TurnEndedWithoutReplyError`, for example when the director waits, when
+  a correlated send resumes nothing, or when the send joined a parked turn
+  whose only reply came before the send joined it.
+- A turn that ends `failed` with no fatal reactor error before it rejects
+  the send with `TurnFailedError`.
+- A send that names a turn that already ended rejects. Naming another live
+  turn, other than a parked turn the send resumes, is misuse. For example,
+  a queued send that names the same turn as the send before it starts when
+  that send's reply settles it, before the turn ends. Its message then runs
+  under a fresh turn, and the named turn's end rejects the send with
+  `TurnEndedWithoutReplyError`.
+
+Both `reply` and `suspended` results carry `turnId`: the turn the send
+followed, which after a join is the parked turn. See INFERENCE.md § Agent
+Sends.
+
+An aborted send (`SendOptions.signal`) rejects with the signal's reason
+at once, and the agent abandons the turn the send follows: its model call
+or tool batch is aborted, the director sees no more of its events, its
+open tool calls get an error result, and it ends `abandoned`. The next
+send starts once that turn has ended. The turn the send follows is also
+a turn the send names (`SendOptions.turnId`): an abort abandons that
+turn, even a parked one. A turn stays parked only when the send uses its
+own fresh turn id and the abort lands before the delivery is admitted:
+the delivery is then dropped and resumes nothing. A send aborted while
+still queued never reaches the reactor.
+
 ## Compactors
 
 A compactor rewrites the conversation history when the director asks for

@@ -1051,7 +1051,7 @@ honors it -- after a step's output it re-arms while budget remains, else
 completes. The step-invoker adapter is a translator: it returns a reply as
 `{ output }` and never parks itself. Its only concession to the input kind is
 the resume path -- an `"approval"` resume delivers a body stamped with the
-correlationId so the reactor's `tryCorrelate` matches the rehydrated gate; an
+correlationId so the reactor correlates it with the rehydrated gate; an
 `"input"` resume delivers the decision as a plain next user turn (no gate to
 match).
 

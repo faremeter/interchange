@@ -116,6 +116,8 @@ function pendingApproval(
     kind: "approval",
     registeredAt: 0,
     gateId: `gate-${correlationId}`,
+    turnId: `turn-${correlationId}`,
+    gated: true,
     ...(approvalSnapshot !== undefined ? { approvalSnapshot } : {}),
   };
 }
@@ -995,6 +997,8 @@ describe("toParkedApprovalOps", () => {
       registeredAt: 0,
       gateId: "gate-corr-timeout",
       timeoutAt: 1_700_000_000_000,
+      turnId: "turn-corr-timeout",
+      gated: true,
     };
 
     const got = toParkedApprovalOps([

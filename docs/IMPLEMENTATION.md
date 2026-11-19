@@ -495,7 +495,7 @@ The workflow-process runs code the operator deploys but the sidecar does not ful
 Each deployment gets two channels:
 
 - **Control channel.** NDJSON over stdio, Ed25519-signed per direction. Carries the child's first `authority.set`, trigger fires, signal deliveries, drain, quiet checks, shutdown, grants-updated, credentials-updated, sources-updated, and back from the child its `definition` report and its `ready` signal. Low rate, high authority. Sending and receiving live in `packages/workflow-host/src/ipc/control-sender.ts` and `control-receiver.ts`; payload validation lives in `control-payloads.ts`.
-- **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-message `message.run.started` / `message.run.ended` brackets). High rate. Sending lives in `packages/workflow-host/src/ipc/event-sender.ts`; receiving and payload validation live in `event-channel.ts`.
+- **Event channel.** A UNIX socketpair, HMAC-SHA256-authenticated with a 32-byte symmetric key derived at spawn time. Carries `InferenceEvent`s from the reactor (including the per-turn `reactor.turn.started` / `reactor.turn.ended` events). High rate. Sending lives in `packages/workflow-host/src/ipc/event-sender.ts`; receiving and payload validation live in `event-channel.ts`.
 
 Each side signs control frames with its own private key and verifies incoming frames against its peer's public key, so the child cannot forge supervisor commands. Symmetric HMAC authenticates the event stream at reactor cadence — Ed25519 per frame at that rate would dominate runtime cost. The control receiver validates each payload against its message kind's schema. Those schemas and the `InferenceEvent` schema applied by `parseInferenceEvent` accept disjoint payload shapes: control schemas reject inference-event shapes, and the event schema rejects control-plane shapes, so a confused-deputy attack that smuggles a `drain` or `recycle` over the event channel fails at validation.
 
@@ -962,6 +962,19 @@ park still queued at the restart is relayed then too; for an approval, the
 snapshot comes from the parked step's stored state, through the env's
 `loadParkedApproval`, and a resume without one fails the spawn step. The
 child stays unaddressable; the parent is the resume root.
+
+A step parks on one correlation at a time. Its reactor holds each turn to
+one gate of any type and refuses a second suspend in the same turn
+(INFERENCE.md § Gates). The runtime parking of a step, the correlation
+that `send()` reports, and the connector router's map of parked turns by
+correlation ID all depend on that limit.
+
+A warm step that is aborted mid-turn passes the step's abort signal to
+`agent.send`, and the agent abandons the turn in the reactor
+(INFERENCE.md § Abandoning a Turn): the turn's model call or tool batch is
+aborted, its open calls are answered with an error result, and it ends
+`abandoned`. The hub's approval row of an abandoned parked turn stays
+pending.
 
 #### Recycle
 

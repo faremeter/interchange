@@ -8,12 +8,13 @@
 //     rejects synchronously without enqueueing.
 //   - If the signal fires while the item is still queued the item is
 //     removed and rejected.
-//   - If the signal fires while the item is active the caller-facing
-//     promise rejects immediately, but the reactor cycle continues in the
-//     background. The queue does not start the next item until the consumer
-//     reports the cycle done via resolveActive/rejectActive. This keeps the
-//     queue ordered against actual reactor cycles — two send() promises
-//     cannot interleave at the reactor level.
+//   - If the signal fires while the item is active the queue calls
+//     `abortActive` with the item, and the caller-facing promise rejects
+//     immediately. The consumer abandons the item's work, and the active
+//     slot stays until that work ends: the queue does not start the next
+//     item until the consumer reports it done via resolveActive/rejectActive.
+//     This keeps the queue ordered against actual reactor turns — two send()
+//     promises cannot interleave at the reactor level.
 //
 // A `start` that throws synchronously rejects that item and pumps the
 // next, so a rejected item never occupies the active slot.
@@ -56,6 +57,13 @@ export type SendQueueOptions<T> = {
    * `rejectActive` exactly once.
    */
   start: (item: T) => void;
+  /**
+   * Called when the signal of the active job fires, before the job's
+   * promise rejects. Not called for a pending job, nor after the job
+   * settled. The consumer abandons the job's work; it must still call
+   * `resolveActive` or `rejectActive` when that work ends.
+   */
+  abortActive: (item: T) => void;
 };
 
 export type SendQueue<T, R> = {
@@ -149,9 +157,10 @@ export function createSendQueue<T, R>(
       const handler = (): void => {
         const reason = abortReason(signal);
         if (active === job) {
-          // In flight: settle the caller now; the consumer will eventually
-          // call resolveActive/rejectActive which becomes a no-op and
-          // advances the queue.
+          // In flight: abandon the work and settle the caller now; the
+          // consumer will eventually call resolveActive/rejectActive, which
+          // becomes a no-op and advances the queue.
+          opts.abortActive(job.item);
           settle(job, "reject", reason);
         } else {
           const idx = pending.indexOf(job);

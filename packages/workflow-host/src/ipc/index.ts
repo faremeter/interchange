@@ -65,7 +65,7 @@
 // 2. HMAC-SHA256 on the event channel.
 //    Symmetric authentication is correct for the high-rate path
 //    (InferenceEvents stream at the reactor's emit cadence, including
-//    `message.run.started` / `message.run.ended` brackets). Both
+//    `reactor.turn.started` / `reactor.turn.ended` events). Both
 //    sides hold the same 32-byte key; both sides authenticate every
 //    frame. HMAC is roughly two orders of magnitude cheaper per byte
 //    than Ed25519, which is what makes per-frame authentication

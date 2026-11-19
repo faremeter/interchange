@@ -83,7 +83,7 @@ All inference activity — streaming tokens, tool execution, reactor state chang
 ### Event Types
 
 ```
-inference.start           — Model call begins (carries model ID)
+inference.start           — Model call begins (carries model ID and turn ID)
 inference.thinking.delta  — Reasoning token
 inference.text.delta      — Output token
 inference.refusal.delta   — Refusal token (OpenAI strict-mode structured outputs)
@@ -91,7 +91,7 @@ inference.tool_call.start — Tool call detected (name, partial args)
 inference.tool_call.delta — Tool call argument fragment
 inference.tool_call.end   — Tool call complete (full args)
 inference.usage           — Token accounting for this call (fires before inference.done)
-inference.done            — Model call completed normally (carries final message and usage summary)
+inference.done            — Model call completed normally (carries final message, usage summary and turn ID)
 inference.error           — Model call failed (carries error classification and partial message)
 inference.retry           — Retry-policy decision between attempts (carries failed attempt #, chosen delayMs, previous error)
 
@@ -103,11 +103,13 @@ message.received          — Inbound message arrived (reactor-internal; not for
 message.queued            — Inbound message queued for later processing
 message.correlated        — Inbound message matched to pending outbound
 
-connector.reply           — Agent reply sent to the conversation (turn complete)
+connector.reply           — Agent reply sent to the conversation (carries content, checkpoint hash and turn ID)
 
 reactor.start             — Reactor initialized
-reactor.gate.blocked      — Reactor suspended (reason, gate type)
-reactor.gate.cleared      — Suspension resolved, reactor resuming
+reactor.gate.blocked      — Reactor suspended (reason, gate type, turn ID)
+reactor.gate.cleared      — Suspension resolved, reactor resuming (reason `resolved`, `timeout`, `shutdown`, or `abandoned` when its turn was abandoned and nothing resumes). Emitted for every gate that `reactor.gate.blocked` announced, after that event. For an ask-flow approval (approved, rejected or timed out) and for an abandoned gate it is emitted only; the director gets the resume event, or nothing
+reactor.turn.started      — The reactor starts work for a turn in this process (turn ID, resumed flag, message ID)
+reactor.turn.ended        — A turn ended (turn ID, outcome, joined turn ID or error)
 reactor.done              — Reactor completed normally
 reactor.error             — Reactor failed
 
@@ -322,6 +324,12 @@ This document uses "context" in three distinct senses:
 
 When the distinction matters, this document uses the specific term. When it doesn't, "context" refers to the message history.
 
+This document uses these terms for the work the reactor does:
+
+- **Turn** — One inbound request. A turn spans every cycle and every resume of that request, also across a restart. See [Turn IDs](#turn-ids) and [Turn Lifecycle](#turn-lifecycle).
+- **Cycle** — One model call and the actions that follow it. The hub's `inference_turn` row records one cycle, not one turn.
+- **Conversation turn** — One message in the message history (`ConversationTurn`), for example an assistant turn or a tool-result turn.
+
 ### Relationship to the Harness
 
 The harness (described in ARCHITECTURE.md) is the agent's runtime. The inference package is a library the harness uses. The harness:
@@ -361,7 +369,7 @@ Event arrives → Director decides → Reactor executes → Next event
 - `tool.done` — A tool execution completed (with result)
 - `reactor.gate.cleared` — A suspension condition resolved (with gate result)
 - `resume.execute_tools` — An approval resolved and a parked tool call is being re-run (carries the calls the reactor is about to dispatch)
-- `resume.tool_result` — A parked call is answered with a synthesized result and the run re-infers once (an approval was rejected or timed out; carries the error tool result). It does NOT seed the outstanding-tool-result count — the result is injected, not executed
+- `resume.tool_result` — A parked call is answered with a synthesized result (an approval was rejected or timed out; carries the error tool result). The result is injected, not executed, so no `tool.done` follows
 - `abort` — The reactor should shut down (with reason)
 
 **Actions** (things the reactor can do, as directed by the director):
@@ -384,6 +392,8 @@ Events from multiple sources can land in the reactor's queue simultaneously. Dur
 The reactor enforces a priority invariant: when the last message in the conversation history is an assistant message with tool calls (meaning tool results have not yet been appended), inference-cycle events (`inference.done`, `inference.error`, `tool.done`) are dequeued before other events. This ensures the tool-call cycle always completes before inbound messages are interleaved into the history. Once tool results are in place, the reactor reverts to FIFO ordering so inbound messages are processed promptly.
 
 `abort` events are always processed immediately regardless of cycle state.
+
+An internal abandon event (see Abandoning a Turn) has its own place in that order. While cycle events are queued, an abandon of the turn that owns them goes first, because it drops them; an abandon of another turn waits until the cycle is quiescent, so its history append cannot land in the middle of another turn's tool batch. When the cycle is quiescent, the first queued abandon goes before FIFO order.
 
 ### The `emit` Action
 
@@ -409,7 +419,7 @@ It returns one or more actions. Multiple actions execute concurrently where poss
 
 **If the director throws an exception**, the reactor catches it, emits `reactor.error` with the exception details, and initiates graceful shutdown. The director is user-provided code and must not be able to crash the reactor without a clean terminal event.
 
-**If the model drives a doom loop** — the same tool-call turn (identical tool names and, by exact match, arguments) executed `doomLoopThreshold` times in a row, default 3 — the reactor emits a fatal `reactor.error` and initiates graceful shutdown, ending the run with `message.run.ended` carrying `kind: "doom_loop"`. This guards against a runaway model that repeats an identical call: it makes no progress but keeps paying for an inference every turn. Passing `doomLoopThreshold: false` disables the guard entirely.
+**If the model drives a doom loop** — the same tool batch (identical tool names and, by exact match, arguments) executed `doomLoopThreshold` times in a row in one turn, default 3 — the reactor emits a fatal `reactor.error`, ends the turn with `reactor.turn.ended` (outcome `failed`, `error.kind: "doom_loop"`), and initiates graceful shutdown. This guards against a runaway model that repeats an identical call: it makes no progress but keeps paying for an inference every cycle. Each turn has its own count, so the batches of another turn do not change it. A parked turn keeps its count in memory until it resumes. The count is not persisted, so a restart resets it. Passing `doomLoopThreshold: false` disables the guard entirely.
 
 ### Action Validation
 
@@ -419,7 +429,7 @@ The reactor validates the action set returned by the director before executing:
 - **Fork is composable** — `fork` can appear alongside `infer` or `execute_tools` (fork happens concurrently).
 - **Multiple tool executions collapse** — Multiple `execute_tools` actions are merged into a single parallel batch.
 - **Suspend is exclusive** — `suspend` cannot appear alongside `infer` or `execute_tools`. You either do work or you wait.
-- **Reply is terminal for the cycle** — At most one `reply` action. It carries a `content` string. The reactor flushes any pending cycle work, emits a `connector.reply` event carrying the content (and the current checkpoint hash, when one exists), then returns to the event loop to await the next inbound message. Because `reply` ends the turn by handing content back to the connector, it cannot appear alongside `infer`, `execute_tools`, `done`, `suspend`, or `wait` — the reactor will not both reply and continue doing work or terminate in the same set. It composes with the always-composable actions (`fork`, `emit`, `checkpoint`), which fire before the reply is emitted.
+- **Reply is terminal for the cycle** — At most one `reply` action. It carries a `content` string. The reactor flushes any pending cycle work, emits a `connector.reply` event carrying the content (and the current checkpoint hash, when one exists), then returns to the event loop to await the next inbound message. Because `reply` ends the cycle by handing content back to the connector, it cannot appear alongside `infer`, `execute_tools`, `done`, `suspend`, or `wait` — the reactor will not both reply and continue doing work or terminate in the same set. It composes with the always-composable actions (`fork`, `emit`, `checkpoint`), which fire before the reply is emitted.
 - **Checkpoint is composable** — At most one `checkpoint` per action set; it can appear alongside any other action (it fires before the other action executes). The checkpoint carries a `message` string used as the git commit message.
 - **Compact selects a registered compactor** — The `compact` action carries a `compactor` name (resolved against the reactor's compactor registry) and a `reason` string recorded in the manifest. Composition rules with other actions are defined in [Context Transforms and Compactors](#context-transforms-and-compactors). The reactor executes it via `executeCompact`, which runs the selected compactor and overwrites the durable turns (`turns.jsonl`, via `ContextStore.writeTurns`) with its output.
 - **Wait is exclusive** — `wait` returns to the event loop immediately. It cannot appear alongside `infer` or `execute_tools`.
@@ -438,6 +448,144 @@ Inbound messages arrive at the reactor regardless of current state. Correlated m
 
 **Ignore** — Drop the message. Use case: duplicate delivery, irrelevant system notification.
 
+### Turn IDs
+
+A turn is one inbound request. Its turn ID spans every cycle and every resume of that request, also across a restart.
+
+A caller names the turn with `reactor.deliver(message, { turnId })`. When the caller gives no `turnId`, the reactor mints a fresh ID for the delivery. The reactor records the turn ID of each event it queues, and it holds the turn ID of the event that it is handling now. It stamps that ID on `inference.start`, `inference.done`, `connector.reply`, and `reactor.gate.blocked`. The harness does not know turns, so the reactor stamps `inference.start` and `inference.done` as it passes them through.
+
+A gate and the pending operation it parks carry the turn ID of the turn that parked them. A director can suspend on the correlation of a pending operation that the running turn or an earlier turn registered (an async pending marker). When the operation has no live gate, that gate moves the operation to the turn that suspends, and the operation takes the gate's ID: the running turn now waits for the operation, so the operation, its gate and its resume belong to the turn that waits. The earlier turn can also have ended (see [Turn Lifecycle](#turn-lifecycle)), and a gate under an ended turn would resume a turn that cannot end again. When the correlation already has a live gate, of any turn, the reactor refuses the suspend with a non-fatal `reactor.error`, registers no gate and moves no operation. It still commits the cycle (see [Gates](#gates)). The pending operation persists its turn ID. A resume continues the parked turn, not the turn that runs when the resume happens:
+
+- An approved or rejected approval continues the pending operation's turn. The turn ID of the correlated delivery does not apply to the resume.
+- A gate that clears or times out continues the gate's turn.
+
+A pending operation persisted before turn IDs existed has no turn ID. When the reactor loads it, the reactor gives it the ID `legacy:<correlationId>`, and its rehydrated gate takes the same ID.
+
+A pending operation records whether a live gate parks it (`gated`). An ask-rail approval and an operation that a director suspend waits on are gated. This includes a marker that a tool returns while a director gate already waits on its correlation: the operation then takes that gate's ID and turn. An async pending marker that no turn waits on is not gated. When a gate goes away and its operation stays registered (for example, a director gate on a marker times out), the operation is no longer gated, and the next commit persists that. A shutdown keeps its operations gated, so a parked turn resumes after the restart. A restart registers every loaded operation, but re-arms a gate only for a gated one. A pending operation persisted before `gated` existed counts as gated, because that state re-armed a gate for every operation.
+
+### Turn Lifecycle
+
+The reactor gives each turn one lifecycle in a process: at most one `reactor.turn.started` and at most one `reactor.turn.ended`.
+
+**Start.** The reactor emits `reactor.turn.started` the first time it handles an event of a turn in this process:
+
+- On the dequeue of a new message, with `resumed: false` and the message's `messageId` when it has one.
+- On the first resume of a parked turn, with `resumed: true` and no `messageId`. A resume after a restart is a first resume in the new process.
+
+A resume that arrives while the turn's first cycle still runs emits no second start.
+
+**End.** A turn ends when one of its cycles settles and the turn has no live gate and no queued event. The outcome tells why:
+
+| Outcome      | Cause                                                                                                                                                                  |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `replied`    | The turn settled after it emitted a `connector.reply`.                                                                                                                 |
+| `unanswered` | The turn settled with no reply: `wait`, an empty action set, emit or checkpoint only, `compact` alone, or `done`.                                                      |
+| `joined`     | A correlated delivery continued another turn. `joinedTurnId` names the turn it continued: the operation's turn for an approval, the gate's turn for an async response. |
+| `failed`     | A fatal path stopped the turn. `error` carries a message and a kind.                                                                                                   |
+| `abandoned`  | The turn's caller gave up (`abandonTurn`, see Abandoning a Turn).                                                                                                      |
+
+`infer` and `execute_tools` do not end a turn, because they queue the turn's next cycle event. `suspend` does not end a turn, because the turn then holds a live gate. A gate that clears or times out queues its resume in the same step that removes the gate, so its turn does not settle in between.
+
+**Correlated deliveries.** The delivered turn is the turn the caller named on `deliver`, or the turn the reactor minted for it. A delivery awaits once, for the correlation validator, and changes no state before that await, except that it marks its correlation as in progress until its outcome is applied. After it, the reactor reads the current state once and does one thing, from this table. It uses the operation that is registered for the correlation now, under that operation's current turn: a director suspend can have moved the operation to the turn that waits for it while the validator ran.
+
+A correlation ends the delivered turn only when this process has not seen it: the turn has not ended and this process does not hold it open.
+
+| Reactor | Validation                                                                                                                                                | Operation and gate now                                                    | Outcome                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Done    | Any                                                                                                                                                       | Any                                                                       | The delivered turn ends `failed` (`reactor_done`) when this process has not seen it. Nothing else happens.                                                                                                                                                                                                                                                                                                             |
+| Running | Does not correlate (no correlation ID, no registered operation, a delivery for the same correlation in progress, the validator returns `false` or throws) | Any                                                                       | A new message under the delivered turn. When that turn ended while the validator ran, the delivery becomes a new message under a new turn ID, and the reactor logs a warning that names both IDs.                                                                                                                                                                                                                      |
+| Running | Correlates                                                                                                                                                | No operation (for example, its gate timed out)                            | `message.correlated`; the delivered turn ends `unanswered`.                                                                                                                                                                                                                                                                                                                                                            |
+| Running | Correlates                                                                                                                                                | An approval whose gate is gone (it timed out during its suspend's commit) | As above. The deferred timeout answers the parked call.                                                                                                                                                                                                                                                                                                                                                                |
+| Running | Correlates                                                                                                                                                | An approval with a live gate                                              | The approval resumes the operation's turn (re-run or denied result), and the delivery's options apply to that turn; `message.correlated`; the delivered turn ends `joined`, naming that turn.                                                                                                                                                                                                                          |
+| Running | Correlates                                                                                                                                                | An async operation with a live gate                                       | The gate clears, and its `reactor.gate.cleared` resumes the gate's turn; the response lands in history; the operation is removed; the delivery's options apply to the gate's turn; `message.correlated`; the delivered turn ends `joined`, naming the gate's turn. A marker registered while a director gate already waits on its correlation takes that gate's turn, so the gate's turn is also the operation's turn. |
+| Running | Correlates                                                                                                                                                | An async operation with no gate                                           | The response lands in history; the operation is removed; nothing is queued; `message.correlated`; the delivered turn ends `unanswered`.                                                                                                                                                                                                                                                                                |
+
+Two rows come before the table, right after the done check. A delivery admitted while the abandon of the turn it names is pending is dropped with no event: no `message.received`, no history and no resume. Once the abandoned turn has ended, `deliver()` that names it throws, as for any ended turn. This covers an abort that lands while the delivery validates or waits for startup. When the delivery has its own turn ID, such an abort cancels the delivery and does not abandon the parked turn it would resume. When the delivery names the parked turn itself, the abort abandons that turn. A correlated delivery whose operation would resume a turn that is being abandoned (abandoned, not yet ended) resumes nothing: `message.correlated`; the delivered turn ends `unanswered`; the abandon removes the operation.
+
+Each "ends" in the table applies only to a delivered turn that this process has not seen. A malformed approval decision is a correlation-dispatch failure (see Failures). A caller that names another live turn on `deliver` misuses the reactor.
+
+A turn that **this process holds open** has not ended and is one of these:
+
+- A started turn.
+- A turn that owns a registered pending operation.
+- A turn with an event in the queue. After a restart, this covers a parked turn whose rehydrated gate fired and queued its resume before the turn started in this process.
+
+**Failures.** These paths end turns `failed`. Each path except `deliver()` after done then shuts the reactor down; `deliver()` after done runs when the reactor is already done:
+
+| Path                         | Turns that end `failed`                                                                         | `error.kind`    |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- | --------------- |
+| Director throw               | The running turn                                                                                | `reactor_fatal` |
+| Invalid action set           | The running turn                                                                                | `reactor_fatal` |
+| Compaction failure           | The running turn                                                                                | `reactor_fatal` |
+| Doom loop                    | The running turn                                                                                | `doom_loop`     |
+| Loop throw                   | The running turn, if one runs                                                                   | `reactor_fatal` |
+| External `abort`             | The turn whose cycle event is queued, if any                                                    | `aborted`       |
+| Correlation-dispatch failure | The delivered turn unless this process holds it open or it already ended, then the running turn | `reactor_fatal` |
+| `deliver()` after done       | The delivered turn, at once, unless this process holds it open                                  | `reactor_done`  |
+
+A parked or queued turn gets no end on these paths. A running turn that also holds a gate still ends `failed`; after a restart, that gate can still resume it. A `deliver()` after done that names a turn this process holds open (see Correlated deliveries) ends nothing: the reactor drops the delivery, and the turn survives for the restart. A `deliver()` that names a turn that already ended throws, also after done (see Ended turns). A correlated delivery whose validator settles after the reactor is done follows the same rules, except that a turn that ended while the validator ran gets nothing: it already has its end.
+
+No event that carries a turn's ID follows its `reactor.turn.ended`. A turn can end while work of it is still in flight, for example when a correlation-dispatch failure ends the running turn during its inference or its suspend commit. The reactor drops any later event that carries the ended turn's ID. Events that carry no turn ID (for example `tool.start`, `tool.done`, the inference deltas, `inference.error` and `reactor.gate.cleared`) are not dropped by this rule. During the fatal shutdown that follows such a failure, they can still follow the turn's failed end, up to `reactor.done`. The reactor also queues no event for an ended turn. After done it drops the event. Before done it emits a non-fatal `reactor.error` and drops the event.
+
+Only `reactor.turn.ended` follows `reactor.done`. Work that the shutdown does not wait for, for example a director suspend whose commit outlives the shutdown, can settle after `reactor.done`, and the reactor drops its events. A delivery after done still ends its turn, so that event passes.
+
+No `connector.reply` or `reactor.gate.blocked` of an abandoned turn is emitted. A reply or suspend commit can be in flight when the abandon arrives; the reactor still commits, and drops the event. A reply emitted before the abandon is already out.
+
+A dropped event already has its sequence number, so a drop can leave a gap in the sequence numbers. Apart from the abandon rule, drops happen only on a fatal-failure path, right before or after `reactor.done`.
+
+**Turns that end with no start.** These turns get `reactor.turn.ended` with no `reactor.turn.started`: a `joined` turn, a correlated delivery that resumes nothing, a delivery after done, and the delivered turn of a correlation-dispatch failure.
+
+**Turns that never end in this process.** These turns get no `reactor.turn.ended`, by design:
+
+- A turn parked at shutdown. It survives the restart.
+- A started turn whose resume is queued, but is not yet a cycle event, at an abort or at `done`. The turn is parked.
+- A queued turn that never ran before shutdown.
+- A turn this process holds open that a `deliver()` after done names.
+- A delivery held for startup when the context load or the gate rehydration fails.
+
+**Ended turns.** The reactor records each ended turn ID for the life of the process, so the set grows by one ID for each turn. The record of abandoned turns and the record of joins (each `joined` turn and the turn it joined) also grow for the life of the process, by one entry for each abandon and each join. `deliver()` throws when its `turnId` names a turn that already ended. A turn can also end while a delivery that names it waits for the validator; that delivery does not throw. If it does not correlate, it becomes a new message under a new turn ID (see Correlated deliveries).
+
+### Abandoning a Turn
+
+`reactor.abandonTurn(turnId)` abandons a turn whose caller gave up. It follows a `joined` turn to the turn it joined. It is idempotent, never throws, does nothing for an ended turn or after the reactor is done, and emits no event during the call: it records the turn as abandoned, aborts the operation in flight when the turn runs (a fresh signal serves the next turn), and queues an internal abandon event under the turn. The director never sees that event. The loop handles it without a director call:
+
+1. It drops every queued event of the turn. An approval travels on its `resume.execute_tools` event, so a dropped re-dispatch takes its approval with it: nothing remains to revoke, and a later call that reuses the call ID still hits the ask gate.
+2. It clears each gate of the turn and emits `reactor.gate.cleared` with reason `abandoned` for each, and removes the gate's operation when it belongs to the turn. A gate whose `reactor.gate.blocked` was dropped, because the abandon landed while its suspend committed, gets no `reactor.gate.cleared` either.
+3. It answers each open call of the turn with an error result (`turn abandoned`) in one tool-result turn: the calls of its inferences that have no result, the calls that an approval re-dispatched (open from the admission), and the parked calls of its operations.
+4. It commits, then emits `reactor.turn.ended` with outcome `abandoned`.
+
+| Phase when abandoned                                     | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Not seen (an unknown ID, or a delivery still validating) | Nothing to remove; the turn ends `abandoned` with no `reactor.turn.started`. The delivery is dropped, and a later `deliver()` that names the turn throws.                                                                                                                                                                                                                                                                                                                                                             |
+| Queued, not started                                      | Its queued events are dropped, so its message never reaches history; it ends `abandoned` with no `reactor.turn.started`.                                                                                                                                                                                                                                                                                                                                                                                              |
+| Running                                                  | Its inference or tool batch gets the aborted signal; no provider call and no tool starts after the abandon. A call whose before-tool decision lands after the abandon is answered with `turn abandoned`, and the decision is not acted on: a suspend registers no gate and persists no operation. Tool results that arrive go into history, but the director gets no `tool.done`. The actions of a decision in flight are all dropped, `done` included. An abandoned batch does not count toward doom-loop detection. |
+| Parked                                                   | Its gates and their operations are removed, its parked call is answered, and the state is committed. Operations of the turn that have no gate stay: a later delivery for one resumes nothing.                                                                                                                                                                                                                                                                                                                         |
+| Ended                                                    | Nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Joined into another turn                                 | That turn is abandoned.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+
+The outcome is `abandoned` also when the turn replied earlier. Known limits:
+
+- An abandon of a parked turn leaves the hub's approval row pending. A later approval for it arrives as a new uncorrelated message, because the operation is gone. A correlated delivery that finds the operation before the abandon removes it is consumed and resumes nothing. This includes any delivery admitted after `abandonTurn()` and before the loop handles the abandon, and an approval that is still validating when the abandon lands.
+- An abandon that the loop has not handled when the reactor is done is lost, and the parked turn survives the restart.
+
+### Agent Sends
+
+`agent.send()` in `@intx/agent` delivers one message with a turn ID (`SendOptions.turnId`, or a fresh ID the agent mints) and settles only on the events of the turn it follows. Another turn's `connector.reply` or `reactor.gate.blocked` never settles it.
+
+- A `connector.reply` of the turn resolves the send with the reply, the last assistant turn of that turn's inferences, and the turn ID.
+- A `reactor.gate.blocked` of the turn resolves it as `suspended`, with the correlation ID and the turn ID. After the send joins a parked turn, a `reactor.gate.blocked` whose correlation ID is the one the send's own message carries does not settle it. That happens when the send arrives while the park's commit runs: the send resumes the turn and joins it before the park's `reactor.gate.blocked` is emitted, so that park is already over. A send that did not join settles on its own turn's park, also when the park is on the correlation its message carries.
+- A `joined` end means that the send resumed a parked turn. The send then follows that turn and settles on its reply or its next park. The result carries that turn's ID.
+- An `unanswered` end rejects the send with `TurnEndedWithoutReplyError`. This covers a director that waits, returns no action, or ends the reactor, and a correlated send that resumes nothing.
+- A `replied` end can reach a send that is still waiting: the send joined a parked turn that had replied before it parked, and the turn then ends with no new reply. That reply was not the send's, so the send rejects with `TurnEndedWithoutReplyError` too.
+- A `failed` end with no fatal `reactor.error` before it (for example a delivery after the reactor is done) rejects the send with `TurnFailedError`. A fatal `reactor.error` rejects the active send at once, whatever its turn. The queue then starts the next send while the reactor shuts down; its delivery reaches a done reactor, so it rejects with `TurnFailedError` (`reactor_done`).
+- `reactor.done` rejects the active send and every send still in the queue with `AgentClosedError`, and every later send rejects the same way.
+- A send that names a turn that already ended rejects, and the next send still runs.
+- Naming another live turn is misuse. For example, a queued send that names the same turn as the send before it starts when the first send's reply settles it, before that turn ends. The reactor then admits its message under a fresh turn, and the named turn's end rejects the second send with `TurnEndedWithoutReplyError`.
+- An `abandoned` end rejects the send with `TurnEndedWithoutReplyError` when another caller abandoned its turn.
+- An aborted send (`SendOptions.signal`) rejects with the signal's reason at once, and the agent abandons the turn the send follows: after a join, the joined turn. Before its delivery is admitted, that is the turn the send names. When the send names a parked turn (`SendOptions.turnId`), the abort abandons that turn. When the send uses its own fresh turn ID, the delivery is dropped and a parked turn it would resume stays parked. The next queued send starts once the abandoned turn has ended. A queued send that aborts never reaches the reactor.
+
+A workflow step resumes an approval by a send that carries the approval. When the approval's operation is still registered but its gate is gone, the send resumes nothing, so it rejects with `TurnEndedWithoutReplyError` and the step fails.
+
 ### INBOX Consumption
 
 The harness consumes messages from the agent's INBOX after delivering them to the reactor. Messages that belong to the active connector thread or that are responses to agent-initiated outbound sends are fetched, delivered via `reactor.deliver()`, and then flagged as deleted and expunged from the INBOX. Unsolicited messages (new threads, untracked threads) remain in the INBOX for the agent to discover via mail tools.
@@ -448,19 +596,21 @@ This means messages routed through the connector or matched as agent-initiated r
 
 Correlation connects outbound async tool calls to inbound responses. The reactor owns correlation matching — it is mechanical protocol behavior, not a policy decision.
 
-**Registration.** When a tool returns a pending marker, the reactor registers the correlation ID in its async state. The correlation ID is the marker's only matching criterion, and the registered operation records no expected responder. A sender requirement is not carried on the marker: the marker comes from a tool running on the model's behalf, so an expectation stated there is asserted by the same trust domain that wants the gate cleared.
+**Registration.** When a tool returns a pending marker, the reactor registers the correlation ID in its async state. The correlation ID is the marker's only matching criterion, and the registered operation records no expected responder. The operation records the turn ID of the turn that ran the tool (see Turn IDs). A sender requirement is not carried on the marker: the marker comes from a tool running on the model's behalf, so an expectation stated there is asserted by the same trust domain that wants the gate cleared.
 
-**Matching.** When an inbound event carries a correlation ID, the reactor checks it against registered correlations before delivering it to the director. When a correlation validator is wired, the reactor calls it with the registered operation and the inbound message; the validator returns whether the match is authentic, and a `false` (or a throw) delivers the event to the director as a regular uncorrelated event. When none is wired, a registered correlation ID is sufficient on its own.
+**Matching.** When an inbound event carries a correlation ID, the reactor checks it against registered correlations before delivering it to the director. When a correlation validator is wired, the reactor calls it with the registered operation and the inbound message; the validator returns whether the match is authentic, and a `false` (or a throw) delivers the event to the director as a regular uncorrelated event, under the delivered turn, or under a new turn when that turn ended during validation. When none is wired, a registered correlation ID is sufficient on its own.
 
 Sender identity and signature verification belong to that validator and to nothing else. The reactor performs neither: it does not know which channel a message arrived over, nor which signer is authoritative for an address, and the `From` it can see is a value the message asserts about itself. A composition that requires those checks supplies a validator. See MESSAGE.md (Correlation Security) for which of them the shipped composition runs today.
 
-**On match.** The reactor clears the corresponding gate, resumes the operation, and emits a `message.correlated` event. How it resumes depends on what parked. A pending marker awaiting an inbound response (the async-tool path) resumes by injecting the response as a resolution into the message history and letting the gate-cleared event drive the director to re-infer. An approval ask that parked a specific tool call carries that call on its pending operation; an `approved` decision resumes by re-running that exact call — the reactor grants a one-shot bypass so the re-run skips the ask gate, dispatches the call, and answers it with a real tool result. The parked call, not a fresh re-inference, is the authorized unit that runs. In both cases the director sees the correlated event flow but does not participate in the matching itself.
+**On match.** The reactor clears the corresponding gate, resumes the operation, and emits a `message.correlated` event. How it resumes depends on what parked. A pending marker awaiting an inbound response (the async-tool path) resumes by injecting the response as a resolution into the message history and letting the gate-cleared event drive the director to re-infer. An approval ask that parked a specific tool call carries that call on its pending operation; an `approved` decision resumes by re-running that exact call — the reactor passes the approval to the re-run's before-tool extensions (`BeforeToolContext.approved`) so the re-run passes the ask gate, dispatches the call, and answers it with a real tool result. The approval applies only to the `execute_tools` action that the director returns for the `resume.execute_tools` event, in that cycle, and only to a call with the same ID, name and arguments; nothing about it persists. The parked call, not a fresh re-inference, is the authorized unit that runs. In both cases the director sees the correlated event flow but does not participate in the matching itself.
 
-For the approval re-run, the reactor raises a `resume.execute_tools` event carrying the re-dispatched call so the director seeds its outstanding-tool-result count before the call's `tool.done` arrives. The reactor drives the execution; the director counts the results, so the count returns to zero after the single re-run and the director re-infers exactly once with the real result in history.
+For the approval re-run, the reactor raises a `resume.execute_tools` event carrying the re-dispatched call, and the reactor drives the execution. The two rails are distinct. `execute_tools` re-runs the approved call, and its real `tool.done` answers the call. `resume.tool_result` is the reject/timeout path: the reactor injects a synthetic error result that answers the parked call, and no `tool.done` follows.
 
-The two rails are deliberately distinct. `execute_tools` re-runs the approved call: it seeds the outstanding-tool-result count, and a real `tool.done` drives the re-infer. `resume.tool_result` is the reject/timeout path: the reactor injects a synthetic error result answering the parked call and the director re-infers once off it, with no `tool.done` and no count involvement. Keeping `resume.tool_result` off the counter is load-bearing — routing it through the outstanding-tool-result count would decrement past the injected result and re-infer twice.
+The default director tracks the outstanding calls of each tool batch (the calls of one `inference.done`) as a set of call ids. A `tool.done` or a `resume.tool_result` answers one call, and the director re-infers once when the last call of that batch is answered. A parked call stays outstanding until the re-run's `tool.done` or the `resume.tool_result` answers it, so a batch with a parked call does not re-infer, and a different batch never waits on it.
 
-**Duplicate responses** (same correlation ID, already resolved) are delivered to the director as regular uncorrelated events. The reactor does not deduplicate — the director decides whether to process or ignore.
+A director built after a respawn holds no batches. When a resumed call's batch is unknown, the director rebuilds it from history and the pending operations: the call that is answered or resumed now, plus each call of the assistant turn that holds it that no `tool_result` answers and that a pending operation still parks. An unanswered call with no pending operation was running when the process stopped. Nothing answers it, so the batch does not wait on it. A re-run call that history does not hold opens a batch of its own, and a `resume.tool_result` for such a call re-infers at once. The rebuild takes the first assistant turn that holds the call. The reactor checks that tool call ids are unique only in the assembled prompt (after the context transforms) at each inference, not across the full history.
+
+**Duplicate responses** (same correlation ID, already resolved, or still in progress) are delivered to the director as regular uncorrelated events. A correlation stays in progress from its validation until its outcome is applied, so a duplicate that arrives in the same tick is a regular message too. The reactor does not deduplicate — the director decides whether to process or ignore.
 
 **Orphaned correlations** (pending operations whose responses never arrive) are cleaned up by gate timeouts.
 
@@ -554,6 +704,27 @@ When a gate blocks, the reactor emits `reactor.gate.blocked` and suspends. It re
 - **Child completion** — Parent waiting for a child fork to finish.
 - **Message response** — Waiting for a correlated response from another agent or human. The gate holds a correlation ID; when a `message.received` event matches, the gate clears with the response.
 
+**One gate per turn.** A turn holds at most one gate at a time (`MAX_GATES_PER_TURN = 1`). The limit counts gates of every type, not only approvals. The reactor checks it when a suspend starts, before the suspend changes any state. The check refuses the suspend when the turn holds a gate, or when another suspend is still in flight (between its gate registration and its `reactor.gate.blocked`). The check and the gate registration run with no await between them, so a sibling call of a parallel batch sees the first call's gate while that gate's commit is still in flight. The in-flight condition covers a gate that times out during its suspend's commit: the gate manager has already removed that gate, so the gate count alone would admit a second suspend.
+
+- **A refused before-tool suspend** answers its call with an error result: "Another call in this turn is waiting on a gate. Request this call again after that decision." The call gets no gate, no pending operation and no `reactor.gate.blocked`. The result goes into history and queues its own `tool.done`, like a blocked call, so the director sees the call answered while the parked sibling keeps the batch open.
+- **A refused director suspend** registers no gate and emits a non-fatal `reactor.error`. It still commits the cycle, as a suspend does, so a pending operation that an earlier event of the cycle registered, for example an async pending marker, survives a restart while the turn stays parked. The operation that the refused suspend named, which can be that same marker or one of an earlier turn, stays registered under its own turn with no gate, also after a restart, so a later delivery for it resumes nothing (see [Turn Lifecycle](#turn-lifecycle)). The default director never suspends, so only a custom director reaches this path.
+
+A refusal never changes when the turn ends:
+
+- The gate-limit refusal happens only while the turn holds a gate, which keeps the turn open, or while a suspend of the turn is in flight. A gate that times out during that in-flight commit has its clear deferred until after `reactor.gate.blocked`, and the deferred clear then queues the turn's resume, so the turn does not settle in between.
+- The refusal of a director suspend on a correlation that already has a live gate (see [Turn IDs](#turn-ids)) can happen while the running turn holds no gate. The turn then settles as it would after any action set that leaves it no gate and no queued event.
+
+**Effect on doom-loop detection.** A refused call did not run, so it does not count toward doom-loop detection. When a batch holds N identical gated calls and the model asks again for each refused call, the same single call runs N times in a row: one park, approval and re-run at a time, each time as the only call that runs in its batch. Three such runs trip the default `doomLoopThreshold` of 3, which ends the turn `failed` with kind `doom_loop`.
+
+To raise the limit, the reactor and its consumers need:
+
+- `commitCycle` serialized across concurrent suspends.
+- A per-gate in-flight map in place of the single in-flight suspend slot.
+- A `send()` result that reports every parked correlation of its turn, not only one.
+- A rule for a director suspend while the turn holds a gate.
+- Runtime parking of several correlations for one step.
+- A connector router that stores parked turns by more than the correlation ID, because that map stops being one-to-one.
+
 ### Gate Timeouts
 
 Every gate has a timeout. The director sets the timeout when defining the gate. If no timeout is specified, the reactor enforces a default maximum (configurable at reactor initialization, default 1 hour).
@@ -563,6 +734,8 @@ When a gate times out:
 1. The reactor emits `reactor.gate.cleared` with a `reason: "timeout"` field
 2. The director receives the event and decides the response — retry, fail, switch to a different strategy
 3. The timed-out gate is removed from the active gates list
+
+An ask-flow approval that times out is the exception to step 2: the director gets a `resume.tool_result` with the error result `approval timed out`, not the `reactor.gate.cleared`.
 
 Gates without timeouts are resource leaks. The reactor prevents them.
 
@@ -587,7 +760,7 @@ When the reactor suspends, its resumable state is:
 - The pending action (what was about to happen when the gate blocked)
 - Active gates and their context (including timeouts)
 - Active forks and their state
-- Async operations (pending ops list)
+- Async operations (pending ops list, each with the turn ID of the turn that parked it)
 - Token accounting
 
 If this state has been checkpointed, the harness process can restart and the reactor can resume from the checkpoint. This supports the lifecycle patterns in ARCHITECTURE.md — agents that survive restarts, migrate between harnesses, or hibernate when idle.
@@ -634,8 +807,8 @@ The core director is a decision function. It receives an event and returns actio
 - On `inference.error` — Decide: retry, compact, switch model, or fail.
 - On `tool.done` — Decide: infer again, execute more tools, wait, or done.
 - On `reactor.gate.cleared` — Resume the suspended action, or take a different action based on the gate result.
-- On `resume.execute_tools` — Seed the outstanding-tool-result count and execute the re-dispatched calls the reactor supplies (an approved approval re-running its parked call).
-- On `resume.tool_result` — Re-infer once off the synthetic tool result the reactor already appended (an approval rejected or timed out), leaving the outstanding-tool-result count untouched — no tool ran, so the counter stays out of it.
+- On `resume.execute_tools` — Execute the re-dispatched calls the reactor supplies (an approved approval re-running its parked call).
+- On `resume.tool_result` — Count the synthetic tool result the reactor already appended (an approval rejected or timed out) as the answer to its call, and re-infer when that answer completes the call's batch.
 - On `message.received` while suspended — Decide: queue, fork, or ignore.
 
 The director also provides:
@@ -644,7 +817,7 @@ The director also provides:
 - **Gate definitions** — Which gates to check before which actions. Can be static or dynamic.
 - **Model selection** — Which model for each inference call. Per-call, not per-session. Enables cost-based routing, fallback, and capability matching.
 - **Fork policy** — How to initialize a new fork's director state. Called when a fork action is executed.
-- **Commit policy** — When to auto-commit to the context store. Default: lifecycle boundaries (suspension, compaction, shutdown). Can be configured to per-turn or per-message for agents that need more granularity.
+- **Commit policy** — When to auto-commit to the context store. Default: lifecycle boundaries (suspension, compaction, shutdown). Can be configured to per-cycle or per-message for agents that need more granularity.
 
 ### Extension Hooks
 
@@ -711,7 +884,7 @@ Examples: a language server (LSP) validating code, a JSON schema validator check
 
 ### Tool Result Lifecycle
 
-Tool results enter the message history and stay there. Over a long session, old tool results accumulate — file contents that have since changed, search results that are no longer relevant, error messages from issues that were resolved turns ago. This has two costs: token spend (every old result is re-sent on each inference call) and context degradation (model performance measurably worsens as context grows — see Context Window Tracking for measurements). Old tool results sitting in the middle of a long conversation are in the worst position for both cost and retrieval quality.
+Tool results enter the message history and stay there. Over a long session, old tool results accumulate — file contents that have since changed, search results that are no longer relevant, error messages from issues that were resolved cycles ago. This has two costs: token spend (every old result is re-sent on each inference call) and context degradation (model performance measurably worsens as context grows — see Context Window Tracking for measurements). Old tool results sitting in the middle of a long conversation are in the worst position for both cost and retrieval quality.
 
 **Tool result clearing.**
 
@@ -727,7 +900,7 @@ Clearing strategy: prioritize clearing the oldest and largest tool results first
 
 When a tool fails and the model retries, the failure sequence (error result, model apology, retry call, success result) pollutes the conversation. After a successful retry, the failure sequence can be collapsed into a compact annotation on the successful result: "Applied successfully. 2 prior attempts failed: missing required field, invalid reference format." The model retains the lesson without the verbose error/retry/apology turns consuming context.
 
-Collapse should happen before the next inference call so the collapsed form becomes part of the stable cache prefix. The alternative — leaving the full failure sequence — gives better immediate cache hits (the prefix is unchanged) but worse long-term cost (the verbose sequence is re-sent on every future turn at 10% of base price per cached token).
+Collapse should happen before the next inference call so the collapsed form becomes part of the stable cache prefix. The alternative — leaving the full failure sequence — gives better immediate cache hits (the prefix is unchanged) but worse long-term cost (the verbose sequence is re-sent on every future cycle at 10% of base price per cached token).
 
 **Cache invalidation from collapse.** All current providers use prefix-based caching. Modifying content at position N in the conversation invalidates the cache from position N through the end of the request — including content after the collapsed region that is byte-identical to its previous version. The tokens are at different offsets in the sequence, so the KV-cache entries are invalid. This is a fundamental property of how attention-based caching works, not a provider limitation.
 
@@ -756,7 +929,7 @@ Transaction granularity is the tool's decision. Per-call transactions maximize s
 
 ### Inference Trace Storage
 
-Inference activity is stored separately from mail. Each inference cycle produces one `inference_turn` row, with its streaming parts stored in `turn_part` rows ordered by `ordinal`. The turn captures the model, status, and time bounds of the cycle. Parts capture individual content blocks: text, reasoning, tool calls, tool results, and step markers.
+Inference activity is stored separately from mail. Each inference cycle produces one `inference_turn` row, with its streaming parts stored in `turn_part` rows ordered by `ordinal`. The row captures the model, status, and time bounds of the cycle. Parts capture individual content blocks: text, reasoning, tool calls, tool results, and step markers.
 
 This separation means mail records are pure RFC 5322 MIME objects, and inference traces are queryable independently. The `/turns` endpoint serves these records to UI clients.
 
@@ -796,7 +969,7 @@ The message history is stored in the agent's git-backed local storage. This is n
 
 During active operation, the reactor works with an in-memory representation of the message history for performance. Git captures snapshots at commit points. On resume after suspension, the reactor reconstructs state from the last git commit.
 
-Commit frequency is controlled by the director's commit policy. The default commits on lifecycle boundaries (suspension, compaction, shutdown), matching the commit policy described in ARCHITECTURE.md's Change History section. Directors can configure more frequent commits (per-turn, per-message) when durability requirements are higher.
+Commit frequency is controlled by the director's commit policy. The default commits on lifecycle boundaries (suspension, compaction, shutdown), matching the commit policy described in ARCHITECTURE.md's Change History section. Directors can configure more frequent commits (per-cycle, per-message) when durability requirements are higher.
 
 ### Context Window Tracking
 
@@ -919,7 +1092,7 @@ Token accounting is per-reactor. When a reactor forks, each fork tracks its own 
 
 ## Prompt Caching
 
-Prompt caching is a provider-level optimization where identical prefixes of the request (tools, system prompt, message history) are cached and reused across turns. The inference layer must structure requests to maximize cache hits, because caching dominates the cost profile of multi-turn agent sessions.
+Prompt caching is a provider-level optimization where identical prefixes of the request (tools, system prompt, message history) are cached and reused across cycles. The inference layer must structure requests to maximize cache hits, because caching dominates the cost profile of multi-turn agent sessions.
 
 ### Provider Mechanics
 
@@ -939,25 +1112,25 @@ Stable content goes first, variable content goes last. This is a hard constraint
 
 1. **Tool definitions** — Most stable. Change rarely or never during a session. Place cache breakpoints on the last tool in the array.
 2. **System prompt** — Stable for the session duration. Do not inject per-request data (timestamps, mode flags, dynamic context) into the system prompt. Put variable context into messages instead.
-3. **Message history** — Grows each turn. The existing prefix is cached; new messages extend it. Modifications to earlier messages (compaction, collapse, clearing) invalidate the cache from the modification point forward.
+3. **Message history** — Grows each cycle. The existing prefix is cached; new messages extend it. Modifications to earlier messages (compaction, collapse, clearing) invalidate the cache from the modification point forward.
 
 The reactor should not inject ephemeral data (pending status, dynamic context) into the system prompt. The context transform chain handles ephemeral injection by modifying the message array, leaving the system prompt cache intact.
 
 ### Tool Definition Stability
 
-Tool definitions are part of the cached prefix. Their token cost compounds: a set of 15 tools with moderately complex parameters consumes roughly 5,000-6,000 tokens, sent and cached on every turn.
+Tool definitions are part of the cached prefix. Their token cost compounds: a set of 15 tools with moderately complex parameters consumes roughly 5,000-6,000 tokens, sent and cached on every cycle.
 
 For agents with dynamic capabilities (tools from remote registries, extension-provided tools), the mitigation is a stable core with deferred loading: a small, fixed set of always-available tools lives in the tool definition array (stable, always cached). Tools that are not always needed are excluded from the array entirely. When the model needs a deferred tool, it discovers it through a search/discovery tool in the core set, and the discovered tool's definition is injected inline as a tool reference in the message history. The tool prefix stays stable; discovered tools are part of the message stream, not the tool array.
 
-The cost of dynamic tool sets without these mitigations is severe. Each MCP server adds 1,500-12,000 tokens to the tool prefix. Three to four servers can add 10,000-18,000 tokens of overhead per turn. Every connect/disconnect event invalidates the entire cache.
+The cost of dynamic tool sets without these mitigations is severe. Each MCP server adds 1,500-12,000 tokens to the tool prefix. Three to four servers can add 10,000-18,000 tokens of overhead per cycle. Every connect/disconnect event invalidates the entire cache.
 
 ### Cache-Aware Compaction
 
 Compaction (described in Context Management) replaces older messages with a summary. Because caching is strictly prefix-based, any modification to the message history invalidates the cache from the modification point through the end of the request. Content after the compacted region is rebuilt even if it is unchanged — it now sits at different token offsets. The cost of compaction is not just the summarization inference call — it includes a full cache rebuild of everything from the compaction point forward.
 
-For compaction to be worthwhile, the tokens saved per turn must recoup the one-time cache rebuild cost within the remaining session. The rebuild cost depends on the tail: everything from the compaction point forward must be re-cached, regardless of whether it changed. At Anthropic's pricing, each re-cached token costs 1.25x base price instead of the 0.1x it would have cost as a cache read — a per-token premium of 1.15x base price for the rebuild turn.
+For compaction to be worthwhile, the tokens saved per cycle must recoup the one-time cache rebuild cost within the remaining session. The rebuild cost depends on the tail: everything from the compaction point forward must be re-cached, regardless of whether it changed. At Anthropic's pricing, each re-cached token costs 1.25x base price instead of the 0.1x it would have cost as a cache read — a per-token premium of 1.15x base price for the rebuild cycle.
 
-Consider a conversation at 60,000 tokens where compaction at the midpoint removes 10,000 tokens. The post-compaction conversation is 50,000 tokens. The tail from the compaction point is 25,000 tokens (the second half minus the removed content plus the summary). Rebuild premium: 25,000 tokens at 1.15x base price. Per-turn savings: 10,000 fewer cached tokens at 0.1x base price = 1,000 base-price-equivalents per turn. Break-even depends on the ratio of tail size to tokens removed — the larger the tail relative to the savings, the longer until break-even. Compaction near the end of the conversation (small tail) pays back quickly. Compaction near the beginning (large tail) takes many turns to recoup.
+Consider a conversation at 60,000 tokens where compaction at the midpoint removes 10,000 tokens. The post-compaction conversation is 50,000 tokens. The tail from the compaction point is 25,000 tokens (the second half minus the removed content plus the summary). Rebuild premium: 25,000 tokens at 1.15x base price. Per-cycle savings: 10,000 fewer cached tokens at 0.1x base price = 1,000 base-price-equivalents per cycle. Break-even depends on the ratio of tail size to tokens removed — the larger the tail relative to the savings, the longer until break-even. Compaction near the end of the conversation (small tail) pays back quickly. Compaction near the beginning (large tail) takes many cycles to recoup.
 
 The failure collapse pattern (described in Tool Interaction Patterns) is the favorable case: the failure sequence is typically near the end of the conversation, so the tail is small. The stable prefix before the failure point is preserved; only the collapsed region and whatever follows it are rebuilt.
 
@@ -984,7 +1157,7 @@ The budget is a ceiling, not a target. The provider adapter translates the on/of
 
 The reactor director can override reasoning configuration per-call if needed (for example, enabling reasoning for a complex planning step and disabling it for simple tool result processing). But the default comes from the agent definition, not from the inference package.
 
-A caller can also pass per-send options (`agent.send(content, { inference })`, which a workflow step's `inference` selector feeds). They apply to every inference call of that message run only and sit beneath the director: a key the director sets wins over the per-send value for that same key.
+A caller can also pass per-send options (`agent.send(content, { inference })`, which a workflow step's `inference` selector feeds). They belong to the turn the send starts, or to the parked turn it resumes, and apply to every later inference call of that turn only. A resume with no options keeps the options the turn has. They sit beneath the director: a key the director sets wins over the per-send value for that same key.
 
 **Effort.** `InferenceOptions.effort` (`low | medium | high | max`) is a provider-neutral name. No provider accepts every name as a wire value, and the accepted values differ by model, so each adapter maps the name onto what its model accepts. Effort and `thinking.budgetTokens` are two spellings of one intent: an effort with no `thinking` setting turns thinking on, and an explicit `thinking.budgetTokens` wins over the budget an effort maps to.
 
@@ -1004,7 +1177,7 @@ The adapter drops an effort, with a warning logged once per process, where the m
 
 None of these effort values has a provider capture; the adapter tests pin the request bodies.
 
-**Cache interaction.** Changing the thinking budget between turns invalidates the message cache. Tool and system prompt caches survive, but all message-level cache entries are rebuilt. If the director toggles reasoning on and off per-call, each toggle pays a cache rebuild cost. For cost-sensitive agents, holding a consistent thinking budget across the session is preferable to dynamic adjustment. If variable reasoning depth is needed, achieve it through prompt engineering (instructing the model to think briefly vs. deeply) rather than through the API parameter, preserving the cache.
+**Cache interaction.** Changing the thinking budget between cycles invalidates the message cache. Tool and system prompt caches survive, but all message-level cache entries are rebuilt. If the director toggles reasoning on and off per-call, each toggle pays a cache rebuild cost. For cost-sensitive agents, holding a consistent thinking budget across the session is preferable to dynamic adjustment. If variable reasoning depth is needed, achieve it through prompt engineering (instructing the model to think briefly vs. deeply) rather than through the API parameter, preserving the cache.
 
 ### Thinking Content
 

@@ -13,9 +13,10 @@
 //
 // Composition:
 //   - `send()` enqueues into a FIFO `SendQueue` capped at
-//     `env.sendQueueMax`. Per-send `AbortSignal` removes queued items or
-//     rejects in-flight callers while letting the reactor cycle finish
-//     in the background.
+//     `env.sendQueueMax`. Each send follows one turn and settles only on
+//     the events of that turn, so another turn's reply or park never
+//     settles it. Per-send `AbortSignal` removes queued items, or rejects
+//     an in-flight caller and abandons its turn in the reactor.
 //   - `stream()` returns a bounded `StreamConsumer` iterator; consumers
 //     buffer independently and noisy backpressure poisons only the
 //     affected iterator.
@@ -67,6 +68,7 @@ import type {
   ToolDefinition,
   ToolResult,
   ToolRunner,
+  TurnFailureKind,
 } from "@intx/types/runtime";
 
 import type { AgentDefinition } from "./definition";
@@ -106,11 +108,13 @@ export type SendOptions = {
   /**
    * Abort signal for this send. When the signal fires before processing
    * the call is dropped from the queue and the promise rejects with the
-   * signal's reason. When it fires mid-cycle the promise rejects
-   * immediately, but the underlying reactor cycle keeps running because
-   * the reactor does not expose per-cycle cancellation -- the next
-   * queued send waits for that cycle to finish before starting. The
-   * reply (if any) is still visible via `stream()` and `history()`.
+   * signal's reason. When it fires while the send is active the promise
+   * rejects immediately, and the agent abandons the turn the send follows
+   * (`Reactor.abandonTurn`): its operation in flight is aborted, the
+   * director sees none of its later events, its open tool calls get an
+   * error result, and it ends `abandoned`. The next queued send starts
+   * once that turn has ended. A reply emitted before the abort stays
+   * visible via `stream()` and `history()`.
    */
   signal?: AbortSignal;
   /** Override the default "from" header on the synthetic inbound message. */
@@ -120,11 +124,20 @@ export type SendOptions = {
    * send alone; a key the director names outright still wins.
    */
   inference?: PerCallInferenceOptions;
+  /**
+   * The turn this send belongs to. A turn is one inbound request; its id
+   * spans every cycle and every resume of that request. When omitted, the
+   * agent mints a fresh id. The send settles only on events of its turn. A
+   * send that names a turn that already ended rejects. Naming another live
+   * turn, other than a parked one the send resumes, is misuse.
+   */
+  turnId?: string;
 };
 
 type QueuedSend = {
   message: InboundMessage;
   inference: PerCallInferenceOptions | undefined;
+  turnId: string;
 };
 
 export type SendResult =
@@ -134,19 +147,30 @@ export type SendResult =
       reply: string;
       /**
        * Full-fidelity assistant turn that produced the reply. Captured from
-       * the reactor's `inference.done` event preceding `connector.reply`.
+       * the last `inference.done` of the send's turn before its
+       * `connector.reply`.
        */
       turn: ConversationTurn;
+      /**
+       * The turn the send follows: its own turn, or, when the send resumed
+       * a parked turn, that turn.
+       */
+      turnId: string;
     }
   | {
       /**
-       * The reactor parked on a gate before producing a reply. The cycle
-       * is not finished -- it will resume when the correlated external
-       * decision is delivered. `correlationId` identifies the pending
-       * operation the caller resumes against.
+       * The turn the send follows parked on a gate before producing a
+       * reply. The turn is not finished -- it will resume when the
+       * correlated external decision is delivered. `correlationId`
+       * identifies the pending operation the caller resumes against.
        */
       type: "suspended";
       correlationId: string;
+      /**
+       * The turn the send follows: its own turn, or, when the send resumed
+       * a parked turn, that turn.
+       */
+      turnId: string;
       /**
        * Approver-facing snapshot of the parked tool call, when the reactor
        * carried one on the gate-blocked event. Forwarded so the runtime can
@@ -174,6 +198,43 @@ export class GateSuspendedWithoutCorrelationError extends Error {
     this.name = "GateSuspendedWithoutCorrelationError";
     this.gateId = gateId;
   }
+}
+
+/**
+ * The turn the send follows ended with no reply for this send: the director
+ * waited, returned no action, or ended the reactor; the send was a
+ * correlated delivery that resumed nothing; or the send joined a parked
+ * turn whose only reply came before the send joined it.
+ */
+export class TurnEndedWithoutReplyError extends Error {
+  readonly turnId: string;
+
+  constructor(turnId: string) {
+    super(`turn ${turnId} ended without a reply`);
+    this.name = "TurnEndedWithoutReplyError";
+    this.turnId = turnId;
+  }
+}
+
+/**
+ * The turn the send follows ended `failed` with no fatal `reactor.error`
+ * before it, for example a delivery that reached the reactor after it was
+ * done (`kind: "reactor_done"`).
+ */
+export class TurnFailedError extends Error {
+  readonly turnId: string;
+  readonly kind: TurnFailureKind;
+
+  constructor(turnId: string, message: string, kind: TurnFailureKind) {
+    super(`turn ${turnId} failed (${kind}): ${message}`);
+    this.name = "TurnFailedError";
+    this.turnId = turnId;
+    this.kind = kind;
+  }
+}
+
+function assertNever(x: never): never {
+  throw new Error(`Unhandled turn outcome: ${JSON.stringify(x)}`);
 }
 
 export type Agent = {
@@ -457,12 +518,25 @@ export async function createAgent<EnvReq extends BaseEnv>(
     let preStartBuffer: ReactorEmittedEvent[] | undefined = [];
     let preStartBufferOverflows = 0;
 
-    // Per-active-cycle bookkeeping for send(). The reactor produces one or
-    // more inference.done events during a cycle; we keep the most recent
+    // Bookkeeping for the active send(). `turnId` is the turn the send
+    // follows: its own turn until a correlated delivery joins a parked
+    // turn, then that turn. Only events of that turn settle the send. The
+    // turn can run one or more inferences; we keep its most recent
     // assistant turn so the final connector.reply can be paired with the
     // full-fidelity turn (rather than a synthesized text-only fallback).
-    type ActiveCycle = { lastAssistantTurn: AssistantTurn | undefined };
+    type ActiveCycle = {
+      turnId: string;
+      lastAssistantTurn: AssistantTurn | undefined;
+      // The correlation that the send's own message carries, if any.
+      messageCorrelationId: string | undefined;
+      // The correlation the send answered by joining a parked turn: set
+      // only after a `joined` end. A park on it after the join is over.
+      answeredCorrelationId: string | undefined;
+    };
     let activeCycle: ActiveCycle | null = null;
+    // Set once the reactor emits `reactor.done`. A later send rejects, since
+    // the reactor drops a delivery that names a turn it holds open.
+    let reactorDone = false;
 
     // sendQueue is built after the reactor (since its `start` callback
     // delivers into the reactor), but handleEvent -- which is wired
@@ -580,6 +654,136 @@ export async function createAgent<EnvReq extends BaseEnv>(
       };
     }
 
+    function rejectActive(reason: unknown): void {
+      activeCycle = null;
+      sendQueue.rejectActive(reason);
+    }
+
+    // Settle the active send on an event of the turn it follows. A fatal
+    // `reactor.error` and `reactor.done` carry no turn and settle it in any
+    // case. Events of other turns, and events with no turn id, do not
+    // settle it: another turn's reply or park belongs to that turn.
+    function settleActive(event: ReactorEmittedEvent): void {
+      if (event.type === "reactor.done") {
+        // A delivery after done that names a turn the reactor holds open
+        // is dropped with no event, so a send left in the queue would hang.
+        reactorDone = true;
+        activeCycle = null;
+        sendQueue.drain(new AgentClosedError());
+        return;
+      }
+      if (activeCycle === null) return;
+      const cycle = activeCycle;
+      switch (event.type) {
+        case "reactor.error":
+          // Only fatal reactor errors terminate the active send. Non-fatal
+          // errors (e.g. transient write/commit failures the reactor is
+          // recovering from) are surfaced via stream() but must not
+          // resolve send() -- the turn is still running and may yet
+          // produce connector.reply or a fatal error.
+          if (event.data.fatal) {
+            rejectActive(new Error(`reactor error: ${event.data.error}`));
+          }
+          return;
+        case "inference.done":
+          if (event.data.turnId === cycle.turnId) {
+            cycle.lastAssistantTurn = event.data.turn;
+          }
+          return;
+        case "connector.reply": {
+          if (event.data.turnId !== cycle.turnId) return;
+          const turn: ConversationTurn =
+            cycle.lastAssistantTurn ?? buildSyntheticTurn(event.data.content);
+          activeCycle = null;
+          sendQueue.resolveActive({
+            type: "reply",
+            reply: event.data.content,
+            turn,
+            turnId: cycle.turnId,
+          });
+          return;
+        }
+        case "reactor.gate.blocked": {
+          if (event.data.turnId !== cycle.turnId) return;
+          // A park whose blocked event comes after the send joined the
+          // parked turn by answering its correlation: the send's message
+          // arrived while the park's commit ran. That park is over, so it
+          // does not settle the send. A send that did not join settles on
+          // its own turn's park, also one on the correlation it carries.
+          if (
+            event.data.correlationId !== undefined &&
+            event.data.correlationId === cycle.answeredCorrelationId
+          ) {
+            return;
+          }
+          // The turn parked on a gate before producing a reply. This is a
+          // terminal outcome for the send: the turn will not continue
+          // until the correlated external decision is delivered, and a
+          // parked turn emits no connector.reply, so leaving the send
+          // unsettled would hang the caller. Resolve with the suspended
+          // outcome so the caller can resume against the correlationId. A
+          // gate parked without a correlationId is unresumable -- surface
+          // it rather than hand back an outcome with no handle.
+          const { correlationId, approvalSnapshot } = event.data;
+          if (correlationId === undefined) {
+            rejectActive(
+              new GateSuspendedWithoutCorrelationError(event.data.gateId),
+            );
+            return;
+          }
+          activeCycle = null;
+          sendQueue.resolveActive({
+            type: "suspended",
+            correlationId,
+            turnId: cycle.turnId,
+            ...(approvalSnapshot !== undefined ? { approvalSnapshot } : {}),
+          });
+          return;
+        }
+        case "reactor.turn.ended": {
+          if (event.data.turnId !== cycle.turnId) return;
+          const ended = event.data;
+          switch (ended.outcome) {
+            case "joined":
+              // The send resumed a parked turn and now follows it. A plain
+              // reassignment also follows a chain of joins. The send
+              // answered that turn's park with its own correlation.
+              cycle.turnId = ended.joinedTurnId;
+              cycle.answeredCorrelationId = cycle.messageCorrelationId;
+              return;
+            case "unanswered":
+            case "abandoned":
+            case "replied":
+              // A `replied` end reaches a send that is still waiting only
+              // when the send joined a parked turn that had replied before
+              // it parked. That reply was not this send's, so the send got
+              // no reply of its own. An `abandoned` end of an aborted send
+              // only frees its slot (the send already rejected with the
+              // abort reason); another caller's abandon rejects it here.
+              rejectActive(new TurnEndedWithoutReplyError(ended.turnId));
+              return;
+            case "failed":
+              // A failed end that follows a fatal reactor.error finds no
+              // active send. This one had none, such as a delivery after
+              // done.
+              rejectActive(
+                new TurnFailedError(
+                  ended.turnId,
+                  ended.error.message,
+                  ended.error.kind,
+                ),
+              );
+              return;
+            default:
+              assertNever(ended);
+          }
+          return;
+        }
+        default:
+          return;
+      }
+    }
+
     function handleEvent(event: ReactorEmittedEvent): void {
       if (event.type === "inference.error") {
         accumulatedErrors.push({
@@ -606,59 +810,10 @@ export async function createAgent<EnvReq extends BaseEnv>(
         });
       }
 
-      if (activeCycle !== null && event.type === "inference.done") {
-        activeCycle.lastAssistantTurn = event.data.turn;
-      }
-
-      if (activeCycle !== null) {
-        if (event.type === "connector.reply") {
-          const turn: ConversationTurn =
-            activeCycle.lastAssistantTurn ??
-            buildSyntheticTurn(event.data.content);
-          activeCycle = null;
-          sendQueue.resolveActive({
-            type: "reply",
-            reply: event.data.content,
-            turn,
-          });
-        } else if (event.type === "reactor.gate.blocked") {
-          // The reactor parked on a gate before producing a reply. This
-          // is a terminal outcome for the active send: the cycle will not
-          // continue until the correlated external decision is delivered,
-          // and a parked cycle does not emit connector.reply or
-          // reactor.done, so leaving the send unsettled would hang the
-          // caller. Resolve with the suspended outcome so the caller can
-          // resume against the correlationId. A gate parked without a
-          // correlationId is unresumable -- surface it rather than hand
-          // back an outcome with no handle.
-          const { correlationId, approvalSnapshot } = event.data;
-          activeCycle = null;
-          if (correlationId === undefined) {
-            sendQueue.rejectActive(
-              new GateSuspendedWithoutCorrelationError(event.data.gateId),
-            );
-          } else {
-            sendQueue.resolveActive({
-              type: "suspended",
-              correlationId,
-              ...(approvalSnapshot !== undefined ? { approvalSnapshot } : {}),
-            });
-          }
-        } else if (event.type === "reactor.error" && event.data.fatal) {
-          // Only fatal reactor errors terminate the active send. Non-fatal
-          // errors (e.g. transient write/commit failures the reactor is
-          // recovering from) are surfaced via stream() but must not
-          // resolve send() -- the cycle is still running and may yet
-          // produce connector.reply or a fatal error.
-          activeCycle = null;
-          sendQueue.rejectActive(
-            new Error(`reactor error: ${event.data.error}`),
-          );
-        } else if (event.type === "reactor.done") {
-          activeCycle = null;
-          sendQueue.rejectActive(new AgentClosedError());
-        }
-      }
+      // Settle the active send in the same synchronous step as the stream
+      // fan-out below, so a consumer that snapshots its reply count before a
+      // send sees this send's reply once it resolves.
+      settleActive(event);
 
       // reactor.done is the reactor's terminal event. Resolve
       // shutdownComplete here in addition to the onShutdown hook so close()
@@ -730,9 +885,36 @@ export async function createAgent<EnvReq extends BaseEnv>(
 
     sendQueue = createSendQueue<QueuedSend, SendResult>({
       maxDepth: env.sendQueueMax ?? DEFAULT_SEND_QUEUE_MAX,
-      start: ({ message, inference }) => {
-        activeCycle = { lastAssistantTurn: undefined };
-        reactor.deliver(message, inference !== undefined ? { inference } : {});
+      start: ({ message, inference, turnId }) => {
+        // The send is active before the delivery: a delivery after the
+        // reactor is done ends its turn in the same synchronous step, and
+        // that end settles this send.
+        activeCycle = {
+          turnId,
+          lastAssistantTurn: undefined,
+          messageCorrelationId: message.headers.interchangeCorrelationId,
+          answeredCorrelationId: undefined,
+        };
+        try {
+          reactor.deliver(message, {
+            ...(inference !== undefined ? { inference } : {}),
+            turnId,
+          });
+        } catch (cause) {
+          // The queue rejects the send when start throws, for example when
+          // the send names a turn that already ended.
+          activeCycle = null;
+          throw cause;
+        }
+      },
+      // An aborted send abandons the turn it follows: after a join, the
+      // turn it joined. Before its delivery is admitted, that is the turn
+      // the send names. A send that names a parked turn abandons that
+      // turn. A send with its own fresh turn id only drops its delivery,
+      // so a parked turn it would resume stays parked. The turn's end
+      // settles the send's slot.
+      abortActive: () => {
+        if (activeCycle !== null) reactor.abandonTurn(activeCycle.turnId);
       },
     });
 
@@ -769,10 +951,14 @@ export async function createAgent<EnvReq extends BaseEnv>(
       // `sendQueue.enqueue` is left as a synchronous throw -- it signals a
       // programmer error (the caller exceeded the configured queue cap)
       // and per the design must fail loud.
-      if (closed) return Promise.reject(new AgentClosedError());
+      if (closed || reactorDone) return Promise.reject(new AgentClosedError());
       const message = buildInboundMessage(content, opts);
       return sendQueue.enqueue(
-        { message, inference: opts?.inference },
+        {
+          message,
+          inference: opts?.inference,
+          turnId: opts?.turnId ?? crypto.randomUUID(),
+        },
         opts?.signal,
       );
     }
