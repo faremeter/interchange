@@ -68,6 +68,8 @@ import {
   flushColdStepState,
   type SidecarStepBuildEnvDeps,
 } from "./substrate-factory";
+import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
+import type { SupervisorBackedTransportInbound } from "./supervisor-backed-transport";
 
 const STEP_ID = "step-1";
 const WORKFLOW_RUN_REPO_ID: RepoId = {
@@ -123,6 +125,27 @@ function stubOutboundMailBridge(): ChildOutboundMailBridge {
   };
 }
 
+// buildEnv only hands the inbound surface to the transport; no test here
+// calls a mailbox method.
+function stubInbound(): SupervisorBackedTransportInbound {
+  const unused = () => Promise.reject(new Error("unused in buildEnv test"));
+  return {
+    watchRegistry: createMailboxWatchRegistry(),
+    mutationBridge: {
+      submit: unused,
+      handleResult: () => undefined,
+      cancelAll: () => undefined,
+      pendingCount: 0,
+    },
+    callBridge: {
+      submit: unused,
+      handleResult: () => undefined,
+      cancelAll: () => undefined,
+      pendingCount: 0,
+    },
+  };
+}
+
 // A warm `durableConversation` whose `acquire(stepId)` returns a storage
 // the env builder files into `env.storage`. `buildEnv` never invokes the
 // store's methods, so a structural double-cast stub is sufficient and is
@@ -162,6 +185,7 @@ function buildDeps(opts: {
     closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
     mailSigner: opts.mailSigner ?? unavailableMailSigner,
+    inbound: stubInbound(),
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }
       : {}),

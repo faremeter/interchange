@@ -282,9 +282,8 @@ export interface WorkflowStepInvokerOpts {
    * Reader for the run's inbound-mail parts. When the step input is a decoded
    * `Mail`, the adapter resolves each part's `ref` to its committed bytes
    * through this reader and delivers a real `InboundMessage` (text and/or
-   * attachments) to `agent.send`. Supplied by the run child for the top-level
-   * run's steps; absent for body steps, where a part whose bytes must be read
-   * is refused loudly rather than silently flattened to text.
+   * attachments) to `agent.send`. When it is absent, a part whose bytes must
+   * be read is refused loudly rather than silently flattened to text.
    */
   mailPartReader?: MailPartReader;
 }
@@ -887,9 +886,9 @@ function usableAddrs(raw: string[]): string[] {
  *
  * The reader is required only when a part's bytes must actually be read (a
  * non-text part, or a text part too large to have inlined its `text`). A
- * text-only mail whose parts all inlined -- e.g. one routed to a body step,
- * which is not wired with a reader -- still delivers; a part that needs bytes
- * with no reader is refused loudly rather than silently dropped.
+ * text-only mail whose parts all inlined still delivers without one; a part
+ * that needs bytes with no reader is refused loudly rather than silently
+ * dropped.
  */
 async function buildInboundMessageFromMail(
   mail: Mail,

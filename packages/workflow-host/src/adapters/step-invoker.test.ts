@@ -2845,7 +2845,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
       workflowAuthorize: allowAll,
       buildEnv: async () => stubBuildEnv(),
       agentFactory: async () => agent,
-      // no mailPartReader (mirrors a body step)
+      // no mailPartReader
     });
     await expect(
       invoker(

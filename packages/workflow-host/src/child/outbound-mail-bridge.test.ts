@@ -332,24 +332,6 @@ describe("createSupervisorBackedTransport", () => {
     expect(receipt.messageId).toBe("<m-5@example.com>");
   });
 
-  test("inbound methods throw when constructed without the inbound wiring", async () => {
-    const transport = createSupervisorBackedTransport(
-      makeBridge(),
-      "agent@example.com",
-    );
-    await expect(transport.search("INBOX", {})).rejects.toThrow(
-      /is not wired for unified-host step agent/,
-    );
-    await expect(
-      transport.fetchFull({ uid: 1, mailbox: "INBOX" }),
-    ).rejects.toThrow(/is not wired for unified-host step agent/);
-    await expect(
-      transport.watch("INBOX", () => {
-        /* never reached */
-      }),
-    ).rejects.toThrow(/is not wired for unified-host step agent/);
-  });
-
   // Search and watch both forward the mailbox name and surface whatever the
   // supervisor answered. The child does not treat INBOX as special and does
   // not invent a condition of its own.
@@ -386,23 +368,6 @@ describe("createSupervisorBackedTransport", () => {
         { runId, op: "watch", mailbox },
       ]),
     );
-  });
-
-  test("an unwired inbound surface refuses both with the same condition", async () => {
-    const transport = createSupervisorBackedTransport(
-      makeBridge(),
-      "agent@example.com",
-    );
-
-    const searchRefusal = await rejectedCondition(() =>
-      transport.search("INBOX", {}),
-    );
-    const watchRefusal = await rejectedCondition(() =>
-      transport.watch("INBOX", () => undefined),
-    );
-
-    expect(searchRefusal).toBe("SERVERBUG");
-    expect(watchRefusal).toBe(searchRefusal);
   });
 
   test("search forwards the query and returns the supervisor's refs", async () => {

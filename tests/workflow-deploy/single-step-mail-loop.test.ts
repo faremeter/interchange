@@ -263,8 +263,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // the same turn. The mock replied with the tool_result content behind
       // RESULT_PREFIX, so the committed reply carries the delivered message's
       // own Message-Id and sender -- which could only come from the read tool
-      // opening the committed INBOX. A "not wired" inbound surface would have
-      // thrown inside `mail_search` instead, leaving the reply without them.
+      // opening the committed INBOX. A failed search would have left the
+      // reply without them.
       const reply = readStepReply(stepCompletedBody(events));
       expect(reply.startsWith(RESULT_PREFIX)).toBe(true);
       expect(reply).toContain("mail-loop-inbound-7f3a91");

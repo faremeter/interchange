@@ -146,9 +146,9 @@ export interface SubstrateFactoryEnv {
   readonly mailboxMutationBridge: ChildMailboxMutationBridge;
   /**
    * Child-side IPC bridge for every mailbox method that is not `send` and
-   * not a flag or expunge mutation. The factory attaches it to the warm
-   * agent's transport. A build without an inbound surface does not receive
-   * it, and those methods fail as unwired.
+   * not a flag or expunge mutation. The factory attaches it to every step
+   * agent's transport, and the spawned-child mail part reader reads parts
+   * through it.
    */
   readonly mailboxCallBridge: ChildMailboxCallBridge;
   /**

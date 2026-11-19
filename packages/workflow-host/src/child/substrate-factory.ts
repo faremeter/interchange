@@ -168,6 +168,7 @@ import {
   sourceStepToolFactories,
   type StepToolRuntime,
 } from "./step-tools";
+import { createSupervisorBackedMailPartReader } from "./supervisor-backed-mail-part-reader";
 import {
   createSupervisorBackedTransport,
   type SupervisorBackedTransportInbound,
@@ -885,12 +886,11 @@ export interface SidecarStepBuildEnvDeps {
    * (INBOUND half of mailbox ownership, §3b). Bundles the shared mailbox
    * watch registry (the same instance the child's control loop fires
    * `mailbox.notify` into), the mutation bridge for flag writes and expunge,
-   * and the call bridge for every other mailbox method. When present, the
-   * warm agent's mail tools ask the supervisor. Absent for a build that owns
-   * no inbound mailbox (a spawned child or an onTrigger body), whose
-   * transport inbound stays inert.
+   * and the call bridge for every other mailbox method. The step agent's
+   * mail tools ask the supervisor through it, in the top-level build and in
+   * a spawned child's build alike.
    */
-  inbound?: SupervisorBackedTransportInbound;
+  inbound: SupervisorBackedTransportInbound;
   /**
    * Adapter registry the step agent resolves inference adapters through.
    * The child builds this eagerly at boot from the validated
@@ -1150,10 +1150,8 @@ export function createSidecarStepBuildEnv(
     // `address` is the deployment mailbox address: the same identity the host
     // registered the agent's `CryptoProvider` against, so the outbound mail
     // carries the agent's signature with parity to the in-process path.
-    // Inbound (`deps.inbound`, present for the warm single-step agent) forwards
-    // every mailbox method other than `send` to the supervisor. A build that
-    // owns no inbound mailbox (a spawned child) leaves it undefined and those
-    // methods fail as unwired. Both `transport` and `address` are the env
+    // Inbound (`deps.inbound`) forwards every mailbox method other than `send`
+    // to the supervisor. Both `transport` and `address` are the env
     // keys `@intx/tools-mail`'s sidecar bundle declares in its `requires`.
     const transport = createSupervisorBackedTransport(
       deps.outboundMailBridge,
@@ -2568,7 +2566,14 @@ export function createSidecarSubstrateFactory(
       definition: env.definition,
     });
 
-    const buildStepEnv = createSidecarStepBuildEnv({
+    // The top-level build and the spawned-child build share every dependency
+    // except `durableConversation`, which only the warm top-level agent owns.
+    // Both get the deployment's inbound mailbox surface: a body step's mail
+    // tools ask the supervisor through the same bundle a top-level step does.
+    const stepBuildEnvBase: Omit<
+      SidecarStepBuildEnvDeps,
+      "durableConversation"
+    > = {
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
       substrate,
@@ -2583,10 +2588,11 @@ export function createSidecarSubstrateFactory(
       // agent's declared plugin packages from.
       closurePackageDir: env.spawn.closurePackageDir,
       directors: stepDirectors,
-      // Activate the warm agent's inbound mail surface. Mail tools ask the
-      // supervisor through this bundle. The spawned-child build below omits
-      // it (a spawned child owns no warm inbound mailbox).
       inbound: transportInbound,
+    };
+
+    const buildStepEnv = createSidecarStepBuildEnv({
+      ...stepBuildEnvBase,
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
 
@@ -2630,26 +2636,19 @@ export function createSidecarSubstrateFactory(
     // `packages/workflow/README.md`).
     //
     // Built COLD per invocation -- no `durableConversation`/warm hooks (a
-    // fan-out branch and a section body are each a fresh run per spawn) and no
-    // `inbound` (a spawned child owns no warm inbound mailbox; inbound-reading
-    // tools stay inert). A source tool's bare `tool:<name>` grant is already
-    // in the credentials snapshot.
+    // fan-out branch and a section body are each a fresh run per spawn). A
+    // source tool's bare `tool:<name>` grant is already in the credentials
+    // snapshot.
     //
     // Each agent gets its own evaluated `req.agent.toolFactories`, so a body
     // step whose id collides with a parent step id still gets its own tools.
-    const coldChildBuildStepEnv = createSidecarStepBuildEnv({
-      dataDir: validated.SIDECAR_DATA_DIR,
-      workflowRunRepoId,
-      substrate,
-      workflowRunRef: validated.WORKFLOW_RUN_REF,
-      principal,
-      signer: conversationSigner,
-      mailboxAddress: env.spawn.mailboxAddress,
-      outboundMailBridge: env.outboundMailBridge,
-      mailSigner: env.mailSigner,
-      adapters: childAdapterRegistry,
-      closurePackageDir: env.spawn.closurePackageDir,
-      directors: stepDirectors,
+    const coldChildBuildStepEnv = createSidecarStepBuildEnv(stepBuildEnvBase);
+    // One mail part reader serves every spawned child's steps. The supervisor
+    // resolves a part by its ref and does not consult the run id, so the
+    // child uses the deployment's top-level run id, as its transport does.
+    const childMailPartReader = createSupervisorBackedMailPartReader({
+      callBridge: env.mailboxCallBridge,
+      runId: deriveWorkflowRunId(env.spawn.mailboxAddress),
     });
     // Spawned-child step invoker (INTR-310). It runs a real agent through
     // `createWorkflowStepInvoker`, resolving inference against the child's own
@@ -2678,6 +2677,7 @@ export function createSidecarSubstrateFactory(
         agentFactory: stepAgentFactory,
         sourcesRef,
         onEvent,
+        mailPartReader: childMailPartReader,
         onColdStepSettled: flushColdStepState,
       })(req);
 
