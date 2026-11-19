@@ -426,23 +426,29 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   // Memoize `load` for the current window and the window before it. A
   // hit in the earlier window is copied to the current one, so a value
-  // that each commit reads loads once, not once per two commits.
+  // that each commit reads loads once, not once per two commits. The
+  // pending load is kept, so concurrent reads of one oid share it, and a
+  // failed load is dropped so a long-lived memo does not keep the error.
   function windowedMemo<T>(load: (oid: string) => Promise<T>): {
     get: (oid: string) => Promise<T>;
     advance: () => void;
   } {
-    let current = new Map<string, T>();
-    let previous = new Map<string, T>();
+    let current = new Map<string, Promise<T>>();
+    let previous = new Map<string, Promise<T>>();
     return {
-      get: async (oid) => {
+      get: (oid) => {
         const hit = current.get(oid) ?? previous.get(oid);
         if (hit !== undefined) {
           current.set(oid, hit);
           return hit;
         }
-        const loaded = await load(oid);
-        current.set(oid, loaded);
-        return loaded;
+        const loading = load(oid);
+        current.set(oid, loading);
+        loading.catch(() => {
+          if (current.get(oid) === loading) current.delete(oid);
+          if (previous.get(oid) === loading) previous.delete(oid);
+        });
+        return loading;
       },
       advance: () => {
         previous = current;
