@@ -29,6 +29,7 @@ export interface LSPManagerOptions {
   cwd: string;
   worktree?: string;
   servers?: ServerInfo[];
+  tsserverPath?: string;
 }
 
 export interface LSPStatus {
@@ -78,6 +79,9 @@ export function createLSPManager(opts: LSPManagerOptions): LSPManager {
   const serverCtx: ServerContext = {
     directory: ctx.cwd,
     worktree: ctx.worktree,
+    ...(opts.tsserverPath !== undefined
+      ? { tsserverPath: opts.tsserverPath }
+      : {}),
   };
 
   const servers: Record<string, ServerInfo> = {};

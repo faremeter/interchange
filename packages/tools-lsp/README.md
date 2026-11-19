@@ -26,3 +26,20 @@ const tools = createPosixTools({
   plugins: [createLSPPlugin({ cwd, minSeverity: 2 })],
 });
 ```
+
+TypeScript support runs `typescript-language-server`, found in the
+project's `node_modules/.bin` or on `PATH`, on the `tsserver` script
+of the workspace's TypeScript. TypeScript 7 ships no such script, so a
+TypeScript 7 workspace gets no server unless `tsserverPath` names one
+from an older install, such as an npm alias
+(`"typescript5": "npm:typescript@5.9.3"`):
+
+```ts
+createLSPPlugin({
+  cwd,
+  tsserverPath: `${cwd}/node_modules/typescript5/lib/tsserver.js`,
+});
+```
+
+Relative `tsserverPath` values resolve from the caller's current directory
+when the plugin is created, even when `cwd` points to another workspace.

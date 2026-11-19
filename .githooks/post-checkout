@@ -14,7 +14,7 @@ source "$SCRIPTDIR/lib.opsh"
 
 step::000::remove-build-artifacts() {
 	if [[ $PREV_HEAD != $NEW_HEAD && $IS_BRANCH_CHECKOUT = 1 ]]; then
-		rm -rf dist .eslintcache
+		rm -rf dist
 		find . -type d -name "dist" -a ! -path '*/node_modules/*' | xargs rm -rf
 	fi
 }

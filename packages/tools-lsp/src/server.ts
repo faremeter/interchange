@@ -6,6 +6,10 @@ import { nearestRoot, exists, which, resolveModuleFrom } from "./fs";
 export interface ServerContext {
   directory: string;
   worktree: string;
+  /** A tsserver script to run instead of the workspace TypeScript's own.
+   *  TypeScript 7 ships none, so its workspaces need one from an older
+   *  install. The plugin checks that it exists. */
+  tsserverPath?: string;
 }
 
 export interface ServerHandle {
@@ -39,10 +43,9 @@ export const Typescript: ServerInfo = {
     ["deno.json", "deno.jsonc"],
   ),
   async spawn(root, ctx) {
-    const tsserver = resolveModuleFrom(
-      "typescript/lib/tsserver.js",
-      ctx.directory,
-    );
+    const tsserver =
+      ctx.tsserverPath ??
+      resolveModuleFrom("typescript/lib/tsserver.js", ctx.directory);
     if (tsserver === undefined) return undefined;
 
     const localBin = path.join(

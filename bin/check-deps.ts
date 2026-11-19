@@ -5,10 +5,11 @@
 //
 //   1. Phantom dependencies — every module a workspace member imports must
 //      be declared in that member's own package.json. Imports are extracted
-//      with the TypeScript pre-processor, covering value, default, namespace,
+//      from Oxc's syntax tree, covering value, default, namespace,
 //      re-export, dynamic import(), require(), and the type-only forms
-//      (`import type`, inline `{ type X }`, and `typeof import()`), while
-//      strings, comments, and template literals are ignored. Triple-slash
+//      (`import type`, inline `{ type X }`, and `typeof import()`), plus
+//      external-module augmentations. Import-like text in strings, comments,
+//      and template literals is ignored. Triple-slash
 //      `/// <reference types="..." />` directives are out of scope. Bun's
 //      flat, hoisted node_modules otherwise lets a package resolve a
 //      dependency it never declared, so the manifest lies and a strict
@@ -27,10 +28,15 @@
 // tests; the lockfile check and CLI gate run only when this file is the entry
 // point. Exits non-zero with a list of violations, or zero when clean.
 
-import { dirname, join, relative } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { type } from "arktype";
-import ts from "typescript";
+import { getTsconfig, parseTsconfig } from "get-tsconfig";
 
+import {
+  collectModuleSpecifiers,
+  type ModuleDetection,
+} from "./lib/module-specifiers";
 import { readWorkspaceManifestPaths } from "./lib/packages";
 
 const NODE_BUILTINS = new Set([
@@ -109,48 +115,48 @@ function packageOf(spec: string): string | null {
 }
 
 type AliasMatcher = { exact: Set<string>; prefixes: string[] };
-type MemberConfig = { aliases: AliasMatcher; outDir: string | null };
+type MemberConfig = {
+  aliases: AliasMatcher;
+  outDir: string | null;
+  moduleDetection: ModuleDetection;
+};
 
-/** Read a member's tsconfig for the two things the phantom scan needs: the
+/** Read a member's tsconfig for the settings the phantom scan needs: the
  *  `paths` alias matchers to exclude (a key with a trailing `*` matches by
  *  prefix; a key without one matches exactly, so "react" never suppresses
- *  "react-dom"), and the `outDir` to skip so emitted JS is not scanned. Uses
- *  the TypeScript config reader so JSONC and `extends` chains resolve as the
- *  compiler sees them; a config that cannot be read — including an unresolvable
- *  `extends` target — raises rather than silently dropping aliases. */
+ *  "react-dom"), the `outDir` to skip, and how source files become modules. Uses
+ *  get-tsconfig to resolve JSONC and `extends` chains. An unreadable config
+ *  or unresolved `extends` target raises rather than dropping aliases. */
 function memberConfig(dir: string): MemberConfig {
   const empty: MemberConfig = {
     aliases: { exact: new Set(), prefixes: [] },
     outDir: null,
+    moduleDetection: "auto",
   };
   const configPath = join(dir, "tsconfig.json");
-  if (!ts.sys.fileExists(configPath)) return empty;
-  const read = ts.readConfigFile(configPath, ts.sys.readFile);
-  if (read.error) {
-    throw new Error(
-      `check-deps: cannot read ${configPath}: ${ts.flattenDiagnosticMessageText(read.error.messageText, "\n")}`,
-    );
-  }
-  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dir);
-  // TS5083 = "Cannot read file" — an unreadable config or extends target.
-  const unreadable = parsed.errors.filter((e) => e.code === 5083);
-  if (unreadable.length > 0) {
-    throw new Error(
-      `check-deps: cannot resolve ${configPath}: ${unreadable.map((e) => ts.flattenDiagnosticMessageText(e.messageText, "\n")).join("; ")}`,
-    );
+  if (!existsSync(configPath)) return empty;
+  let parsed;
+  try {
+    parsed = parseTsconfig(configPath);
+  } catch (cause) {
+    throw new Error(`check-deps: cannot resolve ${configPath}`, { cause });
   }
   const exact = new Set<string>();
   const prefixes: string[] = [];
-  for (const key of Object.keys(parsed.options.paths ?? {})) {
+  for (const key of Object.keys(parsed.compilerOptions?.paths ?? {})) {
     if (key.endsWith("*")) prefixes.push(key.slice(0, -1));
     else exact.add(key);
   }
   let outDir: string | null = null;
-  if (parsed.options.outDir !== undefined) {
-    const rel = relative(dir, parsed.options.outDir);
+  if (parsed.compilerOptions?.outDir !== undefined) {
+    const rel = relative(dir, resolve(dir, parsed.compilerOptions.outDir));
     if (rel !== "" && rel !== "." && !rel.startsWith("..")) outDir = rel;
   }
-  return { aliases: { exact, prefixes }, outDir };
+  return {
+    aliases: { exact, prefixes },
+    outDir,
+    moduleDetection: parsed.compilerOptions?.moduleDetection ?? "auto",
+  };
 }
 
 async function readManifest(path: string): Promise<Manifest> {
@@ -211,7 +217,7 @@ export async function checkWorkspace(
     const manifest = await readManifest(manifestPath);
     const self = manifest.name ?? rel;
     const declared = declaredNames(manifest);
-    const { aliases, outDir } = memberConfig(dir);
+    const { aliases, outDir, moduleDetection } = memberConfig(dir);
     workspaceNames.add(self);
     memberCount += 1;
 
@@ -231,11 +237,12 @@ export async function checkWorkspace(
       fileCount += 1;
       const code = await Bun.file(join(dir, file)).text();
       const specs = new Set<string>();
-      // detectJavaScriptImports=true so require() is included alongside every
-      // ES import/export form, including type-only ones.
-      for (const imported of ts.preProcessFile(code, true, true)
-        .importedFiles) {
-        specs.add(imported.fileName);
+      for (const imported of collectModuleSpecifiers(
+        code,
+        join(rel, file),
+        moduleDetection,
+      )) {
+        specs.add(imported.text);
       }
 
       for (const spec of specs) {
@@ -311,9 +318,10 @@ export async function checkWorkspace(
   // packages are always available to root scripts; only external imports must
   // be declared in root. ---
   const rootDeclared = declaredNames(rootManifest);
+  const tsconfigCache = new Map<string, unknown>();
   for (const area of ["bin", "tests"]) {
     const areaDir = join(repoRoot, area);
-    if (!ts.sys.directoryExists(areaDir)) continue;
+    if (!statSync(areaDir, { throwIfNoEntry: false })?.isDirectory()) continue;
     for (const file of new Bun.Glob(
       "**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
     ).scanSync(areaDir)) {
@@ -326,10 +334,17 @@ export async function checkWorkspace(
       if (segments.includes("node_modules") || segments.includes("dist"))
         continue;
       fileCount += 1;
-      const code = await Bun.file(join(repoRoot, area, file)).text();
-      for (const imported of ts.preProcessFile(code, true, true)
-        .importedFiles) {
-        const name = packageOf(imported.fileName);
+      const path = join(repoRoot, area, file);
+      const code = await Bun.file(path).text();
+      const moduleDetection =
+        getTsconfig(path, "tsconfig.json", tsconfigCache)?.config
+          .compilerOptions?.moduleDetection ?? "auto";
+      for (const imported of collectModuleSpecifiers(
+        code,
+        repoRel,
+        moduleDetection,
+      )) {
+        const name = packageOf(imported.text);
         if (name === null || workspaceNames.has(name)) continue;
         if (!rootDeclared.has(name)) {
           violations.push(
