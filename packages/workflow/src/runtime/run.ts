@@ -651,10 +651,10 @@ async function executeRunBody(
   // injected override can only tighten it). Both thread down to the
   // childWorkflow spawn site, which checks the child's depth before it
   // commits anything and passes the incremented depth to the child run.
-  const depth = options.depth ?? 0;
-  const maxChildSpawnDepth = resolveMaxChildSpawnDepth(
-    options.maxChildSpawnDepth,
-  );
+  const lineage: RunLineage = {
+    depth: options.depth ?? 0,
+    maxChildSpawnDepth: resolveMaxChildSpawnDepth(options.maxChildSpawnDepth),
+  };
 
   // Restore prior events to the repo store on resume so a downstream
   // read sees the historical log alongside any newly-appended events.
@@ -1185,8 +1185,7 @@ async function executeRunBody(
           primitive,
           ctx,
           stepLocalAbort.signal,
-          depth,
-          maxChildSpawnDepth,
+          lineage,
         )
           .then((output) => {
             stepOutputs[primitive.id] = output;
@@ -1522,6 +1521,18 @@ function createStepAbort(
 // Per-primitive execution
 // =========================================================================
 
+/**
+ * The lineage of a run in its run tree, resolved once at the `runtimeRun`
+ * edge and passed to each primitive that starts a child run. `depth` is this
+ * run's depth in the childWorkflow spawn chain: a `childWorkflow` child runs
+ * one deeper, and a loop or onTrigger body runs at its container's depth.
+ * `maxChildSpawnDepth` is the same for the whole run tree.
+ */
+type RunLineage = {
+  depth: number;
+  maxChildSpawnDepth: number;
+};
+
 async function runPrimitive(
   definition: WorkflowDefinition,
   env: WorkflowRuntimeEnv,
@@ -1529,8 +1540,7 @@ async function runPrimitive(
   primitive: Primitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   switch (primitive.kind) {
     case "step":
@@ -1553,19 +1563,10 @@ async function runPrimitive(
         primitive,
         selectorCtx,
         abort,
-        depth,
-        maxChildSpawnDepth,
+        lineage,
       );
     case "onTrigger":
-      return runOnTrigger(
-        env,
-        runId,
-        primitive,
-        selectorCtx,
-        abort,
-        depth,
-        maxChildSpawnDepth,
-      );
+      return runOnTrigger(env, runId, primitive, selectorCtx, abort, lineage);
     case "map":
       return runMap(definition, env, runId, primitive, selectorCtx, abort);
     case "gate":
@@ -1582,8 +1583,7 @@ async function runPrimitive(
         primitive,
         selectorCtx,
         abort,
-        depth,
-        maxChildSpawnDepth,
+        lineage,
       );
     case "escalation":
       return runEscalation(env, runId, primitive, selectorCtx);
@@ -1604,8 +1604,7 @@ async function runPrimitiveSafe(
   primitive: Primitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   try {
     return await runPrimitive(
@@ -1615,8 +1614,7 @@ async function runPrimitiveSafe(
       primitive,
       selectorCtx,
       abort,
-      depth,
-      maxChildSpawnDepth,
+      lineage,
     );
   } catch (cause) {
     // Only this run's failed flush. A nested run stamps the same
@@ -2420,8 +2418,7 @@ async function runLoop(
   primitive: LoopPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   const spawnLoopIteration = env.spawnLoopIteration;
   const loopFns = env.loopFns;
@@ -2571,8 +2568,7 @@ async function runLoop(
       input: currentInput,
       relays: occurrenceRelays,
       spawnSuspendableChild: spawnLoopIteration,
-      depth,
-      maxChildSpawnDepth,
+      lineage,
       abort,
       signalRelayAddressing: "name",
     });
@@ -2705,8 +2701,7 @@ async function driveSuspendableOccurrence(
     // A recovered body's relays, run before its queue is read.
     relays: readonly ChildRelay[];
     spawnSuspendableChild: SpawnSuspendableChild;
-    depth: number;
-    maxChildSpawnDepth: number;
+    lineage: RunLineage;
     abort: AbortSignal;
     signalRelayAddressing: SignalRelayAddressing;
   },
@@ -2717,8 +2712,7 @@ async function driveSuspendableOccurrence(
     input,
     relays,
     spawnSuspendableChild,
-    depth,
-    maxChildSpawnDepth,
+    lineage,
     abort,
     signalRelayAddressing,
   } = args;
@@ -2750,8 +2744,8 @@ async function driveSuspendableOccurrence(
     parentRunId: runId,
     parentStepId: containerStepId,
     signal: AbortSignal.any([abort, bodyTeardown.signal]),
-    depth,
-    maxChildSpawnDepth,
+    depth: lineage.depth,
+    maxChildSpawnDepth: lineage.maxChildSpawnDepth,
     ...(bodyLog !== undefined ? { resumeFromEvents: bodyLog } : {}),
   });
   // A body whose log is gone starts over and surfaces its gates afresh, and
@@ -2969,8 +2963,7 @@ async function runOnTrigger(
   primitive: OnTriggerPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   if (!("ref" in primitive.body)) {
     throw new Error(
@@ -3084,8 +3077,7 @@ async function runOnTrigger(
         input: currentInput,
         relays: resumeRelays,
         spawnSuspendableChild,
-        depth,
-        maxChildSpawnDepth,
+        lineage,
         abort,
         signalRelayAddressing: "correlation",
       },
@@ -7629,15 +7621,18 @@ async function runChildWorkflow(
   primitive: ChildWorkflowPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   // Bound the spawn chain BEFORE committing StepStarted/ChildSpawned. A
   // reject here lands a clean StepFailed on this spawn step (runPrimitiveSafe
   // synthesizes it) and never writes a phantom child-run log. The child runs
   // one rung deeper; the ceiling is tree-wide (threaded from this run).
-  const childDepth = depth + 1;
-  assertSpawnDepthWithinLimit(childDepth, primitive.id, maxChildSpawnDepth);
+  const childDepth = lineage.depth + 1;
+  assertSpawnDepthWithinLimit(
+    childDepth,
+    primitive.id,
+    lineage.maxChildSpawnDepth,
+  );
   const sectionSteps = sectionInputStepIds(parent);
   // Post-extraction the child definition is the internal `{ ref }` handle: the
   // deploy step lifts the authored inline child to a standalone definition and
@@ -7742,7 +7737,7 @@ async function runChildWorkflow(
           parentStepId: primitive.id,
           signal: childAbort.signal,
           depth: childDepth,
-          maxChildSpawnDepth,
+          maxChildSpawnDepth: lineage.maxChildSpawnDepth,
           ...(childEvents.length > 0 ? { resumeFromEvents: childEvents } : {}),
         });
         handle = spawnedHandle;
