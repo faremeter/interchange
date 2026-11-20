@@ -26,9 +26,11 @@
 // its metadata, so a later attempt can tell the stored state is not its own.
 // An agent whose conversation spans attempts leaves it unset.
 //
-// Parked reply targets hold the reply target of each turn parked on an
-// approval gate, keyed by the gate's correlation id. State written before
-// they existed omits them, and reads as holding none.
+// Parked reply targets hold the mail each turn parked on an approval gate
+// answers, keyed by the gate's correlation id: the connector thread, or a
+// passthrough reply target. State written before they existed omits them,
+// and reads as holding none. State written before the thread variant
+// existed holds only passthrough targets.
 //
 // Every reader reconstructs through `reconstructStepState` behind the
 // `StepStateReader` seam, whatever it reads the files from.

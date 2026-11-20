@@ -20,23 +20,29 @@ import type {
 export interface StepConversation {
   /**
    * Start a connector turn. `turn.resume` is the correlation id of the gate
-   * an approval resume resumes: that turn takes the reply target its parked
-   * turn filed. Any other turn clears the reply target a passthrough seed
-   * set, so a turn that seeds no mail does not reply to an earlier turn's
+   * an approval resume resumes: that turn takes the turn mode its parked
+   * turn filed. Any other turn answers no mail until a seed sets its mode,
+   * so a turn that seeds no mail does not reply to an earlier passthrough
    * sender.
    */
   beginTurn(turn: { resume?: string }): Promise<void>;
   /**
    * Route a mail-derived inbound message onto the connector thread before
-   * the send, so the reply path has thread state.
+   * the send, so the reply path has thread state and the turn answers that
+   * mail.
    */
   seedInbound(message: InboundMessage): Promise<void>;
   /**
-   * File the reply target of a turn that parked on an approval gate under
+   * File the turn mode of a mail turn that parked on an approval gate under
    * the gate's correlation id, so the mirror persists it for the approval
    * resume.
    */
   parkTurn(correlationId: string): Promise<void>;
+  /**
+   * Whether the current turn answers mail: its input was mail, or it
+   * resumes a parked turn whose input was mail.
+   */
+  turnAnswersMail(): boolean;
   /** The reply drain's threading headers for the next reply. */
   composeReply(): ConnectorReplyParts | null;
   /** Advance the connector thread after the reply drain sent a reply. */

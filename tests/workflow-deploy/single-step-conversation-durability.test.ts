@@ -562,6 +562,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
             beginTurn: async () => undefined,
             seedInbound: async () => undefined,
             parkTurn: async () => undefined,
+            turnAnswersMail: () => false,
             composeReply: () => {
               throw new Error("composeReply() not used");
             },

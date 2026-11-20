@@ -93,6 +93,7 @@ function stubStepConversation(
     beginTurn: async () => undefined,
     seedInbound: async () => undefined,
     parkTurn: async () => undefined,
+    turnAnswersMail: () => false,
     composeReply: () => {
       throw new Error("stub composeReply() not used");
     },
@@ -1826,6 +1827,7 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
       seedInbound: async (message) => {
         router.commit(router.route(message));
       },
+      turnAnswersMail: () => router.turnAnswersMail(),
       composeReply: () => router.composeReply(),
       send: async (message) => {
         sent.push(message);
@@ -2228,7 +2230,7 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     const pending = invoker(buildRequest({ input: "hello" }));
     // Let the invoker reach the barrier await, then fail the reply send.
     await harness.awaitBarrier(1);
-    harness.settle({ ok: false, cause: sendCause });
+    harness.settle({ ok: false, phase: "send", cause: sendCause });
 
     // The step rejects rather than returning a step result that claims a reply
     // which never went out. The run fails, and the supervisor consumes the
@@ -2274,7 +2276,7 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     composeCause.name = "NoActiveConnectorThreadError";
     const pending = invoker(buildRequest({ input: "hello" }));
     await harness.awaitBarrier(1);
-    harness.settle({ ok: false, cause: composeCause });
+    harness.settle({ ok: false, phase: "compose", cause: composeCause });
 
     let thrown: unknown;
     try {
@@ -2290,6 +2292,68 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     expect(thrown.cause).toBe(composeCause);
 
     await warmCache.evictAll("test teardown");
+  });
+
+  describe("a failed reply settlement", () => {
+    async function failedTurn(
+      settlement: Extract<WarmReplySettlement, { ok: false }>,
+    ): Promise<unknown> {
+      const warmCache = createWarmAgentCache();
+      const { agent } = buildBarrierStubAgent(replySendResult("the reply"));
+      const harness = buildReplyDriveHarness();
+      const invoker = createWorkflowStepInvoker({
+        workflowAuthorize: async () => ({
+          effect: "allow",
+          matchingGrants: [],
+          resolvedBy: null,
+        }),
+        buildEnv: async () => stubBuildEnv(),
+        agentFactory: async () => agent,
+        warmCache,
+        driveReplies: harness.driveReplies,
+      });
+
+      const pending = invoker(buildRequest({ input: "hello" }));
+      await harness.awaitBarrier(1);
+      harness.settle(settlement);
+      let thrown: unknown;
+      try {
+        await pending;
+      } catch (cause) {
+        thrown = cause;
+      }
+      await warmCache.evictAll("test teardown");
+      return thrown;
+    }
+
+    test("a send-phase failure fails the step with a retryable error", async () => {
+      const cause = new Error("outbound bridge rejected the reply");
+
+      const thrown = await failedTurn({ ok: false, phase: "send", cause });
+
+      if (!(thrown instanceof Error)) {
+        throw new Error("expected the failed reply send to reject the step");
+      }
+      expect(thrown).not.toBeInstanceOf(StepOutcomeCommitError);
+      expect(thrown.cause).toBe(cause);
+    });
+
+    test("a persist-phase failure fails the step as an uncommitted outcome", async () => {
+      const cause = new Error("connector metadata write failed");
+
+      const thrown = await failedTurn({ ok: false, phase: "persist", cause });
+
+      if (!(thrown instanceof StepOutcomeCommitError)) {
+        throw new Error("expected a StepOutcomeCommitError");
+      }
+      expect(thrown.message).toContain("auto-reply was sent");
+      expect(thrown.message).toContain("connector metadata write failed");
+      const inner = thrown.cause;
+      if (!(inner instanceof Error)) {
+        throw new Error("expected the commit error to wrap an Error");
+      }
+      expect(inner.cause).toBe(cause);
+    });
   });
 });
 

@@ -36,6 +36,7 @@ export function createWarmConnectorHooks(
     seedInbound: async (message) => registry.get(key).seedInbound(message),
     parkTurn: async (correlationId) =>
       registry.get(key).parkTurn(correlationId),
+    turnAnswersMail: () => registry.get(key).turnAnswersMail(),
     composeReply: () => registry.get(key).composeReply(),
     onReplySent: async (receipt, references) =>
       registry.get(key).onReplySent(receipt, references),

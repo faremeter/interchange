@@ -521,4 +521,110 @@ describe("driveConnectorReplies", () => {
       expect(settlement.cause).toBe(sentinel);
     }
   });
+
+  describe("a failed settlement names its phase", () => {
+    const PARTS: ConnectorReplyParts = {
+      to: "alice@example.com",
+      cc: [],
+      inReplyTo: "<parent@interchange>",
+    };
+    const RECEIPT: SendReceipt = {
+      messageId: "<child@interchange>",
+      status: "delivered",
+    };
+
+    async function settleOne(
+      seams: Pick<
+        Parameters<typeof driveConnectorReplies>[0],
+        "composeReply" | "send" | "onReplySent"
+      >,
+    ) {
+      const drain = driveConnectorReplies({
+        stream: streamOf([replyEvent(1, "reply")]),
+        ...seams,
+      });
+      await drain.done;
+      return drain.waitForReplyAfter(0);
+    }
+
+    test("a compose failure settles in the compose phase", async () => {
+      const sentinel = new Error("no thread");
+      let sendCalled = false;
+
+      const settlement = await settleOne({
+        composeReply: () => {
+          throw sentinel;
+        },
+        send: async () => {
+          sendCalled = true;
+          return RECEIPT;
+        },
+        onReplySent: () => undefined,
+      });
+
+      expect(settlement).toEqual({
+        ok: false,
+        phase: "compose",
+        cause: sentinel,
+      });
+      expect(sendCalled).toBe(false);
+    });
+
+    test("a send failure settles in the send phase", async () => {
+      const sentinel = new Error("bridge rejected the send");
+
+      const settlement = await settleOne({
+        composeReply: () => PARTS,
+        send: async () => {
+          throw sentinel;
+        },
+        onReplySent: () => undefined,
+      });
+
+      expect(settlement).toEqual({ ok: false, phase: "send", cause: sentinel });
+    });
+
+    test("an onReplySent failure after the send acked settles in the persist phase", async () => {
+      const sentinel = new Error("metadata write failed");
+      const sent: OutboundMessage[] = [];
+
+      const settlement = await settleOne({
+        composeReply: () => PARTS,
+        send: async (message) => {
+          sent.push(message);
+          return RECEIPT;
+        },
+        onReplySent: async () => {
+          throw sentinel;
+        },
+      });
+
+      expect(settlement).toEqual({
+        ok: false,
+        phase: "persist",
+        cause: sentinel,
+      });
+      expect(sent.length).toBe(1);
+    });
+
+    test("a drain that ends before the reply settles it in the compose phase", async () => {
+      const { stream, end } = pushStream();
+      const drain = driveConnectorReplies({
+        stream,
+        composeReply: () => PARTS,
+        send: async () => RECEIPT,
+        onReplySent: () => undefined,
+      });
+      const barrier = drain.waitForReplyAfter(0);
+
+      end();
+      const settlement = await barrier;
+      await drain.done;
+
+      expect(settlement.ok).toBe(false);
+      if (!settlement.ok) {
+        expect(settlement.phase).toBe("compose");
+      }
+    });
+  });
 });

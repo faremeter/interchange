@@ -35,6 +35,7 @@
 
 import { getLogger } from "@intx/log";
 import type { Agent } from "@intx/agent";
+import type { ReplyFailurePhase } from "@intx/harness";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 const logger = getLogger(["workflow-host", "child", "warm-agent-cache"]);
@@ -62,7 +63,11 @@ export interface WarmEventSinkRef {
  */
 export type WarmReplySettlement =
   | { readonly ok: true }
-  | { readonly ok: false; readonly cause: unknown };
+  | {
+      readonly ok: false;
+      readonly phase: ReplyFailurePhase;
+      readonly cause: unknown;
+    };
 
 export interface WarmReplyDrive {
   /** Settles when the drain loop exits at eviction. Folded into `eventForward`. */
@@ -72,8 +77,9 @@ export interface WarmReplyDrive {
   /**
    * Resolve once the reply at index `n` has settled, with its outcome. A
    * failure outcome (or a drain that tears down before reply `n` arrives)
-   * carries `ok: false` so the caller fails the turn rather than treating the
-   * reply as sent.
+   * carries `ok: false` so the caller fails the turn rather than treating
+   * the reply as settled. Its `phase` tells a reply that went out
+   * (`persist`) from one that did not.
    */
   waitForReplyAfter(n: number): Promise<WarmReplySettlement>;
 }

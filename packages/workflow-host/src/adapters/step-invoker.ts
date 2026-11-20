@@ -87,6 +87,7 @@ import type {
   WarmAgentCache,
   WarmEventSinkRef,
   WarmReplyDrive,
+  WarmReplySettlement,
 } from "../child/warm-agent-cache";
 import { runBodyThenCleanup } from "../run-body-then-cleanup";
 import type { StepConversation } from "./step-conversation";
@@ -377,18 +378,53 @@ function describeStep(req: StepInvokeRequest): string {
 }
 
 /**
+ * The error a failed reply settlement fails the turn with. A reply that
+ * failed before or during its send did not go out, so the turn fails with a
+ * plain `Error` that the runtime can retry. A reply whose send acked but whose
+ * connector thread advance failed already went out, and a retry would send it
+ * again, so the turn fails with a `StepOutcomeCommitError`, which the runtime
+ * neither retries nor routes.
+ */
+function replyFailureError(
+  settlement: Extract<WarmReplySettlement, { ok: false }>,
+): Error {
+  const { phase, cause } = settlement;
+  switch (phase) {
+    case "compose":
+      return new Error(
+        `workflow step invoker: ${describeComposeFailure(cause)}; failing the turn`,
+        { cause },
+      );
+    case "send":
+      return new Error(
+        "workflow step invoker: the step's auto-reply send failed; failing the turn",
+        { cause },
+      );
+    case "persist":
+      return new StepOutcomeCommitError(
+        new Error(
+          "the step's auto-reply was sent, but recording it on the " +
+            `connector thread failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          { cause },
+        ),
+        "commit",
+      );
+  }
+}
+
+/**
  * The reply drain reports this cause through the structural `WarmReplyDrive`,
  * so the harness error arrives as a value whose class is not part of that
  * contract. Match it by name.
  */
-function describeReplyFailure(cause: unknown): string {
+function describeComposeFailure(cause: unknown): string {
   if (cause instanceof Error && cause.name === "NoActiveConnectorThreadError") {
     return (
-      "the warm agent has no active connector thread, so its auto-reply " +
+      "the step has no active connector thread, so its auto-reply " +
       "names nobody to reply to and was never sent"
     );
   }
-  return "the warm agent's auto-reply send failed";
+  return "the step's auto-reply was never sent";
 }
 
 /**
@@ -515,13 +551,14 @@ async function invokeWarmStep(
  * Drive one turn of a warm agent through its connector conversation, when the
  * deployment has one, and return the step result.
  *
- * The turn begins a connector turn (taking the parked reply target on an
+ * The turn begins a connector turn (taking the parked turn mode on an
  * `"approval"` resume), seeds a mail-derived inbound message onto the
- * connector thread, sends, and on a `"suspended"` send files the turn's reply
- * target under the gate. `replyDrive` is the reply drain the caller owns; a
- * reply turn returns only once the drain settles this turn's reply, and a
- * failed settlement rejects the turn. The abort signal is threaded into the
- * send, so an abort cancels only this turn.
+ * connector thread, sends, and on a `"suspended"` send files the turn mode
+ * under the gate. `replyDrive` is the reply drain the caller owns; a reply
+ * turn returns only once the drain settles this turn's reply, and a failed
+ * settlement rejects the turn with the error `replyFailureError` picks for
+ * its phase. The abort signal is threaded into the send, so an abort cancels
+ * only this turn.
  */
 async function runConversationTurn(
   agent: Agent,
@@ -563,20 +600,13 @@ async function runConversationTurn(
   // `connector.reply`; a suspended/gate turn produces none, so it must NOT
   // await the barrier (that reply never arrives and the wait would hang).
   // Fail the turn rather than return a step result claiming a reply that
-  // never went out. The mail is still consumed, because a replay would fail
-  // to compose the same reply again. The barrier counts replies, so it
-  // waits on this turn's reply only if no reply of another turn (such as
-  // a resume after a gate timeout) settles after the snapshot.
+  // did not settle; `replyFailureError` decides whether a retry is safe.
+  // The barrier counts replies, so it waits on this turn's reply only if no
+  // reply of another turn (such as a resume after a gate timeout) settles
+  // after the snapshot.
   if (replyDrive !== null && sendResult.type === "reply") {
     const settlement = await replyDrive.waitForReplyAfter(replySeqBeforeSend);
-    if (!settlement.ok) {
-      throw new Error(
-        `workflow step invoker: ${describeReplyFailure(settlement.cause)}; ` +
-          "failing the turn, so the inbound mail is consumed without a " +
-          "reply rather than replayed",
-        { cause: settlement.cause },
-      );
-    }
+    if (!settlement.ok) throw replyFailureError(settlement);
   }
   return stepResult;
 }

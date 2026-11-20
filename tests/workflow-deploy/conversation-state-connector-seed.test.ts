@@ -489,7 +489,12 @@ describe("durable conversation store connector seed (design §3c)", () => {
       const parked = await readCommitted();
       expect(parked.pendingOperations).toEqual([gate]);
       expect(parked.tokenUsage).toEqual(usage);
-      expect(parked.parkedReplyTargets.c1?.parts?.to).toBe("carol@example.com");
+      const parkedC1 = parked.parkedReplyTargets.c1;
+      expect(
+        parkedC1 !== undefined && "parts" in parkedC1
+          ? parkedC1.parts?.to
+          : undefined,
+      ).toBe("carol@example.com");
 
       await store.beginTurn({ resume: "c1" });
       await store.mirrorToSubstrate();
@@ -602,6 +607,43 @@ describe("durable conversation store connector seed (design §3c)", () => {
       await expect(store.restoreFromSubstrate()).rejects.toThrow(
         /parkedReplyTargets/,
       );
+    });
+  });
+
+  describe("a thread turn parked on an approval gate", () => {
+    test("the parked thread mode survives the mirror and a respawned store's restore", async () => {
+      const store = await makeStore(h, localDir);
+      await store.beginTurn({});
+      await store.seedInbound(
+        inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
+      );
+      expect(store.turnAnswersMail()).toBe(true);
+      await store.parkTurn("c1");
+      await store.mirrorToSubstrate();
+
+      const committed = await readStepState({
+        substrate: h.substrate,
+        workflowRunRepoId: h.workflowRunRepoId,
+        workflowRunRef: WORKFLOW_RUN_REF,
+        principal: PRINCIPAL,
+        runId: RUN_ID,
+        stepId: STEP_ID,
+      });
+      expect(committed?.parkedReplyTargets).toEqual({ c1: { mode: "thread" } });
+
+      const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
+      expect(await fresh.restoreFromSubstrate()).toBe(true);
+      // Restoring a non-null connector state fires the router's
+      // change-driven mirror; drain it so it does not outlive the substrate.
+      await fresh.mirrorToSubstrate();
+      await fresh.beginTurn({});
+      expect(fresh.turnAnswersMail()).toBe(false);
+      await fresh.beginTurn({ resume: "c1" });
+
+      expect(fresh.turnAnswersMail()).toBe(true);
+      const reply = requireReply(fresh);
+      expect(reply.to).toBe("alice@example.com");
+      expect(reply.inReplyTo).toBe("<a@example.com>");
     });
   });
 });

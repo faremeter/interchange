@@ -265,31 +265,38 @@ export interface DurableConversationStore {
    * the thread. The advanced connector state is flushed into the local
    * store's metadata so the run-boundary mirror persists it and a respawn
    * restore re-seeds the router. Called before the warm agent's send so
-   * `composeReply()` can compose a threaded reply. A passthrough message
-   * leaves the thread unchanged and sets the router's turn reply target to
-   * its sender, which the router holds in memory until `parkTurn` files
-   * it. A metadata write failure surfaces.
+   * `composeReply()` can compose a threaded reply. A start or continue
+   * sets the router's turn mode to `thread`. A passthrough message leaves
+   * the thread unchanged and sets the turn mode to `passthrough`, with its
+   * sender as the reply target. The router holds the turn mode in memory
+   * until `parkTurn` files it. A metadata write failure surfaces.
    */
   seedInbound(message: InboundMessage): Promise<void>;
   /**
    * Mark the start of a warm agent turn (the router's `beginTurn`). A turn
-   * that resumes the approval gate `turn.resume` takes the reply target
+   * that resumes the approval gate `turn.resume` takes the turn mode
    * `parkTurn` filed under that correlation id, and the removal of the
-   * filed target is flushed into the local store's metadata. Any other
-   * turn clears the turn reply target, so a turn that seeds no passthrough
-   * message does not reply to the sender of an earlier one. Called before
-   * `seedInbound` on every warm turn. A metadata write failure surfaces.
+   * filed mode is flushed into the local store's metadata. Any other turn
+   * sets the turn mode to `none`, so a turn that seeds no mail does not
+   * reply to an earlier passthrough sender. Called before `seedInbound` on
+   * every warm turn. A metadata write failure surfaces.
    */
   beginTurn(turn: { resume?: string }): Promise<void>;
   /**
    * Park the current turn on the approval gate `correlationId` (the
-   * router's `parkTurn`): file the turn reply target under that id and
-   * flush it into the local store's metadata, so the run-boundary mirror
-   * persists it and the approval resume replies to the same target, also
-   * after a child respawn. A turn with no turn reply target writes
-   * nothing. A metadata write failure surfaces.
+   * router's `parkTurn`): file the turn mode under that id and flush it
+   * into the local store's metadata, so the run-boundary mirror persists it
+   * and the approval resume answers the same mail, also after a child
+   * respawn. A turn that answers no mail writes nothing. A metadata write
+   * failure surfaces.
    */
   parkTurn(correlationId: string): Promise<void>;
+  /**
+   * Whether the current turn answers mail (the router's
+   * `turnAnswersMail`): its input was mail, or it resumes a parked turn
+   * whose input was mail.
+   */
+  turnAnswersMail(): boolean;
   /**
    * Produce the threading headers for a reply (the router's
    * `composeReply`): to the turn's passthrough sender when a passthrough
@@ -412,6 +419,10 @@ export async function createDurableConversationStore(
 
   function parkTurn(correlationId: string): Promise<void> {
     return serializeStateOp(() => runParkTurn(correlationId));
+  }
+
+  function turnAnswersMail(): boolean {
+    return connectorRouter.turnAnswersMail();
   }
 
   function composeReply(): ConnectorReplyParts | null {
@@ -765,8 +776,8 @@ export async function createDurableConversationStore(
   // from the router), the metadata write below is what makes the seeded
   // state reach the substrate. The write preserves the reactor's staged
   // pendingOperations / tokenUsage -- a seed advances only connectorState.
-  // A passthrough commit sets only the router's in-memory turn reply target
-  // and leaves the thread unchanged, so it writes nothing.
+  // A passthrough commit sets only the router's in-memory turn mode and
+  // leaves the thread unchanged, so it writes nothing.
   async function runSeed(message: InboundMessage): Promise<void> {
     const decision = routeOrPassthrough(message);
     connectorRouter.commit(decision);
@@ -774,23 +785,21 @@ export async function createDurableConversationStore(
     await writeConnectorMetadata(`seed connector thread for ${opts.stepId}`);
   }
 
-  // An approval resume removes the reply target its parked turn filed, so
+  // An approval resume removes the turn mode its parked turn filed, so
   // the removal is flushed the same way `runSeed` flushes a thread advance.
   // It reaches the substrate at this turn's run-boundary mirror, so a child
-  // respawn before that mirror restores the target still filed.
+  // respawn before that mirror restores the mode still filed.
   async function runBeginTurn(turn: { resume?: string }): Promise<void> {
     if (!connectorRouter.beginTurn(turn)) return;
-    await writeConnectorMetadata(
-      `resume parked reply target for ${opts.stepId}`,
-    );
+    await writeConnectorMetadata(`resume parked turn mode for ${opts.stepId}`);
   }
 
   async function runParkTurn(correlationId: string): Promise<void> {
     if (!connectorRouter.parkTurn(correlationId)) return;
-    await writeConnectorMetadata(`park reply target for ${opts.stepId}`);
+    await writeConnectorMetadata(`park turn mode for ${opts.stepId}`);
   }
 
-  // Flush the router's connector state and parked reply targets into the
+  // Flush the router's connector state and parked turn modes into the
   // local store's metadata and commit it. The write preserves the reactor's
   // staged pendingOperations / tokenUsage.
   async function writeConnectorMetadata(message: string): Promise<void> {
@@ -834,6 +843,7 @@ export async function createDurableConversationStore(
     seedInbound,
     beginTurn,
     parkTurn,
+    turnAnswersMail,
     composeReply,
     onReplySent,
   };

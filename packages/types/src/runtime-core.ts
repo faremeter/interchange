@@ -2301,14 +2301,17 @@ export const ConnectorReplyParts = type({
 export type ConnectorReplyParts = typeof ConnectorReplyParts.infer;
 
 /**
- * The reply target of an agent turn that parked on an approval gate,
- * kept until the approval resumes the turn. `parts` is `null` when the
- * parked turn answered a passthrough message with no sender address: the
- * resumed turn then sends no reply, and does not reply on the thread.
+ * The mail that an agent turn parked on an approval gate answers, kept
+ * until the approval resumes the turn. `{ mode: "thread" }` is a turn that
+ * answers the connector thread. `{ parts }` is a turn that answers a
+ * passthrough message: its reply goes to `parts`. `parts` is `null` when
+ * that message had no sender address: the resumed turn then sends no
+ * reply, and does not reply on the thread.
  */
 export const ParkedReplyTarget = type({
+  "+": "reject",
   parts: ConnectorReplyParts.or("null"),
-});
+}).or({ "+": "reject", mode: "'thread'" });
 export type ParkedReplyTarget = typeof ParkedReplyTarget.infer;
 
 /** Parked reply targets, keyed by the correlation id of the parked gate. */

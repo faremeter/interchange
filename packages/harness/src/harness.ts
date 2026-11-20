@@ -61,11 +61,13 @@ export const MAIL_FETCH_FAILED_FLAG = "$FetchFailed";
  * `validateEnv` can blame either at the env entry point.
  *
  * `onReplySendFailed` is invoked when the reply drain catches a failure
- * from `connectorRouter.composeReply` or `transport.send` for an
- * outbound `connector.reply`. The reply is dropped and the router
- * state is not advanced; the callback is the only programmatic surface
- * a caller has to observe the loss. Production deployments that need
- * retry semantics layer them on top of this callback.
+ * from `connectorRouter.composeReply`, `transport.send`, or
+ * `connectorRouter.onReplySent` for an outbound `connector.reply`. A
+ * failure in `composeReply` or `send` drops the reply. A failure in
+ * `onReplySent` comes after the send acked, so that reply already went
+ * out. The callback does not tell the two cases apart, so a retry built
+ * on it can send a reply a second time. The callback is the only
+ * programmatic surface a caller has to observe the failure.
  *
  * The callback may be synchronous or async; the reply drain awaits its
  * resolution so an async callback's rejection is observed (and logged)
@@ -447,12 +449,12 @@ export async function createHarness<EnvReq extends MailEnv>(
           }
 
           if (decision.kind === "passthrough") {
-            // A passthrough commit only sets the router's turn reply target,
-            // which points the reply at this message's sender. This harness
-            // does not commit it. It routes at delivery, and `agent.deliver`
-            // gives it no hook at the point the reactor takes the message
-            // up, so it cannot bind a per-message target to the turn that
-            // answers it: a passthrough that arrived during another
+            // A passthrough commit only sets the router's turn mode, whose
+            // reply target points the reply at this message's sender. This
+            // harness does not commit it. It routes at delivery, and
+            // `agent.deliver` gives it no hook at the point the reactor takes
+            // the message up, so it cannot bind a per-message target to the
+            // turn that answers it: a passthrough that arrived during another
             // sender's turn would take that sender's reply. Replies to
             // passthrough mail therefore go to the connector thread.
             if (stopped) return;
