@@ -6,7 +6,7 @@
 //
 // The tests drive a REAL `createRepoStore` workflow-run substrate and a REAL
 // isogit local store (the production path), so the connector-state flush, the
-// change-driven + run-boundary mirrors, and the committed-tree reconstruction
+// run-boundary mirror, and the committed-tree reconstruction
 // are exercised end to end -- not mocked. This mirrors the harness in
 // conversation-state-wal.test.ts; the substrate dependency is why these live
 // under tests/ rather than co-located in apps/sidecar/src (co-location would
@@ -189,9 +189,6 @@ describe("durable conversation store connector seed (design §3c)", () => {
         subject: "hi there",
       }),
     );
-    // Drain the change-driven mirror the seed enqueued so it does not outlive
-    // the test's substrate.
-    await store.mirrorToSubstrate();
 
     const reply = requireReply(store);
     // The first inbound starts the thread: reply to its sender, in-reply-to
@@ -393,9 +390,6 @@ describe("durable conversation store connector seed (design §3c)", () => {
     const freshLocalDir = path.join(h.baseDir, "respawn-local");
     const fresh = await makeStore(h, freshLocalDir);
     expect(await fresh.restoreFromSubstrate()).toBe(true);
-    // Restoring a non-null connector state fires the router's change-driven
-    // mirror; drain it so it does not outlive the test's substrate.
-    await fresh.mirrorToSubstrate();
     await fresh.beginTurn({ resume: "t1" });
 
     const reply = requireReply(fresh);
@@ -519,9 +513,6 @@ describe("durable conversation store connector seed (design §3c)", () => {
 
       const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
       expect(await fresh.restoreFromSubstrate()).toBe(true);
-      // Restoring a non-null connector state fires the router's
-      // change-driven mirror; drain it so it does not outlive the substrate.
-      await fresh.mirrorToSubstrate();
 
       // The first resume took the target off `c1`, so a second resume of it
       // answers no mail.
@@ -548,9 +539,6 @@ describe("durable conversation store connector seed (design §3c)", () => {
 
       const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
       expect(await fresh.restoreFromSubstrate()).toBe(true);
-      // Restoring a non-null connector state fires the router's
-      // change-driven mirror; drain it so it does not outlive the substrate.
-      await fresh.mirrorToSubstrate();
       await fresh.beginTurn({ resume: "c1" });
 
       expect(requireReply(fresh)).toEqual(CAROL_REPLY);
@@ -638,9 +626,6 @@ describe("durable conversation store connector seed (design §3c)", () => {
 
       const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
       expect(await fresh.restoreFromSubstrate()).toBe(true);
-      // Restoring a non-null connector state fires the router's
-      // change-driven mirror; drain it so it does not outlive the substrate.
-      await fresh.mirrorToSubstrate();
       await fresh.beginTurn({});
       expect(fresh.turnAnswersMail()).toBe(false);
       await fresh.beginTurn({ resume: "c1" });

@@ -410,10 +410,9 @@ multi-step durability model:
   been deleted (§4).
 - **Conversation state across trigger occurrences.** The agent's
   connector/conversation state is committed to the workflow-run substrate at
-  turn boundaries (and at connector-state-change points, mirroring the
-  harness's existing `onConnectorStateChanged` hook). The live stable run reads
-  that state before delivering the next message, so multi-turn continuity
-  survives child respawns without creating another top-level run.
+  turn boundaries, once per turn. The live stable run reads that state before
+  delivering the next message, so multi-turn continuity survives child
+  respawns without creating another top-level run.
 - **Kill+respawn mid-conversation.** If the child dies mid-turn, the in-flight
   run's log lacks a terminal event; `discoverInFlightRuns`
   (`packages/workflow-host/src/child/run-child.ts`) finds it on respawn and

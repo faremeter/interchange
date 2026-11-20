@@ -105,15 +105,10 @@
 // The async flusher, run-log enrichment, and crash reconciliation are
 // later, conditional phases (D2-D4), not done here.
 //
-// Commit granularity (greybeard's pick, design §3c open question). The
-// design calls for connector-state-change-driven commits via the router's
-// `onStateChanged` hook. The step invoker drives the connector router
-// through `seedInbound`: each mail-derived inbound message routes and
-// commits its thread state before the agent's send, so `onStateChanged`
-// fires and enqueues a change-driven mirror. The run-boundary mirror (per
-// message) still runs unconditionally, so the two triggers are
-// complementary -- the seed persists the connector state promptly, the
-// boundary persists the turn delta.
+// Commit granularity. The step invoker mirrors the store once per turn,
+// after the turn settles; a change of the connector state does not mirror
+// it. The seed, the park, and the reply advance only the local store, so
+// the turn's mirror commits them with the turn's conversation.
 //
 // Defensive: a restore that finds a checkpoint or WAL but cannot
 // parse/replay it THROWS (a lost or corrupt conversation on respawn is a
@@ -337,19 +332,10 @@ export async function createDurableConversationStore(
   const baseStorage = await createIsogitStore(opts.localStoreDir, opts.signer);
 
   // Reuse the connector router + the harness storage-override seam. The
-  // router's `onStateChanged` is the change-driven commit hook the design
-  // names. `seedInbound` drives the router (route + commit) on each inbound
-  // mail, so `onStateChanged` fires and enqueues a change-driven mirror
-  // behind the seed on the shared serialization tail; the run-boundary
-  // mirror still commits every boundary. Both triggers persist state, so a
-  // dropped change-driven mirror is recoverable at the next boundary.
+  // router's state reaches the substrate only through the local store's
+  // metadata, which the turn's mirror commits.
   const connectorRouter = createConnectorRouter({
     ownAddress: opts.mailboxAddress,
-    onStateChanged: () => {
-      void mirrorToSubstrate().catch((cause) => {
-        logger.error`connector-state-change conversation mirror failed for ${opts.stepId}: ${cause instanceof Error ? cause.message : String(cause)}`;
-      });
-    },
   });
 
   const statePrefix = workflowRunStepStatePrefix(opts.runId, opts.stepId);
@@ -382,19 +368,18 @@ export async function createDurableConversationStore(
 
   // Serialize the shared-counter critical section. Both `mirrorToSubstrate`
   // and `restoreFromSubstrate` read and advance the three counts above, and
-  // either can re-enter the other: `connectorRouter.restore()` can fire
-  // `onStateChanged` synchronously, which enqueues a mirror. A single
-  // per-instance tail runs every such op one-at-a-time regardless of entry
-  // point, so two overlapping runs cannot read the same boundary seq and
-  // emit two WAL entries at it. The stored tail swallows rejections so one
-  // failed op does not poison the chain, while each caller still observes its own op's
-  // result (or rejection) through the returned promise.
+  // the connector ops write the local store's metadata that a mirror reads.
+  // A single per-instance tail runs every such op one-at-a-time regardless
+  // of entry point, so two overlapping runs cannot read the same boundary
+  // seq and emit two WAL entries at it. The stored tail swallows rejections
+  // so one failed op does not poison the chain, while each caller still
+  // observes its own op's result (or rejection) through the returned promise.
   //
-  // This serializes mirror-vs-mirror and mirror-vs-restore only. It does NOT
-  // address the reactor-vs-mirror peek-snapshot window documented on
-  // `runMirror` below (nothing must append to the reactor's turn array
-  // between its last writeTurns and the mirror's peekTurns) -- that is a
-  // different concurrency axis and is out of scope here.
+  // This serializes the store's own ops: mirror, restore, and the connector
+  // ops. It does NOT address the reactor-vs-mirror peek-snapshot window
+  // documented on `runMirror` below (nothing must append to the reactor's
+  // turn array between its last writeTurns and the mirror's peekTurns) --
+  // that is a different concurrency axis and is out of scope here.
   let stateOpTail: Promise<unknown> = Promise.resolve();
   function serializeStateOp<T>(op: () => Promise<T>): Promise<T> {
     const result = stateOpTail.then(op, op);
@@ -479,14 +464,9 @@ export async function createDurableConversationStore(
   }
 
   async function runRestore(): Promise<boolean> {
-    // Establish the committed counts BEFORE the connector state is restored
-    // into the router. `connectorRouter.restore()` can fire `onStateChanged`
-    // synchronously (when the restored state differs from current), which
-    // enqueues a mirror. Serialization already chains that mirror behind
-    // this restore, but setting the counts first keeps them correct even if
-    // that ordering guarantee is ever weakened. The counts reflect the
-    // substrate state they were read from, which is durable independent of
-    // the local-store commit.
+    // Establish the committed counts before the connector state is restored
+    // into the router. The counts reflect the substrate state they were read
+    // from, which is durable independent of the local-store commit.
     const reads = await openCommittedReads();
     const reconstructed = await readOwnState(reads);
     if (reconstructed !== null) {
@@ -564,11 +544,11 @@ export async function createDurableConversationStore(
    * Write a conversation into the local store's working tree and commit, so
    * the agent's reactor `load()` reads it. `setConnectorState` and
    * `setParkedReplyTargets` buffer the connector state and the parked reply
-   * targets for the metadata write; the router takes both so a future
-   * change-driven mirror carries the right base. The
-   * metadata goes first: a crash before the turns then leaves a store
-   * `isLocalStateCurrent` refuses, where turns written alone would pass as
-   * current without their pending operations.
+   * targets for the metadata write; the router takes both so the next
+   * connector op starts from the restored state. The metadata goes first: a
+   * crash before the turns then leaves a store `isLocalStateCurrent`
+   * refuses, where turns written alone would pass as current without their
+   * pending operations.
    */
   async function loadIntoLocalStore(
     state: StepStateContent,
@@ -773,12 +753,10 @@ export async function createDurableConversationStore(
   }
 
   // Advance the connector router from a received inbound message and flush
-  // the resulting connector state into the local store's metadata. `commit`
-  // fires the router's `onStateChanged`, which enqueues a change-driven
-  // mirror behind this op on the shared serialization tail; because that
-  // mirror reads the connector state from the local store's metadata (not
-  // from the router), the metadata write below is what makes the seeded
-  // state reach the substrate. The write preserves the reactor's staged
+  // the resulting connector state into the local store's metadata. The
+  // turn's mirror reads the connector state from the local store's metadata
+  // (not from the router), so the metadata write below is what makes the
+  // seeded state reach the substrate. The write preserves the reactor's staged
   // pendingOperations / tokenUsage -- a seed advances only connectorState.
   // A passthrough commit sets only the router's in-memory turn mode and
   // leaves the thread unchanged, so it writes nothing.
@@ -819,17 +797,15 @@ export async function createDurableConversationStore(
 
   // Advance the connector thread after a reply was sent and flush the
   // resulting connector state into the local store's metadata. `onReplySent`
-  // makes the reply the thread's parent and fires the router's
-  // `onStateChanged`, which enqueues a change-driven mirror behind this op on
-  // the shared serialization tail; because that mirror reads the connector
-  // state from the local store's metadata (not from the router), the metadata
-  // write below is what makes the advanced state reach the substrate. The
-  // write preserves the reactor's staged pendingOperations / tokenUsage -- an
-  // outbound advance touches only connectorState. A reply to a passthrough
-  // sender leaves the thread unchanged, so the flush writes the same
-  // connector state again. `onReplySent` throws when the turn answers no
-  // mail or when no thread is active, which fails the reply's settlement in
-  // its persist phase rather than persisting a phantom advance.
+  // makes the reply the thread's parent. The turn's mirror reads the
+  // connector state from the local store's metadata (not from the router),
+  // so the metadata write below is what makes the advanced state reach the
+  // substrate. The write preserves the reactor's staged pendingOperations /
+  // tokenUsage -- an outbound advance touches only connectorState. A reply
+  // to a passthrough sender leaves the thread unchanged, so the flush writes
+  // the same connector state again. `onReplySent` throws when the turn
+  // answers no mail or when no thread is active, which fails the reply's
+  // settlement in its persist phase rather than persisting a phantom advance.
   async function runReplySent(
     receipt: SendReceipt,
     references: readonly string[],
