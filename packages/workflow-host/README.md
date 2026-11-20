@@ -75,7 +75,7 @@ Public surface (the package barrel re-exports these):
 - `commitCancelRequested` — low-level Q3 `CancelRequested` commit
   primitive the supervisor invokes for every cancellation origin.
 
-Plus the relevant options and callback types (`StepEnvBase`,
+Plus the relevant options and callback types (`StepEnvBase`, `StepBuild`,
 `RunChildWorkflow`,
 `WorkflowSupervisorBindings`, `SubprocessSpawner`,
 `MailBusBindings`, `PrincipalSigner`, `SignedPayload`, etc.).

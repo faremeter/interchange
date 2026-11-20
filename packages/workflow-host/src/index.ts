@@ -31,6 +31,7 @@ export {
 } from "./adapters/substrate-mailbox-store";
 export {
   createWorkflowStepInvoker,
+  type StepBuild,
   type StepEnvBase,
   type WorkflowStepInvokerOpts,
 } from "./adapters/step-invoker";

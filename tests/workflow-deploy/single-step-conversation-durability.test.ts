@@ -95,7 +95,7 @@ import {
   readStepState,
   type ChildStepInvoker,
   type RunWorkflowChildBindings,
-  type StepEnvBase,
+  type StepBuild,
 } from "@intx/workflow-host";
 
 const DEPLOYMENT_ID = "run_durability-deployment";
@@ -529,16 +529,19 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
 
       const { agentFactory, builds } = buildStorageAwareSpyAgentFactory();
 
-      const buildEnv = async (): Promise<StepEnvBase> => {
+      const buildEnv = async (): Promise<StepBuild> => {
         const store = await registry.acquire(STEP_ID);
         return {
-          sources: [STUB_SOURCE],
-          defaultSource: STUB_SOURCE.id,
-          storage: store.storage,
-          workdir: path.join(localDataDir, "workdir", channelId),
-          audit: store.storage,
-          directors: createDefaultDirectorRegistry(),
-          readCurrentMaterial: () => ({ secret: "test-secret" }),
+          env: {
+            sources: [STUB_SOURCE],
+            defaultSource: STUB_SOURCE.id,
+            storage: store.storage,
+            workdir: path.join(localDataDir, "workdir", channelId),
+            audit: store.storage,
+            directors: createDefaultDirectorRegistry(),
+            readCurrentMaterial: () => ({ secret: "test-secret" }),
+          },
+          conversation: undefined,
         };
       };
 

@@ -107,6 +107,7 @@ import {
 } from "../adapters/spawn-child";
 import {
   createWorkflowStepInvoker,
+  type StepBuild,
   type StepEnvBase,
 } from "../adapters/step-invoker";
 import {
@@ -173,6 +174,7 @@ import {
   createSupervisorBackedTransport,
   type SupervisorBackedTransportInbound,
 } from "./supervisor-backed-transport";
+import { createStoreStepConversation } from "./store-step-conversation";
 import { createWarmConnectorHooks } from "./warm-connector-hooks";
 
 // The child does not construct a workflow-run pack-push pipeline of
@@ -911,7 +913,7 @@ export interface SidecarStepBuildEnvDeps {
    * agent's reactor `load()` and the warm cache's lazy build see the
    * restored turns -- including the respawn-rebuild path). Absent for a
    * multi-step deploy, whose steps each open a durable store per invocation,
-   * scoped to the attempt (see `flushColdStepState`).
+   * scoped to the attempt, whose conversation's `settle` commits it.
    */
   durableConversation?: DurableConversationRegistry;
   /**
@@ -976,6 +978,12 @@ async function materializeSourcePluginFactories(
  * construction failure (mkdir, isogit init) surfaces here rather than
  * being papered over with a stub: the single-step path now always runs
  * a real agent against real storage.
+ *
+ * A cold step's build returns the connector conversation over the store it
+ * opened for the invocation, which sends replies through the outbound
+ * bridge and whose `settle` commits the store to the substrate. A warm
+ * build returns no conversation, because the warm step invoker drives the
+ * warm agent's conversation through its connector hooks.
  */
 export function createSidecarStepBuildEnv(
   deps: SidecarStepBuildEnvDeps,
@@ -983,12 +991,12 @@ export function createSidecarStepBuildEnv(
   req: StepInvokeRequest,
   sourcesRef: SourcesSnapshotRef,
   credentialContext?: SidecarStepCredentialContext,
-) => Promise<StepEnvBase> {
+) => Promise<StepBuild> {
   return async (
     req: StepInvokeRequest,
     sourcesRef: SourcesSnapshotRef,
     credentialContext?: SidecarStepCredentialContext,
-  ): Promise<StepEnvBase> => {
+  ): Promise<StepBuild> => {
     // Resolve against the live table each build so a source rotation that
     // wrote `sourcesRef.current` before this build is reflected in the
     // agent this build constructs. A warm agent that is already built does
@@ -1057,8 +1065,8 @@ export function createSidecarStepBuildEnv(
     // child respawn and a move to a replacement host. The warm single-step
     // agent keeps one store for its deployment's life. A cold step opens a
     // store per invocation, scoped to the attempt, over the per-attempt local
-    // store; `flushColdStepState` commits it once the turn settles, so the
-    // next invocation restores the conversation that turn left. The workdir
+    // store; its conversation's `settle` commits it once the turn settles, so
+    // the next invocation restores the conversation that turn left. The workdir
     // and tools stay local in both cases.
     let storage: ContextStore & AuditStore;
     let coldStore: DurableConversationStore | undefined;
@@ -1175,7 +1183,7 @@ export function createSidecarStepBuildEnv(
     // tree the posix tools operate on; `capabilities` is what the mail bundle
     // reads; `transport` remains a raw env surface for tool packages that
     // read it directly. `address` is observability-only. These widen the
-    // returned `StepEnvBase` structurally, which the buildEnv return type
+    // returned `StepEnvBase` structurally, which the build's `env`
     // (`StepEnvBase`) accepts (a wider object is assignable to the narrower
     // type).
     const env: StepEnvBase & {
@@ -1235,32 +1243,14 @@ export function createSidecarStepBuildEnv(
         providers: credentialContext.providers,
       });
     }
-    if (coldStore !== undefined) coldStepStates.set(env, coldStore);
-    return env;
+    const conversation =
+      coldStore !== undefined
+        ? createStoreStepConversation(coldStore, (message) =>
+            deps.outboundMailBridge.submit(deps.mailboxAddress, message),
+          )
+        : undefined;
+    return { env, conversation };
   };
-}
-
-/**
- * The durable store each cold step env was built over, keyed by the env
- * object `createSidecarStepBuildEnv` returned for the invocation.
- */
-const coldStepStates = new WeakMap<object, DurableConversationStore>();
-
-/**
- * Commit a cold step's durable state once its turn has settled. The step
- * invoker's `onColdStepSettled` hook, handed the env
- * `createSidecarStepBuildEnv` returned for the invocation; the invoker
- * returns the step's result only after this resolves, so the turn is durable
- * before the run records it.
- */
-export async function flushColdStepState(env: StepEnvBase): Promise<void> {
-  const store = coldStepStates.get(env);
-  if (store === undefined) {
-    throw new Error(
-      "sidecar workflow-child: this step env carries no cold step state; only an env the cold path of createSidecarStepBuildEnv built can be flushed",
-    );
-  }
-  await store.mirrorToSubstrate();
 }
 
 /**
@@ -2531,8 +2521,8 @@ export function createSidecarSubstrateFactory(
     // so it is mirrored to the workflow-run substrate under its run's
     // steps. A multi-step deploy leaves this `undefined` -- its per-step
     // agents are not warm/long-lived (§3b), so each cold invocation opens
-    // a store scoped to its attempt and `flushColdStepState` commits it
-    // once the turn settles. The registry lives for the child's lifetime;
+    // a store scoped to its attempt and its conversation's `settle` commits
+    // it once the turn settles. The registry lives for the child's lifetime;
     // on respawn the child rebuilds it empty and each store restores its
     // prior snapshot from the substrate on first acquire.
     const conversationSigner = createStepStorageSigner(signingKey);
@@ -2678,7 +2668,6 @@ export function createSidecarSubstrateFactory(
         sourcesRef,
         onEvent,
         mailPartReader: childMailPartReader,
-        onColdStepSettled: flushColdStepState,
       })(req);
 
     // Adapt the workflow-runtime `StepInvoker` shape onto the host's
@@ -2756,9 +2745,7 @@ export function createSidecarSubstrateFactory(
         sourcesRef,
         mailPartReader,
         ...(warmCache !== undefined ? { warmCache } : {}),
-        ...(warmConnectorHooks !== undefined
-          ? warmConnectorHooks
-          : { onColdStepSettled: flushColdStepState }),
+        ...(warmConnectorHooks !== undefined ? warmConnectorHooks : {}),
       })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = createGrantEvaluator();

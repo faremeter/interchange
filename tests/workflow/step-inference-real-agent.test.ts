@@ -87,8 +87,15 @@ describe("step inference selector reaches the provider request", () => {
     });
     const invokeStep = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: () =>
-        localStepEnvBase({ baseDir, name: "answer", source, harness }),
+      buildEnv: async () => ({
+        env: await localStepEnvBase({
+          baseDir,
+          name: "answer",
+          source,
+          harness,
+        }),
+        conversation: undefined,
+      }),
       agentFactory: createAgent,
     });
 

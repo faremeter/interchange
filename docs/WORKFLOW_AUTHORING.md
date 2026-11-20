@@ -238,7 +238,7 @@ const invokeStep = createWorkflowStepInvoker({
       resolveGrants: () => resolveGrants(stepId),
       providers,
     });
-    return env;
+    return { env, conversation: undefined };
   },
 });
 await runLocal(definition, {

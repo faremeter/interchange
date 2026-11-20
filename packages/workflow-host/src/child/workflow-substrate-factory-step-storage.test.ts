@@ -21,7 +21,7 @@
 //
 // The cold path also backs each invocation's `ContextStore` with the step's
 // committed state in the workflow-run substrate: it restores that state on a
-// fresh host, `flushColdStepState` commits the turn, and a retried attempt
+// fresh host, the build's conversation commits the turn, and a retried attempt
 // starts over rather than continuing an earlier attempt's conversation.
 
 import { afterAll, describe, test, expect } from "bun:test";
@@ -33,6 +33,7 @@ import type {
   AuditStore,
   ContextStore,
   InferenceSource,
+  OutboundMessage,
   PendingOperation,
   ToolCall,
 } from "@intx/types/runtime";
@@ -55,7 +56,7 @@ import {
   type ChildOutboundMailBridge,
   type DurableConversationRegistry,
   type SourcesSnapshotRef,
-  type StepEnvBase,
+  type StepBuild,
 } from "@intx/workflow-host";
 import {
   scopedStepId,
@@ -65,7 +66,6 @@ import {
 
 import {
   createSidecarStepBuildEnv,
-  flushColdStepState,
   type SidecarStepBuildEnvDeps,
 } from "./substrate-factory";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
@@ -171,6 +171,7 @@ function buildDeps(opts: {
   substrate: RepoStore;
   durableConversation?: DurableConversationRegistry;
   mailSigner?: MailSigner;
+  outboundMailBridge?: ChildOutboundMailBridge;
 }): SidecarStepBuildEnvDeps {
   return {
     dataDir: opts.dataDir,
@@ -180,7 +181,7 @@ function buildDeps(opts: {
     principal: PRINCIPAL,
     signer,
     mailboxAddress: "run_deployment-keying@example.com",
-    outboundMailBridge: stubOutboundMailBridge(),
+    outboundMailBridge: opts.outboundMailBridge ?? stubOutboundMailBridge(),
     adapters: createBuiltinRegistry(),
     closurePackageDir: "/unused-closure",
     directors: createDefaultDirectorRegistry(),
@@ -235,18 +236,12 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     );
 
     const sourcesRef = sourcesRefFor();
-    const env1: StepEnvBase = await buildEnv(
-      requestForRun("run-1"),
-      sourcesRef,
-    );
+    const { env: env1 } = await buildEnv(requestForRun("run-1"), sourcesRef);
     // A file the agent would write during run-1's turn.
     const marker = path.join(env1.workdir, "turn-1.txt");
     await fs.writeFile(marker, "carried");
 
-    const env2: StepEnvBase = await buildEnv(
-      requestForRun("run-2"),
-      sourcesRef,
-    );
+    const { env: env2 } = await buildEnv(requestForRun("run-2"), sourcesRef);
 
     // Stable keying: a different runId resolves to the SAME workdir, so
     // the warm case is bounded to one dir per agent (not one-per-message)
@@ -271,14 +266,8 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     );
     const sourcesRef = sourcesRefFor();
 
-    const env1: StepEnvBase = await buildEnv(
-      requestForRun("run-1"),
-      sourcesRef,
-    );
-    const env2: StepEnvBase = await buildEnv(
-      requestForRun("run-2"),
-      sourcesRef,
-    );
+    const { env: env1 } = await buildEnv(requestForRun("run-1"), sourcesRef);
+    const { env: env2 } = await buildEnv(requestForRun("run-2"), sourcesRef);
 
     // Per-run keying: each run gets its own workdir, rooted under that
     // run's `runs/<runId>/` subtree -- exactly what the run-completion
@@ -314,7 +303,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
     );
 
-    const env: StepEnvBase = await buildEnv(
+    const { env } = await buildEnv(
       requestForRun("run-1"),
       sourcesRefFor(chain),
     );
@@ -336,10 +325,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     );
     const sourcesRef = sourcesRefFor();
 
-    const before: StepEnvBase = await buildEnv(
-      requestForRun("run-1"),
-      sourcesRef,
-    );
+    const { env: before } = await buildEnv(requestForRun("run-1"), sourcesRef);
     expect(before.sources).toEqual([SOURCE]);
 
     const rotated: InferenceSource = {
@@ -351,10 +337,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     };
     sourcesRef.current = { [STEP_ID]: [rotated] };
 
-    const after: StepEnvBase = await buildEnv(
-      requestForRun("run-2"),
-      sourcesRef,
-    );
+    const { env: after } = await buildEnv(requestForRun("run-2"), sourcesRef);
     expect(after.sources).toEqual([rotated]);
     expect(after.defaultSource).toBe(rotated.id);
   });
@@ -379,7 +362,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       authzContext: { stepId: scopedId, runId: "run-1", attempt: 1 },
       signal: new AbortController().signal,
     };
-    const env: StepEnvBase = await buildEnv(scopedRequest, sourcesRefFor());
+    const { env } = await buildEnv(scopedRequest, sourcesRefFor());
 
     // The scoped iteration resolves the base step's pinned source.
     expect(env.sources).toEqual([SOURCE]);
@@ -491,7 +474,7 @@ describe("createSidecarStepBuildEnv capabilities", () => {
       }),
     );
 
-    const env = await buildEnv(requestForRun("run-1"), sourcesRefFor());
+    const { env } = await buildEnv(requestForRun("run-1"), sourcesRefFor());
 
     // A tool reads `capabilities` from its own env type; StepEnvBase does
     // not declare it, so narrow it here.
@@ -530,7 +513,7 @@ describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
       buildDeps({ dataDir, substrate }),
     );
 
-    const env: StepEnvBase = await buildEnv(
+    const { env } = await buildEnv(
       approvalResumeRequest("run-1", "corr-1"),
       sourcesRefFor(),
     );
@@ -570,10 +553,13 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     );
   }
 
-  async function takeTurn(env: StepEnvBase, turns: ReturnType<typeof turn>[]) {
-    await env.storage.writeTurns(turns);
-    await env.storage.commit({ message: "turn" });
-    await flushColdStepState(env);
+  async function takeTurn(build: StepBuild, turns: ReturnType<typeof turn>[]) {
+    if (build.conversation === undefined) {
+      throw new Error("a cold step build returns its conversation");
+    }
+    await build.env.storage.writeTurns(turns);
+    await build.env.storage.commit({ message: "turn" });
+    await build.conversation.settle();
   }
 
   test("a replacement host restores the conversation the last turn committed", async () => {
@@ -597,7 +583,9 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     const replacement = await (
       await host(substrate)
     )(requestForRun("run-1"), sourcesRefFor());
-    expect((await replacement.storage.load()).turns).toEqual([turn("first")]);
+    expect((await replacement.env.storage.load()).turns).toEqual([
+      turn("first"),
+    ]);
   });
 
   test("a retried attempt starts over and replaces the earlier attempt's state", async () => {
@@ -608,7 +596,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     ]);
 
     const retry = await buildEnv(requestForRun("run-1", 2), sourcesRefFor());
-    expect((await retry.storage.load()).turns).toEqual([]);
+    expect((await retry.env.storage.load()).turns).toEqual([]);
     await takeTurn(retry, [turn("attempt two")]);
 
     const committed = await readStepState({
@@ -626,7 +614,45 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     ).rejects.toThrow(/later than attempt 1/);
   });
 
-  test("flushing an env the cold path did not build fails loudly", async () => {
+  test("a cold build's conversation sends through the bridge as the deployment mailbox", async () => {
+    const dataDir = await makeTempDir();
+    const submitted: { sender: string; message: OutboundMessage }[] = [];
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({
+        dataDir,
+        substrate: await createSubstrate(dataDir),
+        outboundMailBridge: {
+          ...stubOutboundMailBridge(),
+          submit: async (sender, message) => {
+            submitted.push({ sender, message });
+            return { messageId: "<sent@example.com>", status: "delivered" };
+          },
+        },
+      }),
+    );
+    const { conversation } = await buildEnv(
+      requestForRun("run-1"),
+      sourcesRefFor(),
+    );
+    if (conversation === undefined) {
+      throw new Error("a cold step build returns its conversation");
+    }
+    const message: OutboundMessage = {
+      to: "alice@example.com",
+      type: "conversation.message",
+      content: "hello",
+    };
+
+    expect(await conversation.send(message)).toEqual({
+      messageId: "<sent@example.com>",
+      status: "delivered",
+    });
+    expect(submitted).toEqual([
+      { sender: "run_deployment-keying@example.com", message },
+    ]);
+  });
+
+  test("a warm build returns no conversation", async () => {
     const dataDir = await makeTempDir();
     const buildEnv = createSidecarStepBuildEnv(
       buildDeps({
@@ -635,9 +661,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
         durableConversation: stubDurableConversationRegistry(),
       }),
     );
-    const warmEnv = await buildEnv(requestForRun("run-1"), sourcesRefFor());
-    await expect(flushColdStepState(warmEnv)).rejects.toThrow(
-      /carries no cold step state/,
-    );
+    const warm = await buildEnv(requestForRun("run-1"), sourcesRefFor());
+    expect(warm.conversation).toBeUndefined();
   });
 });

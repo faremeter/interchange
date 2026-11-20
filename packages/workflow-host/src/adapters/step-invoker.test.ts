@@ -61,7 +61,11 @@ import {
 } from "@intx/workflow-host/testing";
 
 import type { StepConversation } from "./step-conversation";
-import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
+import {
+  createWorkflowStepInvoker,
+  type StepBuild,
+  type StepEnvBase,
+} from "./step-invoker";
 import { createDurableConversationRegistry } from "../conversation-state";
 import { createWarmConnectorHooks } from "../child/warm-connector-hooks";
 import { createWarmAgentCache } from "../child/warm-agent-cache";
@@ -89,7 +93,7 @@ function stubBlobReader(): BlobReader {
 }
 
 /**
- * A warm step conversation whose turn and settle members do nothing unless
+ * A step conversation whose turn and settle members do nothing unless
  * a test overrides them. Its turns answer no mail, and its reply has no
  * recipient, so a reply turn sends nothing unless a test overrides
  * `turnAnswersMail` and `composeReply`.
@@ -123,6 +127,11 @@ function stubBuildEnv(): StepEnvBase {
     audit: noopAuditStore(),
     directors: createDefaultDirectorRegistry(),
   };
+}
+
+/** A step build with a stub env and no durable conversation. */
+function stubStepBuild(): StepBuild {
+  return { env: stubBuildEnv(), conversation: undefined };
 }
 
 function stubDef(): AgentDefinition<BaseEnv> {
@@ -370,7 +379,7 @@ describe("workflow-host StepInvoker adapter - warm source rotation", () => {
 
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => {
         announceBuildStarted();
         await buildGate;
@@ -415,7 +424,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
 
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -463,7 +472,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
     const inference = { maxTokens: 2048, effort: "medium" as const };
@@ -495,7 +504,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -545,7 +554,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -602,7 +611,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
 
@@ -621,7 +630,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -650,7 +659,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
     const req = buildRequest({ input: () => "function" });
@@ -673,7 +682,7 @@ describe("workflow-host StepInvoker adapter - abort handling", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -697,7 +706,7 @@ describe("workflow-host StepInvoker adapter - abort handling", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => {
         factoryCalls += 1;
         return buildStubAgent().agent;
@@ -719,7 +728,7 @@ describe("workflow-host StepInvoker adapter - abort handling", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -740,7 +749,7 @@ describe("workflow-host StepInvoker adapter - output shape", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -776,7 +785,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
       onEvent: () => {
         calls += 1;
@@ -799,7 +808,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
       onEvent: (event) => seen.push(event.type),
     });
@@ -825,7 +834,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -860,22 +869,29 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     resolvedBy: null,
   });
 
-  test("settles with the env buildEnv produced, after the agent closes, before the result returns", async () => {
+  // A step build whose conversation's `settle` runs `settle`.
+  function settlingBuild(settle: () => Promise<void>): StepBuild {
+    return {
+      env: stubBuildEnv(),
+      conversation: stubStepConversation({ settle }),
+    };
+  }
+
+  test("settles the conversation buildEnv returned, after the agent closes, before the result returns", async () => {
     const stub = buildStubAgent();
-    const built = stubBuildEnv();
-    const settledWith: StepEnvBase[] = [];
+    let settled = 0;
     const settleEntered = Promise.withResolvers<undefined>();
     const settleHeld = Promise.withResolvers<undefined>();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => built,
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          stub.events.push("settled");
+          settled += 1;
+          settleEntered.resolve(undefined);
+          await settleHeld.promise;
+        }),
       agentFactory: async () => stub.agent,
-      onColdStepSettled: async (env) => {
-        stub.events.push("settled");
-        settledWith.push(env);
-        settleEntered.resolve(undefined);
-        await settleHeld.promise;
-      },
     });
 
     let returned = false;
@@ -896,8 +912,7 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     await pending;
 
     expect(returned).toBe(true);
-    expect(settledWith).toEqual([built]);
-    expect(settledWith[0]).toBe(built);
+    expect(settled).toBe(1);
     expect(stub.events.slice(-2)).toEqual(["close", "settled"]);
   });
 
@@ -906,12 +921,12 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          settled += 1;
+          throw new Error("settle boom");
+        }),
       agentFactory: async () => stub.agent,
-      onColdStepSettled: async () => {
-        settled += 1;
-        throw new Error("settle boom");
-      },
     });
 
     const pending = invoker(buildRequest({ input: "turn" }));
@@ -925,11 +940,11 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     const stub = buildStubAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          throw new Error("settle boom");
+        }),
       agentFactory: async () => stub.agent,
-      onColdStepSettled: async () => {
-        throw new Error("settle boom");
-      },
     });
 
     const pending = invoker(buildRequest({ input: "turn" }));
@@ -968,11 +983,11 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          settled += 1;
+        }),
       agentFactory: async () => closeFails(stub),
-      onColdStepSettled: async () => {
-        settled += 1;
-      },
     });
 
     const pending = invoker(buildRequest({ input: "turn" }));
@@ -996,11 +1011,11 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     );
   });
 
-  test("a close failure after a clean turn fails the step without a retry when no settle hook is wired", async () => {
+  test("a close failure after a clean turn fails the step without a retry when the step has no conversation", async () => {
     const stub = buildStubAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => closeFails(stub),
     });
 
@@ -1021,11 +1036,11 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          settled += 1;
+        }),
       agentFactory: async () => closeFails(stub),
-      onColdStepSettled: async () => {
-        settled += 1;
-      },
     });
 
     const pending = invoker(buildRequest({ input: "turn" }));
@@ -1036,18 +1051,18 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     expect(settled).toBe(1);
   });
 
-  test("the warm path never calls the cold settle hook", async () => {
+  test("the warm path never settles the conversation buildEnv returned", async () => {
     const warmCache = createWarmAgentCache();
     const stub = buildWarmStubAgent();
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          settled += 1;
+        }),
       agentFactory: async () => stub.agent,
       warmCache,
-      onColdStepSettled: async () => {
-        settled += 1;
-      },
     });
 
     await invoker(buildRequest({ input: "first message" }));
@@ -1158,7 +1173,7 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => {
         factoryCalls += 1;
         return stub.agent;
@@ -1263,7 +1278,7 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => {
         factoryCalls += 1;
         return agent;
@@ -1306,7 +1321,7 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
           matchingGrants: [],
           resolvedBy: null,
         }),
-        buildEnv: async () => stubBuildEnv(),
+        buildEnv: async () => stubStepBuild(),
         agentFactory: async () => stub.agent,
         onEvent,
         warmCache,
@@ -1402,7 +1417,7 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
     const stub = buildWarmStubAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
       warmCache,
       warmConversation: () =>
@@ -1431,7 +1446,7 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
     let boundaries = 0;
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => ({
         ...stub.agent,
         async send(): Promise<SendResult> {
@@ -1462,7 +1477,7 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
     const seeded: string[] = [];
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
       warmCache,
       warmConversation: (key) =>
@@ -1490,7 +1505,7 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
     const calls: string[] = [];
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
       warmCache,
       warmConversation: () =>
@@ -1731,7 +1746,7 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     };
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => scripted.agent,
       warmCache,
       warmConversation: () => conversation,
@@ -2063,7 +2078,7 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
         const stepId = req.authzContext.stepId;
         if (stepId === undefined) throw new Error("expected a step id");
         await registry.acquire(stepId);
-        return stubBuildEnv();
+        return stubStepBuild();
       },
       agentFactory: async () => scripted.agent,
       warmCache,
@@ -2109,7 +2124,7 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
     const warmCache = createWarmAgentCache();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       warmCache,
       warmConversation: () => conversation,
@@ -2353,7 +2368,7 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
 
@@ -2427,7 +2442,7 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
 
@@ -2493,7 +2508,7 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
 
@@ -2664,7 +2679,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       mailPartReader: stubReader({ "mail-part:///r/m/1-photo.png": "PNGDATA" }),
     });
@@ -2703,7 +2718,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     const base = mail([
@@ -2731,7 +2746,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
 
@@ -2759,7 +2774,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     const threaded: Mail = {
@@ -2799,7 +2814,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     // Inbound mail can carry a headerless-derived (sha256) or malformed
@@ -2841,7 +2856,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       mailPartReader: stubReader({
         "mail-part:///r/m/1-notes.txt": "SECRET FILE",
@@ -2888,7 +2903,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       mailPartReader: stubReader({ "mail-part:///r/m/0-a.mp3": "AUDIOBYTES" }),
     });
@@ -2919,7 +2934,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       // no mailPartReader
     });
@@ -2942,7 +2957,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       // no reader: a text-only mail whose parts inlined their text still delivers
     });
@@ -2968,7 +2983,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       mailPartReader: stubReader({}),
     });
@@ -3014,7 +3029,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     await invoker(buildRequest({ input }));
@@ -3044,7 +3059,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     await invoker(buildRequest({ input: mailFrom(undefined) }));

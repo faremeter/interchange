@@ -3655,7 +3655,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
-        buildEnv: async () => stubStepEnv(),
+        buildEnv: async () => ({ env: stubStepEnv(), conversation: undefined }),
         agentFactory: async () => {
           factoryCalls += 1;
           return agent;
@@ -3854,7 +3854,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
-        buildEnv: async () => stubStepEnv(),
+        buildEnv: async () => ({ env: stubStepEnv(), conversation: undefined }),
         agentFactory: async () => {
           factoryCalls += 1;
           return agent;

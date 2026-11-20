@@ -316,7 +316,7 @@ describe("createSupervisorBackedMailPartReader", () => {
     });
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => ({ env: stubBuildEnv(), conversation: undefined }),
       agentFactory: async () => agent,
       mailPartReader: reader,
     });
