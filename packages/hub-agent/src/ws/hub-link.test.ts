@@ -2237,6 +2237,116 @@ describe("initial handshake on connect", () => {
     }
   });
 
+  test("a standby report owed during an outage goes out after the wake it followed, and a later wake drops it", async () => {
+    const frames: string[] = [];
+    const sockets: { send(data: string): void; close(): void }[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          sockets.push(ws);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") frames.push(evt.data);
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const idleAgain = "run_idle_again@integration.interchange";
+    const wokenAgain = "run_woken_again@integration.interchange";
+    let reconnect = Promise.withResolvers<() => void>();
+    const client = createHubLink({
+      capacity: DEFAULT_SIDECAR_CAPACITY,
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-standby-reports",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () =>
+        [idleAgain, wokenAgain].map((address) => ({
+          address,
+          generation: 1,
+          state: "live" as const,
+        })),
+      scheduleReconnect(callback) {
+        reconnect.resolve(callback);
+        return () => undefined;
+      },
+    });
+    const reports = () =>
+      frames
+        .map((raw) => {
+          const frame: { type: string; agentAddress?: string } =
+            JSON.parse(raw);
+          return frame;
+        })
+        .filter(
+          (frame) =>
+            frame.type === "deployment.woken" ||
+            frame.type === "deployment.standby",
+        )
+        .map((frame) => `${frame.type} ${String(frame.agentAddress)}`);
+    const welcome = async (index: number) => {
+      await waitUntil(
+        () =>
+          frames.filter((raw) => raw.includes('"type":"hello"')).length ===
+          index + 1,
+      );
+      sockets[index]!.send(JSON.stringify({ type: "welcome", routed: [] }));
+    };
+
+    client.connect();
+    try {
+      await welcome(0);
+      sockets[0]!.close();
+      const resume = await reconnect.promise;
+      reconnect = Promise.withResolvers<() => void>();
+      client.sendDeploymentWoken({
+        agentAddress: idleAgain,
+        generation: 1,
+        reason: "Woken by timer",
+      });
+      client.sendDeploymentInStandby({
+        agentAddress: idleAgain,
+        generation: 1,
+        idleStandby: crypto.randomUUID(),
+      });
+      client.sendDeploymentInStandby({
+        agentAddress: wokenAgain,
+        generation: 1,
+        idleStandby: crypto.randomUUID(),
+      });
+      client.sendDeploymentWoken({
+        agentAddress: wokenAgain,
+        generation: 1,
+        reason: "Woken by mail",
+      });
+
+      resume();
+      await welcome(1);
+      await waitUntil(() => reports().length === 3);
+      expect(reports()).toEqual([
+        `deployment.woken ${idleAgain}`,
+        `deployment.standby ${idleAgain}`,
+        `deployment.woken ${wokenAgain}`,
+      ]);
+
+      // A welcomed link sends the report at once.
+      client.sendDeploymentInStandby({
+        agentAddress: wokenAgain,
+        generation: 1,
+        idleStandby: crypto.randomUUID(),
+      });
+      await waitUntil(() => reports().length === 4);
+      expect(reports().at(-1)).toBe(`deployment.standby ${wokenAgain}`);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
   test("an outage that fills the queue drops audit copies before it refuses mail to route", async () => {
     const frames: string[] = [];
     const sockets: { send(data: string): void }[] = [];

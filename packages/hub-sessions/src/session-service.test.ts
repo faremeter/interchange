@@ -200,6 +200,9 @@ function createMockAllocationRouter(
     async putAllocationInStandby() {
       throw new Error("mock standby is not used by session service");
     },
+    async confirmAllocationInStandby() {
+      throw new Error("mock standby is not used by session service");
+    },
     async wakeAllocation() {
       throw new Error("mock wake is not used by session service");
     },
@@ -384,6 +387,20 @@ describe("sendMultiStepDeployFrame", () => {
 
     const sent = sentWorkflows[0];
     if (sent === undefined) throw new Error("missing workflow projection");
+    // Nothing asked for a wait before standby, so the frame carries none.
+    expect("standbyAfterMs" in sent).toBe(false);
+    await sendMultiStepDeployFrame({
+      lineage: "source-ref",
+      sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+      allocationTarget: { allocationId: "alloc-test", generation: 1 },
+      agentAddress: "ins_dep_src@workflow.interchange",
+      config,
+      sources,
+      approvedWireHash: frozenWireHash,
+      sourceRef: { source, closure },
+      standbyAfterMs: 1_200_000,
+    });
+    expect(sentWorkflows[1]?.standbyAfterMs).toBe(1_200_000);
     // The gate-frozen hash rides the frame VERBATIM -- the source-ref arm never
     // recomputes it, so the child's re-verify over the closure matches.
     expect(sent.approvedWireHash).toBe(frozenWireHash);

@@ -7,6 +7,7 @@
 // affect other listeners or the wire layer.
 
 import type {
+  IdleStandbyId,
   PackRejectReason,
   RunGrantsFrame,
   WorkflowRunRefTips,
@@ -111,7 +112,8 @@ export type SidecarEventMap = {
   /**
    * Notification of whether the current generation's workflow child is
    * in standby, as the sidecar reports it: on every `hello` for each live
-   * incarnation it routes, and when an input wakes a child in standby.
+   * incarnation it routes, when an input wakes a child in standby, and when
+   * the sidecar puts a child in standby by itself.
    */
   "deployment.standby": {
     allocationId: string;
@@ -119,6 +121,8 @@ export type SidecarEventMap = {
     inStandby: boolean;
     /** Why a child in standby runs again, when an input woke it. */
     reason?: string;
+    /** The standby the sidecar began by itself, by the idle rule. */
+    idleStandby?: IdleStandbyId;
   };
 
   /** Notification. Emitted for mail the Hub gives up on: recipients no

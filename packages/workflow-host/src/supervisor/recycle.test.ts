@@ -3832,7 +3832,10 @@ async function answerQuiet(
   child: FakeChild,
   childSender: ReturnType<typeof createControlChannelSender>,
   count: number,
-  answer: { ended: true } | { quiet: boolean; wakeAt?: string; error?: string },
+  answer:
+    | { ended: true }
+    | { quiet: true; quietForMs: number; wakeAt?: string }
+    | { quiet: false; wakeAt?: string; error?: string },
 ): Promise<{ wait: boolean }> {
   const queries = await waitForUpstreamPayloads(
     child.supervisorToChild,
@@ -3858,7 +3861,8 @@ async function actAsChildEnteringStandby(
 ): Promise<void> {
   const first = opts.firstQuery ?? 1;
   const answer = {
-    quiet: true,
+    quiet: true as const,
+    quietForMs: 0,
     ...(opts.wakeAt !== undefined ? { wakeAt: opts.wakeAt } : {}),
   };
   expect((await answerQuiet(child, childSender, first, answer)).wait).toBe(
@@ -3933,6 +3937,10 @@ describe("supervisor standby and wake", () => {
         "setTimer" | "clearTimer" | "now"
       >;
       recyclePolicy?: Partial<WorkflowSupervisorBindings>;
+      idleRule?: Pick<
+        WorkflowSupervisorBindings,
+        "standbyAfterMs" | "onIdleStandby"
+      >;
       drainTimeoutAccumulatorFactory?: WorkflowSupervisorBindings["drainTimeoutAccumulatorFactory"];
       respawnBackoffInitialMs?: number;
       dispatchRetryBackoffMs?: number;
@@ -4007,6 +4015,7 @@ describe("supervisor standby and wake", () => {
           : {}),
         ...opts.timers,
         ...opts.recyclePolicy,
+        ...opts.idleRule,
       },
     });
     const first = tracker.children[0];
@@ -4107,8 +4116,8 @@ describe("supervisor standby and wake", () => {
       await setup();
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
     first.childToSupervisor.inject("not-json{{{");
@@ -4234,10 +4243,12 @@ describe("supervisor standby and wake", () => {
 
     const inStandby = supervisor.enterStandby();
     expect(
-      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(true);
     expect(
-      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(false);
     await answerParkedQuery(first, firstSender, 2);
     await expect(inStandby).rejects.toThrow(
@@ -4260,8 +4271,8 @@ describe("supervisor standby and wake", () => {
     });
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await expect(inStandby).rejects.toThrow(
       "the deployment's inbox could not be read: the inbox is unreadable",
@@ -4294,8 +4305,8 @@ describe("supervisor standby and wake", () => {
     });
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await expect(inStandby).rejects.toThrow(
       "the run's history could not be read: the history ref is unreadable",
     );
@@ -4429,8 +4440,8 @@ describe("supervisor standby and wake", () => {
     expect(inbox.messageIds(ADDRESS).inbox).toHaveLength(1);
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await expect(inStandby).rejects.toThrow(
       "mail is waiting in the deployment's inbox",
@@ -4505,8 +4516,8 @@ describe("supervisor standby and wake", () => {
     failPutBack = false;
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await expect(inStandby).rejects.toThrow(
       "mail a failed dispatch left in processing/ is not back in the inbox or with its run yet",
@@ -4529,8 +4540,8 @@ describe("supervisor standby and wake", () => {
     });
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await expect(inStandby).rejects.toThrow(
       "mail a failed replay left waits in processing/ for the child to restart",
@@ -4572,8 +4583,8 @@ describe("supervisor standby and wake", () => {
     expect(inbox.messageIds(ADDRESS).processing).toHaveLength(1);
 
     const refused = supervisor.enterStandby();
-    await answerQuiet(second, secondSender, 1, { quiet: true });
-    await answerQuiet(second, secondSender, 2, { quiet: true });
+    await answerQuiet(second, secondSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(second, secondSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(second, secondSender, 2);
     await expect(refused).rejects.toThrow(
       "mail a failed replay left waits in processing/ for the child to restart",
@@ -4620,7 +4631,7 @@ describe("supervisor standby and wake", () => {
       payload: { approved: true },
     });
     const before = waits.length;
-    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
     await waited.until(() => waits.slice(before).includes("standby"));
     first.eventChildToSupervisor.close();
     first.childToSupervisor.close();
@@ -4647,7 +4658,7 @@ describe("supervisor standby and wake", () => {
       await setup({ recyclePolicy: policy.bindings });
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
     await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
     policy.advance(61_000);
     policy.tick();
@@ -4672,8 +4683,8 @@ describe("supervisor standby and wake", () => {
       await setup();
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await waitForUpstreamPayloads(
       first.supervisorToChild,
       "parked-correlations.request",
@@ -4722,7 +4733,7 @@ describe("supervisor standby and wake", () => {
     });
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
     await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
     // Mail during the final check is held back.
     mailBus.deliver(
@@ -4771,11 +4782,11 @@ describe("supervisor standby and wake", () => {
     });
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
     await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
     // A write still landing when the child answers holds the final check.
     await sendChildWrite(firstSender, "landing");
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     // A write after the answer is held by the fence and found by the check,
     // which waits for the landing write. The supervisor takes frames in order,
     // so once it registers the park sent next, it has taken that write.
@@ -4788,7 +4799,8 @@ describe("supervisor standby and wake", () => {
     firstWrite.resolve(undefined);
 
     expect(
-      (await answerQuiet(first, firstSender, 3, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 3, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(true);
     expect(first.killSignals).toEqual([]);
     expect(sentFrameTypes(first)).not.toContain("shutdown");
@@ -4825,10 +4837,10 @@ describe("supervisor standby and wake", () => {
     });
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
     await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
     await sendChildWrite(firstSender, "landing");
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     // Held by the fence; the park sent next shows the supervisor took it.
     await sendChildWrite(firstSender, "after-quiet");
     await firstSender.send({
@@ -4856,8 +4868,8 @@ describe("supervisor standby and wake", () => {
     );
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await waitForUpstreamPayloads(
       first.supervisorToChild,
       "parked-correlations.request",
@@ -5012,8 +5024,8 @@ describe("supervisor standby and wake", () => {
     });
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await expect(inStandby).rejects.toThrow(
       "mail the dispatch took is still waiting for the child",
@@ -5685,8 +5697,8 @@ describe("supervisor standby and wake", () => {
           : undefined,
     });
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await inStandby;
     expect(first.killSignals).toEqual(["SIGTERM"]);
@@ -5757,8 +5769,8 @@ describe("supervisor standby and wake", () => {
     await dequeued.promise;
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await expect(inStandby).rejects.toThrow(
       "mail the dispatch took is still waiting for the child",
@@ -5853,7 +5865,7 @@ describe("supervisor standby and wake", () => {
     await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
     await sendChildWrite(firstSender, "stuck");
     const before = waits.length;
-    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
     await waited.until(() => waits.slice(before).includes("standby"));
     const delivered = supervisor.deliverSignal(heldSignal);
     await waited.until(() => waits.includes("input"));
@@ -5883,10 +5895,10 @@ describe("supervisor standby and wake", () => {
     } = await setupStuckWrite();
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
     await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
     await sendChildWrite(firstSender, "stuck");
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     // The supervisor takes frames in order, so once it registers the park sent
     // next, it has the answer and waits on the write.
     await firstSender.send({
@@ -5938,7 +5950,8 @@ describe("supervisor standby and wake", () => {
 
     const inStandby = supervisor.enterStandby();
     expect(
-      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(true);
     const queries = await waitForUpstreamPayloads(
       first.supervisorToChild,
@@ -6215,7 +6228,7 @@ describe("supervisor standby and wake", () => {
     const { supervisor, firstSender, first, tracker, ipcKeypair } =
       await setup();
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
     await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
 
     const delivered = supervisor.deliverSignal({
@@ -6224,7 +6237,7 @@ describe("supervisor standby and wake", () => {
       signalId: "sig-1",
       payload: { approved: true },
     });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
     first.eventChildToSupervisor.close();
@@ -6258,8 +6271,8 @@ describe("supervisor standby and wake", () => {
     });
 
     const entering = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     const queries = await waitForUpstreamPayloads(
       first.supervisorToChild,
       "parked-correlations.request",
@@ -6519,7 +6532,8 @@ describe("supervisor standby and wake", () => {
 
     const inStandby = supervisor.enterStandby();
     expect(
-      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(true);
     await waitForUpstreamPayloads(first.supervisorToChild, "quiet.request", 2);
     const committed = deadline.pass();
@@ -6552,10 +6566,12 @@ describe("supervisor standby and wake", () => {
 
     const inStandby = supervisor.enterStandby();
     expect(
-      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(true);
     expect(
-      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(false);
     await answerParkedQuery(first, firstSender, 2);
     await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
@@ -6598,8 +6614,8 @@ describe("supervisor standby and wake", () => {
     await drainSleepingRun(supervisor, firstSender, registered.promise);
 
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
     const committed = deadline.pass();
@@ -6685,8 +6701,16 @@ describe("supervisor standby and wake", () => {
     const wakeAt = new Date(Date.now() + 3_600_000).toISOString();
 
     const entering = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true, wakeAt });
-    await answerQuiet(first, firstSender, 2, { quiet: true, wakeAt });
+    await answerQuiet(first, firstSender, 1, {
+      quiet: true,
+      quietForMs: 0,
+      wakeAt,
+    });
+    await answerQuiet(first, firstSender, 2, {
+      quiet: true,
+      quietForMs: 0,
+      wakeAt,
+    });
     const queries = await waitForUpstreamPayloads(
       first.supervisorToChild,
       "parked-correlations.request",
@@ -6801,10 +6825,12 @@ describe("supervisor standby and wake", () => {
     });
     const inStandby = supervisor.enterStandby();
     expect(
-      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(true);
     expect(
-      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(false);
     await expect(inStandby).rejects.toThrow(
       "the workflow child did not report the correlations it is parked on",
@@ -6822,10 +6848,12 @@ describe("supervisor standby and wake", () => {
 
     const inStandby = supervisor.enterStandby();
     expect(
-      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(true);
     expect(
-      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(false);
     await answerParkedQuery(first, firstSender, 2);
     await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
@@ -6883,10 +6911,12 @@ describe("supervisor standby and wake", () => {
 
     const inStandby = supervisor.enterStandby();
     expect(
-      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(true);
     expect(
-      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(false);
     await answerParkedQuery(first, firstSender, 2);
     await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
@@ -7032,8 +7062,8 @@ describe("supervisor standby and wake", () => {
       () => null,
       (cause: unknown) => cause,
     );
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await answerParkedQuery(first, firstSender, 2);
     await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
     // The wake waits for the stop first, so the drain deadline's cancellation
@@ -7155,10 +7185,12 @@ describe("supervisor standby and wake", () => {
 
     const abandoned = supervisor.enterStandby();
     expect(
-      (await answerQuiet(first, firstSender, 1, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(true);
     expect(
-      (await answerQuiet(first, firstSender, 2, { quiet: true })).wait,
+      (await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 }))
+        .wait,
     ).toBe(false);
     await waitForUpstreamPayloads(
       first.supervisorToChild,
@@ -7389,8 +7421,8 @@ describe("supervisor standby and wake", () => {
 
     queryFails = true;
     const inStandby = supervisor.enterStandby();
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await expect(inStandby).rejects.toBeInstanceOf(StandbyDeferredError);
     expect(sentFrameTypes(first)).not.toContain("shutdown");
 
@@ -7557,8 +7589,8 @@ describe("supervisor standby and wake", () => {
     });
     const inStandby = supervisor.enterStandby();
     void inStandby.catch(() => undefined);
-    await answerQuiet(first, firstSender, 1, { quiet: true });
-    await answerQuiet(first, firstSender, 2, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
+    await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 0 });
     await waitForUpstreamPayloads(
       first.supervisorToChild,
       "parked-correlations.request",
@@ -7607,7 +7639,7 @@ describe("supervisor standby and wake", () => {
       payload: null,
     });
     await reached.promise;
-    await answerQuiet(first, firstSender, 1, { quiet: true });
+    await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 0 });
     expect(
       await Promise.race([
         waits.promise.then(() => "waited"),
@@ -7692,6 +7724,1138 @@ describe("supervisor standby and wake", () => {
     expect(await stopped.promise).toBe(
       "recycle failed: the workflow-child binary is missing",
     );
+  });
+
+  describe("the idle rule", () => {
+    const IDLE_MS = 123_456;
+
+    // Holds the idle rule's waits for the test to fire; every other timer
+    // runs as usual. `delays` are the waits the test expects to be armed.
+    function idleClock(delays: readonly number[]) {
+      type Wait = { ms: number; fire: () => void };
+      const waits = new Set<Wait>();
+      let armed = 0;
+      let onArm: (() => void) | null = null;
+      const hooks: {
+        watchdogCleared: (() => void) | null;
+        armed: (() => void) | null;
+      } = { watchdogCleared: null, armed: null };
+      return {
+        // `watchdogCleared` is called when a quiet check's watchdog is
+        // cleared, which is as its final check ends, and `armed` when an
+        // idle wait is armed.
+        hooks,
+        timers: {
+          now: () => 0,
+          setTimer: (callback: () => void, ms: number): unknown => {
+            if (!delays.includes(ms)) {
+              const handle = setTimeout(callback, ms);
+              return {
+                clear: () => {
+                  clearTimeout(handle);
+                  if (ms === 30_000) hooks.watchdogCleared?.();
+                },
+              };
+            }
+            const wait: Wait = {
+              ms,
+              fire: () => {
+                waits.delete(wait);
+                callback();
+              },
+            };
+            waits.add(wait);
+            armed += 1;
+            onArm?.();
+            hooks.armed?.();
+            return { clear: () => waits.delete(wait) };
+          },
+          clearTimer: (handle: unknown): void => {
+            if (
+              typeof handle === "object" &&
+              handle !== null &&
+              "clear" in handle &&
+              typeof handle.clear === "function"
+            )
+              handle.clear();
+          },
+        },
+        armed: () => armed,
+        waiting: () => [...waits].map((wait) => wait.ms),
+        nextArm: (): Promise<void> =>
+          new Promise((resolve) => {
+            onArm = () => {
+              onArm = null;
+              resolve();
+            };
+          }),
+        fire: (): void => {
+          const [wait, ...others] = waits;
+          if (wait === undefined || others.length > 0)
+            throw new Error(
+              `expected one idle wait, found ${String(waits.size)}`,
+            );
+          wait.fire();
+        },
+      };
+    }
+
+    test("puts a child whose runs waited long enough in standby, and waits again once it is woken", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const recorded: RecordedStandby[] = [];
+      const idle = Promise.withResolvers<undefined>();
+      const woke = Promise.withResolvers<string>();
+      const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+        await setup({
+          timers: clock.timers,
+          onWake: ({ reason }) => woke.resolve(reason),
+          recordStandby: async (standby) => {
+            recorded.push(standby);
+          },
+          idleRule: {
+            standbyAfterMs: IDLE_MS,
+            onIdleStandby: () => idle.resolve(undefined),
+          },
+        });
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      clock.fire();
+      // Neither check waits for the child to go quiet.
+      for (const count of [1, 2]) {
+        expect(
+          (
+            await answerQuiet(first, firstSender, count, {
+              quiet: true,
+              quietForMs: IDLE_MS,
+            })
+          ).wait,
+        ).toBe(false);
+      }
+      await answerParkedQuery(first, firstSender, 2);
+      await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+      first.eventChildToSupervisor.close();
+      first.childToSupervisor.close();
+      first.resolveExit?.(0);
+      await idle.promise;
+      expect(recorded.map((standby) => standby.idle)).toEqual([
+        expect.any(String),
+      ]);
+      expect(clock.waiting()).toEqual([]);
+
+      const rearmed = clock.nextArm();
+      mailBus.deliver(
+        ADDRESS,
+        inboundDelivery(new TextEncoder().encode("wake up")),
+      );
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      const secondSender = await driveReady(second, ipcKeypair);
+      await answerParkedQuery(second, secondSender, 1);
+      expect(await woke.promise).toBe("mail");
+      await rearmed;
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+      expect(clock.waiting()).toEqual([]);
+    });
+
+    test("a standby the host asked for is not recorded or reported as idle", async () => {
+      const recorded: RecordedStandby[] = [];
+      let reported = 0;
+      const { supervisor, firstSender, first } = await setup({
+        timers: idleClock([IDLE_MS]).timers,
+        recordStandby: async (standby) => {
+          recorded.push(standby);
+        },
+        idleRule: {
+          standbyAfterMs: IDLE_MS,
+          onIdleStandby: () => {
+            reported += 1;
+          },
+        },
+      });
+
+      const inStandby = supervisor.enterStandby();
+      await actAsChildEnteringStandby(first, firstSender);
+      await inStandby;
+      expect(recorded.map((standby) => standby.idle)).toEqual([undefined]);
+      expect(reported).toBe(0);
+
+      await supervisor.shutdown();
+    });
+
+    test("a child that has not been quiet long enough is checked again once it can have been", async () => {
+      const waited = 100_000;
+      const clock = idleClock([IDLE_MS, IDLE_MS - waited]);
+      const { supervisor, firstSender, first, tracker } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+
+      const rearmed = clock.nextArm();
+      clock.fire();
+      await answerQuiet(first, firstSender, 1, {
+        quiet: true,
+        quietForMs: waited,
+      });
+      await rearmed;
+      expect(clock.waiting()).toEqual([IDLE_MS - waited]);
+      expect(sentFrameTypes(first)).not.toContain("shutdown");
+      expect(tracker.totalSpawns).toBe(1);
+
+      await supervisor.shutdown();
+    });
+
+    test("a working child starts the wait over", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, firstSender, first } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+
+      const rearmed = clock.nextArm();
+      clock.fire();
+      await answerQuiet(first, firstSender, 1, { quiet: false });
+      await rearmed;
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+      expect(sentFrameTypes(first)).not.toContain("shutdown");
+
+      await supervisor.shutdown();
+    });
+
+    test("mail that arrives while the idle check asks the child is not held back", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const held = Promise.withResolvers<"held">();
+      const { supervisor, firstSender, first, mailBus } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+        onStandbyWait: (waiting) => {
+          if (waiting === "input") held.resolve("held");
+        },
+      });
+
+      clock.fire();
+      await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+      mailBus.deliver(
+        ADDRESS,
+        inboundDelivery(new TextEncoder().encode("hello")),
+      );
+      expect(
+        await Promise.race([
+          held.promise,
+          waitForUpstreamPayload(first.supervisorToChild, "trigger.fire").then(
+            () => "sent" as const,
+          ),
+        ]),
+      ).toBe("sent");
+      await takeTrigger(first, firstSender);
+
+      const rearmed = clock.nextArm();
+      await answerQuiet(first, firstSender, 1, { quiet: false });
+      await rearmed;
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+      expect(sentFrameTypes(first)).not.toContain("shutdown");
+
+      await supervisor.shutdown();
+    });
+
+    test("a signal sent while the idle check asks the child is not held back", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const held = Promise.withResolvers<"held">();
+      const { supervisor, firstSender, first } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+        onStandbyWait: (waiting) => {
+          if (waiting === "input") held.resolve("held");
+        },
+      });
+
+      clock.fire();
+      await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+      const delivered = supervisor.deliverSignal({
+        runId: RUN,
+        signalName: "gate",
+        signalId: "sig-1",
+        payload: { approved: true },
+      });
+      expect(
+        await Promise.race([
+          held.promise,
+          waitForUpstreamPayload(
+            first.supervisorToChild,
+            "signal.deliver",
+          ).then(() => "sent" as const),
+        ]),
+      ).toBe("sent");
+      await confirmSignal(first, firstSender);
+      await delivered;
+
+      const rearmed = clock.nextArm();
+      await answerQuiet(first, firstSender, 1, { quiet: false });
+      await rearmed;
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a shutdown during the idle check leaves no wait armed", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, first } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+
+      clock.fire();
+      await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+      await supervisor.shutdown();
+      expect(clock.waiting()).toEqual([]);
+    });
+
+    test("a recycle during the idle check leaves one wait, for the new child", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, first, tracker, ipcKeypair } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+
+      clock.fire();
+      await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+      const recycled = supervisor.recycle({ reason: "operator" });
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      const secondSender = await driveReady(second, ipcKeypair);
+      await answerParkedQuery(second, secondSender, 1);
+      await recycled;
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+      expect(clock.waiting()).toEqual([]);
+    });
+
+    // Answer the idle check of a child whose runs waited long enough, through
+    // to its exit for the standby.
+    async function stopIdleChild(
+      child: FakeChild,
+      sender: ReturnType<typeof createControlChannelSender>,
+    ): Promise<void> {
+      for (const count of [1, 2]) {
+        await answerQuiet(child, sender, count, {
+          quiet: true,
+          quietForMs: IDLE_MS,
+        });
+      }
+      await answerParkedQuery(child, sender, 2);
+      await waitForUpstreamPayload(child.supervisorToChild, "shutdown");
+      child.eventChildToSupervisor.close();
+      child.childToSupervisor.close();
+      child.resolveExit?.(0);
+    }
+
+    test("a standby that cannot be recorded holds the next idle check back, and the third in a row stops the rule until one is", async () => {
+      // Holds every wait the backoff could arm, so one past the third shows.
+      const clock = idleClock([IDLE_MS, 2 * IDLE_MS, 4 * IDLE_MS, 8 * IDLE_MS]);
+      let failing = true;
+      let woken = Promise.withResolvers<string>();
+      const { supervisor, firstSender, first, tracker, ipcKeypair } =
+        await setup({
+          timers: clock.timers,
+          onWake: ({ reason }) => woken.resolve(reason),
+          recordStandby: async () => {
+            if (failing) throw new Error("disk full");
+          },
+          idleRule: { standbyAfterMs: IDLE_MS },
+        });
+
+      let child = first;
+      let sender = firstSender;
+      const waitsAfter = [[2 * IDLE_MS], [4 * IDLE_MS], []];
+      for (const [round, waiting] of waitsAfter.entries()) {
+        woken = Promise.withResolvers<string>();
+        clock.fire();
+        await stopIdleChild(child, sender);
+        await tracker.awaitChildren(round + 2);
+        const started = tracker.children[round + 1];
+        if (started === undefined) throw new Error("woken child missing");
+        sender = await driveReady(started, ipcKeypair);
+        await answerParkedQuery(started, sender, 1);
+        expect(await woken.promise).toBe("a standby that was not recorded");
+        expect(clock.waiting()).toEqual(waiting);
+        child = started;
+      }
+
+      await supervisor.wake();
+      expect(clock.waiting()).toEqual([]);
+
+      // A standby the host asks for that is recorded starts the rule again.
+      failing = false;
+      const inStandby = supervisor.enterStandby();
+      await actAsChildEnteringStandby(child, sender);
+      await inStandby;
+      const awake = supervisor.wake();
+      await tracker.awaitChildren(5);
+      const fifth = tracker.children[4];
+      if (fifth === undefined) throw new Error("fifth child missing");
+      await answerParkedQuery(fifth, await driveReady(fifth, ipcKeypair), 1);
+      await awake;
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a recorded standby starts the count of unrecorded ones over", async () => {
+      const clock = idleClock([IDLE_MS, 2 * IDLE_MS]);
+      let failures = 1;
+      let woken = Promise.withResolvers<string>();
+      const idle = Promise.withResolvers<undefined>();
+      const { supervisor, firstSender, first, tracker, mailBus, ipcKeypair } =
+        await setup({
+          timers: clock.timers,
+          onWake: ({ reason }) => woken.resolve(reason),
+          recordStandby: async () => {
+            if (failures === 0) return;
+            failures -= 1;
+            throw new Error("disk full");
+          },
+          idleRule: {
+            standbyAfterMs: IDLE_MS,
+            onIdleStandby: () => idle.resolve(undefined),
+          },
+        });
+
+      clock.fire();
+      await stopIdleChild(first, firstSender);
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      const secondSender = await driveReady(second, ipcKeypair);
+      await answerParkedQuery(second, secondSender, 1);
+      expect(await woken.promise).toBe("a standby that was not recorded");
+      expect(clock.waiting()).toEqual([2 * IDLE_MS]);
+
+      clock.fire();
+      await stopIdleChild(second, secondSender);
+      await idle.promise;
+      woken = Promise.withResolvers<string>();
+      mailBus.deliver(
+        ADDRESS,
+        inboundDelivery(new TextEncoder().encode("wake up")),
+      );
+      await tracker.awaitChildren(3);
+      const third = tracker.children[2];
+      if (third === undefined) throw new Error("third child missing");
+      const thirdSender = await driveReady(third, ipcKeypair);
+      await answerParkedQuery(third, thirdSender, 1);
+      expect(await woken.promise).toBe("mail");
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+    });
+
+    // A request made while the idle check is under way takes the check over,
+    // so it stops the child as a request does and is not the idle rule's.
+    async function takenOver(
+      opts: Parameters<typeof setup>[0] = {},
+      clock = idleClock([IDLE_MS]),
+    ) {
+      const recorded: RecordedStandby[] = [];
+      let reported = 0;
+      const running = await setup({
+        ...opts,
+        timers: clock.timers,
+        recordStandby: async (standby) => {
+          recorded.push(standby);
+        },
+        idleRule: {
+          standbyAfterMs: IDLE_MS,
+          onIdleStandby: () => {
+            reported += 1;
+          },
+        },
+      });
+      return {
+        ...running,
+        clock,
+        // Whether the one standby recorded was the idle rule's.
+        idle: () => ({
+          recorded: recorded.map((standby) => standby.idle),
+          reported,
+        }),
+      };
+    }
+
+    test("a standby request made during the idle check waits for a working child instead of giving up", async () => {
+      const { supervisor, firstSender, first, clock, idle } = await takenOver();
+
+      clock.fire();
+      const inStandby = supervisor.enterStandby();
+      expect(
+        (await answerQuiet(first, firstSender, 1, { quiet: false })).wait,
+      ).toBe(false);
+      // The request waits for quiet, as one that started its own attempt does.
+      await actAsChildEnteringStandby(first, firstSender, { firstQuery: 2 });
+      expect(await inStandby).toEqual({});
+      expect(idle()).toEqual({ recorded: [undefined], reported: 0 });
+      expect(clock.waiting()).toEqual([]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a standby request made during the idle check stops a child that has not been quiet long enough", async () => {
+      const { supervisor, firstSender, first, clock, idle } = await takenOver();
+
+      clock.fire();
+      const inStandby = supervisor.enterStandby();
+      await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 1 });
+      await answerQuiet(first, firstSender, 2, { quiet: true, quietForMs: 1 });
+      await answerParkedQuery(first, firstSender, 2);
+      await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+      first.eventChildToSupervisor.close();
+      first.childToSupervisor.close();
+      first.resolveExit?.(0);
+      expect(await inStandby).toEqual({});
+      expect(idle()).toEqual({ recorded: [undefined], reported: 0 });
+
+      await supervisor.shutdown();
+    });
+
+    test("a standby request made as the idle check gives up still stops the child", async () => {
+      const { supervisor, firstSender, first, clock, idle } = await takenOver();
+      // The check has decided to give up by the time its watchdog is cleared.
+      let inStandby: Promise<unknown> | undefined;
+      clock.hooks.watchdogCleared = () => {
+        inStandby ??= supervisor.enterStandby();
+      };
+
+      clock.fire();
+      await answerQuiet(first, firstSender, 1, { quiet: true, quietForMs: 1 });
+      await actAsChildEnteringStandby(first, firstSender, { firstQuery: 2 });
+      if (inStandby === undefined) throw new Error("the request was not made");
+      expect(await inStandby).toEqual({});
+      expect(idle()).toEqual({ recorded: [undefined], reported: 0 });
+
+      await supervisor.shutdown();
+    });
+
+    test("a standby request made once the idle check is stopping the child shares its standby", async () => {
+      const asked = Promise.withResolvers<Promise<unknown>>();
+      const supervisorRef: { enterStandby?: () => Promise<unknown> } = {};
+      const recorded: RecordedStandby[] = [];
+      let reported = 0;
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, firstSender, first } = await setup({
+        timers: clock.timers,
+        // The record is written after the child has stopped.
+        recordStandby: async (standby) => {
+          recorded.push(standby);
+          const enterStandby = supervisorRef.enterStandby;
+          if (enterStandby === undefined) throw new Error("no supervisor");
+          asked.resolve(enterStandby());
+        },
+        idleRule: {
+          standbyAfterMs: IDLE_MS,
+          onIdleStandby: () => {
+            reported += 1;
+          },
+        },
+      });
+      supervisorRef.enterStandby = () => supervisor.enterStandby();
+
+      clock.fire();
+      for (const count of [1, 2]) {
+        await answerQuiet(first, firstSender, count, {
+          quiet: true,
+          quietForMs: IDLE_MS,
+        });
+      }
+      await answerParkedQuery(first, firstSender, 2);
+      await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+      first.eventChildToSupervisor.close();
+      first.childToSupervisor.close();
+      first.resolveExit?.(0);
+      expect(await await asked.promise).toEqual({});
+      expect(recorded.map((standby) => standby.idle)).toEqual([
+        expect.any(String),
+      ]);
+      expect(reported).toBe(1);
+
+      await supervisor.shutdown();
+    });
+
+    test("a host that joins the idle standby once its stop has begun cannot call it off", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const idle = Promise.withResolvers<undefined>();
+      const ref: {
+        enterStandby?: () => Promise<unknown>;
+        abandonStandby?: (reason: string) => void;
+      } = {};
+      const joined = Promise.withResolvers<Promise<unknown>>();
+      const { supervisor, firstSender, first, tracker } = await setup({
+        timers: clock.timers,
+        // The idle rule has stopped the child when the host joins, and the
+        // host that asked goes away at once.
+        recordStandby: async () => {
+          const { enterStandby, abandonStandby } = ref;
+          if (enterStandby === undefined || abandonStandby === undefined)
+            throw new Error("no supervisor");
+          const request = enterStandby();
+          abandonStandby("the Hub that asked for it disconnected");
+          joined.resolve(request);
+        },
+        idleRule: {
+          standbyAfterMs: IDLE_MS,
+          onIdleStandby: () => idle.resolve(undefined),
+        },
+      });
+      ref.enterStandby = () => supervisor.enterStandby();
+      ref.abandonStandby = (reason) => supervisor.abandonStandby(reason);
+
+      clock.fire();
+      await stopIdleChild(first, firstSender);
+      expect(await await joined.promise).toEqual({});
+      await idle.promise;
+      expect(tracker.totalSpawns).toBe(1);
+      expect(clock.waiting()).toEqual([]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a standby attempt that fails starts the wait over", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, first } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+
+      const inStandby = supervisor.enterStandby();
+      await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+      supervisor.abandonStandby("the test called it off");
+      await expect(inStandby).rejects.toBeInstanceOf(StandbyAbandonedError);
+      expect(clock.armed()).toBe(2);
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a wake of a running child starts the wait over", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+
+      await supervisor.wake();
+      expect(clock.armed()).toBe(2);
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a wake made as the idle check gives up still starts the whole wait over", async () => {
+      const waited = 100_000;
+      const clock = idleClock([IDLE_MS, IDLE_MS - waited]);
+      const { supervisor, firstSender, first } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+      // The check has decided to wait only for the missing time by the time
+      // its watchdog is cleared.
+      const woken = Promise.withResolvers<Promise<void>>();
+      clock.hooks.watchdogCleared = () => {
+        clock.hooks.watchdogCleared = null;
+        woken.resolve(supervisor.wake());
+      };
+
+      clock.fire();
+      await answerQuiet(first, firstSender, 1, {
+        quiet: true,
+        quietForMs: waited,
+      });
+      await await woken.promise;
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a run that has ended is not checked again, even after a wake", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, firstSender, first } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+
+      clock.fire();
+      const inStandby = supervisor.enterStandby();
+      await answerQuiet(first, firstSender, 1, { ended: true });
+      await expect(inStandby).rejects.toThrow("the workflow run has ended");
+      expect(clock.waiting()).toEqual([]);
+
+      await supervisor.wake();
+      expect(clock.armed()).toBe(1);
+      expect(clock.waiting()).toEqual([]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a child that crashes during the idle check leaves one wait armed for its successor", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, first, tracker, ipcKeypair } = await setup({
+        timers: clock.timers,
+        respawnBackoffInitialMs: 1,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+
+      clock.fire();
+      await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+      first.eventChildToSupervisor.close();
+      first.childToSupervisor.close();
+      first.resolveExit?.(1);
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      const secondSender = await driveReady(second, ipcKeypair);
+      await answerParkedQuery(second, secondSender, 1);
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+      expect(clock.waiting()).toEqual([]);
+    });
+
+    test("the wait ending during the host's attempt starts no second attempt", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, firstSender, first } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+
+      const inStandby = supervisor.enterStandby();
+      await waitForUpstreamPayload(first.supervisorToChild, "quiet.request");
+      clock.fire();
+      expect(clock.waiting()).toEqual([]);
+      // One attempt asks the child: its wait, then its final check.
+      await actAsChildEnteringStandby(first, firstSender);
+      expect(await inStandby).toEqual({});
+      expect(clock.waiting()).toEqual([]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a check made once the missing time has passed stops a child that has now waited long enough", async () => {
+      const waited = 100_000;
+      const clock = idleClock([IDLE_MS, IDLE_MS - waited]);
+      const idle = Promise.withResolvers<undefined>();
+      const { supervisor, firstSender, first } = await setup({
+        timers: clock.timers,
+        idleRule: {
+          standbyAfterMs: IDLE_MS,
+          onIdleStandby: () => idle.resolve(undefined),
+        },
+      });
+
+      const rearmed = clock.nextArm();
+      clock.fire();
+      await answerQuiet(first, firstSender, 1, {
+        quiet: true,
+        quietForMs: waited,
+      });
+      await rearmed;
+      clock.fire();
+      for (const count of [2, 3]) {
+        await answerQuiet(first, firstSender, count, {
+          quiet: true,
+          quietForMs: IDLE_MS,
+        });
+      }
+      await answerParkedQuery(first, firstSender, 2);
+      await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+      first.eventChildToSupervisor.close();
+      first.childToSupervisor.close();
+      first.resolveExit?.(0);
+      await idle.promise;
+
+      await supervisor.shutdown();
+    });
+
+    test("a wait that ends while the recycle that started its child is still finishing is checked once it has", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, tracker, ipcKeypair } = await setup({
+        timers: clock.timers,
+        idleRule: { standbyAfterMs: IDLE_MS },
+      });
+      // The recycled child's wait ends in the turn it is armed, while the
+      // respawn still holds its latch.
+      clock.hooks.armed = () => {
+        clock.hooks.armed = null;
+        queueMicrotask(() => clock.fire());
+      };
+      const recycled = supervisor.recycle({ reason: "operator" });
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      const secondSender = await driveReady(second, ipcKeypair);
+      await answerParkedQuery(second, secondSender, 1);
+      await recycled;
+
+      const rearmed = clock.nextArm();
+      expect(
+        (await answerQuiet(second, secondSender, 1, { quiet: false })).wait,
+      ).toBe(false);
+      await rearmed;
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+    });
+
+    test("a wait that ends while the wake that started its child is still finishing is checked once it has", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor, firstSender, first, tracker, ipcKeypair } =
+        await setup({
+          timers: clock.timers,
+          idleRule: { standbyAfterMs: IDLE_MS },
+        });
+      const inStandby = supervisor.enterStandby();
+      await actAsChildEnteringStandby(first, firstSender);
+      await inStandby;
+
+      // The next wait is the woken child's. It ends in the same turn it is
+      // armed, which is before the wake has finished.
+      clock.hooks.armed = () => {
+        clock.hooks.armed = null;
+        queueMicrotask(() => clock.fire());
+      };
+      const woken = supervisor.wake();
+      await tracker.awaitChildren(2);
+      const second = tracker.children[1];
+      if (second === undefined) throw new Error("second child missing");
+      const secondSender = await driveReady(second, ipcKeypair);
+      await answerParkedQuery(second, secondSender, 1);
+      await woken;
+
+      // The check asks the woken child, so it was not lost.
+      const rearmed = clock.nextArm();
+      expect(
+        (await answerQuiet(second, secondSender, 1, { quiet: false })).wait,
+      ).toBe(false);
+      await rearmed;
+      expect(clock.waiting()).toEqual([IDLE_MS]);
+
+      await supervisor.shutdown();
+    });
+
+    test("no wait is armed without the rule", async () => {
+      const clock = idleClock([IDLE_MS]);
+      const { supervisor } = await setup({ timers: clock.timers });
+
+      await supervisor.wake();
+      expect(clock.armed()).toBe(0);
+
+      await supervisor.shutdown();
+    });
+
+    describe("what a check finds", () => {
+      const logs = createLogCapture();
+      beforeAll(() => {
+        logs.install();
+      });
+      afterAll(() => {
+        logs.restore();
+      });
+      beforeEach(() => {
+        logs.reset();
+      });
+
+      const refusals = () =>
+        logs
+          .records()
+          .filter((record) =>
+            record.message.includes(
+              "the idle rule's standby attempt was refused",
+            ),
+          );
+
+      test("a final check that finds the child quiet for less than the wait checks again once it can have waited", async () => {
+        const finalQuiet = 50_000;
+        const clock = idleClock([IDLE_MS, IDLE_MS - finalQuiet]);
+        const { supervisor, firstSender, first, tracker } = await setup({
+          timers: clock.timers,
+          idleRule: { standbyAfterMs: IDLE_MS },
+        });
+
+        const rearmed = clock.nextArm();
+        clock.fire();
+        await answerQuiet(first, firstSender, 1, {
+          quiet: true,
+          quietForMs: IDLE_MS,
+        });
+        await answerQuiet(first, firstSender, 2, {
+          quiet: true,
+          quietForMs: finalQuiet,
+        });
+        await rearmed;
+        expect(clock.waiting()).toEqual([IDLE_MS - finalQuiet]);
+        expect(sentFrameTypes(first)).not.toContain("shutdown");
+        expect(tracker.totalSpawns).toBe(1);
+
+        await supervisor.shutdown();
+      });
+
+      test("a final check that finds the child working starts the whole wait over", async () => {
+        const clock = idleClock([IDLE_MS]);
+        const { supervisor, firstSender, first } = await setup({
+          timers: clock.timers,
+          idleRule: { standbyAfterMs: IDLE_MS },
+        });
+
+        clock.fire();
+        await answerQuiet(first, firstSender, 1, {
+          quiet: true,
+          quietForMs: IDLE_MS,
+        });
+        const rearmed = clock.nextArm();
+        await answerQuiet(first, firstSender, 2, { quiet: false });
+        await rearmed;
+        expect(clock.waiting()).toEqual([IDLE_MS]);
+        expect(sentFrameTypes(first)).not.toContain("shutdown");
+
+        await supervisor.shutdown();
+      });
+
+      test("a standby request made while the idle check asks for the parked correlations takes it over", async () => {
+        const { supervisor, firstSender, first, clock, idle } =
+          await takenOver();
+
+        clock.fire();
+        for (const count of [1, 2]) {
+          await answerQuiet(first, firstSender, count, {
+            quiet: true,
+            quietForMs: IDLE_MS,
+          });
+        }
+        await waitForUpstreamPayloads(
+          first.supervisorToChild,
+          "parked-correlations.request",
+          2,
+        );
+        const inStandby = supervisor.enterStandby();
+        await answerParkedQuery(first, firstSender, 2);
+        await waitForUpstreamPayload(first.supervisorToChild, "shutdown");
+        first.eventChildToSupervisor.close();
+        first.childToSupervisor.close();
+        first.resolveExit?.(0);
+        expect(await inStandby).toEqual({});
+        expect(idle()).toEqual({ recorded: [undefined], reported: 0 });
+
+        await supervisor.shutdown();
+      });
+
+      test("mail the dispatch holds for the child refuses the check before it asks the child or holds input", async () => {
+        const clock = idleClock([IDLE_MS]);
+        let held = 0;
+        const { supervisor, firstSender, first, mailBus } = await setup({
+          timers: clock.timers,
+          idleRule: { standbyAfterMs: IDLE_MS },
+          onStandbyWait: (waiting) => {
+            if (waiting === "input") held += 1;
+          },
+        });
+        mailBus.deliver(
+          ADDRESS,
+          inboundDelivery(new TextEncoder().encode("hello")),
+        );
+        const fire = await waitForUpstreamPayload(
+          first.supervisorToChild,
+          "trigger.fire",
+        );
+        const requestId = fire.data.requestId;
+        if (requestId === undefined)
+          throw new Error("the trigger has no requestId");
+        // The child declines it, so the dispatch keeps it for the child.
+        await firstSender.send({
+          type: "input.taken",
+          data: { requestId, committed: false },
+        });
+
+        const rearmed = clock.nextArm();
+        clock.fire();
+        await rearmed;
+        expect(clock.waiting()).toEqual([IDLE_MS]);
+        expect(sentFrameTypes(first)).not.toContain("quiet.request");
+        expect(held).toBe(0);
+        expect(refusals()).toEqual([]);
+
+        await supervisor.shutdown();
+      });
+
+      test("mail in the inbox refuses the check without a warning", async () => {
+        const clock = idleClock([IDLE_MS]);
+        const inbox = createMemoryInboxPrimitives();
+        const { supervisor, firstSender, first } = await setup({
+          timers: clock.timers,
+          idleRule: { standbyAfterMs: IDLE_MS },
+          inboxPrimitives: { ...inbox, hasInboxEntries: async () => true },
+        });
+
+        clock.fire();
+        for (const count of [1, 2]) {
+          await answerQuiet(first, firstSender, count, {
+            quiet: true,
+            quietForMs: IDLE_MS,
+          });
+        }
+        const rearmed = clock.nextArm();
+        await answerParkedQuery(first, firstSender, 2);
+        await rearmed;
+        expect(clock.waiting()).toEqual([IDLE_MS]);
+        expect(sentFrameTypes(first)).not.toContain("shutdown");
+        expect(refusals()).toEqual([]);
+
+        await supervisor.shutdown();
+      });
+
+      test("a child whose quiet check failed is logged as a refusal", async () => {
+        const clock = idleClock([IDLE_MS]);
+        const { supervisor, firstSender, first } = await setup({
+          timers: clock.timers,
+          idleRule: { standbyAfterMs: IDLE_MS },
+        });
+
+        clock.fire();
+        const rearmed = clock.nextArm();
+        await answerQuiet(first, firstSender, 1, {
+          quiet: false,
+          error: "the check broke",
+        });
+        await rearmed;
+        const record = await logs.waitForRecord("the check broke");
+        expect(record.level).toBe("warning");
+        expect(clock.waiting()).toEqual([IDLE_MS]);
+
+        await supervisor.shutdown();
+      });
+
+      test("a standby the host asked for that cannot be recorded holds the idle check back too", async () => {
+        const clock = idleClock([IDLE_MS, 2 * IDLE_MS]);
+        const woken = Promise.withResolvers<string>();
+        const { supervisor, firstSender, first, tracker, ipcKeypair } =
+          await setup({
+            timers: clock.timers,
+            onWake: ({ reason }) => woken.resolve(reason),
+            recordStandby: async () => {
+              throw new Error("disk full");
+            },
+            idleRule: { standbyAfterMs: IDLE_MS },
+          });
+
+        const inStandby = supervisor.enterStandby();
+        await actAsChildEnteringStandby(first, firstSender);
+        await expect(inStandby).rejects.toThrow("disk full");
+        await tracker.awaitChildren(2);
+        const second = tracker.children[1];
+        if (second === undefined) throw new Error("second child missing");
+        await answerParkedQuery(
+          second,
+          await driveReady(second, ipcKeypair),
+          1,
+        );
+        expect(await woken.promise).toBe("a standby that was not recorded");
+        expect(clock.waiting()).toEqual([2 * IDLE_MS]);
+
+        await supervisor.shutdown();
+      });
+
+      test("the wait after a standby that cannot be recorded counts from the failure", async () => {
+        const elapsed = 10_000;
+        const base = idleClock([IDLE_MS, 2 * IDLE_MS - elapsed]);
+        let now = 0;
+        const woken = Promise.withResolvers<string>();
+        const { supervisor, firstSender, first, tracker, ipcKeypair } =
+          await setup({
+            timers: { ...base.timers, now: () => now },
+            onWake: ({ reason }) => woken.resolve(reason),
+            recordStandby: async () => {
+              throw new Error("disk full");
+            },
+            idleRule: { standbyAfterMs: IDLE_MS },
+          });
+
+        base.fire();
+        await stopIdleChild(first, firstSender);
+        await tracker.awaitChildren(2);
+        // The woken child starts a while after the failure.
+        now += elapsed;
+        const second = tracker.children[1];
+        if (second === undefined) throw new Error("second child missing");
+        await answerParkedQuery(
+          second,
+          await driveReady(second, ipcKeypair),
+          1,
+        );
+        expect(await woken.promise).toBe("a standby that was not recorded");
+        expect(base.waiting()).toEqual([2 * IDLE_MS - elapsed]);
+
+        await supervisor.shutdown();
+      });
+
+      test("an idle standby a cancellation calls off after it was recorded is not reported", async () => {
+        const clock = idleClock([IDLE_MS]);
+        const recorded: RecordedStandby[] = [];
+        let reported = 0;
+        const cancelled = Promise.withResolvers<Promise<unknown>>();
+        const woke = Promise.withResolvers<{
+          reason: string;
+          requested: boolean;
+        }>();
+        const ref: { cancel?: () => Promise<unknown> } = {};
+        const { supervisor, firstSender, first, tracker, ipcKeypair } =
+          await setup({
+            timers: clock.timers,
+            onWake: (info) => woke.resolve(info),
+            recordStandby: async (standby) => {
+              recorded.push(standby);
+              const cancel = ref.cancel;
+              if (cancel === undefined) throw new Error("no supervisor");
+              cancelled.resolve(cancel());
+            },
+            idleRule: {
+              standbyAfterMs: IDLE_MS,
+              onIdleStandby: () => {
+                reported += 1;
+              },
+            },
+          });
+        ref.cancel = () =>
+          supervisor.requestCancel({
+            runId: RUN,
+            origin: "hub-admin",
+            reason: "the test cancels it",
+            at: new Date(0).toISOString(),
+          });
+
+        clock.fire();
+        await stopIdleChild(first, firstSender);
+        const cancelling = await cancelled.promise;
+        await tracker.awaitChildren(2);
+        const second = tracker.children[1];
+        if (second === undefined) throw new Error("second child missing");
+        await answerParkedQuery(
+          second,
+          await driveReady(second, ipcKeypair),
+          1,
+        );
+        await cancelling;
+        expect(recorded.map((standby) => standby.idle)).toEqual([
+          expect.any(String),
+        ]);
+        expect(reported).toBe(0);
+        expect(await woke.promise).toEqual({
+          reason: "cancel",
+          requested: false,
+        });
+
+        await supervisor.shutdown();
+      });
+    });
   });
 });
 

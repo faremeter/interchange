@@ -36,9 +36,11 @@ import {
   type AgentUndeployAckFrame,
   type AgentUndeployErrorFrame,
   type DeploymentStoppedFrame,
+  type DeploymentStandbyFrame,
   type DeploymentWokenFrame,
   type DeploymentRetention,
   type HostedIncarnation,
+  type IdleStandbyId,
   type SidecarCapacity,
   type PackAckFrame,
   type HubFrame,
@@ -502,6 +504,13 @@ type WorkflowControlCommand = Omit<
 type WorkflowControlResult = {
   readonly retention?: DeploymentRetention;
   readonly wakeAt?: string;
+  readonly idleStandby?: IdleStandbyId;
+};
+
+// What an answered standby request says of the child in standby.
+type StandbyAnswer = {
+  readonly wakeAt?: string;
+  readonly idleStandby?: IdleStandbyId;
 };
 
 export type SidecarAllocationRouter = {
@@ -527,9 +536,10 @@ export type SidecarAllocationRouter = {
   ): Promise<void>;
   /**
    * Put the deployment's workflow child in standby. Resolves with its earliest
-   * pending timer once the sidecar has stopped the child and the Hub holds the
-   * history the sidecar reported for it. Rejects with the sidecar's reason when
-   * the standby request was abandoned, and with
+   * pending timer, and the standby the sidecar began by itself if the child was
+   * already in one, once the sidecar has stopped the child and the Hub holds
+   * the history the sidecar reported for it. Rejects with the sidecar's reason
+   * when the standby request was abandoned, and with
    * `WorkflowControlHistoryPendingError` while that history is still arriving;
    * a repeated standby request answers again. The sidecar answers once every
    * run waits, however long that takes, or the connection closes; `timeoutMs`
@@ -540,7 +550,18 @@ export type SidecarAllocationRouter = {
     target: AllocatedSidecarTarget,
     timeoutMs: number,
     onAnswered?: () => void,
-  ): Promise<{ readonly wakeAt?: string }>;
+  ): Promise<StandbyAnswer>;
+  /**
+   * Read the earliest pending timer of a workflow child its sidecar put in
+   * standby by itself, and which standby that is, and wait for the history it
+   * left, as `putAllocationInStandby` does. The sidecar refuses when the child
+   * runs, and does not stop it.
+   */
+  confirmAllocationInStandby(
+    target: AllocatedSidecarTarget,
+    timeoutMs: number,
+    onAnswered?: () => void,
+  ): Promise<StandbyAnswer>;
   /**
    * Abandon a standby request in progress, or run a workflow child
    * in standby again. `onAnswered` runs as for `putAllocationInStandby`.
@@ -1891,6 +1912,7 @@ export function createSidecarRouter(
       case "workflow.control.ack":
       case "deployment.stopped":
       case "deployment.woken":
+      case "deployment.standby":
       case "repo.pack.push":
       case "repo.pack.done":
         return false;
@@ -2068,6 +2090,9 @@ export function createSidecarRouter(
         return;
       case "deployment.woken":
         handleDeploymentWoken(ws, frame);
+        return;
+      case "deployment.standby":
+        handleDeploymentInStandby(ws, frame);
         return;
       default:
         return assertNever(frame);
@@ -2901,6 +2926,9 @@ export function createSidecarRouter(
         allocationId: binding.allocationId,
         generation: binding.generation,
         inStandby: incarnation.inStandby === true,
+        ...(incarnation.idleStandby !== undefined
+          ? { idleStandby: incarnation.idleStandby }
+          : {}),
       });
     }
     // Live retained copies were validated in readHostedWork's bounded batches.
@@ -5610,6 +5638,9 @@ export function createSidecarRouter(
         ...(entry.meta.action === "standby" && frame.wakeAt !== undefined
           ? { wakeAt: frame.wakeAt }
           : {}),
+        ...(entry.meta.action === "standby" && frame.idleStandby !== undefined
+          ? { idleStandby: frame.idleStandby }
+          : {}),
       });
     }
   }
@@ -5697,6 +5728,25 @@ export function createSidecarRouter(
     });
   }
 
+  // A child its sidecar put in standby by itself. Only the current
+  // generation's report counts.
+  function handleDeploymentInStandby(
+    ws: WsHandle,
+    frame: DeploymentStandbyFrame,
+  ): void {
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+    const binding = deploymentBinding(conn, frame.agentAddress);
+    if (binding?.generation !== frame.generation || !isFencedAsCurrent(binding))
+      return;
+    events.emit("deployment.standby", {
+      allocationId: binding.allocationId,
+      generation: binding.generation,
+      inStandby: true,
+      idleStandby: frame.idleStandby,
+    });
+  }
+
   // Describes the first ref whose reported tip the Hub does not hold, or
   // returns null when the Hub holds the worker's whole history.
   async function findUnreceivedWorkflowHistory(
@@ -5732,12 +5782,36 @@ export function createSidecarRouter(
     target: AllocatedSidecarTarget,
     timeoutMs: number,
     onAnswered?: () => void,
-  ): Promise<{ readonly wakeAt?: string }> {
-    const result = await sendStandbyControl(target, "standby", timeoutMs, {
-      untilAnswered: true,
-      ...(onAnswered !== undefined ? { onAnswered } : {}),
-    });
-    return result.wakeAt === undefined ? {} : { wakeAt: result.wakeAt };
+  ): Promise<StandbyAnswer> {
+    return standbyAnswer(
+      await sendStandbyControl(target, "standby", timeoutMs, {
+        confirm: false,
+        untilAnswered: true,
+        ...(onAnswered !== undefined ? { onAnswered } : {}),
+      }),
+    );
+  }
+
+  async function confirmAllocationInStandby(
+    target: AllocatedSidecarTarget,
+    timeoutMs: number,
+    onAnswered?: () => void,
+  ): Promise<StandbyAnswer> {
+    return standbyAnswer(
+      await sendStandbyControl(target, "standby", timeoutMs, {
+        confirm: true,
+        ...(onAnswered !== undefined ? { onAnswered } : {}),
+      }),
+    );
+  }
+
+  function standbyAnswer(result: WorkflowControlResult): StandbyAnswer {
+    return {
+      ...(result.wakeAt !== undefined ? { wakeAt: result.wakeAt } : {}),
+      ...(result.idleStandby !== undefined
+        ? { idleStandby: result.idleStandby }
+        : {}),
+    };
   }
 
   async function wakeAllocation(
@@ -5745,12 +5819,10 @@ export function createSidecarRouter(
     timeoutMs: number,
     onAnswered?: () => void,
   ): Promise<void> {
-    await sendStandbyControl(
-      target,
-      "wake",
-      timeoutMs,
-      onAnswered !== undefined ? { onAnswered } : {},
-    );
+    await sendStandbyControl(target, "wake", timeoutMs, {
+      confirm: false,
+      ...(onAnswered !== undefined ? { onAnswered } : {}),
+    });
   }
 
   // A deployment's standby and wake commands go out in the order they were
@@ -5761,7 +5833,10 @@ export function createSidecarRouter(
     target: AllocatedSidecarTarget,
     action: "standby" | "wake",
     timeoutMs: number,
-    opts: { untilAnswered?: boolean; onAnswered?: () => void },
+    {
+      confirm,
+      ...opts
+    }: { confirm: boolean; untilAnswered?: boolean; onAnswered?: () => void },
   ): Promise<WorkflowControlResult> {
     const key = `${target.allocationId}:${String(target.generation)}`;
     const previous = standbySends.get(key) ?? Promise.resolve();
@@ -5802,9 +5877,12 @@ export function createSidecarRouter(
               agentAddress: connection.binding.workflowRunAddress,
               action,
               reason:
-                action === "standby"
-                  ? "Put the deployment's workflow child in standby"
-                  : "Wake the deployment's workflow child",
+                action === "wake"
+                  ? "Wake the deployment's workflow child"
+                  : confirm
+                    ? "Confirm the standby the sidecar reported"
+                    : "Put the deployment's workflow child in standby",
+              ...(confirm ? { confirm: true as const } : {}),
             },
             timeoutMs,
             { terminal: false, ...opts },
@@ -6366,6 +6444,7 @@ export function createSidecarRouter(
     getCleanupConnection,
     sendWorkflowControl,
     putAllocationInStandby,
+    confirmAllocationInStandby,
     wakeAllocation,
     retainAllocation,
     getAllocationRetention,

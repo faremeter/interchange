@@ -583,10 +583,10 @@ Durably requests that a live top-level run's workflow child stop once every run 
 ### POST /api/tenants/:tenantId/workflows/runs/:runId/wake
 Wake a deployment
 
-Durably requests that the workflow child of a deployment in standby run again, or that a standby request in progress be abandoned. Poll the Location header for progress.
+Durably requests that the workflow child of a deployment in standby run again, or that a standby request in progress be abandoned. A deployment whose lifecycle policy sets `standbyAfter` always takes the request: its sidecar may have put it in standby before the Hub heard of it, and the request starts that wait over. Poll the Location header for progress.
 
 202: (no content) -- Wake requested
-204: (no content) -- The deployment is not in standby
+204: (no content) -- The deployment is not in standby, and its policy sets no `standbyAfter`
 404: ErrorResponse -- Run not found
 409: ErrorResponse -- Run is terminal, being cancelled, or its allocation can no longer be dispatched to a sidecar
 503: ErrorResponse -- Workflow lifecycle service unavailable
@@ -1660,7 +1660,7 @@ Source: packages/types/src/step-state-snapshot.ts
 **mailboxUidNext**: The UID the exporting deployment's mailbox assigns next, so every mailbox UID the turns name is below it. A deployment that imports the snapshot numbers its own mail from at least this UID, so those UIDs never name one of its messages. An import accepts at most 2147483648. Absent when the exporting deployment has no mailbox.
 
 ### TenantResponse
-`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, parentId?: string | null }`
+`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , standbyAfter?: string , + (undeclared): reject }, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, parentId?: string | null }`
 Source: packages/types/src/tenants.ts
 
 ### TraceResponse
@@ -1728,7 +1728,7 @@ Source: packages/types/src/providers.ts
 Source: packages/types/src/roles.ts
 
 ### UpdateTenant
-`{ config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject } | null, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } | null }, name?: string }`
+`{ config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , standbyAfter?: string , + (undeclared): reject } | null, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } | null }, name?: string }`
 Source: packages/types/src/tenants.ts
 
 ### UpdateWallet
@@ -1738,7 +1738,7 @@ Source: packages/types/src/wallets.ts
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
 
 ### UpdateWorkflowDefinitionLifecycle
-`{ lifecycle: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, + (undeclared): reject }`
+`{ lifecycle: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , standbyAfter?: string , + (undeclared): reject }, + (undeclared): reject }`
 Source: packages/types/src/workflows.ts
 
 ### UserProfile
@@ -1754,7 +1754,7 @@ Source: packages/types/src/wallets.ts
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
 
 ### WorkflowDefinitionResponse
-`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, description?: string | null, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject } }`
+`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, description?: string | null, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , standbyAfter?: string , + (undeclared): reject } }`
 Source: packages/types/src/workflows.ts
 
 **status**: Lifecycle state of the definition: `deployed` (a launchable version is active) or `stopped` (deactivated).
@@ -1766,10 +1766,10 @@ Source: packages/types/src/workflows.ts
 **status**: Deployment lifecycle status. `recovering` means the Hub is replacing deployment capacity. `failed` is a terminal allocation failure with no infrastructure. `destroy_failed` means automatic cleanup stopped. Read `GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle` for the allocation's failure code and message.
 
 ### WorkflowLifecycleResponse
-`{ allocation: { failureCode: string | null, failureMessage: string | null, generation: number, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, runId: string, standby: { changedAt: string | null, reason: string | null, state: "awake" | "entering" | "standby" | "waking", wakeAt: string | null } | null, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
+`{ allocation: { failureCode: string | null, failureMessage: string | null, generation: number, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , standbyAfter?: string , + (undeclared): reject }, runId: string, standby: { changedAt: string | null, reason: string | null, state: "awake" | "entering" | "standby" | "waking", wakeAt: string | null } | null, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
 Source: packages/types/src/workflow-lifecycle.ts
 
-**standby**: Null once the run is terminal. `state` is `awake` while the workflow child runs and no standby is asked for, `entering` until the sidecar stops the child, `standby` once the Hub holds the history it left, and `waking` until the child runs again. `wakeAt` is the earliest timer a child in standby wakes for by itself. `reason` says why the state last changed other than as requested: the sidecar refused a standby or wake request, something other than a wake request woke the child in standby, such as mail or a restart that found new history, the sidecar reported the child running, it reported the child in standby though no standby was asked for, a cancellation ended the standby, or the deployment moved to replacement capacity. While a request is pending it says why the Hub's last attempt was put off. It is null when none was, which includes a sidecar that is not connected and history still on its way to the Hub, and a request stays pending for as long as that takes.
+**standby**: Null once the run is terminal. `state` is `awake` while the workflow child runs and no standby is asked for, `entering` until the sidecar has stopped the child and the Hub holds the history it left, `standby` after, and `waking` until the sidecar answers the wake request. `wakeAt` is the earliest timer a child in standby wakes for by itself. `reason` says why the state last changed other than as requested: the sidecar refused a standby or wake request, something other than a wake request woke the child in standby, such as mail or a restart that found new history, the sidecar reported the child running, it reported the child in standby though no standby was asked for, it put the child in standby itself because every run had waited for the policy's `standbyAfter`, a cancellation ended the standby, or the deployment moved to replacement capacity. While a request is pending it says why the Hub's last attempt was put off. It is null when none was, which includes a sidecar that is not connected and history still on its way to the Hub, and a request stays pending for as long as that takes.
 
 ### WorkflowRollbackRequest
 `{ version: string }`

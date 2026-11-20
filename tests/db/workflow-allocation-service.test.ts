@@ -41,9 +41,9 @@ import {
 } from "@intx/hub-sessions";
 import {
   credentialAad,
-  type ResolvedWorkflowLifecyclePolicy,
   type SidecarCapabilityRule,
   type StepStateSnapshot,
+  type WorkflowLifecycleDefaults,
 } from "@intx/types";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
@@ -74,7 +74,7 @@ import {
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
-const TEST_DEFAULT_LIFECYCLE_POLICY: ResolvedWorkflowLifecyclePolicy = {
+const TEST_DEFAULT_LIFECYCLE_POLICY: WorkflowLifecycleDefaults = {
   maxLifetime: "7d",
   maxDisconnected: "15m",
   capacityRetention: { completed: "30m", failed: "24h", cancelled: "1h" },
@@ -986,6 +986,83 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       expect(anchorVisibleDuringDeploy).toBe(true);
+    });
+
+    test("deploys a ready allocation with the standbyAfter its anchor's policy saved", async () => {
+      await h.db.insert(workflowDefinition).values({
+        id: DEFINITION_ID,
+        tenantId: TENANT_ID,
+        name: "workflow-standby-after",
+        lifecyclePolicy: { standbyAfter: "20m" },
+      });
+      const provisioner = makeProvisioner({
+        id: "standby-after",
+        ensureCalls: [],
+        destroyCalls: [],
+      });
+      const deployedWith: (number | undefined)[] = [];
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
+        ...sharedPluginPools([provisioner]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) => freeze(params),
+          deployPreparedCodeSourcedWorkflow: async (params) => {
+            deployedWith.push(params.standbyAfterMs);
+            return {
+              anchorRunId: params.anchorRunId,
+              deploymentAddress: params.agentAddress,
+              publicKey: "public-key",
+            };
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
+          waitForSidecarInventory: async () => undefined,
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        createAllocationId: () => "sal-standby-after",
+        createSidecarId: () => "sc-standby-after",
+        createToken: () => "standby-after-token",
+      });
+      const prepared = await service.prepareProvisionedDeployment(
+        prepareArgs("run-standby-after"),
+      );
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, prepared.anchorRunId),
+        }),
+      ).toMatchObject({ lifecyclePolicy: { standbyAfter: "20m" } });
+      // An edit after the deployment was prepared does not reach its copies.
+      await h.db
+        .update(workflowDefinition)
+        .set({ lifecyclePolicy: { standbyAfter: "5m" } })
+        .where(eq(workflowDefinition.id, DEFINITION_ID));
+      const allocation = await createSidecarAllocationStore(
+        h.db,
+      ).findByAnchorRunId(prepared.anchorRunId);
+      if (allocation === null) throw new Error("expected adopted allocation");
+
+      await service.deployReadyAllocation(allocation, {
+        signal: new AbortController().signal,
+        leaseId: "initialization-test",
+      });
+
+      expect(deployedWith).toEqual([1_200_000]);
     });
 
     // The deploy reads its approval back from the launch spec, so the approved

@@ -7,6 +7,7 @@ import {
   createWorkflowRunLaunchSpecStore,
   insertRunPrincipal,
   loadRunPrincipalActiveKey,
+  parseWorkflowRunLifecyclePolicy,
   resolveTenantSidecarCapabilityPolicies,
   resolveDeploymentLifecyclePolicy,
   canExecuteWorkflowRun,
@@ -28,8 +29,8 @@ import {
   SidecarCapabilityRule,
   type AdapterManifest,
   type CredentialCipher,
-  type ResolvedWorkflowLifecyclePolicy,
   type StepStateImport,
+  type WorkflowLifecycleDefaults,
 } from "@intx/types";
 import {
   DeploymentRejectedError,
@@ -172,7 +173,7 @@ export type WorkflowAllocationServiceDeps = {
   >;
   readonly hubWebSocketUrl: string;
   /** Fills lifecycle fields no tenant or installed workflow sets. */
-  readonly defaultLifecyclePolicy: ResolvedWorkflowLifecyclePolicy;
+  readonly defaultLifecyclePolicy: WorkflowLifecycleDefaults;
   /**
    * Operator-declared custom adapter manifest forwarded to every provisioned
    * sidecar via the ensure request. Opaque here — the sidecar's adapter
@@ -940,6 +941,7 @@ export function createWorkflowAllocationService({
         status: true,
         expiresAt: true,
         cancellationRequestedAt: true,
+        lifecyclePolicy: true,
       },
     });
     if (anchor === undefined) {
@@ -1055,6 +1057,10 @@ export function createWorkflowAllocationService({
         defaultSource: defaultSource.id,
       });
 
+      // Every copy, a replacement too, gets the rule saved with the deployment.
+      const standbyAfter = parseWorkflowRunLifecyclePolicy(
+        anchor.lifecyclePolicy,
+      )?.standbyAfter;
       reconciliation.signal.throwIfAborted();
       return await preparedDeployer.deployPreparedCodeSourcedWorkflow({
         reconciliation,
@@ -1067,6 +1073,9 @@ export function createWorkflowAllocationService({
         config,
         allocationTarget,
         credentialCipher,
+        ...(standbyAfter !== undefined
+          ? { standbyAfterMs: lifecycleDurationMs(standbyAfter) }
+          : {}),
       });
     } catch (error) {
       // Keep capacity refusals terminal and leave uncertain deploys and lost

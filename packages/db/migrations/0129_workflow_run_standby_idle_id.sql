@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_run" ADD COLUMN "standby_idle_id" text;

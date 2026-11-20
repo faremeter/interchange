@@ -140,6 +140,37 @@ describe("workflow lifecycle policy", () => {
     });
   });
 
+  test("standbyAfter is a positive wait a descendant can set or shorten, never extend", () => {
+    expect(WorkflowLifecyclePolicy({ standbyAfter: "30m" })).toEqual({
+      standbyAfter: "30m",
+    });
+    expect(WorkflowLifecyclePolicy({ standbyAfter: "0s" })).toBeInstanceOf(
+      type.errors,
+    );
+    // No ancestor sets one, so there is no limit to exceed.
+    expect(
+      resolveWorkflowLifecyclePolicy([{}, { standbyAfter: "30m" }]),
+    ).toEqual({ ok: true, policy: { standbyAfter: "30m" } });
+    expect(
+      resolveWorkflowLifecyclePolicy([
+        { standbyAfter: "30m" },
+        { standbyAfter: "1h" },
+      ]),
+    ).toEqual({
+      ok: false,
+      field: "standbyAfter",
+      requested: "1h",
+      limit: "30m",
+    });
+    expect(
+      clampWorkflowLifecyclePolicy([
+        { standbyAfter: "30m" },
+        { standbyAfter: "1h" },
+        { standbyAfter: "10m" },
+      ]),
+    ).toEqual({ standbyAfter: "10m" });
+  });
+
   test("a descendant cannot extend an inherited disconnect limit", () => {
     expect(
       resolveWorkflowLifecyclePolicy([

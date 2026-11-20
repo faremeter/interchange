@@ -108,6 +108,9 @@ const workflowRunRecordBase = {
   "state?": "'stopped' | 'tearing-down'",
   "retention?": DeploymentRetention,
   "error?": "string > 0",
+  // The deploy frame's `standbyAfterMs`, so a restart keeps putting the child
+  // in standby once every run has waited that long.
+  "standbyAfterMs?": "number.integer > 0",
   // Set while the child is in standby: what a restart needs to restore the
   // standby without the child while the run's history is still at `tip`.
   "standby?": RecordedStandby,

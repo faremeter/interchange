@@ -959,10 +959,13 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "Wake a deployment",
       description:
-        "Durably requests that the workflow child of a deployment in standby run again, or that a standby request in progress be abandoned. Poll the Location header for progress.",
+        "Durably requests that the workflow child of a deployment in standby run again, or that a standby request in progress be abandoned. A deployment whose lifecycle policy sets `standbyAfter` always takes the request: its sidecar may have put it in standby before the Hub heard of it, and the request starts that wait over. Poll the Location header for progress.",
       responses: {
         202: { description: "Wake requested" },
-        204: { description: "The deployment is not in standby" },
+        204: {
+          description:
+            "The deployment is not in standby, and its policy sets no `standbyAfter`",
+        },
         404: jsonResponse("Run not found", ErrorResponse),
         409: jsonResponse(
           "Run is terminal, being cancelled, or its allocation can no longer be dispatched to a sidecar",

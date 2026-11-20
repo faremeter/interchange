@@ -46,8 +46,10 @@ import {
   type AgentUndeployFrame,
   type DeploymentStoppedFrame,
   type DeploymentRetention,
+  type DeploymentStandbyFrame,
   type DeploymentWokenFrame,
   type HostedIncarnation,
+  type IdleStandbyId,
   type IncarnationState,
   type SourceRefPin,
   type WorkflowControlFrame,
@@ -490,6 +492,13 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   onWake?: (info: { reason: string; requested: boolean }) => void;
   /** Records the standby before anything can wake the stopped child. */
   recordStandby?: (standby: RecordedStandby) => Promise<void>;
+  /**
+   * How long every run must wait before the supervisor puts the child in
+   * standby by itself. Unset, it never does.
+   */
+  standbyAfterMs?: number;
+  /** Called once the supervisor has put the child in standby by itself. */
+  onIdleStandby?: () => void;
 };
 
 export type SidecarWorkflowSupervisor = {
@@ -678,6 +687,7 @@ type WorkflowControlOutcome = {
   refTips?: WorkflowRunRefTips;
   retention?: DeploymentRetention;
   wakeAt?: string;
+  idleStandby?: IdleStandbyId;
 };
 
 type ResolvedInboundMailPolicy = Record<InboundMailOutcome, "reject" | "admit">;
@@ -1133,6 +1143,13 @@ export function createSidecarDeployRouter<
    * that do not exercise the report omit it.
    */
   publishDeploymentWoken?: (report: Omit<DeploymentWokenFrame, "type">) => void;
+  /**
+   * Send the Hub a report that the sidecar put a deployment in standby by
+   * itself. Tests that do not exercise the report omit it.
+   */
+  publishDeploymentInStandby?: (
+    report: Omit<DeploymentStandbyFrame, "type">,
+  ) => void;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first deploy. The seed signs every
@@ -1214,6 +1231,8 @@ export function createSidecarDeployRouter<
     error?: string;
     // The workflow child is in standby: stopped while every run waits.
     inStandby?: true;
+    // The supervisor began that standby by itself, by the idle rule.
+    idleStandby?: IdleStandbyId;
   };
   const deployments = new Map<string, HostedDeployment>();
   const retaining = new Set<HostedDeployment>();
@@ -1409,6 +1428,7 @@ export function createSidecarDeployRouter<
   }): void {
     if (deployments.get(args.agentAddress) !== args.hosted) return;
     delete args.hosted.inStandby;
+    delete args.hosted.idleStandby;
     const report = (): void => {
       if (args.requested) return;
       if (deployments.get(args.agentAddress) !== args.hosted) return;
@@ -1428,6 +1448,24 @@ export function createSidecarDeployRouter<
         logger.error`Could not clear the standby mark of ${args.agentAddress}; a restart could restore it in standby: ${message}`;
       })
       .finally(report);
+  }
+
+  // The supervisor put the child in standby by itself. A child that already
+  // runs again reports that it was woken instead.
+  function noteIdleStandby(
+    agentAddress: string,
+    hosted: HostedDeployment,
+  ): void {
+    if (
+      deployments.get(agentAddress) !== hosted ||
+      hosted.idleStandby === undefined
+    )
+      return;
+    deps.publishDeploymentInStandby?.({
+      agentAddress,
+      generation: hosted.generation,
+      idleStandby: hosted.idleStandby,
+    });
   }
 
   // Hold a deployment whose supervisor drove ITSELF to a terminal phase
@@ -1603,6 +1641,11 @@ export function createSidecarDeployRouter<
     recordDataDir?: string;
     /** The standby the deployment's record holds; unset on a deploy. */
     standby?: RecordedStandby;
+    /**
+     * The deploy frame's `standbyAfterMs`: how long every run must wait before
+     * the supervisor puts the child in standby by itself.
+     */
+    standbyAfterMs?: number;
   }
 
   /**
@@ -1659,6 +1702,9 @@ export function createSidecarDeployRouter<
       // restore re-runs applyFrozenWorkflowClosure with.
       approvedWireHash: spec.approvedWireHash,
       sourceRef: spec.sourceRef,
+      ...(spec.standbyAfterMs !== undefined
+        ? { standbyAfterMs: spec.standbyAfterMs }
+        : {}),
     };
   }
 
@@ -1931,6 +1977,7 @@ export function createSidecarDeployRouter<
         },
         recordStandby: async (standby) => {
           hosted.inStandby = true;
+          if (standby.idle !== undefined) hosted.idleStandby = standby.idle;
           if (
             stepStateDataDir !== undefined &&
             !(await markWorkflowRunRecordInStandby(
@@ -1944,6 +1991,14 @@ export function createSidecarDeployRouter<
             );
           }
         },
+        ...(spec.standbyAfterMs !== undefined
+          ? {
+              standbyAfterMs: spec.standbyAfterMs,
+              onIdleStandby: () => {
+                noteIdleStandby(spec.agentAddress, hosted);
+              },
+            }
+          : {}),
         substrateEnv,
         // Recomputed on every spawn AND recycle respawn. The rotation
         // handler below revises `currentSources` in place, so a respawn
@@ -2038,8 +2093,11 @@ export function createSidecarDeployRouter<
           spawnOpts,
           spec.standby,
         );
-        if (restored.inStandby) hosted.inStandby = true;
-        else restoredAwake = restored.reason;
+        if (restored.inStandby) {
+          hosted.inStandby = true;
+          if (spec.standby.idle !== undefined)
+            hosted.idleStandby = spec.standby.idle;
+        } else restoredAwake = restored.reason;
       }
       wiredForUnwind = wired;
       hosted.wired = wired;
@@ -2433,6 +2491,9 @@ export function createSidecarDeployRouter<
         // The run record the spawn core writes once the child has reported
         // its definition.
         recordDataDir: dataDir,
+        ...(projection.standbyAfterMs !== undefined
+          ? { standbyAfterMs: projection.standbyAfterMs }
+          : {}),
       };
 
       // Sweep any legacy plaintext body-source file this deployment's bodies
@@ -2492,7 +2553,14 @@ export function createSidecarDeployRouter<
     wired: SidecarWorkflowSupervisor,
     signal: AbortSignal | undefined,
   ): Promise<WorkflowControlOutcome> {
+    // The Hub only reads the history of a standby the sidecar began by
+    // itself, so a child that runs again is not stopped for it, and a Hub
+    // that disconnects does not end that standby.
+    const confirm = frame.confirm === true;
+    if (confirm && hosted.inStandby !== true)
+      throw new Error("The deployment is not in standby");
     const abandon = (): void => {
+      if (confirm) return;
       wired.supervisor.abandonStandby("the Hub that asked for it disconnected");
     };
     signal?.addEventListener("abort", abandon, { once: true });
@@ -2521,19 +2589,26 @@ export function createSidecarDeployRouter<
     }
     // Read for every answer, a repeated one too: the supervisor can write
     // history while the child is stopped, and reading ships what the Hub
-    // still lacks.
+    // still lacks. A child that woke and stopped again during the read is in
+    // a standby whose history the read may not hold, and whose own report
+    // the Hub dropped while it waited for this answer, so it reads again and
+    // names that standby.
+    let idleStandby: IdleStandbyId | undefined;
     let refTips: WorkflowRunRefTips;
-    try {
-      refTips = await deps.reportDeploymentRefTips({
-        agentAddress: frame.agentAddress,
-        generation: frame.generation,
-      });
-    } catch (cause) {
-      // The child stays stopped, and the Hub asks again. Nothing else here
-      // acts on it: this request may be stale already.
-      logger.error`Could not read the history tips of ${frame.agentAddress}, which is in standby; the Hub asks again: ${cause instanceof Error ? cause.message : String(cause)}`;
-      throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR, { cause });
-    }
+    do {
+      idleStandby = hosted.idleStandby;
+      try {
+        refTips = await deps.reportDeploymentRefTips({
+          agentAddress: frame.agentAddress,
+          generation: frame.generation,
+        });
+      } catch (cause) {
+        // The child stays stopped, and the Hub asks again. Nothing else here
+        // acts on it: this request may be stale already.
+        logger.error`Could not read the history tips of ${frame.agentAddress}, which is in standby; the Hub asks again: ${cause instanceof Error ? cause.message : String(cause)}`;
+        throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR, { cause });
+      }
+    } while (hosted.inStandby === true && hosted.idleStandby !== idleStandby);
     if (
       deployments.get(frame.agentAddress) !== hosted ||
       hosted.wired !== wired
@@ -2549,6 +2624,7 @@ export function createSidecarDeployRouter<
     return {
       refTips,
       ...(outcome.wakeAt !== undefined ? { wakeAt: outcome.wakeAt } : {}),
+      ...(idleStandby !== undefined ? { idleStandby } : {}),
     };
   }
 
@@ -2996,6 +3072,9 @@ export function createSidecarDeployRouter<
               ...(record.standby !== undefined
                 ? { standby: record.standby }
                 : {}),
+              ...(record.standbyAfterMs !== undefined
+                ? { standbyAfterMs: record.standbyAfterMs }
+                : {}),
             };
 
             await spawnWorkflowRun(spec, hosted);
@@ -3067,7 +3146,12 @@ export function createSidecarDeployRouter<
         generation: hosted.generation,
         state: hosted.state,
         ...(hosted.inStandby === true && hosted.state === "live"
-          ? { inStandby: true as const }
+          ? {
+              inStandby: true as const,
+              ...(hosted.idleStandby !== undefined
+                ? { idleStandby: hosted.idleStandby }
+                : {}),
+            }
           : {}),
         ...(hosted.retention !== undefined
           ? { retention: hosted.retention }
@@ -3232,6 +3316,12 @@ export function createSidecarWorkflowSupervisor(
     ...(opts.onWake !== undefined ? { onWake: opts.onWake } : {}),
     ...(opts.recordStandby !== undefined
       ? { recordStandby: opts.recordStandby }
+      : {}),
+    ...(opts.standbyAfterMs !== undefined
+      ? { standbyAfterMs: opts.standbyAfterMs }
+      : {}),
+    ...(opts.onIdleStandby !== undefined
+      ? { onIdleStandby: opts.onIdleStandby }
       : {}),
     ...(opts.onDispatchTiming !== undefined
       ? { onDispatchTiming: opts.onDispatchTiming }

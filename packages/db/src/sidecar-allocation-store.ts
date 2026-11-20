@@ -1578,10 +1578,11 @@ function buildSidecarAllocationStore(
           .set({ credentialRefs: null })
           .where(eq(workflowRun.id, updated.anchorRunId));
         await retireRunPrincipalKey(tx, updated.tenantId, updated.anchorRunId);
-        // The replacement copy starts awake: a standby request still wanted is
-        // carried out there, and a wake has nothing left to do. A JS date,
-        // since an answer is matched against this value read back, which
-        // drops microseconds.
+        // The replacement copy starts awake: a recorded standby, or one the Hub
+        // was confirming, is asked of it again, however it began, as is a
+        // pending standby request, while a pending wake has nothing left to
+        // do. A JS date, since an answer is matched against this value read
+        // back, which drops microseconds.
         const standbyChangedAt = args.now ?? new Date();
         await tx
           .update(workflowRun)
@@ -1589,13 +1590,14 @@ function buildSidecarAllocationStore(
             standbyState: "entering",
             standbyStateAt: standbyChangedAt,
             standbyWakeAt: null,
+            standbyIdleId: null,
             standbyReason:
               "The deployment moved to replacement capacity, which starts awake",
           })
           .where(
             and(
               eq(workflowRun.id, updated.anchorRunId),
-              eq(workflowRun.standbyState, "standby"),
+              inArray(workflowRun.standbyState, ["standby", "confirming"]),
             ),
           );
         await tx

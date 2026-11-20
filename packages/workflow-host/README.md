@@ -355,6 +355,35 @@ starting or restarting, so the host can ask again once it runs.
 child again when it comes after the stop began; `wake()` and a cancellation
 that abandon one run the child themselves.
 
+With `standbyAfterMs` set, the supervisor also puts the child in standby
+unasked once every run has waited that long. A wait is armed when a child
+starts. When it ends, one standby attempt waits for whatever the supervisor
+still drives for the child, as step 1 does, and then asks the child once,
+without waiting for it to go quiet, whether it is quiet and for how long.
+Dispatch and signals go on meanwhile. A child that works, or has not been
+quiet long enough, ends the attempt, and the wait is armed again for the
+soonest the runs can have waited long enough. Otherwise the attempt goes on
+to the final check of step 3, which ends it the same way. A standby
+attempt that fails for any other reason starts the wait over, as does
+`wake()`, and a run that has ended stops it. The supervisor logs why such
+an attempt was refused, unless the child was busy, restarting or woken, or
+mail still waits for it.
+
+A standby that `recordStandby` fails to record, whoever asked for it,
+stopped the child for nothing, and the child is started again. Each one is
+logged as an error. After the first in a row, the next idle check comes no
+sooner than twice `standbyAfterMs` after it, after the second four times,
+and the third stops the rule. A standby that is recorded, such as one the
+host asks for, starts the count over and the rule again.
+
+A standby begun by the idle rule is recorded with an `idle` id unique to
+it, and the supervisor then calls `onIdleStandby`. An `enterStandby()` made
+before such an attempt begins to stop the child takes it over: the attempt
+goes on as the host's own, waits for quiet where it would have given up,
+and is neither recorded with `idle` nor reported. One made later shares the
+standby the attempt ends in, and `abandonStandby()` leaves that attempt
+alone, since it is still the idle rule's.
+
 A supervisor in standby respawns its child through the recycle path for mail,
 a signal (delivered to the new child), a cancellation (committed first),
 its earliest pending timer, or `wake()`, and then calls `onWake`, with

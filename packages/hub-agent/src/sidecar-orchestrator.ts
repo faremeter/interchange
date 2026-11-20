@@ -15,6 +15,7 @@ import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import type { SignalKind } from "@intx/types";
 import type {
+  DeploymentStandbyFrame,
   DeploymentStoppedFrame,
   DeploymentWokenFrame,
   HostedIncarnation,
@@ -115,6 +116,13 @@ export type CreateDeployRouter = (deps: {
    * hub-link's `sendDeploymentWoken`, like `publishDeploymentStopped`.
    */
   publishDeploymentWoken: (report: Omit<DeploymentWokenFrame, "type">) => void;
+  /**
+   * Sink for reports that the sidecar put a deployment in standby by itself.
+   * Wired to the hub-link's `sendDeploymentInStandby`.
+   */
+  publishDeploymentInStandby: (
+    report: Omit<DeploymentStandbyFrame, "type">,
+  ) => void;
 }) => DeployRouter;
 
 export type SidecarOrchestratorConfig = {
@@ -354,6 +362,12 @@ export function createSidecarOrchestrator(
     /* replaced after HubLink construction */
   };
 
+  let dispatchDeploymentInStandby: (
+    report: Omit<DeploymentStandbyFrame, "type">,
+  ) => void = () => {
+    /* replaced after HubLink construction */
+  };
+
   const sessions = createSessionManager({ repoStore });
 
   const deployRouter = createDeployRouter({
@@ -397,6 +411,9 @@ export function createSidecarOrchestrator(
     },
     publishDeploymentWoken: (report) => {
       dispatchDeploymentWoken(report);
+    },
+    publishDeploymentInStandby: (report) => {
+      dispatchDeploymentInStandby(report);
     },
   });
 
@@ -442,6 +459,7 @@ export function createSidecarOrchestrator(
   dispatchSuspensionRelease = hubLink.releaseSignalCorrelationRegisters;
   dispatchDeploymentStopped = hubLink.sendDeploymentStopped;
   dispatchDeploymentWoken = hubLink.sendDeploymentWoken;
+  dispatchDeploymentInStandby = hubLink.sendDeploymentInStandby;
 
   function start(): void {
     hubLink.connect();
