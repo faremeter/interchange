@@ -69,6 +69,11 @@ export const MAIL_FETCH_FAILED_FLAG = "$FetchFailed";
  * on it can send a reply a second time. The callback is the only
  * programmatic surface a caller has to observe the failure.
  *
+ * The harness sets the router's turn mode only when it commits start or
+ * continue mail. Until the first such commit, the agent answers no mail,
+ * also when it restored a thread from disk. A reply in that window gets
+ * `TurnAnswersNoMailError` from `composeReply`, and the harness drops it.
+ *
  * The callback may be synchronous or async; the reply drain awaits its
  * resolution so an async callback's rejection is observed (and logged)
  * rather than surfacing as an unhandled promise rejection.
@@ -454,8 +459,10 @@ export async function createHarness<EnvReq extends MailEnv>(
             // `agent.deliver` gives it no hook at the point the reactor takes
             // the message up, so it cannot bind a per-message target to the
             // turn that answers it: a passthrough that arrived during another
-            // sender's turn would take that sender's reply. Replies to
-            // passthrough mail therefore go to the connector thread.
+            // sender's turn would take that sender's reply. A reply to
+            // passthrough mail therefore goes to the connector thread when
+            // an earlier start or continue commit set the turn mode, and
+            // to nobody before that.
             if (stopped) return;
             agent.deliver(message);
             return;

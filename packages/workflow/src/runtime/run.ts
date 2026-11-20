@@ -1993,11 +1993,14 @@ async function runStep(
             e.parkKind === "input",
         ).length;
       }
+      // The one place an absent `replyByMail` becomes `false`.
+      const replyByMail = step.replyByMail ?? false;
       while (true) {
         const result = await env.invokeStep({
           agent: step.agent,
           input,
           ...(inference !== undefined ? { inference } : {}),
+          replyByMail,
           authzContext: {
             stepId: step.id,
             attempt,

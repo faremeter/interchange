@@ -39,6 +39,8 @@ import type { StateSchema } from "./primitives";
 export interface SingularShorthand<EnvReq extends BaseEnv> {
   id: string;
   agent: import("@intx/agent").AgentDefinition<EnvReq>;
+  /** The `replyByMail` option of the single step. See `step()`. */
+  replyByMail?: boolean;
   trigger?: Trigger;
   triggers?: readonly Trigger[];
   state?: { schema?: StateSchema };
@@ -69,7 +71,14 @@ export function normalizeSingularShorthand<EnvReq extends BaseEnv>(
     id: config.id,
     ...(config.trigger !== undefined ? { trigger: config.trigger } : {}),
     ...(config.triggers !== undefined ? { triggers: config.triggers } : {}),
-    steps: { default: step({ agent: config.agent }) },
+    steps: {
+      default: step({
+        agent: config.agent,
+        ...(config.replyByMail !== undefined
+          ? { replyByMail: config.replyByMail }
+          : {}),
+      }),
+    },
     ...(config.state !== undefined ? { state: config.state } : {}),
     ...(config.grantRequirements !== undefined
       ? { grantRequirements: config.grantRequirements }

@@ -507,10 +507,12 @@ async function invokeWarmStep(
  * The turn begins a connector turn (taking the parked turn mode on an
  * `"approval"` resume), seeds a mail-derived inbound message onto the
  * connector thread, sends, and on a `"suspended"` send files the turn mode
- * under the gate. A reply turn sends its reply through the conversation and
- * returns only once the send settles. A failed settlement rejects the turn
- * with the error `replyFailureError` picks for its phase. The abort signal is
- * threaded into the send, so an abort cancels only this turn.
+ * under the gate. A reply turn of a step that sets `replyByMail`, on a turn
+ * that answers mail, sends its reply through the conversation and returns
+ * only once the send settles. Any other reply is only step output. A failed
+ * settlement rejects the turn with the error `replyFailureError` picks for
+ * its phase. The abort signal is threaded into the send, so an abort cancels
+ * only this turn.
  */
 async function runConversationTurn(
   agent: Agent,
@@ -543,7 +545,8 @@ async function runConversationTurn(
     // for it, that cycle can continue and produce a reply later. Only a turn
     // sends a reply, so that reply goes out to nobody. The turn does not
     // know whether the cycle started, so the log says what holds either way.
-    if (req.signal.aborted && conversation !== undefined) {
+    // A step that does not reply by mail loses nothing, so it logs nothing.
+    if (req.signal.aborted && req.replyByMail && conversation !== undefined) {
       logger.warn`step invoker: ${describeStep(req)}: the turn was aborted; a reply from a cycle that already started for it is not sent`;
     }
     throw err;
@@ -559,9 +562,16 @@ async function runConversationTurn(
   // reactor committed the reply turn. Fail the turn rather than return a
   // step result that claims a reply that did not settle; `replyFailureError`
   // decides whether a retry is safe.
-  if (conversation !== undefined && sendResult.type === "reply") {
-    const settlement = await sendConnectorReply(conversation, sendResult.reply);
-    if (!settlement.ok) throw replyFailureError(settlement);
+  if (sendResult.type === "reply" && req.replyByMail) {
+    if (conversation !== undefined && conversation.turnAnswersMail()) {
+      const settlement = await sendConnectorReply(
+        conversation,
+        sendResult.reply,
+      );
+      if (!settlement.ok) throw replyFailureError(settlement);
+    } else {
+      logger.debug`step invoker: ${describeStep(req)}: the step sets replyByMail, but the turn answers no mail, so no reply goes out by mail`;
+    }
   }
   return stepResult;
 }

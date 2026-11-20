@@ -13,6 +13,7 @@ type ConnectorThreadState = typeof ConnectorThreadStateSchema.infer;
 import {
   createConnectorRouter,
   NoActiveConnectorThreadError,
+  TurnAnswersNoMailError,
   type ConnectorReplyParts,
   type ConnectorRouter,
 } from "./connector-router";
@@ -25,6 +26,14 @@ function requireReplyParts(router: ConnectorRouter): ConnectorReplyParts {
     throw new Error("composeReply() returned no reply address");
   }
   return parts;
+}
+
+// Start a turn that answers the restored thread: the approval resume of a
+// thread turn that parked before a respawn. A router that only restored its
+// state answers no mail, so it has no reply target.
+function resumeThreadTurn(router: ConnectorRouter): void {
+  router.restoreParkedReplyTargets({ "thread-turn": { mode: "thread" } });
+  router.beginTurn({ resume: "thread-turn" });
 }
 
 // `cc` names the recipients the starting sender addresses besides the
@@ -352,8 +361,10 @@ describe("createConnectorRouter", () => {
       expect(router.snapshot()?.cc).toEqual(["user@example.com"]);
     });
 
-    test("no active thread: throws NoActiveConnectorThreadError", () => {
+    test("a thread turn with no active thread throws NoActiveConnectorThreadError", () => {
       const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(router.route(startMessage()));
+      router.restore(null);
       expect(() => {
         router.composeReply();
       }).toThrow(NoActiveConnectorThreadError);
@@ -401,8 +412,10 @@ describe("createConnectorRouter", () => {
       expect(router.route(followup).kind).toBe("continue");
     });
 
-    test("onReplySent with no active thread throws", () => {
+    test("onReplySent in a thread turn with no active thread throws", () => {
       const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(router.route(startMessage()));
+      router.restore(null);
       expect(() => {
         router.onReplySent(
           {
@@ -443,6 +456,7 @@ describe("createConnectorRouter", () => {
       expect(b.route(probe).kind).toBe(a.route(probe).kind);
 
       // Outbound parts also match (including cc).
+      resumeThreadTurn(b);
       expect(b.composeReply()).toEqual(a.composeReply());
     });
 
@@ -724,18 +738,12 @@ describe("createConnectorRouter", () => {
       });
     });
 
-    test("beginTurn() clears the target, so a later turn replies on the thread", () => {
+    test("beginTurn() clears the target, so a later turn replies to nobody", () => {
       const router = routerWithPassthrough();
 
       router.beginTurn();
 
-      expect(router.composeReply()).toEqual({
-        to: "user@example.com",
-        cc: [],
-        inReplyTo: "<root@example.com>",
-        references: ["<root@example.com>"],
-        subject: "Hello",
-      });
+      expect(() => router.composeReply()).toThrow(TurnAnswersNoMailError);
     });
 
     test("an approval resume takes the reply target its parked turn filed", () => {
@@ -751,18 +759,12 @@ describe("createConnectorRouter", () => {
       expect(router.parkedReplyTargets()).toEqual({});
     });
 
-    test("a resume of an id with no filed target replies on the thread", () => {
+    test("a resume of an id with no filed target replies to nobody", () => {
       const router = routerWithPassthrough();
 
       expect(router.beginTurn({ resume: "unknown" })).toBe(false);
 
-      expect(router.composeReply()).toEqual({
-        to: "user@example.com",
-        cc: [],
-        inReplyTo: "<root@example.com>",
-        references: ["<root@example.com>"],
-        subject: "Hello",
-      });
+      expect(() => router.composeReply()).toThrow(TurnAnswersNoMailError);
     });
 
     test("a passthrough turn that parks and resumes answers mail", () => {
@@ -880,13 +882,34 @@ describe("createConnectorRouter", () => {
       expect(router.parkedReplyTargets()).toEqual({});
     });
 
-    test("a turn in mode none still composes a reply on the thread", () => {
-      const router = routerOnThread();
+    test("a turn in mode none on an active thread throws when it composes or records a reply", () => {
+      const changes: (ConnectorThreadState | null)[] = [];
+      const router = createConnectorRouter({
+        ownAddress: AGENT,
+        onStateChanged: (state) => changes.push(state),
+      });
+      router.commit(router.route(startMessage({ subject: "Hello" })));
+      const before = router.snapshot();
+      const changesBefore = changes.length;
 
       router.beginTurn();
 
       expect(router.turnAnswersMail()).toBe(false);
-      expect(router.composeReply()).toEqual(THREAD_REPLY);
+      expect(() => router.composeReply()).toThrow(TurnAnswersNoMailError);
+      expect(() =>
+        router.onReplySent(
+          { messageId: "<sent@example.com>", status: "delivered" },
+          [],
+        ),
+      ).toThrow(TurnAnswersNoMailError);
+      expect(router.snapshot()).toEqual(before);
+      expect(changes.length).toBe(changesBefore);
+    });
+
+    test("a fresh router answers no mail and throws when it composes a reply", () => {
+      const router = createConnectorRouter({ ownAddress: AGENT });
+
+      expect(() => router.composeReply()).toThrow(TurnAnswersNoMailError);
     });
 
     test("a persisted entry has exactly one of the two shapes", () => {
@@ -1923,6 +1946,7 @@ describe("createConnectorRouter", () => {
         throw new Error(persisted.summary);
       }
       router.restore(persisted);
+      resumeThreadTurn(router);
 
       expect(router.snapshot()).toEqual(persisted);
       expect(requireReplyParts(router)).toEqual({
@@ -1955,6 +1979,7 @@ describe("createConnectorRouter", () => {
       b.restore(parsed);
 
       expect(b.snapshot()).toEqual(snap);
+      resumeThreadTurn(b);
       expect(b.composeReply()).toEqual(a.composeReply());
 
       // The restored state is a copy of the input's chain.

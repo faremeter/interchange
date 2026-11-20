@@ -247,6 +247,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         systemPrompt: "You are the single-step run-completes agent.",
         address: deploymentMailAddress,
         agentId: `agent_${DEPLOYMENT_ID}`,
+        replyByMail: true,
       });
       const handle = await deployWorkflowSourceForTest(env, {
         entryModule,

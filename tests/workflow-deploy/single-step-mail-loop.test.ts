@@ -191,6 +191,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         systemPrompt: "You are the single-step mail-inbox agent.",
         address: deploymentMailAddress,
         agentId: AGENT_ID,
+        replyByMail: true,
       });
 
       // approve-probed: approve exactly the surface the probe discovered (the

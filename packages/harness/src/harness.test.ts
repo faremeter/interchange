@@ -42,7 +42,10 @@ import type {
   SearchQuery,
 } from "@intx/types/runtime";
 
-import { createConnectorRouter } from "./connector-router";
+import {
+  createConnectorRouter,
+  TurnAnswersNoMailError,
+} from "./connector-router";
 import {
   createHarness,
   createWrappedStorageOverrides,
@@ -553,6 +556,65 @@ describe("createHarness outbound pipeline", () => {
       expect(control.getSent()).not.toContainEqual(
         expect.objectContaining({ to: "mallory@example.com" }),
       );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  // The harness commits the turn mode only for start and continue mail, so
+  // an agent that restored its thread from disk answers no mail until such
+  // mail arrives. A reply before then has no target: it fails through
+  // `onReplySendFailed` and the thread does not advance.
+  test("a reply before any thread mail after a restore goes to nobody", async () => {
+    inference.scenario.replyOnce("anthropic", { text: "unprompted reply" });
+    const { transport, control } = makeMockTransport();
+    const storage = await createIsogitStore(workDir);
+    const restored: ConnectorThreadState = {
+      threadRoot: "<root@example.com>",
+      lastMessageId: "<alice-last@example.com>",
+      replyTo: "alice@example.com",
+      cc: [],
+    };
+    storage.setConnectorState(restored);
+    await storage.writeTurns([]);
+    await storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        thinking: 0,
+      },
+    });
+    await storage.commit({ message: "restored thread" });
+
+    const failures: unknown[] = [];
+    const states: (ConnectorThreadState | null)[] = [];
+    const harness = await createHarness(emptyDef(), {
+      ...outboundEnv(transport, storage),
+      onReplySendFailed: (cause) => {
+        failures.push(cause);
+      },
+      onConnectorStateChanged: (state) => {
+        states.push(state);
+      },
+    });
+
+    try {
+      harness.deliver(
+        createInboundMessage({
+          from: "alice@example.com",
+          to: AGENT_ADDRESS,
+          content: "Direct",
+          interchangeType: "conversation.message",
+        }),
+      );
+      await pumpUntil(() => failures.length === 1);
+
+      expect(failures[0]).toBeInstanceOf(TurnAnswersNoMailError);
+      expect(control.getSent()).toEqual([]);
+      expect(states).toEqual([restored]);
     } finally {
       await harness.close();
     }

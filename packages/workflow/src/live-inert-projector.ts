@@ -144,6 +144,11 @@ export interface InertStepStep {
   readonly drainBehavior?: DrainBehavior;
   readonly triggers?: number | "unbounded";
   readonly onFailure?: string;
+  /**
+   * Present only when the author set it, so a definition that does not set
+   * it keeps the definition hash it had before the option existed.
+   */
+  readonly replyByMail?: boolean;
 }
 
 export interface InertMap {
@@ -421,6 +426,9 @@ function projectStepPrimitive(
       : {}),
     ...(step.triggers !== undefined ? { triggers: step.triggers } : {}),
     ...(step.onFailure !== undefined ? { onFailure: step.onFailure } : {}),
+    ...(step.replyByMail !== undefined
+      ? { replyByMail: step.replyByMail }
+      : {}),
   };
 }
 

@@ -48,6 +48,12 @@ export type SingleStepAgentFixtureParams = {
    * triggering sender, or `{ tenant: true }` for a same-tenant sender.
    */
   mailAccept?: MailAccept;
+  /**
+   * The step's `replyByMail` option. Omitted by default, so the step sends no
+   * mail and its final text is only step output. A caller that expects the
+   * step to answer its inbound mail sets it to `true`.
+   */
+  replyByMail?: boolean;
 };
 
 export function singleStepAgentEntry(
@@ -63,6 +69,10 @@ export function singleStepAgentEntry(
   const mailAcceptField =
     params.mailAccept !== undefined
       ? `\n  mailAccept: ${JSON.stringify(params.mailAccept)},`
+      : "";
+  const replyByMailClause =
+    params.replyByMail !== undefined
+      ? `, replyByMail: ${JSON.stringify(params.replyByMail)}`
       : "";
   return `
 import { defineWorkflow, step } from "@intx/workflow/definition";
@@ -82,7 +92,7 @@ export const workflow = defineWorkflow({
   id: ${JSON.stringify(workflowId)},
   trigger: { type: "mail", to: ${JSON.stringify(params.address)} },${inboundMailPolicyField}${mailAcceptField}
   steps: {
-    [${JSON.stringify(params.stepId)}]: step({ agent }),
+    [${JSON.stringify(params.stepId)}]: step({ agent${replyByMailClause} }),
   },
 });
 `;

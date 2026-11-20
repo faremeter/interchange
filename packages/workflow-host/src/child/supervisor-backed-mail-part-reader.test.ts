@@ -156,6 +156,7 @@ function buildRequest(input: unknown): StepInvokeRequest {
   return {
     agent: stubDef(),
     input,
+    replyByMail: false,
     authzContext,
     signal: new AbortController().signal,
   };

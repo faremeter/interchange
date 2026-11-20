@@ -189,6 +189,20 @@ vocabulary (so the deploy-time capability walk can compute grants
 without executing user code), and parsing an opaque agent reply is host
 work that belongs at an `action`/LoopFn seam.
 
+## A step replies by mail only when it sets `replyByMail`
+
+A `step`'s final text is its output. The step sends that text as mail on
+the inbound thread only when it sets `replyByMail: true` and the turn
+answers mail. A turn answers mail when its input is a Mail, or when it is
+the approval resume of a turn whose input was a Mail. The option is absent
+by default, and `runStep` resolves an absent option to `false` on
+`StepInvokeRequest.replyByMail`. Only the step of a single-step
+deployment can send the reply today: a step of a multi-step deployment
+sends no mail, also when it sets the option.
+
+The live-to-inert projector carries the option only when the author set
+it, so a definition that does not set it keeps its definition hash.
+
 ## Crash and suspension behavior of a `loop` body
 
 Two facts govern what a `loop` body can and cannot survive.

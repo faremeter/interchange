@@ -348,6 +348,28 @@ describe("hash binds to the grant surface", () => {
     await expectGrantMutation(withInference);
   });
 
+  test("a step that sets replyByMail projects it and changes the hash", async () => {
+    const withReply = defineWorkflow({
+      id: "wf_main",
+      trigger: { type: "mail", to: "wf@acme.test" },
+      steps: {
+        main: step({
+          agent: mkAgent([alphaTool, betaTool], baseCapabilities, [OPENAI]),
+          replyByMail: true,
+        }),
+      },
+    });
+    expect(mainStepOf(withReply).replyByMail).toBe(true);
+    await expectGrantMutation(withReply);
+  });
+
+  // An unset option must leave the projection as it was before the option
+  // existed, so the definition hash of an existing deployment holds.
+  test("a step that does not set replyByMail projects no replyByMail", () => {
+    expect(mainStepOf(baselineWorkflow)).not.toHaveProperty("replyByMail");
+    expect(baselineBytes).not.toContain("replyByMail");
+  });
+
   test("adding a declared plugin package changes projection and hash", async () => {
     // A plugin package contributes tool grants the operator approves, so a
     // tampered plugin set must move the hashed surface and fail re-verify.

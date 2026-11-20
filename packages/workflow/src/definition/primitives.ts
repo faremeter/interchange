@@ -123,6 +123,16 @@ export interface StepPrimitive extends PrimitiveBase {
    * permanent failure fails the run.
    */
   onFailure?: string;
+  /**
+   * Send the step's final model text as mail on the inbound thread. The
+   * step replies only on a turn that answers mail: its input is a Mail, or
+   * it is the approval resume of a turn whose input was a Mail. On any
+   * other turn the final text is only step output. Absent means `false`,
+   * resolved in `runStep`. Only the step of a single-step deployment can
+   * send the reply today: a step of a multi-step deployment sends no mail,
+   * also when it sets this option.
+   */
+  replyByMail?: boolean;
 }
 
 export interface MapPrimitive extends PrimitiveBase {
@@ -506,6 +516,8 @@ export interface StepOpts<EnvReq extends BaseEnv> {
   triggers?: number | "unbounded";
   /** See {@link StepPrimitive.onFailure}. */
   onFailure?: string;
+  /** See {@link StepPrimitive.replyByMail}. Absent means `false`. */
+  replyByMail?: boolean;
 }
 
 /**
@@ -596,6 +608,9 @@ export function step<EnvReq extends BaseEnv>(
     ...(opts.after !== undefined ? { after: opts.after } : {}),
     ...(opts.triggers !== undefined ? { triggers: opts.triggers } : {}),
     ...(opts.onFailure !== undefined ? { onFailure: opts.onFailure } : {}),
+    ...(opts.replyByMail !== undefined
+      ? { replyByMail: opts.replyByMail }
+      : {}),
   };
   validateRetryTriggerCombination(primitive);
   return primitive;

@@ -277,9 +277,10 @@ export interface DurableConversationStore {
    * that resumes the approval gate `turn.resume` takes the turn mode
    * `parkTurn` filed under that correlation id, and the removal of the
    * filed mode is flushed into the local store's metadata. Any other turn
-   * sets the turn mode to `none`, so a turn that seeds no mail does not
-   * reply to an earlier passthrough sender. Called before `seedInbound` on
-   * every warm turn. A metadata write failure surfaces.
+   * sets the turn mode to `none`, so a turn that seeds no mail replies to
+   * nobody: not to an earlier passthrough sender, and not on the thread.
+   * Called before `seedInbound` on every warm turn. A metadata write
+   * failure surfaces.
    */
   beginTurn(turn: { resume?: string }): Promise<void>;
   /**
@@ -300,10 +301,12 @@ export interface DurableConversationStore {
   /**
    * Produce the threading headers for a reply (the router's
    * `composeReply`): to the turn's passthrough sender when a passthrough
-   * seed set one, otherwise on the active connector thread. Returns `null`
-   * when the passthrough sender has no address. Throws
-   * `NoActiveConnectorThreadError` when neither exists. The warm step
-   * invoker reads this to address the reply of its turn.
+   * seed set one, and on the active connector thread when a start or
+   * continue seed set the mode. Returns `null` when the passthrough sender
+   * has no address. Throws `TurnAnswersNoMailError` when the turn answers
+   * no mail, and `NoActiveConnectorThreadError` when a thread turn has no
+   * active thread. The warm step invoker reads this to address the reply
+   * of its turn.
    */
   composeReply(): ConnectorReplyParts | null;
   /**
@@ -316,9 +319,10 @@ export interface DurableConversationStore {
    * store's metadata the same way `seedInbound` does, so the parent
    * persists across turns and across a child respawn. Called by the warm
    * step invoker after the outbound send of its turn's reply settles. Throws
-   * `NoActiveConnectorThreadError` when no thread is active -- advancing
-   * outbound state has no meaning without a seeded thread. A metadata
-   * write failure surfaces.
+   * `TurnAnswersNoMailError` when the turn answers no mail, and
+   * `NoActiveConnectorThreadError` when a thread turn has no active thread
+   * -- advancing outbound state has no meaning without a seeded thread. A
+   * metadata write failure surfaces.
    */
   onReplySent(
     receipt: SendReceipt,
@@ -823,9 +827,9 @@ export async function createDurableConversationStore(
   // write preserves the reactor's staged pendingOperations / tokenUsage -- an
   // outbound advance touches only connectorState. A reply to a passthrough
   // sender leaves the thread unchanged, so the flush writes the same
-  // connector state again. `onReplySent` throws when no
-  // thread is active, which fails the reply's settlement in its persist
-  // phase rather than persisting a phantom advance.
+  // connector state again. `onReplySent` throws when the turn answers no
+  // mail or when no thread is active, which fails the reply's settlement in
+  // its persist phase rather than persisting a phantom advance.
   async function runReplySent(
     receipt: SendReceipt,
     references: readonly string[],

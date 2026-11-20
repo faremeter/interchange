@@ -424,6 +424,22 @@ describe("defineWorkflow", () => {
     expect(singular).toEqual(plural);
   });
 
+  test("singular shorthand carries replyByMail to its step", () => {
+    const planner = makeAgent("planner");
+    const singular = defineWorkflow({
+      id: "w",
+      agent: planner,
+      replyByMail: true,
+      trigger: { type: "mail", to: "p@x" },
+    });
+    const plural = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "p@x" },
+      steps: { default: step({ agent: planner, replyByMail: true }) },
+    });
+    expect(singular).toEqual(plural);
+  });
+
   test("validates after references against the steps record", () => {
     const a = makeAgent("a");
     expect(() =>

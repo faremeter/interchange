@@ -36,6 +36,12 @@ export type SingleStepMailInboxFixtureParams = {
    * -- the interactive conversational path.
    */
   triggers?: number | "unbounded";
+  /**
+   * The step's `replyByMail` option. Omitted by default, so the step sends no
+   * mail and its final text is only step output. A caller that expects the
+   * step to answer its inbound mail sets it to `true`.
+   */
+  replyByMail?: boolean;
 };
 
 export function singleStepMailInboxEntry(
@@ -47,6 +53,10 @@ export function singleStepMailInboxEntry(
   const triggersClause =
     params.triggers !== undefined
       ? `, triggers: ${JSON.stringify(params.triggers)}`
+      : "";
+  const replyByMailClause =
+    params.replyByMail !== undefined
+      ? `, replyByMail: ${JSON.stringify(params.replyByMail)}`
       : "";
   return `
 import { defineWorkflow, step } from "@intx/workflow/definition";
@@ -67,7 +77,7 @@ export const workflow = defineWorkflow({
   id: ${JSON.stringify(workflowId)},
   trigger: { type: "mail", to: ${JSON.stringify(params.address)} },
   steps: {
-    [${JSON.stringify(stepId)}]: step({ agent${triggersClause} }),
+    [${JSON.stringify(stepId)}]: step({ agent${triggersClause}${replyByMailClause} }),
   },
 });
 `;

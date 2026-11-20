@@ -157,6 +157,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         systemPrompt: "You are the single-step mail-inbox agent.",
         address: deploymentMailAddress,
         agentId: AGENT_ID,
+        replyByMail: true,
       });
 
       const handle = await deployWorkflowSourceForTest(env, {

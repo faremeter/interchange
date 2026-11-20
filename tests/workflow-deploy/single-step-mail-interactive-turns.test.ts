@@ -248,6 +248,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: deploymentMailAddress,
         agentId: AGENT_ID,
         triggers: "unbounded",
+        replyByMail: true,
       });
 
       const handle = await deployWorkflowSourceForTest(env, {

@@ -18,7 +18,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair, createSSHSignature } from "@intx/crypto";
-import type { ConnectorReplyParts } from "@intx/harness";
+import {
+  TurnAnswersNoMailError,
+  type ConnectorReplyParts,
+} from "@intx/harness";
 import { createInboundMessage } from "@intx/mime";
 import type {
   KeyPair,
@@ -174,7 +177,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
 
   test("composeReply throws before any inbound has been seeded", async () => {
     const store = await makeStore(h, localDir);
-    expect(() => store.composeReply()).toThrow(/no active connector thread/);
+    expect(() => store.composeReply()).toThrow(TurnAnswersNoMailError);
   });
 
   test("seeding an inbound starts a thread that composeReply targets at its sender", async () => {
@@ -319,7 +322,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
     });
   });
 
-  test("a turn that seeds no mail after a passthrough replies on the thread", async () => {
+  test("a turn that seeds no mail after a passthrough replies to nobody", async () => {
     const store = await makeStore(h, localDir);
     await store.seedInbound(
       inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
@@ -331,13 +334,12 @@ describe("durable conversation store connector seed (design §3c)", () => {
     );
     expect(requireReply(store).to).toBe("carol@example.com");
 
-    // The next turn starts from a non-mail input, so it seeds nothing.
+    // The next turn starts from a non-mail input, so it seeds nothing and
+    // answers no mail.
     await store.beginTurn({});
 
-    const reply = requireReply(store);
-    expect(reply.to).toBe("alice@example.com");
-    expect(reply.inReplyTo).toBe("<a@example.com>");
-    expect(reply.cc).toEqual([]);
+    expect(store.turnAnswersMail()).toBe(false);
+    expect(() => store.composeReply()).toThrow(TurnAnswersNoMailError);
   });
 
   test("seeded connector state persists to the substrate and restores into a fresh store", async () => {
@@ -360,6 +362,9 @@ describe("durable conversation store connector seed (design §3c)", () => {
         inReplyTo: "<a@example.com>",
       }),
     );
+    // Bob's turn parks on an approval gate, so its resume answers the thread
+    // after the respawn.
+    await store.parkTurn("t1");
     await store.mirrorToSubstrate();
 
     // The substrate carries the advanced connector thread, not a stale null.
@@ -383,14 +388,15 @@ describe("durable conversation store connector seed (design §3c)", () => {
     });
 
     // A fresh store (a respawn with an empty local FS) restores the seeded
-    // thread and composes the same reply -- the cross-respawn continuity the
-    // warm mail loop depends on.
+    // thread, and the approval resume composes the same reply -- the
+    // cross-respawn continuity the warm mail loop depends on.
     const freshLocalDir = path.join(h.baseDir, "respawn-local");
     const fresh = await makeStore(h, freshLocalDir);
     expect(await fresh.restoreFromSubstrate()).toBe(true);
     // Restoring a non-null connector state fires the router's change-driven
     // mirror; drain it so it does not outlive the test's substrate.
     await fresh.mirrorToSubstrate();
+    await fresh.beginTurn({ resume: "t1" });
 
     const reply = requireReply(fresh);
     expect(reply.to).toBe("bob@example.com");
@@ -517,24 +523,23 @@ describe("durable conversation store connector seed (design §3c)", () => {
       // change-driven mirror; drain it so it does not outlive the substrate.
       await fresh.mirrorToSubstrate();
 
+      // The first resume took the target off `c1`, so a second resume of it
+      // answers no mail.
       await fresh.beginTurn({ resume: "c1" });
-      const onThread = requireReply(fresh);
-      expect(onThread.to).toBe("alice@example.com");
-      expect(onThread.inReplyTo).toBe("<a@example.com>");
+      expect(() => fresh.composeReply()).toThrow(TurnAnswersNoMailError);
 
       await fresh.beginTurn({ resume: "c2" });
       expect(requireReply(fresh)).toEqual(CAROL_REPLY);
     });
 
-    test("a resume of an id with no filed target replies on the thread", async () => {
+    test("a resume of an id with no filed target replies to nobody", async () => {
       const store = await makeStore(h, localDir);
       await parkCarolOnC1(store);
 
       await store.beginTurn({ resume: "unknown" });
 
-      const reply = requireReply(store);
-      expect(reply.to).toBe("alice@example.com");
-      expect(reply.inReplyTo).toBe("<a@example.com>");
+      expect(store.turnAnswersMail()).toBe(false);
+      expect(() => store.composeReply()).toThrow(TurnAnswersNoMailError);
     });
 
     test("a respawned store resumes the parked turn to the passthrough sender", async () => {

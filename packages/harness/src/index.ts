@@ -49,6 +49,7 @@ export type {
 export {
   createConnectorRouter,
   NoActiveConnectorThreadError,
+  TurnAnswersNoMailError,
 } from "./connector-router";
 export type {
   ConnectorRouter,

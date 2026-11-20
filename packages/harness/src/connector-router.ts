@@ -52,7 +52,9 @@
 // Its commit sets `passthrough` with a reply target instead: the reply goes
 // to the passthrough sender, threaded under that message, and the thread
 // state stays as it was. `turnAnswersMail()` is true for `thread` and
-// `passthrough`.
+// `passthrough`. A turn in mode `none` replies to nobody: `composeReply()`
+// and `onReplySent()` throw `TurnAnswersNoMailError`, also when a thread is
+// active.
 //
 // A mail turn that parks on an approval gate keeps its mode across the
 // park: `parkTurn()` files the mode under the gate's correlation id, and the
@@ -85,6 +87,13 @@ export class NoActiveConnectorThreadError extends Error {
   constructor() {
     super("no active connector thread");
     this.name = "NoActiveConnectorThreadError";
+  }
+}
+
+export class TurnAnswersNoMailError extends Error {
+  constructor() {
+    super("the current turn answers no mail, so it has no reply target");
+    this.name = "TurnAnswersNoMailError";
   }
 }
 
@@ -200,8 +209,10 @@ export interface ConnectorRouter {
    * no id, `inReplyTo` is absent and `references` is `lastReferences`
    * alone. Each is absent when it would be empty. The caller composes the
    * full outbound message by adding its own `content` and `type` fields.
-   * Throws `NoActiveConnectorThreadError` when the turn mode is not
-   * `passthrough` and no thread is active.
+   * Throws `TurnAnswersNoMailError` when the turn mode is `none`, also when
+   * a thread is active: a turn that answers no mail replies to nobody.
+   * Throws `NoActiveConnectorThreadError` when the turn mode is `thread`
+   * and no thread is active.
    */
   composeReply(): ConnectorReplyParts | null;
 
@@ -209,9 +220,10 @@ export interface ConnectorRouter {
    * Make a sent thread reply the parent of the next one: `lastMessageId`
    * becomes the receipt's Message-ID, and `lastReferences` becomes
    * `references`, the References chain the reply was sent with. A reply in
-   * a `passthrough` turn leaves the thread state unchanged. Throws when the
-   * turn mode is not `passthrough` and no thread is active — outbound state
-   * advance has no meaning without a thread.
+   * a `passthrough` turn leaves the thread state unchanged. Throws
+   * `TurnAnswersNoMailError` when the turn mode is `none`, and leaves the
+   * thread state unchanged. Throws `NoActiveConnectorThreadError` when the
+   * turn mode is `thread` and no thread is active.
    */
   onReplySent(receipt: SendReceipt, references: readonly string[]): void;
 
@@ -577,6 +589,9 @@ export function createConnectorRouter(
   }
 
   function composeReply(): ConnectorReplyParts | null {
+    if (turnMode.kind === "none") {
+      throw new TurnAnswersNoMailError();
+    }
     if (turnMode.kind === "passthrough") {
       const { parts } = turnMode;
       if (parts === null) return null;
@@ -614,6 +629,9 @@ export function createConnectorRouter(
     receipt: SendReceipt,
     references: readonly string[],
   ): void {
+    if (turnMode.kind === "none") {
+      throw new TurnAnswersNoMailError();
+    }
     if (turnMode.kind === "passthrough") return;
     if (state === null) {
       throw new NoActiveConnectorThreadError();

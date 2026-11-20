@@ -146,6 +146,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           address,
           agentId: "agent-standby-mail-input",
           triggers: "unbounded",
+          replyByMail: true,
         }),
         db: h.db,
         tenantId: TENANT_ID,

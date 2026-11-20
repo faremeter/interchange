@@ -90,8 +90,9 @@ function stubBlobReader(): BlobReader {
 
 /**
  * A warm step conversation whose turn and settle members do nothing unless
- * a test overrides them. Its reply has no recipient, so a reply turn sends
- * nothing unless a test overrides `composeReply`.
+ * a test overrides them. Its turns answer no mail, and its reply has no
+ * recipient, so a reply turn sends nothing unless a test overrides
+ * `turnAnswersMail` and `composeReply`.
  */
 function stubStepConversation(
   overrides: Partial<StepConversation>,
@@ -312,6 +313,7 @@ function buildRequest(opts: {
   signal?: AbortSignal;
   input?: unknown;
   inference?: PerCallInferenceOptions;
+  replyByMail?: boolean;
 }): StepInvokeRequest {
   const ctrl = new AbortController();
   const authzContext: AuthorizeContext = {
@@ -323,6 +325,7 @@ function buildRequest(opts: {
     agent: stubDef(),
     input: opts.input,
     ...(opts.inference !== undefined ? { inference: opts.inference } : {}),
+    replyByMail: opts.replyByMail ?? false,
     authzContext,
     signal: opts.signal ?? ctrl.signal,
   };
@@ -1739,13 +1742,14 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
   function mailRequest(mail: Mail, signal?: AbortSignal): StepInvokeRequest {
     return buildRequest({
       input: mail,
+      replyByMail: true,
       ...(signal !== undefined ? { signal } : {}),
     });
   }
 
   function resumeRequest(correlationId: string): StepInvokeRequest {
     return {
-      ...buildRequest({ input: "unused" }),
+      ...buildRequest({ input: "unused", replyByMail: true }),
       resume: {
         correlationId,
         decision: { outcome: "approved" },
@@ -1761,6 +1765,97 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     }
     return message;
   }
+
+  test("a mail turn without replyByMail sends no mail and leaves the thread at the inbound message", async () => {
+    const w = wire([{ kind: "reply", content: "only output" }]);
+
+    const result = await w.invoker(buildRequest({ input: inboundMail(ALICE) }));
+
+    expect(readReply(expectOutput(result))).toBe("only output");
+    expect(w.sent).toEqual([]);
+    expect(w.router.snapshot()?.lastMessageId).toBe("<a@example.com>");
+    await w.warmCache.evictAll("test teardown");
+  });
+
+  test("a mail turn with replyByMail replies on the thread", async () => {
+    const w = wire([{ kind: "reply", content: "to alice" }]);
+
+    await w.invoker(mailRequest(inboundMail(ALICE)));
+
+    expect(w.sent).toHaveLength(1);
+    const reply = sentAt(w.sent, 0);
+    expect(reply.content).toBe("to alice");
+    expect(reply.to).toBe("alice@example.com");
+    expect(reply.inReplyTo).toBe("<a@example.com>");
+    expect(w.router.snapshot()?.lastMessageId).toBe(
+      "<sent-1@agent.example.com>",
+    );
+    await w.warmCache.evictAll("test teardown");
+  });
+
+  test("with replyByMail, an input resume between two mail turns sends no mail", async () => {
+    const w = wire([
+      { kind: "reply", content: "to alice" },
+      { kind: "reply", content: "only output" },
+      { kind: "reply", content: "to alice again" },
+    ]);
+
+    await w.invoker(mailRequest(inboundMail(ALICE)));
+    const resumed = await w.invoker({
+      ...buildRequest({ input: "unused", replyByMail: true }),
+      resume: { correlationId: "in-1", decision: "next", kind: "input" },
+    });
+
+    expect(readReply(expectOutput(resumed))).toBe("only output");
+    expect(w.sent).toHaveLength(1);
+    expect(w.router.snapshot()?.lastMessageId).toBe(
+      "<sent-1@agent.example.com>",
+    );
+
+    await w.invoker(
+      mailRequest(
+        inboundMail({
+          from: "alice@example.com",
+          messageId: "<a2@example.com>",
+          inReplyTo: "<sent-1@agent.example.com>",
+          references: ["<a@example.com>", "<sent-1@agent.example.com>"],
+        }),
+      ),
+    );
+
+    expect(w.sent).toHaveLength(2);
+    const reply = sentAt(w.sent, 1);
+    expect(reply.content).toBe("to alice again");
+    expect(reply.to).toBe("alice@example.com");
+    expect(reply.inReplyTo).toBe("<a2@example.com>");
+    expect(reply.references).toEqual([
+      "<a@example.com>",
+      "<sent-1@agent.example.com>",
+      "<a2@example.com>",
+    ]);
+    await w.warmCache.evictAll("test teardown");
+  });
+
+  test("with replyByMail, the approval resume of a parked mail turn replies on the thread", async () => {
+    const w = wire([
+      { kind: "suspend", correlationId: "c1" },
+      { kind: "reply", content: "approved, alice" },
+    ]);
+
+    const parked = await w.invoker(mailRequest(inboundMail(ALICE)));
+    if (!("suspend" in parked)) {
+      throw new Error("expected a suspend-shaped step result");
+    }
+    expect(w.sent).toEqual([]);
+    await w.invoker(resumeRequest("c1"));
+
+    expect(w.sent).toHaveLength(1);
+    const reply = sentAt(w.sent, 0);
+    expect(reply.content).toBe("approved, alice");
+    expect(reply.to).toBe("alice@example.com");
+    expect(reply.inReplyTo).toBe("<a@example.com>");
+    await w.warmCache.evictAll("test teardown");
+  });
 
   test("an approval resume replies to the sender of the passthrough turn that parked", async () => {
     const w = wire([
@@ -1809,12 +1904,11 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     expect(sentAt(w.sent, 1).to).toBe("carol@example.com");
     expect(sentAt(w.sent, 1).inReplyTo).toBe("<c@example.com>");
 
-    // A later turn that is neither mail nor a resume replies on the thread,
-    // and nothing stays parked.
-    await w.invoker(buildRequest({ input: "next" }));
+    // A later turn that is neither mail nor a resume sends no mail, and
+    // nothing stays parked.
+    await w.invoker(buildRequest({ input: "next", replyByMail: true }));
 
-    expect(sentAt(w.sent, 2).content).toBe("to the owner");
-    expect(sentAt(w.sent, 2).to).toBe("alice@example.com");
+    expect(w.sent).toHaveLength(2);
     expect(w.router.parkedReplyTargets()).toEqual({});
     await w.warmCache.evictAll("test teardown");
   });
@@ -1884,6 +1978,42 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     await w.warmCache.evictAll("test teardown");
   });
 
+  test("an aborted turn of a step that does not reply by mail logs no lost reply", async () => {
+    let releaseLate: () => void = () => undefined;
+    const late = new Promise<void>((resolve) => {
+      releaseLate = resolve;
+    });
+    const w = wire([
+      { kind: "reply", content: "late reply", release: late },
+      { kind: "reply", content: "to carol" },
+    ]);
+
+    const controller = new AbortController();
+    const aborted = w.invoker(
+      buildRequest({
+        input: inboundMail(ALICE),
+        replyByMail: false,
+        signal: controller.signal,
+      }),
+    );
+    await w.scripted.sendsChanged.until(() => w.scripted.sendCount() >= 1);
+    controller.abort();
+    await expect(aborted).rejects.toThrow(/aborted/);
+
+    // The next turn's send waits behind the aborted cycle, so its return
+    // shows that the late reply was produced.
+    releaseLate();
+    await w.invoker(
+      buildRequest({ input: inboundMail(CAROL), replyByMail: false }),
+    );
+
+    expect(
+      logs.records().filter((record) => record.message.includes("is not sent")),
+    ).toEqual([]);
+    expect(w.sent).toEqual([]);
+    await w.warmCache.evictAll("test teardown");
+  });
+
   test("the durable store's connector hooks keep each turn's reply target", async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "warm-hooks-"));
     const repoId: RepoId = { kind: "workflow-run", id: "warm-hooks" };
@@ -1943,12 +2073,12 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     try {
       await invoker(mailRequest(inboundMail(ALICE)));
       await invoker(mailRequest(inboundMail(CAROL)));
-      await invoker(buildRequest({ input: "next" }));
+      await invoker(buildRequest({ input: "next", replyByMail: true }));
       await invoker(resumeRequest("c1"));
 
+      // The turn that answers no mail sends nothing.
       expect(sent.map((message) => [message.content, message.to])).toEqual([
         ["to alice", "alice@example.com"],
-        ["to the owner", "alice@example.com"],
         ["to carol", "carol@example.com"],
       ]);
     } finally {
@@ -2006,6 +2136,7 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
     const w = warmInvoker(
       agent,
       stubStepConversation({
+        turnAnswersMail: () => true,
         composeReply: () => PARTS,
         send: async (message) => {
           sent.push(message);
@@ -2022,7 +2153,7 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
 
     let settled = false;
     const pending = w
-      .invoker(buildRequest({ input: "hello" }))
+      .invoker(buildRequest({ input: "hello", replyByMail: true }))
       .then((result) => {
         settled = true;
         return result;
@@ -2056,6 +2187,7 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
     const w = warmInvoker(
       agent,
       stubStepConversation({
+        turnAnswersMail: () => true,
         composeReply: () => {
           composed += 1;
           return PARTS;
@@ -2063,7 +2195,9 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
       }),
     );
 
-    const result = await w.invoker(buildRequest({ input: "needs approval" }));
+    const result = await w.invoker(
+      buildRequest({ input: "needs approval", replyByMail: true }),
+    );
     if (!("suspend" in result)) {
       throw new Error("expected a suspend-shaped step result");
     }
@@ -2078,6 +2212,7 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
     const w = warmInvoker(
       agent,
       stubStepConversation({
+        turnAnswersMail: () => true,
         composeReply: () => PARTS,
         send: async () => {
           throw sendCause;
@@ -2089,7 +2224,7 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
     // which never went out. The run fails, and the supervisor consumes the
     // inbound mail without a reply rather than replaying it.
     const thrown = await rejectionOf(
-      w.invoker(buildRequest({ input: "hello" })),
+      w.invoker(buildRequest({ input: "hello", replyByMail: true })),
     );
     if (!(thrown instanceof Error)) {
       throw new Error("expected the failed reply send to reject the step");
@@ -2099,17 +2234,19 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
     await w.warmCache.evictAll("test teardown");
   });
 
-  test("a reply with no connector thread names that, not a failed send", async () => {
-    // The connector router passes a message that names no reply address
-    // through without opening a thread, so composing a reply on that step
-    // later throws `NoActiveConnectorThreadError` and nothing is ever
-    // submitted. The turn still fails, but the operator must not be told the
-    // send failed -- there was no send to fail.
+  test("a reply with no active connector thread names that, not a failed send", async () => {
+    // A turn in `thread` mode with no active thread makes `composeReply`
+    // throw `NoActiveConnectorThreadError`, and nothing is ever submitted.
+    // A message that names no reply address does not take this path: it
+    // routes as passthrough with no reply target, so `composeReply` returns
+    // null and the reply is dropped as ok. The turn still fails, but the
+    // operator must not be told the send failed -- there was no send to fail.
     const { agent } = buildResultStubAgent(replySendResult("unaddressed"));
     const composeCause = new NoActiveConnectorThreadError();
     const w = warmInvoker(
       agent,
       stubStepConversation({
+        turnAnswersMail: () => true,
         composeReply: () => {
           throw composeCause;
         },
@@ -2117,7 +2254,7 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
     );
 
     const thrown = await rejectionOf(
-      w.invoker(buildRequest({ input: "hello" })),
+      w.invoker(buildRequest({ input: "hello", replyByMail: true })),
     );
     if (!(thrown instanceof Error)) {
       throw new Error("expected the unaddressable reply to reject the step");
@@ -2136,6 +2273,7 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
       const w = warmInvoker(
         agent,
         stubStepConversation({
+          turnAnswersMail: () => true,
           composeReply: () => PARTS,
           send: async () => RECEIPT,
           onReplySent: async () => undefined,
@@ -2143,7 +2281,7 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
         }),
       );
       const thrown = await rejectionOf(
-        w.invoker(buildRequest({ input: "hello" })),
+        w.invoker(buildRequest({ input: "hello", replyByMail: true })),
       );
       await w.warmCache.evictAll("test teardown");
       return thrown;

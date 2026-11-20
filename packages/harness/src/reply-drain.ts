@@ -7,11 +7,13 @@
 // sent reply the parent of the next one. The caller's `composeReply`
 // decides the recipient: the turn's `passthrough` sender when one is set,
 // otherwise the active connector thread. When it returns no recipient, the
-// drain drops the reply and logs it. The drain composes when the agent
-// emits the reply, not when the turn starts. `sendConnectorReply` sends one
-// reply, and the drain calls it for each event. The harness composition
-// layer (`createHarness`) uses the drain. A caller that sends each reply
-// from its own turn, such as the workflow-host step invoker, calls
+// drain drops the reply and logs it. A turn in `none` mode makes
+// `composeReply` throw `TurnAnswersNoMailError`, and the drain reports that
+// as a compose failure. The drain composes when the agent emits the reply,
+// not when the turn starts. `sendConnectorReply` sends one reply, and the
+// drain calls it for each event. The harness composition layer
+// (`createHarness`) uses the drain. A caller that sends each reply from its
+// own turn, such as the workflow-host step invoker, calls
 // `sendConnectorReply` directly.
 //
 // The loop subscribes an agent event stream and serializes every reply

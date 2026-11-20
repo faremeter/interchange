@@ -151,6 +151,7 @@ function buildRequest(
   return {
     agent: stepAgentDefinition(tool),
     input: { goal: "record the value" },
+    replyByMail: false,
     authzContext,
     signal: new AbortController().signal,
   };

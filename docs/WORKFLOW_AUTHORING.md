@@ -714,3 +714,25 @@ Where it lives today: the standby paragraph of
 `packages/workflow/src/runtime/activity.ts`, called by `runStep` and
 `runMap`, and the doc comment of `waitForTimer`,
 `packages/workflow/src/runtime/run.ts`.
+
+**35.** A step's final model text goes out as mail only when the step sets
+`replyByMail: true`. Without the option, the final text is only the step's
+output, and the deployment sends no mail for the step. The option applies
+only to a turn that answers mail: the step's input is a Mail, or the turn is
+the approval resume of a turn whose input was a Mail. Then the reply goes on
+the inbound thread, or to the sender of a Mail that is not on the thread. A
+turn that answers no mail sends nothing, also when the step sets the option.
+Only the step of a single-step deployment can send the reply today: a step
+of a multi-step deployment sends no mail, also when it sets the option. The
+singular shorthand takes the option next to `agent`.
+
+```ts
+steps: {
+  reply: step({ agent, replyByMail: true }),
+},
+```
+
+Where it lives today: `StepPrimitive.replyByMail`,
+`packages/workflow/src/definition/primitives.ts`; the default, `runStep`,
+`packages/workflow/src/runtime/run.ts`; the send, `runConversationTurn`,
+`packages/workflow-host/src/adapters/step-invoker.ts`.

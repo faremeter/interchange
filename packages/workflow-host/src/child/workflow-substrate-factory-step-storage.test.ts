@@ -203,6 +203,7 @@ function requestForRun(runId: string, attempt = 1): StepInvokeRequest {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv reads only authzContext; the agent definition is never consulted here
     agent: { toolFactories: [] } as unknown as StepInvokeRequest["agent"],
     input: null,
+    replyByMail: false,
     authzContext: { stepId: STEP_ID, runId, attempt },
     signal: new AbortController().signal,
   };
@@ -374,6 +375,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv reads only authzContext; the agent definition is never consulted here
       agent: { toolFactories: [] } as unknown as StepInvokeRequest["agent"],
       input: null,
+      replyByMail: false,
       authzContext: { stepId: scopedId, runId: "run-1", attempt: 1 },
       signal: new AbortController().signal,
     };
@@ -454,6 +456,7 @@ function approvalResumeRequest(
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv reads only authzContext and resume; the agent definition is never consulted here
     agent: { toolFactories: [] } as unknown as StepInvokeRequest["agent"],
     input: null,
+    replyByMail: false,
     authzContext: { stepId: STEP_ID, runId, attempt: 1 },
     resume: {
       correlationId,

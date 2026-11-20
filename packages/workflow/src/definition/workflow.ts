@@ -102,6 +102,8 @@ export interface WorkflowConfig {
 export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
   id: string;
   agent: AgentDefinition<EnvReq>;
+  /** The `replyByMail` option of the single step. See `step()`. */
+  replyByMail?: boolean;
   trigger?: Trigger;
   triggers?: readonly Trigger[];
   state?: { schema?: StateSchema };

@@ -190,6 +190,12 @@ export interface StepInvokeRequest {
    * agent's defaults.
    */
   inference?: PerCallInferenceOptions;
+  /**
+   * The step's `replyByMail` option, resolved: `false` when the step does
+   * not set it. The invoker sends the step's final text as mail only when
+   * this is `true` and the turn answers mail.
+   */
+  replyByMail: boolean;
   /** Workflow-runtime context for every authz call inside the step. */
   authzContext: AuthorizeContext;
   /** Cancelled when the step is being torn down (timeout, cancellation). */
