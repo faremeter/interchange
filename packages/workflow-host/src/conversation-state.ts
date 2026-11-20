@@ -107,7 +107,7 @@
 //
 // Commit granularity (greybeard's pick, design §3c open question). The
 // design calls for connector-state-change-driven commits via the router's
-// `onStateChanged` hook. The warm-agent path drives the connector router
+// `onStateChanged` hook. The step invoker drives the connector router
 // through `seedInbound`: each mail-derived inbound message routes and
 // commits its thread state before the agent's send, so `onStateChanged`
 // fires and enqueues a change-driven mirror. The run-boundary mirror (per
@@ -260,11 +260,11 @@ export interface DurableConversationStore {
   mirrorToSubstrate(): Promise<void>;
   /**
    * Advance the connector router from a received inbound message so the
-   * warm agent's reply path has thread state. Runs the router's pure
+   * step agent's reply path has thread state. Runs the router's pure
    * `route()` then `commit()`; the router owns what each decision does to
    * the thread. The advanced connector state is flushed into the local
    * store's metadata so the run-boundary mirror persists it and a respawn
-   * restore re-seeds the router. Called before the warm agent's send so
+   * restore re-seeds the router. Called before the step agent's send so
    * `composeReply()` can compose a threaded reply. A start or continue
    * sets the router's turn mode to `thread`. A passthrough message leaves
    * the thread unchanged and sets the turn mode to `passthrough`, with its
@@ -273,13 +273,13 @@ export interface DurableConversationStore {
    */
   seedInbound(message: InboundMessage): Promise<void>;
   /**
-   * Mark the start of a warm agent turn (the router's `beginTurn`). A turn
+   * Mark the start of a step agent turn (the router's `beginTurn`). A turn
    * that resumes the approval gate `turn.resume` takes the turn mode
    * `parkTurn` filed under that correlation id, and the removal of the
    * filed mode is flushed into the local store's metadata. Any other turn
    * sets the turn mode to `none`, so a turn that seeds no mail replies to
    * nobody: not to an earlier passthrough sender, and not on the thread.
-   * Called before `seedInbound` on every warm turn. A metadata write
+   * Called before `seedInbound` on every step turn. A metadata write
    * failure surfaces.
    */
   beginTurn(turn: { resume?: string }): Promise<void>;
@@ -305,7 +305,7 @@ export interface DurableConversationStore {
    * continue seed set the mode. Returns `null` when the passthrough sender
    * has no address. Throws `TurnAnswersNoMailError` when the turn answers
    * no mail, and `NoActiveConnectorThreadError` when a thread turn has no
-   * active thread. The warm step invoker reads this to address the reply
+   * active thread. The step invoker reads this to address the reply
    * of its turn.
    */
   composeReply(): ConnectorReplyParts | null;
@@ -317,7 +317,7 @@ export interface DurableConversationStore {
    * chain it carried. A reply to a passthrough sender leaves the thread
    * unchanged. Then flushes the advanced connector state into the local
    * store's metadata the same way `seedInbound` does, so the parent
-   * persists across turns and across a child respawn. Called by the warm
+   * persists across turns and across a child respawn. Called by the
    * step invoker after the outbound send of its turn's reply settles. Throws
    * `TurnAnswersNoMailError` when the turn answers no mail, and
    * `NoActiveConnectorThreadError` when a thread turn has no active thread

@@ -2341,6 +2341,228 @@ describe("workflow-host StepInvoker adapter - warm reply send", () => {
   });
 });
 
+describe("workflow-host StepInvoker adapter - cold reply", () => {
+  const allow: WorkflowAuthorizeFn = async () => ({
+    effect: "allow",
+    matchingGrants: [],
+    resolvedBy: null,
+  });
+  const logs = createLogCapture();
+  beforeAll(logs.install);
+  afterAll(logs.restore);
+  beforeEach(logs.reset);
+
+  const ALICE = { from: "alice@example.com", messageId: "<a@example.com>" };
+  const SUSPENDED: SendResult = {
+    type: "suspended",
+    turnId: "turn-test",
+    correlationId: "c1",
+    approvalSnapshot: {
+      name: "tool_a",
+      description: "needs approval",
+      inputSchema: { type: "object" },
+      arguments: {},
+    },
+  };
+
+  /**
+   * Wire a cold step invoker whose builds return a conversation over one
+   * real connector router, as the attempt-scoped durable store does. Each
+   * invocation builds a new agent that settles its send with the next
+   * result. `events` records the reply send, each close, and each settle.
+   */
+  function wire(
+    results: SendResult[],
+    overrides: Partial<StepConversation> = {},
+  ) {
+    const router = createConnectorRouter({
+      ownAddress: "run@deployment.example.com",
+    });
+    const sent: OutboundMessage[] = [];
+    const events: string[] = [];
+    const conversation: StepConversation = {
+      beginTurn: async (turn) => {
+        router.beginTurn(turn);
+      },
+      parkTurn: async (correlationId) => {
+        router.parkTurn(correlationId);
+      },
+      seedInbound: async (message) => {
+        router.commit(router.route(message));
+      },
+      turnAnswersMail: () => router.turnAnswersMail(),
+      composeReply: () => router.composeReply(),
+      send: async (message) => {
+        sent.push(message);
+        events.push("sent");
+        return {
+          messageId: `<sent-${String(sent.length)}@agent.example.com>`,
+          status: "delivered",
+        };
+      },
+      onReplySent: async (receipt, references) => {
+        router.onReplySent(receipt, references);
+      },
+      settle: async () => {
+        events.push("settled");
+      },
+      ...overrides,
+    };
+    const pending = [...results];
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => ({ env: stubBuildEnv(), conversation }),
+      agentFactory: async () => {
+        const result = pending.shift();
+        if (result === undefined) throw new Error("no scripted send result");
+        const { agent } = buildResultStubAgent(result);
+        return {
+          ...agent,
+          async close() {
+            events.push("close");
+            await agent.close();
+          },
+        };
+      },
+    });
+    return { router, sent, events, invoker };
+  }
+
+  function mailRequest(replyByMail: boolean): StepInvokeRequest {
+    return buildRequest({ input: inboundMail(ALICE), replyByMail });
+  }
+
+  async function rejectionOf(pending: Promise<unknown>): Promise<unknown> {
+    return pending.then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+  }
+
+  test("a mail turn with replyByMail replies on the thread before the close and the settle", async () => {
+    const w = wire([replySendResult("to alice")]);
+
+    const result = await w.invoker(mailRequest(true));
+
+    expect(readReply(expectOutput(result))).toBe("to alice");
+    expect(w.sent.map((m) => [m.content, m.to, m.inReplyTo])).toEqual([
+      ["to alice", "alice@example.com", "<a@example.com>"],
+    ]);
+    expect(w.router.snapshot()?.lastMessageId).toBe(
+      "<sent-1@agent.example.com>",
+    );
+    expect(w.events).toEqual(["sent", "close", "settled"]);
+  });
+
+  test("a mail turn without replyByMail sends no mail", async () => {
+    const w = wire([replySendResult("only output")]);
+
+    await w.invoker(mailRequest(false));
+
+    expect(w.sent).toEqual([]);
+    expect(w.router.snapshot()?.lastMessageId).toBe("<a@example.com>");
+    expect(w.events).toEqual(["close", "settled"]);
+  });
+
+  test("the approval resume of a parked mail turn replies on the thread", async () => {
+    const w = wire([SUSPENDED, replySendResult("approved, alice")]);
+
+    const parked = await w.invoker(mailRequest(true));
+    if (!("suspend" in parked)) {
+      throw new Error("expected a suspend-shaped step result");
+    }
+    expect(w.sent).toEqual([]);
+    await w.invoker({
+      ...buildRequest({ input: "unused", replyByMail: true }),
+      resume: {
+        correlationId: "c1",
+        decision: { outcome: "approved" },
+        kind: "approval",
+      },
+    });
+
+    expect(w.sent.map((m) => [m.content, m.to, m.inReplyTo])).toEqual([
+      ["approved, alice", "alice@example.com", "<a@example.com>"],
+    ]);
+  });
+
+  test("a later turn that answers no mail sends no mail", async () => {
+    const w = wire([replySendResult("to alice"), replySendResult("no mail")]);
+
+    await w.invoker(mailRequest(true));
+    await w.invoker(buildRequest({ input: "next", replyByMail: true }));
+
+    expect(w.sent.map((m) => m.content)).toEqual(["to alice"]);
+  });
+
+  test("a reply-send failure fails the step with a retryable error and still settles", async () => {
+    const cause = new Error("outbound bridge rejected the reply");
+    const w = wire([replySendResult("doomed")], {
+      send: async () => {
+        throw cause;
+      },
+    });
+
+    const thrown = await rejectionOf(w.invoker(mailRequest(true)));
+
+    if (!(thrown instanceof Error)) {
+      throw new Error("expected the failed reply send to reject the step");
+    }
+    expect(thrown).not.toBeInstanceOf(StepOutcomeCommitError);
+    expect(thrown.cause).toBe(cause);
+    expect(w.events).toEqual(["close", "settled"]);
+  });
+
+  test("a persist failure after the send fails the step as an uncommitted outcome and still settles", async () => {
+    const w = wire([replySendResult("sent once")], {
+      onReplySent: async () => {
+        throw new Error("connector metadata write failed");
+      },
+    });
+
+    const thrown = await rejectionOf(w.invoker(mailRequest(true)));
+
+    expect(thrown).toBeInstanceOf(StepOutcomeCommitError);
+    expect(w.sent.map((m) => m.content)).toEqual(["sent once"]);
+    expect(w.events).toEqual(["sent", "close", "settled"]);
+  });
+
+  test("an aborted turn closes the agent and logs no lost reply", async () => {
+    const stub = buildStubAgent();
+    let settled = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => ({
+        env: stubBuildEnv(),
+        conversation: stubStepConversation({
+          settle: async () => {
+            settled += 1;
+          },
+        }),
+      }),
+      agentFactory: async () => stub.agent,
+    });
+    const controller = new AbortController();
+
+    const pending = invoker(
+      buildRequest({
+        input: inboundMail(ALICE),
+        replyByMail: true,
+        signal: controller.signal,
+      }),
+    );
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/aborted/);
+    expect(stub.events).toContain("close");
+    expect(settled).toBe(1);
+    expect(
+      logs.records().filter((record) => record.message.includes("is not sent")),
+    ).toEqual([]);
+  });
+});
+
 describe("workflow-host StepInvoker adapter - resume send path", () => {
   test("a resume request sends the correlated decision and returns the resumed reply", async () => {
     // The resumed reactor's reply turn -- what the step output should carry.

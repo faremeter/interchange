@@ -128,9 +128,10 @@ export interface StepPrimitive extends PrimitiveBase {
    * step replies only on a turn that answers mail: its input is a Mail, or
    * it is the approval resume of a turn whose input was a Mail. On any
    * other turn the final text is only step output. Absent means `false`,
-   * resolved in `runStep`. Only the step of a single-step deployment can
-   * send the reply today: a step of a multi-step deployment sends no mail,
-   * also when it sets this option.
+   * resolved in `runStep`. Every agent step can send the reply. Two steps
+   * that set this option and answer the same Mail both reply. A reply goes
+   * out at most once: a crash after the send and before the step commits
+   * its turn fails the step without running it again.
    */
   replyByMail?: boolean;
 }

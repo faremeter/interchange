@@ -15,13 +15,13 @@
 //
 // The same conversation also continues on a second deployment through the
 // routes a client uses: after two turns on one deployment, `step1`'s state is
-// read from the export route and passed to the deploy route of a new
-// deployment as its `stepState`. The Hub files it as a seed in the new
-// deployment's history, the reconciler restores that history onto the new
-// sidecar, and the new deployment's first mail is the step's third turn. The
-// new deployment's mailbox numbers its first message past the two the first
-// one received, so a mailbox UID the imported turns name cannot reach one of
-// its messages.
+// read from the export route and passed, without its reply thread, to the
+// deploy route of a new deployment as its `stepState`. The Hub files it as a
+// seed in the new deployment's history, the reconciler restores that history
+// onto the new sidecar, and the new deployment's first mail is the step's third
+// turn. The new deployment's mailbox numbers its first message past the two the
+// first one received, so a mailbox UID the imported turns name cannot reach one
+// of its messages.
 //
 // The proof is what the model sees. The mock inference server records every
 // request and echoes each turn's inbound text, so the third turn's request
@@ -527,6 +527,10 @@ describe.skipIf(!harnessHubEnvAvailable())(
         "assistant",
       ]);
       expect(exported.mailboxUidNext).toBe(3);
+      // The step keeps a reply thread for the mail its turns answered. An
+      // import carries no thread, so the client drops it.
+      expect(exported.connectorState).not.toBeNull();
+      const imported = { ...exported, connectorState: null };
 
       // --- A new deployment imports it through the deploy route -----------
       const assetB = "ast_conversation_import_b";
@@ -534,10 +538,10 @@ describe.skipIf(!harnessHubEnvAvailable())(
         tenant,
         assetB,
         await publishConversation(tenant, assetB),
-        { step1: exported },
+        { step1: imported },
       );
       await waitFor(async () => (await b.readRunKey()) !== null);
-      expect(await b.exportStep1()).toEqual(exported);
+      expect(await b.exportStep1()).toEqual(imported);
       await b.sendMail(`Third turn ${IMPORT_THREE}.`);
       await waitFor(async () => (await b.inputParks()) >= 1);
 

@@ -9,7 +9,8 @@
 //   - "agent":       a single agent step, exercising the body-agent invoker
 //                    (the model reply commits as the step output). The agent
 //                    is tool-less unless `mailTools` pins the production
-//                    `@intx/tools-mail` sidecar bundle.
+//                    `@intx/tools-mail` sidecar bundle, and replies by mail
+//                    only when `replyByMail` is set.
 //   - "awaitSignal": a single `awaitSignal` gate, exercising the signal-relay
 //                    capability. An optional `timeout` adds an `onTimeout`
 //                    route to a completing `sleep` step.
@@ -37,6 +38,8 @@ export type OnTriggerAgentBody = {
    * mailbox. Defaults to a tool-less agent.
    */
   mailTools?: boolean;
+  /** When true, the body agent step sets `replyByMail: true`. */
+  replyByMail?: boolean;
 };
 
 export type OnTriggerAwaitSignalBody = {
@@ -100,6 +103,10 @@ function renderAgentBody(
   const stepId = body.stepId ?? "work";
   const agentId = body.agentId ?? "on-trigger-body-agent";
   const mailTools = body.mailTools === true;
+  const stepOpts =
+    body.replyByMail === true
+      ? "{ agent: bodyAgent, replyByMail: true }"
+      : "{ agent: bodyAgent }";
   return {
     imports:
       `import { defineWorkflow, step } from "@intx/workflow/definition";\n` +
@@ -122,7 +129,7 @@ const body = defineWorkflow({
   id: ${JSON.stringify(bodyWorkflowId)},
   trigger: { type: "manual" },
   steps: {
-    [${JSON.stringify(stepId)}]: step({ agent: bodyAgent }),
+    [${JSON.stringify(stepId)}]: step(${stepOpts}),
   },
 });
 `,

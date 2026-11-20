@@ -316,15 +316,22 @@ inbound message into the mailbox (durable, replicated to the hub). The warm
 agent's mail tools ask that supervisor and take its answer, with no hub
 round-trip, so `mail_read`, `mail_search`, and `mail_wait` work. Search,
 fetch, flag changes, folder operations, and attachment reads all go that
-way; the child does not open the run repo to answer them. When the step
-sets `replyByMail` and the warm turn answers mail, the step invoker sends
-the turn's reply through the outbound bridge before the turn returns. A
-reply that no turn waits for is not sent: the step invoker logs a warning
-when a turn is aborted, because its cycle can still reply. The child
-builds the reply's `References` from the connector thread state, and the
-supervisor sends the chain as the child named it. This does not reopen the
-ownership decision: the child does not open the mailbox, and there is still
-exactly one mail owner.
+way; the child does not open the run repo to answer them. When a step
+sets `replyByMail` and its turn answers mail, the step invoker sends the
+turn's reply through the outbound bridge before the turn returns. This
+holds for the warm agent and for each cold step: each step of a
+multi-step deployment, and each step of a spawned child run such as an
+`onTrigger` body, also in a deployment whose only top-level step is the
+section. A cold step's turn runs over a connector thread in the step's
+attempt-scoped store. A reply that no turn waits for is not sent: the step
+invoker logs a warning when a warm turn is aborted, because its cycle can
+still reply. An aborted cold step closes its agent, so its cycle cannot
+reply. A cold step sends its reply before it commits its turn, so a crash
+between the two fails the step without running it again: the reply goes
+out at most once. The child builds the reply's `References`
+from the connector thread state, and the supervisor sends the chain as the
+child named it. This does not reopen the ownership decision: the child does
+not open the mailbox, and there is still exactly one mail owner.
 
 The conversational loop has two first-class shapes, both delivered:
 

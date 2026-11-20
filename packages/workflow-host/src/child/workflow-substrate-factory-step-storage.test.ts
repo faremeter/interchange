@@ -31,8 +31,10 @@ import path from "node:path";
 
 import type {
   AuditStore,
+  BlobReader,
   ContextStore,
   InferenceSource,
+  Mail,
   OutboundMessage,
   PendingOperation,
   ToolCall,
@@ -49,9 +51,15 @@ import {
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import { createBuiltinRegistry } from "@intx/inference/providers";
-import { createDefaultDirectorRegistry } from "@intx/agent";
+import {
+  createDefaultDirectorRegistry,
+  type Agent,
+  type BaseEnv,
+  type SendResult,
+} from "@intx/agent";
 import {
   createDurableConversationStore,
+  createWorkflowStepInvoker,
   readStepState,
   type ChildOutboundMailBridge,
   type DurableConversationRegistry,
@@ -62,6 +70,7 @@ import {
   scopedStepId,
   type StepInvokeRequest,
   unavailableMailSigner,
+  type WorkflowAuthorizeFn,
 } from "@intx/workflow";
 
 import {
@@ -663,5 +672,174 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     );
     const warm = await buildEnv(requestForRun("run-1"), sourcesRefFor());
     expect(warm.conversation).toBeUndefined();
+  });
+});
+
+describe("a cold step's reply over its attempt's durable store", () => {
+  const MAIL: Mail = {
+    headers: {
+      from: "alice@example.com",
+      to: ["run_deployment-keying@example.com"],
+      date: "2026-01-02T03:04:05Z",
+      messageId: "<a@example.com>",
+    },
+    rawHeaders: {},
+    parts: [
+      {
+        contentType: "text/plain",
+        ref: "mail-part:///r/<a@example.com>/0-text",
+        text: "please charge the card",
+      },
+    ],
+  };
+  const allow: WorkflowAuthorizeFn = async () => ({
+    effect: "allow",
+    matchingGrants: [],
+    resolvedBy: null,
+  });
+
+  // A step agent whose one send runs `send` against the env it was built
+  // with. The cold path closes it after the turn.
+  function stepAgent(send: () => Promise<SendResult>): Agent {
+    return {
+      send,
+      stream() {
+        throw new Error("stub stream() not used");
+      },
+      deliver() {
+        throw new Error("stub deliver() not used");
+      },
+      async close() {
+        /* no-op */
+      },
+      setSource() {
+        throw new Error("stub setSource() not used");
+      },
+      setSources() {
+        throw new Error("stub setSources() not used");
+      },
+      async history() {
+        return [];
+      },
+      async checkpoints() {
+        return [];
+      },
+      async readAt() {
+        return [];
+      },
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the cold path never reads blobs
+      blobReader: {} as BlobReader,
+    };
+  }
+
+  // The first send parks on an approval gate the way the reactor does: it
+  // commits the gate's pending operation to the step's store, then settles
+  // as suspended. The next send replies.
+  function parkThenReply(env: BaseEnv, sends: number): Agent {
+    if (sends === 0) {
+      return stepAgent(async () => {
+        await env.storage.writeMetadata({
+          pendingOperations: [
+            approvalOp("c1", { suspendedCall: SUSPENDED_CALL }),
+          ],
+          tokenUsage: ZERO_USAGE,
+        });
+        await env.storage.commit({ message: "park" });
+        return {
+          type: "suspended",
+          turnId: "turn-test",
+          correlationId: "c1",
+          approvalSnapshot: {
+            name: SUSPENDED_CALL.name,
+            description: "needs approval",
+            inputSchema: { type: "object" },
+            arguments: SUSPENDED_CALL.arguments,
+          },
+        };
+      });
+    }
+    return stepAgent(async () => ({
+      type: "reply",
+      turnId: "turn-test",
+      reply: "charged",
+      turn: {
+        role: "assistant",
+        content: [{ type: "text", text: "charged" }],
+        model: SOURCE.model,
+        timestamp: 0,
+      },
+    }));
+  }
+
+  async function invoker(
+    substrate: RepoStore,
+    submitted: OutboundMessage[],
+    sends: { count: number },
+  ) {
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({
+        dataDir: await makeTempDir(),
+        substrate,
+        outboundMailBridge: {
+          ...stubOutboundMailBridge(),
+          submit: async (_sender, message) => {
+            submitted.push(message);
+            return {
+              messageId: `<sent-${String(submitted.length)}@example.com>`,
+              status: "delivered",
+            };
+          },
+        },
+      }),
+    );
+    return createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: (req) => buildEnv(req, sourcesRefFor()),
+      agentFactory: async (_def, env) => parkThenReply(env, sends.count++),
+    });
+  }
+
+  const mailTurn: StepInvokeRequest = {
+    ...requestForRun("run-1"),
+    input: MAIL,
+    replyByMail: true,
+  };
+  const resumeTurn: StepInvokeRequest = {
+    ...approvalResumeRequest("run-1", "c1"),
+    replyByMail: true,
+  };
+
+  test("the approval resume of a parked mail turn replies on the thread", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const submitted: OutboundMessage[] = [];
+    const invoke = await invoker(substrate, submitted, { count: 0 });
+
+    const parked = await invoke(mailTurn);
+    if (!("suspend" in parked)) {
+      throw new Error("expected a suspend-shaped step result");
+    }
+    expect(submitted).toEqual([]);
+    await invoke(resumeTurn);
+
+    expect(submitted.map((m) => [m.content, m.to, m.inReplyTo])).toEqual([
+      ["charged", "alice@example.com", "<a@example.com>"],
+    ]);
+  });
+
+  test("a replacement host resumes the committed park and replies on the thread", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const submitted: OutboundMessage[] = [];
+    const sends = { count: 0 };
+
+    await (
+      await invoker(substrate, submitted, sends)
+    )(mailTurn);
+    await (
+      await invoker(substrate, submitted, sends)
+    )(resumeTurn);
+
+    expect(submitted.map((m) => [m.content, m.to, m.inReplyTo])).toEqual([
+      ["charged", "alice@example.com", "<a@example.com>"],
+    ]);
   });
 });

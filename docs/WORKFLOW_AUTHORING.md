@@ -722,9 +722,16 @@ only to a turn that answers mail: the step's input is a Mail, or the turn is
 the approval resume of a turn whose input was a Mail. Then the reply goes on
 the inbound thread, or to the sender of a Mail that is not on the thread. A
 turn that answers no mail sends nothing, also when the step sets the option.
-Only the step of a single-step deployment can send the reply today: a step
-of a multi-step deployment sends no mail, also when it sets the option. The
-singular shorthand takes the option next to `agent`.
+Every agent step can send the reply. Two steps that set the option and
+answer the same Mail both reply, so a deployment that must answer each Mail
+once sets the option on one step only. A reply goes out at most once: a
+step that builds its agent for each turn sends its reply before it commits
+its turn, and a crash between the two fails the step without running it
+again, so the conversation does not hold that turn. Every step builds its agent for each turn except the one step of
+a single-step deployment. Each step of a section body, such as an
+`onTrigger` body, builds its agent for each turn, also when the section is
+the only top-level step.
+The singular shorthand takes the option next to `agent`.
 
 ```ts
 steps: {

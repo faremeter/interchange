@@ -18,7 +18,7 @@ export const StepStateSnapshot = type({
   ),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null").describe(
-    "Mail thread the agent replies on, or null when no thread is active. An import must carry null: the imported step starts without a thread, and a single-step agent starts one from the sender of its first mail.",
+    "Mail thread the agent replies on, or null when no thread is active. An import must carry null: the imported step starts without a thread, and an agent step starts one from the sender of its first mail.",
   ),
   "mailboxUidNext?": type("1 <= number.integer <= 4294967295").describe(
     "The UID the exporting deployment's mailbox assigns next, so every mailbox UID the turns name is below it. A deployment that imports the snapshot numbers its own mail from at least this UID, so those UIDs never name one of its messages. An import accepts at most 2147483648. Absent when the exporting deployment has no mailbox.",

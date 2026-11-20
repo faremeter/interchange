@@ -23,7 +23,9 @@
 //      `{ reply, turn }` so downstream consumers can either read the
 //      plain-text reply or walk the full assistant turn (tool calls,
 //      thinking blocks, etc.) without the step output dropping
-//      structure.
+//      structure. When the step sets `replyByMail` and the turn answers
+//      mail, send the reply by mail through the step's conversation
+//      before the turn returns.
 //   5. Tear down the agent (close + lock release) on every exit path,
 //      whether the step completed cleanly, the abort signal fired, or
 //      the underlying `agent.send` rejected, then settle the step's
@@ -139,19 +141,21 @@ export interface WorkflowStepInvokerOpts {
    * per-step paths (workdir under the run id, per-attempt storage
    * roots) from the workflow runtime's vocabulary.
    *
-   * On the cold path, the adapter awaits the returned conversation's
-   * `settle` after the agent has closed, and returns the step's result only
-   * once it resolves. The sidecar's `settle` commits the step's durable
-   * state, so every turn is durable before the run records it and a
-   * replacement host resumes the step where that turn left it. It runs
-   * whether the send completed, suspended, aborted, or rejected, and
-   * whether or not closing the agent succeeded: the agent's own close waits
-   * for its in-flight commits before the tool disposers that can fail it
-   * run. A settle failure rejects the step with a `StepOutcomeCommitError`,
-   * which the runtime neither retries nor routes because the turn's work
-   * already happened, unless the step already failed, in which case it is
-   * logged. A close that fails after a turn that did not fail rejects the
-   * step the same way. The warm path does not use the returned
+   * On the cold path, the adapter drives the turn through the returned
+   * conversation the same way the warm path drives `warmConversation`: the turn
+   * start, the mail seed, the approval park, and the reply of a step that sets
+   * `replyByMail`. It awaits the conversation's `settle` after the agent has
+   * closed, and returns the step's result only once it resolves. The sidecar's
+   * `settle` commits the step's durable state, so every turn is durable before
+   * the run records it and a replacement host resumes the step where that turn
+   * left it. It runs whether the send completed, suspended, aborted, or
+   * rejected, and whether or not closing the agent succeeded: the agent's own
+   * close waits for its in-flight commits before the tool disposers that can
+   * fail it run. A settle failure rejects the step with a
+   * `StepOutcomeCommitError`, which the runtime neither retries nor routes
+   * because the turn's work already happened, unless the step already failed,
+   * in which case it is logged. A close that fails after a turn that did not
+   * fail rejects the step the same way. The warm path does not use the returned
    * conversation; `warmConversation` drives the warm agent's conversation.
    */
   buildEnv: (req: StepInvokeRequest) => Promise<StepBuild>;
@@ -321,17 +325,18 @@ async function invokeColdStep(
   // path -- `agent.close()` ends the forwarder's for-await loop, and it
   // never rejects (subscribeAgentEvents swallows), so awaiting it in the
   // cleanup cannot mask either error.
+  //
+  // The turn sends its reply, when it has one to send, in the body, before
+  // the close and the settle. A crash after the send and before the settle
+  // commits leaves the turn uncommitted, and the step fails without
+  // running again, so a cold step's reply is sent at most once.
   return runBodyThenCleanup(
-    async () =>
-      stepResultFromSend(
-        await sendWithAbort(agent, req, {
-          closeOnAbort: true,
-          mailPartReader: opts.mailPartReader,
-          // Cold-path per-step agents have no durable connector state; the
-          // warm path is the only connector-seeding path.
-          seedInbound: undefined,
-        }),
-      ),
+    () =>
+      runConversationTurn(agent, req, {
+        conversation,
+        mailPartReader: opts.mailPartReader,
+        closeOnAbort: true,
+      }),
     async () => {
       let closeFailure: { cause: unknown } | undefined;
       try {
@@ -481,6 +486,7 @@ async function invokeWarmStep(
       runConversationTurn(agent, req, {
         conversation,
         mailPartReader: opts.mailPartReader,
+        closeOnAbort: false,
       }),
     async () => {
       // Do NOT close the agent or drain its forwarder: both span
@@ -510,8 +516,8 @@ async function invokeWarmStep(
 }
 
 /**
- * Drive one turn of a warm agent through its connector conversation, when the
- * deployment has one, and return the step result.
+ * Drive one turn of a step's agent through its connector conversation, when
+ * the step has one, and return the step result.
  *
  * The turn begins a connector turn (taking the parked turn mode on an
  * `"approval"` resume), seeds a mail-derived inbound message onto the
@@ -520,8 +526,8 @@ async function invokeWarmStep(
  * that answers mail, sends its reply through the conversation and returns
  * only once the send settles. Any other reply is only step output. A failed
  * settlement rejects the turn with the error `replyFailureError` picks for
- * its phase. The abort signal is threaded into the send, so an abort cancels
- * only this turn.
+ * its phase. `closeOnAbort` selects the abort semantics of the send (see
+ * `sendWithAbort`).
  */
 async function runConversationTurn(
   agent: Agent,
@@ -529,6 +535,7 @@ async function runConversationTurn(
   turn: {
     conversation: StepConversation | undefined;
     mailPartReader: MailPartReader | undefined;
+    closeOnAbort: boolean;
   },
 ): Promise<StepInvokeResult> {
   const { conversation } = turn;
@@ -542,7 +549,7 @@ async function runConversationTurn(
   let sendResult: SendResult;
   try {
     sendResult = await sendWithAbort(agent, req, {
-      closeOnAbort: false,
+      closeOnAbort: turn.closeOnAbort,
       mailPartReader: turn.mailPartReader,
       seedInbound:
         conversation !== undefined
@@ -550,12 +557,19 @@ async function runConversationTurn(
           : undefined,
     });
   } catch (err) {
-    // An abort rejects only this turn. If the agent already started a cycle
-    // for it, that cycle can continue and produce a reply later. Only a turn
-    // sends a reply, so that reply goes out to nobody. The turn does not
-    // know whether the cycle started, so the log says what holds either way.
-    // A step that does not reply by mail loses nothing, so it logs nothing.
-    if (req.signal.aborted && req.replyByMail && conversation !== undefined) {
+    // An abort that leaves the agent open rejects only this turn. If the
+    // agent already started a cycle for it, that cycle can continue and
+    // produce a reply later. Only a turn sends a reply, so that reply goes
+    // out to nobody. The turn does not know whether the cycle started, so
+    // the log says what holds either way. A step that does not reply by
+    // mail loses nothing, so it logs nothing. An abort that closes the agent
+    // ends the cycle too, so no reply comes later.
+    if (
+      req.signal.aborted &&
+      !turn.closeOnAbort &&
+      req.replyByMail &&
+      conversation !== undefined
+    ) {
       logger.warn`step invoker: ${describeStep(req)}: the turn was aborted; a reply from a cycle that already started for it is not sent`;
     }
     throw err;
@@ -652,8 +666,8 @@ async function sendWithAbort(
     req,
     cfg.mailPartReader,
   );
-  // Seed the warm agent's connector thread from a mail-derived inbound before
-  // the send, so the reply path has thread state (design §3c). Only the
+  // Seed the step's connector thread from a mail-derived inbound before the
+  // send, so the reply path has thread state (design §3c). Only the
   // mail branch surfaces `mailInbound`; an approval-resume inbound and a
   // synthesized string do not advance the thread. The seed is awaited so its
   // durable flush completes (or surfaces) before the reply is produced; a

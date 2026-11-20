@@ -196,9 +196,11 @@ the inbound thread only when it sets `replyByMail: true` and the turn
 answers mail. A turn answers mail when its input is a Mail, or when it is
 the approval resume of a turn whose input was a Mail. The option is absent
 by default, and `runStep` resolves an absent option to `false` on
-`StepInvokeRequest.replyByMail`. Only the step of a single-step
-deployment can send the reply today: a step of a multi-step deployment
-sends no mail, also when it sets the option.
+`StepInvokeRequest.replyByMail`. Every agent step can send the reply.
+Two steps that set the option and answer the same Mail both reply, so a
+deployment that must answer each Mail once sets the option on one step
+only. A reply goes out at most once: a crash after the send and before
+the step commits its turn fails the step without running it again.
 
 The live-to-inert projector carries the option only when the author set
 it, so a definition that does not set it keeps its definition hash.
