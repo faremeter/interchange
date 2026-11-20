@@ -8,7 +8,8 @@
 // decides the recipient: the turn's `passthrough` sender when one is set,
 // otherwise the active connector thread. When it returns no recipient, the
 // drain drops the reply and logs it. The drain composes when the agent
-// emits the reply, not when the turn starts. This module owns that loop so
+// emits the reply, not when the turn starts. `sendConnectorReply` sends one
+// reply, and the drain calls it for each event. This module owns that loop so
 // both the harness composition layer (`createHarness`) and the warm
 // workflow-host agent path drive replies through one implementation rather
 // than each keeping its own copy.
@@ -41,21 +42,20 @@ const logger = getLogger(["interchange", "harness", "reply-drain"]);
  */
 export type AgentEventStream = ReturnType<Agent["stream"]>;
 
-export interface ConnectorReplyDrainOpts {
-  /** The agent event stream to drain. Each `connector.reply` sends a reply. */
-  stream: AgentEventStream;
+export interface ConnectorReplySendOpts {
   /**
    * Produce the threading headers (`to`, `cc`, `inReplyTo`, `references`,
    * `subject`) for the reply. Returns `null` when the reply has no
-   * recipient; the drain then drops the reply without a send, logs it, and
-   * settles it as `ok` with no receipt. Throws when no thread is active;
-   * the throw is caught per reply and routed to `onSendFailed`.
+   * recipient; `sendConnectorReply` then drops the reply without a send,
+   * logs it, and settles it as `ok` with no receipt. Throws when no thread
+   * is active; `sendConnectorReply` catches the throw and settles the reply
+   * as failed in the `compose` phase.
    */
   composeReply: () => ConnectorReplyParts | null;
   /**
-   * Send the composed reply. The drain builds the `OutboundMessage` from
-   * `composeReply()`'s parts plus the reply content and a
-   * `conversation.message` type; the caller's `send` routes it to the
+   * Send the composed reply. `sendConnectorReply` builds the
+   * `OutboundMessage` from `composeReply()`'s parts plus the reply content
+   * and a `conversation.message` type; the caller's `send` routes it to the
    * transport / outbound bridge.
    */
   send: (message: OutboundMessage) => Promise<SendReceipt>;
@@ -64,13 +64,17 @@ export interface ConnectorReplyDrainOpts {
    * References chain the reply carried: `composeReply()`'s `references`, or
    * empty when the parts had none. May be synchronous (the in-process
    * router's `onReplySent`) or asynchronous (a durable store that persists
-   * the advanced state); the drain awaits it before composing the next
-   * reply.
+   * the advanced state); `sendConnectorReply` awaits it before it settles.
    */
   onReplySent: (
     receipt: SendReceipt,
     references: readonly string[],
   ) => void | Promise<void>;
+}
+
+export interface ConnectorReplyDrainOpts extends ConnectorReplySendOpts {
+  /** The agent event stream to drain. Each `connector.reply` sends a reply. */
+  stream: AgentEventStream;
   /**
    * Invoked when `composeReply`, `send`, or `onReplySent` throws for one
    * reply. A reply whose `onReplySent` threw already went out, and the
@@ -177,6 +181,49 @@ async function invokeAbsorbing(
 }
 
 /**
+ * Send one connector reply: compose the threading headers, send the reply
+ * with `content` through the transport, then report the receipt and the
+ * References the reply carried to `onReplySent`.
+ *
+ * Never throws. Returns the settlement of the reply:
+ *
+ * - `{ ok: true, receipt }` when the send acked and `onReplySent` finished.
+ * - `{ ok: true, receipt: null }` when `composeReply` returned `null`. The
+ *   function drops the reply without a send and logs it.
+ * - `{ ok: false, phase, cause }` when `composeReply`, `send`, or
+ *   `onReplySent` threw. The function logs the failure with its phase.
+ *   Before the `persist` phase, nothing went out and the connector thread
+ *   stays at its pre-send value. In the `persist` phase, the reply already
+ *   went out, and the connector thread holds whatever `onReplySent` changed
+ *   before it threw.
+ */
+export async function sendConnectorReply(
+  opts: ConnectorReplySendOpts,
+  content: string,
+): Promise<ReplySettlement> {
+  let phase: ReplyFailurePhase = "compose";
+  try {
+    const parts = opts.composeReply();
+    if (parts === null) {
+      logger.warn`Dropping connector reply: the message it answers names no reply address`;
+      return { ok: true, receipt: null };
+    }
+    phase = "send";
+    const receipt = await opts.send({
+      ...parts,
+      content,
+      type: "conversation.message",
+    });
+    phase = "persist";
+    await opts.onReplySent(receipt, parts.references ?? []);
+    return { ok: true, receipt };
+  } catch (cause) {
+    logger.error`Failed to send connector reply in its ${phase} phase: ${cause}`;
+    return { ok: false, phase, cause };
+  }
+}
+
+/**
  * Drive an agent's `connector.reply` events out through a transport. Returns
  * immediately with a handle; the drain runs in the background until the
  * stream ends or `stop()` is called.
@@ -261,37 +308,20 @@ export function driveConnectorReplies(
         if (event.type !== "connector.reply") continue;
         const content = event.data.content;
         replyChain = replyChain.then(async () => {
-          let phase: ReplyFailurePhase = "compose";
-          try {
-            const parts = opts.composeReply();
-            if (parts === null) {
-              logger.warn`Dropping connector reply: the message it answers names no reply address`;
-              recordSettlement({ ok: true, receipt: null });
-              return;
-            }
-            phase = "send";
-            const receipt = await opts.send({
-              ...parts,
-              content,
-              type: "conversation.message",
-            });
-            phase = "persist";
-            await opts.onReplySent(receipt, parts.references ?? []);
-            recordSettlement({ ok: true, receipt });
-          } catch (cause) {
-            // Before the `persist` phase the reply is dropped and the
-            // connector thread stays at its pre-send value; in it, the reply
-            // already went out. Surface the loss to `onSendFailed` in addition
-            // to the operator-facing log so programmatic consumers (retries,
-            // alerting) can observe what the log alone hides. Record the
-            // failure on the barrier too, so a per-turn caller awaiting this
-            // reply sees `ok: false` rather than treating it as sent.
-            logger.error`Failed to send connector reply in its ${phase} phase: ${cause}`;
-            if (opts.onSendFailed !== undefined) {
-              await invokeAbsorbing(opts.onSendFailed, cause, "onSendFailed");
-            }
-            recordSettlement({ ok: false, phase, cause });
+          const settlement = await sendConnectorReply(opts, content);
+          // Surface a failed reply to `onSendFailed` in addition to the
+          // operator-facing log so programmatic consumers (retries,
+          // alerting) can observe what the log alone hides. Record the
+          // failure on the barrier too, so a per-turn caller awaiting this
+          // reply sees `ok: false` rather than treating it as sent.
+          if (!settlement.ok && opts.onSendFailed !== undefined) {
+            await invokeAbsorbing(
+              opts.onSendFailed,
+              settlement.cause,
+              "onSendFailed",
+            );
           }
+          recordSettlement(settlement);
         });
       }
     } catch (cause) {

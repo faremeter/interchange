@@ -20,7 +20,7 @@ import {
   createConnectorRouter,
   type ConnectorReplyParts,
 } from "./connector-router";
-import { driveConnectorReplies } from "./reply-drain";
+import { driveConnectorReplies, sendConnectorReply } from "./reply-drain";
 
 function replyEvent(seq: number, content: string): InferenceEvent {
   return { type: "connector.reply", seq, data: { content } };
@@ -626,5 +626,141 @@ describe("driveConnectorReplies", () => {
         expect(settlement.phase).toBe("compose");
       }
     });
+  });
+});
+
+describe("sendConnectorReply", () => {
+  const PARTS: ConnectorReplyParts = {
+    to: "alice@example.com",
+    cc: [],
+    inReplyTo: "<parent@interchange>",
+    references: ["<root@interchange>", "<parent@interchange>"],
+  };
+  const RECEIPT: SendReceipt = {
+    messageId: "<child@interchange>",
+    status: "delivered",
+  };
+
+  test("sends the reply and reports the receipt and References", async () => {
+    const sent: OutboundMessage[] = [];
+    const reported: [SendReceipt, readonly string[]][] = [];
+
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => PARTS,
+        send: async (message) => {
+          sent.push(message);
+          return RECEIPT;
+        },
+        onReplySent: (receipt, references) => {
+          reported.push([receipt, references]);
+        },
+      },
+      "the reply body",
+    );
+
+    expect(settlement).toEqual({ ok: true, receipt: RECEIPT });
+    expect(sent).toEqual([
+      { ...PARTS, content: "the reply body", type: "conversation.message" },
+    ]);
+    expect(reported).toEqual([
+      [RECEIPT, ["<root@interchange>", "<parent@interchange>"]],
+    ]);
+  });
+
+  test("a reply with no recipient settles with no receipt and no send", async () => {
+    let sendCalled = false;
+    let onReplySentCalled = false;
+
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => null,
+        send: async () => {
+          sendCalled = true;
+          return RECEIPT;
+        },
+        onReplySent: () => {
+          onReplySentCalled = true;
+        },
+      },
+      "no one to answer",
+    );
+
+    expect(settlement).toEqual({ ok: true, receipt: null });
+    expect(sendCalled).toBe(false);
+    expect(onReplySentCalled).toBe(false);
+  });
+
+  test("a compose failure settles in the compose phase without a send", async () => {
+    const sentinel = new Error("no thread");
+    let sendCalled = false;
+
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => {
+          throw sentinel;
+        },
+        send: async () => {
+          sendCalled = true;
+          return RECEIPT;
+        },
+        onReplySent: () => undefined,
+      },
+      "reply",
+    );
+
+    expect(settlement).toEqual({
+      ok: false,
+      phase: "compose",
+      cause: sentinel,
+    });
+    expect(sendCalled).toBe(false);
+  });
+
+  test("a send failure settles in the send phase without onReplySent", async () => {
+    const sentinel = new Error("bridge rejected the send");
+    let onReplySentCalled = false;
+
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => PARTS,
+        send: async () => {
+          throw sentinel;
+        },
+        onReplySent: () => {
+          onReplySentCalled = true;
+        },
+      },
+      "reply",
+    );
+
+    expect(settlement).toEqual({ ok: false, phase: "send", cause: sentinel });
+    expect(onReplySentCalled).toBe(false);
+  });
+
+  test("an onReplySent failure after the send settles in the persist phase", async () => {
+    const sentinel = new Error("metadata write failed");
+    const sent: OutboundMessage[] = [];
+
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => PARTS,
+        send: async (message) => {
+          sent.push(message);
+          return RECEIPT;
+        },
+        onReplySent: async () => {
+          throw sentinel;
+        },
+      },
+      "reply",
+    );
+
+    expect(settlement).toEqual({
+      ok: false,
+      phase: "persist",
+      cause: sentinel,
+    });
+    expect(sent.length).toBe(1);
   });
 });

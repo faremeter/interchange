@@ -57,11 +57,12 @@ export type {
   RouteDecision,
 } from "./connector-router";
 
-export { driveConnectorReplies } from "./reply-drain";
+export { driveConnectorReplies, sendConnectorReply } from "./reply-drain";
 export type {
   AgentEventStream,
   ConnectorReplyDrain,
   ConnectorReplyDrainOpts,
+  ConnectorReplySendOpts,
   ReplyFailurePhase,
   ReplySettlement,
 } from "./reply-drain";
