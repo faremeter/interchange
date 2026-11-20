@@ -17,18 +17,51 @@ export type SidecarProvisionerSelection =
       readonly mismatches: Readonly<
         Record<string, readonly SidecarCapabilityMismatch[]>
       >;
-    };
+    }
+  | { readonly ok: false; readonly reason: "declined" };
 
-/** Selects one provisioner from the capability-matched candidates. */
+/** An ensure that failed for the probe or deployment being placed. */
+export type SidecarProvisionerAttempt = {
+  readonly provisionerId: string;
+  /**
+   * The provisioner's rejection code, or the Hub's own: `ensure_failed` when
+   * ensure threw, `ensure_outcome_unknown` when the Hub restarted during it,
+   * and `sidecar_reuse_rejected` when the Hub refused the sidecar it named.
+   */
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+};
+
+export type SidecarProvisionerChoiceContext = {
+  readonly purpose: "probe" | "deployment";
+  readonly tenantId: string;
+  /** The deployment's anchor run, also when its probe is being placed. */
+  readonly anchorRunId: string;
+  /** Aborts when the Hub stops waiting for the choice. */
+  readonly signal: AbortSignal;
+  /** Oldest first. Empty on the first choice. */
+  readonly attempts: readonly SidecarProvisionerAttempt[];
+};
+
+/**
+ * Selects one provisioner from the capability-matched candidates. The Hub
+ * asks again after each failed ensure, with that failure added to `attempts`.
+ * Returning a provisioner that already failed retries it; returning null
+ * fails the probe or deployment. State a chooser keeps belongs to one Hub
+ * process, and a choice the Hub could not act on is asked for again.
+ */
 export type SidecarProvisionerChooser = (
   candidates: readonly SidecarProvisioner[],
-) => SidecarProvisioner | Promise<SidecarProvisioner>;
+  context: SidecarProvisionerChoiceContext,
+) => SidecarProvisioner | null | Promise<SidecarProvisioner | null>;
 
 export type SidecarPluginRegistry = {
   /** Missing plugins return null so reconciliation can stop fail-closed. */
   getProvisioner(id: string): SidecarProvisioner | null;
   selectProvisioner(
     policy: EffectiveSidecarCapabilityPolicy,
+    context: SidecarProvisionerChoiceContext,
   ): Promise<SidecarProvisionerSelection>;
 };
 
@@ -38,14 +71,22 @@ export type CreateSidecarPluginRegistryOpts = {
   readonly chooser?: SidecarProvisionerChooser;
 };
 
+/**
+ * The first match in registration order. After a failed ensure it never moves
+ * to another provisioner: a probe fails, and a deployment retries the
+ * provisioner that failed if the failure was retryable.
+ */
 export function chooseFirstSidecarProvisioner(
   candidates: readonly SidecarProvisioner[],
-): SidecarProvisioner {
-  const first = candidates[0];
-  if (first === undefined) {
-    throw new Error("No matching sidecar provisioners are available");
-  }
-  return first;
+  { purpose, attempts }: SidecarProvisionerChoiceContext,
+): SidecarProvisioner | null {
+  const failed = attempts.at(-1);
+  if (failed === undefined) return candidates[0] ?? null;
+  if (purpose === "probe" || !failed.retryable) return null;
+  return (
+    candidates.find((candidate) => candidate.id === failed.provisionerId) ??
+    null
+  );
 }
 
 export function createSidecarPluginRegistry({
@@ -83,7 +124,7 @@ export function createSidecarPluginRegistry({
     getProvisioner(id) {
       return provisionersById.get(id) ?? null;
     },
-    async selectProvisioner(policy) {
+    async selectProvisioner(policy, context) {
       const mismatches: Record<string, readonly SidecarCapabilityMismatch[]> =
         {};
       const candidates: SidecarProvisioner[] = [];
@@ -101,7 +142,8 @@ export function createSidecarPluginRegistry({
       if (candidates.length === 0) {
         return { ok: false, reason: "no_match", mismatches };
       }
-      const provisioner = await chooser(candidates);
+      const provisioner = await chooser(candidates, context);
+      if (provisioner === null) return { ok: false, reason: "declined" };
       if (!candidates.includes(provisioner)) {
         throw new Error(
           "Sidecar provisioner chooser returned a provisioner outside the matching candidates",
@@ -110,6 +152,22 @@ export function createSidecarPluginRegistry({
       return { ok: true, provisioner };
     },
   };
+}
+
+export function formatProvisionerMismatches(
+  mismatches: Readonly<Record<string, readonly SidecarCapabilityMismatch[]>>,
+): string {
+  const details = Object.entries(mismatches)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([provisionerId, failures]) =>
+      failures.map(
+        ({ capability, expected, actual }) =>
+          `${provisionerId}: ${capability} must be ${expected}, was ${actual}`,
+      ),
+    );
+  return details.length === 0
+    ? "No sidecar provisioners are registered"
+    : `No sidecar provisioner satisfies the deployment (${details.join("; ")})`;
 }
 
 function validateId(id: string): void {

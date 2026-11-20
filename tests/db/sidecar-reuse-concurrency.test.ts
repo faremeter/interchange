@@ -440,6 +440,7 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
               return store.bindReplacementSidecar({
                 allocationId: "holder",
                 generation: 1,
+                binding: BINDING,
                 sidecarId: "sidecar-replacement",
                 tokenHashSha256: new TextEncoder().encode("replacement"),
                 adapterManifestDigest: MANIFEST_DIGEST,

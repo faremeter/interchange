@@ -422,6 +422,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const reconciler = createSidecarAllocationReconciler({
         allocationStore: store,
         router: before.router,
+        resolvePlacementPolicy: async () => ({
+          tenantPolicies: [],
+          workflowRules: [],
+        }),
         plugins,
         hubWebSocketUrl: "ws://localhost",
       });
@@ -444,6 +448,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
             getSidecarInventory: router.getSidecarInventory,
           }),
           router,
+          resolvePlacementPolicy: async () => ({
+            tenantPolicies: [],
+            workflowRules: [],
+          }),
           plugins,
           hubWebSocketUrl: "ws://localhost",
         });
@@ -532,6 +540,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         reconciler = createSidecarAllocationReconciler({
           allocationStore: store,
           router,
+          resolvePlacementPolicy: async () => ({
+            tenantPolicies: [],
+            workflowRules: [],
+          }),
           plugins: createSidecarPluginRegistry({
             provisioners: [
               {
@@ -709,6 +721,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ).toBe(true);
         const bound = await store.bindReplacementSidecar({
           ...cleanupTarget,
+          binding: {
+            provisionerId: "test",
+            provisionerApiVersion: 2,
+            provisionerBindingFingerprint: "test:v1",
+          },
           sidecarId: "replacement-sidecar",
           tokenHashSha256: await sha256("replacement-token"),
           connectDeadline: new Date(Date.now() + 120_000),
@@ -810,6 +827,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const reconciler = createSidecarAllocationReconciler({
         allocationStore: store,
         router: f.router,
+        resolvePlacementPolicy: async () => ({
+          tenantPolicies: [],
+          workflowRules: [],
+        }),
         plugins: createSidecarPluginRegistry({
           provisioners: [
             {
