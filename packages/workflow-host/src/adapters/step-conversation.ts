@@ -1,22 +1,23 @@
 // The connector conversation one step turn drives, bound to one durable
 // conversation store (design §3c). The step invoker runs each turn through
-// it: the turn start, the inbound mail seed, the approval park, and the
-// mirror to the workflow-run substrate after the turn. The reply drain reads
-// the store to address each reply, sends it through the outbound bridge, and
+// it: the turn start, the inbound mail seed, the approval park, the reply,
+// and the mirror to the workflow-run substrate after the turn. The step
+// invoker sends each reply from the turn that produced it: it reads the
+// store to address the reply, sends it through the outbound bridge, and
 // advances the connector thread from the receipt.
 
-import {
-  driveConnectorReplies,
-  type AgentEventStream,
-  type ConnectorReplyDrain,
-  type ConnectorReplyParts,
-} from "@intx/harness";
+import type { ConnectorReplyParts } from "@intx/harness";
 import type {
   InboundMessage,
   OutboundMessage,
   SendReceipt,
 } from "@intx/types/runtime";
 
+/**
+ * The connector conversation of one step. A turn that has a conversation
+ * sends its reply through it: the step invoker composes, sends, and records
+ * the reply before the turn completes.
+ */
 export interface StepConversation {
   /**
    * Start a connector turn. `turn.resume` is the correlation id of the gate
@@ -43,9 +44,9 @@ export interface StepConversation {
    * resumes a parked turn whose input was mail.
    */
   turnAnswersMail(): boolean;
-  /** The reply drain's threading headers for the next reply. */
+  /** The threading headers for the next reply. */
   composeReply(): ConnectorReplyParts | null;
-  /** Advance the connector thread after the reply drain sent a reply. */
+  /** Advance the connector thread after the step sent a reply. */
   onReplySent(
     receipt: SendReceipt,
     references: readonly string[],
@@ -54,22 +55,4 @@ export interface StepConversation {
   send(message: OutboundMessage): Promise<SendReceipt>;
   /** Mirror the conversation to the workflow-run substrate. */
   settle(): Promise<void>;
-}
-
-/**
- * Drive the `connector.reply` events on `stream` out through `conversation`:
- * compose each reply from the conversation, send it, then advance the
- * connector thread from the receipt.
- */
-export function driveStepConversationReplies(
-  conversation: StepConversation,
-  stream: AgentEventStream,
-): ConnectorReplyDrain {
-  return driveConnectorReplies({
-    stream,
-    composeReply: () => conversation.composeReply(),
-    send: (message) => conversation.send(message),
-    onReplySent: (receipt, references) =>
-      conversation.onReplySent(receipt, references),
-  });
 }

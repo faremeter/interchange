@@ -563,9 +563,9 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
             seedInbound: async () => undefined,
             parkTurn: async () => undefined,
             turnAnswersMail: () => false,
-            composeReply: () => {
-              throw new Error("composeReply() not used");
-            },
+            // The test checks the conversation, not the mail, so a reply
+            // has no recipient and is not sent.
+            composeReply: () => null,
             onReplySent: async () => {
               throw new Error("onReplySent() not used");
             },

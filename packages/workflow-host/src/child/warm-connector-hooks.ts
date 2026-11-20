@@ -7,18 +7,13 @@
 // builder filed the durable store under, so each hook resolves the right
 // per-agent store.
 
-import type { AgentEventStream, ConnectorReplyDrain } from "@intx/harness";
 import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
 
-import {
-  driveStepConversationReplies,
-  type StepConversation,
-} from "../adapters/step-conversation";
+import type { StepConversation } from "../adapters/step-conversation";
 import type { DurableConversationRegistry } from "../conversation-state";
 
 export type WarmConnectorHooks = {
   warmConversation: (key: string) => StepConversation;
-  driveReplies: (key: string, stream: AgentEventStream) => ConnectorReplyDrain;
 };
 
 /**
@@ -46,14 +41,5 @@ export function createWarmConnectorHooks(
     // settles.
     settle: async () => registry.get(key).mirrorToSubstrate(),
   });
-  return {
-    warmConversation,
-    // Connector reply drain. Established once per warm agent over its
-    // lifetime stream; the returned drain handle carries the lifetime `done`
-    // promise the step invoker folds into the warm entry so eviction drains
-    // it, plus the per-turn settle barrier the warm step gates each reply
-    // turn on.
-    driveReplies: (key, stream) =>
-      driveStepConversationReplies(warmConversation(key), stream),
-  };
+  return { warmConversation };
 }

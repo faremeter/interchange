@@ -9,10 +9,10 @@
 // otherwise the active connector thread. When it returns no recipient, the
 // drain drops the reply and logs it. The drain composes when the agent
 // emits the reply, not when the turn starts. `sendConnectorReply` sends one
-// reply, and the drain calls it for each event. This module owns that loop so
-// both the harness composition layer (`createHarness`) and the warm
-// workflow-host agent path drive replies through one implementation rather
-// than each keeping its own copy.
+// reply, and the drain calls it for each event. The harness composition
+// layer (`createHarness`) uses the drain. A caller that sends each reply
+// from its own turn, such as the workflow-host step invoker, calls
+// `sendConnectorReply` directly.
 //
 // The loop subscribes an agent event stream and serializes every reply
 // through a single chain: two replies fired in quick succession do not
@@ -97,8 +97,7 @@ export interface ConnectorReplyDrainOpts extends ConnectorReplySendOpts {
 /**
  * The phase in which a reply failed:
  *
- * - `compose`: `composeReply` threw, or the drain stopped before it reached
- *   the reply. Nothing was sent.
+ * - `compose`: `composeReply` threw. Nothing was sent.
  * - `send`: `send` threw. The transport did not ack the reply.
  * - `persist`: `onReplySent` threw after the send acked. The reply went out,
  *   but `onReplySent` did not finish recording it.
@@ -106,15 +105,13 @@ export interface ConnectorReplyDrainOpts extends ConnectorReplySendOpts {
 export type ReplyFailurePhase = "compose" | "send" | "persist";
 
 /**
- * The settled outcome of one reply the drain processed. `ok` distinguishes a
- * durably-sent reply (the send acked and `onReplySent` advanced the thread)
- * from a failed one (compose, send, or `onReplySent` threw). A caller gating a
- * side effect on the reply reaching the transport awaits the barrier and acts
- * only on `ok: true`; `ok: false` carries the failure `phase` and `cause` so
- * the caller can surface it rather than treat the reply as sent, and can tell
- * a reply that went out from one that did not. A reply that `composeReply`
- * gave no recipient settles as `ok: true` with a `null` receipt: nothing was
- * sent, and nothing is left to send.
+ * The outcome of one reply that `sendConnectorReply` returns. `ok: true`
+ * means the send acked and `onReplySent` advanced the thread. `ok: false`
+ * means `composeReply`, `send`, or `onReplySent` threw. It carries the
+ * failure `phase` and `cause`, so the caller can surface the failure and can
+ * tell a reply that went out from one that did not. A reply that
+ * `composeReply` gave no recipient settles as `ok: true` with a `null`
+ * receipt: nothing was sent, and nothing is left to send.
  */
 export type ReplySettlement =
   | { readonly ok: true; readonly receipt: SendReceipt | null }
@@ -138,34 +135,6 @@ export interface ConnectorReplyDrain {
    * is the cooperative early exit for a caller tearing down before then.
    */
   stop(): void;
-  /**
-   * The count of replies that have SETTLED so far -- sent-and-acked or failed.
-   * Monotonic. A per-turn caller captures this BEFORE the `agent.send` that may
-   * produce a reply, then, for a turn that did produce a `connector.reply`,
-   * awaits `waitForReplyAfter(captured)` to block until the next reply after
-   * the capture settles, which is this turn's reply only under the condition
-   * that `waitForReplyAfter` states. The capture-before-send ordering is
-   * required: the agent resolves
-   * `agent.send` in the same synchronous step that pushes the `connector.reply`
-   * onto this drain's stream, so the reply is not yet enqueued when `send`
-   * resolves -- a post-send snapshot would miss it.
-   */
-  replySeq(): number;
-  /**
-   * Resolve once more than `n` replies have settled -- i.e. the reply at index
-   * `n` (the `(n + 1)`th reply the drain processed) has settled -- with that
-   * reply's settlement. The drain is FIFO, so a turn that captured `n` from
-   * `replySeq()` before its send and produced exactly one reply awaits reply
-   * `n` here. That is correct only if no reply of another turn settles between
-   * the capture and this turn's reply. A resume after a gate timeout can reply
-   * in that window, and then this resolves with that other turn's reply.
-   *
-   * When the drain loop exits (stream end, `stop()`, or an abnormal
-   * termination) before reply `n` settles, resolves with a failure settlement
-   * rather than hanging, so a caller awaiting a reply that will never arrive
-   * fails its turn instead of blocking forever.
-   */
-  waitForReplyAfter(n: number): Promise<ReplySettlement>;
 }
 
 async function invokeAbsorbing(
@@ -238,69 +207,6 @@ export function driveConnectorReplies(
   // thread before composing its own.
   let replyChain: Promise<void> = Promise.resolve();
 
-  // Per-turn settle barrier. `settlements[i]` is the outcome of the `i`th reply
-  // the drain processed; `settlements.length` is the monotonic settled count a
-  // caller snapshots through `replySeq()`. Waiters block until the settled
-  // count passes their target index, then resolve with that reply's outcome. A
-  // reply is recorded here on BOTH success and failure so a waiter never hangs;
-  // the outcome's `ok` tells the caller which happened.
-  const settlements: ReplySettlement[] = [];
-  let terminated = false;
-  type Waiter = { target: number; resolve: (s: ReplySettlement) => void };
-  let waiters: Waiter[] = [];
-
-  const terminalSettlement = (): ReplySettlement => ({
-    ok: false,
-    phase: "compose",
-    cause: new Error(
-      "connector reply drain terminated before the reply was sent",
-    ),
-  });
-
-  function settlementAt(index: number): ReplySettlement {
-    const settlement = settlements[index];
-    if (settlement === undefined) {
-      // Reached only if a waiter resolves for an index the drain never
-      // recorded -- an internal invariant break, surfaced loudly rather than
-      // handed back as a silent fallback.
-      throw new Error(
-        `connector reply drain: settlement ${String(index)} missing though ` +
-          `${String(settlements.length)} replies have settled`,
-      );
-    }
-    return settlement;
-  }
-
-  function recordSettlement(settlement: ReplySettlement): void {
-    settlements.push(settlement);
-    const settledCount = settlements.length;
-    const stillWaiting: Waiter[] = [];
-    for (const waiter of waiters) {
-      if (settledCount > waiter.target) {
-        waiter.resolve(settlementAt(waiter.target));
-      } else {
-        stillWaiting.push(waiter);
-      }
-    }
-    waiters = stillWaiting;
-  }
-
-  function releaseWaitersOnTermination(): void {
-    terminated = true;
-    const outstanding = waiters;
-    waiters = [];
-    for (const waiter of outstanding) {
-      // A waiter whose reply settled before teardown gets its real outcome; one
-      // whose reply never arrived (the drain stopped first) gets a terminal
-      // failure so the caller fails its turn rather than blocking.
-      waiter.resolve(
-        settlements.length > waiter.target
-          ? settlementAt(waiter.target)
-          : terminalSettlement(),
-      );
-    }
-  }
-
   const done = (async () => {
     try {
       for await (const event of opts.stream) {
@@ -311,9 +217,7 @@ export function driveConnectorReplies(
           const settlement = await sendConnectorReply(opts, content);
           // Surface a failed reply to `onSendFailed` in addition to the
           // operator-facing log so programmatic consumers (retries,
-          // alerting) can observe what the log alone hides. Record the
-          // failure on the barrier too, so a per-turn caller awaiting this
-          // reply sees `ok: false` rather than treating it as sent.
+          // alerting) can observe what the log alone hides.
           if (!settlement.ok && opts.onSendFailed !== undefined) {
             await invokeAbsorbing(
               opts.onSendFailed,
@@ -321,7 +225,6 @@ export function driveConnectorReplies(
               "onSendFailed",
             );
           }
-          recordSettlement(settlement);
         });
       }
     } catch (cause) {
@@ -334,12 +237,9 @@ export function driveConnectorReplies(
         await invokeAbsorbing(opts.onTerminated, cause, "onTerminated");
       }
     } finally {
-      // Drain the pending reply before the loop exits so its settlement is
-      // recorded and a caller awaiting `done` sees a settled state. Then
-      // release any barrier waiter still blocked on a reply that will never
-      // arrive, so a per-turn caller cannot hang past teardown.
+      // Drain the pending reply before the loop exits so a caller awaiting
+      // `done` sees a settled state.
       await replyChain;
-      releaseWaitersOnTermination();
     }
   })();
 
@@ -347,20 +247,6 @@ export function driveConnectorReplies(
     done,
     stop() {
       stopped = true;
-    },
-    replySeq() {
-      return settlements.length;
-    },
-    waitForReplyAfter(n: number): Promise<ReplySettlement> {
-      if (settlements.length > n) {
-        return Promise.resolve(settlementAt(n));
-      }
-      if (terminated) {
-        return Promise.resolve(terminalSettlement());
-      }
-      return new Promise<ReplySettlement>((resolve) => {
-        waiters.push({ target: n, resolve });
-      });
     },
   };
 }

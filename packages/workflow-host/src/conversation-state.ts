@@ -302,8 +302,8 @@ export interface DurableConversationStore {
    * `composeReply`): to the turn's passthrough sender when a passthrough
    * seed set one, otherwise on the active connector thread. Returns `null`
    * when the passthrough sender has no address. Throws
-   * `NoActiveConnectorThreadError` when neither exists. The warm mail
-   * loop's reply drain reads this to address its outbound reply.
+   * `NoActiveConnectorThreadError` when neither exists. The warm step
+   * invoker reads this to address the reply of its turn.
    */
   composeReply(): ConnectorReplyParts | null;
   /**
@@ -315,7 +315,7 @@ export interface DurableConversationStore {
    * unchanged. Then flushes the advanced connector state into the local
    * store's metadata the same way `seedInbound` does, so the parent
    * persists across turns and across a child respawn. Called by the warm
-   * mail loop's reply drain after its outbound send settles. Throws
+   * step invoker after the outbound send of its turn's reply settles. Throws
    * `NoActiveConnectorThreadError` when no thread is active -- advancing
    * outbound state has no meaning without a seeded thread. A metadata
    * write failure surfaces.
@@ -824,8 +824,8 @@ export async function createDurableConversationStore(
   // outbound advance touches only connectorState. A reply to a passthrough
   // sender leaves the thread unchanged, so the flush writes the same
   // connector state again. `onReplySent` throws when no
-  // thread is active, which surfaces to the reply drain's failure callback
-  // rather than persisting a phantom advance.
+  // thread is active, which fails the reply's settlement in its persist
+  // phase rather than persisting a phantom advance.
   async function runReplySent(
     receipt: SendReceipt,
     references: readonly string[],

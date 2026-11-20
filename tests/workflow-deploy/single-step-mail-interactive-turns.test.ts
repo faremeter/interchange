@@ -23,7 +23,7 @@
 // The scripted mock drives that loop deterministically: on each turn it returns
 // a plain text reply (no tool call, so the step produces an OUTPUT and the
 // runtime re-arms; NO `mail_wait`, so the run does not stay inside one turn).
-// Each reply is drained through the warm agent's connector reply path, which
+// Each turn sends its reply through the warm agent's connector reply path, which
 // composes the outbound `In-Reply-To`/`To`/`Cc` from the durable connector
 // thread the `seedInbound` hook advanced -- so the delivered wire headers are a
 // faithful proof of which mail each turn's reply threaded onto.
@@ -98,8 +98,8 @@ const MAIL4_BODY = "Turn four owner body marker mail-int-7c4e21.";
 
 // A plain text reply per turn: the step produces an OUTPUT (so the unbounded
 // step re-arms on an input park) and calls no tool (so it never stays inside a
-// single turn the way `mail_wait` would). The connector reply drain threads
-// each reply from the durable connector thread seeded on that turn's mail.
+// single turn the way `mail_wait` would). The step invoker threads each reply
+// from the durable connector thread seeded on that turn's mail.
 const TURN_REPLY = "Acknowledged; replying on this turn.";
 
 const ALL_TOOL_NAMES = [
@@ -409,7 +409,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Each mail was serviced as exactly ONE turn: exactly one delivered
       // outbound reply threads onto each inbound. A mail double-dispatched as
-      // two turns (the failure this test guards against) would drain a second
+      // two turns (the failure this test guards against) would send a second
       // reply onto the same inbound.
       const repliesThreadedOn = (inReplyTo: string): number =>
         env.hub.outboundMail.filter(

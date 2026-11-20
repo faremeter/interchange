@@ -18,8 +18,8 @@
 //
 // Why the reply threads onto the inbound: the warm agent's connector thread
 // opens on the first inbound (its `Message-Id` becomes the thread's
-// `lastMessageId`), and the reply drain composes the outbound `inReplyTo` from
-// that thread state. The outbound send path stamps it into the wire
+// `lastMessageId`), and the step invoker composes the outbound `inReplyTo`
+// from that thread state. The outbound send path stamps it into the wire
 // `In-Reply-To` header. So the reply's `In-Reply-To` must equal the inbound's
 // `Message-Id`; this test fires a mail with a distinctive id and asserts that
 // exact equality on the delivered bytes.
@@ -208,7 +208,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
 
-      // The reply drained back out as a signed outbound send; wait for the
+      // The reply went back out as a signed outbound send; wait for the
       // delivered `mail.outbound` frame the hub retained (raw signed MIME).
       await waitFor(
         () =>

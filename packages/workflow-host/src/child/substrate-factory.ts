@@ -2717,9 +2717,10 @@ export function createSidecarSubstrateFactory(
     // own the rest of the lifecycle.
     // Connector hooks (design §3c). When the deployment is warm-kept, the
     // durable store drives the warm agent's connector thread: the seed, the
-    // turn start and park, the reply drain, and the run-boundary mirror.
-    // Replies go through the outbound bridge (`bridge.submit`, the same
-    // signed-send path the agent's own supervisor-backed transport uses).
+    // turn start and park, the reply that each turn sends, and the
+    // run-boundary mirror. Replies go through the outbound bridge
+    // (`bridge.submit`, the same signed-send path the agent's own
+    // supervisor-backed transport uses).
     // Absent for a multi-step deploy (no durable registry).
     const warmConnectorHooks =
       durableConversation !== undefined

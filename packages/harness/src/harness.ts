@@ -332,8 +332,7 @@ export async function createHarness<EnvReq extends MailEnv>(
     // serialization (a second reply waits for the first's receipt to
     // advance the router before composing its own), per-reply failure
     // surfacing to `onReplySendFailed`, and abnormal-termination
-    // surfacing to `onReplyDrainTerminated`. The warm workflow-host
-    // path drives replies through the same helper.
+    // surfacing to `onReplyDrainTerminated`.
     const replyDrain = driveConnectorReplies({
       stream: agent.stream(),
       composeReply: () => connectorRouter.composeReply(),
