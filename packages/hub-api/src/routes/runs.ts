@@ -20,6 +20,7 @@ import { runPrincipalActiveKeySql } from "@intx/db";
 import { getLogger } from "@intx/log";
 import type { MailSendAuthorizer } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
+import { isTopLevelStepPlaceKey } from "@intx/types/step-place";
 import { extractPartByPath } from "@intx/mime";
 
 import {
@@ -1162,6 +1163,11 @@ export function createRunRoutes({
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
         return errorResponse(c, "not_found", "Run not found");
+      }
+      // A nested step's state lives under the top-level run at its key, but
+      // only the top-level run's own steps are exported.
+      if (!isTopLevelStepPlaceKey(stepId)) {
+        return errorResponse(c, "not_found", "The step has no committed state");
       }
       if (repoStore === null) {
         return errorResponse(

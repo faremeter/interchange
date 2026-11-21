@@ -413,6 +413,13 @@ multi-step durability model:
   turn boundaries, once per turn. The live stable run reads that state before
   delivering the next message, so multi-turn continuity survives child
   respawns without creating another top-level run.
+- **Where step state lives.** A step's conversation state lives under the
+  deployment's top-level run at the step's key,
+  `runs/<topLevelRunId>/steps/<key>/`, whichever run the step runs in. The
+  key is the step's path of step ids joined with `.`, plus `[i]` for a map
+  item, so a top-level step's key is its step id. A cold step stamps the
+  state with the invocation that wrote it (its run, step id and attempt). An
+  invocation that did not write the state starts over from the seed.
 - **Kill+respawn mid-conversation.** If the child dies mid-turn, the in-flight
   run's log lacks a terminal event; `discoverInFlightRuns`
   (`packages/workflow-host/src/child/run-child.ts`) finds it on respawn and

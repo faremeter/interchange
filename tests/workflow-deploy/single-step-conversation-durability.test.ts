@@ -586,6 +586,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         workflowRunRepoId,
         workflowRunRef: WORKFLOW_RUN_REF,
         principal,
+        topLevelRunId: DEPLOYMENT_ID,
         invokeStep,
         actionCredentials: () => unavailableActionCredentials,
         spawnChild: async () => createTerminalChildHandle("completed"),

@@ -300,6 +300,12 @@ export interface RunWorkflowChildBindings {
    */
   principal: Principal;
   /**
+   * The deployment's one addressable top-level run. Every step's durable
+   * state is filed under it, so it is the only run the child may discover
+   * in flight as a top-level run.
+   */
+  topLevelRunId: string;
+  /**
    * Step-invoker callback the runtime body invokes per step. The
    * shape is the workflow-runtime `StepInvoker` widened with an
    * `onEvent` slot so the harness can emit `InferenceEvent` frames
@@ -953,6 +959,16 @@ export async function runWorkflowChild(
     repoId: opts.bindings.workflowRunRepoId,
     runtimeRepoStore,
   });
+  // Every step's durable state is filed under the deployment's top-level run
+  // at the key of the step's place, so a second top-level run would share
+  // the state of every step it runs.
+  for (const run of discovered) {
+    if (run.runId !== opts.bindings.topLevelRunId) {
+      throw new Error(
+        `workflow-child: discovered in-flight top-level run ${run.runId}, but the deployment's top-level run is ${opts.bindings.topLevelRunId}; step state is filed under the one top-level run, so the child cannot resume another`,
+      );
+    }
+  }
   const resumedRunIds: string[] = [];
   // One-driver-per-run claim. A runId present here is already being
   // driven by a live `runtimeRun` in this process (a resume below, or an

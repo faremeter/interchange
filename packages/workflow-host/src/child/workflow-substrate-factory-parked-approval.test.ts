@@ -3,8 +3,9 @@
 //
 // Two layouts, verified against the production read helpers:
 //   - COLD (multi-step): the snapshot lives in the step's committed state in
-//     the workflow-run substrate, stamped with the attempt that parked; the
-//     read reconstructs it and ignores another attempt's state. A step that
+//     the workflow-run substrate, under the top-level run at the key of the
+//     step's place, stamped with the invocation that parked; the read
+//     reconstructs it and ignores another invocation's state. A step that
 //     parked before cold step state was committed is read from its local
 //     per-attempt store instead.
 //   - WARM (single-step): the snapshot lives in the durable conversation
@@ -35,6 +36,7 @@ import {
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import { signalName } from "@intx/types/signals";
+import { stepPlaceKey, type StepPlace } from "@intx/types/step-place";
 import {
   childWorkflow,
   createInMemoryBlobSubstrate,
@@ -161,14 +163,16 @@ const testSigner = (payload: string): Promise<string> =>
   Promise.resolve(`sig:${payload.length}`);
 
 /**
- * Park attempt `attempt` of step "s" in `runId` the way the cold path does:
- * its durable store commits the pending operations to the step's state.
+ * Park attempt `attempt` of step "s" in `runId`, at `stepPath`, the way the
+ * cold path does: its durable store commits the pending operations to the
+ * state of the step's place under the top-level run.
  */
 async function parkColdStep(
   substrate: RepoStore,
   runId: string,
   attempt: number,
   pendingOperations: PendingOperation[],
+  stepPath: readonly string[] = ["s"],
 ): Promise<void> {
   const store = await createDurableConversationStore({
     localStoreDir: await makeTempDir(),
@@ -177,9 +181,12 @@ async function parkColdStep(
     workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
     workflowRunRef: WORKFLOW_RUN_REF,
     principal: PRINCIPAL,
-    runId,
-    stepId: "s",
-    lifetime: { kind: "attempt", attempt },
+    runId: RUN_ID,
+    stepId: stepPlaceKey({ stepPath }),
+    lifetime: {
+      kind: "invocation",
+      invocation: { runId, stepId: "s", attempt },
+    },
     mailboxAddress: "agent@example.com",
   });
   await store.restoreFromSubstrate();
@@ -198,9 +205,11 @@ describe("readColdParkedApprovalSnapshot", () => {
       substrate: await createSubstrate(dataDir),
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       ...COMMITTED_READS,
+      topLevelRunId: RUN_ID,
       runId: "run-1",
       stepId: "s",
       attempt: 1,
+      place: { stepPath: ["s"] },
       correlationId,
     };
   }
@@ -323,17 +332,32 @@ describe("readWarmParkedApprovalSnapshot", () => {
 // re-registration enumeration. Both project the same durable store; these pin the
 // enumeration variant returns every parked op, not just one matched by correlationId.
 describe("readColdParkedPendingOperations", () => {
-  async function coordinate(runId: string, attempt: number) {
+  async function coordinate(
+    runId: string,
+    attempt: number,
+    place: StepPlace = { stepPath: ["s"] },
+  ) {
     const dataDir = await makeTempDir();
     return {
       dataDir,
       substrate: await createSubstrate(dataDir),
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       ...COMMITTED_READS,
+      topLevelRunId: RUN_ID,
       runId,
       stepId: "s",
       attempt,
+      place,
     };
+  }
+
+  /** The committed state of the key of `at`'s place, whatever its stamp. */
+  function readCommitted(at: Awaited<ReturnType<typeof coordinate>>) {
+    return readStepState({
+      ...at,
+      runId: at.topLevelRunId,
+      stepId: stepPlaceKey(at.place),
+    });
   }
 
   /**
@@ -366,6 +390,44 @@ describe("readColdParkedPendingOperations", () => {
     ]);
 
     expect(await readColdParkedPendingOperations(at)).toEqual([]);
+  });
+
+  test("reads a body step's park from the key of its place", async () => {
+    const stepPath = ["section", "s"];
+    const at = await coordinate("run-body-1", 1, { stepPath });
+    await parkColdStep(
+      at.substrate,
+      "run-body-1",
+      1,
+      [pendingApproval("corr-1", snapshot)],
+      stepPath,
+    );
+
+    expect(await readColdParkedPendingOperations(at)).toEqual([
+      pendingApproval("corr-1", snapshot),
+    ]);
+    expect(
+      await readColdParkedPendingOperations(
+        await coordinate("run-body-1", 1, { stepPath: ["other", "s"] }),
+      ),
+    ).toEqual([]);
+  });
+
+  test("ignores a park another invocation of the same place committed", async () => {
+    const stepPath = ["section", "s"];
+    const at = await coordinate("run-body-2", 1, { stepPath });
+    await parkColdStep(
+      at.substrate,
+      "run-body-1",
+      1,
+      [pendingApproval("corr-1", snapshot)],
+      stepPath,
+    );
+
+    expect(await readColdParkedPendingOperations(at)).toEqual([]);
+    expect(
+      await readColdParkedApprovalSnapshot({ ...at, correlationId: "corr-1" }),
+    ).toBeUndefined();
   });
 
   test("reads a park that predates committed step state from the local store", async () => {
@@ -401,9 +463,12 @@ describe("readColdParkedPendingOperations", () => {
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      runId: at.runId,
-      stepId: at.stepId,
-      lifetime: { kind: "attempt", attempt: at.attempt },
+      runId: at.topLevelRunId,
+      stepId: stepPlaceKey(at.place),
+      lifetime: {
+        kind: "invocation",
+        invocation: { runId: at.runId, stepId: at.stepId, attempt: at.attempt },
+      },
       mailboxAddress: "agent@example.com",
     });
     await store.restoreFromSubstrate();
@@ -494,9 +559,12 @@ describe("readColdParkedPendingOperations", () => {
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      runId: at.runId,
-      stepId: at.stepId,
-      lifetime: { kind: "attempt", attempt: at.attempt },
+      runId: at.topLevelRunId,
+      stepId: stepPlaceKey(at.place),
+      lifetime: {
+        kind: "invocation",
+        invocation: { runId: at.runId, stepId: at.stepId, attempt: at.attempt },
+      },
       mailboxAddress: "agent@example.com",
     });
     // The host is lost at the restore's second write, whichever file it is.
@@ -612,9 +680,13 @@ describe("readColdParkedPendingOperations", () => {
           correlationId: "corr-2",
         }),
       ).toEqual(snapshot);
-      const committed = await readStepState(at);
+      const committed = await readCommitted(at);
       expect(committed?.turns).toEqual([turn("ask"), turn("approved")]);
-      expect(committed?.attempt).toBe(1);
+      expect(committed?.invocation).toEqual({
+        runId: "run-1",
+        stepId: "s",
+        attempt: 1,
+      });
     });
 
     test("writes nothing when the committed state already holds the park", async () => {
@@ -647,12 +719,38 @@ describe("readColdParkedPendingOperations", () => {
 
       await persist(at, "corr-2");
 
-      const committed = await readStepState(at);
-      expect(committed?.attempt).toBe(2);
+      const committed = await readCommitted(at);
+      expect(committed?.invocation?.attempt).toBe(2);
       expect(committed?.turns).toEqual([turn("retry")]);
       expect(committed?.pendingOperations).toEqual([
         pendingApproval("corr-2", snapshot),
       ]);
+    });
+
+    test("commits a body step's park under the key of its place", async () => {
+      const stepPath = ["section", "s"];
+      const at = await coordinate("run-body-1", 1, { stepPath });
+      await runColdTurn(
+        at,
+        [turn("ask")],
+        [pendingApproval("corr-1", snapshot)],
+        "crashed",
+      );
+
+      await persist(at, "corr-1");
+
+      const committed = await readCommitted(at);
+      expect(committed?.pendingOperations).toEqual([
+        pendingApproval("corr-1", snapshot),
+      ]);
+      expect(committed?.invocation).toEqual({
+        runId: "run-body-1",
+        stepId: "s",
+        attempt: 1,
+      });
+      expect(
+        await readStepState({ ...at, runId: "run-body-1", stepId: "s" }),
+      ).toBeNull();
     });
 
     test("fails without creating a store when no copy holds the park", async () => {
@@ -786,6 +884,7 @@ describe("createParkedApprovalHooks", () => {
       ...COMMITTED_READS,
       signer: testSigner,
       mailboxAddress: "agent@example.com",
+      topLevelRunId: RUN_ID,
       warmRunId: RUN_ID,
     });
     return { substrate, hooks };
@@ -824,9 +923,13 @@ describe("createParkedApprovalHooks", () => {
     "%s reads its parks from its cold step state",
     async (_name, runId, stepPath) => {
       const { substrate, hooks } = await warmDeployment();
-      await parkColdStep(substrate, runId, 1, [
-        pendingApproval("corr-cold", snapshot),
-      ]);
+      await parkColdStep(
+        substrate,
+        runId,
+        1,
+        [pendingApproval("corr-cold", snapshot)],
+        stepPath,
+      );
       const at = { runId, stepId: "s", attempt: 1, place: { stepPath } };
 
       expect(
@@ -907,6 +1010,7 @@ describe("createParkedApprovalHooks", () => {
       ...COMMITTED_READS,
       signer: testSigner,
       mailboxAddress: "agent@example.com",
+      topLevelRunId: RUN_ID,
       warmRunId: RUN_ID,
     });
     const invokeStep: StepInvoker = async (req) =>
@@ -992,9 +1096,13 @@ describe("createParkedApprovalHooks", () => {
     const bodyLog = await beforePark(childRunId);
     stop.abort();
     await first.complete;
-    await parkColdStep(substrate, childRunId, 1, [
-      pendingApproval("corr-1", snapshot),
-    ]);
+    await parkColdStep(
+      substrate,
+      childRunId,
+      1,
+      [pendingApproval("corr-1", snapshot)],
+      ["spawn", "s"],
+    );
 
     const repo = createInMemoryRepoStore();
     await repo.appendBatch(childRunId, bodyLog);

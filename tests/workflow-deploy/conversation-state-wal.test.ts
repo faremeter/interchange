@@ -180,6 +180,17 @@ function unvalidatedSubstrate(h: Harness): RepoStore {
   });
 }
 
+/** The lifetime of attempt `attempt` of step `STEP_ID` in run `runId`. */
+function invocation(
+  attempt: number,
+  runId = RUN_ID,
+): DurableConversationLifetime {
+  return {
+    kind: "invocation",
+    invocation: { runId, stepId: STEP_ID, attempt },
+  };
+}
+
 async function makeStore(
   h: Harness,
   localDir: string,
@@ -940,10 +951,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 describe("durable conversation store attempt-scoped local store", () => {
   let h: Harness;
   let localDir: string;
-  const attemptOne: DurableConversationLifetime = {
-    kind: "attempt",
-    attempt: 1,
-  };
+  const attemptOne = invocation(1);
 
   beforeEach(async () => {
     h = await makeHarness();
@@ -984,7 +992,7 @@ describe("durable conversation store attempt-scoped local store", () => {
     });
     const committed = await readCommitted(h);
     expect(committed?.turns).toEqual([...localTurns, userTurn("third")]);
-    expect(committed?.attempt).toBe(1);
+    expect(committed?.invocation?.attempt).toBe(1);
   });
 
   test("a restore whose read of the state ref fails throws instead of starting over from the local store", async () => {
@@ -1226,7 +1234,7 @@ describe("durable conversation store with a seed", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
-      lifetime: { kind: "attempt", attempt: 1 },
+      lifetime: invocation(1),
       mailboxAddress: "agent@example.com",
     });
     await store.restoreFromSubstrate();
@@ -1246,7 +1254,7 @@ describe("durable conversation store with a seed", () => {
     });
     const committed = await readCommitted(h);
     expect(committed?.turns).toEqual(two);
-    expect(committed?.attempt).toBe(1);
+    expect(committed?.invocation?.attempt).toBe(1);
     // The retry folds again, so the seeded turns still land in a checkpoint
     // rather than in one WAL entry.
     expect(readCheckpointMeta(h.stateDir)).toMatchObject({
@@ -1273,19 +1281,21 @@ describe("durable conversation store with a seed", () => {
   });
 
   test("a retried attempt starts over from the seed, not from the earlier attempt", async () => {
-    const attemptOne = await makeStore(h, path.join(h.baseDir, "attempt-1"), {
-      kind: "attempt",
-      attempt: 1,
-    });
+    const attemptOne = await makeStore(
+      h,
+      path.join(h.baseDir, "attempt-1"),
+      invocation(1),
+    );
     await attemptOne.restoreFromSubstrate();
     await pushAndMirror(attemptOne, seed.turns, [userTurn("attempt one")], {
       tokenUsageInput: 12,
     });
 
-    const attemptTwo = await makeStore(h, path.join(h.baseDir, "attempt-2"), {
-      kind: "attempt",
-      attempt: 2,
-    });
+    const attemptTwo = await makeStore(
+      h,
+      path.join(h.baseDir, "attempt-2"),
+      invocation(2),
+    );
     expect(await attemptTwo.restoreFromSubstrate()).toBe(true);
     const loaded = await attemptTwo.storage.load();
     expect(loaded.turns).toEqual(seed.turns);
@@ -1295,7 +1305,39 @@ describe("durable conversation store with a seed", () => {
     });
     const committed = await readCommitted(h);
     expect(committed?.turns).toEqual([...seed.turns, userTurn("attempt two")]);
-    expect(committed?.attempt).toBe(2);
+    expect(committed?.invocation?.attempt).toBe(2);
+  });
+
+  test("another run's invocation of the same key starts over from the seed", async () => {
+    const first = await makeStore(
+      h,
+      path.join(h.baseDir, "first-run"),
+      invocation(1, "run-body-1"),
+    );
+    await first.restoreFromSubstrate();
+    await pushAndMirror(first, seed.turns, [userTurn("first run")], {
+      tokenUsageInput: 12,
+    });
+
+    const second = await makeStore(
+      h,
+      path.join(h.baseDir, "second-run"),
+      invocation(1, "run-body-2"),
+    );
+    expect(await second.restoreFromSubstrate()).toBe(true);
+    const loaded = await second.storage.load();
+    expect(loaded.turns).toEqual(seed.turns);
+
+    await pushAndMirror(second, loaded.turns, [userTurn("second run")], {
+      tokenUsageInput: 13,
+    });
+    const committed = await readCommitted(h);
+    expect(committed?.turns).toEqual([...seed.turns, userTurn("second run")]);
+    expect(committed?.invocation).toEqual({
+      runId: "run-body-2",
+      stepId: STEP_ID,
+      attempt: 1,
+    });
   });
 
   test("a restore reads the committed seed, not the working tree's copy", async () => {

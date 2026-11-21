@@ -22,9 +22,14 @@
 // directory's size, so no commit re-hashes a tree that grows with the
 // conversation.
 //
-// A step whose retries start over stamps the attempt that owns the state in
-// its metadata, so a later attempt can tell the stored state is not its own.
-// An agent whose conversation spans attempts leaves it unset.
+// A cold step stamps its metadata with the invocation that wrote the state:
+// the run it ran in, its scoped step id and its attempt. Many invocations can
+// share one state directory (loop iterations, onTrigger events, retries), so
+// an invocation that finds another invocation's stamp knows the state is not
+// its own and starts over from the seed. An agent whose conversation spans
+// invocations leaves the stamp unset. State written before the stamp existed
+// carries a bare `attempt` instead. The types below ignore that key, so such
+// state reads as stamped by no invocation.
 //
 // Parked reply targets hold the mail each turn parked on an approval gate
 // answers, keyed by the gate's correlation id: the connector thread, or a
@@ -52,12 +57,33 @@ export const STEP_STATE_CHECKPOINT_META_FILE = "checkpoint.meta.json";
 export const STEP_STATE_WAL_DIR = "wal";
 export const STEP_STATE_WAL_BUCKET_SIZE = 128;
 
+/**
+ * The invocation that wrote a step's state: the run it ran in, its scoped
+ * step id (`<id>[<index>]` for a map item) and its attempt.
+ */
+export const StepStateInvocation = type({
+  runId: "string",
+  stepId: "string",
+  attempt: "number.integer >= 0",
+});
+export type StepStateInvocation = typeof StepStateInvocation.infer;
+
+/** Whether two invocation stamps name the same invocation. */
+export function isSameStepStateInvocation(
+  a: StepStateInvocation,
+  b: StepStateInvocation,
+): boolean {
+  return (
+    a.runId === b.runId && a.stepId === b.stepId && a.attempt === b.attempt
+  );
+}
+
 const StepStateMetadata = type({
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
   "parkedReplyTargets?": ParkedReplyTargets,
-  "attempt?": "number.integer >= 0",
+  "invocation?": StepStateInvocation,
 });
 
 /** The non-turn state stamped on every WAL entry and on the checkpoint. */
@@ -69,7 +95,7 @@ export const StepStateCheckpoint = type({
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
   "parkedReplyTargets?": ParkedReplyTargets,
-  "attempt?": "number.integer >= 0",
+  "invocation?": StepStateInvocation,
 });
 
 export const StepStateCheckpointMeta = type({
@@ -79,7 +105,7 @@ export const StepStateCheckpointMeta = type({
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
   "parkedReplyTargets?": ParkedReplyTargets,
-  "attempt?": "number.integer >= 0",
+  "invocation?": StepStateInvocation,
 });
 
 export const StepStateWalEntry = type({
@@ -102,13 +128,14 @@ export type StepStateContent = {
  * `boundaryCount` is the number of mirror boundaries durably committed, so
  * the next WAL entry uses it as its seq. `checkpointBoundarySeq` is the
  * boundary seq the checkpoint folded to, the first WAL seq to expect.
- * `attempt` is the attempt the latest metadata was stamped with, if any.
+ * `invocation` is the invocation the latest metadata was stamped with, if
+ * any.
  */
 export type ReconstructedStepState = StepStateContent & {
   totalTurns: number;
   boundaryCount: number;
   checkpointBoundarySeq: number;
-  attempt?: number;
+  invocation?: StepStateInvocation;
 };
 
 /**
@@ -206,22 +233,22 @@ export function buildStepStateCheckpoint(
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
     parkedReplyTargets?: ParkedReplyTargets;
-    attempt?: number;
+    invocation?: StepStateInvocation;
   },
 ): Record<string, string> {
   const parkedReplyTargets =
     content.parkedReplyTargets !== undefined
       ? { parkedReplyTargets: content.parkedReplyTargets }
       : {};
-  const attempt =
-    content.attempt !== undefined ? { attempt: content.attempt } : {};
+  const invocation =
+    content.invocation !== undefined ? { invocation: content.invocation } : {};
   const snapshot = {
     turns: content.turns,
     pendingOperations: content.pendingOperations,
     tokenUsage: content.tokenUsage,
     connectorState: content.connectorState,
     ...parkedReplyTargets,
-    ...attempt,
+    ...invocation,
   };
   const meta = {
     checkpointSeq,
@@ -230,7 +257,7 @@ export function buildStepStateCheckpoint(
     tokenUsage: content.tokenUsage,
     connectorState: content.connectorState,
     ...parkedReplyTargets,
-    ...attempt,
+    ...invocation,
   };
   return {
     [`${stateDir}${STEP_STATE_CHECKPOINT_FILE}`]: JSON.stringify(snapshot),
@@ -273,7 +300,9 @@ export async function reconstructStepState(
     totalTurns: turns.length,
     boundaryCount: baseBoundarySeq + wal.length,
     checkpointBoundarySeq: baseBoundarySeq,
-    ...(metadata.attempt !== undefined ? { attempt: metadata.attempt } : {}),
+    ...(metadata.invocation !== undefined
+      ? { invocation: metadata.invocation }
+      : {}),
   };
 }
 
@@ -329,8 +358,8 @@ async function readCheckpoint(
       ...(validatedSnapshot.parkedReplyTargets !== undefined
         ? { parkedReplyTargets: validatedSnapshot.parkedReplyTargets }
         : {}),
-      ...(validatedSnapshot.attempt !== undefined
-        ? { attempt: validatedSnapshot.attempt }
+      ...(validatedSnapshot.invocation !== undefined
+        ? { invocation: validatedSnapshot.invocation }
         : {}),
     },
   };
@@ -390,8 +419,8 @@ async function readWalTail(
           ...(validated.metadata.parkedReplyTargets !== undefined
             ? { parkedReplyTargets: validated.metadata.parkedReplyTargets }
             : {}),
-          ...(validated.metadata.attempt !== undefined
-            ? { attempt: validated.metadata.attempt }
+          ...(validated.metadata.invocation !== undefined
+            ? { invocation: validated.metadata.invocation }
             : {}),
         },
       });

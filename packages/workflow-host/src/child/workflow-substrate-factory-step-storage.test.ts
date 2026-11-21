@@ -20,9 +20,11 @@
 //     per-run keying the run-completion cleanup reclaims.
 //
 // The cold path also backs each invocation's `ContextStore` with the step's
-// committed state in the workflow-run substrate: it restores that state on a
-// fresh host, the build's conversation commits the turn, and a retried attempt
-// starts over rather than continuing an earlier attempt's conversation.
+// committed state in the workflow-run substrate, under the deployment's
+// top-level run at the key of the step's place: it restores that state on a
+// fresh host, the build's conversation commits the turn, and another
+// invocation (a retried attempt, or a later run of the same place) starts
+// over rather than continuing an earlier invocation's conversation.
 
 import { afterAll, describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -45,6 +47,8 @@ import { generateKeyPair } from "@intx/crypto";
 import {
   createRepoStore,
   workflowRunKindHandler,
+  workflowRunStepSeedPath,
+  workflowRunStepStatePrefix,
   WORKFLOW_RUN_GITIGNORE_PATH,
   type RepoId,
   type RepoStore,
@@ -81,6 +85,8 @@ import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
 import type { SupervisorBackedTransportInbound } from "./supervisor-backed-transport";
 
 const STEP_ID = "step-1";
+// The run the deployment mailbox names, under which every step's state lives.
+const TOP_LEVEL_RUN_ID = "run_deployment-keying";
 const WORKFLOW_RUN_REPO_ID: RepoId = {
   kind: "workflow-run",
   id: "deployment-keying",
@@ -189,7 +195,8 @@ function buildDeps(opts: {
     workflowRunRef: WORKFLOW_RUN_REF,
     principal: PRINCIPAL,
     signer,
-    mailboxAddress: "run_deployment-keying@example.com",
+    topLevelRunId: TOP_LEVEL_RUN_ID,
+    mailboxAddress: `${TOP_LEVEL_RUN_ID}@example.com`,
     outboundMailBridge: opts.outboundMailBridge ?? stubOutboundMailBridge(),
     adapters: createBuiltinRegistry(),
     closurePackageDir: "/unused-closure",
@@ -413,9 +420,9 @@ function approvalOp(
 }
 
 /**
- * Commit a step's state for attempt 1 of `runId` through the production
- * cold-path store, from a local store the env under test never sees, so the
- * env can only find it by restoring from the substrate.
+ * Commit a step's state for attempt 1 of the step in `runId` through the
+ * production cold-path store, from a local store the env under test never
+ * sees, so the env can only find it by restoring from the substrate.
  */
 async function seedColdStore(
   substrate: RepoStore,
@@ -429,9 +436,12 @@ async function seedColdStore(
     workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
     workflowRunRef: WORKFLOW_RUN_REF,
     principal: PRINCIPAL,
-    runId,
+    runId: TOP_LEVEL_RUN_ID,
     stepId: STEP_ID,
-    lifetime: { kind: "attempt", attempt: 1 },
+    lifetime: {
+      kind: "invocation",
+      invocation: { runId, stepId: STEP_ID, attempt: 1 },
+    },
     mailboxAddress: "agent@example.com",
   });
   await store.restoreFromSubstrate();
@@ -586,11 +596,15 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      runId: "run-1",
+      runId: TOP_LEVEL_RUN_ID,
       stepId: STEP_ID,
     });
     expect(committed?.turns).toEqual([turn("first")]);
-    expect(committed?.attempt).toBe(1);
+    expect(committed?.invocation).toEqual({
+      runId: "run-1",
+      stepId: STEP_ID,
+      attempt: 1,
+    });
 
     const replacement = await (
       await host(substrate)
@@ -616,14 +630,252 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      runId: "run-1",
+      runId: TOP_LEVEL_RUN_ID,
       stepId: STEP_ID,
     });
     expect(committed?.turns).toEqual([turn("attempt two")]);
-    expect(committed?.attempt).toBe(2);
+    expect(committed?.invocation).toEqual({
+      runId: "run-1",
+      stepId: STEP_ID,
+      attempt: 2,
+    });
     await expect(
       buildEnv(requestForRun("run-1", 1), sourcesRefFor()),
     ).rejects.toThrow(/later than attempt 1/);
+  });
+
+  /** An invocation of the step at `stepPath` in the run `runId`. */
+  function placedRequest(
+    runId: string,
+    stepPath: string[],
+    attempt = 1,
+  ): StepInvokeRequest {
+    return { ...requestForRun(runId, attempt), place: { stepPath } };
+  }
+
+  function readKey(substrate: RepoStore, runId: string, key: string) {
+    return readStepState({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId,
+      stepId: key,
+    });
+  }
+
+  async function writeSeed(
+    substrate: RepoStore,
+    key: string,
+    turns: ReturnType<typeof turn>[],
+  ): Promise<void> {
+    const seedPath = workflowRunStepSeedPath(TOP_LEVEL_RUN_ID, key);
+    await substrate.writeTreePreservingPrefix(
+      { kind: "hub" },
+      WORKFLOW_RUN_REPO_ID,
+      WORKFLOW_RUN_REF,
+      {
+        preservePrefix: seedPath.slice(0, seedPath.lastIndexOf("/") + 1),
+        merge: async () => ({
+          [seedPath]: JSON.stringify({
+            version: 1,
+            turns,
+            tokenUsage: ZERO_USAGE,
+            connectorState: null,
+          }),
+        }),
+        message: "seed step",
+      },
+    );
+  }
+
+  test.each([
+    ["a loop body", ["loop", STEP_ID]],
+    ["an onTrigger body", ["section", STEP_ID]],
+    ["a childWorkflow child", ["child", STEP_ID]],
+  ])(
+    "%s step files its state under the top-level run at its key",
+    async (_, stepPath) => {
+      const substrate = await createSubstrate(await makeTempDir());
+      const build = await (
+        await host(substrate)
+      )(placedRequest("run-body-1", stepPath), sourcesRefFor());
+      await takeTurn(build, [turn("body turn")]);
+
+      const key = stepPath.join(".");
+      expect((await readKey(substrate, TOP_LEVEL_RUN_ID, key))?.turns).toEqual([
+        turn("body turn"),
+      ]);
+      expect(await readKey(substrate, "run-body-1", STEP_ID)).toBeNull();
+      const reads = await substrate.openCommittedReads(
+        PRINCIPAL,
+        WORKFLOW_RUN_REPO_ID,
+        WORKFLOW_RUN_REF,
+      );
+      const stateDir = workflowRunStepStatePrefix(TOP_LEVEL_RUN_ID, key);
+      expect(stateDir).toBe(`runs/${TOP_LEVEL_RUN_ID}/steps/${key}/state/`);
+      expect(
+        (await reads?.listDir(`runs/${TOP_LEVEL_RUN_ID}/steps`))?.map(
+          (entry) => entry.name,
+        ),
+      ).toEqual([key]);
+      expect(await reads?.listDir("runs/run-body-1")).toEqual([]);
+    },
+  );
+
+  test("a later invocation of the same place starts over from the seed", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const stepPath = ["section", STEP_ID];
+    const key = stepPath.join(".");
+    await writeSeed(substrate, key, [turn("seeded")]);
+    const buildEnv = await host(substrate);
+
+    const first = await buildEnv(
+      placedRequest("run-body-1", stepPath),
+      sourcesRefFor(),
+    );
+    expect((await first.env.storage.load()).turns).toEqual([turn("seeded")]);
+    await takeTurn(first, [turn("seeded"), turn("first event")]);
+
+    const second = await buildEnv(
+      placedRequest("run-body-2", stepPath),
+      sourcesRefFor(),
+    );
+    expect((await second.env.storage.load()).turns).toEqual([turn("seeded")]);
+    await takeTurn(second, [turn("seeded"), turn("second event")]);
+
+    const committed = await readKey(substrate, TOP_LEVEL_RUN_ID, key);
+    expect(committed?.turns).toEqual([turn("seeded"), turn("second event")]);
+    expect(committed?.invocation).toEqual({
+      runId: "run-body-2",
+      stepId: STEP_ID,
+      attempt: 1,
+    });
+  });
+
+  test("a top-level map item files its state under its scoped key", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const itemId = scopedStepId(STEP_ID, 0);
+    const request: StepInvokeRequest = {
+      ...requestForRun(TOP_LEVEL_RUN_ID),
+      authzContext: { stepId: itemId, runId: TOP_LEVEL_RUN_ID, attempt: 1 },
+      place: { stepPath: [STEP_ID], mapIndex: 0 },
+    };
+    const build = await (await host(substrate))(request, sourcesRefFor());
+    await takeTurn(build, [turn("item turn")]);
+
+    const reads = await substrate.openCommittedReads(
+      PRINCIPAL,
+      WORKFLOW_RUN_REPO_ID,
+      WORKFLOW_RUN_REF,
+    );
+    expect(
+      (await reads?.listDir(`runs/${TOP_LEVEL_RUN_ID}/steps`))?.map(
+        (entry) => entry.name,
+      ),
+    ).toEqual(["step-1%5B0%5D"]);
+    const committed = await readKey(substrate, TOP_LEVEL_RUN_ID, itemId);
+    expect(committed?.turns).toEqual([turn("item turn")]);
+    expect(committed?.invocation).toEqual({
+      runId: TOP_LEVEL_RUN_ID,
+      stepId: "step-1[0]",
+      attempt: 1,
+    });
+  });
+
+  test("an invocation keeps its own crashed turn but not another invocation's", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const stepPath = ["section", STEP_ID];
+    const key = stepPath.join(".");
+    const sameHost = await host(substrate);
+
+    await takeTurn(
+      await sameHost(placedRequest("run-body-1", stepPath), sourcesRefFor()),
+      [turn("body one")],
+    );
+
+    // Body run 2 commits its turn to its local store, then the host dies
+    // before the settle commits it to the repo.
+    const crashed = await sameHost(
+      placedRequest("run-body-2", stepPath),
+      sourcesRefFor(),
+    );
+    expect((await crashed.env.storage.load()).turns).toEqual([]);
+    await crashed.env.storage.writeTurns([turn("body two")]);
+    await crashed.env.storage.commit({ message: "turn" });
+
+    const rebuilt = await sameHost(
+      placedRequest("run-body-2", stepPath),
+      sourcesRefFor(),
+    );
+    expect((await rebuilt.env.storage.load()).turns).toEqual([
+      turn("body two"),
+    ]);
+    if (rebuilt.conversation === undefined) {
+      throw new Error("a cold step build returns its conversation");
+    }
+    await rebuilt.conversation.settle();
+    const committed = await readKey(substrate, TOP_LEVEL_RUN_ID, key);
+    expect(committed?.turns).toEqual([turn("body two")]);
+    expect(committed?.invocation).toEqual({
+      runId: "run-body-2",
+      stepId: STEP_ID,
+      attempt: 1,
+    });
+
+    const replacement = await (
+      await host(substrate)
+    )(placedRequest("run-body-1", stepPath), sourcesRefFor());
+    expect((await replacement.env.storage.load()).turns).toEqual([]);
+  });
+
+  test("state stamped with a bare attempt belongs to no invocation and starts over", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const stateDir = workflowRunStepStatePrefix(TOP_LEVEL_RUN_ID, STEP_ID);
+    // The shape a build that stamped only the attempt wrote.
+    await substrate.writeTreePreservingPrefix(
+      PRINCIPAL,
+      WORKFLOW_RUN_REPO_ID,
+      WORKFLOW_RUN_REF,
+      {
+        preservePrefix: stateDir,
+        merge: async () => ({
+          [`${stateDir}checkpoint.json`]: JSON.stringify({
+            turns: [turn("legacy")],
+            pendingOperations: [],
+            tokenUsage: ZERO_USAGE,
+            connectorState: null,
+            attempt: 1,
+          }),
+          [`${stateDir}checkpoint.meta.json`]: JSON.stringify({
+            checkpointSeq: 1,
+            turnCount: 1,
+            pendingOperations: [],
+            tokenUsage: ZERO_USAGE,
+            connectorState: null,
+            attempt: 1,
+          }),
+        }),
+        message: "legacy step state",
+      },
+    );
+    expect(
+      (await readKey(substrate, TOP_LEVEL_RUN_ID, STEP_ID))?.invocation,
+    ).toBeUndefined();
+
+    const build = await (
+      await host(substrate)
+    )(requestForRun("run-1", 1), sourcesRefFor());
+    expect((await build.env.storage.load()).turns).toEqual([]);
+    await takeTurn(build, [turn("fresh")]);
+
+    const committed = await readKey(substrate, TOP_LEVEL_RUN_ID, STEP_ID);
+    expect(committed?.turns).toEqual([turn("fresh")]);
+    expect(committed?.invocation).toEqual({
+      runId: "run-1",
+      stepId: STEP_ID,
+      attempt: 1,
+    });
   });
 
   test("a cold build's conversation sends through the bridge as the deployment mailbox", async () => {

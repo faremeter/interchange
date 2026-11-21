@@ -64,6 +64,7 @@ export {
 export {
   buildStepStateCheckpoint,
   createCommittedStepStateReader,
+  isSameStepStateInvocation,
   reconstructStepState,
   serializeStepStateWalEntry,
   stepStateWalBucket,
@@ -73,6 +74,7 @@ export {
 export type {
   ReconstructedStepState,
   StepStateContent,
+  StepStateInvocation,
   StepStateMetadata,
   StepStateReader,
 } from "./step-state";

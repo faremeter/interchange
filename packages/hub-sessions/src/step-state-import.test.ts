@@ -269,6 +269,28 @@ describe("buildStepStateSeeds", () => {
     });
   });
 
+  // A nested step's state lives at the key of its place, but an import seeds
+  // only the steps of the top-level run, whose keys are their step ids.
+  test("refuses the key of a loop body step and a map item's scoped id", () => {
+    const imported = snapshot([question]);
+
+    expect(
+      buildStepStateSeeds({
+        projection,
+        sources,
+        runId: RUN_ID,
+        uidValidity: UID_VALIDITY,
+        stepState: {
+          "rounds.drafter": imported,
+          "fanout[0]": imported,
+        },
+      }),
+    ).toEqual({
+      ok: false,
+      reason: `Step state names "rounds.drafter", "fanout[0]", which the workflow has no top-level agent step for`,
+    });
+  });
+
   test("bounds what a refusal quotes from the request", () => {
     const refuse = (stepState: Record<string, StepStateSnapshot>) => {
       const result = buildStepStateSeeds({

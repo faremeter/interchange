@@ -258,6 +258,7 @@ export { MAILBOX_INDEX_VERSION, MailboxIndex } from "./mailbox-index";
 export {
   buildStepStateCheckpoint,
   createCommittedStepStateReader,
+  isSameStepStateInvocation,
   reconstructStepState,
   serializeStepStateWalEntry,
   stepStateWalBucket,
@@ -265,6 +266,7 @@ export {
   stepStateWalEntryPath,
   type ReconstructedStepState,
   type StepStateContent,
+  type StepStateInvocation,
   type StepStateMetadata,
   type StepStateReader,
 } from "./step-state";

@@ -9,22 +9,26 @@
 //
 // This module makes the warm agent's conversation DURABLE in the
 // workflow-run substrate (the single-writer proxy `RepoStore`, written
-// through the supervisor). The durable copy lives in the state directory
-// of the step in the run it belongs to
-// (`runs/<runId>/steps/<stepId>/state/`), beside that run's event log, so
-// the Hub's copy of the repo carries it to a replacement host. After a
-// child respawn, once the warm agent is rebuilt lazily, the conversation is
-// restored from the substrate into the agent's local store BEFORE the
-// agent's reactor loads, so multi-turn continuity holds across respawn and
-// failover.
+// through the supervisor). The durable copy lives under the deployment's
+// top-level run, in the state directory of the step's key
+// (`runs/<topLevelRunId>/steps/<key>/state/`). The key is the step's path of
+// step ids joined with `.`, plus `[i]` for a map item (`stepPlaceKey`), so a
+// top-level step's key is its step id. The Hub's copy of the repo carries
+// the state to a replacement host. After a child respawn, once the warm
+// agent is rebuilt lazily, the conversation is restored from the substrate
+// into the agent's local store BEFORE the agent's reactor loads, so
+// multi-turn continuity holds across respawn and failover.
 //
 // A multi-step workflow's agent steps run cold -- a fresh agent per
 // invocation -- and use the same store for each invocation, scoped to one
-// attempt (`DurableConversationLifetime`): it restores the attempt's
+// invocation (`DurableConversationLifetime`): it restores the invocation's
 // committed conversation before the agent loads and is mirrored once the
 // turn settles, so a conversational step continues on a replacement host.
-// On the host that ran the attempt, the per-attempt local store can be one
-// turn ahead of the committed copy: a crash between the reactor's local
+// The committed state is stamped with the invocation that wrote it. Many
+// invocations share one key (loop iterations, onTrigger events, retries), and
+// an invocation that finds another invocation's stamp starts over from the
+// seed. On the host that ran the attempt, the per-attempt local store can be
+// one turn ahead of the committed copy: a crash between the reactor's local
 // commit and the mirror leaves that turn only there. A restore there keeps
 // the local store while it still extends the committed turns
 // (`isLocalStateCurrent`), so the turn is not lost and a crash-recovered
@@ -37,7 +41,7 @@
 // directory for the step to start from. A restore that finds no state of
 // the store's own starts from the seed instead, and the first mirror
 // commits the seeded turns as the step's own state. That covers a step's
-// first turn and a retried attempt starting over alike, so a retry starts
+// first turn and a later invocation starting over alike, so a retry starts
 // over from the seed, not from nothing. A restore that finds neither, and
 // no current attempt lead, starts the step with no conversation: the
 // committed history, not the local store, decides what the agent continues.
@@ -130,11 +134,13 @@ import type {
   RepoId,
   RepoStore,
   StepStateContent,
+  StepStateInvocation,
   StepStateMetadata,
 } from "@intx/hub-sessions/substrate";
 import {
   buildStepStateCheckpoint,
   createCommittedStepStateReader,
+  isSameStepStateInvocation,
   readCommittedStepStateSeed,
   reconstructStepState,
   serializeStepStateWalEntry,
@@ -177,19 +183,21 @@ const MAX_UNCOMPACTED_WAL = 2 * CHECKPOINT_INTERVAL;
 /**
  * What a store's durable state belongs to. The warm agent keeps one
  * conversation for the life of its deployment, across attempts. A cold
- * step's conversation belongs to one attempt: a retried attempt starts over,
- * so its store neither restores nor appends to an earlier attempt's state.
+ * step's conversation belongs to one invocation, named by its run, its scoped
+ * step id and its attempt: another invocation of the same step, a retry
+ * included, starts over, so its store neither restores nor appends to the
+ * state an earlier invocation left.
  */
 export type DurableConversationLifetime =
   | { readonly kind: "deployment" }
-  | { readonly kind: "attempt"; readonly attempt: number };
+  | { readonly kind: "invocation"; readonly invocation: StepStateInvocation };
 
 export interface DurableConversationStoreOpts {
   /**
    * Local per-agent isogit store root. For a deployment lifetime it is
    * stable across runs (NOT keyed by runId) so a warm agent's reactor
-   * loads the same on-disk store on every message; for an attempt
-   * lifetime it must be unique to the attempt, so a retried attempt never
+   * loads the same on-disk store on every message; for an invocation
+   * lifetime it must be unique to the invocation, so a retried attempt never
    * loads an earlier attempt's store. The substrate is the cross-respawn
    * durable mirror of this store's conversation content.
    */
@@ -204,9 +212,15 @@ export interface DurableConversationStoreOpts {
   workflowRunRef: string;
   /** Principal the substrate write is authored under. */
   principal: Principal;
-  /** The run the step belongs to; its state lives under that run. */
+  /**
+   * The deployment's top-level run; the state lives under its `steps/`
+   * directory.
+   */
   runId: string;
-  /** The step whose state this store holds. */
+  /**
+   * The step segment under the run: the key of the step's place
+   * (`stepPlaceKey`). A top-level step's key is its step id.
+   */
   stepId: string;
   lifetime: DurableConversationLifetime;
   /**
@@ -234,7 +248,7 @@ export interface DurableConversationStore {
   /**
    * Pull the prior conversation from the substrate (checkpoint + WAL-tail
    * replay) into the local store so the agent's reactor `load()` sees it.
-   * An attempt-scoped store whose local store is still current keeps it
+   * An invocation-scoped store whose local store is still current keeps it
    * instead (see `isLocalStateCurrent`). Otherwise a step with no state of
    * its own starts from its seed, when there is one, and with no
    * conversation when there is none, whatever its local store held. Called
@@ -339,11 +353,13 @@ export async function createDurableConversationStore(
   });
 
   const statePrefix = workflowRunStepStatePrefix(opts.runId, opts.stepId);
-  const stampedAttempt =
-    opts.lifetime.kind === "attempt" ? { attempt: opts.lifetime.attempt } : {};
+  const stamped =
+    opts.lifetime.kind === "invocation"
+      ? { invocation: opts.lifetime.invocation }
+      : {};
   // Set when the next mirror folds the whole conversation into a fresh
-  // checkpoint instead of appending a WAL entry: the substrate holds an
-  // earlier attempt's state, which the fold drops in the same commit, or the
+  // checkpoint instead of appending a WAL entry: the substrate holds another
+  // invocation's state, which the fold drops in the same commit, or the
   // store holds turns none of its commits do yet -- a seed's, or a local
   // copy's that resumed before its first mirror -- which would otherwise sit
   // in one WAL entry that every later append to its bucket carries along.
@@ -435,8 +451,10 @@ export async function createDurableConversationStore(
 
   /**
    * The committed state this store continues, or `null` to start over. An
-   * attempt continues only state stamped with its own attempt; state from an
-   * earlier attempt is replaced by this attempt's first mirror.
+   * invocation continues only state stamped with its own invocation; state
+   * any other invocation left, or state with no stamp, is replaced by this
+   * invocation's first mirror. A later attempt of the same invocation's run
+   * and step is never replaced.
    */
   async function readOwnState(
     reads: CommittedReads | null,
@@ -445,11 +463,19 @@ export async function createDurableConversationStore(
     if (committed === null || opts.lifetime.kind === "deployment") {
       return committed;
     }
-    const attempt = opts.lifetime.attempt;
-    if (committed.attempt === attempt) return committed;
-    if (committed.attempt !== undefined && committed.attempt > attempt) {
+    const own = opts.lifetime.invocation;
+    const stamp = committed.invocation;
+    if (stamp !== undefined && isSameStepStateInvocation(stamp, own)) {
+      return committed;
+    }
+    if (
+      stamp !== undefined &&
+      stamp.runId === own.runId &&
+      stamp.stepId === own.stepId &&
+      stamp.attempt > own.attempt
+    ) {
       throw new Error(
-        `sidecar conversation-state: ${statePrefix} holds attempt ${String(committed.attempt)}, later than attempt ${String(attempt)}; refusing to replace it`,
+        `sidecar conversation-state: ${statePrefix} holds attempt ${String(stamp.attempt)} of step ${stamp.stepId} in run ${stamp.runId}, later than attempt ${String(own.attempt)}; refusing to replace it`,
       );
     }
     foldNextMirror = true;
@@ -481,7 +507,7 @@ export async function createDurableConversationStore(
       mirroredTurnCount = 0;
       checkpointBoundarySeq = 0;
     }
-    if (opts.lifetime.kind === "attempt") {
+    if (opts.lifetime.kind === "invocation") {
       // Writing the local state back re-seeds the store's turn snapshot and
       // connector buffer, which a fresh store instance starts without; the
       // next mirror then commits the turns the committed copy lacks.
@@ -662,7 +688,7 @@ export async function createDurableConversationStore(
     const turns = baseStorage.peekTurns();
     const metadata = {
       ...(await baseStorage.loadMetadata()),
-      ...stampedAttempt,
+      ...stamped,
     };
 
     // First mirror in this store's lifetime that did not run through
@@ -939,7 +965,12 @@ type CommittedStepStateArgs = {
   workflowRunRepoId: RepoId;
   workflowRunRef: string;
   principal: Principal;
+  /** The deployment's top-level run, whose `steps/` holds the state. */
   runId: string;
+  /**
+   * The step segment under the run: the key of the step's place
+   * (`stepPlaceKey`). A top-level step's key is its step id.
+   */
   stepId: string;
 };
 
@@ -989,14 +1020,14 @@ function reconstructCommitted(
 
 /**
  * Whether a cold step attempt's local store holds the attempt's current
- * state, given the attempt's committed turns (`null` when the attempt has
- * committed nothing). On the host that runs an attempt the local store never
- * trails what that host committed: a restore fills it before the agent
- * loads, the reactor commits every cycle to it, and the settle mirror commits
- * from it. It leads by the turn in flight when a crash beat the mirror. A
- * store that holds nothing was just created on this host, and one whose
- * turns no longer extend the committed ones was left by a host the attempt
- * has since moved away from; neither is current.
+ * state, given the turns committed under the attempt's invocation stamp
+ * (`null` when the invocation has committed nothing). On the host that runs
+ * an attempt the local store never trails what that host committed: a
+ * restore fills it before the agent loads, the reactor commits every cycle to
+ * it, and the settle mirror commits from it. It leads by the turn in flight
+ * when a crash beat the mirror. A store that holds nothing was just created
+ * on this host, and one whose turns no longer extend the committed ones was
+ * left by a host the attempt has since moved away from; neither is current.
  */
 export function isLocalStateCurrent(
   local: {

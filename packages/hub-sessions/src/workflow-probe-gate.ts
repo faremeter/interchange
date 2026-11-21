@@ -60,6 +60,11 @@ import {
   RESERVED_GRANT_NAMESPACES,
   reservedGrantNamespace,
 } from "@intx/types/reserved-namespaces";
+import {
+  MAX_MAP_ITEM_INDEX,
+  MAX_STEP_PLACE_SEGMENT_BYTES,
+  measureStepPlaceKey,
+} from "@intx/types/step-place";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type {
   WorkflowDefinitionAssetSource,
@@ -232,6 +237,14 @@ export type ProbeGateResult =
     }
   | {
       readonly ok: false;
+      readonly reason: "step_place_keys_too_long";
+      /** Every agent step whose state key is too long, in walk order. */
+      readonly overlongStepPlaceKeys: readonly OverlongStepPlaceKey[];
+      /** One sentence naming every such step and the limit. */
+      readonly message: string;
+    }
+  | {
+      readonly ok: false;
       readonly reason: "steps_without_grant_record";
       /** Every executable step the grant-walk snapshot accounts for nothing at. */
       readonly stepsWithoutGrantRecord: readonly StepWithoutGrantRecord[];
@@ -274,6 +287,19 @@ export type StepWithoutGrantRecord = {
    * `perStep` key the absent record would have had.
    */
   readonly recordStepId: string;
+};
+
+/**
+ * An agent step whose place key does not fit in one repo path segment, so
+ * the step could not store its state.
+ */
+export type OverlongStepPlaceKey = {
+  /** The chain of step ids the step was reached through, itself last. */
+  readonly reachedThrough: readonly string[];
+  /** The key; a map's key carries the largest index a map item can have. */
+  readonly key: string;
+  /** The size of the URL-encoded key. */
+  readonly segmentBytes: number;
 };
 
 /** A gate outcome that refused the definition. */
@@ -333,6 +359,8 @@ export function describeProbeGateRefusal(refusal: ProbeGateRefusal): string {
       return `grant_requirement_conditions_invalid: a requirement may carry only conditions a run can evaluate; declared: ${refusal.invalidGrantRequirements.map(({ requirement, problems }) => `${describeGrantRequirement(requirement)} ${JSON.stringify(problems)}`).join("; ")}`;
     case "self_run_resource_misplaced":
       return `self_run_resource_misplaced: a requirement names its own run only as "${SELF_RUN_RESOURCE}"; declared: ${refusal.grantRequirements.map(describeGrantRequirement).join("; ")}`;
+    case "step_place_keys_too_long":
+      return `step_place_keys_too_long: ${refusal.message}`;
     case "steps_without_grant_record":
       return `steps_without_grant_record: ${refusal.message}`;
     default: {
@@ -478,6 +506,61 @@ function collectUndeclaredMailAcceptMarkers(
 
 const EXECUTABLE_CLOSURE_CONTEXT = "probe gate executable closure: ";
 
+// The projected steps that store state: an agent step, and a map, whose
+// items each run its agent step.
+const ProjectedStatefulStep = type({ kind: "'step' | 'map'" });
+
+/**
+ * Every agent step in an inline body of the projection whose place key is
+ * too long for the repo to hold its state (`MAX_STEP_PLACE_SEGMENT_BYTES`).
+ * A nested step's key joins its whole path, so the walk is the executable
+ * one: loop bodies, onTrigger bodies and childWorkflow children at every
+ * depth the projection nests them.
+ *
+ * The workflow constructors always emit inline bodies, so every body the
+ * runtime runs from a constructed definition is inline here. A hand-built
+ * definition can instead carry a `{ ref }` onTrigger or childWorkflow body.
+ * The walk does not descend into it, so its steps are not measured here;
+ * `stepPlaceKey` still checks their keys when they run.
+ *
+ * A map's key is measured at `MAX_MAP_ITEM_INDEX`, the largest index its
+ * items can have, so every item fits when the map does.
+ */
+function collectOverlongStepPlaceKeys(
+  projection: WorkflowProjectionDefinition,
+): readonly OverlongStepPlaceKey[] {
+  const overlong: OverlongStepPlaceKey[] = [];
+  walkStepTree<unknown, WorkflowProjectionDefinition>({
+    tree: projection,
+    context: EXECUTABLE_CLOSURE_CONTEXT,
+    nestedTrees: (step) => inertNestedBodies(step, EXECUTABLE_STEP_DESCENT),
+    visit: ({ step, path }) => {
+      const stateful = ProjectedStatefulStep(step);
+      if (stateful instanceof type.errors) return;
+      const { key, segmentBytes } = measureStepPlaceKey({
+        stepPath: path,
+        ...(stateful.kind === "map" ? { mapIndex: MAX_MAP_ITEM_INDEX } : {}),
+      });
+      if (segmentBytes > MAX_STEP_PLACE_SEGMENT_BYTES) {
+        overlong.push({ reachedThrough: path, key, segmentBytes });
+      }
+    },
+  });
+  return overlong;
+}
+
+function describeOverlongStepPlaceKeys(
+  overlong: readonly OverlongStepPlaceKey[],
+): string {
+  const steps = overlong
+    .map(
+      (step) =>
+        `${step.reachedThrough.join(" > ")} (key ${JSON.stringify(step.key)}, ${String(step.segmentBytes)} bytes encoded)`,
+    )
+    .join("; ");
+  return `a step stores its state in a directory named for its URL-encoded key, its path of step ids joined with ".", and a directory name is limited to ${String(MAX_STEP_PLACE_SEGMENT_BYTES)} bytes; nest fewer containers or use shorter step ids for: ${steps}`;
+}
+
 /** One step the executable walk reached, with where it was reached from. */
 type ExecutableReach = StepWithoutGrantRecord;
 
@@ -586,12 +669,13 @@ export type GateAndFreezeArgs = {
  * a projection whose triggers include a reserved-but-unimplemented type -- not
  * a security check, but the layer a pinned closure cannot carry a stale copy
  * of, so it is where a workflow that could only sit inert is caught -- one
- * whose credential bindings cannot be delivered to a consumer it runs, one
- * declaring a grant requirement whose conditions a run cannot evaluate, and one
- * whose executable closure reaches a step the grant walk left no record for --
- * the layer holding both halves of the probe answer at once, and a presence
- * check on those records rather than a check that any record's contents are
- * sufficient.
+ * with an agent step whose place key is too long to name the directory of
+ * its state, one whose credential bindings cannot be delivered to a consumer
+ * it runs, one declaring a grant requirement whose conditions a run cannot
+ * evaluate, and one whose executable closure reaches a step the grant walk
+ * left no record for -- the layer holding both halves of the probe answer at
+ * once, and a presence check on those records rather than a check that any
+ * record's contents are sufficient.
  * Only then does it freeze the recomputed hash onto the version row and return
  * the approved grant set.
  */
@@ -646,6 +730,21 @@ export async function gateAndFreezeProbeResult(
       ok: false,
       reason: "unimplemented_trigger",
       unimplementedTriggerTypes,
+    };
+  }
+
+  // Refuse an agent step whose state key is too long. The sidecar would
+  // otherwise fail the step only when it runs. Like the trigger check this is
+  // an author-definition error an operator cannot approve away.
+  const overlongStepPlaceKeys = collectOverlongStepPlaceKeys(
+    probeResult.projection,
+  );
+  if (overlongStepPlaceKeys.length > 0) {
+    return {
+      ok: false,
+      reason: "step_place_keys_too_long",
+      overlongStepPlaceKeys,
+      message: describeOverlongStepPlaceKeys(overlongStepPlaceKeys),
     };
   }
 

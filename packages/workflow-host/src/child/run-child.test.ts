@@ -486,6 +486,8 @@ const AUTHORITY_SNAPSHOT = {
 function buildBindings(opts: {
   baseDir: string;
   childKeyPair?: { privateKey: Uint8Array; publicKey: Uint8Array };
+  /** The one run the child may discover in flight. */
+  topLevelRunId?: string;
 }): RunWorkflowChildBindings {
   const substrate = createStubRepoStore(opts.baseDir);
   const principal: Principal = { kind: "supervisor" };
@@ -495,6 +497,7 @@ function buildBindings(opts: {
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
     principal,
+    topLevelRunId: opts.topLevelRunId ?? "run-1",
     invokeStep: async () => ({ output: null }),
     actionCredentials: () => unavailableActionCredentials,
     spawnChild: async () => createTerminalChildHandle("completed"),
@@ -2301,6 +2304,7 @@ describe("runWorkflowChild", () => {
     const bindings = buildBindings({
       baseDir,
       childKeyPair,
+      topLevelRunId: "run-live",
     });
 
     const supervisorSender = createControlChannelSender({
@@ -2329,6 +2333,70 @@ describe("runWorkflowChild", () => {
     const result = await runPromise;
     expect(result.resumedRunIds).toEqual(["run-live"]);
     expect(result.resumedRunIds).not.toContain("run-done");
+  });
+
+  test("self-discovery refuses an in-flight run that is not the deployment's top-level run", async () => {
+    const baseDir = await makeTempDir("child-discover-other-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const {
+      packageDir: closurePackageDir,
+      approvedHash: definitionHash,
+      definition,
+    } = await materializeClosure("child-def-", emptyWorkflowDefinition());
+    await seedRun(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      "run-other",
+      [
+        {
+          seq: 1,
+          type: "RunStarted",
+          at: "2026-01-01T00:00:00.000Z",
+          runId: "run-other",
+          definitionHash: "definition-hash-abc",
+          trigger: { type: "manual", payload: null },
+        },
+      ],
+    );
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+
+    await expect(
+      runWorkflowChild({
+        env,
+        definition,
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: eventStream.writer,
+        bindings: buildBindings({
+          baseDir,
+          childKeyPair,
+          topLevelRunId: "run-top",
+        }),
+      }),
+    ).rejects.toThrow(
+      "discovered in-flight top-level run run-other, but the deployment's top-level run is run-top",
+    );
+    supervisorToChild.close();
   });
 
   test("a re-fired trigger for a self-discovered run does not spawn a second driver", async () => {
@@ -2434,7 +2502,7 @@ describe("runWorkflowChild", () => {
     // counter must stay at zero for the resumed run.
     let invokeCalls = 0;
     const bindings: RunWorkflowChildBindings = {
-      ...buildBindings({ baseDir, childKeyPair }),
+      ...buildBindings({ baseDir, childKeyPair, topLevelRunId: runId }),
       invokeStep: async () => {
         invokeCalls += 1;
         return { output: null };
@@ -3214,7 +3282,7 @@ describe("a signal for a park a resumed run holds", () => {
 
     const decisions: unknown[] = [];
     const bindings: RunWorkflowChildBindings = {
-      ...buildBindings({ baseDir, childKeyPair }),
+      ...buildBindings({ baseDir, childKeyPair, topLevelRunId: RUN_ID }),
       substrate: heldAtFirstRead,
       principal,
       invokeStep: async (req) => {
@@ -3796,6 +3864,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       workflowRunRepoId,
       workflowRunRef: "refs/heads/main",
       principal,
+      topLevelRunId: "run-1",
       invokeStep,
       actionCredentials: () => unavailableActionCredentials,
       spawnChild: async () => createTerminalChildHandle("completed"),
@@ -3995,6 +4064,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       workflowRunRepoId,
       workflowRunRef: "refs/heads/main",
       principal,
+      topLevelRunId: "run-1",
       invokeStep,
       actionCredentials: () => unavailableActionCredentials,
       spawnChild: async () => createTerminalChildHandle("completed"),

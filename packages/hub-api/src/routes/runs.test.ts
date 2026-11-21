@@ -1324,6 +1324,26 @@ describe("GET /workflows/runs/:runId/steps/:stepId/state", () => {
     }
   });
 
+  test("404s a nested step's key, though its state lives under the run", async () => {
+    const app = await appWithState("section.reply");
+    const res = await app.request(`${runURL()}/steps/section.reply/state`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  test("serves a map item's key in either form and 404s an encoded nested key", async () => {
+    const app = await appWithState("m[2]");
+    for (const segment of ["m%5B2%5D", "m[2]"]) {
+      const res = await app.request(`${runURL()}/steps/${segment}/state`);
+      expect(res.status).toBe(200);
+    }
+    const nestedApp = await appWithState("section.reply");
+    const nested = await nestedApp.request(
+      `${runURL()}/steps/section%2Ereply/state`,
+    );
+    expect(nested.status).toBe(404);
+  });
+
   test("404s a step with no committed state", async () => {
     const app = await appWithState("specialist");
     const res = await app.request(`${runURL()}/steps/other-step/state`);
