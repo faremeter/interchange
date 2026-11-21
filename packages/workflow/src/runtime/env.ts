@@ -12,6 +12,7 @@ import type {
   CredentialCapability,
   HostCredentialCapability,
   MailSigner,
+  StepPlace,
 } from "@intx/types";
 import type {
   ApprovalSnapshot,
@@ -198,6 +199,12 @@ export interface StepInvokeRequest {
   replyByMail: boolean;
   /** Workflow-runtime context for every authz call inside the step. */
   authzContext: AuthorizeContext;
+  /**
+   * The step's place in its deployment's run tree. It is the same each time
+   * the same step runs: on a retry, on a resume, and when a loop or an
+   * onTrigger section runs its body again.
+   */
+  place: StepPlace;
   /** Cancelled when the step is being torn down (timeout, cancellation). */
   signal: AbortSignal;
   /**
@@ -419,6 +426,12 @@ export type SpawnChildWorkflow = (input: {
   /** The tree-wide spawn-depth ceiling, threaded to the child run. */
   maxChildSpawnDepth: number;
   /**
+   * The child run's step path prefix: the parent run's prefix plus the
+   * `childWorkflow` step id. The spawner threads it into the child run so the
+   * child's steps know their place in the run tree. See `StepPlace`.
+   */
+  stepPathPrefix: readonly string[];
+  /**
    * Re-adopt a child that was mid-flight when the process crashed. Drive
    * `runtimeRun` from this durable log instead of `input`. Omit the field
    * when the child log is empty: an empty array is a resume with no
@@ -573,6 +586,13 @@ export type SpawnSuspendableChild = (input: {
   depth: number;
   /** The tree-wide spawn-depth ceiling, threaded into the body run. */
   maxChildSpawnDepth: number;
+  /**
+   * The body run's step path prefix: the container run's prefix plus the
+   * container step id (the loop or the onTrigger section). Every occurrence
+   * of the same container gets the same prefix, so a body step has the same
+   * place each time the container runs its body. See `StepPlace`.
+   */
+  stepPathPrefix: readonly string[];
   resumeFromEvents?: readonly WorkflowEvent[];
 }) => Promise<SuspendableChildHandle>;
 
@@ -668,12 +688,15 @@ export type ParkedApprovalOp = {
 /**
  * Read-only recovery hook the resume classifier consults: enumerate the durable
  * pending approval operations a step left behind, keyed by
- * `{ runId, stepId, attempt }`. See `WorkflowRuntimeEnv.readParkedApprovalOps`.
+ * `{ runId, stepId, attempt }`. `place` is the step's place in the run tree,
+ * as its `StepInvokeRequest` carried it. See
+ * `WorkflowRuntimeEnv.readParkedApprovalOps`.
  */
 export type ReadParkedApprovalOps = (args: {
   runId: string;
   stepId: string;
   attempt: number;
+  place: StepPlace;
 }) => Promise<ParkedApprovalOp[]>;
 
 /**
@@ -684,6 +707,7 @@ export type LoadParkedApproval = (args: {
   runId: string;
   stepId: string;
   attempt: number;
+  place: StepPlace;
   correlationId: string;
 }) => Promise<ApprovalSnapshot | undefined>;
 
@@ -698,6 +722,7 @@ export type PersistRecoveredPark = (args: {
   runId: string;
   stepId: string;
   attempt: number;
+  place: StepPlace;
   correlationId: string;
 }) => Promise<void>;
 

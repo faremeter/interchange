@@ -336,6 +336,7 @@ function buildRequest(opts: {
     ...(opts.inference !== undefined ? { inference: opts.inference } : {}),
     replyByMail: opts.replyByMail ?? false,
     authzContext,
+    place: { stepPath: ["step-1"] },
     signal: opts.signal ?? ctrl.signal,
   };
 }

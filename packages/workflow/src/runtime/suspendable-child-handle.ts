@@ -75,6 +75,8 @@ export function createSuspendableChildHandle(
      */
     depth: number;
     maxChildSpawnDepth: number;
+    /** The body run's step path prefix, forwarded to the body run. */
+    stepPathPrefix: readonly string[];
     resumeFromEvents?: readonly WorkflowEvent[];
     signal: AbortSignal;
     /**
@@ -100,6 +102,7 @@ export function createSuspendableChildHandle(
     input,
     depth,
     maxChildSpawnDepth,
+    stepPathPrefix,
     resumeFromEvents,
     signal,
     cleanup,
@@ -248,6 +251,7 @@ export function createSuspendableChildHandle(
     ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
     depth,
     maxChildSpawnDepth,
+    stepPathPrefix,
   };
   const handle = runtimeRun(definition, runEnv, {
     ...baseOptions,

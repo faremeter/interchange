@@ -793,7 +793,12 @@ describe("createParkedApprovalHooks", () => {
 
   test("the top-level run reads its parks from the warm store", async () => {
     const { hooks } = await warmDeployment();
-    const at = { runId: RUN_ID, stepId: "s", attempt: 1 };
+    const at = {
+      runId: RUN_ID,
+      stepId: "s",
+      attempt: 1,
+      place: { stepPath: ["s"] },
+    };
 
     expect(
       await hooks.loadParkedApproval({ ...at, correlationId: "corr-warm" }),
@@ -804,23 +809,34 @@ describe("createParkedApprovalHooks", () => {
   });
 
   test.each([
-    ["a childWorkflow child", "run-child"],
-    ["an onTrigger body", sectionBodyRunId(RUN_ID, "section", 0)],
-    ["a loop iteration inside a child", loopBodyRunId("run-child", "loop", 0)],
-  ])("%s reads its parks from its cold step state", async (_name, runId) => {
-    const { substrate, hooks } = await warmDeployment();
-    await parkColdStep(substrate, runId, 1, [
-      pendingApproval("corr-cold", snapshot),
-    ]);
-    const at = { runId, stepId: "s", attempt: 1 };
+    ["a childWorkflow child", "run-child", ["child", "s"]],
+    [
+      "an onTrigger body",
+      sectionBodyRunId(RUN_ID, "section", 0),
+      ["section", "s"],
+    ],
+    [
+      "a loop iteration inside a child",
+      loopBodyRunId("run-child", "loop", 0),
+      ["child", "loop", "s"],
+    ],
+  ])(
+    "%s reads its parks from its cold step state",
+    async (_name, runId, stepPath) => {
+      const { substrate, hooks } = await warmDeployment();
+      await parkColdStep(substrate, runId, 1, [
+        pendingApproval("corr-cold", snapshot),
+      ]);
+      const at = { runId, stepId: "s", attempt: 1, place: { stepPath } };
 
-    expect(
-      await hooks.loadParkedApproval({ ...at, correlationId: "corr-cold" }),
-    ).toEqual(snapshot);
-    expect(await hooks.readParkedApprovalOps(at)).toEqual([
-      { correlationId: "corr-cold" },
-    ]);
-  });
+      expect(
+        await hooks.loadParkedApproval({ ...at, correlationId: "corr-cold" }),
+      ).toEqual(snapshot);
+      expect(await hooks.readParkedApprovalOps(at)).toEqual([
+        { correlationId: "corr-cold" },
+      ]);
+    },
+  );
 
   // The top-level run's park is read from committed state, so it has nothing
   // to commit; any other run's goes to its cold step state, which here holds
@@ -829,9 +845,17 @@ describe("createParkedApprovalHooks", () => {
     const { hooks } = await warmDeployment();
     const park = { stepId: "s", attempt: 1, correlationId: "corr-lost" };
 
-    await hooks.persistRecoveredPark({ runId: RUN_ID, ...park });
+    await hooks.persistRecoveredPark({
+      runId: RUN_ID,
+      place: { stepPath: ["s"] },
+      ...park,
+    });
     await expect(
-      hooks.persistRecoveredPark({ runId: "run-child", ...park }),
+      hooks.persistRecoveredPark({
+        runId: "run-child",
+        place: { stepPath: ["child", "s"] },
+        ...park,
+      }),
     ).rejects.toThrow(
       "neither the committed step state nor a current local store holds its pending operation",
     );
@@ -938,6 +962,7 @@ describe("createParkedApprovalHooks", () => {
             input: spawn.input,
             depth: spawn.depth,
             maxChildSpawnDepth: spawn.maxChildSpawnDepth,
+            stepPathPrefix: spawn.stepPathPrefix,
             signal: spawn.signal,
             ...(spawn.resumeFromEvents !== undefined
               ? { resumeFromEvents: spawn.resumeFromEvents }

@@ -93,6 +93,7 @@ describe("createSuspendableChildHandle", () => {
         input: null,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: [],
         signal: new AbortController().signal,
         surfaceInputPark: false,
       });
@@ -124,6 +125,7 @@ describe("createSuspendableChildHandle", () => {
       input: null,
       depth: 0,
       maxChildSpawnDepth: 32,
+      stepPathPrefix: [],
       signal: stop.signal,
       surfaceInputPark: false,
     });

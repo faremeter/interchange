@@ -274,6 +274,7 @@ describe("createSidecarSpawnSuspendableChild", () => {
         signal: new AbortController().signal,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["section"],
       },
       () => undefined,
     );
@@ -333,6 +334,7 @@ describe("createSidecarSpawnSuspendableChild", () => {
         signal: new AbortController().signal,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["section"],
         resumeFromEvents: [
           {
             kind: "RunStarted",
@@ -372,6 +374,7 @@ describe("createSidecarSpawnSuspendableChild", () => {
         runId: childRunId,
         stepId: "s",
         attempt: 1,
+        place: { stepPath: ["section", "s"] },
         correlationId: CORRELATION_ID,
       },
     ]);
@@ -415,6 +418,7 @@ describe("createSidecarSpawnSuspendableChild", () => {
         signal: new AbortController().signal,
         depth: 1,
         maxChildSpawnDepth: 1,
+        stepPathPrefix: ["section"],
       },
       () => undefined,
     );

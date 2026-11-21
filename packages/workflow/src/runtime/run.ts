@@ -8,6 +8,7 @@
 // us swap the env implementations underneath without re-validating the
 // body.
 
+import type { StepPlace } from "@intx/types";
 import { correlationIdFromSignalName, signalName } from "@intx/types/signals";
 import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
 
@@ -86,7 +87,7 @@ import {
 } from "./errors";
 import { loopBodyRunId, scopedStepId, sectionBodyRunId } from "./step-scope";
 import { inlineBodyRef } from "../inline-body-ref";
-import { findParkedApprovalSnapshot } from "./parked-approval";
+import { findParkedApprovalSnapshot, parkedStepPlace } from "./parked-approval";
 import {
   applyEvent,
   controlParkKindOf,
@@ -162,6 +163,14 @@ export interface RuntimeRunOptions {
    * ceiling. Default `MAX_CHILD_SPAWN_DEPTH`.
    */
   maxChildSpawnDepth?: number;
+  /**
+   * This run's step path prefix: the step ids of the container steps
+   * (loop, onTrigger, childWorkflow) from the top-level run down to this
+   * run. The top-level triggered run's prefix is empty. Carried on the spawn
+   * seam, not in the durable log. The spawning parent passes the prefix when
+   * it reattaches a child. Default `[]`. See `StepPlace`.
+   */
+  stepPathPrefix?: readonly string[];
   /**
    * A parent-supplied abort that tears this run down LOCALLY on fire: it
    * aborts the run's own cancel controller directly, so an in-flight or parked
@@ -651,9 +660,11 @@ async function executeRunBody(
   // injected override can only tighten it). Both thread down to the
   // childWorkflow spawn site, which checks the child's depth before it
   // commits anything and passes the incremented depth to the child run.
+  // The step path prefix is empty at the top level.
   const lineage: RunLineage = {
     depth: options.depth ?? 0,
     maxChildSpawnDepth: resolveMaxChildSpawnDepth(options.maxChildSpawnDepth),
+    stepPathPrefix: options.stepPathPrefix ?? [],
   };
 
   // Restore prior events to the repo store on resume so a downstream
@@ -826,6 +837,8 @@ async function executeRunBody(
           runId,
           stepId,
           stepState.currentAttempt,
+          // A crashed invocation is a definition step, never a map item.
+          { stepPath: [...lineage.stepPathPrefix, stepId] },
           readRunLog,
         );
         if (parked !== undefined) {
@@ -898,6 +911,7 @@ async function executeRunBody(
         runId,
         stepId,
         attempt,
+        place: { stepPath: [...lineage.stepPathPrefix, stepId] },
         correlationId,
       });
     } catch (cause) {
@@ -1523,14 +1537,18 @@ function createStepAbort(
 
 /**
  * The lineage of a run in its run tree, resolved once at the `runtimeRun`
- * edge and passed to each primitive that starts a child run. `depth` is this
- * run's depth in the childWorkflow spawn chain: a `childWorkflow` child runs
- * one deeper, and a loop or onTrigger body runs at its container's depth.
- * `maxChildSpawnDepth` is the same for the whole run tree.
+ * edge and passed to each primitive that starts a child run or invokes a
+ * step. `depth` is this run's depth in the childWorkflow spawn chain: a
+ * `childWorkflow` child runs one deeper, and a loop or onTrigger body runs at
+ * its container's depth. `maxChildSpawnDepth` is the same for the whole run
+ * tree. `stepPathPrefix` is the start of the `StepPlace.stepPath` of each step
+ * of this run: a loop, onTrigger or childWorkflow child's prefix is this
+ * prefix plus the container step id.
  */
 type RunLineage = {
   depth: number;
   maxChildSpawnDepth: number;
+  stepPathPrefix: readonly string[];
 };
 
 async function runPrimitive(
@@ -1549,6 +1567,7 @@ async function runPrimitive(
         env,
         runId,
         primitive,
+        { stepPath: [...lineage.stepPathPrefix, primitive.id] },
         selectorCtx,
         abort,
         "durable",
@@ -1568,7 +1587,15 @@ async function runPrimitive(
     case "onTrigger":
       return runOnTrigger(env, runId, primitive, selectorCtx, abort, lineage);
     case "map":
-      return runMap(definition, env, runId, primitive, selectorCtx, abort);
+      return runMap(
+        definition,
+        env,
+        runId,
+        primitive,
+        selectorCtx,
+        abort,
+        lineage,
+      );
     case "gate":
       return runGate(definition, env, runId, primitive, selectorCtx, abort);
     case "awaitSignal":
@@ -1780,6 +1807,7 @@ async function runStep(
   env: WorkflowRuntimeEnv,
   runId: string,
   step: StepPrimitive,
+  place: StepPlace,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
   completion: "durable" | "buffered",
@@ -2004,6 +2032,7 @@ async function runStep(
             attempt,
             runId,
           },
+          place,
           signal: stepAbort.signal,
           ...(resume !== undefined ? { resume } : {}),
         });
@@ -2540,7 +2569,15 @@ async function runLoop(
   // every later iteration spawns fresh.
   let occurrenceRelays = terminated
     ? []
-    : await planLoopResume(env, primitive, runId, state, log, iteration);
+    : await planLoopResume(
+        env,
+        primitive,
+        runId,
+        [...lineage.stepPathPrefix, primitive.id],
+        state,
+        log,
+        iteration,
+      );
 
   let iterations = iteration;
   for (let i = iteration; !terminated && i < primitive.maxIterations; i += 1) {
@@ -2746,6 +2783,7 @@ async function driveSuspendableOccurrence(
     signal: AbortSignal.any([abort, bodyTeardown.signal]),
     depth: lineage.depth,
     maxChildSpawnDepth: lineage.maxChildSpawnDepth,
+    stepPathPrefix: [...lineage.stepPathPrefix, containerStepId],
     ...(bodyLog !== undefined ? { resumeFromEvents: bodyLog } : {}),
   });
   // A body whose log is gone starts over and surfaces its gates afresh, and
@@ -3002,7 +3040,13 @@ async function runOnTrigger(
     // after a crash. Reconstruct the drive position from the reduced state and
     // the log rather than re-running from event 0.
     const log = await env.repoStore.read(runId);
-    const plan = await planOnTriggerResume(env, primitive, initial, log);
+    const plan = await planOnTriggerResume(
+      env,
+      primitive,
+      [...lineage.stepPathPrefix, primitive.id],
+      initial,
+      log,
+    );
     switch (plan.kind) {
       case "fresh":
         eventIndex = 0;
@@ -3815,6 +3859,7 @@ function highestSectionEventIndex(
 async function planOnTriggerResume(
   env: WorkflowRuntimeEnv,
   primitive: OnTriggerPrimitive,
+  bodyStepPathPrefix: readonly string[],
   state: RunState,
   log: readonly WorkflowEvent[],
 ): Promise<OnTriggerResumePlan<ChildRelay>> {
@@ -3822,7 +3867,7 @@ async function planOnTriggerResume(
     primitive,
     state,
     log,
-    (childRunId) => bodyLogForRelays(env, childRunId),
+    (childRunId) => bodyLogForRelays(env, childRunId, bodyStepPathPrefix),
     env.clock().getTime(),
   );
   if (plan.kind !== "relink-body") return plan;
@@ -3832,13 +3877,14 @@ async function planOnTriggerResume(
     plan.eventIndex,
     state.children,
   );
-  const childLog = await bodyLogForRelays(env, childRunId);
+  const childLog = await bodyLogForRelays(env, childRunId, bodyStepPathPrefix);
   return {
     ...plan,
     relays: await loadPlannedRelays(
       env,
       `onTrigger ${primitive.id}`,
       childRunId,
+      bodyStepPathPrefix,
       resumeFromLog(childRunId, childLog),
       plan.relays,
     ),
@@ -4017,16 +4063,18 @@ async function planLoopResume(
   env: WorkflowRuntimeEnv,
   primitive: LoopPrimitive,
   runId: string,
+  bodyStepPathPrefix: readonly string[],
   state: RunState,
   log: readonly WorkflowEvent[],
   iteration: number,
 ): Promise<ChildRelay[]> {
   const childRunId = loopBodyRunId(runId, primitive.id, iteration);
-  const childLog = await bodyLogForRelays(env, childRunId);
+  const childLog = await bodyLogForRelays(env, childRunId, bodyStepPathPrefix);
   return loadPlannedRelays(
     env,
     `loop ${primitive.id}`,
     childRunId,
+    bodyStepPathPrefix,
     resumeFromLog(childRunId, childLog),
     finishLoopResume(
       primitive,
@@ -4955,6 +5003,7 @@ async function runMap(
   primitive: MapPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
+  lineage: RunLineage,
 ): Promise<unknown> {
   const over = evaluate(primitive.over, selectorCtx);
   if (!Array.isArray(over)) {
@@ -4997,6 +5046,7 @@ async function runMap(
         env,
         runId,
         scopedStep,
+        { stepPath: [...lineage.stepPathPrefix, primitive.id], mapIndex: i },
         itemCtx,
         abort,
         "buffered",
@@ -7271,6 +7321,7 @@ async function loadPlannedRelays(
   env: WorkflowRuntimeEnv,
   container: string,
   childRunId: string,
+  childStepPathPrefix: readonly string[],
   childState: RunState,
   planned: readonly PlannedChildRelay[],
 ): Promise<ChildRelay[]> {
@@ -7286,9 +7337,11 @@ async function loadPlannedRelays(
         ? undefined
         : await findParkedApprovalSnapshot({
             // A relaying body's own body can hold a lost park too.
-            repoStore: { read: (id) => bodyLogForRelays(env, id) },
+            readLog: (id, stepPathPrefix) =>
+              bodyLogForRelays(env, id, stepPathPrefix),
             load,
             runId: childRunId,
+            stepPathPrefix: childStepPathPrefix,
             state: childState,
             stepId: relay.stepId,
             attempt: relay.attempt,
@@ -7324,6 +7377,7 @@ function childSpawnSeq(
 async function planChildWorkflowResume(
   env: WorkflowRuntimeEnv,
   stepId: string,
+  childStepPathPrefix: readonly string[],
   definitionRef: string,
   prior: RunState,
   parentLog: readonly WorkflowEvent[],
@@ -7358,7 +7412,11 @@ async function planChildWorkflowResume(
       terminalStatus: recorded.terminalStatus,
     };
   }
-  const childLog = await bodyLogForRelays(env, recorded.childRunId);
+  const childLog = await bodyLogForRelays(
+    env,
+    recorded.childRunId,
+    childStepPathPrefix,
+  );
   if (childLog.length === 0) {
     if (step.phase === "awaiting-signal") {
       throw new Error(
@@ -7392,6 +7450,7 @@ async function planChildWorkflowResume(
       env,
       `childWorkflow ${stepId}`,
       recorded.childRunId,
+      childStepPathPrefix,
       childState,
       planChildRelays(
         `childWorkflow ${stepId}`,
@@ -7628,6 +7687,7 @@ async function runChildWorkflow(
   // synthesizes it) and never writes a phantom child-run log. The child runs
   // one rung deeper; the ceiling is tree-wide (threaded from this run).
   const childDepth = lineage.depth + 1;
+  const childStepPathPrefix = [...lineage.stepPathPrefix, primitive.id];
   assertSpawnDepthWithinLimit(
     childDepth,
     primitive.id,
@@ -7655,6 +7715,7 @@ async function runChildWorkflow(
   const plan = await planChildWorkflowResume(
     env,
     primitive.id,
+    childStepPathPrefix,
     definitionRef,
     prior,
     parentLog,
@@ -7738,6 +7799,7 @@ async function runChildWorkflow(
           signal: childAbort.signal,
           depth: childDepth,
           maxChildSpawnDepth: lineage.maxChildSpawnDepth,
+          stepPathPrefix: childStepPathPrefix,
           ...(childEvents.length > 0 ? { resumeFromEvents: childEvents } : {}),
         });
         handle = spawnedHandle;
@@ -7935,11 +7997,12 @@ async function lostApprovalPark(
   runId: string,
   stepId: string,
   attempt: number,
+  place: StepPlace,
   readLog: () => Promise<readonly WorkflowEvent[]>,
 ): Promise<ParkedApprovalOp | undefined> {
   const parkedOps =
     env.readParkedApprovalOps !== undefined
-      ? await env.readParkedApprovalOps({ runId, stepId, attempt })
+      ? await env.readParkedApprovalOps({ runId, stepId, attempt, place })
       : [];
   // A step-attempt parks on at most one control-plane suspension. More than
   // one durable pending approval op is a corrupt store, not a state the
@@ -7994,7 +8057,8 @@ function lostParkAwaited(
  * The plan then relays such a park as it does any other, and finds it again
  * after a crash that came after the container relayed it but before the body
  * re-committed it. Whatever re-registers a container's parks reads its bodies
- * through this too, so it finds the same parks.
+ * through this too, so it finds the same parks. `stepPathPrefix` is the body
+ * run's step path prefix.
  */
 export async function bodyLogForRelays(
   env: Pick<
@@ -8002,6 +8066,7 @@ export async function bodyLogForRelays(
     "repoStore" | "readParkedApprovalOps" | "clock"
   >,
   childRunId: string,
+  stepPathPrefix: readonly string[],
 ): Promise<WorkflowEvent[]> {
   const log = [...(await env.repoStore.read(childRunId))];
   if (log.length === 0) return log;
@@ -8011,11 +8076,16 @@ export async function bodyLogForRelays(
   let seq = state.lastSeq;
   for (const step of state.steps.values()) {
     if (step.phase !== "in-flight") continue;
+    // A loop iteration's scoped step is in flight while its body runs, and
+    // its id decodes as a map item's would. That step never invokes an agent,
+    // so no park is stored for it, and the loop records its proxy park on the
+    // loop's own id, never on the scoped id. The read finds no park for it.
     const parked = await lostApprovalPark(
       env,
       childRunId,
       step.stepId,
       step.currentAttempt,
+      parkedStepPlace(stepPathPrefix, step.stepId),
       async () => committed,
     );
     if (parked === undefined) continue;

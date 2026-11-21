@@ -98,6 +98,51 @@ function parkedSeedSteps(
 }
 
 /**
+ * A durable log whose container step `stepId` spawned `childRunId` and relays
+ * the child's park on `corr-deep`.
+ */
+function relayingRun(
+  runId: string,
+  stepId: string,
+  childRunId: string,
+): WorkflowEvent[] {
+  return [
+    {
+      kind: "RunStarted",
+      seq: 1,
+      at,
+      runId,
+      definitionHash: "x",
+      trigger: { type: "manual", payload: undefined },
+    },
+    {
+      kind: "StepStarted",
+      seq: 2,
+      at,
+      stepId,
+      attempt: 1,
+      input: { ref: "inline:null" },
+    },
+    {
+      kind: "ChildSpawned",
+      seq: 3,
+      at,
+      stepId,
+      childRunId,
+      childDefinitionRef: "body",
+    },
+    {
+      kind: "SignalAwaited",
+      seq: 4,
+      at,
+      stepId,
+      signalName: signalName("corr-deep"),
+      parkKind: "approval",
+    },
+  ];
+}
+
+/**
  * A substrate stub that resolves `getRepoDir` the way the real substrate does
  * -- `<baseDir>/<kind>/<id>` -- and surfaces any other method as a precise
  * failure. `getRepoDir` is the only method the enumeration exercises.
@@ -173,7 +218,13 @@ describe("collectParkedApprovalCorrelations", () => {
       },
     ]);
     expect(calls).toEqual([
-      { runId: "run-1", stepId: "s", attempt: 1, correlationId: "corr-1" },
+      {
+        runId: "run-1",
+        stepId: "s",
+        attempt: 1,
+        place: { stepPath: ["s"] },
+        correlationId: "corr-1",
+      },
     ]);
   });
 
@@ -413,14 +464,60 @@ describe("collectParkedApprovalCorrelations", () => {
         runId: "parent-run",
         stepId: "spawn",
         attempt: 1,
+        place: { stepPath: ["spawn"] },
         correlationId: "corr-body",
       },
       {
         runId: "child-run",
         stepId: "hold",
         attempt: 1,
+        place: { stepPath: ["spawn", "hold"] },
         correlationId: "corr-body",
       },
+    ]);
+  });
+
+  test("a park two levels down is loaded at the place its container chain names", async () => {
+    // The top-level onTrigger section relays its body's park. The body's
+    // childWorkflow step relays its child's park. The child's agent step
+    // holds the snapshot.
+    const baseDir = await makeTempDir();
+    const runsDir = path.join(baseDir, repoId.kind, repoId.id, "runs");
+    const runtimeRepoStore = createInMemoryRepoStore();
+    const runs = {
+      "top-run": relayingRun("top-run", "section", "body-run"),
+      "body-run": relayingRun("body-run", "spawn", "child-run"),
+      "child-run": parkedSeed("child-run", "ask", signalName("corr-deep")),
+    };
+    for (const [runId, events] of Object.entries(runs)) {
+      await fs.mkdir(path.join(runsDir, runId), { recursive: true });
+      for (const event of events) await runtimeRepoStore.append(runId, event);
+    }
+    const places: unknown[] = [];
+    const loadParkedApproval: LoadParkedApproval = async (args) => {
+      places.push([args.runId, args.place]);
+      return args.runId === "child-run" ? snapshot : undefined;
+    };
+
+    const result = await collectParkedApprovalCorrelations({
+      substrate: createStubSubstrate(baseDir),
+      repoId,
+      runtimeRepoStore,
+      loadParkedApproval,
+    });
+
+    expect(result).toEqual([
+      {
+        runId: "top-run",
+        correlationId: "corr-deep",
+        parkKind: "approval",
+        snapshot,
+      },
+    ]);
+    expect(places).toEqual([
+      ["top-run", { stepPath: ["section"] }],
+      ["body-run", { stepPath: ["section", "spawn"] }],
+      ["child-run", { stepPath: ["section", "spawn", "ask"] }],
     ]);
   });
 

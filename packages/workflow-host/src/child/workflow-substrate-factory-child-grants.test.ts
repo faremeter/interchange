@@ -322,6 +322,7 @@ describe("createSidecarRunChild grant capping", () => {
         signal: new AbortController().signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["s"],
       },
       noopOnEvent,
     );
@@ -386,6 +387,7 @@ describe("createSidecarRunChild grant capping", () => {
         signal: new AbortController().signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["s"],
       },
       noopOnEvent,
     );
@@ -448,6 +450,7 @@ describe("createSidecarRunChild grant capping", () => {
           signal: new AbortController().signal,
           depth: 1,
           maxChildSpawnDepth: 32,
+          stepPathPrefix: ["s"],
         },
         noopOnEvent,
       ),
@@ -540,6 +543,7 @@ describe("createSidecarRunChild root grants", () => {
         signal: new AbortController().signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["s"],
       },
       noopOnEvent,
       {

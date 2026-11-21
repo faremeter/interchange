@@ -3,6 +3,7 @@ import { describe, test, expect } from "bun:test";
 import {
   scopedStepId,
   baseStepId,
+  scopedStepIndex,
   loopBodyRunId,
   sectionBodyRunId,
 } from "./step-scope";
@@ -36,6 +37,20 @@ describe("step-scope", () => {
     expect(baseStepId("a[1]b")).toBe("a[1]b");
     // Only the single trailing scope is stripped.
     expect(baseStepId("foo[0]")).toBe("foo");
+  });
+
+  test("scopedStepIndex inverts scopedStepId", () => {
+    for (const base of ["foo", "step-1_a"]) {
+      for (const index of [0, 1, 9, 42, 100]) {
+        expect(scopedStepIndex(scopedStepId(base, index))).toBe(index);
+      }
+    }
+  });
+
+  test("scopedStepIndex is undefined on an unscoped id", () => {
+    expect(scopedStepIndex("foo")).toBeUndefined();
+    expect(scopedStepIndex("foo[x]")).toBeUndefined();
+    expect(scopedStepIndex("a[1]b")).toBeUndefined();
   });
 
   test("loopBodyRunId prefixes the container run id", () => {

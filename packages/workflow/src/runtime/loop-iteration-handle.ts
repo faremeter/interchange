@@ -50,6 +50,8 @@ export function createLoopIterationHandle(
      */
     depth: number;
     maxChildSpawnDepth: number;
+    /** The iteration body's step path prefix, forwarded to the body run. */
+    stepPathPrefix: readonly string[];
     /**
      * A durable child log to re-adopt instead of a fresh spawn. `runLoop` sends
      * it when re-linking a parked iteration on crash-resume (planLoopResume);
@@ -82,6 +84,7 @@ export function createLoopIterationHandle(
     input: args.input,
     depth: args.depth,
     maxChildSpawnDepth: args.maxChildSpawnDepth,
+    stepPathPrefix: args.stepPathPrefix,
     ...(args.resumeFromEvents !== undefined
       ? { resumeFromEvents: args.resumeFromEvents }
       : {}),

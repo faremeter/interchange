@@ -195,6 +195,11 @@
       "types": "./dist/step-state-snapshot.d.ts",
       "default": "./dist/step-state-snapshot.js"
     },
+    "./step-place": {
+      "intx-src": "./src/step-place.ts",
+      "types": "./dist/step-place.d.ts",
+      "default": "./dist/step-place.js"
+    },
     "./message-id": {
       "intx-src": "./src/message-id.ts",
       "types": "./dist/message-id.d.ts",

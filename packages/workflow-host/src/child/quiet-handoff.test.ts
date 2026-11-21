@@ -264,6 +264,7 @@ async function childStack(
       input: spawn.input,
       depth: spawn.depth,
       maxChildSpawnDepth: spawn.maxChildSpawnDepth,
+      stepPathPrefix: spawn.stepPathPrefix,
       ...(spawn.resumeFromEvents !== undefined
         ? { resumeFromEvents: spawn.resumeFromEvents }
         : {}),

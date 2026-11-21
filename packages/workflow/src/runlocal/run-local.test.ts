@@ -92,6 +92,57 @@ describe("runLocal childWorkflow env inheritance", () => {
     expect(invoked).toEqual(["child-agent"]);
   });
 
+  test("a step in a spawned child, and in a loop inside it, gets its place", async () => {
+    // The child's two branches run concurrently, so places are keyed by agent.
+    const places = new Map<string, unknown>();
+    const invokeStep: StepInvoker = async ({ agent, place }) => {
+      places.set(agent.id, place);
+      return { output: `output-from-${agent.id}` };
+    };
+    const parent = defineWorkflow({
+      id: "env-fidelity-place-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "env-fidelity-place-child",
+            trigger: { type: "manual" },
+            steps: {
+              work: step({ agent: makeAgent("child-agent") }),
+              rework: loop({
+                body: defineWorkflow({
+                  id: "env-fidelity-place-loop-body",
+                  trigger: { type: "manual" },
+                  steps: { inLoop: step({ agent: makeAgent("loop-agent") }) },
+                }),
+                while: "stop",
+                carry: "keep",
+                maxIterations: 1,
+                onExhausted: "done",
+              }),
+              done: action({ handler: "done", after: ["rework"] }),
+            },
+          }),
+        }),
+      },
+    });
+
+    const result = await runLocal(parent, {
+      authorize: allow,
+      hasUpstreamSignalResolver: true,
+      invokeStep,
+      actionResolver: () => async () => null,
+      loopFns: (ref) =>
+        ref === "stop" ? () => false : (_output, input) => input,
+    }).complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(Object.fromEntries(places)).toEqual({
+      "child-agent": { stepPath: ["spawn", "work"] },
+      "loop-agent": { stepPath: ["spawn", "rework", "inLoop"] },
+    });
+  });
+
   test("a spawned child consults the injected authorize", async () => {
     const resources: string[] = [];
     const authorize: WorkflowAuthorizeFn = async (resource) => {

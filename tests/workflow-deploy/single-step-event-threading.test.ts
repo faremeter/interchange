@@ -153,6 +153,7 @@ function buildRequest(
     input: { goal: "record the value" },
     replyByMail: false,
     authzContext,
+    place: { stepPath: ["step1"] },
     signal: new AbortController().signal,
   };
 }

@@ -13,7 +13,11 @@
 import { describe, test, expect } from "bun:test";
 
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
-import { correlationIdFromSignalName, signalName } from "@intx/types";
+import {
+  correlationIdFromSignalName,
+  signalName,
+  type StepPlace,
+} from "@intx/types";
 import type { ConversationTurn } from "@intx/types/runtime";
 
 import {
@@ -27,6 +31,7 @@ import {
   runtimeRun,
   step,
   type ParkedApprovalOp,
+  type ReadParkedApprovalOps,
   type SignalChannel,
   type StepInvoker,
   type WorkflowDefinition,
@@ -124,11 +129,12 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
     const corr = "corr-crashed-park";
     const channel = createInMemorySignalChannel();
     const repoStore = createInMemoryRepoStore();
-    const readCalls: { runId: string; stepId: string; attempt: number }[] = [];
+    const readCalls: Parameters<ReadParkedApprovalOps>[0][] = [];
     const persistCalls: {
       runId: string;
       stepId: string;
       attempt: number;
+      place: StepPlace;
       correlationId: string;
       awaitedBefore: number;
     }[] = [];
@@ -176,10 +182,19 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
     );
 
     // The classifier consulted the binding for exactly the crashed step-attempt.
-    expect(readCalls).toEqual([{ runId, stepId: "s", attempt: 1 }]);
+    expect(readCalls).toEqual([
+      { runId, stepId: "s", attempt: 1, place: { stepPath: ["s"] } },
+    ]);
     // The park's state was made durable once, before its SignalAwaited.
     expect(persistCalls).toEqual([
-      { runId, stepId: "s", attempt: 1, correlationId: corr, awaitedBefore: 0 },
+      {
+        runId,
+        stepId: "s",
+        attempt: 1,
+        place: { stepPath: ["s"] },
+        correlationId: corr,
+        awaitedBefore: 0,
+      },
     ]);
     // The agent was not re-invoked as a fresh park.
     expect(invoked).toBe(0);

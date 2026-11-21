@@ -128,6 +128,7 @@ export type RunChildWorkflow = (
     signal: AbortSignal;
     depth: number;
     maxChildSpawnDepth: number;
+    stepPathPrefix: readonly string[];
     resumeFromEvents?: readonly WorkflowEvent[];
   },
   onEvent: (event: InferenceEvent) => void,
@@ -177,6 +178,7 @@ export function createInMemorySpawnChild(opts: {
       signal,
       depth,
       maxChildSpawnDepth,
+      stepPathPrefix,
       resumeFromEvents,
     },
     onEvent,
@@ -216,6 +218,7 @@ export function createInMemorySpawnChild(opts: {
         signal,
         depth,
         maxChildSpawnDepth,
+        stepPathPrefix,
         ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       },
       onEvent,
@@ -245,6 +248,7 @@ export type RunSuspendableChild = (
     signal: AbortSignal;
     depth: number;
     maxChildSpawnDepth: number;
+    stepPathPrefix: readonly string[];
     resumeFromEvents?: readonly WorkflowEvent[];
   },
   /**
@@ -301,6 +305,7 @@ export function createInMemorySpawnSuspendableChild(opts: {
       signal,
       depth,
       maxChildSpawnDepth,
+      stepPathPrefix,
       resumeFromEvents,
     },
     onEvent,
@@ -334,6 +339,7 @@ export function createInMemorySpawnSuspendableChild(opts: {
         signal,
         depth,
         maxChildSpawnDepth,
+        stepPathPrefix,
         ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       },
       onEvent,

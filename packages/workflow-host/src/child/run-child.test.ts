@@ -63,6 +63,7 @@ import { createParkReleases } from "./park-releases";
 import { emitParkNotify, emitTerminalEvent } from "./run-child";
 import type {
   RunResult,
+  StepInvokeRequest,
   WorkflowDefinition,
   WorkflowEvent,
   WorkflowPark,
@@ -332,6 +333,7 @@ async function materializeClosure(
     steps: Record<string, unknown>;
     stepOrder: string[];
   },
+  loopsSource?: string,
 ): Promise<{
   packageDir: string;
   approvedHash: string;
@@ -343,7 +345,10 @@ async function materializeClosure(
     JSON.stringify({
       name: "@fixture/run-child",
       version: "1.0.0",
-      interchange: { workflow: "workflow.mjs" },
+      interchange: {
+        workflow: "workflow.mjs",
+        ...(loopsSource !== undefined ? { loops: "loops.mjs" } : {}),
+      },
     }),
     "utf8",
   );
@@ -352,6 +357,9 @@ async function materializeClosure(
     `export const workflow = ${JSON.stringify(definition)};\n`,
     "utf8",
   );
+  if (loopsSource !== undefined) {
+    await fs.writeFile(path.join(packageDir, "loops.mjs"), loopsSource, "utf8");
+  }
   const live = await loadWorkflowDefinitionFromClosure({ packageDir });
   const approvedHash = await computeLiveDefinitionHash(live);
   return { packageDir, approvedHash, definition: live };
@@ -703,6 +711,124 @@ describe("runWorkflowChild", () => {
     expect(result.triggeredRunIds).toEqual(["run-1"]);
     expect(result.finalCredentialsSnapshot).not.toBeNull();
     expect(result.finalCredentialsSnapshot?.steps).toHaveLength(1);
+  });
+
+  test("a step in a top-level loop body gets its place", async () => {
+    const baseDir = await makeTempDir("child-loop-place-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const {
+      packageDir: closurePackageDir,
+      approvedHash: definitionHash,
+      definition,
+    } = await materializeClosure(
+      "child-loop-place-def-",
+      {
+        id: "loop-place",
+        triggers: [],
+        steps: {
+          rework: {
+            kind: "loop",
+            id: "rework",
+            body: {
+              id: "loop-place-body",
+              triggers: [],
+              steps: { inLoop: agentStep("inLoop") },
+              stepOrder: ["inLoop"],
+            },
+            while: "stop",
+            carry: "keep",
+            maxIterations: 1,
+            onExhausted: "done",
+            drainBehavior: "cancel",
+          },
+          done: {
+            kind: "escalation",
+            id: "done",
+            to: "operator",
+            after: ["rework"],
+          },
+        },
+        stepOrder: ["rework", "done"],
+      },
+      [
+        "export const stop = () => false;",
+        "export const keep = (_output, input) => input;",
+        "",
+      ].join("\n"),
+    );
+    await seedProcessingEntry(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      {
+        address: "deployment-x@example.com",
+        messageId: "msg-loop",
+        receivedAt: 1,
+        text: "run the loop",
+      },
+    );
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const { promise: invoked, resolve: onInvoke } =
+      Promise.withResolvers<StepInvokeRequest>();
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      invokeStep: async (req) => {
+        onInvoke(req);
+        return { output: null };
+      },
+      // Required once a deployment carries a loop body. The loop host runs
+      // the iteration itself, so no onTrigger body reaches this executor.
+      runSuspendableChild: () =>
+        Promise.reject(new Error("this deployment has no onTrigger body")),
+    };
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+
+    const runPromise = runWorkflowChild({
+      env,
+      definition,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: createMemoryFrameStream().writer,
+      bindings,
+    });
+    await waitForUpstreamPayload(childToSupervisor, "ready");
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: {
+        runId: "run-loop",
+        mailIdentity: { messageId: "msg-loop" },
+        receivedAt: 1,
+        requestId: "input-loop",
+        payload: textMail("run the loop"),
+      },
+    });
+    const req = await invoked;
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+
+    expect(req.authzContext.stepId).toBe("inLoop");
+    expect(req.place).toEqual({ stepPath: ["rework", "inLoop"] });
   });
 
   test("a later quiet check supersedes one still waiting, which is not answered", async () => {

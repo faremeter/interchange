@@ -215,6 +215,7 @@ function requestForRun(runId: string, attempt = 1): StepInvokeRequest {
     input: null,
     replyByMail: false,
     authzContext: { stepId: STEP_ID, runId, attempt },
+    place: { stepPath: [STEP_ID] },
     signal: new AbortController().signal,
   };
 }
@@ -369,6 +370,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       input: null,
       replyByMail: false,
       authzContext: { stepId: scopedId, runId: "run-1", attempt: 1 },
+      place: { stepPath: [STEP_ID], mapIndex: 0 },
       signal: new AbortController().signal,
     };
     const { env } = await buildEnv(scopedRequest, sourcesRefFor());
@@ -450,6 +452,7 @@ function approvalResumeRequest(
     input: null,
     replyByMail: false,
     authzContext: { stepId: STEP_ID, runId, attempt: 1 },
+    place: { stepPath: [STEP_ID] },
     resume: {
       correlationId,
       decision: { outcome: "approved" },

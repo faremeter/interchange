@@ -230,6 +230,7 @@ function startCapture(args: {
         input: input.input,
         depth: input.depth,
         maxChildSpawnDepth: input.maxChildSpawnDepth,
+        stepPathPrefix: input.stepPathPrefix,
         ...(input.resumeFromEvents !== undefined
           ? { resumeFromEvents: input.resumeFromEvents }
           : {}),
@@ -388,6 +389,7 @@ async function resumeOnHost(args: {
         input: input.input,
         depth: input.depth,
         maxChildSpawnDepth: input.maxChildSpawnDepth,
+        stepPathPrefix: input.stepPathPrefix,
         ...(input.resumeFromEvents !== undefined
           ? { resumeFromEvents: input.resumeFromEvents }
           : {}),

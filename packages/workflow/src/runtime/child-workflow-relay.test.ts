@@ -129,6 +129,7 @@ function holdSpawnUntilChildAwaits(
       input: input.input,
       depth: input.depth,
       maxChildSpawnDepth: input.maxChildSpawnDepth,
+      stepPathPrefix: input.stepPathPrefix,
       signal: input.signal,
       surfaceInputPark: true,
     });
@@ -1454,6 +1455,7 @@ describe("park-release watch", () => {
       input: null,
       depth: 1,
       maxChildSpawnDepth: 32,
+      stepPathPrefix: [],
       signal: new AbortController().signal,
       surfaceInputPark: true,
     });

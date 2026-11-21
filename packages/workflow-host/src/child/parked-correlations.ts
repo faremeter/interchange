@@ -110,10 +110,15 @@ export async function collectParkedApprovalCorrelations(
           `workflow-child parked-correlations: run ${run.runId} step ${step.stepId} is parked on control-plane correlation ${correlationId}, but no loadParkedApproval binding is wired to recover its snapshot`,
         );
       }
+      // Self-discovery returns top-level runs only, so each run's step path
+      // prefix is empty. The walk extends it down to a body that holds the
+      // park.
       const snapshot = await findParkedApprovalSnapshot({
-        repoStore: { read: (id) => bodyLogForRelays(bodyEnv, id) },
+        readLog: (id, stepPathPrefix) =>
+          bodyLogForRelays(bodyEnv, id, stepPathPrefix),
         load: opts.loadParkedApproval,
         runId: run.runId,
+        stepPathPrefix: [],
         state: run.resumedState,
         stepId: step.stepId,
         attempt: step.currentAttempt,

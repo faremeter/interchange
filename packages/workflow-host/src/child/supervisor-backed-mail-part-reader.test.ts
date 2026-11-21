@@ -158,6 +158,7 @@ function buildRequest(input: unknown): StepInvokeRequest {
     input,
     replyByMail: false,
     authzContext,
+    place: { stepPath: ["step-1"] },
     signal: new AbortController().signal,
   };
 }
