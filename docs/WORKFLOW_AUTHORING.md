@@ -182,12 +182,43 @@ Where it lives today: `routeLoopOutcome`,
 
 **10.** A loop iteration's `AuthorizeContext.runId` is
 `<parentRunId>__<loopId>__<index>`, distinct per iteration. That is what lets
-a host give each iteration its own workdir, and therefore its own fresh agent
-conversation.
+a host give each iteration its own workdir. The agent conversation does not
+start over with the iteration. An agent step's conversation belongs to its
+place in the deployment: its path of step ids, plus the item index for a
+`map` item. The step continues that conversation each time its place runs
+again:
+
+- A loop body step continues it in the next iteration. A `map` item in a
+  loop body continues the conversation of the same index.
+- An `onTrigger` body step continues it at the next event.
+- The body steps of a `childWorkflow` step continue it each time the
+  `childWorkflow` step runs again, as in a loop.
+- In a multi-step workflow, a turn that fails commits nothing, so a retry
+  continues from the last committed turn and does not see the failed turn's
+  partial work. A turn whose reply by mail was sent commits like any settled
+  turn, and its record of the send on the connector thread commits with it.
+  The step is not retried after the send, because a retry would send a
+  second, different reply. If that commit fails, the step fails without a
+  retry, and the next invocation does not see the turn: not its inbound mail
+  and not its reply. The thread continues when the recipient answers,
+  because their References name the thread.
+- In a multi-step workflow, the next invocation rolls back a turn that
+  parked on an approval to the start of that turn. This applies when the
+  park was never resumed, for example because its step failed after the
+  park. It also applies when a resume parks again, because the resume keeps
+  the start of the original turn, and when a resume fails, because that
+  resume commits nothing. Thus the conversation that the next invocation
+  sees can lack an approved action that a resume ran. The effects of that
+  action stay.
+
+The conversation lives as long as the deployment's run repository. The same
+address and the same step path mean the same conversation.
 
 Where it lives today: `loopBodyRunId`,
 `packages/workflow/src/runtime/step-scope.ts` (`runLoop` in
-`packages/workflow/src/runtime/run.ts` is the caller)
+`packages/workflow/src/runtime/run.ts` is the caller); `stepPlaceKey`,
+`packages/types/src/step-place.ts`; `createDurableConversationStore`,
+`packages/workflow-host/src/conversation-state.ts`
 
 **11.** `escalation` needs no handler ref and no resolver. It is a pure
 runtime node that emits `{ escalatedTo, payload }`. That makes it the cheapest

@@ -28,9 +28,12 @@
 //      before the turn returns.
 //   5. Tear down the agent (close + lock release) on every exit path,
 //      whether the step completed cleanly, the abort signal fired, or
-//      the underlying `agent.send` rejected, then settle the step's
-//      conversation, when `buildEnv` returned one, so the host can commit
-//      the step's durable state before the result is returned.
+//      the underlying `agent.send` rejected. After a turn that settled,
+//      settle the step's conversation, when `buildEnv` returned one, so the
+//      host can commit the step's durable state before the result is
+//      returned. A turn whose reply by mail was sent commits like any
+//      settled turn, and its record of the send on the connector thread
+//      commits with it.
 //
 // Abort handling: when `signal.aborted` fires mid-step, the adapter
 // closes the agent (which drains the send queue with
@@ -114,9 +117,10 @@ export type StepEnvBase = Omit<BaseEnv, "authorize">;
 /**
  * What `buildEnv` returns for one step invocation: the step's env, and the
  * connector conversation over the durable store the env's `storage` is
- * built over. The cold path settles `conversation` after each turn. It is
- * `undefined` when the step has no durable conversation state, and for a
- * warm build, whose conversation `warmConversation` drives.
+ * built over. The cold path settles `conversation` after each turn that
+ * settled. It is `undefined` when the step has no durable conversation
+ * state, and for a warm build, whose conversation `warmConversation`
+ * drives.
  */
 export type StepBuild = {
   env: StepEnvBase;
@@ -144,19 +148,31 @@ export interface WorkflowStepInvokerOpts {
    * On the cold path, the adapter drives the turn through the returned
    * conversation the same way the warm path drives `warmConversation`: the turn
    * start, the mail seed, the approval park, and the reply of a step that sets
-   * `replyByMail`. It awaits the conversation's `settle` after the agent has
-   * closed, and returns the step's result only once it resolves. The sidecar's
-   * `settle` commits the step's durable state, so every turn is durable before
-   * the run records it and a replacement host resumes the step where that turn
-   * left it. It runs whether the send completed, suspended, aborted, or
-   * rejected, and whether or not closing the agent succeeded: the agent's own
+   * `replyByMail`. After a turn that settled, with output or on a park, it
+   * awaits the conversation's `settle` once the agent has closed, and returns
+   * the step's result only once it resolves. The sidecar's `settle` commits
+   * the step's durable state, so every settled turn is durable before the run
+   * records it and a replacement host resumes the step where that turn left
+   * it. It runs whether or not closing the agent succeeded: the agent's own
    * close waits for its in-flight commits before the tool disposers that can
-   * fail it run. A settle failure rejects the step with a
+   * fail it run. A turn that threw, also on an abort, is not settled, so it
+   * commits nothing, and the step's next invocation, a retry or the next run
+   * of its place, continues from the last committed turn and not from the
+   * failed turn's partial work. A turn whose reply by mail was sent commits
+   * like any settled turn, and its record of the send on the connector
+   * thread commits with it. The step is not retried after the send, because
+   * a retry would send a second, different reply. If that commit fails, the
+   * step fails without a retry, and the next invocation does not see the
+   * turn: not its inbound mail and not its reply. The thread continues when
+   * the recipient answers, because their References name the thread. When
+   * the thread cannot take the send, which only a broken connector state
+   * causes, the turn commits without the thread advance and the step fails
+   * without a retry. A settle failure rejects the step with a
    * `StepOutcomeCommitError`, which the runtime neither retries nor routes
-   * because the turn's work already happened, unless the step already failed,
-   * in which case it is logged. A close that fails after a turn that did not
-   * fail rejects the step the same way. The warm path does not use the returned
-   * conversation; `warmConversation` drives the warm agent's conversation.
+   * because the turn's work already happened. A close that fails after a
+   * turn that did not fail rejects the step the same way. The warm path does
+   * not use the returned conversation; `warmConversation` drives the warm
+   * agent's conversation.
    */
   buildEnv: (req: StepInvokeRequest) => Promise<StepBuild>;
   /**
@@ -330,13 +346,38 @@ async function invokeColdStep(
   // the close and the settle. A crash after the send and before the settle
   // commits leaves the turn uncommitted, and the step fails without
   // running again, so a cold step's reply is sent at most once.
+  //
+  // Only a turn that settled, with output or on a park, is committed. A
+  // turn that throws commits nothing, so the next invocation of the step,
+  // a retry or the next run of its place, continues from the last
+  // committed turn and not from the failed turn's partial work. A turn
+  // whose reply by mail was sent commits like any settled turn, and its
+  // record of the send on the connector thread commits with it. The step
+  // is not retried after the send, because a retry would send a second,
+  // different reply. If that commit fails, the step fails without a retry,
+  // and the next invocation does not see the turn: not its inbound mail and
+  // not its reply. The thread continues when the recipient answers, because
+  // their References name the thread. When the connector thread refuses
+  // the send (see `replyFailureError`), the reply still went out, so the
+  // turn commits without the thread advance and the step fails.
+  let turnSettled = false;
   return runBodyThenCleanup(
-    () =>
-      runConversationTurn(agent, req, {
-        conversation,
-        mailPartReader: opts.mailPartReader,
-        closeOnAbort: true,
-      }),
+    async () => {
+      try {
+        const result = await runConversationTurn(agent, req, {
+          conversation,
+          mailPartReader: opts.mailPartReader,
+          closeOnAbort: true,
+        });
+        turnSettled = true;
+        return result;
+      } catch (err) {
+        // In a turn, only a reply that was sent and that the connector
+        // thread then refused throws this error (see `replyFailureError`).
+        if (err instanceof StepOutcomeCommitError) turnSettled = true;
+        throw err;
+      }
+    },
     async () => {
       let closeFailure: { cause: unknown } | undefined;
       try {
@@ -346,7 +387,7 @@ async function invokeColdStep(
       } finally {
         await eventForward;
       }
-      if (conversation !== undefined) {
+      if (conversation !== undefined && turnSettled) {
         try {
           await conversation.settle();
         } catch (cause) {
@@ -362,7 +403,7 @@ async function invokeColdStep(
       }
     },
     (cause) =>
-      logger.error`step invoker: ${describeStep(req)}: closing or settling the step failed while unwinding a step error; surfacing the step error, cleanup failure: ${cause instanceof Error ? cause.message : String(cause)}`,
+      logger.error`step invoker: ${describeStep(req)}: closing the step's agent or committing its turn failed while unwinding a step error; surfacing the step error, cleanup failure: ${cause instanceof Error ? cause.message : String(cause)}`,
   );
 }
 
@@ -377,7 +418,9 @@ function describeStep(req: StepInvokeRequest): string {
  * plain `Error` that the runtime can retry. A reply whose send acked but whose
  * connector thread advance failed already went out, and a retry would send it
  * again, so the turn fails with a `StepOutcomeCommitError`, which the runtime
- * neither retries nor routes.
+ * neither retries nor routes. For a cold step the advance fails only when the
+ * connector router refuses it, which only a broken connector state causes;
+ * the warm step's advance also fails when its local store cannot save it.
  */
 function replyFailureError(
   settlement: Extract<ReplySettlement, { ok: false }>,
@@ -397,8 +440,8 @@ function replyFailureError(
     case "persist":
       return new StepOutcomeCommitError(
         new Error(
-          "the step's auto-reply was sent, but recording it on the " +
-            `connector thread failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          "the step's auto-reply was sent, but advancing the connector " +
+            `thread with it failed: ${cause instanceof Error ? cause.message : String(cause)}`,
           { cause },
         ),
         "commit",

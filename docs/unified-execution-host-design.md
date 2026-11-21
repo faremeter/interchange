@@ -417,9 +417,11 @@ multi-step durability model:
   deployment's top-level run at the step's key,
   `runs/<topLevelRunId>/steps/<key>/`, whichever run the step runs in. The
   key is the step's path of step ids joined with `.`, plus `[i]` for a map
-  item, so a top-level step's key is its step id. A cold step stamps the
-  state with the invocation that wrote it (its run, step id and attempt). An
-  invocation that did not write the state starts over from the seed.
+  item, so a top-level step's key is its step id. Each invocation of the
+  place continues the conversation the last one committed. A cold step
+  stamps the state with the invocation that wrote it (its run, step id and
+  attempt); another invocation rolls back a turn that invocation left parked
+  on an approval.
 - **Kill+respawn mid-conversation.** If the child dies mid-turn, the in-flight
   run's log lacks a terminal event; `discoverInFlightRuns`
   (`packages/workflow-host/src/child/run-child.ts`) finds it on respawn and

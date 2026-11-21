@@ -351,6 +351,42 @@ describe("workflowRunKindHandler.validatePush — step state", () => {
     if (!r.ok) throw new Error(r.reason);
   });
 
+  test("accepts a parked turn start on a checkpoint and a WAL entry, and rejects a negative one", async () => {
+    const parked = {
+      ...METADATA,
+      invocation: { runId: RUN, stepId: STEP, attempt: 1 },
+      parkedTurnStart: 2,
+    };
+    const r = await validate(
+      {
+        ...runEvents,
+        ...buildStepStateCheckpoint(stateDir(), 1, {
+          turns: [turn("0"), turn("1"), turn("2")],
+          ...parked,
+        }),
+        [stepStateWalEntryPath(stateDir(), 1)]: serializeStepStateWalEntry(
+          1,
+          [],
+          parked,
+        ),
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    if (!r.ok) throw new Error(r.reason);
+
+    await expectRejected(
+      {
+        ...runEvents,
+        [stepStateWalEntryPath(stateDir(), 0)]: serializeStepStateWalEntry(
+          0,
+          [],
+          { ...parked, parkedTurnStart: -1 },
+        ),
+      },
+      /metadata.parkedTurnStart must be non-negative/,
+    );
+  });
+
   test("accepts a compaction that rewrites the checkpoint and truncates the WAL", async () => {
     const r = await validate(
       { ...runEvents, ...checkpoint(2, 2) },

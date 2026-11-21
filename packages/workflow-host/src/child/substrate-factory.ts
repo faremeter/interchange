@@ -1104,8 +1104,9 @@ export function createSidecarStepBuildEnv(
     // store for its deployment's life. A cold step opens a store per
     // invocation over the per-attempt local store, and stamps the state with
     // the invocation; its conversation's `settle` commits it once the turn
-    // settles, so a resume of the same invocation restores the conversation
-    // that turn left. The workdir and tools stay local in both cases.
+    // settles, so the next invocation of the step's place, or a resume of the
+    // same invocation, continues the conversation that turn left. The workdir
+    // and tools stay local in both cases.
     let storage: ContextStore & AuditStore;
     let coldStore: DurableConversationStore | undefined;
     if (deps.durableConversation !== undefined) {

@@ -312,9 +312,8 @@ export const WORKFLOW_RUN_STEP_STATE_DIR = "state";
 
 /**
  * A step's seed: a `StepStateSnapshot` the Hub commits beside the step's
- * `state/` for the step to start from. The step starts from it whenever it
- * has no state of its own, which covers its first turn and another
- * invocation, such as a retried attempt, that starts over. It sits outside
+ * `state/` for the step to start from. The step starts from it while it has
+ * no committed state, which covers its first turn. It sits outside
  * `state/` so a checkpoint rewrite never clears it. Only a `hub` principal
  * adds one, and it is immutable once written: a push may neither change nor
  * remove it.

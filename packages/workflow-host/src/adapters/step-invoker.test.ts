@@ -917,7 +917,7 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     expect(stub.events.slice(-2)).toEqual(["close", "settled"]);
   });
 
-  test("settles a step whose send rejected and still surfaces the send error", async () => {
+  test("a step whose send rejected commits nothing and surfaces the send error", async () => {
     const stub = buildStubAgent();
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
@@ -925,7 +925,6 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
       buildEnv: async () =>
         settlingBuild(async () => {
           settled += 1;
-          throw new Error("settle boom");
         }),
       agentFactory: async () => stub.agent,
     });
@@ -934,6 +933,39 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     await Promise.resolve();
     stub.rejectSend(new Error("send boom"));
     await expect(pending).rejects.toThrow(/send boom/);
+    expect(stub.events).toContain("close");
+    expect(settled).toBe(0);
+  });
+
+  test("a suspended turn commits its park", async () => {
+    const stub = buildStubAgent();
+    let settled = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          settled += 1;
+        }),
+      agentFactory: async () => stub.agent,
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.resolveSend({
+      type: "suspended",
+      turnId: "turn-test",
+      correlationId: "corr-1",
+      approvalSnapshot: {
+        name: "tool_a",
+        description: "needs approval",
+        inputSchema: { type: "object" },
+        arguments: {},
+      },
+    });
+    const result = await pending;
+    if (!("suspend" in result)) {
+      throw new Error("expected a suspend-shaped step result");
+    }
     expect(settled).toBe(1);
   });
 
@@ -1032,7 +1064,7 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     await expect(pending).rejects.toBeInstanceOf(StepOutcomeCommitError);
   });
 
-  test("a close failure while a send error unwinds still settles and surfaces the send error", async () => {
+  test("a close failure while a send error unwinds commits nothing and surfaces the send error", async () => {
     const stub = buildStubAgent();
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
@@ -1049,7 +1081,7 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     stub.rejectSend(new Error("send boom"));
 
     await expect(pending).rejects.toThrow(/send boom/);
-    expect(settled).toBe(1);
+    expect(settled).toBe(0);
   });
 
   test("the warm path never settles the conversation buildEnv returned", async () => {
@@ -2496,7 +2528,7 @@ describe("workflow-host StepInvoker adapter - cold reply", () => {
     expect(w.sent.map((m) => m.content)).toEqual(["to alice"]);
   });
 
-  test("a reply-send failure fails the step with a retryable error and still settles", async () => {
+  test("a reply-send failure fails the step with a retryable error and commits nothing", async () => {
     const cause = new Error("outbound bridge rejected the reply");
     const w = wire([replySendResult("doomed")], {
       send: async () => {
@@ -2511,13 +2543,14 @@ describe("workflow-host StepInvoker adapter - cold reply", () => {
     }
     expect(thrown).not.toBeInstanceOf(StepOutcomeCommitError);
     expect(thrown.cause).toBe(cause);
-    expect(w.events).toEqual(["close", "settled"]);
+    expect(w.events).toEqual(["close"]);
   });
 
-  test("a persist failure after the send fails the step as an uncommitted outcome and still settles", async () => {
+  test("a commit that fails after the send fails the step without a retry", async () => {
     const w = wire([replySendResult("sent once")], {
-      onReplySent: async () => {
-        throw new Error("connector metadata write failed");
+      settle: async () => {
+        w.events.push("settle failed");
+        throw new Error("substrate write failed");
       },
     });
 
@@ -2525,10 +2558,47 @@ describe("workflow-host StepInvoker adapter - cold reply", () => {
 
     expect(thrown).toBeInstanceOf(StepOutcomeCommitError);
     expect(w.sent.map((m) => m.content)).toEqual(["sent once"]);
+    expect(w.events).toEqual(["sent", "close", "settle failed"]);
+  });
+
+  test("a thread that refuses the sent reply fails the step without a retry and commits its turn", async () => {
+    const w = wire([replySendResult("sent once")], {
+      onReplySent: async () => {
+        throw new Error("the connector thread refused the reply");
+      },
+    });
+
+    const thrown = await rejectionOf(w.invoker(mailRequest(true)));
+
+    expect(thrown).toBeInstanceOf(StepOutcomeCommitError);
+    expect(w.sent.map((m) => m.content)).toEqual(["sent once"]);
+    expect(w.router.snapshot()?.lastMessageId).toBe("<a@example.com>");
     expect(w.events).toEqual(["sent", "close", "settled"]);
   });
 
-  test("an aborted turn closes the agent and logs no lost reply", async () => {
+  test("a settle that fails after the thread refused the sent reply surfaces the refusal", async () => {
+    const w = wire([replySendResult("sent once")], {
+      onReplySent: async () => {
+        throw new Error("the connector thread refused the reply");
+      },
+      settle: async () => {
+        throw new Error("substrate write failed");
+      },
+    });
+
+    const thrown = await rejectionOf(w.invoker(mailRequest(true)));
+
+    expect(thrown).toBeInstanceOf(StepOutcomeCommitError);
+    if (!(thrown instanceof Error)) throw new Error("expected an Error");
+    expect(thrown.message).toContain("the connector thread refused the reply");
+    expect(
+      logs
+        .records()
+        .filter((record) => record.message.includes("substrate write failed")),
+    ).toHaveLength(1);
+  });
+
+  test("an aborted turn closes the agent, commits nothing and logs no lost reply", async () => {
     const stub = buildStubAgent();
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
@@ -2557,7 +2627,7 @@ describe("workflow-host StepInvoker adapter - cold reply", () => {
 
     await expect(pending).rejects.toThrow(/aborted/);
     expect(stub.events).toContain("close");
-    expect(settled).toBe(1);
+    expect(settled).toBe(0);
     expect(
       logs.records().filter((record) => record.message.includes("is not sent")),
     ).toEqual([]);

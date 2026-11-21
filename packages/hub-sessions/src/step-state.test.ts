@@ -146,6 +146,41 @@ describe("step state invocation stamp", () => {
     expect(appended.invocation).toEqual(INVOCATION);
   });
 
+  test("a checkpoint and a WAL entry carry the start of a parked turn", async () => {
+    const checkpointed = await reconstruct(
+      buildStepStateCheckpoint("", 1, {
+        turns: [],
+        pendingOperations: [],
+        tokenUsage: USAGE,
+        connectorState: null,
+        invocation: INVOCATION,
+        parkedTurnStart: 0,
+      }),
+    );
+    expect(checkpointed.parkedTurnStart).toBe(0);
+
+    const appended = await reconstruct({
+      [stepStateWalEntryPath("", 0)]: serializeStepStateWalEntry(0, [], {
+        pendingOperations: [],
+        tokenUsage: USAGE,
+        connectorState: null,
+        invocation: INVOCATION,
+        parkedTurnStart: 3,
+      }),
+    });
+    expect(appended.parkedTurnStart).toBe(3);
+
+    const unparked = await reconstruct({
+      [stepStateWalEntryPath("", 0)]: serializeStepStateWalEntry(0, [], {
+        pendingOperations: [],
+        tokenUsage: USAGE,
+        connectorState: null,
+        invocation: INVOCATION,
+      }),
+    });
+    expect("parkedTurnStart" in unparked).toBe(false);
+  });
+
   test("state stamped with a bare attempt reads as stamped by no invocation", async () => {
     const meta = {
       checkpointSeq: 1,

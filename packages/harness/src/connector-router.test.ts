@@ -1851,6 +1851,40 @@ describe("createConnectorRouter", () => {
       ]);
     });
 
+    test("a message that answers a reply the thread did not record continues it through its References", () => {
+      // The thread still names the mail the reply answered, as after a
+      // reply whose advance was lost. The answer's In-Reply-To names that
+      // reply, and its References carry the thread root.
+      const router = createConnectorRouter({ ownAddress: AGENT });
+      router.commit(router.route(inbound({ messageId: "<m1@example.com>" })));
+
+      const decision = router.route(
+        inbound({
+          messageId: "<m3@example.com>",
+          inReplyTo: "<r1@example.com>",
+          references: ["<m1@example.com>", "<r1@example.com>"],
+        }),
+      );
+      expect(decision.kind).toBe("continue");
+      router.commit(decision);
+
+      expect(router.snapshot()?.lastMessageId).toBe("<m3@example.com>");
+      expect(router.snapshot()?.lastReferences).toEqual([
+        "<m1@example.com>",
+        "<r1@example.com>",
+      ]);
+      expect(requireReplyParts(router)).toEqual({
+        to: "user@example.com",
+        cc: [],
+        inReplyTo: "<m3@example.com>",
+        references: [
+          "<m1@example.com>",
+          "<r1@example.com>",
+          "<m3@example.com>",
+        ],
+      });
+    });
+
     test("the next reply carries the References the sent reply carried", () => {
       // The chain comes from the send, not from the state at send time.
       const router = createConnectorRouter({ ownAddress: AGENT });

@@ -23,13 +23,22 @@
 // conversation.
 //
 // A cold step stamps its metadata with the invocation that wrote the state:
-// the run it ran in, its scoped step id and its attempt. Many invocations can
-// share one state directory (loop iterations, onTrigger events, retries), so
-// an invocation that finds another invocation's stamp knows the state is not
-// its own and starts over from the seed. An agent whose conversation spans
-// invocations leaves the stamp unset. State written before the stamp existed
-// carries a bare `attempt` instead. The types below ignore that key, so such
-// state reads as stamped by no invocation.
+// the run it ran in, its scoped step id and its attempt. Many invocations
+// share one state directory (loop iterations, onTrigger events, retries), and
+// each continues the conversation the last one committed. The stamp tells an
+// invocation whether a pending approval in the state is its own park, which
+// it resumes, or another invocation's, which it rolls back. An agent whose
+// conversation spans a deployment leaves the stamp unset. State written
+// before the stamp existed carries a bare `attempt` instead. The types below
+// ignore that key, so such state reads as stamped by no invocation.
+//
+// A cold step's state that holds a pending approval also records
+// `parkedTurnStart`: the turn count at the start of the turn that parked, so
+// another invocation can roll the state back to that turn's start. The WAL
+// cannot supply it: a fold drops the entries, the first mirror over a seed or
+// over a rolled-back state is itself a fold, and an approval resume that
+// parks again writes an entry that starts at the first park, not at the
+// turn's start.
 //
 // Parked reply targets hold the mail each turn parked on an approval gate
 // answers, keyed by the gate's correlation id: the connector thread, or a
@@ -84,6 +93,7 @@ const StepStateMetadata = type({
   connectorState: ConnectorThreadState.or("null"),
   "parkedReplyTargets?": ParkedReplyTargets,
   "invocation?": StepStateInvocation,
+  "parkedTurnStart?": "number.integer >= 0",
 });
 
 /** The non-turn state stamped on every WAL entry and on the checkpoint. */
@@ -96,6 +106,7 @@ export const StepStateCheckpoint = type({
   connectorState: ConnectorThreadState.or("null"),
   "parkedReplyTargets?": ParkedReplyTargets,
   "invocation?": StepStateInvocation,
+  "parkedTurnStart?": "number.integer >= 0",
 });
 
 export const StepStateCheckpointMeta = type({
@@ -106,6 +117,7 @@ export const StepStateCheckpointMeta = type({
   connectorState: ConnectorThreadState.or("null"),
   "parkedReplyTargets?": ParkedReplyTargets,
   "invocation?": StepStateInvocation,
+  "parkedTurnStart?": "number.integer >= 0",
 });
 
 export const StepStateWalEntry = type({
@@ -129,13 +141,15 @@ export type StepStateContent = {
  * the next WAL entry uses it as its seq. `checkpointBoundarySeq` is the
  * boundary seq the checkpoint folded to, the first WAL seq to expect.
  * `invocation` is the invocation the latest metadata was stamped with, if
- * any.
+ * any. `parkedTurnStart` is the turn count at the start of the turn the
+ * latest metadata's pending approval parked, if it recorded one.
  */
 export type ReconstructedStepState = StepStateContent & {
   totalTurns: number;
   boundaryCount: number;
   checkpointBoundarySeq: number;
   invocation?: StepStateInvocation;
+  parkedTurnStart?: number;
 };
 
 /**
@@ -234,6 +248,7 @@ export function buildStepStateCheckpoint(
     connectorState: ConnectorThreadState | null;
     parkedReplyTargets?: ParkedReplyTargets;
     invocation?: StepStateInvocation;
+    parkedTurnStart?: number;
   },
 ): Record<string, string> {
   const parkedReplyTargets =
@@ -242,6 +257,10 @@ export function buildStepStateCheckpoint(
       : {};
   const invocation =
     content.invocation !== undefined ? { invocation: content.invocation } : {};
+  const parkedTurnStart =
+    content.parkedTurnStart !== undefined
+      ? { parkedTurnStart: content.parkedTurnStart }
+      : {};
   const snapshot = {
     turns: content.turns,
     pendingOperations: content.pendingOperations,
@@ -249,6 +268,7 @@ export function buildStepStateCheckpoint(
     connectorState: content.connectorState,
     ...parkedReplyTargets,
     ...invocation,
+    ...parkedTurnStart,
   };
   const meta = {
     checkpointSeq,
@@ -258,6 +278,7 @@ export function buildStepStateCheckpoint(
     connectorState: content.connectorState,
     ...parkedReplyTargets,
     ...invocation,
+    ...parkedTurnStart,
   };
   return {
     [`${stateDir}${STEP_STATE_CHECKPOINT_FILE}`]: JSON.stringify(snapshot),
@@ -302,6 +323,9 @@ export async function reconstructStepState(
     checkpointBoundarySeq: baseBoundarySeq,
     ...(metadata.invocation !== undefined
       ? { invocation: metadata.invocation }
+      : {}),
+    ...(metadata.parkedTurnStart !== undefined
+      ? { parkedTurnStart: metadata.parkedTurnStart }
       : {}),
   };
 }
@@ -360,6 +384,9 @@ async function readCheckpoint(
         : {}),
       ...(validatedSnapshot.invocation !== undefined
         ? { invocation: validatedSnapshot.invocation }
+        : {}),
+      ...(validatedSnapshot.parkedTurnStart !== undefined
+        ? { parkedTurnStart: validatedSnapshot.parkedTurnStart }
         : {}),
     },
   };
@@ -421,6 +448,9 @@ async function readWalTail(
             : {}),
           ...(validated.metadata.invocation !== undefined
             ? { invocation: validated.metadata.invocation }
+            : {}),
+          ...(validated.metadata.parkedTurnStart !== undefined
+            ? { parkedTurnStart: validated.metadata.parkedTurnStart }
             : {}),
         },
       });

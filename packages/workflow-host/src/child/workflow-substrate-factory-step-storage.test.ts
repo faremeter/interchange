@@ -23,10 +23,17 @@
 // committed state in the workflow-run substrate, under the deployment's
 // top-level run at the key of the step's place: it restores that state on a
 // fresh host, the build's conversation commits the turn, and another
-// invocation (a retried attempt, or a later run of the same place) starts
-// over rather than continuing an earlier invocation's conversation.
+// invocation (a retried attempt, or a later run of the same place) continues
+// the conversation the last invocation committed.
 
-import { afterAll, describe, test, expect } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  test,
+  expect,
+} from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -35,6 +42,7 @@ import type {
   AuditStore,
   BlobReader,
   ContextStore,
+  ConversationTurn,
   InferenceSource,
   Mail,
   OutboundMessage,
@@ -70,8 +78,10 @@ import {
   type SourcesSnapshotRef,
   type StepBuild,
 } from "@intx/workflow-host";
+import { createLogCapture } from "@intx/workflow-host/testing";
 import {
   scopedStepId,
+  StepOutcomeCommitError,
   type StepInvokeRequest,
   unavailableMailSigner,
   type WorkflowAuthorizeFn,
@@ -187,6 +197,7 @@ function buildDeps(opts: {
   durableConversation?: DurableConversationRegistry;
   mailSigner?: MailSigner;
   outboundMailBridge?: ChildOutboundMailBridge;
+  signer?: (payload: string) => Promise<string>;
 }): SidecarStepBuildEnvDeps {
   return {
     dataDir: opts.dataDir,
@@ -194,7 +205,7 @@ function buildDeps(opts: {
     substrate: opts.substrate,
     workflowRunRef: WORKFLOW_RUN_REF,
     principal: PRINCIPAL,
-    signer,
+    signer: opts.signer ?? signer,
     topLevelRunId: TOP_LEVEL_RUN_ID,
     mailboxAddress: `${TOP_LEVEL_RUN_ID}@example.com`,
     outboundMailBridge: opts.outboundMailBridge ?? stubOutboundMailBridge(),
@@ -614,7 +625,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     ]);
   });
 
-  test("a retried attempt starts over and replaces the earlier attempt's state", async () => {
+  test("a retried attempt continues from the last committed turn", async () => {
     const substrate = await createSubstrate(await makeTempDir());
     const buildEnv = await host(substrate);
     await takeTurn(await buildEnv(requestForRun("run-1", 1), sourcesRefFor()), [
@@ -622,8 +633,10 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     ]);
 
     const retry = await buildEnv(requestForRun("run-1", 2), sourcesRefFor());
-    expect((await retry.env.storage.load()).turns).toEqual([]);
-    await takeTurn(retry, [turn("attempt two")]);
+    expect((await retry.env.storage.load()).turns).toEqual([
+      turn("attempt one"),
+    ]);
+    await takeTurn(retry, [turn("attempt one"), turn("attempt two")]);
 
     const committed = await readStepState({
       substrate,
@@ -633,7 +646,10 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       runId: TOP_LEVEL_RUN_ID,
       stepId: STEP_ID,
     });
-    expect(committed?.turns).toEqual([turn("attempt two")]);
+    expect(committed?.turns).toEqual([
+      turn("attempt one"),
+      turn("attempt two"),
+    ]);
     expect(committed?.invocation).toEqual({
       runId: "run-1",
       stepId: STEP_ID,
@@ -723,7 +739,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     },
   );
 
-  test("a later invocation of the same place starts over from the seed", async () => {
+  test("an onTrigger body step continues the conversation the last event committed", async () => {
     const substrate = await createSubstrate(await makeTempDir());
     const stepPath = ["section", STEP_ID];
     const key = stepPath.join(".");
@@ -737,17 +753,132 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     expect((await first.env.storage.load()).turns).toEqual([turn("seeded")]);
     await takeTurn(first, [turn("seeded"), turn("first event")]);
 
+    // The seed applies only while the key holds no committed state.
     const second = await buildEnv(
       placedRequest("run-body-2", stepPath),
       sourcesRefFor(),
     );
-    expect((await second.env.storage.load()).turns).toEqual([turn("seeded")]);
-    await takeTurn(second, [turn("seeded"), turn("second event")]);
+    expect((await second.env.storage.load()).turns).toEqual([
+      turn("seeded"),
+      turn("first event"),
+    ]);
+    await takeTurn(second, [
+      turn("seeded"),
+      turn("first event"),
+      turn("second event"),
+    ]);
 
     const committed = await readKey(substrate, TOP_LEVEL_RUN_ID, key);
-    expect(committed?.turns).toEqual([turn("seeded"), turn("second event")]);
+    expect(committed?.turns).toEqual([
+      turn("seeded"),
+      turn("first event"),
+      turn("second event"),
+    ]);
     expect(committed?.invocation).toEqual({
       runId: "run-body-2",
+      stepId: STEP_ID,
+      attempt: 1,
+    });
+  });
+
+  test("a loop body step continues the conversation across iterations, and a retry drops the failed attempt's work", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const stepPath = ["loop", STEP_ID];
+    const key = stepPath.join(".");
+    const buildEnv = await host(substrate);
+
+    await takeTurn(
+      await buildEnv(placedRequest("run_loop__0", stepPath), sourcesRefFor()),
+      [turn("iteration 0")],
+    );
+
+    // Attempt 1 of the next iteration records a partial turn locally, then
+    // fails, so its conversation never settles.
+    const failed = await buildEnv(
+      placedRequest("run_loop__1", stepPath, 1),
+      sourcesRefFor(),
+    );
+    expect((await failed.env.storage.load()).turns).toEqual([
+      turn("iteration 0"),
+    ]);
+    await failed.env.storage.writeTurns([turn("iteration 0"), turn("partial")]);
+    await failed.env.storage.commit({ message: "partial" });
+
+    const retry = await buildEnv(
+      placedRequest("run_loop__1", stepPath, 2),
+      sourcesRefFor(),
+    );
+    expect((await retry.env.storage.load()).turns).toEqual([
+      turn("iteration 0"),
+    ]);
+    await takeTurn(retry, [turn("iteration 0"), turn("iteration 1")]);
+
+    const next = await buildEnv(
+      placedRequest("run_loop__2", stepPath),
+      sourcesRefFor(),
+    );
+    expect((await next.env.storage.load()).turns).toEqual([
+      turn("iteration 0"),
+      turn("iteration 1"),
+    ]);
+    expect(
+      (await readKey(substrate, TOP_LEVEL_RUN_ID, key))?.invocation,
+    ).toEqual({ runId: "run_loop__1", stepId: STEP_ID, attempt: 2 });
+  });
+
+  test("a map item in a loop body continues the conversation of the same index", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const buildEnv = await host(substrate);
+    const item = (runId: string, index: number): StepInvokeRequest => ({
+      ...requestForRun(runId),
+      authzContext: { stepId: scopedStepId(STEP_ID, index), runId, attempt: 1 },
+      place: { stepPath: ["loop", STEP_ID], mapIndex: index },
+    });
+
+    for (const index of [0, 1]) {
+      await takeTurn(
+        await buildEnv(item("run_loop__0", index), sourcesRefFor()),
+        [turn(`item ${String(index)} iteration 0`)],
+      );
+    }
+    for (const index of [0, 1]) {
+      const next = await buildEnv(item("run_loop__1", index), sourcesRefFor());
+      expect((await next.env.storage.load()).turns).toEqual([
+        turn(`item ${String(index)} iteration 0`),
+      ]);
+    }
+  });
+
+  test("a childWorkflow body step continues the conversation when the childWorkflow step runs again", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const buildEnv = await host(substrate);
+    // The childWorkflow step `child` sits in the onTrigger body `section`.
+    // Each event spawns a child run with a new run id, and the child run's
+    // step path prefix is the parent's prefix plus the childWorkflow step id.
+    const stepPath = ["section", "child", STEP_ID];
+    const key = stepPath.join(".");
+
+    await takeTurn(
+      await buildEnv(placedRequest("run_child_a", stepPath), sourcesRefFor()),
+      [turn("first child run")],
+    );
+
+    const second = await buildEnv(
+      placedRequest("run_child_b", stepPath),
+      sourcesRefFor(),
+    );
+    expect((await second.env.storage.load()).turns).toEqual([
+      turn("first child run"),
+    ]);
+    await takeTurn(second, [turn("first child run"), turn("second child run")]);
+
+    const committed = await readKey(substrate, TOP_LEVEL_RUN_ID, key);
+    expect(committed?.turns).toEqual([
+      turn("first child run"),
+      turn("second child run"),
+    ]);
+    expect(committed?.invocation).toEqual({
+      runId: "run_child_b",
       stepId: STEP_ID,
       attempt: 1,
     });
@@ -783,7 +914,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     });
   });
 
-  test("an invocation keeps its own crashed turn but not another invocation's", async () => {
+  test("an invocation keeps its own crashed turn, and another continues it once committed", async () => {
     const substrate = await createSubstrate(await makeTempDir());
     const stepPath = ["section", STEP_ID];
     const key = stepPath.join(".");
@@ -800,8 +931,10 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       placedRequest("run-body-2", stepPath),
       sourcesRefFor(),
     );
-    expect((await crashed.env.storage.load()).turns).toEqual([]);
-    await crashed.env.storage.writeTurns([turn("body two")]);
+    expect((await crashed.env.storage.load()).turns).toEqual([
+      turn("body one"),
+    ]);
+    await crashed.env.storage.writeTurns([turn("body one"), turn("body two")]);
     await crashed.env.storage.commit({ message: "turn" });
 
     const rebuilt = await sameHost(
@@ -809,6 +942,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       sourcesRefFor(),
     );
     expect((await rebuilt.env.storage.load()).turns).toEqual([
+      turn("body one"),
       turn("body two"),
     ]);
     if (rebuilt.conversation === undefined) {
@@ -816,20 +950,23 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     }
     await rebuilt.conversation.settle();
     const committed = await readKey(substrate, TOP_LEVEL_RUN_ID, key);
-    expect(committed?.turns).toEqual([turn("body two")]);
+    expect(committed?.turns).toEqual([turn("body one"), turn("body two")]);
     expect(committed?.invocation).toEqual({
       runId: "run-body-2",
       stepId: STEP_ID,
       attempt: 1,
     });
 
-    const replacement = await (
+    const next = await (
       await host(substrate)
-    )(placedRequest("run-body-1", stepPath), sourcesRefFor());
-    expect((await replacement.env.storage.load()).turns).toEqual([]);
+    )(placedRequest("run-body-3", stepPath), sourcesRefFor());
+    expect((await next.env.storage.load()).turns).toEqual([
+      turn("body one"),
+      turn("body two"),
+    ]);
   });
 
-  test("state stamped with a bare attempt belongs to no invocation and starts over", async () => {
+  test("state stamped with a bare attempt belongs to no invocation and is continued", async () => {
     const substrate = await createSubstrate(await makeTempDir());
     const stateDir = workflowRunStepStatePrefix(TOP_LEVEL_RUN_ID, STEP_ID);
     // The shape a build that stamped only the attempt wrote.
@@ -866,11 +1003,11 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     const build = await (
       await host(substrate)
     )(requestForRun("run-1", 1), sourcesRefFor());
-    expect((await build.env.storage.load()).turns).toEqual([]);
-    await takeTurn(build, [turn("fresh")]);
+    expect((await build.env.storage.load()).turns).toEqual([turn("legacy")]);
+    await takeTurn(build, [turn("legacy"), turn("next")]);
 
     const committed = await readKey(substrate, TOP_LEVEL_RUN_ID, STEP_ID);
-    expect(committed?.turns).toEqual([turn("fresh")]);
+    expect(committed?.turns).toEqual([turn("legacy"), turn("next")]);
     expect(committed?.invocation).toEqual({
       runId: "run-1",
       stepId: STEP_ID,
@@ -1063,6 +1200,433 @@ describe("a cold step's reply over its attempt's durable store", () => {
     ...approvalResumeRequest("run-1", "c1"),
     replyByMail: true,
   };
+
+  test("a turn that throws commits nothing", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir: await makeTempDir(), substrate }),
+    );
+    const invoke = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: (req) => buildEnv(req, sourcesRefFor()),
+      agentFactory: async (_def, env) =>
+        stepAgent(async () => {
+          // The reactor commits each cycle to the local store before the
+          // send settles; the turn then fails.
+          await env.storage.writeTurns([
+            {
+              role: "user",
+              content: [{ type: "text", text: "partial" }],
+              timestamp: 1,
+            },
+          ]);
+          await env.storage.commit({ message: "partial" });
+          throw new Error("inference failed");
+        }),
+    });
+
+    await expect(invoke(mailTurn)).rejects.toThrow(/inference failed/);
+
+    expect(
+      await readStepState({
+        substrate,
+        workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+        workflowRunRef: WORKFLOW_RUN_REF,
+        principal: PRINCIPAL,
+        runId: TOP_LEVEL_RUN_ID,
+        stepId: STEP_ID,
+      }),
+    ).toBeNull();
+  });
+
+  /**
+   * An invoker whose agent for each invocation, in order, is the next of
+   * `agents`. Each agent's send runs against the env it was built with. The
+   * bridge records every reply it accepts; `submit` may refuse one first.
+   * `localSigner` signs the commits of each invocation's local store.
+   */
+  async function scriptedInvoker(
+    substrate: RepoStore,
+    agents: ((env: BaseEnv) => Promise<SendResult>)[],
+    submit?: (message: OutboundMessage) => Promise<void>,
+    localSigner?: (payload: string) => Promise<string>,
+  ) {
+    const accepted: OutboundMessage[] = [];
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({
+        dataDir: await makeTempDir(),
+        substrate,
+        ...(localSigner !== undefined ? { signer: localSigner } : {}),
+        outboundMailBridge: {
+          ...stubOutboundMailBridge(),
+          submit: async (_sender, message) => {
+            await submit?.(message);
+            accepted.push(message);
+            return {
+              messageId: `<sent-${String(accepted.length)}@example.com>`,
+              status: "delivered",
+            };
+          },
+        },
+      }),
+    );
+    let built = 0;
+    const invoke = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: (req) => buildEnv(req, sourcesRefFor()),
+      agentFactory: async (_def, env) => {
+        const send = agents[built++];
+        if (send === undefined) throw new Error("no agent left to build");
+        return stepAgent(() => send(env));
+      },
+    });
+    return { invoke, accepted };
+  }
+
+  const text = (role: "user" | "assistant", value: string) =>
+    role === "user"
+      ? {
+          role,
+          content: [{ type: "text" as const, text: value }],
+          timestamp: 1,
+        }
+      : {
+          role,
+          content: [{ type: "text" as const, text: value }],
+          model: SOURCE.model,
+          timestamp: 1,
+        };
+
+  function toolCall(callId: string) {
+    return {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "tool_call" as const,
+          id: callId,
+          name: SUSPENDED_CALL.name,
+          arguments: {},
+        },
+      ],
+      model: SOURCE.model,
+      timestamp: 1,
+    };
+  }
+
+  function toolResult(callId: string) {
+    return {
+      role: "user" as const,
+      content: [
+        {
+          type: "tool_result" as const,
+          callId,
+          content: [{ type: "text" as const, text: "charged" }],
+        },
+      ],
+      timestamp: 1,
+    };
+  }
+
+  /**
+   * A send that records `turns` after the store's turns and then parks on
+   * the gate `correlationId`, the way the reactor does.
+   */
+  function parkOn(
+    correlationId: string,
+    turns: ConversationTurn[],
+  ): (env: BaseEnv) => Promise<SendResult> {
+    return async (env) => {
+      const prior = (await env.storage.load()).turns;
+      await env.storage.writeTurns([...prior, ...turns]);
+      await env.storage.writeMetadata({
+        pendingOperations: [
+          approvalOp(correlationId, {
+            suspendedCall: { ...SUSPENDED_CALL, id: `call-${correlationId}` },
+          }),
+        ],
+        tokenUsage: ZERO_USAGE,
+      });
+      await env.storage.commit({ message: "park" });
+      return {
+        type: "suspended",
+        turnId: "turn-test",
+        correlationId,
+        approvalSnapshot: {
+          name: SUSPENDED_CALL.name,
+          description: "needs approval",
+          inputSchema: { type: "object" },
+          arguments: SUSPENDED_CALL.arguments,
+        },
+      };
+    };
+  }
+
+  /** A send that records `turns` after the store's turns and replies. */
+  function replyWith(
+    reply: string,
+    turns: ConversationTurn[],
+  ): (env: BaseEnv) => Promise<SendResult> {
+    return async (env) => {
+      const prior = (await env.storage.load()).turns;
+      await env.storage.writeTurns([...prior, ...turns]);
+      await env.storage.writeMetadata({
+        pendingOperations: [],
+        tokenUsage: ZERO_USAGE,
+      });
+      await env.storage.commit({ message: "reply" });
+      return {
+        type: "reply",
+        turnId: "turn-test",
+        reply,
+        turn: {
+          role: "assistant",
+          content: [{ type: "text", text: reply }],
+          model: SOURCE.model,
+          timestamp: 0,
+        },
+      };
+    };
+  }
+
+  function readCommitted(substrate: RepoStore) {
+    return readStepState({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: TOP_LEVEL_RUN_ID,
+      stepId: STEP_ID,
+    });
+  }
+
+  test("a reply that fails to send commits nothing, and the retry replies once", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    let refuse = true;
+    const { invoke, accepted } = await scriptedInvoker(
+      substrate,
+      [
+        replyWith("charged", [
+          text("user", "inbound"),
+          text("assistant", "charged"),
+        ]),
+        async (env) => {
+          // The retry starts from the last committed turn, which is none.
+          expect((await env.storage.load()).turns).toEqual([]);
+          return replyWith("charged", [
+            text("user", "inbound"),
+            text("assistant", "charged"),
+          ])(env);
+        },
+      ],
+      async () => {
+        if (refuse) {
+          refuse = false;
+          throw new Error("outbound bridge refused the reply");
+        }
+      },
+    );
+
+    await expect(invoke(mailTurn)).rejects.toThrow(/auto-reply send failed/);
+    expect(await readCommitted(substrate)).toBeNull();
+    await invoke({
+      ...mailTurn,
+      authzContext: { ...mailTurn.authzContext, attempt: 2 },
+    });
+
+    expect(accepted.map((m) => [m.content, m.to])).toEqual([
+      ["charged", "alice@example.com"],
+    ]);
+    expect((await readCommitted(substrate))?.turns).toEqual([
+      text("user", "inbound"),
+      text("assistant", "charged"),
+    ]);
+  });
+
+  describe("after the reply is sent", () => {
+    const logs = createLogCapture();
+    beforeAll(logs.install);
+    afterAll(logs.restore);
+    beforeEach(logs.reset);
+
+    const replied = [text("user", "inbound"), text("assistant", "charged")];
+
+    test("a local thread record that fails to save leaves the step a success, and the next invocation continues the thread", async () => {
+      const substrate = await createSubstrate(await makeTempDir());
+      // Set once the bridge accepts the reply, so only the local store's
+      // commits after the send fail. The substrate signs with its own key.
+      let localCommitsFail = false;
+      const { invoke, accepted } = await scriptedInvoker(
+        substrate,
+        [
+          replyWith("charged", replied),
+          async (env) => {
+            const loaded = await env.storage.load();
+            expect(loaded.turns).toEqual(replied);
+            expect(loaded.connectorState?.lastMessageId).toBe(
+              "<sent-1@example.com>",
+            );
+            return replyWith("noted", [text("user", "next")])(env);
+          },
+        ],
+        async () => {
+          localCommitsFail = true;
+        },
+        async (payload) => {
+          if (localCommitsFail) throw new Error("local disk is full");
+          return signer(payload);
+        },
+      );
+
+      const result = await invoke(mailTurn);
+      localCommitsFail = false;
+
+      expect("output" in result).toBe(true);
+      expect(accepted.map((m) => m.content)).toEqual(["charged"]);
+      const committed = await readCommitted(substrate);
+      expect(committed?.turns).toEqual(replied);
+      expect(committed?.connectorState?.lastMessageId).toBe(
+        "<sent-1@example.com>",
+      );
+      expect(
+        logs
+          .records()
+          .filter(
+            (record) =>
+              record.level === "warning" &&
+              record.message.includes("local copy of its thread record"),
+          ),
+      ).toHaveLength(1);
+
+      await invoke(requestForRun("run-2"));
+      expect(accepted.map((m) => m.content)).toEqual(["charged"]);
+    });
+
+    test("a commit that fails after the send fails the step without a retry and commits nothing", async () => {
+      const real = await createSubstrate(await makeTempDir());
+      let commitsFail = false;
+      const substrate: RepoStore = {
+        ...real,
+        writeTreePreservingPrefix: async (...args) => {
+          if (commitsFail) throw new Error("substrate write refused");
+          return real.writeTreePreservingPrefix(...args);
+        },
+      };
+      const { invoke, accepted } = await scriptedInvoker(
+        substrate,
+        [replyWith("charged", replied)],
+        async () => {
+          commitsFail = true;
+        },
+      );
+
+      const thrown = await invoke(mailTurn).then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+      expect(thrown).toBeInstanceOf(StepOutcomeCommitError);
+      expect(accepted.map((m) => m.content)).toEqual(["charged"]);
+      expect(await readCommitted(real)).toBeNull();
+    });
+  });
+
+  test("a retry after a resumed turn that parked again and then failed rolls back to the start of the original turn", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const earlier = [text("user", "earlier"), text("assistant", "noted")];
+    const inbound = text("user", "please charge the card");
+    const { invoke, accepted } = await scriptedInvoker(substrate, [
+      replyWith("noted", earlier),
+      parkOn("c1", [inbound, toolCall("call-c1")]),
+      parkOn("c2", [toolResult("call-c1"), toolCall("call-c2")]),
+      async (env) => {
+        const prior = (await env.storage.load()).turns;
+        await env.storage.writeTurns([...prior, toolResult("call-c2")]);
+        await env.storage.commit({ message: "partial" });
+        throw new Error("inference failed");
+      },
+      async (env) => {
+        const loaded = await env.storage.load();
+        expect(loaded.turns).toEqual(earlier);
+        expect(loaded.pendingOperations).toEqual([]);
+        return replyWith("charged", [inbound, text("assistant", "charged")])(
+          env,
+        );
+      },
+    ]);
+
+    await invoke(requestForRun("run-0"));
+    await invoke(mailTurn);
+    await invoke({
+      ...approvalResumeRequest("run-1", "c1"),
+      replyByMail: true,
+    });
+    const parkedAgain = await readCommitted(substrate);
+    expect(parkedAgain?.parkedTurnStart).toBe(earlier.length);
+    expect(Object.keys(parkedAgain?.parkedReplyTargets ?? {})).toEqual(["c2"]);
+    const thread = parkedAgain?.connectorState;
+    expect(thread).not.toBeNull();
+
+    await expect(
+      invoke({ ...approvalResumeRequest("run-1", "c2"), replyByMail: true }),
+    ).rejects.toThrow(/inference failed/);
+    expect((await readCommitted(substrate))?.pendingOperations).toEqual(
+      parkedAgain?.pendingOperations,
+    );
+
+    await invoke({
+      ...mailTurn,
+      authzContext: { ...mailTurn.authzContext, attempt: 2 },
+    });
+
+    const committed = await readCommitted(substrate);
+    expect(committed?.turns).toEqual([
+      ...earlier,
+      inbound,
+      text("assistant", "charged"),
+    ]);
+    expect(committed?.pendingOperations).toEqual([]);
+    expect(committed?.parkedReplyTargets).toEqual({});
+    expect(committed?.parkedTurnStart).toBeUndefined();
+    expect(accepted.map((m) => [m.content, m.to])).toEqual([
+      ["charged", "alice@example.com"],
+    ]);
+  });
+
+  test("an onTrigger body that failed while parked leaves the next event the turns before the park", async () => {
+    // Each event runs the body in its own run; the first event's body parks
+    // and then fails without the approval, the way a tolerated failure ends.
+    const substrate = await createSubstrate(await makeTempDir());
+    const stepPath = ["section", STEP_ID];
+    const event = (runId: string): StepInvokeRequest => ({
+      ...requestForRun(runId),
+      input: MAIL,
+      replyByMail: true,
+      place: { stepPath },
+    });
+    const before = [text("user", "first event"), text("assistant", "done")];
+    const { invoke } = await scriptedInvoker(substrate, [
+      replyWith("done", before),
+      parkOn("c1", [text("user", "second event"), toolCall("call-c1")]),
+      async (env) => {
+        expect((await env.storage.load()).turns).toEqual(before);
+        return replyWith("done", [text("user", "third event")])(env);
+      },
+    ]);
+
+    await invoke(event("run-body-1"));
+    await invoke(event("run-body-2"));
+    await invoke(event("run-body-3"));
+
+    const committed = await readStepState({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: TOP_LEVEL_RUN_ID,
+      stepId: stepPath.join("."),
+    });
+    expect(committed?.turns).toEqual([...before, text("user", "third event")]);
+  });
 
   test("the approval resume of a parked mail turn replies on the thread", async () => {
     const substrate = await createSubstrate(await makeTempDir());

@@ -727,6 +727,55 @@ describe("readColdParkedPendingOperations", () => {
       ]);
     });
 
+    test("commits another invocation's park recorded locally over a rolled-back park", async () => {
+      const stepPath = ["section", "s"];
+      const first = await coordinate("run-body-1", 1, { stepPath });
+      const gate = (correlationId: string): PendingOperation => ({
+        ...pendingApproval(correlationId, snapshot),
+        suspendedCall: {
+          id: `call-${correlationId}`,
+          name: "t",
+          arguments: {},
+        },
+      });
+      await runColdTurn(
+        first,
+        [turn("first event")],
+        [gate("corr-1")],
+        "mirrored",
+      );
+      // The next event's body continues the conversation rolled back to the
+      // start of the first body's parked turn, parks, and crashes before its
+      // mirror.
+      const second = {
+        ...first,
+        runId: "run-body-2",
+      };
+      await runColdTurn(
+        second,
+        [turn("second event")],
+        [gate("corr-2")],
+        "crashed",
+      );
+
+      expect(await readColdParkedPendingOperations(second)).toEqual([
+        gate("corr-2"),
+      ]);
+      await persist(second, "corr-2");
+
+      const committed = await readCommitted(second);
+      expect(committed?.turns).toEqual([turn("second event")]);
+      expect(committed?.pendingOperations).toEqual([gate("corr-2")]);
+      expect(committed?.parkedTurnStart).toBe(0);
+      expect(committed?.invocation?.runId).toBe("run-body-2");
+      expect(
+        await readColdParkedApprovalSnapshot({
+          ...(await onReplacementHost(second)),
+          correlationId: "corr-2",
+        }),
+      ).toEqual(snapshot);
+    });
+
     test("commits a body step's park under the key of its place", async () => {
       const stepPath = ["section", "s"];
       const at = await coordinate("run-body-1", 1, { stepPath });
@@ -940,6 +989,39 @@ describe("createParkedApprovalHooks", () => {
       ]);
     },
   );
+
+  test("a body does not adopt the park an earlier body of its place committed", async () => {
+    const { substrate, hooks } = await warmDeployment();
+    const stepPath = ["section", "s"];
+    await parkColdStep(
+      substrate,
+      sectionBodyRunId(RUN_ID, "section", 0),
+      1,
+      [
+        {
+          ...pendingApproval("corr-stale", snapshot),
+          suspendedCall: { id: "call-stale", name: "t", arguments: {} },
+        },
+      ],
+      stepPath,
+    );
+    const at = {
+      runId: sectionBodyRunId(RUN_ID, "section", 1),
+      stepId: "s",
+      attempt: 1,
+      place: { stepPath },
+    };
+
+    expect(await hooks.readParkedApprovalOps(at)).toEqual([]);
+    expect(
+      await hooks.loadParkedApproval({ ...at, correlationId: "corr-stale" }),
+    ).toBeUndefined();
+    await expect(
+      hooks.persistRecoveredPark({ ...at, correlationId: "corr-stale" }),
+    ).rejects.toThrow(
+      "neither the committed step state nor a current local store holds its pending operation",
+    );
+  });
 
   // The top-level run's park is read from committed state, so it has nothing
   // to commit; any other run's goes to its cold step state, which here holds
