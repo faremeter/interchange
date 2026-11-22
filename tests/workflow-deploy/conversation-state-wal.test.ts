@@ -1,4 +1,4 @@
-// Unit tests for the warm-agent durable conversation store's two-tier
+// Unit tests for the durable conversation store's two-tier
 // WAL + checkpoint layout (Phase D1). These cover the three properties the
 // D1 plan calls out:
 //
@@ -195,7 +195,7 @@ function invocation(
 async function makeStore(
   h: Harness,
   localDir: string,
-  lifetime: DurableConversationLifetime = { kind: "deployment" },
+  lifetime: DurableConversationLifetime = invocation(1),
 ): Promise<DurableConversationStore> {
   return createDurableConversationStore({
     localStoreDir: localDir,
@@ -212,7 +212,7 @@ async function makeStore(
 }
 
 /**
- * Append turns to the store's local isogit store exactly as the warm
+ * Append turns to the store's local isogit store exactly as the step
  * agent's reactor would (writeTurns + writeMetadata + commit), then run the
  * synchronous run-boundary mirror. Returns the full turn list so callers
  * can assert exact reconstruction.
@@ -507,7 +507,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
         principal: PRINCIPAL,
         runId: RUN_ID,
         stepId: STEP_ID,
-        lifetime: { kind: "deployment" },
+        lifetime: invocation(1),
         mailboxAddress: "agent@example.com",
       });
     }
@@ -646,31 +646,6 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     expect(await store.restoreFromSubstrate()).toBe(false);
     const loaded = await store.storage.load();
     expect(loaded.turns).toEqual([]);
-  });
-
-  test("a restore with neither committed state nor a seed drops a conversation only the local store holds", async () => {
-    // The agent's first turn reached its local store, and the host died
-    // before the run-boundary mirror committed it.
-    const crashed = await makeStore(h, localDir);
-    await crashed.storage.writeTurns([userTurn("never committed")]);
-    await crashed.storage.writeMetadata({
-      pendingOperations: [],
-      tokenUsage: tokenUsage(5),
-    });
-    await crashed.storage.commit({ message: "turn" });
-
-    const respawned = await makeStore(h, localDir);
-    expect(await respawned.restoreFromSubstrate()).toBe(false);
-    const loaded = await respawned.storage.load();
-    expect(loaded.turns).toEqual([]);
-    expect(loaded.tokenUsage).toEqual(tokenUsage(0));
-
-    await pushAndMirror(respawned, [], [userTurn("first committed")], {
-      tokenUsageInput: 1,
-    });
-    expect((await readCommitted(h))?.turns).toEqual([
-      userTurn("first committed"),
-    ]);
   });
 
   test("a corrupt WAL entry throws on reconstruction (no silent fresh start)", async () => {
@@ -812,7 +787,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
-      lifetime: { kind: "deployment" },
+      lifetime: invocation(1),
       mailboxAddress: "agent@example.com",
     });
 
@@ -901,7 +876,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
-      lifetime: { kind: "deployment" },
+      lifetime: invocation(1),
       mailboxAddress: "agent@example.com",
     });
 
@@ -1715,29 +1690,6 @@ describe("durable conversation store across invocations of one key", () => {
         /parked turn starting at turn 2, past its 1 turns/,
       );
     }
-  });
-
-  test("the deployment lifetime never records a turn start nor rolls back", async () => {
-    const warm = await makeStore(h, local("warm"));
-    await warm.restoreFromSubstrate();
-    await warm.beginTurn({});
-    await warm.storage.writeTurns([userTurn("charge it"), toolCall("c1")]);
-    await warm.storage.writeMetadata({
-      pendingOperations: [gate("c1")],
-      tokenUsage: tokenUsage(1),
-    });
-    await warm.storage.commit({ message: "park" });
-    await warm.mirrorToSubstrate();
-
-    const committed = await readCommitted(h);
-    expect(committed?.parkedTurnStart).toBeUndefined();
-    expect(committed?.invocation).toBeUndefined();
-
-    const respawned = await makeStore(h, local("respawned"));
-    await respawned.restoreFromSubstrate();
-    const loaded = await respawned.storage.load();
-    expect(loaded.turns).toEqual([userTurn("charge it"), toolCall("c1")]);
-    expect(loaded.pendingOperations).toEqual([gate("c1")]);
   });
 });
 

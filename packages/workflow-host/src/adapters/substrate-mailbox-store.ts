@@ -13,7 +13,7 @@
 // resident: `readRaw(uid)` reads a message's `<uid>.eml` blob on demand from
 // the committed-read snapshot the open pinned. The only raw this backing keeps
 // in memory is that of a message appended-but-not-yet-flushed; a successful
-// `flush` drops it. So the resident footprint of a long-lived warm mailbox is
+// `flush` drops it. So the resident footprint of a long-lived mailbox is
 // bounded to metadata regardless of how much mail it has accumulated.
 //
 // On-disk layout, a top-level subtree of the workflow-run repo (one mailbox per
@@ -35,7 +35,7 @@
 // appended since the last successful flush and deletes only those whose
 // message was removed since then, and the substrate carries every untouched
 // `.eml` forward by object id. This keeps a flush O(delta) rather than
-// O(mailbox), so a long-lived warm conversational mailbox does not re-hash its
+// O(mailbox), so a long-lived conversational mailbox does not re-hash its
 // whole history on each append or flag change. The committed subtree the delta
 // leaves behind is byte-identical in shape to a full rewrite of the same live
 // set. The kind handler's push-time validation of this subtree is owned

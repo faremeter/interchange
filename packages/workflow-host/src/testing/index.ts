@@ -44,3 +44,4 @@ export {
   TEST_DEFINITION,
   TEST_DEFINITION_HASH,
 } from "./child-handshake";
+export { commitUnstampedStepState } from "./step-state";

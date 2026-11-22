@@ -333,7 +333,7 @@ export async function createHarness<EnvReq extends MailEnv>(
     // else flows past unobserved. Other consumers can subscribe to the
     // exposed `stream()` method to see the same events.
     //
-    // The shared `driveConnectorReplies` helper owns the loop: reply
+    // The `driveConnectorReplies` helper owns the loop: reply
     // serialization (a second reply waits for the first's receipt to
     // advance the router before composing its own), per-reply failure
     // surfacing to `onReplySendFailed`, and abnormal-termination

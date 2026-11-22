@@ -16,10 +16,10 @@
 // from the substrate before the agent is built, and binds the turn's
 // conversation to that store with `createStoreStepConversation`, whose
 // `settle` commits it. This build is not `createSidecarStepBuildEnv`: the
-// step-storage and full-lifecycle tests cover that function. The run loop
-// passes no warm cache, so the step invoker takes the same per-turn path a
-// spawned child takes, minus the OS process boundary whose kill timing would
-// only add nondeterminism to the durability assertion.
+// step-storage and full-lifecycle tests cover that function. The step
+// invoker takes the same per-turn path a spawned child takes, minus the OS
+// process boundary whose kill timing would only add nondeterminism to the
+// durability assertion.
 //
 // The spy agent is storage-aware: it loads its prior turns from
 // `env.storage` at build (exactly as a real reactor does via
@@ -568,13 +568,10 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         req,
         onEvent,
         authorize,
-        warmCache,
         _sourcesRef,
         _credentialWiring,
         mailPartReader,
       ) => {
-        // The run loop builds every agent step for each turn.
-        expect(warmCache).toBeUndefined();
         return createWorkflowStepInvoker({
           workflowAuthorize: authorize,
           buildEnv,

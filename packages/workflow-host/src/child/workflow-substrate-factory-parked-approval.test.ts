@@ -1,19 +1,12 @@
 // `loadParkedApproval` durable reads: the sidecar binding recovers a parked
 // correlation's approval snapshot for the child's re-registration enumeration.
 //
-// Two layouts, verified against the production read helpers:
-//   - COLD (multi-step): the snapshot lives in the step's committed state in
-//     the workflow-run substrate, under the top-level run at the key of the
-//     step's place, stamped with the invocation that parked; the read
-//     reconstructs it and ignores another invocation's state. A read for a
-//     park's gate also takes state with no stamp parked on that gate. A
-//     step that parked before cold step state was committed is read from its
-//     local per-attempt store instead.
-//   - WARM (single-step): the snapshot lives in the durable conversation
-//     store, mirrored to the step's state directory in the workflow-run
-//     substrate. The read reconstructs it from the substrate WITHOUT
-//     going through the live registry -- proving a respawned child (whose
-//     live store is unbuilt) still recovers the snapshot.
+// The snapshot lives in the step's committed state in the workflow-run
+// substrate, under the top-level run at the key of the step's place, stamped
+// with the invocation that parked; the read reconstructs it and ignores
+// another invocation's state. A read for a park's gate also takes state with
+// no stamp parked on that gate. A step that parked before cold step state was
+// committed is read from its local per-attempt store instead.
 
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs/promises";
@@ -65,6 +58,7 @@ import {
   createDurableConversationStore,
   readStepState,
 } from "@intx/workflow-host";
+import { commitUnstampedStepState } from "@intx/workflow-host/testing";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import type { ControlChannelSender } from "../ipc/control-sender";
@@ -76,8 +70,6 @@ import {
   persistColdRecoveredPark,
   readColdParkedApprovalSnapshot,
   readColdParkedPendingOperations,
-  readWarmParkedApprovalSnapshot,
-  readWarmParkedPendingOperations,
   stepStorageRoot,
   toParkedApprovalOps,
 } from "./substrate-factory";
@@ -251,29 +243,29 @@ describe("readColdParkedApprovalSnapshot", () => {
     // Commit a park on gate `corr-1` with no stamp, as an earlier version
     // wrote it, from a local store the reads never see.
     async function parkWithNoStamp(substrate: RepoStore): Promise<void> {
-      const store = await createDurableConversationStore({
-        localStoreDir: await makeTempDir(),
-        signer: testSigner,
+      await commitUnstampedStepState({
         substrate,
         workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
         workflowRunRef: WORKFLOW_RUN_REF,
         principal: PRINCIPAL,
         runId: RUN_ID,
         stepId: "s",
-        lifetime: { kind: "deployment" },
-        mailboxAddress: "agent@example.com",
+        turns: [],
+        metadata: {
+          pendingOperations: [
+            {
+              ...pendingApproval("corr-1", snapshot),
+              suspendedCall: {
+                id: "call-1",
+                name: "charge_card",
+                arguments: {},
+              },
+            },
+          ],
+          tokenUsage: EMPTY_USAGE,
+          connectorState: null,
+        },
       });
-      await store.restoreFromSubstrate();
-      await store.storage.writeMetadata({
-        pendingOperations: [
-          {
-            ...pendingApproval("corr-1", snapshot),
-            suspendedCall: { id: "call-1", name: "charge_card", arguments: {} },
-          },
-        ],
-        tokenUsage: EMPTY_USAGE,
-      });
-      await store.mirrorToSubstrate();
     }
 
     test("a read for the park's gate takes the park on a host with no local store", async () => {
@@ -363,87 +355,6 @@ describe("readColdParkedApprovalSnapshot", () => {
 
       expect(await readColdParkedPendingOperations(at)).toEqual([]);
     });
-  });
-});
-
-describe("readWarmParkedApprovalSnapshot", () => {
-  test("reconstructs the snapshot from the durable substrate mirror", async () => {
-    const substrate = await createSubstrate(await makeTempDir());
-    const store = await createDurableConversationStore({
-      localStoreDir: await makeTempDir(),
-      signer: testSigner,
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      principal: PRINCIPAL,
-      runId: RUN_ID,
-      stepId: "s",
-      lifetime: { kind: "deployment" },
-      mailboxAddress: "agent@example.com",
-    });
-    // Suspend-time state: the parked approval's pending op, then mirrored to
-    // the substrate at the run boundary. No live registry is involved on the
-    // read side, mirroring a respawned child whose warm store is unbuilt.
-    await store.storage.writeMetadata({
-      pendingOperations: [pendingApproval("corr-1", snapshot)],
-      tokenUsage: EMPTY_USAGE,
-    });
-    await store.mirrorToSubstrate();
-
-    const got = await readWarmParkedApprovalSnapshot({
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      ...COMMITTED_READS,
-      runId: RUN_ID,
-      stepId: "s",
-      correlationId: "corr-1",
-    });
-    expect(got).toEqual(snapshot);
-  });
-
-  test("returns undefined when no durable state exists for the agent", async () => {
-    const substrate = await createSubstrate(await makeTempDir());
-
-    const got = await readWarmParkedApprovalSnapshot({
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      ...COMMITTED_READS,
-      runId: RUN_ID,
-      stepId: "never-ran",
-      correlationId: "corr-x",
-    });
-    expect(got).toBeUndefined();
-  });
-
-  test("returns undefined for a matching op that carries no snapshot", async () => {
-    const substrate = await createSubstrate(await makeTempDir());
-    const store = await createDurableConversationStore({
-      localStoreDir: await makeTempDir(),
-      signer: testSigner,
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      principal: PRINCIPAL,
-      runId: RUN_ID,
-      stepId: "s",
-      lifetime: { kind: "deployment" },
-      mailboxAddress: "agent@example.com",
-    });
-    await store.storage.writeMetadata({
-      pendingOperations: [pendingApproval("corr-1")],
-      tokenUsage: EMPTY_USAGE,
-    });
-    await store.mirrorToSubstrate();
-
-    const got = await readWarmParkedApprovalSnapshot({
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      ...COMMITTED_READS,
-      runId: RUN_ID,
-      stepId: "s",
-      correlationId: "corr-1",
-    });
-    expect(got).toBeUndefined();
   });
 });
 
@@ -960,53 +871,6 @@ describe("readColdParkedPendingOperations", () => {
   });
 });
 
-describe("readWarmParkedPendingOperations", () => {
-  test("reconstructs the pending operations from the durable substrate mirror", async () => {
-    const substrate = await createSubstrate(await makeTempDir());
-    const store = await createDurableConversationStore({
-      localStoreDir: await makeTempDir(),
-      signer: testSigner,
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      principal: PRINCIPAL,
-      runId: RUN_ID,
-      stepId: "s",
-      lifetime: { kind: "deployment" },
-      mailboxAddress: "agent@example.com",
-    });
-    await store.storage.writeMetadata({
-      pendingOperations: [pendingApproval("corr-1", snapshot)],
-      tokenUsage: EMPTY_USAGE,
-    });
-    await store.mirrorToSubstrate();
-
-    const got = await readWarmParkedPendingOperations({
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      ...COMMITTED_READS,
-      runId: RUN_ID,
-      stepId: "s",
-    });
-    expect(got).toEqual([pendingApproval("corr-1", snapshot)]);
-  });
-
-  test("returns an empty list when no durable state exists for the agent", async () => {
-    const substrate = await createSubstrate(await makeTempDir());
-
-    const got = await readWarmParkedPendingOperations({
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      ...COMMITTED_READS,
-      runId: RUN_ID,
-      stepId: "never-ran",
-    });
-    expect(got).toEqual([]);
-  });
-});
-
-// A warm-kept deployment's warm invoker runs its top-level run, and the cold
-// invoker every run it spawns.
 describe("createParkedApprovalHooks", () => {
   const agent = defineAgent({
     id: "a",
@@ -1022,30 +886,13 @@ describe("createParkedApprovalHooks", () => {
       steps: { s: step({ agent }) },
     });
 
-  // A warm deployment whose agent of step "s" is parked on `corr-warm`.
-  async function warmDeployment(): Promise<{
+  // A deployment whose hooks read the parks of its runs.
+  async function deployment(): Promise<{
     substrate: RepoStore;
     hooks: ReturnType<typeof createParkedApprovalHooks>;
   }> {
     const dataDir = await makeTempDir();
     const substrate = await createSubstrate(dataDir);
-    const store = await createDurableConversationStore({
-      localStoreDir: await makeTempDir(),
-      signer: testSigner,
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      principal: PRINCIPAL,
-      runId: RUN_ID,
-      stepId: "s",
-      lifetime: { kind: "deployment" },
-      mailboxAddress: "agent@example.com",
-    });
-    await store.storage.writeMetadata({
-      pendingOperations: [pendingApproval("corr-warm", snapshot)],
-      tokenUsage: EMPTY_USAGE,
-    });
-    await store.mirrorToSubstrate();
     const hooks = createParkedApprovalHooks({
       dataDir,
       substrate,
@@ -1054,29 +901,12 @@ describe("createParkedApprovalHooks", () => {
       signer: testSigner,
       mailboxAddress: "agent@example.com",
       topLevelRunId: RUN_ID,
-      warmRunId: RUN_ID,
     });
     return { substrate, hooks };
   }
 
-  test("the top-level run reads its parks from the warm store", async () => {
-    const { hooks } = await warmDeployment();
-    const at = {
-      runId: RUN_ID,
-      stepId: "s",
-      attempt: 1,
-      place: { stepPath: ["s"] },
-    };
-
-    expect(
-      await hooks.loadParkedApproval({ ...at, correlationId: "corr-warm" }),
-    ).toEqual(snapshot);
-    expect(await hooks.readParkedApprovalOps(at)).toEqual([
-      { correlationId: "corr-warm" },
-    ]);
-  });
-
   test.each([
+    ["the top-level run", RUN_ID, ["s"]],
     ["a childWorkflow child", "run-child", ["child", "s"]],
     [
       "an onTrigger body",
@@ -1091,7 +921,7 @@ describe("createParkedApprovalHooks", () => {
   ])(
     "%s reads its parks from its cold step state",
     async (_name, runId, stepPath) => {
-      const { substrate, hooks } = await warmDeployment();
+      const { substrate, hooks } = await deployment();
       await parkColdStep(
         substrate,
         runId,
@@ -1111,7 +941,7 @@ describe("createParkedApprovalHooks", () => {
   );
 
   test("a body does not adopt the park an earlier body of its place committed", async () => {
-    const { substrate, hooks } = await warmDeployment();
+    const { substrate, hooks } = await deployment();
     const stepPath = ["section", "s"];
     await parkColdStep(
       substrate,
@@ -1143,31 +973,8 @@ describe("createParkedApprovalHooks", () => {
     );
   });
 
-  // The top-level run's park is read from committed state, so it has nothing
-  // to commit; any other run's goes to its cold step state, which here holds
-  // no park to commit.
-  test("only a run other than the top-level one commits a recovered park", async () => {
-    const { hooks } = await warmDeployment();
-    const park = { stepId: "s", attempt: 1, correlationId: "corr-lost" };
-
-    await hooks.persistRecoveredPark({
-      runId: RUN_ID,
-      place: { stepPath: ["s"] },
-      ...park,
-    });
-    await expect(
-      hooks.persistRecoveredPark({
-        runId: "run-child",
-        place: { stepPath: ["child", "s"] },
-        ...park,
-      }),
-    ).rejects.toThrow(
-      "neither the committed step state nor a current local store holds its pending operation",
-    );
-  });
-
-  // The hooks read only the top-level run warm, since a loop iteration would
-  // inherit its env.
+  // A loop must name another step as its onExhausted, so a workflow's one
+  // step cannot be a loop.
   test.each(["loop", "done"])(
     "a deployment's one step cannot be a loop, whose onExhausted names %s",
     (onExhausted) => {
@@ -1192,7 +999,7 @@ describe("createParkedApprovalHooks", () => {
 
   // The container plans its relays from the body's parks, read through its
   // own env, while the body recovers its park through the body's.
-  test("a warm-kept deployment's resume relays an approval its spawned body stored but never logged", async () => {
+  test("a resume relays an approval its spawned body stored but never logged", async () => {
     const dataDir = await makeTempDir();
     const substrate = await createSubstrate(dataDir);
     const childRunId = "run-body";
@@ -1213,7 +1020,6 @@ describe("createParkedApprovalHooks", () => {
       signer: testSigner,
       mailboxAddress: "agent@example.com",
       topLevelRunId: RUN_ID,
-      warmRunId: RUN_ID,
     });
     const invokeStep: StepInvoker = async (req) =>
       req.resume !== undefined

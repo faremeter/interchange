@@ -3762,13 +3762,10 @@ async function startOneStepChild(opts: {
     req,
     onEvent,
     authorize,
-    warmCache,
     sourcesRef,
     _credentialWiring,
     mailPartReader,
   ) => {
-    // The run loop builds every agent step for each turn.
-    expect(warmCache).toBeUndefined();
     return createWorkflowStepInvoker({
       workflowAuthorize: authorize,
       buildEnv: (buildReq) => buildEnv(buildReq, sourcesRef),

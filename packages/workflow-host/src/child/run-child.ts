@@ -177,7 +177,6 @@ import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
 import { createSupervisorBackedMailPartReader } from "./supervisor-backed-mail-part-reader";
 import type { ChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
-import type { WarmAgentCache } from "./warm-agent-cache";
 import { mergeCredentialDelivery } from "./credential-cell";
 import {
   createCredentialsBackedAuthorize,
@@ -241,9 +240,6 @@ export type DrainController = WorkflowHostDrainController;
  * shape -- the child wraps this binding into a `StepInvoker` inside
  * `buildRuntimeEnv` so the workflow-runtime never sees the
  * host-specific surface.
- *
- * The run loop always passes `undefined` as `warmCache`, so the adapter
- * builds the step's agent for each turn and closes it when the turn ends.
  */
 /**
  * Per-run credential inputs the top-level step and action invokers carry to
@@ -266,7 +262,6 @@ export type ChildStepInvoker = (
   req: StepInvokeRequest,
   onEvent: (event: EventPayload) => void,
   authorize: WorkflowAuthorizeFn,
-  warmCache: WarmAgentCache | undefined,
   sourcesRef: SourcesSnapshotRef,
   credentialWiring: CredentialWiring,
   mailPartReader: MailPartReader,
@@ -417,8 +412,7 @@ export interface RunWorkflowChildBindings {
    * Make durable the step state behind a park the resume classifier
    * recovered through `readParkedApprovalOps`, before the park is committed
    * to the run log. Wired wherever `readParkedApprovalOps` can answer from a
-   * local store the crash left ahead of the durable copy, which is the cold
-   * path only; a warm read answers from committed state, so it is unset there.
+   * local store the crash left ahead of the durable copy.
    */
   persistRecoveredPark?: PersistRecoveredPark;
   /**
@@ -1998,7 +1992,6 @@ function buildRuntimeEnv(args: {
       req,
       args.onEvent,
       args.authorize,
-      undefined,
       args.sourcesRef,
       args.credentialWiring,
       mailPartReader,

@@ -2106,7 +2106,7 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
 });
 
 describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
-  // The substrate mailbox backing commits the warm agent's durable inbox
+  // The substrate mailbox backing commits the deployment's durable inbox
   // under `mailbox/INBOX/`: a MUTABLE `index.json` rewritten on each flush
   // plus `<uid>.eml` message blobs carrying raw signed bytes. `<uid>` is a
   // decimal integer >= 1. A RETAINED message blob is held immutable via
@@ -2290,7 +2290,7 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
   });
 
   test("accepts expunging a prior message while the index persists", async () => {
-    // The warm agent physically removes a message from the live INBOX. The
+    // The agent physically removes a message from the live INBOX. The
     // index is rewritten (mutable) and retained; the `<uid>.eml` blob is
     // dropped from the tree but survives in git history because a
     // workflow-run repo is never GC'd.

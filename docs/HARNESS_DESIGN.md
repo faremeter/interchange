@@ -124,7 +124,7 @@ SIDECAR_DATA_DIR/
   workflow-step-state/
     <runId>/                     # per-step scratch and working stores, reclaimed on undeploy
   agent-conversation-state/
-    <runId>/                     # local conversation copy, reclaimed on undeploy
+    <runId>/                     # written only by an earlier version; removed on undeploy
   workflow-definition-sources/
     <runId>/
       source-assets/<assetId>/   # mounted tarball asset

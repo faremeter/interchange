@@ -1,17 +1,12 @@
 // Per-step scratch keying for `createSidecarStepBuildEnv`.
 //
 // These tests pin the keying directly off the production `buildEnv` the
-// substrate factory wires:
-//   - COLD (no `durableConversation`, as the sidecar builds every step):
-//     two different runIds produce DIFFERENT `env.workdir`s, each under
-//     that run's subtree -- the per-run keying the run-completion cleanup
-//     reclaims. A workspace lives for one attempt: a retry does not see
-//     the files of the attempt before it.
-//   - WARM (`durableConversation` injected): two different runIds produce
-//     the SAME `env.workdir`, and a file written for run-1 is visible in
-//     the env built for run-2.
+// substrate factory wires: two different runIds produce DIFFERENT
+// `env.workdir`s, each under that run's subtree -- the per-run keying the
+// run-completion cleanup reclaims. A workspace lives for one attempt: a
+// retry does not see the files of the attempt before it.
 //
-// The cold path also backs each invocation's `ContextStore` with the step's
+// The build also backs each invocation's `ContextStore` with the step's
 // committed state in the workflow-run substrate, under the deployment's
 // top-level run at the key of the step's place: it restores that state on a
 // fresh host, the build's conversation commits the turn, and another
@@ -31,9 +26,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type {
-  AuditStore,
   BlobReader,
-  ContextStore,
   ConversationTurn,
   InferenceSource,
   Mail,
@@ -44,6 +37,7 @@ import type {
 import type { MailSigner } from "@intx/types/mail-signer";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 import { generateKeyPair } from "@intx/crypto";
+import { createConnectorRouter } from "@intx/harness";
 import { createInboundMessage } from "@intx/mime";
 import {
   createRepoStore,
@@ -67,11 +61,13 @@ import {
   createWorkflowStepInvoker,
   readStepState,
   type ChildOutboundMailBridge,
-  type DurableConversationRegistry,
   type SourcesSnapshotRef,
   type StepBuild,
 } from "@intx/workflow-host";
-import { createLogCapture } from "@intx/workflow-host/testing";
+import {
+  commitUnstampedStepState,
+  createLogCapture,
+} from "@intx/workflow-host/testing";
 import {
   scopedStepId,
   StepOutcomeCommitError,
@@ -165,30 +161,9 @@ function stubInbound(): SupervisorBackedTransportInbound {
   };
 }
 
-// A warm `durableConversation` whose `acquire(stepId)` returns a storage
-// the env builder files into `env.storage`. `buildEnv` never invokes the
-// store's methods, so a structural double-cast stub is sufficient and is
-// the documented test-stub escape hatch for a wide library interface.
-function stubDurableConversationRegistry(): DurableConversationRegistry {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv only files `.storage` into the env; it never calls the store's methods, so a structural stub cannot be satisfied field-by-field
-  const storage = {} as ContextStore & AuditStore;
-  const store = {
-    storage,
-    mirrorToSubstrate: () => Promise.resolve(),
-    restoreFromSubstrate: () => Promise.resolve(),
-  };
-  return {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the registry's full DurableConversationStore surface is not exercised by buildEnv
-    acquire: () => Promise.resolve(store as never),
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- same: only `.storage` is read
-    get: () => store as never,
-  };
-}
-
 function buildDeps(opts: {
   dataDir: string;
   substrate: RepoStore;
-  durableConversation?: DurableConversationRegistry;
   mailSigner?: MailSigner;
   outboundMailBridge?: ChildOutboundMailBridge;
   signer?: (payload: string) => Promise<string>;
@@ -208,9 +183,6 @@ function buildDeps(opts: {
     directors: createDefaultDirectorRegistry(),
     mailSigner: opts.mailSigner ?? unavailableMailSigner,
     inbound: stubInbound(),
-    ...(opts.durableConversation !== undefined
-      ? { durableConversation: opts.durableConversation }
-      : {}),
   };
 }
 
@@ -264,40 +236,6 @@ async function makeTempDir(): Promise<string> {
 }
 
 describe("createSidecarStepBuildEnv per-step scratch keying", () => {
-  test("warm path keys one stable workdir across runs and preserves files", async () => {
-    const dataDir = await makeTempDir();
-    const buildEnv = createSidecarStepBuildEnv(
-      buildDeps({
-        dataDir,
-        substrate: await createSubstrate(dataDir),
-        durableConversation: stubDurableConversationRegistry(),
-      }),
-    );
-
-    const sourcesRef = sourcesRefFor();
-    const { env: env1 } = await buildEnv(requestForRun("run-1"), sourcesRef);
-    // A file the agent would write during run-1's turn.
-    const marker = path.join(env1.workdir, "turn-1.txt");
-    await fs.writeFile(marker, "carried");
-
-    const { env: env2 } = await buildEnv(requestForRun("run-2"), sourcesRef);
-
-    // Stable keying: a different runId resolves to the SAME workdir, so
-    // the warm case is bounded to one dir per agent (not one-per-message)
-    // and the workspace survives across runs/respawn.
-    expect(env2.workdir).toBe(env1.workdir);
-    // The warm workdir lives under the stable `warm/<stepId>/` sub-root,
-    // never under any run's `runs/<runId>/` subtree.
-    expect(env1.workdir).toContain(
-      path.join("workflow-step-state", WORKFLOW_RUN_REPO_ID.id, "warm"),
-    );
-    expect(env1.workdir).not.toContain(path.join("runs", "run-1"));
-    // Continuity: the file written in run-1 is visible in run-2's env.
-    expect(
-      await fs.readFile(path.join(env2.workdir, "turn-1.txt"), "utf8"),
-    ).toBe("carried");
-  });
-
   test("cold path keys a distinct per-run workdir under that run's subtree", async () => {
     const dataDir = await makeTempDir();
     const buildEnv = createSidecarStepBuildEnv(
@@ -321,8 +259,6 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       ),
     );
     expect(env2.workdir).toContain(path.join("runs", "run-2"));
-    // The cold path never parks scratch under the warm sub-root.
-    expect(env1.workdir).not.toContain(path.join("warm", STEP_ID));
   });
 
   test("a retried attempt does not see the files of the attempt before it", async () => {
@@ -421,8 +357,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
   test("resolves sources from the mutable ref at build time", async () => {
     // The build reads the source table through the ref, so a rotation that
     // writes the ref before a build is reflected in the agent that build
-    // constructs (the cold-window path; a warm already-built agent swaps
-    // sources through the warm cache, not here).
+    // constructs.
     const dataDir = await makeTempDir();
     const buildEnv = createSidecarStepBuildEnv(
       buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
@@ -578,7 +513,6 @@ describe("createSidecarStepBuildEnv capabilities", () => {
       buildDeps({
         dataDir,
         substrate: await createSubstrate(dataDir),
-        durableConversation: stubDurableConversationRegistry(),
         mailSigner,
       }),
     );
@@ -1215,31 +1149,31 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
           : {}),
       });
     // An earlier version kept the step of a one-step deployment in a store
-    // that lives as long as the deployment and stamps no invocation.
-    const earlier = await createDurableConversationStore({
-      localStoreDir: await makeTempDir(),
-      signer,
+    // that lives as long as the deployment and stamps no invocation. Its
+    // first turn answered Alice's mail and replied on the thread.
+    const router = createConnectorRouter({ ownAddress: mailboxAddress });
+    router.beginTurn({});
+    router.commit(router.route(mail({ messageId: "<a1@example.com>" })));
+    const firstReply = router.composeReply();
+    if (firstReply === null) throw new Error("expected a reply address");
+    router.onReplySent(
+      { messageId: "<r1@example.com>", status: "delivered" },
+      firstReply.references ?? [],
+    );
+    await commitUnstampedStepState({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
       runId: TOP_LEVEL_RUN_ID,
       stepId: STEP_ID,
-      lifetime: { kind: "deployment" },
-      mailboxAddress,
+      turns: [turn("first")],
+      metadata: {
+        pendingOperations: [],
+        tokenUsage: ZERO_USAGE,
+        connectorState: router.snapshot(),
+      },
     });
-    await earlier.restoreFromSubstrate();
-    await earlier.beginTurn({});
-    await earlier.seedInbound(mail({ messageId: "<a1@example.com>" }));
-    const firstReply = earlier.composeReply();
-    if (firstReply === null) throw new Error("expected a reply address");
-    await earlier.storage.writeTurns([turn("first")]);
-    await earlier.storage.commit({ message: "turn" });
-    await earlier.onReplySent(
-      { messageId: "<r1@example.com>", status: "delivered" },
-      firstReply.references ?? [],
-    );
-    await earlier.mirrorToSubstrate();
     const before = await readKey(substrate, TOP_LEVEL_RUN_ID, STEP_ID);
     expect(before?.invocation).toBeUndefined();
     expect(before?.pendingOperations).toEqual([]);
@@ -1322,19 +1256,6 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     expect(submitted).toEqual([
       { sender: "run_deployment-keying@example.com", message },
     ]);
-  });
-
-  test("a warm build returns no conversation", async () => {
-    const dataDir = await makeTempDir();
-    const buildEnv = createSidecarStepBuildEnv(
-      buildDeps({
-        dataDir,
-        substrate: await createSubstrate(dataDir),
-        durableConversation: stubDurableConversationRegistry(),
-      }),
-    );
-    const warm = await buildEnv(requestForRun("run-1"), sourcesRefFor());
-    expect(warm.conversation).toBeUndefined();
   });
 });
 

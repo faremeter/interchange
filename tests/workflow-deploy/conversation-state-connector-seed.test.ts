@@ -1,8 +1,10 @@
-// Unit tests for the warm-agent durable conversation store's connector-seed
-// hook (design §3c threading). Seeding drives the store's connector router
-// from each mail-derived inbound message so the warm agent's reply path has
-// thread state, and the seeded state persists to the workflow-run substrate
-// so it survives a child respawn.
+// Unit tests for the durable conversation store's connector-seed hook
+// (design §3c threading). Seeding drives the store's connector router from
+// each mail-derived inbound message so the step agent's reply path has
+// thread state, and the turn's mirror commits the router's state to the
+// workflow-run substrate so it survives a child respawn. Every store here
+// serves one invocation, so a respawned store continues the state that
+// invocation committed.
 //
 // The tests drive a REAL `createRepoStore` workflow-run substrate and a REAL
 // isogit local store (the production path), so the connector-state flush, the
@@ -127,7 +129,10 @@ async function makeStore(
     principal: PRINCIPAL,
     runId: RUN_ID,
     stepId: STEP_ID,
-    lifetime: { kind: "deployment" },
+    lifetime: {
+      kind: "invocation",
+      invocation: { runId: RUN_ID, stepId: STEP_ID, attempt: 1 },
+    },
     mailboxAddress: "agent@example.com",
   });
 }
@@ -386,7 +391,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
 
     // A fresh store (a respawn with an empty local FS) restores the seeded
     // thread, and the approval resume composes the same reply -- the
-    // cross-respawn continuity the warm mail loop depends on.
+    // cross-respawn continuity a parked mail turn depends on.
     const freshLocalDir = path.join(h.baseDir, "respawn-local");
     const fresh = await makeStore(h, freshLocalDir);
     expect(await fresh.restoreFromSubstrate()).toBe(true);

@@ -160,7 +160,6 @@ export {
   createSnapshotGrantsResolver,
   createStoreStepConversation,
   createSupervisorBackedTransport,
-  createWarmAgentCache,
   discoverInFlightRuns,
   parseSpawnTimeEnv,
   runWorkflowChild,
@@ -194,8 +193,6 @@ export {
   type SubstrateWriteRequest,
   type SubstrateWriteResponseSink,
   type SupervisorBackedTransportInbound,
-  type WarmAgentCache,
-  type WarmEventSinkRef,
 } from "./child/index";
 
 export {
@@ -209,12 +206,9 @@ export {
   type SignalChannelOpts,
 } from "./seams/index";
 export {
-  createDurableConversationRegistry,
   createDurableConversationStore,
   readStepState,
   type DurableConversationLifetime,
-  type DurableConversationRegistry,
-  type DurableConversationRegistryOpts,
   type DurableConversationStore,
   type DurableConversationStoreOpts,
 } from "./conversation-state";

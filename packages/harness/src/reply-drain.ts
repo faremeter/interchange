@@ -1,4 +1,4 @@
-// Shared connector reply drain for the agent harness.
+// Connector reply drain for the agent harness.
 //
 // A director emits a `connector.reply` event when the agent produces an
 // outbound reply. Draining that event means: compose the threading

@@ -388,7 +388,7 @@ async function runUnifiedD2(opts: {
       workflowId: `wf_${DEPLOYMENT_ID}`,
     });
 
-    // Deploy the single warm agent BY SOURCE-REF, the same code-sourced front
+    // Deploy the single agent step BY SOURCE-REF, the same code-sourced front
     // production drives. The helper registers the deployment on the env, so the
     // fire loop resolves it by `anchorRunId` with no manual registration.
     const handle = await deployWorkflowSourceForTest(env, {

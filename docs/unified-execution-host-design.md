@@ -1275,8 +1275,8 @@ buildEnv, agentFactory: createAgent })`. Tools empty for now.
   single agent) — gate it hardest.
 - **Riskiest sub-item.** The mailbox-ownership reconciliation (§3a) and reply
   latency through the inbox/dispatch path (§6).
-- **Later change.** No deployment uses the warm-agent cache: every step
-  builds its agent for each turn, and conversation state continues through
+- **Later change.** The warm-agent cache is removed: every step builds its
+  agent for each turn, and conversation state continues through
   the substrate (§3b, §3c).
 
 ### Phase 4b — Isolation declaration (workflow + per-node) + sandbox-boundary abstraction (pure additions)

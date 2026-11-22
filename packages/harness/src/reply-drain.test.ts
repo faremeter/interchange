@@ -1,4 +1,4 @@
-// Unit tests for the shared connector reply drain. The drain is exercised
+// Unit tests for the connector reply drain. The drain is exercised
 // against a plain async stream and stub compose/send/onReplySent seams --
 // no full agent or transport -- so the contract (one send per
 // connector.reply, correct threading headers, serialized ordering, and a

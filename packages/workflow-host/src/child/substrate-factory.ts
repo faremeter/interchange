@@ -33,8 +33,6 @@ import { stepPlaceKey, type StepPlace } from "@intx/types/step-place";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import type {
   ApprovalSnapshot,
-  AuditStore,
-  ContextStore,
   ConversationTurn,
   MessageTransport,
   PersistedPendingOperation,
@@ -117,8 +115,6 @@ import {
   isLocalStateCurrent,
   isOwnStepState,
   readStepState,
-  type DurableConversationRegistry,
-  type DurableConversationStore,
 } from "../conversation-state";
 import { readRunGrants, runGrantsPath } from "../run-grants";
 import {
@@ -545,35 +541,6 @@ function runStepStorageRoot(args: {
   );
 }
 
-/**
- * Stable per-agent scratch root for the WARM single-step agent's
- * workspace. Keyed
- * by the step identity exactly like the durable conversation store's
- * `agent-conversation-state/<repoId>/<agentKey>/` (conversation-state.ts),
- * NOT by the arbitrary first-message runId. Keying it stably is what
- * bounds the warm case: the cached agent reuses ONE workspace across
- * every message in the child's lifetime, and that same workspace is
- * re-derived (and so survives) across a child respawn, instead of
- * stranding a fresh per-runId subtree each time. The whole subtree is
- * reclaimed on undeploy, when the deployment's supervisor + child are
- * already torn down. Rooted under a `warm/` sibling of the cold `runs/`
- * subtree so the undeploy sweep of `workflow-step-state/<repoId>/`
- * reclaims both with one removal and the two keyings never collide.
- */
-function warmStepStorageRoot(args: {
-  dataDir: string;
-  workflowRunRepoId: RepoId;
-  stepId: string;
-}): string {
-  return path.join(
-    args.dataDir,
-    "workflow-step-state",
-    args.workflowRunRepoId.id,
-    "warm",
-    encodeURIComponent(args.stepId),
-  );
-}
-
 function findApprovalSnapshot(
   pendingOperations: readonly PersistedPendingOperation[],
   correlationId: string,
@@ -767,48 +734,6 @@ export async function readColdParkedApprovalSnapshot(
 }
 
 /**
- * Read a warm (single-step) parked agent's durable pending operations from
- * substrate state. A warm agent's pending operations live in its durable
- * conversation store, mirrored to the step's state directory in the
- * workflow-run substrate.
- *
- * Reconstructs that state read-only -- deliberately NOT through
- * `DurableConversationRegistry.acquire`, whose first acquire writes and
- * commits a substrate restore into the live store and would front-run the warm
- * agent's own restore ordering. A respawned child has not rebuilt the live
- * store when re-registration runs (resume re-parks without re-invoking the
- * step), so the substrate is the only place the pending operations live at that
- * moment. Returns an empty list when no durable state exists for the agent.
- */
-export async function readWarmParkedPendingOperations(args: {
-  substrate: RepoStore;
-  workflowRunRepoId: RepoId;
-  workflowRunRef: string;
-  principal: Principal;
-  runId: string;
-  stepId: string;
-}): Promise<PersistedPendingOperation[]> {
-  const reconstructed = await readStepState(args);
-  if (reconstructed === null) return [];
-  return reconstructed.pendingOperations;
-}
-
-export async function readWarmParkedApprovalSnapshot(args: {
-  substrate: RepoStore;
-  workflowRunRepoId: RepoId;
-  workflowRunRef: string;
-  principal: Principal;
-  runId: string;
-  stepId: string;
-  correlationId: string;
-}): Promise<ApprovalSnapshot | undefined> {
-  return findApprovalSnapshot(
-    await readWarmParkedPendingOperations(args),
-    args.correlationId,
-  );
-}
-
-/**
  * Project a parked step's durable pending operations down to the minimal
  * approval records the resume classifier needs. Filters to `approval` (the only
  * control-plane kind today) and keeps only the correlationId and the optional
@@ -839,8 +764,7 @@ export interface ParkedApprovalHooks {
  * stored by the invoker that ran them. The cold invoker runs every run of
  * the sidecar's deployments: the top-level run, each loop iteration body,
  * each `childWorkflow` child and each onTrigger body. It stamps each step's
- * state with the invocation that wrote it. With `warmRunId`, the warm
- * readers answer for that run instead; the sidecar does not pass it.
+ * state with the invocation that wrote it.
  */
 export function createParkedApprovalHooks(args: {
   dataDir: string;
@@ -851,10 +775,9 @@ export function createParkedApprovalHooks(args: {
   signer: (payload: string) => Promise<string>;
   mailboxAddress: string;
   topLevelRunId: string;
-  warmRunId?: string;
 }): ParkedApprovalHooks {
-  const { warmRunId, signer, mailboxAddress, ...store } = args;
-  const cold: ParkedApprovalHooks = {
+  const { signer, mailboxAddress, ...store } = args;
+  return {
     loadParkedApproval: (park) =>
       readColdParkedApprovalSnapshot({ ...store, ...park }),
     readParkedApprovalOps: async (step) =>
@@ -863,33 +786,6 @@ export function createParkedApprovalHooks(args: {
       ),
     persistRecoveredPark: (park) =>
       persistColdRecoveredPark({ ...store, signer, mailboxAddress, ...park }),
-  };
-  if (warmRunId === undefined) return cold;
-  return {
-    loadParkedApproval: (park) =>
-      park.runId === warmRunId
-        ? readWarmParkedApprovalSnapshot({
-            ...store,
-            runId: warmRunId,
-            stepId: stepPlaceKey(park.place),
-            correlationId: park.correlationId,
-          })
-        : cold.loadParkedApproval(park),
-    readParkedApprovalOps: async (step) =>
-      step.runId === warmRunId
-        ? toParkedApprovalOps(
-            await readWarmParkedPendingOperations({
-              ...store,
-              runId: warmRunId,
-              stepId: stepPlaceKey(step.place),
-            }),
-          )
-        : cold.readParkedApprovalOps(step),
-    // A warm read answers only from committed state, so a warm park never
-    // needs committing before the runtime records it.
-    persistRecoveredPark: async (park) => {
-      if (park.runId !== warmRunId) await cold.persistRecoveredPark(park);
-    },
   };
 }
 
@@ -958,18 +854,6 @@ export interface SidecarStepBuildEnvDeps {
    */
   adapters: AdapterRegistry;
   /**
-   * Durable-conversation registry for a warm agent. When present, the env
-   * builder swaps the per-run isogit
-   * `ContextStore` for a per-agent durable store whose conversation is
-   * mirrored to the workflow-run substrate, and restores the prior
-   * conversation from the substrate before returning the env (so the
-   * agent's reactor `load()` and the warm cache's lazy build see the
-   * restored turns -- including the respawn-rebuild path). The sidecar
-   * leaves it absent, so every step opens a durable store per invocation,
-   * scoped to the invocation, whose conversation's `settle` commits it.
-   */
-  durableConversation?: DurableConversationRegistry;
-  /**
    * Sidecar-local directory of the materialized workflow-definition closure
    * (`env.spawn.closurePackageDir`). The invoker materializes each step
    * agent's declared plugin packages (`req.agent.plugins`) from this
@@ -1032,11 +916,9 @@ async function materializeSourcePluginFactories(
  * being papered over with a stub: the single-step path now always runs
  * a real agent against real storage.
  *
- * A cold step's build returns the connector conversation over the store it
+ * A step's build returns the connector conversation over the store it
  * opened for the invocation, which sends replies through the outbound
- * bridge and whose `settle` commits the store to the substrate. A warm
- * build returns no conversation, because the warm step invoker drives the
- * warm agent's conversation through its connector hooks.
+ * bridge and whose `settle` commits the store to the substrate.
  */
 export function createSidecarStepBuildEnv(
   deps: SidecarStepBuildEnvDeps,
@@ -1052,9 +934,7 @@ export function createSidecarStepBuildEnv(
   ): Promise<StepBuild> => {
     // Resolve against the live table each build so a source rotation that
     // wrote `sourcesRef.current` before this build is reflected in the
-    // agent this build constructs. A warm agent that is already built does
-    // not pass through here again, so a rotation does not reach it through
-    // this path -- this ref covers only a build that has not happened yet.
+    // agent this build constructs.
     const resolveStepInferenceSource = createStepInferenceSourceResolver(
       sourcesRef.current,
     );
@@ -1085,75 +965,52 @@ export function createSidecarStepBuildEnv(
       );
     }
 
-    // Root the per-step scratch (the workspace). The cold path, which the
-    // sidecar uses for every agent step, keys it per run/step/attempt:
-    // each turn builds the agent over its attempt's scratch. An internal
-    // run's whole `runs/<runId>/` subtree is reclaimed when the run
-    // completes. The top-level run's subtree is kept until allocation
-    // cleanup. The warm path (`durableConversation` present) keys it
-    // STABLY per agent so the cached agent reuses one workspace across
-    // every message, and the subtree is reclaimed on undeploy. The two
-    // keyings live under disjoint `runs/` and `warm/` sub-roots so neither
-    // sweep touches the other's tree, and the durable conversation under
-    // `agent-conversation-state/` is a different root that neither sweep
-    // touches.
-    const storeDir =
-      deps.durableConversation !== undefined
-        ? warmStepStorageRoot({
-            dataDir: deps.dataDir,
-            workflowRunRepoId: deps.workflowRunRepoId,
-            stepId,
-          })
-        : stepStorageRoot({
-            dataDir: deps.dataDir,
-            workflowRunRepoId: deps.workflowRunRepoId,
-            runId,
-            stepId,
-            attempt,
-          });
+    // Root the per-step scratch (the workspace) per run/step/attempt: each
+    // turn builds the agent over its attempt's scratch. An internal run's
+    // whole `runs/<runId>/` subtree is reclaimed when the run completes. The
+    // top-level run's subtree is kept until allocation cleanup.
+    const storeDir = stepStorageRoot({
+      dataDir: deps.dataDir,
+      workflowRunRepoId: deps.workflowRunRepoId,
+      runId,
+      stepId,
+      attempt,
+    });
     // Conversation storage. Every agent step's conversation is committed to
     // its state directory in the workflow-run substrate (design §3c) and
     // restored from there before the agent's reactor loads, so it survives a
     // child respawn and a move to a replacement host. The state directory
     // belongs to the step's place, under the deployment's top-level run,
-    // whichever run the step runs in. The warm single-step agent keeps one
-    // store for its deployment's life. A cold step opens a store per
-    // invocation over the per-attempt local store, and stamps the state with
-    // the invocation. An approval resume names the gate it resumes, so it
+    // whichever run the step runs in. A step opens a store per invocation
+    // over the per-attempt local store, and stamps the state with the
+    // invocation. An approval resume names the gate it resumes, so it
     // also continues a park that an earlier version committed with no stamp.
     // Its conversation's `settle` commits it once the turn settles, so the
     // next invocation of the step's place, or a resume of the same
     // invocation, continues the conversation that turn left. The workdir and
-    // tools stay local in both cases.
-    let storage: ContextStore & AuditStore;
-    let coldStore: DurableConversationStore | undefined;
-    if (deps.durableConversation !== undefined) {
-      storage = (await deps.durableConversation.acquire(stepId)).storage;
-    } else {
-      const key = stepPlaceKey(req.place);
-      coldStore = await createDurableConversationStore({
-        localStoreDir: storeDir,
-        signer: deps.signer,
-        substrate: deps.substrate,
-        workflowRunRepoId: deps.workflowRunRepoId,
-        workflowRunRef: deps.workflowRunRef,
-        principal: deps.principal,
-        runId: deps.topLevelRunId,
-        stepId: key,
-        lifetime: {
-          kind: "invocation",
-          invocation: { runId, stepId, attempt },
-          ...(req.resume?.kind === "approval"
-            ? { resumes: req.resume.correlationId }
-            : {}),
-        },
-        mailboxAddress: deps.mailboxAddress,
-      });
-      await coldStore.restoreFromSubstrate();
-      storage = coldStore.storage;
-    }
+    // tools stay local.
+    const store = await createDurableConversationStore({
+      localStoreDir: storeDir,
+      signer: deps.signer,
+      substrate: deps.substrate,
+      workflowRunRepoId: deps.workflowRunRepoId,
+      workflowRunRef: deps.workflowRunRef,
+      principal: deps.principal,
+      runId: deps.topLevelRunId,
+      stepId: stepPlaceKey(req.place),
+      lifetime: {
+        kind: "invocation",
+        invocation: { runId, stepId, attempt },
+        ...(req.resume?.kind === "approval"
+          ? { resumes: req.resume.correlationId }
+          : {}),
+      },
+      mailboxAddress: deps.mailboxAddress,
+    });
+    await store.restoreFromSubstrate();
+    const storage = store.storage;
 
-    // Cold-path resume keying assertion (correct-by-construction guard for
+    // Resume keying assertion (correct-by-construction guard for
     // the resume-attempt invariant documented on `stepStorageRoot`). An
     // APPROVAL resume re-invocation delivers the correlated decision to the
     // reactor, which rehydrates its gate from THIS store's pending
@@ -1169,19 +1026,13 @@ export function createSidecarStepBuildEnv(
     // match is an async marker, so the gate clears and the approved call is
     // silently skipped. Make either loud here, at the single seam that both
     // opened the store AND knows an approval resume must find its gate,
-    // rather than letting it surface as a hang or a skipped call. The
-    // warm path keys its durable store per agent (not per attempt) and
-    // rehydrates from a different lifecycle, so
-    // this assertion is cold-path only. An `"input"` resume is exempt by
-    // construction: its correlationId names the runtime-minted re-arm channel
-    // awaiting the step's next trigger, not a reactor gate, so no pending
-    // operation ever exists for it and the delivered decision is sent as a
-    // plain next turn (no correlation to rehydrate).
-    if (
-      deps.durableConversation === undefined &&
-      req.resume !== undefined &&
-      req.resume.kind === "approval"
-    ) {
+    // rather than letting it surface as a hang or a skipped call. An
+    // `"input"` resume is exempt by construction: its correlationId names the
+    // runtime-minted re-arm channel awaiting the step's next trigger, not a
+    // reactor gate, so no pending operation ever exists for it and the
+    // delivered decision is sent as a plain next turn (no correlation to
+    // rehydrate).
+    if (req.resume !== undefined && req.resume.kind === "approval") {
       const resumeCorrelationId = req.resume.correlationId;
       const loaded = await storage.load();
       const hasPendingGate = loaded.pendingOperations.some(
@@ -1307,12 +1158,9 @@ export function createSidecarStepBuildEnv(
         providers: credentialContext.providers,
       });
     }
-    const conversation =
-      coldStore !== undefined
-        ? createStoreStepConversation(coldStore, (message) =>
-            deps.outboundMailBridge.submit(deps.mailboxAddress, message),
-          )
-        : undefined;
+    const conversation = createStoreStepConversation(store, (message) =>
+      deps.outboundMailBridge.submit(deps.mailboxAddress, message),
+    );
     return { env, conversation };
   };
 }
@@ -2598,14 +2446,11 @@ export function createSidecarSubstrateFactory(
       definition: env.definition,
     });
 
-    // The top-level build and the spawned-child build share every
-    // dependency, and neither keeps a conversation across turns in memory.
-    // Both get the deployment's inbound mailbox surface: a body step's mail
-    // tools ask the supervisor through the same bundle a top-level step does.
-    const stepBuildEnvBase: Omit<
-      SidecarStepBuildEnvDeps,
-      "durableConversation"
-    > = {
+    // One build serves the top-level steps and the spawned children's steps.
+    // It keeps no conversation across turns in memory. Its steps get the
+    // deployment's inbound mailbox surface: a body step's mail tools ask the
+    // supervisor through the same bundle a top-level step does.
+    const stepBuildEnvBase: SidecarStepBuildEnvDeps = {
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
       substrate,
@@ -2665,14 +2510,13 @@ export function createSidecarSubstrateFactory(
     // build a top-level step agent gets (see the tool-availability invariant in
     // `packages/workflow/README.md`).
     //
-    // Built COLD per invocation -- no `durableConversation`/warm hooks (a
-    // fan-out branch and a section body are each a fresh run per spawn). A
-    // source tool's bare `tool:<name>` grant is already in the credentials
-    // snapshot.
+    // The build keeps no state between calls, so the top level's
+    // `buildStepEnv` also builds every spawned child's steps. A source tool's
+    // bare `tool:<name>` grant is already in the credentials snapshot.
     //
     // Each agent gets its own evaluated `req.agent.toolFactories`, so a body
     // step whose id collides with a parent step id still gets its own tools.
-    const coldChildBuildStepEnv = createSidecarStepBuildEnv(stepBuildEnvBase);
+    //
     // One mail part reader serves every spawned child's steps. The supervisor
     // resolves a part by its ref and does not consult the run id, so the
     // child uses the deployment's top-level run id, as its transport does.
@@ -2703,9 +2547,8 @@ export function createSidecarSubstrateFactory(
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
         buildEnv: (buildReq) =>
-          coldChildBuildStepEnv(buildReq, sourcesRef, credentialContext),
+          buildStepEnv(buildReq, sourcesRef, credentialContext),
         agentFactory: stepAgentFactory,
-        sourcesRef,
         onEvent,
         mailPartReader: childMailPartReader,
       })(req);
@@ -2737,8 +2580,8 @@ export function createSidecarSubstrateFactory(
     // factory are pinned (closed over above); the event sink and the
     // authorize closure vary per step.
     //
-    // Every agent step is built for each turn: the run loop passes no warm
-    // cache, so the adapter builds the agent, runs one turn, and closes it.
+    // Every agent step is built for each turn: the adapter builds the agent,
+    // runs one turn, and closes it.
     // The step's conversation continues through the store `buildStepEnv`
     // opens, which restores the committed state and commits the turn once it
     // settles.
@@ -2746,7 +2589,6 @@ export function createSidecarSubstrateFactory(
       req,
       onEvent,
       authorize,
-      warmCache,
       sourcesRef,
       credentialWiring,
       mailPartReader,
@@ -2766,9 +2608,7 @@ export function createSidecarSubstrateFactory(
           ),
         agentFactory: stepAgentFactory,
         onEvent,
-        sourcesRef,
         mailPartReader,
-        ...(warmCache !== undefined ? { warmCache } : {}),
       })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = createGrantEvaluator();
