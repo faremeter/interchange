@@ -32,18 +32,22 @@
 // invocation drops the pending operations and parked reply targets, and rolls
 // back a turn parked on an approval to that turn's start
 // (`parkedTurnStart`), since only the invocation that parked can resume the
-// gate. State parked on a gate with no `parkedTurnStart`, which only a store
-// written before the field existed holds, cannot be rolled back, so another
-// invocation starts the step over as if nothing were committed. On the host
-// that ran the attempt, the per-attempt local store can be one turn ahead of
-// the committed copy: a crash between the reactor's local
-// commit and the mirror leaves that turn only there. A restore there keeps
-// the local store while it still extends the state the invocation continues
-// (`isLocalStateCurrent`), so the turn is not lost and a crash-recovered
-// approval park resumes against the gate it recorded. The lead is only
-// meaningful over the history it was built on, and that history is never
-// replaced under it: the workflow-run pack restorer refuses Hub history that
-// would move a branch the host already holds.
+// gate. A deployment-lifetime store, and an earlier version of this store,
+// write state with no stamp. When such state is parked on a gate, an approval
+// resume of that gate continues it as its own: the gate's correlation id names
+// the park. State with no stamp records no `parkedTurnStart`, and a resume of
+// its park that parks again cannot learn it. State parked on a gate with no
+// `parkedTurnStart` cannot be rolled back, so another invocation starts the
+// step over as if nothing were committed. On the host that ran the attempt,
+// the per-attempt local store can be one turn ahead of the committed copy: a
+// crash between the reactor's local commit and the mirror leaves that turn
+// only there. A restore there keeps the local store while it still extends
+// the state the invocation continues (`isLocalStateCurrent`), so the turn is
+// not lost and a crash-recovered approval park resumes against the gate it
+// recorded. The lead is only meaningful over the history it was built on,
+// and that history is never replaced under it: the workflow-run pack
+// restorer refuses Hub history that would move a branch the host already
+// holds.
 //
 // A step can carry a seed: a snapshot the Hub commits beside its state
 // directory for the step to start from. A restore that continues no committed
@@ -194,14 +198,19 @@ const MAX_UNCOMPACTED_WAL = 2 * CHECKPOINT_INTERVAL;
  * What a store's durable state belongs to. The warm agent keeps one
  * conversation for the life of its deployment, across attempts. A cold
  * step's store serves one invocation, named by its run, its scoped step id
- * and its attempt, and stamps the state with it. The invocation continues the
- * conversation its key holds; when another invocation wrote that state, the
- * store drops that invocation's pending operations and parked reply targets
- * and rolls back a turn it left parked on an approval.
+ * and its attempt, and stamps the state with it. An approval resume also
+ * names the correlation id of the gate it resumes (`resumes`). The invocation
+ * continues the conversation its key holds; when another invocation wrote that
+ * state, the store drops that invocation's pending operations and parked reply
+ * targets and rolls back a turn it left parked on an approval.
  */
 export type DurableConversationLifetime =
   | { readonly kind: "deployment" }
-  | { readonly kind: "invocation"; readonly invocation: StepStateInvocation };
+  | {
+      readonly kind: "invocation";
+      readonly invocation: StepStateInvocation;
+      readonly resumes?: string;
+    };
 
 export interface DurableConversationStoreOpts {
   /**
@@ -486,17 +495,19 @@ export async function createDurableConversationStore(
    * The state this store continues from its key's committed state, or
    * `null` when it continues none. A deployment-lifetime store continues
    * the committed state as it is. An invocation continues its own state as it
-   * is too; that is a resume of the invocation, such as an approval resume.
-   * Any other invocation continues the committed conversation with the
-   * pending operations and parked reply targets of the invocation that wrote
-   * it dropped, since they name gates only that invocation can resume. When
-   * that invocation's last turn parked on an approval, the conversation is
-   * rolled back to the start of that turn: the park was never answered, and
-   * a turn left on a tool call with no result cannot be continued. When
-   * that turn parked on a gate but the state records no `parkedTurnStart`,
-   * which only state written before the field existed does, the turn's start
-   * is unknown. Such state returns `null`: the invocation starts over from
-   * the seed, or with no conversation, and its first mirror folds over the
+   * is too (`isOwnStepState`); that is a resume of the invocation, such as an
+   * approval resume. Its own state is the state it stamped, or state with no
+   * stamp that is parked on the gate it resumes. Any other invocation
+   * continues the committed conversation with the pending operations and
+   * parked reply targets of the invocation that wrote it dropped, since they
+   * name gates only that invocation can resume. When that invocation's last
+   * turn parked on an approval, the conversation is rolled back to the start
+   * of that turn: the park was never answered, and a turn left on a tool
+   * call with no result cannot be continued. When that turn parked on a gate
+   * but the state records no `parkedTurnStart`, which state with no stamp,
+   * or a resume of such a park that parks again, does, the turn's start is
+   * unknown. Such state returns `null`: the invocation starts over from the
+   * seed, or with no conversation, and its first mirror folds over the
    * committed state. A later attempt of the same run and step is never
    * continued over.
    *
@@ -521,7 +532,7 @@ export async function createDurableConversationStore(
     }
     const own = opts.lifetime.invocation;
     const stamp = committed.invocation;
-    if (stamp !== undefined && isSameStepStateInvocation(stamp, own)) {
+    if (isOwnStepState(committed, own, opts.lifetime.resumes)) {
       return committed;
     }
     if (
@@ -1158,6 +1169,31 @@ function reconstructCommitted(
   );
 }
 
+/**
+ * Whether committed step state belongs to the invocation `own`: the state
+ * carries its stamp, or, when `resumes` names the approval gate the
+ * invocation resumes, the state carries no stamp and is parked on that gate.
+ * A deployment-lifetime store, and an earlier version of this store, write
+ * state with no stamp. A gate's correlation id names one park, so the gate
+ * identifies the invocation that parked on it. Stamped state belongs only to
+ * the invocation it names, whatever gates it holds.
+ */
+export function isOwnStepState(
+  committed: ReconstructedStepState,
+  own: StepStateInvocation,
+  resumes: string | undefined,
+): boolean {
+  if (committed.invocation !== undefined) {
+    return isSameStepStateInvocation(committed.invocation, own);
+  }
+  return (
+    resumes !== undefined &&
+    committed.pendingOperations.some(
+      (op) => op.correlationId === resumes && op.suspendedCall !== undefined,
+    )
+  );
+}
+
 /** The state a store continues, with the start of its parked turn. */
 type ContinuedState = StepStateContent & { parkedTurnStart?: number };
 
@@ -1191,11 +1227,10 @@ function rollBack(committed: ReconstructedStepState): ContinuedState {
 
 /**
  * Where the turn a store continues starts, or `null` when it is unknown:
- * state parked on a gate that records no `parkedTurnStart`, which only state
- * written before the field existed holds. A turn start left unknown is never
- * recorded, so a resume of such a park that parks again leaves the state
- * without one, and another invocation starts over instead of continuing a
- * tool call with no result.
+ * state parked on a gate that records no `parkedTurnStart`, which state with
+ * no stamp holds. A turn start left unknown is never recorded, so a resume of
+ * such a park that parks again leaves the state without one, and another
+ * invocation starts over instead of continuing a tool call with no result.
  */
 function startOfTurn(state: ContinuedState | null): number | null {
   if (state === null) return 0;

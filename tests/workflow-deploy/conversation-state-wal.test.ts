@@ -1925,6 +1925,150 @@ describe("durable conversation store over a gate park with no recorded turn star
   });
 });
 
+// State an earlier version wrote carries no stamp: a single-step agent's
+// state, and a multi-step step's state that carries only a bare `attempt`.
+for (const [label, legacyStamp] of [
+  ["no stamp", {}],
+  ["a bare attempt", { attempt: 1 }],
+] as const) {
+  describe(`durable conversation store over a gate park with ${label}`, () => {
+    let h: Harness;
+    const dangling: ConversationTurn = {
+      role: "assistant",
+      content: [
+        { type: "tool_call", id: "call-c1", name: "charge", arguments: {} },
+      ],
+      model: "stub-model",
+      timestamp: 0,
+    };
+
+    beforeEach(async () => {
+      h = await makeHarness();
+      await h.substrate.writeTreePreservingPrefix(
+        PRINCIPAL,
+        h.workflowRunRepoId,
+        WORKFLOW_RUN_REF,
+        {
+          preservePrefix: STATE_PREFIX,
+          merge: async () => ({
+            [stepStateWalEntryPath(STATE_PREFIX, 0)]: JSON.stringify({
+              seq: 0,
+              turns: [userTurn("charge it"), dangling],
+              metadata: {
+                pendingOperations: [
+                  {
+                    correlationId: "c1",
+                    kind: "approval",
+                    registeredAt: 0,
+                    gateId: "gate-c1",
+                    suspendedCall: {
+                      id: "call-c1",
+                      name: "charge",
+                      arguments: {},
+                    },
+                  },
+                ],
+                tokenUsage: tokenUsage(1),
+                connectorState: null,
+                ...legacyStamp,
+              },
+            }),
+          }),
+          message: `park a gate with ${label}`,
+        },
+      );
+    });
+
+    afterEach(async () => {
+      await fs.promises.rm(h.baseDir, { recursive: true, force: true });
+    });
+
+    function resumeOf(correlationId: string): DurableConversationLifetime {
+      return {
+        kind: "invocation",
+        invocation: { runId: RUN_ID, stepId: STEP_ID, attempt: 1 },
+        resumes: correlationId,
+      };
+    }
+
+    test("an approval resume of the gate continues the park and commits the turn stamped", async () => {
+      const own = await makeStore(
+        h,
+        path.join(h.baseDir, "own"),
+        resumeOf("c1"),
+      );
+      expect(await own.restoreFromSubstrate()).toBe(true);
+      const loaded = await own.storage.load();
+      expect(loaded.turns).toEqual([userTurn("charge it"), dangling]);
+      expect(
+        loaded.pendingOperations.some(
+          (op) => op.correlationId === "c1" && op.suspendedCall !== undefined,
+        ),
+      ).toBe(true);
+
+      await own.beginTurn({ resume: "c1" });
+      const result: ConversationTurn = {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            callId: "call-c1",
+            content: [{ type: "text", text: "ok" }],
+          },
+        ],
+        timestamp: 0,
+      };
+      const done: ConversationTurn = {
+        role: "assistant",
+        content: [{ type: "text", text: "charged" }],
+        model: "stub-model",
+        timestamp: 0,
+      };
+      await pushAndMirror(own, loaded.turns, [result, done], {
+        tokenUsageInput: 2,
+      });
+
+      const committed = await readCommitted(h);
+      expect(committed?.turns).toEqual([
+        userTurn("charge it"),
+        dangling,
+        result,
+        done,
+      ]);
+      expect(committed?.pendingOperations).toEqual([]);
+      expect(committed?.invocation).toEqual({
+        runId: RUN_ID,
+        stepId: STEP_ID,
+        attempt: 1,
+      });
+      // The resume continues the committed history, so its mirror appends.
+      expect(countWalEntries(h.stateDir)).toBe(2);
+    });
+
+    test("an invocation that resumes another gate starts over", async () => {
+      const other = await makeStore(
+        h,
+        path.join(h.baseDir, "other"),
+        resumeOf("c2"),
+      );
+      expect(await other.restoreFromSubstrate()).toBe(false);
+      const loaded = await other.storage.load();
+      expect(loaded.turns).toEqual([]);
+      expect(loaded.pendingOperations).toEqual([]);
+    });
+
+    test("an invocation that resumes no gate starts over", async () => {
+      const next = await makeStore(
+        h,
+        path.join(h.baseDir, "next"),
+        invocation(1),
+      );
+      expect(await next.restoreFromSubstrate()).toBe(false);
+      expect((await next.storage.load()).turns).toEqual([]);
+    });
+  });
+}
+
 describe("an invocation's reply by mail", () => {
   let h: Harness;
   // Set to make the local store's commits fail, as a full or broken local

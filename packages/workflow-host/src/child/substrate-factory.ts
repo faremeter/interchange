@@ -62,7 +62,6 @@ import {
 import { createSSHSignature } from "@intx/crypto";
 import {
   createAgentRepoStore,
-  isSameStepStateInvocation,
   type Principal,
   type ReconstructedStepState,
   type RepoId,
@@ -117,6 +116,7 @@ import {
   createDurableConversationRegistry,
   createDurableConversationStore,
   isLocalStateCurrent,
+  isOwnStepState,
   readStepState,
   type DurableConversationRegistry,
   type DurableConversationStore,
@@ -591,10 +591,12 @@ function coldInvocation(args: ColdStepStateArgs): StepStateInvocation {
 
 /**
  * The committed state of a cold step invocation's key, or `null` when the
- * key holds none or holds state another invocation wrote.
+ * key holds none or holds state another invocation wrote. A read for the
+ * approval park `correlationId` also takes state with no stamp that is parked
+ * on that gate as the invocation's own (`isOwnStepState`).
  */
 async function readColdOwnState(
-  args: ColdStepStateArgs,
+  args: ColdStepStateArgs & { correlationId?: string },
 ): Promise<ReconstructedStepState | null> {
   const key = stepPlaceKey(args.place);
   const committed = await readStepState({
@@ -606,8 +608,8 @@ async function readColdOwnState(
     stepId: key,
   });
   if (
-    committed?.invocation === undefined ||
-    !isSameStepStateInvocation(committed.invocation, coldInvocation(args))
+    committed === null ||
+    !isOwnStepState(committed, coldInvocation(args), args.correlationId)
   ) {
     return null;
   }
@@ -623,11 +625,12 @@ async function readColdOwnState(
  * local store answers while it is current (`isLocalStateCurrent`), which on
  * the host that ran the attempt is whenever it holds anything. Otherwise --
  * on a replacement host -- the committed state stamped with the invocation
- * answers. Returns an empty list when neither holds state for that
- * invocation.
+ * answers. A read for the approval park `correlationId` takes committed state
+ * with no stamp that is parked on that gate too (see `readColdOwnState`).
+ * Returns an empty list when neither holds state for that invocation.
  */
 export async function readColdParkedPendingOperations(
-  args: ColdStepStateArgs,
+  args: ColdStepStateArgs & { correlationId?: string },
 ): Promise<PersistedPendingOperation[]> {
   const own = await readColdOwnState(args);
   const local = await readLocalColdState(args);
@@ -1103,10 +1106,12 @@ export function createSidecarStepBuildEnv(
     // whichever run the step runs in. The warm single-step agent keeps one
     // store for its deployment's life. A cold step opens a store per
     // invocation over the per-attempt local store, and stamps the state with
-    // the invocation; its conversation's `settle` commits it once the turn
-    // settles, so the next invocation of the step's place, or a resume of the
-    // same invocation, continues the conversation that turn left. The workdir
-    // and tools stay local in both cases.
+    // the invocation. An approval resume names the gate it resumes, so it
+    // also continues a park that an earlier version committed with no stamp.
+    // Its conversation's `settle` commits it once the turn settles, so the
+    // next invocation of the step's place, or a resume of the same
+    // invocation, continues the conversation that turn left. The workdir and
+    // tools stay local in both cases.
     let storage: ContextStore & AuditStore;
     let coldStore: DurableConversationStore | undefined;
     if (deps.durableConversation !== undefined) {
@@ -1125,6 +1130,9 @@ export function createSidecarStepBuildEnv(
         lifetime: {
           kind: "invocation",
           invocation: { runId, stepId, attempt },
+          ...(req.resume?.kind === "approval"
+            ? { resumes: req.resume.correlationId }
+            : {}),
         },
         mailboxAddress: deps.mailboxAddress,
       });

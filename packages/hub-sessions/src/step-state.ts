@@ -30,7 +30,10 @@
 // it resumes, or another invocation's, which it rolls back. An agent whose
 // conversation spans a deployment leaves the stamp unset. State written
 // before the stamp existed carries a bare `attempt` instead. The types below
-// ignore that key, so such state reads as stamped by no invocation.
+// ignore that key, so such state reads as stamped by no invocation. An
+// invocation continues state with no stamp as another invocation's state,
+// except that an approval resume of a gate the state is parked on continues
+// it as its own, since the gate's correlation id names the park.
 //
 // A cold step's state that holds a pending approval also records
 // `parkedTurnStart`: the turn count at the start of the turn that parked, so

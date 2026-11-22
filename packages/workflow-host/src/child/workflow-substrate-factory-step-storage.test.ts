@@ -572,6 +572,110 @@ describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
   });
 });
 
+describe("createSidecarStepBuildEnv approval resume of a park with no stamp", () => {
+  const charge = {
+    role: "user" as const,
+    content: [{ type: "text" as const, text: "charge it" }],
+    timestamp: 1,
+  };
+
+  // The shape an earlier build wrote for a park: a bare attempt, no stamp.
+  async function commitLegacyPark(substrate: RepoStore): Promise<void> {
+    const stateDir = workflowRunStepStatePrefix(TOP_LEVEL_RUN_ID, STEP_ID);
+    const metadata = {
+      pendingOperations: [
+        approvalOp("corr-1", { suspendedCall: SUSPENDED_CALL }),
+      ],
+      tokenUsage: ZERO_USAGE,
+      connectorState: null,
+      attempt: 1,
+    };
+    await substrate.writeTreePreservingPrefix(
+      PRINCIPAL,
+      WORKFLOW_RUN_REPO_ID,
+      WORKFLOW_RUN_REF,
+      {
+        preservePrefix: stateDir,
+        merge: async () => ({
+          [`${stateDir}checkpoint.json`]: JSON.stringify({
+            turns: [charge],
+            ...metadata,
+          }),
+          [`${stateDir}checkpoint.meta.json`]: JSON.stringify({
+            checkpointSeq: 1,
+            turnCount: 1,
+            ...metadata,
+          }),
+        }),
+        message: "legacy park",
+      },
+    );
+  }
+
+  test("a resume of the park's gate on a replacement host continues it and commits it stamped", async () => {
+    const dataDir = await makeTempDir();
+    const substrate = await createSubstrate(dataDir);
+    await commitLegacyPark(substrate);
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate }),
+    );
+
+    const build = await buildEnv(
+      approvalResumeRequest("run-1", "corr-1"),
+      sourcesRefFor(),
+    );
+    const loaded = await build.env.storage.load();
+    expect(loaded.turns).toEqual([charge]);
+    if (build.conversation === undefined) {
+      throw new Error("a cold step build returns its conversation");
+    }
+    const done = {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "charged" }],
+      timestamp: 2,
+    };
+    await build.env.storage.writeTurns([charge, done]);
+    await build.env.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: ZERO_USAGE,
+    });
+    await build.env.storage.commit({ message: "turn" });
+    await build.conversation.settle();
+
+    const committed = await readStepState({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: TOP_LEVEL_RUN_ID,
+      stepId: STEP_ID,
+    });
+    expect(committed?.turns).toEqual([charge, done]);
+    expect(committed?.pendingOperations).toEqual([]);
+    expect(committed?.invocation).toEqual({
+      runId: "run-1",
+      stepId: STEP_ID,
+      attempt: 1,
+    });
+  });
+
+  // The keying assertion throws whether the build adopts the park of gate
+  // `corr-1` or starts over, so this test does not show which one it did.
+  // The conversation-state and parked-approval tests show that.
+  test("a resume of another gate finds no gate to resume", async () => {
+    const dataDir = await makeTempDir();
+    const substrate = await createSubstrate(dataDir);
+    await commitLegacyPark(substrate);
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate }),
+    );
+
+    await expect(
+      buildEnv(approvalResumeRequest("run-1", "corr-2"), sourcesRefFor()),
+    ).rejects.toThrow(/keying violation/);
+  });
+});
+
 describe("createSidecarStepBuildEnv cold-path step state", () => {
   const turn = (text: string) => ({
     role: "user" as const,

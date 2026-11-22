@@ -5,9 +5,10 @@
 //   - COLD (multi-step): the snapshot lives in the step's committed state in
 //     the workflow-run substrate, under the top-level run at the key of the
 //     step's place, stamped with the invocation that parked; the read
-//     reconstructs it and ignores another invocation's state. A step that
-//     parked before cold step state was committed is read from its local
-//     per-attempt store instead.
+//     reconstructs it and ignores another invocation's state. A read for a
+//     park's gate also takes state with no stamp parked on that gate. A
+//     step that parked before cold step state was committed is read from its
+//     local per-attempt store instead.
 //   - WARM (single-step): the snapshot lives in the durable conversation
 //     store, mirrored to the step's state directory in the workflow-run
 //     substrate. The read reconstructs it from the substrate WITHOUT
@@ -68,6 +69,7 @@ import {
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import type { ControlChannelSender } from "../ipc/control-sender";
 import { createParkReleases } from "./park-releases";
+import { collectParkedApprovalCorrelations } from "./parked-correlations";
 import {
   createDeploymentHostScheduler,
   createParkedApprovalHooks,
@@ -243,6 +245,124 @@ describe("readColdParkedApprovalSnapshot", () => {
     await parkColdStep(at.substrate, "run-1", 1, [pendingApproval("corr-1")]);
 
     expect(await readColdParkedApprovalSnapshot(at)).toBeUndefined();
+  });
+
+  describe("over a gate park with no stamp", () => {
+    // Commit a park on gate `corr-1` with no stamp, as an earlier version
+    // wrote it, from a local store the reads never see.
+    async function parkWithNoStamp(substrate: RepoStore): Promise<void> {
+      const store = await createDurableConversationStore({
+        localStoreDir: await makeTempDir(),
+        signer: testSigner,
+        substrate,
+        workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+        workflowRunRef: WORKFLOW_RUN_REF,
+        principal: PRINCIPAL,
+        runId: RUN_ID,
+        stepId: "s",
+        lifetime: { kind: "deployment" },
+        mailboxAddress: "agent@example.com",
+      });
+      await store.restoreFromSubstrate();
+      await store.storage.writeMetadata({
+        pendingOperations: [
+          {
+            ...pendingApproval("corr-1", snapshot),
+            suspendedCall: { id: "call-1", name: "charge_card", arguments: {} },
+          },
+        ],
+        tokenUsage: EMPTY_USAGE,
+      });
+      await store.mirrorToSubstrate();
+    }
+
+    test("a read for the park's gate takes the park on a host with no local store", async () => {
+      const at = await coordinate("corr-1");
+      await parkWithNoStamp(at.substrate);
+      expect(
+        (await readStepState({ ...at, runId: RUN_ID }))?.invocation,
+      ).toBeUndefined();
+
+      expect(await readColdParkedApprovalSnapshot(at)).toEqual(snapshot);
+    });
+
+    test("a read for another gate does not take the park", async () => {
+      const at = await coordinate("corr-2");
+      await parkWithNoStamp(at.substrate);
+
+      // The snapshot read filters by gate, so the pending operations show
+      // whether the read took the park.
+      expect(await readColdParkedPendingOperations(at)).toEqual([]);
+      expect(await readColdParkedApprovalSnapshot(at)).toBeUndefined();
+    });
+
+    test("a re-registration on a replacement host collects the park", async () => {
+      const at = await coordinate("corr-1");
+      await parkWithNoStamp(at.substrate);
+      const runtimeRepoStore = createInMemoryRepoStore();
+      const log: WorkflowEvent[] = [
+        {
+          kind: "RunStarted",
+          seq: 1,
+          at: new Date(0).toISOString(),
+          runId: RUN_ID,
+          definitionHash: "x",
+          trigger: { type: "manual", payload: undefined },
+        },
+        {
+          kind: "StepStarted",
+          seq: 2,
+          at: new Date(0).toISOString(),
+          stepId: "s",
+          attempt: 1,
+          input: { ref: "inline:null" },
+        },
+        {
+          kind: "SignalAwaited",
+          seq: 3,
+          at: new Date(0).toISOString(),
+          stepId: "s",
+          signalName: signalName("corr-1"),
+          parkKind: "approval",
+        },
+      ];
+      for (const event of log) await runtimeRepoStore.append(RUN_ID, event);
+      const hooks = createParkedApprovalHooks({
+        dataDir: at.dataDir,
+        substrate: at.substrate,
+        workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+        ...COMMITTED_READS,
+        signer: testSigner,
+        mailboxAddress: "agent@example.com",
+        topLevelRunId: RUN_ID,
+      });
+
+      expect(
+        await collectParkedApprovalCorrelations({
+          substrate: at.substrate,
+          repoId: WORKFLOW_RUN_REPO_ID,
+          runtimeRepoStore,
+          loadParkedApproval: hooks.loadParkedApproval,
+          readParkedApprovalOps: hooks.readParkedApprovalOps,
+        }),
+      ).toEqual([
+        {
+          runId: RUN_ID,
+          correlationId: "corr-1",
+          parkKind: "approval",
+          snapshot,
+        },
+      ]);
+    });
+
+    // Crash recovery reads a step's parks without a correlation id, so it
+    // cannot tell whose park state with no stamp holds.
+    test("a read with no correlation id does not take the park", async () => {
+      const { correlationId: _, ...at } = await coordinate("corr-1");
+      await parkWithNoStamp(at.substrate);
+
+      expect(await readColdParkedPendingOperations(at)).toEqual([]);
+    });
   });
 });
 
