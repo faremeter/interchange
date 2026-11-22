@@ -1,33 +1,38 @@
-// A multi-step workflow fails over to a new host mid-conversation and the
-// conversation continues with no lost turns.
+// An onTrigger conversation fails over to a new host and continues with no
+// lost turns, and a one-step conversation moves into an onTrigger body on a
+// new deployment.
 //
 // The Hub runs as a subprocess with the local-process sidecar provisioner the
 // admin UI e2e suite uses, so every sidecar is provisioned, lost, and replaced
-// by the production allocation reconciler. The workflow's first step is a
-// conversation: its trigger budget is three, so every inbound mail is its next
-// turn, and `step2` runs once the third turn is done. Two turns run on the
-// first sidecar. Once the Hub's copy of the run log holds both input parks, the
-// sidecar's process tree is killed, and its local disk goes with it. The
-// deployment's disconnect limit is one second, so the reconciler soon finds the
-// worker lost, classifies the run as parked, and replaces the worker: the Hub's
-// copy of the workflow-run history is restored onto a new sidecar and the same
-// frozen definition is deployed there. The third mail is the step's next turn.
+// by the production allocation reconciler. The failover workflow has one
+// onTrigger section on mail whose body has the agent step `reply`. Each
+// inbound mail is a new body run, and the body step continues its
+// conversation at its place key, `section.reply`. Two events run on the first
+// sidecar. Once the Hub's copy of the run log holds the section's input park
+// after each of them, the sidecar's process tree is killed, and its local disk
+// goes with it. The deployment's disconnect limit is one second, so the
+// reconciler soon finds the worker lost, classifies the run as parked, and
+// replaces the worker: the Hub's copy of the workflow-run history is restored
+// onto a new sidecar and the same frozen definition is deployed there. The
+// third mail is the section's next event, and its body step continues the
+// conversation.
 //
-// The same conversation also continues on a second deployment through the
-// routes a client uses: after two turns on one deployment, `step1`'s state is
-// read from the export route and passed, without its reply thread, to the
-// deploy route of a new deployment as its `stepState`. The Hub files it as a
-// seed in the new deployment's history, the reconciler restores that history
-// onto the new sidecar, and the new deployment's first mail is the step's third
-// turn. The new deployment's mailbox numbers its first message past the two the
-// first one received, so a mailbox UID the imported turns name cannot reach one
-// of its messages.
+// A conversation also moves to a new deployment through the routes a client
+// uses. A one-step deployment whose agent step is `reply` answers one mail.
+// `reply`'s state is read from the export route and passed, without its reply
+// thread, to the deploy route of a new deployment as its `stepState` at the
+// key `section.reply`. The new deployment puts the agent step `reply` in the
+// body of its onTrigger section `section`. The Hub files the state as a seed
+// in the new deployment's history, the reconciler restores that history onto
+// the new sidecar, and the first event of the section continues the
+// conversation. The new deployment's mailbox numbers its first message past
+// the one the first deployment received, so a mailbox UID the imported turns
+// name cannot reach one of its messages.
 //
 // The proof is what the model sees. The mock inference server records every
-// request and echoes each turn's inbound text, so the third turn's request
-// must carry the second turn's request plus its reply, verbatim, before the
-// new mail. After the failover, the run then completes through `step2` on the
-// replacement host.
+// request and echoes each turn's inbound text, so the request of the
+// continued turn must carry the request of the turn before it plus its reply,
+// verbatim, before the new mail.
 //
 // Harness justification: SPAWN-REAL. A real Hub subprocess with a real
 // provisioner, real sidecar subprocesses, real workflow-process children, and
@@ -49,6 +54,7 @@ import {
   tenant as tenantTable,
 } from "@intx/db/schema";
 import { createAgentRepoStore, DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+import { sectionBodyRunId } from "@intx/workflow";
 import {
   credentialAad,
   deriveWorkflowRunId,
@@ -88,10 +94,11 @@ import {
 import { bundleWorkflowEntry } from "../hub-agent/lib/bundle-workflow-entry";
 import {
   messageText,
-  step1RequestFor,
+  conversationRequestFor,
   withoutCacheMarkers,
 } from "./fixtures/conversation-requests";
-import { twoStepEntry } from "./fixtures/two-step";
+import { onTriggerBodyEntry } from "./fixtures/on-trigger-body";
+import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const PROVISIONED_HUB_ENTRY = path.join(
   "tests",
@@ -106,7 +113,10 @@ const MARKER_THREE = "failover-fa11a7-three";
 
 const IMPORT_ONE = "route-import-2b9057-one";
 const IMPORT_TWO = "route-import-2b9057-two";
-const IMPORT_THREE = "route-import-2b9057-three";
+
+const SECTION_ID = "section";
+const BODY_STEP_ID = "reply";
+const BODY_STEP_KEY = `${SECTION_ID}.${BODY_STEP_ID}`;
 
 const DeployResponse = type({ id: "string" });
 const RunEvents = type({
@@ -234,11 +244,41 @@ async function provisionTenant(key: string): Promise<Tenant> {
   };
 }
 
-// Publish the two-step conversation workflow as a workflow asset and return
-// the commit its deploys name.
+// The route mints the anchor id, so a definition cannot name the deployment
+// address; mail goes to the address the route derives.
+function placeholderAddress(tenant: Tenant): string {
+  return `placeholder@${tenant.domain}`;
+}
+
+// A workflow with one onTrigger section on mail whose body has the agent step
+// `reply`.
+function onTriggerConversation(tenant: Tenant): string {
+  return onTriggerBodyEntry({
+    address: placeholderAddress(tenant),
+    sectionId: SECTION_ID,
+    body: {
+      variant: "agent",
+      stepId: BODY_STEP_ID,
+      systemPrompt: "You are the conversational step.",
+    },
+  });
+}
+
+// A workflow with the one agent step `reply`, which answers one mail.
+function oneStepConversation(tenant: Tenant): string {
+  return singleStepAgentEntry({
+    stepId: BODY_STEP_ID,
+    systemPrompt: "You are the conversational step.",
+    address: placeholderAddress(tenant),
+  });
+}
+
+// Publish a conversation workflow as a workflow asset and return the commit
+// its deploys name.
 async function publishConversation(
   tenant: Tenant,
   assetId: string,
+  entryModule: string,
 ): Promise<string> {
   const { h, db } = requireSetup();
   await seedAsset(db, {
@@ -250,17 +290,7 @@ async function publishConversation(
   });
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "failover-"));
   scratchDirs.push(scratch);
-  const workflowJs = await bundleWorkflowEntry(
-    scratch,
-    twoStepEntry({
-      // The route mints the anchor id, so the definition cannot name the
-      // deployment address; mail goes to the address the route derives.
-      address: `placeholder@${tenant.domain}`,
-      systemPrompt1: "You are the conversational step.",
-      systemPrompt2: "You summarize the conversation.",
-      step1Triggers: 3,
-    }),
-  );
+  const workflowJs = await bundleWorkflowEntry(scratch, entryModule);
   const repoStore = createAgentRepoStore({
     dataDir: h.dataDir,
     signingKey: await generateKeyPair(),
@@ -348,9 +378,26 @@ async function deployConversation(
     (await readEvents()).filter(
       (e) =>
         e.type === "SignalAwaited" &&
-        e.body["stepId"] === "step1" &&
+        e.body["stepId"] === SECTION_ID &&
         e.body["parkKind"] === "input",
     ).length;
+  // A terminal event is the log's last, so a later read finds it too.
+  const readTerminal = async () =>
+    (await readEvents()).find(
+      (e) =>
+        e.type === "RunCompleted" ||
+        e.type === "RunFailed" ||
+        e.type === "RunCancelled",
+    );
+  // The body run of the section's event at `eventIndex`, once it ended:
+  // its `ChildCompleted` terminal status, or `undefined` while it runs.
+  const bodyTerminalStatus = async (eventIndex: number) =>
+    (await readEvents()).find(
+      (e) =>
+        e.type === "ChildCompleted" &&
+        e.body["childRunId"] ===
+          sectionBodyRunId(runId, SECTION_ID, eventIndex),
+    )?.body["terminalStatus"];
   const sendMail = async (content: string) => {
     const res = await apiCall(
       h.url,
@@ -365,11 +412,11 @@ async function deployConversation(
       );
     }
   };
-  const exportStep1 = async (): Promise<StepStateSnapshot> => {
+  const exportStep = async (stepKey: string): Promise<StepStateSnapshot> => {
     const res = await apiCall(
       h.url,
       "GET",
-      `/api/tenants/${tenant.tenantId}/workflows/runs/${runId}/steps/step1/state`,
+      `/api/tenants/${tenant.tenantId}/workflows/runs/${runId}/steps/${stepKey}/state`,
       undefined,
       tenant.user.cookies,
     );
@@ -384,10 +431,11 @@ async function deployConversation(
   return {
     readRunKey,
     readAllocation,
-    readEvents,
     inputParks,
+    readTerminal,
+    bodyTerminalStatus,
     sendMail,
-    exportStep1,
+    exportStep,
   };
 }
 
@@ -431,17 +479,27 @@ afterAll(async () => {
 });
 
 describe.skipIf(!harnessHubEnvAvailable())(
-  "multi-step conversation failover",
+  "onTrigger conversation failover",
   () => {
     test("the conversation continues on a replacement host with every earlier turn", async () => {
       const { mock } = requireSetup();
       const tenant = await provisionTenant("conversation_failover");
       const assetId = "ast_conversation_failover_wf";
-      const commitSha = await publishConversation(tenant, assetId);
-      const { readRunKey, readAllocation, readEvents, inputParks, sendMail } =
-        await deployConversation(tenant, assetId, commitSha);
+      const commitSha = await publishConversation(
+        tenant,
+        assetId,
+        onTriggerConversation(tenant),
+      );
+      const {
+        readRunKey,
+        readAllocation,
+        inputParks,
+        readTerminal,
+        bodyTerminalStatus,
+        sendMail,
+      } = await deployConversation(tenant, assetId, commitSha);
 
-      // --- Two turns on the first host -----------------------------------
+      // --- Two events on the first host ----------------------------------
       // No signal reports these states, so they are polled. The first deploy
       // is complete once the run principal's key commits.
       await waitFor(async () => (await readRunKey()) !== null);
@@ -473,21 +531,20 @@ describe.skipIf(!harnessHubEnvAvailable())(
         );
       });
 
-      // --- The third turn runs on the replacement host --------------------
+      // --- The third event runs on the replacement host -------------------
       await sendMail(`Third turn ${MARKER_THREE}.`);
-      // A terminal event is the log's last, so a later read finds it too.
-      const readTerminal = async () =>
-        (await readEvents()).find(
-          (e) => e.type === "RunCompleted" || e.type === "RunFailed",
-        );
-      await waitFor(async () => (await readTerminal()) !== undefined);
-      expect((await readTerminal())?.type).toBe("RunCompleted");
+      await waitFor(async () => (await bodyTerminalStatus(2)) !== undefined);
+      // The event's body run completed, and the section stays live after
+      // it: the run has no terminal.
+      expect(await bodyTerminalStatus(2)).toBe("completed");
+      expect(await readTerminal()).toBeUndefined();
 
       // --- The model saw the whole conversation ---------------------------
       const secondTurn = withoutCacheMarkers(
-        step1RequestFor(mock.requests, MARKER_ONE, MARKER_TWO).messages ?? [],
+        conversationRequestFor(mock.requests, MARKER_ONE, MARKER_TWO)
+          .messages ?? [],
       );
-      const thirdTurnRequest = step1RequestFor(
+      const thirdTurnRequest = conversationRequestFor(
         mock.requests,
         MARKER_ONE,
         MARKER_THREE,
@@ -500,75 +557,78 @@ describe.skipIf(!harnessHubEnvAvailable())(
       expect(thirdTurn).toHaveLength(secondTurn.length + 2);
     });
 
-    test("a new deployment continues the conversation from state exported through the routes", async () => {
+    test("an onTrigger body step continues a one-step conversation exported through the routes", async () => {
       const { mock } = requireSetup();
       const tenant = await provisionTenant("conversation_import");
 
-      // --- Two turns on the exporting deployment --------------------------
+      // --- One turn on the exporting one-step deployment ------------------
       const assetA = "ast_conversation_import_a";
       const a = await deployConversation(
         tenant,
         assetA,
-        await publishConversation(tenant, assetA),
+        await publishConversation(tenant, assetA, oneStepConversation(tenant)),
       );
       await waitFor(async () => (await a.readRunKey()) !== null);
       await a.sendMail(`Opening turn ${IMPORT_ONE}.`);
-      await waitFor(async () => (await a.inputParks()) >= 1);
-      await a.sendMail(`Second turn ${IMPORT_TWO}.`);
-      await waitFor(async () => (await a.inputParks()) >= 2);
+      await waitFor(async () => (await a.readTerminal()) !== undefined);
+      expect((await a.readTerminal())?.type).toBe("RunCompleted");
 
       // --- Export it through the route ------------------------------------
-      // The park is on the Hub, so the state its turn committed first is too.
-      const exported = await a.exportStep1();
+      // The run is terminal on the Hub, so the state its turn committed
+      // first is too.
+      const exported = await a.exportStep(BODY_STEP_ID);
       expect(exported.turns.map((turn) => turn.role)).toEqual([
         "user",
         "assistant",
-        "user",
-        "assistant",
       ]);
-      expect(exported.mailboxUidNext).toBe(3);
-      // The step keeps a reply thread for the mail its turns answered. An
+      expect(exported.mailboxUidNext).toBe(2);
+      // The step keeps a reply thread for the mail its turn answered. An
       // import carries no thread, so the client drops it.
       expect(exported.connectorState).not.toBeNull();
       const imported = { ...exported, connectorState: null };
 
-      // --- A new deployment imports it through the deploy route -----------
+      // --- A new deployment imports it into its onTrigger body ------------
       const assetB = "ast_conversation_import_b";
       const b = await deployConversation(
         tenant,
         assetB,
-        await publishConversation(tenant, assetB),
-        { step1: imported },
+        await publishConversation(
+          tenant,
+          assetB,
+          onTriggerConversation(tenant),
+        ),
+        { [BODY_STEP_KEY]: imported },
       );
       await waitFor(async () => (await b.readRunKey()) !== null);
-      expect(await b.exportStep1()).toEqual(imported);
-      await b.sendMail(`Third turn ${IMPORT_THREE}.`);
+      expect(await b.exportStep(BODY_STEP_KEY)).toEqual(imported);
+      await b.sendMail(`Second turn ${IMPORT_TWO}.`);
       await waitFor(async () => (await b.inputParks()) >= 1);
 
       // --- The model saw the exporting deployment's whole conversation ----
       const lastTurnOnA = withoutCacheMarkers(
-        step1RequestFor(mock.requests, IMPORT_ONE, IMPORT_TWO).messages ?? [],
+        conversationRequestFor(mock.requests, IMPORT_ONE, IMPORT_ONE)
+          .messages ?? [],
       );
-      const firstTurnOnB = step1RequestFor(
+      const firstTurnOnB = conversationRequestFor(
         mock.requests,
         IMPORT_ONE,
-        IMPORT_THREE,
+        IMPORT_TWO,
       );
       const continued = withoutCacheMarkers(firstTurnOnB.messages ?? []);
       expect(continued.slice(0, lastTurnOnA.length)).toEqual(lastTurnOnA);
       const carriedReply = firstTurnOnB.messages?.[lastTurnOnA.length];
       expect(carriedReply?.role).toBe("assistant");
-      expect(messageText(carriedReply)).toContain(IMPORT_TWO);
+      expect(messageText(carriedReply)).toContain(IMPORT_ONE);
       expect(continued).toHaveLength(lastTurnOnA.length + 2);
 
       // --- The new deployment's own state carries the imported turns ------
-      // Its park is on the Hub, so its turn's state is there too.
-      const continuedState = await b.exportStep1();
+      // Its park is on the Hub, so the state of its body step is there too.
+      const continuedState = await b.exportStep(BODY_STEP_KEY);
       expect(continuedState.turns.slice(0, exported.turns.length)).toEqual(
         exported.turns,
       );
       expect(continuedState.turns).toHaveLength(exported.turns.length + 2);
-      expect(continuedState.mailboxUidNext).toBe(4);
+      expect(continuedState.mailboxUidNext).toBe(3);
     });
   },
 );

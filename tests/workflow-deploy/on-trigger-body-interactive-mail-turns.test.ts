@@ -1,54 +1,53 @@
-// Single-step agent INTERACTIVE multi-turn conversation (INTR-480).
+// An interactive mail conversation through an onTrigger section on mail.
 //
-// Proves the interactive conversational mail path for a single-step agent
-// whose step declares `triggers: "unbounded"`. Unlike the two-turn-thread
-// sibling -- which holds the conversation open WITHIN one turn via `mail_wait`
-// -- this agent replies to each inbound and RETURNS. The runtime re-arms the
-// step on a snapshot-less `input` park after every turn, so the SECOND inbound
-// mail is dispatched as turn 2 via `signal.deliver` on the SAME stable run
-// (its runId is the deployment address's local part; see `deriveWorkflowRunId`
-// -- "a property of the deployment, not of the trigger occurrence"), rather
-// than opening a new run or being rejected as terminal.
+// The workflow has one top-level `onTrigger` section on the deployment
+// address. Its body has one agent step that sets `replyByMail: true`. Each
+// inbound mail is a new event of the section, and each event is a new body
+// run. The body step keeps its conversation at its place key
+// (`section.reply`), so each body run continues the conversation of the body
+// run before it.
 //
-// Run model. A batch step (`triggers` absent / `1`) completes on its first
-// output, so a second inbound would hit a terminal run and be refused. With
-// `triggers: "unbounded"` the step never self-completes: it re-arms on an input
-// park (`run.ts` re-arm), and the supervisor's dispatch loop routes the next
-// inbound onto that park as `signal.deliver` (turn 2) instead of `trigger.fire`
-// (a fresh run). Turn 2's mail flows through the step-invoker's
-// `buildInboundMessageFromMail` -> `seedInbound` connector hook exactly like
-// turn 1, so the connector thread continues across the two dispatched turns and
-// turn 2's reply threads onto turn-2's mail.
+// Run model. Mail 1 starts the container run, whose section spawns the body
+// run of event 0. After that body completes, the section parks on its input.
+// The supervisor delivers mail 2 on that park as a `signal.deliver`, and the
+// section spawns the body run of event 1. Each body step builds the inbound
+// message from its mail and seeds the connector thread with it, so the
+// connector thread continues across the body runs and the reply of event 1
+// threads onto mail 2.
 //
-// The scripted mock drives that loop deterministically: on each turn it returns
-// a plain text reply (no tool call, so the step produces an OUTPUT and the
-// runtime re-arms; NO `mail_wait`, so the run does not stay inside one turn).
-// Each turn sends its reply through the step's connector reply path, which
-// composes the outbound `In-Reply-To`/`To`/`Cc` from the durable connector
-// thread the `seedInbound` hook advanced -- so the delivered wire headers are a
-// faithful proof of which mail each turn's reply threaded onto.
+// The scripted mock returns a plain text reply on each turn and calls no
+// tool. Each turn sends its reply through the step's connector reply path,
+// which composes the outbound `In-Reply-To`/`To`/`Cc` from the durable
+// connector thread. The delivered wire headers thus prove which mail each
+// reply threaded onto.
 //
 // Assertions, read off the delivered `mail.outbound` bytes (via `persistMail`'s
-// retained `raw`, parsed with `parseHeaderSection`) and the run event log:
-//   (a) exactly ONE `RunStarted` for the deployment runId across both turns,
-//       consuming mail 1; mail 2 opened no run of its own and the run reached
-//       no terminal event between the turns (the unbounded re-arm kept it live).
+// retained `raw`, parsed with `parseHeaderSection`), the run event log and the
+// recorded inference requests:
+//   (a) exactly ONE `RunStarted` for the container run across both mails,
+//       consuming mail 1; mail 2 opened no run of its own and the container
+//       reached no terminal event between the mails.
 //   (b) R1's wire In-Reply-To == m1 (To == userA); R2's wire In-Reply-To == m2
-//       (To == userB) -- each turn's reply threaded onto that turn's mail. R2
-//       also carries the FULL References ancestry [m1, r1, m2] (mail 2's own
-//       References plus mail 2's Message-Id), not a truncated [m2]; R1's is the
-//       single-element [m1] the opener seeds.
-//   (c) mail 2 was consumed as turn 2 on the same run: a `SignalReceived` whose
-//       signalId is mail 2's delivery key, plus two input re-arms serviced.
-//   (d) connector cc-accumulation: R2 cc-includes userA, the prior turn's
-//       participant carried forward -- the connector thread continued across the
-//       two dispatched turns rather than restarting on mail 2.
+//       (To == userB) -- each reply threaded onto its own mail. R2 also
+//       carries the FULL References ancestry [m1, r1, m2] (mail 2's own
+//       References plus mail 2's Message-Id), not a truncated [m2]; R1's is
+//       the single-element [m1] the opener seeds.
+//   (c) mail 2 was the section's next event: a `SignalReceived` on the
+//       section whose signalId is mail 2's delivery key, one `ChildSpawned`
+//       for each event, and two section input parks.
+//   (d) connector cc-accumulation: R2 cc-includes userA, the participant of
+//       the earlier mail -- the connector thread continued across the two
+//       body runs rather than restarting on mail 2.
+//   (e) the model saw the conversation: the request of event 1 holds the
+//       request of event 0 and its reply before mail 2.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { parseHeaderSection } from "@intx/mime";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
+import { deriveWorkflowRunId } from "@intx/types";
+import { sectionBodyRunId } from "@intx/workflow";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
@@ -70,15 +69,20 @@ import {
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitFor,
-  waitForFirstRunId,
   type DeployFlowEnv,
   type WorkflowRunEvent,
 } from "../hub-agent/lib/deploy-flow-env";
-import { singleStepMailInboxEntry } from "./fixtures/single-step-mail-inbox-agent";
+import {
+  messageText,
+  conversationRequestFor,
+  withoutCacheMarkers,
+} from "./fixtures/conversation-requests";
+import { onTriggerBodyEntry } from "./fixtures/on-trigger-body";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_ma11500dba5eba11cafef00dba5eba55";
-const STEP_ID = "step1";
+const SECTION_ID = "section";
+const BODY_STEP_ID = "reply";
 const AGENT_ID = "agent-mail-interactive";
 
 const MAIL1_MESSAGE_ID = "<mail-int-m1-7c4e21@integration.interchange>";
@@ -96,10 +100,11 @@ const MAIL3_BODY = "Turn three outsider body marker mail-int-7c4e21.";
 const MAIL4_MESSAGE_ID = "<mail-int-m4-7c4e21@integration.interchange>";
 const MAIL4_BODY = "Turn four owner body marker mail-int-7c4e21.";
 
-// A plain text reply per turn: the step produces an OUTPUT (so the unbounded
-// step re-arms on an input park) and calls no tool (so it never stays inside a
-// single turn the way `mail_wait` would). The step invoker threads each reply
-// from the durable connector thread seeded on that turn's mail.
+// A plain text reply per turn: the body step produces an OUTPUT (so its body
+// run completes and the section parks on its input) and calls no tool (so it
+// never stays inside a single turn the way `mail_wait` would). The step invoker
+// threads each reply from the durable connector thread seeded on that turn's
+// mail.
 const TURN_REPLY = "Acknowledged; replying on this turn.";
 
 const ALL_TOOL_NAMES = [
@@ -121,15 +126,15 @@ const ALL_TOOL_GRANTS: WireGrantRule[] = ALL_TOOL_NAMES.map((name) => ({
   principalId: null,
 }));
 
-const TENANT_ID = "tnt_single_step_mail_int";
-const CALLER_PRINCIPAL_ID = "prn_single_step_mail_int";
-const DEFINITION_ASSET_ID = "ast_single_step_mail_int_wf";
+const TENANT_ID = "tnt_on_trigger_mail_turns";
+const CALLER_PRINCIPAL_ID = "prn_on_trigger_mail_turns";
+const DEFINITION_ASSET_ID = "ast_on_trigger_mail_turns_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
 
-// The two-turn test records the run and the thread's last message for the
-// non-participant test that follows it on the same deployment.
+// The two-mail test records the container run and the thread's last message
+// for the non-participant test that follows it on the same deployment.
 let threadRunId: string | undefined;
 let threadLastMessageId: string | undefined;
 
@@ -152,7 +157,7 @@ beforeAll(async () => {
     id: DEFINITION_ASSET_ID,
     tenantId: TENANT_ID,
     kind: "workflow",
-    name: "single-step-mail-int-wf",
+    name: "on-trigger-mail-turns-wf",
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
 
@@ -206,22 +211,39 @@ function referencesOf(headers: Map<string, string>): string[] {
     .filter((id) => id.length > 0);
 }
 
-/** Count the input-park re-arms serviced: one `SignalAwaited{parkKind:input}`
- * is minted per completed turn of an unbounded step. */
+/** The signal names of the section's input parks. */
+function sectionInputSignalNames(events: WorkflowRunEvent[]): Set<unknown> {
+  return new Set(
+    events
+      .filter(
+        (e) =>
+          e.type === "SignalAwaited" &&
+          e.body["stepId"] === SECTION_ID &&
+          e.body["parkKind"] === "input",
+      )
+      .map((e) => e.body["signalName"]),
+  );
+}
+
+/** Count the section's input parks: the section parks on its input once
+ * after each event's body run completes. */
 function inputRearmCount(events: WorkflowRunEvent[]): number {
   return events.filter(
-    (e) => e.type === "SignalAwaited" && e.body["parkKind"] === "input",
+    (e) =>
+      e.type === "SignalAwaited" &&
+      e.body["stepId"] === SECTION_ID &&
+      e.body["parkKind"] === "input",
   ).length;
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "single-step unbounded agent services two inbound mails as re-armed turns on one run",
+  "an onTrigger section on mail services each inbound mail as a body run that continues the conversation",
   () => {
     test("sidecar registers with hub", () => {
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    test("mail 2 is dispatched as turn 2 via signal.deliver on the same run and its reply threads onto mail 2", async () => {
+    test("mail 2 is the section's next event via signal.deliver and its reply threads onto mail 2", async () => {
       const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
         domain: DEPLOYMENT_DOMAIN,
@@ -242,13 +264,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
         defaultSource: "anthropic:mock-model",
       };
 
-      const entryModule = singleStepMailInboxEntry({
-        stepId: STEP_ID,
-        systemPrompt: "You are the single-step mail-inbox agent.",
+      const entryModule = onTriggerBodyEntry({
         address: deploymentMailAddress,
-        agentId: AGENT_ID,
-        triggers: "unbounded",
-        replyByMail: true,
+        sectionId: SECTION_ID,
+        body: {
+          variant: "agent",
+          stepId: BODY_STEP_ID,
+          systemPrompt: "You are the onTrigger body mail-inbox agent.",
+          agentId: AGENT_ID,
+          mailTools: true,
+          replyByMail: true,
+        },
+        workflowId: `wf_${DEPLOYMENT_ID}`,
+        bodyWorkflowId: `wf_${DEPLOYMENT_ID}_body`,
       });
 
       const handle = await deployWorkflowSourceForTest(env, {
@@ -261,7 +289,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: deploymentMailAddress,
         approvals: "approve-probed",
         config,
-        sources: { [STEP_ID]: [inferenceSource] },
+        sources: { [SECTION_ID]: [inferenceSource] },
       });
       expect(handle.publicKey).toBeTruthy();
 
@@ -271,7 +299,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      // --- Turn 1: opener from userA (trigger.fire) ---------------------
+      // --- Event 0: opener from userA (trigger.fire) --------------------
       // userA cc's userB, which makes userB a participant that can continue
       // the thread.
       const mail1 = await fireMailTrigger(env, deploymentMailAddress, {
@@ -283,9 +311,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       expect(mail1.messageId).toBe(MAIL1_MESSAGE_ID);
 
-      const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
-        diagnostics: env.sidecarDiagnostics,
-      });
+      // The container run's id is a property of the deployment address.
+      const runId = deriveWorkflowRunId(deploymentMailAddress);
       threadRunId = runId;
 
       const r1Headers = await waitForReplyInReplyTo(
@@ -304,11 +331,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("R1 carried no Message-Id");
       }
 
-      // The step produced its turn-1 output and the unbounded runtime re-armed
-      // on a fresh input park. Wait for that re-arm before firing mail 2 so the
-      // second mail lands on the signal.deliver rail (turn 2), not a race with
-      // an in-flight turn. A still-open run here also proves turn 1 did NOT go
-      // terminal -- a batch step would have completed and refused mail 2.
+      // The body run of event 0 completed and the section parked on its
+      // input. Wait for that park before firing mail 2 so the second mail
+      // lands on the signal.deliver rail (event 1), not a race with an
+      // in-flight body run.
       await waitFor(
         async () =>
           inputRearmCount(
@@ -317,7 +343,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      // --- Turn 2: continuation from userB, dispatched as signal.deliver ---
+      // --- Event 1: continuation from userB, dispatched as signal.deliver --
       // Reference the thread root (m1) and R1 so the connector router treats
       // mail 2 as a continuation of the SAME thread rather than a new one.
       // userB can continue it because userA addressed userB on mail 1.
@@ -340,15 +366,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(r2Headers.get("in-reply-to")).toBe(MAIL2_MESSAGE_ID);
       expect(r2Headers.get("to")).toBe(MAIL2_FROM);
       threadLastMessageId = r2Headers.get("message-id");
-      // Connector cc-accumulation: userA, turn 1's participant, is carried
-      // forward onto turn 2's reply. This only happens if the SAME connector
-      // thread advanced across the two dispatched turns (mail 2 seeded as a
-      // continuation), proving the thread continued rather than restarting.
+      // Connector cc-accumulation: userA, the participant of mail 1, is
+      // carried forward onto the reply to mail 2. This only happens if the
+      // SAME connector thread advanced across the two body runs (mail 2 seeded
+      // as a continuation), proving the thread continued rather than
+      // restarting.
       expect(r2Headers.get("cc")).toContain(MAIL1_FROM);
 
       // R2 carries the full RFC 5322 References ancestry of the message it
       // answers: mail 2's own References followed by mail 2's Message-Id. The
-      // connector thread holds that chain from the turn-2 seed.
+      // connector thread holds that chain from the seed of event 1.
       expect(referencesOf(r2Headers)).toEqual([
         ...mail2References,
         MAIL2_MESSAGE_ID,
@@ -360,8 +387,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // emitting an empty or malformed References header.
       expect(referencesOf(r1Headers)).toEqual([MAIL1_MESSAGE_ID]);
 
-      // Wait for turn 2 to complete its own re-arm so the event log reflects
-      // both serviced turns before the structural assertions read it.
+      // Wait for the section to park again after event 1 so the event log
+      // shows both serviced events before the structural assertions read it.
       await waitFor(
         async () =>
           inputRearmCount(
@@ -372,17 +399,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
 
-      // Both turns ran under ONE run. A single RunStarted consumed mail 1; mail
-      // 2 opened no run of its own -- it was routed onto the input park as turn
-      // 2, not dispatched as a fresh run.
+      // Both mails ran under ONE container run. A single RunStarted consumed
+      // mail 1; mail 2 opened no run of its own -- it was routed onto the
+      // section's input park as event 1, not dispatched as a fresh run.
       const started = events.filter((e) => e.type === "RunStarted");
       expect(started).toHaveLength(1);
       expect(started[0]?.body["consumedDeliveryKey"]).toBe(mail1.deliveryKey);
       const consumed = started.map((e) => e.body["consumedDeliveryKey"]);
       expect(consumed).not.toContain(mail2.deliveryKey);
 
-      // The run reached no terminal event between the turns: the unbounded
-      // re-arm kept it live, so mail 2 was serviced rather than refused as
+      // The container reached no terminal event between the mails: the
+      // section kept it live, so mail 2 was serviced rather than refused as
       // terminal.
       const terminal = events.filter(
         (e) =>
@@ -392,25 +419,36 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(terminal).toHaveLength(0);
 
-      // Mail 2 was consumed as turn 2's input: the supervisor delivered it on
-      // the input channel as a `signal.deliver` whose signalId is mail 2's
-      // delivery key, and the child committed a SignalReceived carrying it. An
-      // at-least-once redelivery can record it more than once on the same input
-      // correlation; the state machine dedups by signalId, so those extra
-      // commits service no extra turn -- hence "at least one", not "exactly one".
+      // Mail 2 was consumed as the input of event 1: the supervisor delivered
+      // it on the section's input channel as a `signal.deliver` whose signalId
+      // is mail 2's delivery key, and the child committed a SignalReceived
+      // carrying it. An at-least-once redelivery can record it more than once
+      // on the same input correlation; the state machine dedups by signalId,
+      // so those extra commits service no extra event -- hence "at least one",
+      // not "exactly one".
       const signalReceived = events.filter(
         (e) =>
           e.type === "SignalReceived" &&
+          sectionInputSignalNames(events).has(e.body["signalName"]) &&
           e.body["signalId"] === mail2.deliveryKey,
       );
       expect(signalReceived.length).toBeGreaterThanOrEqual(1);
 
-      // Two turns serviced: one input re-arm per completed turn.
+      // Two events serviced: one body run for each mail, and one section
+      // input park after each body run.
+      expect(
+        events.flatMap((e) =>
+          e.type === "ChildSpawned" ? [e.body["childRunId"]] : [],
+        ),
+      ).toEqual([
+        sectionBodyRunId(runId, SECTION_ID, 0),
+        sectionBodyRunId(runId, SECTION_ID, 1),
+      ]);
       expect(inputRearmCount(events)).toBeGreaterThanOrEqual(2);
 
-      // Each mail was serviced as exactly ONE turn: exactly one delivered
+      // Each mail was serviced as exactly ONE event: exactly one delivered
       // outbound reply threads onto each inbound. A mail double-dispatched as
-      // two turns (the failure this test guards against) would send a second
+      // two events (the failure this test guards against) would send a second
       // reply onto the same inbound.
       const repliesThreadedOn = (inReplyTo: string): number =>
         env.hub.outboundMail.filter(
@@ -420,20 +458,38 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ).length;
       expect(repliesThreadedOn(MAIL1_MESSAGE_ID)).toBe(1);
       expect(repliesThreadedOn(MAIL2_MESSAGE_ID)).toBe(1);
+
+      // The body step of event 1 continued the conversation of event 0: its
+      // request holds the request of event 0 and the reply to it, then mail 2.
+      const event0Turn = withoutCacheMarkers(
+        conversationRequestFor(env.inference.requests, MAIL1_BODY, MAIL1_BODY)
+          .messages ?? [],
+      );
+      const event1Request = conversationRequestFor(
+        env.inference.requests,
+        MAIL1_BODY,
+        MAIL2_BODY,
+      );
+      const event1Turn = withoutCacheMarkers(event1Request.messages ?? []);
+      expect(event1Turn.slice(0, event0Turn.length)).toEqual(event0Turn);
+      const carriedReply = event1Request.messages?.[event0Turn.length];
+      expect(carriedReply?.role).toBe("assistant");
+      expect(messageText(carriedReply)).toContain(TURN_REPLY);
+      expect(event1Turn).toHaveLength(event0Turn.length + 2);
     });
 
     test("a non-participant that names the thread gets its own reply and leaves the thread unchanged", async () => {
       const runId = threadRunId;
       const r2MessageId = threadLastMessageId;
       if (runId === undefined || r2MessageId === undefined) {
-        throw new Error("the two-turn thread test did not run first");
+        throw new Error("the two-mail thread test did not run first");
       }
       const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
         domain: DEPLOYMENT_DOMAIN,
       });
 
-      // --- Turn 3: userC names the thread, but nobody addressed userC -----
+      // --- Event 2: userC names the thread, but nobody addressed userC ----
       await fireMailTrigger(env, deploymentMailAddress, {
         messageId: MAIL3_MESSAGE_ID,
         from: MAIL3_FROM,
@@ -460,7 +516,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      // --- Turn 4: userA answers R2, the thread's last message ------------
+      // --- Event 3: userA answers R2, the thread's last message -----------
       // The passthrough did not advance the thread, so R2 is still its last
       // message, and userC is not on the reply.
       const mail4References = [MAIL1_MESSAGE_ID, r2MessageId];

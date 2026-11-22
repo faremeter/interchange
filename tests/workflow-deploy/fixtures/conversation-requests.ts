@@ -11,12 +11,11 @@ export function messageText(message: InferenceMessage | undefined): string {
 }
 
 /**
- * The one `step1` request for the turn whose inbound mail carries `marker`.
- * `step1`'s conversation opens with the mail carrying `openingMarker`, which
- * tells its requests apart from `step2`'s, whose input is `step1`'s last
- * reply.
+ * The one request of a conversation for the turn whose inbound mail carries
+ * `marker`. The conversation opens with the mail carrying `openingMarker`,
+ * which tells its requests apart from the requests of other conversations.
  */
-export function step1RequestFor(
+export function conversationRequestFor(
   requests: readonly InferenceRequest[],
   openingMarker: string,
   marker: string,
@@ -29,7 +28,7 @@ export function step1RequestFor(
   const [request, ...rest] = matches;
   if (request === undefined || rest.length > 0) {
     throw new Error(
-      `expected one step1 request for ${marker}, found ${String(matches.length)}`,
+      `expected one request for ${marker}, found ${String(matches.length)}`,
     );
   }
   return request;

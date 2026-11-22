@@ -29,14 +29,6 @@ export type SingleStepMailInboxFixtureParams = {
   /** The `defineWorkflow` id. Defaults to a stable fixture-local id. */
   workflowId?: string;
   /**
-   * The step's trigger budget (see `StepPrimitive.triggers`). Omitted leaves
-   * the step at its `step()` default of `1` (batch: single run, terminal after
-   * the first turn). `"unbounded"` makes the step re-arm after every turn so a
-   * second inbound mail is dispatched as the next turn on the SAME stable run
-   * -- the interactive conversational path.
-   */
-  triggers?: number | "unbounded";
-  /**
    * The step's `replyByMail` option. Omitted by default, so the step sends no
    * mail and its final text is only step output. A caller that expects the
    * step to answer its inbound mail sets it to `true`.
@@ -50,10 +42,6 @@ export function singleStepMailInboxEntry(
   const stepId = params.stepId ?? "step1";
   const agentId = params.agentId ?? "single-step-mail-inbox-agent";
   const workflowId = params.workflowId ?? "wf_single_step_mail_inbox";
-  const triggersClause =
-    params.triggers !== undefined
-      ? `, triggers: ${JSON.stringify(params.triggers)}`
-      : "";
   const replyByMailClause =
     params.replyByMail !== undefined
       ? `, replyByMail: ${JSON.stringify(params.replyByMail)}`
@@ -77,7 +65,7 @@ export const workflow = defineWorkflow({
   id: ${JSON.stringify(workflowId)},
   trigger: { type: "mail", to: ${JSON.stringify(params.address)} },
   steps: {
-    [${JSON.stringify(stepId)}]: step({ agent${triggersClause}${replyByMailClause} }),
+    [${JSON.stringify(stepId)}]: step({ agent${replyByMailClause} }),
   },
 });
 `;
