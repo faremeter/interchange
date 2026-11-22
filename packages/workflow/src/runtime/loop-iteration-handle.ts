@@ -32,6 +32,7 @@ import { createNoopDrainController } from "./drain";
 import type {
   SignalChannel,
   SuspendableChildHandle,
+  SuspendableChildSettlement,
   WorkflowRuntimeEnv,
 } from "./env";
 import { createSuspendableChildHandle } from "./suspendable-child-handle";
@@ -61,8 +62,11 @@ export function createLoopIterationHandle(
     signal: AbortSignal;
     /** The iteration-owned signal channel (host-created per childRunId). */
     signalChannel: SignalChannel;
-    /** Teardown for the owned channel, run once the iteration settles. */
-    cleanup?: () => void | Promise<void>;
+    /**
+     * Teardown for the owned channel, run once the iteration settles, with
+     * how it settled (see `createSuspendableChildHandle`).
+     */
+    cleanup?: (settlement: SuspendableChildSettlement) => void | Promise<void>;
   },
 ): SuspendableChildHandle {
   // `onPark`/`onSignalPark`/`onSignalAwaiter` are destructured out (and left

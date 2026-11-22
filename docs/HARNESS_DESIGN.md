@@ -123,6 +123,7 @@ SIDECAR_DATA_DIR/
       deployment.json            # per-run restore record (mode 0600); see below
   workflow-step-state/
     <runId>/                     # per-step scratch and working stores, reclaimed on undeploy
+      runs/<spawnedRunId>/       # a spawned run's stores, removed when that run ends
   agent-conversation-state/
     <runId>/                     # written only by an earlier version; removed on undeploy
   workflow-definition-sources/
@@ -138,6 +139,8 @@ SIDECAR_DATA_DIR/
 ```
 
 The per-agent key directory is keyed by the sanitized run address; the workflow subtrees are keyed by the derived run id.
+
+A spawned run is a `childWorkflow` child, an onTrigger body run or a loop iteration. Its step stores and workspaces live under `workflow-step-state/<runId>/runs/<spawnedRunId>/`. The workflow child removes that directory when the terminal event of the spawned run is durable in its log, so the directory count does not grow with each inbound mail, loop iteration or child run. A spawned run that stays parked keeps its directory. A spawned run whose log write fails before its terminal commits also keeps its directory: a restart recovers the run from the durable prefix of its log, and that recovery reads the local store of a parked step. When nothing recovers that run, the directory stays until undeploy. The top-level run's directory stays until undeploy. When the child stops after a spawned run's terminal and before the removal completes, a restart that drives the spawned run again removes the directory. A restart does that only when the parent run had not yet recorded the spawned run's end. Otherwise the directory stays until undeploy.
 
 Nothing creates or reads `agents/` under `SIDECAR_DATA_DIR` or `HUB_DATA_DIR`. Earlier versions kept agent-state repositories there; one left behind is safe to delete.
 

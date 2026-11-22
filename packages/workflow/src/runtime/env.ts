@@ -456,6 +456,17 @@ export type SuspendableChildPark = {
 };
 
 /**
+ * How a suspendable child body run settled, as its handle's teardown sees it.
+ * `terminal`: the run's `complete` resolved, so its terminal event is in the
+ * log. `uncommitted`: `complete` rejected, for example on a repo write
+ * failure, and the log has no terminal. Recovery drives such a run again from
+ * its durable prefix, so the teardown must keep what that recovery reads.
+ */
+export type SuspendableChildSettlement =
+  | { kind: "terminal"; terminalStatus: "completed" | "failed" | "cancelled" }
+  | { kind: "uncommitted" };
+
+/**
  * A live handle to a running suspendable child body. `next` resolves each
  * time the child parks on an approval (the caller proxies it up and, once
  * granted, calls `resume`), parks on an author `awaitSignal` gate (surfaced as

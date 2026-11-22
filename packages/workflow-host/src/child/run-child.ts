@@ -178,6 +178,7 @@ import { createSupervisorBackedMailPartReader } from "./supervisor-backed-mail-p
 import type { ChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
 import { mergeCredentialDelivery } from "./credential-cell";
+import { createSpawnedRunCleanup } from "./spawned-run-cleanup";
 import {
   createCredentialsBackedAuthorize,
   createSnapshotGrantsReader,
@@ -367,14 +368,15 @@ export interface RunWorkflowChildBindings {
    * reached its terminal status. The host owns the on-disk layout
    * (`<dataDir>/workflow-step-state/<repoId>/runs/<runId>/`), so the
    * teardown lives next to the path construction in the substrate
-   * factory and the run-loop merely fires it at the run-completion
-   * moment it observes. Invoked for every run of every deployment: a
-   * step's workspace lives for one attempt, and its conversation lives in
-   * the workflow-run substrate, which this does not touch. A cleanup
-   * failure is logged and swallowed: it is a
-   * disk-reclamation best-effort, never a correctness gate on the run's
-   * terminal status. Optional so tests and the recursive child-workflow
-   * adapter (which roots no per-run scratch of its own) can omit it.
+   * factory (`createRunStorageCleanup`). The run loop fires it when a run
+   * it drives completes, and the top-level loop's iteration handles fire
+   * it from their teardown. The spawned runs that the substrate factory
+   * builds fire it from their own teardown. A step's workspace lives for
+   * one attempt, and its conversation lives in the workflow-run substrate,
+   * which this does not touch. The host keeps the top-level run's scratch.
+   * It must not reject: the cleanup owns its best effort, logs a failure
+   * and resolves, and a caller neither awaits nor catches it. Optional so
+   * tests can omit it.
    */
   cleanupRunStorage?: (runId: string) => Promise<void>;
   /**
@@ -995,10 +997,7 @@ export async function runWorkflowChild(
     // `terminal.event` upstream frame the child emits below.
     void handle.complete
       .then((result) => {
-        reclaimRunStorage({
-          cleanupRunStorage: opts.bindings.cleanupRunStorage,
-          runId: run.runId,
-        });
+        void opts.bindings.cleanupRunStorage?.(run.runId);
         runsInFlight.delete(run.runId);
         resumeDeliveryHold.runEnded(run.runId);
         return emitTerminalEvent(upstreamSender, result);
@@ -1373,10 +1372,7 @@ async function handleControlPayload(
       // peer notification originate from the same code path.
       void handle.complete
         .then((result) => {
-          reclaimRunStorage({
-            cleanupRunStorage: ctx.bindings.cleanupRunStorage,
-            runId: payload.data.runId,
-          });
+          void ctx.bindings.cleanupRunStorage?.(payload.data.runId);
           ctx.runsInFlight.delete(payload.data.runId);
           return emitTerminalEvent(ctx.upstreamSender, result);
         })
@@ -2102,7 +2098,11 @@ function buildRuntimeEnv(args: {
           : {}),
         signal: loopInput.signal,
         signalChannel: childSignalChannel,
-        cleanup: () => childSignalChannel.stop(),
+        cleanup: createSpawnedRunCleanup({
+          signalChannel: childSignalChannel,
+          cleanupRunStorage: args.bindings.cleanupRunStorage,
+          childRunId: loopInput.childRunId,
+        }),
       });
     },
   });
@@ -2289,27 +2289,6 @@ export function emitTerminalEvent(
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`terminal.event upstream send failed for runId=${result.runId}: ${message}`;
     });
-}
-
-/**
- * Reclaim a completed run's local-disk scratch. Each agent step builds its
- * agent and scratch for each turn, so once the run is terminal nothing
- * reopens its `runs/<runId>/` subtree (resume reads the substrate run log
- * and the step's committed state, not local step state) and the subtree is
- * safe to drop.
- *
- * Best-effort: a reclamation failure is logged and swallowed -- it must
- * never gate the run's terminal status or the upstream terminal.event.
- */
-function reclaimRunStorage(opts: {
-  cleanupRunStorage: ((runId: string) => Promise<void>) | undefined;
-  runId: string;
-}): void {
-  if (opts.cleanupRunStorage === undefined) return;
-  void opts.cleanupRunStorage(opts.runId).catch((cause) => {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    logger.warn`workflow-step-state cleanup failed for runId=${opts.runId}: ${message}`;
-  });
 }
 
 function defaultClock(): Date {

@@ -58,6 +58,7 @@ import {
   type CredentialProviderRegistry,
 } from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
+import { getLogger } from "@intx/log";
 import {
   createAgentRepoStore,
   type Principal,
@@ -172,6 +173,9 @@ import {
   type SupervisorBackedTransportInbound,
 } from "./supervisor-backed-transport";
 import { createStoreStepConversation } from "./store-step-conversation";
+import { createSpawnedRunCleanup } from "./spawned-run-cleanup";
+
+const logger = getLogger(["workflow-host", "child"]);
 
 // The child does not construct a workflow-run pack-push pipeline of
 // its own. The supervisor owns the workflow-run repo's write
@@ -521,11 +525,13 @@ export function stepWorkspaceDir(args: {
  * Root directory for a single workflow-run subtree's per-step scratch:
  * `<dataDir>/workflow-step-state/<repoId>/runs/<runId>/`. Each step's
  * per-attempt `stepStorageRoot` nests under this, so reclaiming this
- * subtree when an internal run completes drops every step/attempt the run
- * produced in one `rm -rf`. The top-level run's subtree is not reclaimed
- * on run completion. Kept distinct from `stepStorageRoot` so the deletion
- * granularity (a whole run, not a single step/attempt) is expressed at the
- * call site that owns run-completion cleanup.
+ * subtree when the terminal event of a spawned run is durable drops every
+ * step/attempt the run produced in one `rm -rf`. A spawned run is a `childWorkflow`
+ * child, an onTrigger body or a loop iteration, at any depth. The top-level
+ * run's subtree is not reclaimed on run completion. Kept distinct from
+ * `stepStorageRoot` so the deletion granularity (a whole run, not a single
+ * step/attempt) is expressed at the call site that owns run-completion
+ * cleanup.
  */
 function runStepStorageRoot(args: {
   dataDir: string;
@@ -539,6 +545,48 @@ function runStepStorageRoot(args: {
     "runs",
     args.runId,
   );
+}
+
+/**
+ * Reclaim a run's local storage, its `runStepStorageRoot` subtree. A spawned
+ * run's handle calls this when the run's `complete` resolves, so its terminal
+ * event is durable (see `createSpawnedRunCleanup`). The run loop calls it when
+ * the `complete` of a run it drives resolves. After a durable terminal nothing
+ * opens that subtree again: a resume reads the run log and the step's
+ * committed state, not the local store. A run whose `complete` rejects has no
+ * terminal in its log. Recovery of a parked step in that run reads the local
+ * store, so nothing calls this for that run, and the subtree stays for
+ * recovery. When nothing recovers the run, it stays until undeploy.
+ *
+ * The top-level run's subtree belongs to the deployment and stays for
+ * inspection until allocation cleanup, so a call with `topLevelRunId` does
+ * nothing. The storage is local only: a step's durable state lives in the
+ * repo under the top-level run, which this does not touch.
+ *
+ * Best effort: a failure is logged and the returned promise resolves. A
+ * failure never changes a run's terminal, and a caller does not await or
+ * catch this call. A crash after a run's terminal and before this call ends
+ * leaves the subtree until undeploy, which removes the whole data directory
+ * of the deployment.
+ */
+export function createRunStorageCleanup(args: {
+  dataDir: string;
+  workflowRunRepoId: RepoId;
+  topLevelRunId: string;
+}): (runId: string) => Promise<void> {
+  const { dataDir, workflowRunRepoId, topLevelRunId } = args;
+  return async (runId) => {
+    if (runId === topLevelRunId) return;
+    try {
+      await fs.promises.rm(
+        runStepStorageRoot({ dataDir, workflowRunRepoId, runId }),
+        { recursive: true, force: true },
+      );
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.warn`workflow-step-state cleanup failed for runId=${runId}: ${message}`;
+    }
+  };
 }
 
 function findApprovalSnapshot(
@@ -962,9 +1010,9 @@ export function createSidecarStepBuildEnv(
     }
 
     // Root the per-step scratch (the workspace) per run/step/attempt: each
-    // turn builds the agent over its attempt's scratch. An internal run's
-    // whole `runs/<runId>/` subtree is reclaimed when the run completes. The
-    // top-level run's subtree is kept until allocation cleanup.
+    // turn builds the agent over its attempt's scratch. A spawned run's
+    // whole `runs/<runId>/` subtree is reclaimed when the run's terminal
+    // event is durable. The top-level run's subtree is kept until allocation cleanup.
     const storeDir = stepStorageRoot({
       dataDir: deps.dataDir,
       workflowRunRepoId: deps.workflowRunRepoId,
@@ -1219,6 +1267,14 @@ interface SidecarRunChildDeps {
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
   persistRecoveredPark?: PersistRecoveredPark;
+  /**
+   * Reclaim the local storage of a spawned run once its terminal event is
+   * durable (see `createRunStorageCleanup`). Every handle this factory
+   * builds, a loop iteration's included, calls it from its teardown, at
+   * every depth, and only when the run's `complete` resolves. It must not
+   * reject. Absent in a test that roots no local storage.
+   */
+  cleanupRunStorage?: (runId: string) => Promise<void>;
   /** Workflow-run repo identifying the parent's deployment. */
   workflowRunRepoId: RepoId;
   /** Workflow-run ref the child reads/writes against. */
@@ -1389,9 +1445,10 @@ async function writeChildRunGrants(args: {
  * an in-process child writes through the proxy substrate and cannot sign
  * the supervisor cancel one would require.
  *
- * Resource lifecycle: the child's per-run signal channel is stopped when
- * the child settles, from the handle's cleanup, so `resume` and
- * `deliverSignal` can still write while a park is open. The blob
+ * Resource lifecycle: the child's per-run signal channel is stopped when the
+ * child settles, from the handle's cleanup, so `resume` and `deliverSignal`
+ * can still write while a park is open. The same cleanup reclaims the run's
+ * local storage when the child's terminal event is durable. The blob
  * substrate, repo store, and scheduler entries are
  * either per-call (no handle to dispose) or shared with the parent
  * (the scheduler).
@@ -1481,7 +1538,11 @@ export function createSidecarRunChild(
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
       surfaceInputPark: true,
-      cleanup: () => signalChannel.stop(),
+      cleanup: createSpawnedRunCleanup({
+        signalChannel,
+        cleanupRunStorage: deps.cleanupRunStorage,
+        childRunId,
+      }),
     });
   };
   return runChild;
@@ -1507,10 +1568,11 @@ export function createSidecarRunChild(
  *
  * Signal-channel lifecycle: the channel stays up until the child settles,
  * so `resume` can deliver on an open park. Teardown is the handle's
- * cleanup, the same place {@link createSidecarRunChild} stops its channel.
- * That runs when the run reaches a terminal: normal completion, a
- * parent-abort local teardown, an illegal-input-park local teardown, or a
- * runtime failure. Stopping the channel on each `next()` would drop it
+ * cleanup, the same place {@link createSidecarRunChild} stops its channel
+ * and reclaims the run's local storage.
+ * That runs when the run settles: normal completion, a parent-abort local
+ * teardown, an illegal-input-park local teardown, or a runtime failure. The
+ * storage reclaim runs only when the terminal event is durable. Stopping the channel on each `next()` would drop it
  * when a parent abort makes `runOnTrigger` stop calling `next()` mid-park.
  *
  * Abort propagation: the parent-supplied `signal` tears the body down through
@@ -1596,7 +1658,11 @@ export function createSidecarSpawnSuspendableChild(
       stepPathPrefix,
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
-      cleanup: () => signalChannel.stop(),
+      cleanup: createSpawnedRunCleanup({
+        signalChannel,
+        cleanupRunStorage: deps.cleanupRunStorage,
+        childRunId,
+      }),
       surfaceInputPark: false,
     });
   };
@@ -2185,7 +2251,11 @@ async function buildChildRunEnv(args: {
             : {}),
           signal: loopInput.signal,
           signalChannel: iterationSignalChannel,
-          cleanup: () => iterationSignalChannel.stop(),
+          cleanup: createSpawnedRunCleanup({
+            signalChannel: iterationSignalChannel,
+            cleanupRunStorage: deps.cleanupRunStorage,
+            childRunId: loopInput.childRunId,
+          }),
         });
       },
     });
@@ -2625,6 +2695,12 @@ export function createSidecarSubstrateFactory(
       topLevelRunId,
     });
 
+    const cleanupRunStorage = createRunStorageCleanup({
+      dataDir: validated.SIDECAR_DATA_DIR,
+      workflowRunRepoId,
+      topLevelRunId,
+    });
+
     const childRunDeps: SidecarRunChildDeps = {
       substrate,
       workflowRunRepoId,
@@ -2652,6 +2728,7 @@ export function createSidecarSubstrateFactory(
       directors: stepDirectors,
       mailSigner: env.mailSigner,
       ...parkHooks,
+      cleanupRunStorage,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory
     // resolver from this plus the lifted-body map it extracts after loading
@@ -2667,23 +2744,6 @@ export function createSidecarSubstrateFactory(
     // re-verify already covers every inline body).
     const runSuspendableChild =
       createSidecarSpawnSuspendableChild(childRunDeps);
-
-    // The top-level run's scratch belongs to the deployment and survives
-    // termination for inspection until allocation cleanup. Internal runs
-    // reclaim their own local scratch once they finish. That scratch is
-    // local only: a step's durable state lives in the repo under the
-    // top-level run, which nothing here removes.
-    const cleanupRunStorage = async (runId: string): Promise<void> => {
-      if (runId === topLevelRunId) return;
-      await fs.promises.rm(
-        runStepStorageRoot({
-          dataDir: validated.SIDECAR_DATA_DIR,
-          workflowRunRepoId,
-          runId,
-        }),
-        { recursive: true, force: true },
-      );
-    };
 
     const bindings: RunWorkflowChildBindings = {
       substrate,

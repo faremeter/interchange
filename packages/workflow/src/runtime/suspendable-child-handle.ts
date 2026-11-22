@@ -20,6 +20,7 @@ import type { WorkflowDefinition } from "../definition/index";
 import type {
   SuspendableChildHandle,
   SuspendableChildPark,
+  SuspendableChildSettlement,
   WorkflowRuntimeEnv,
 } from "./env";
 import { resumeFromLog, type WorkflowEvent } from "../state-machine/index";
@@ -83,9 +84,11 @@ export function createSuspendableChildHandle(
      * Channel teardown, run once the body settles. `signalChannel.stop()` is a
      * concrete-channel method (not on the `SignalChannel` interface), so the
      * caller that created the child's channel supplies its teardown here rather
-     * than the helper reaching for it on `env.signalChannel`.
+     * than the helper reaching for it on `env.signalChannel`. The handle
+     * calls it on every settlement and passes how the run settled, so a
+     * caller can keep state that recovery of an `uncommitted` run reads.
      */
-    cleanup?: () => void | Promise<void>;
+    cleanup?: (settlement: SuspendableChildSettlement) => void | Promise<void>;
     /**
      * Whether an input park is returned to the caller. Required, with no
      * default: the safe direction is to reject, and a caller that forgot
@@ -288,7 +291,13 @@ export function createSuspendableChildHandle(
     })
     .finally(() => {
       detachParentAbort();
-      if (cleanup !== undefined) void cleanup();
+      if (cleanup !== undefined) {
+        const settlement: SuspendableChildSettlement =
+          settled === null
+            ? { kind: "uncommitted" }
+            : { kind: "terminal", terminalStatus: settled.terminalStatus };
+        void cleanup(settlement);
+      }
       notify();
       notifyReleaseWaiters();
       rejectAwaiterWaiters(

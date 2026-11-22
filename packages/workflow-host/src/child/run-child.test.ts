@@ -12,6 +12,7 @@ import {
   computeLiveDefinitionHash,
   createInMemoryRepoStore,
   createTerminalChildHandle,
+  loopBodyRunId,
   unavailableActionCredentials,
 } from "@intx/workflow";
 import { beginDelivery, commitBuffered } from "@intx/workflow/runtime";
@@ -2037,6 +2038,139 @@ describe("runWorkflowChild", () => {
       // Exactly one reclamation per run, keyed by that run's id -- never a
       // per-step or per-attempt call, never another run's id.
       expect([...cleaned].sort()).toEqual(["run-1", "run-2"]);
+    },
+  );
+
+  // A top-level loop runs each iteration as a spawned run whose handle the
+  // run loop builds. The iteration's teardown reclaims its storage once the
+  // iteration is terminal, also when its step failed.
+  test.each([
+    { outcome: "completed", fails: false },
+    { outcome: "failed", fails: true },
+  ])(
+    "reclaims a $outcome top-level loop iteration's storage from its teardown",
+    async ({ fails }) => {
+      const baseDir = await makeTempDir("child-loop-cleanup-");
+      const supervisorKeyPair = await generateKeyPair();
+      const childKeyPair = await generateKeyPair();
+      const channelId = generateChannelId();
+      const hmacKey = generateHmacKey();
+      const {
+        packageDir: closurePackageDir,
+        approvedHash: definitionHash,
+        definition,
+      } = await materializeClosure(
+        "child-loop-def-",
+        {
+          id: "test-loop-workflow",
+          triggers: [],
+          steps: {
+            rework: {
+              kind: "loop",
+              id: "rework",
+              body: {
+                id: "test-loop-iteration",
+                triggers: [],
+                steps: { s: agentStep("s") },
+                stepOrder: ["s"],
+              },
+              while: "once",
+              carry: "next",
+              input: { from: "trigger.payload" },
+              maxIterations: 2,
+              onExhausted: "exhausted",
+              drainBehavior: "cancel",
+            },
+            exhausted: {
+              kind: "escalation",
+              id: "exhausted",
+              to: "operator",
+              after: ["rework"],
+            },
+          },
+          stepOrder: ["rework", "exhausted"],
+        },
+        "export const once = () => false;\nexport const next = (_output, input) => input;\n",
+      );
+      await seedProcessingEntry(
+        baseDir,
+        { kind: "workflow-run", id: "deployment-x" },
+        {
+          address: "deployment-x@example.com",
+          messageId: "msg-1",
+          receivedAt: 1,
+          text: "body msg-1",
+        },
+      );
+      const supervisorToChild = createMemoryNdjsonStream();
+      const childToSupervisor = createMemoryNdjsonStream();
+      const eventStream = createMemoryFrameStream();
+      const env = parseSpawnTimeEnv(
+        makeSpawnEnv({
+          channelId,
+          hmacKeyHex: hexEncode(hmacKey),
+          hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+          definitionHash,
+          closurePackageDir,
+        }),
+      );
+      const iterationRunId = loopBodyRunId("run-1", "rework", 0);
+      const cleaned: string[] = [];
+      const reclaimed = createChangeNotifier();
+      const bindings: RunWorkflowChildBindings = {
+        ...buildBindings({ baseDir, childKeyPair }),
+        // A loop body registers as a suspendable body, which needs an
+        // executor. The definition has no onTrigger section to run on it.
+        runSuspendableChild: () =>
+          Promise.reject(new Error("the definition has no onTrigger section")),
+        invokeStep: async () => {
+          if (fails) throw new Error("the iteration step failed");
+          return { output: null };
+        },
+        cleanupRunStorage: (runId: string) => {
+          cleaned.push(runId);
+          reclaimed.notify();
+          return Promise.resolve();
+        },
+      };
+      const supervisorSender = createControlChannelSender({
+        privateKeySeed: supervisorKeyPair.privateKey,
+        channelId,
+        writer: supervisorToChild.writer,
+      });
+      await sendAuthoritySet(supervisorSender, {
+        snapshot: AUTHORITY_SNAPSHOT,
+      });
+      const runPromise = runWorkflowChild({
+        env,
+        definition,
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: eventStream.writer,
+        bindings,
+      });
+      await waitForUpstreamPayload(childToSupervisor, "ready");
+
+      await supervisorSender.send({
+        type: "trigger.fire",
+        data: {
+          runId: "run-1",
+          mailIdentity: { messageId: "msg-1" },
+          receivedAt: 1,
+          payload: textMail("body msg-1"),
+        },
+      });
+      // The iteration's teardown and the run loop's completion handler each
+      // call the cleanup once. The iteration ends before its container.
+      await reclaimed.until(() => cleaned.length >= 2);
+      await supervisorSender.send({
+        type: "shutdown",
+        data: { reason: "test done" },
+      });
+      supervisorToChild.close();
+      await runPromise;
+
+      expect(cleaned).toEqual([iterationRunId, "run-1"]);
     },
   );
 

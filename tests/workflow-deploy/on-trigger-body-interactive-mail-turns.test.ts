@@ -40,12 +40,20 @@
 //       body runs rather than restarting on mail 2.
 //   (e) the model saw the conversation: the request of event 1 holds the
 //       request of event 0 and its reply before mail 2.
+//
+// The non-participant test also reads the sidecar's local step storage: each
+// body run's `workflow-step-state/<repo>/runs/<bodyRunId>/` is gone once that
+// body run ends, and a later mail still continues the thread.
+
+import fs from "node:fs";
+import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { parseHeaderSection } from "@intx/mime";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
+import type { RepoId } from "@intx/hub-sessions";
 import { deriveWorkflowRunId } from "@intx/types";
 import { sectionBodyRunId } from "@intx/workflow";
 import { deriveRunAddress } from "@intx/workflow-deploy";
@@ -137,6 +145,7 @@ let h: TestDb;
 // for the non-participant test that follows it on the same deployment.
 let threadRunId: string | undefined;
 let threadLastMessageId: string | undefined;
+let threadRepoId: RepoId | undefined;
 
 beforeAll(async () => {
   if (!harnessDbEnvAvailable()) return;
@@ -225,6 +234,20 @@ function sectionInputSignalNames(events: WorkflowRunEvent[]): Set<unknown> {
   );
 }
 
+/**
+ * The run directories under the sidecar's local step storage for the
+ * deployment. A body step's local store and workspace live in its body run's
+ * directory there.
+ */
+async function stepStateRunDirs(
+  env: DeployFlowEnv,
+  repoId: RepoId,
+): Promise<string[]> {
+  return fs.promises.readdir(
+    path.join(env.sidecar.dataDir, "workflow-step-state", repoId.id, "runs"),
+  );
+}
+
 /** Count the section's input parks: the section parks on its input once
  * after each event's body run completes. */
 function inputRearmCount(events: WorkflowRunEvent[]): number {
@@ -292,6 +315,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sources: { [SECTION_ID]: [inferenceSource] },
       });
       expect(handle.publicKey).toBeTruthy();
+      threadRepoId = handle.workflowRunRepoId;
 
       await waitFor(
         () =>
@@ -481,7 +505,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("a non-participant that names the thread gets its own reply and leaves the thread unchanged", async () => {
       const runId = threadRunId;
       const r2MessageId = threadLastMessageId;
-      if (runId === undefined || r2MessageId === undefined) {
+      const repoId = threadRepoId;
+      if (
+        runId === undefined ||
+        r2MessageId === undefined ||
+        repoId === undefined
+      ) {
         throw new Error("the two-mail thread test did not run first");
       }
       const deploymentMailAddress = deriveRunAddress({
@@ -516,6 +545,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
+      // Each ended body run reclaimed its local storage. The `runs/`
+      // directory exists because the body steps wrote there, and it keeps at
+      // most the top-level run's directory, which holds no agent step here.
+      const onlyTopLevelRunDir = async (): Promise<boolean> =>
+        (await stepStateRunDirs(env, repoId)).every((dir) => dir === runId);
+      await waitFor(onlyTopLevelRunDir, {
+        diagnostics: env.sidecarDiagnostics,
+      });
+
       // --- Event 3: userA answers R2, the thread's last message -----------
       // The passthrough did not advance the thread, so R2 is still its last
       // message, and userC is not on the reply.
@@ -534,12 +572,25 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deploymentMailAddress,
         MAIL4_MESSAGE_ID,
       );
+      // The thread continued from the committed step state, not from the
+      // body runs' reclaimed local stores.
       expect(r4Headers.get("to")).toBe(MAIL1_FROM);
       expect(r4Headers.get("cc")).toBe(MAIL2_FROM);
       expect(referencesOf(r4Headers)).toEqual([
         ...mail4References,
         MAIL4_MESSAGE_ID,
       ]);
+
+      await waitFor(
+        async () =>
+          inputRearmCount(
+            await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId),
+          ) >= 4,
+        { diagnostics: env.sidecarDiagnostics },
+      );
+      await waitFor(onlyTopLevelRunDir, {
+        diagnostics: env.sidecarDiagnostics,
+      });
     });
   },
 );
