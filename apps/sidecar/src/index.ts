@@ -353,15 +353,15 @@ const multistepDrainRouter = createMultistepDrainRouter();
 const multistepGrantsRouter = createMultistepGrantsRouter();
 
 // Per-deployment-address sources-rotation handler registry. Only a
-// single-step warm deployment registers a handler once its supervisor
-// spawns; the handler forwards the rotated list into the supervisor's
+// single-step deployment registers a handler once its supervisor spawns;
+// the handler forwards the rotated list into the supervisor's
 // `deliverSources`, which sends a `sources-updated` control IPC frame to
-// the child, where the warm agent's live sources are swapped in place. A
-// multi-step deployment registers none, so a rotation resolved against
-// its address is unrouted.
+// the child, which replaces its sources table so the step's next turn
+// builds its agent on the new sources. A multi-step deployment registers
+// none, so a rotation resolved against its address is unrouted.
 const multistepSourcesRouter = createMultistepSourcesRouter();
 // Per-deployment credential-delivery handler registry. A deployment registers
-// its handler after `spawn` (any deployment with a supervisor, not only warm
+// its handler after `spawn` (any deployment with a supervisor, not only
 // single-step ones); a `credentials.update` for an unregistered address is
 // unrouted.
 const multistepCredentialsRouter = createMultistepCredentialsRouter();

@@ -58,11 +58,20 @@
 // allocation-authenticated `hub-link` reconnect and the supervisor re-emitting
 // the parked correlation.
 //
+// The child answers the re-query from the step's committed state: no agent
+// stays live while the run is parked, so the re-registration reads the park
+// the step's settle committed to the workflow-run substrate. The test reads
+// that committed state itself and asserts the re-emitted registration carries
+// its approval snapshot.
+//
 // Single-test file. The `deploy-flow-env` (real sidecar subprocess + its
-// on-disk warm step-state) is `beforeAll`-scoped, while the DB resets per test.
-// A second test would inherit the first run's warm workspace and live parked
+// on-disk step state) is `beforeAll`-scoped, while the DB resets per test.
+// A second test would inherit the first run's step workspace and live parked
 // run; a run-once guard below fails loud if a second test is ever added here
 // rather than letting that assumption rot.
+
+import fs from "node:fs";
+import path from "node:path";
 
 import {
   afterAll,
@@ -92,7 +101,10 @@ import {
   type EventCollectorRegistry,
   type SessionService,
 } from "@intx/hub-sessions";
+import { generateKeyPair } from "@intx/crypto";
+import { createAgentRepoStore } from "@intx/hub-sessions";
 import { isRunAddress, signalName } from "@intx/types";
+import { readStepState } from "@intx/workflow-host";
 import type { GrantRule } from "@intx/types/authz";
 import type {
   ApprovalSnapshot,
@@ -369,7 +381,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
 describe.skipIf(!harnessDbEnvAvailable())(
   "a hub reconnect re-emits a parked run's correlation and resolves it to completion",
   () => {
-    // Run-once guard. The env (sidecar subprocess + on-disk warm step-state +
+    // Run-once guard. The env (sidecar subprocess + on-disk step state +
     // the live parked run) is shared across the describe block, so a second
     // test would inherit this run's parked correlation and the "absent then
     // present" assertions would stop meaning what they claim. Fail loud if a
@@ -414,7 +426,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (hasRun) {
         throw new Error(
           "reconnect re-emit acceptance test assumes a single test per shared " +
-            "env: the live parked run and warm step-state carry across, so a " +
+            "env: the live parked run and step state carry across, so a " +
             "second test would break the absent-then-present row assertions. " +
             "Add a new scenario in its own file with its own env instead.",
         );
@@ -576,6 +588,67 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(parkedTypes).not.toContain("RunCompleted");
       expect(parkedTypes).not.toContain("RunFailed");
 
+      // The park lives in the step's committed state, stamped with the
+      // invocation that parked. No agent and no in-memory conversation store
+      // outlive the parked turn, so the re-registration below can only read
+      // this committed state.
+      const sidecarSubstrate = createAgentRepoStore({
+        dataDir: env.sidecar.dataDir,
+        signingKey: await generateKeyPair(),
+      }).repoStore;
+      const readCommittedPark = async () => {
+        const committed = await readStepState({
+          substrate: sidecarSubstrate,
+          workflowRunRepoId,
+          workflowRunRef: "refs/heads/main",
+          principal: { kind: "hub" },
+          runId: DEPLOYMENT_ID,
+          stepId: STEP_ID,
+        });
+        return committed?.pendingOperations.find(
+          (op) => op.correlationId === correlationId,
+        );
+      };
+      await waitFor(async () => (await readCommittedPark()) !== undefined, {
+        diagnostics: env.sidecarDiagnostics,
+      });
+      const committedPark = await readCommittedPark();
+      if (committedPark?.approvalSnapshot === undefined) {
+        throw new Error("expected a committed park with an approval snapshot");
+      }
+      const committedState = await readStepState({
+        substrate: sidecarSubstrate,
+        workflowRunRepoId,
+        workflowRunRef: "refs/heads/main",
+        principal: { kind: "hub" },
+        runId: DEPLOYMENT_ID,
+        stepId: STEP_ID,
+      });
+      expect(committedState?.invocation).toEqual({
+        runId,
+        stepId: STEP_ID,
+        attempt: 1,
+      });
+      expect(
+        fs.existsSync(
+          path.join(
+            env.sidecar.dataDir,
+            "workflow-step-state",
+            workflowRunRepoId.id,
+            "warm",
+          ),
+        ),
+      ).toBe(false);
+      expect(
+        fs.existsSync(
+          path.join(
+            env.sidecar.dataDir,
+            "agent-conversation-state",
+            workflowRunRepoId.id,
+          ),
+        ),
+      ).toBe(false);
+
       // ---- drop the hub link ----
       //
       // A raw drop, not a settle: the run is parked (no pack push is in flight
@@ -678,8 +751,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(reemittedApproval.runId).toBe(runId);
       expect(reemittedApproval.agentAddress).toBe(deploymentMailAddress);
       expect(reemittedApproval.resolvedAt).toBeNull();
-      // The re-emitted register carried the child's durable approval snapshot,
-      // so the approvable row exposes the same tool the model asked to invoke.
+      // The re-emitted register carried the approval snapshot of the committed
+      // park, so the approvable row exposes the same tool the model asked to
+      // invoke.
+      expect(reemittedApproval.toolDefinition).toEqual({
+        name: committedPark.approvalSnapshot.name,
+        description: committedPark.approvalSnapshot.description,
+        inputSchema: committedPark.approvalSnapshot.inputSchema,
+      });
+      expect(reemittedApproval.toolArguments).toEqual(
+        committedPark.approvalSnapshot.arguments,
+      );
       expect(reemittedApproval.toolDefinition).toEqual({
         name: TOOL_NAME,
         description: "Send a mail message",

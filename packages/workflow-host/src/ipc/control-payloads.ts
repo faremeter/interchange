@@ -41,10 +41,9 @@ export const CredentialsSnapshotPayload = type({
  * The `narrow` pins two frame-structural invariants at this boundary so
  * every consumer can trust them without re-checking: source ids are
  * unique, and the first element is the default source. The head-is-default
- * rule is what keeps the two rotation paths in agreement -- a warm agent's
- * `setSources` activates the matched default index, while a cold rebuild
- * pins element 0 -- so they pick the same active source only when the
- * default is the head.
+ * rule keeps the frame's `defaultSource` and the step build in agreement: the
+ * build of the step's next turn pins element 0 as the active source, so it
+ * picks the default only when the default is the head.
  */
 export const SourcesUpdatedData = type({
   sources: InferenceSource.array().atLeastLength(1),

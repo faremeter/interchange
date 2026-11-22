@@ -6076,7 +6076,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await spawner.driveReadyFor(0);
     await deployPromise;
 
-    // A multi-step deployment has no single warm agent to rotate, so no
+    // A multi-step deployment has no single source identity to rotate, so no
     // handler is registered and the inbound rotation is unrouted.
     expect(
       await sourcesRouter.tryRoute({

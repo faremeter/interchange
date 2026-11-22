@@ -1902,8 +1902,8 @@ describe("sources-updated payload validation", () => {
 
   test("rejects a defaultSource that is not the head source", () => {
     // The wire boundary owns the head-is-default invariant: the first
-    // element must be the default source, so the warm-swap and cold-build
-    // rotation paths agree on the active source. A default that is present
+    // element must be the default source, so the rotation and the step
+    // build agree on the active source. A default that is present
     // but not first is still rejected here.
     const second = { ...source, id: "secondary" };
     const payload = {

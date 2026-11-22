@@ -1,6 +1,6 @@
-// Single-step warm-agent flag + expunge round-trip (INTR-480).
+// Single-step agent flag + expunge round-trip (INTR-480).
 //
-// Proves that the warm single-step agent consumes a message end-to-end: it
+// Proves that the single-step agent consumes a message end-to-end: it
 // flags an inbound mail \Deleted through `mail_flag`, then removes it with
 // `mail_expunge`, and the change lands in the deployment's durable substrate
 // mailbox on the hub. Both tools route through the supervisor -- the sole
@@ -251,7 +251,7 @@ async function emlInHistory(
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "warm single-step agent flags a message \\Deleted and expunges it",
+  "single-step agent flags a message \\Deleted and expunges it",
   () => {
     test("sidecar registers with hub", () => {
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);

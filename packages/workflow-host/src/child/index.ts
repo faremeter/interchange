@@ -66,6 +66,8 @@ export {
 
 export { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
 
+export { createStoreStepConversation } from "./store-step-conversation";
+
 export {
   discoverInFlightRuns,
   type DiscoverRunsOpts,

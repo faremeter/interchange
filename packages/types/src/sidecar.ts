@@ -975,7 +975,8 @@ export type PongFrame = typeof PongFrame.infer;
 /**
  * Push an updated inference-source list to a running single-step
  * deployment. The sidecar routes it to the deployment's supervisor, which
- * delivers it to the warm agent and swaps its sources in place. `sources`
+ * delivers it to the child; the step's next turn builds its agent on the new
+ * sources. `sources`
  * is non-empty (validated at this boundary, mirroring the deploy frame's
  * per-step source arrays). Element 0 is the active source; the producer
  * sets `defaultSource` to its id -- that equality is producer-enforced,

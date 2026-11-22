@@ -7,6 +7,7 @@
 export {
   SIDECAR_SUBSTRATE_CONFIG_KEYS,
   createSidecarSubstrateFactory,
+  stepWorkspaceDir,
 } from "./substrate-factory";
 export type { StepToolRuntime } from "./step-tools";
 

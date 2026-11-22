@@ -51,6 +51,7 @@ import {
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 import { singleStepAgentEntry } from "./fixtures/single-step-agent";
+import { stepWorkspaceDir } from "@intx/workflow-host/child";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_folded-tools-failover-1";
@@ -275,15 +276,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(toolNames).toContain(MAIL_TOOL_NAME);
 
       // THE PROOF the tool ran in-child: its `run` wrote a sentinel file into
-      // the step agent's stable per-agent workspace.
-      const stepWorkspace = path.join(
-        env.sidecar.dataDir,
-        "workflow-step-state",
-        workflowRunRepoId.id,
-        "warm",
-        encodeURIComponent(STEP_ID),
-        "workspace",
-      );
+      // the step's workspace for this attempt.
+      const stepWorkspace = stepWorkspaceDir({
+        dataDir: env.sidecar.dataDir,
+        workflowRunRepoId,
+        runId,
+        stepId: STEP_ID,
+        attempt: 1,
+      });
       const sentinelPath = path.join(stepWorkspace, SENTINEL_FILENAME);
       if (!fs.existsSync(sentinelPath)) {
         throw new Error(

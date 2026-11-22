@@ -383,7 +383,7 @@ export const WORKFLOW_RUN_WATERMARK_FILE = "watermark.json";
 export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Conversational-mailbox subtree for the warm single-step agent. The
+ * Conversational-mailbox subtree for a deployment's step agents. The
  * substrate mailbox backing commits the agent's durable inbox under
  * `mailbox/INBOX/` so the full message history replicates to the hub
  * alongside the run state. The layout is:
@@ -398,7 +398,7 @@ export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
  *     RETAINED `<uid>.eml` (present in both prior and prospective) is
  *     opaque and IMMUTABLE: it must reappear byte-identically, exactly
  *     like `runs/<runId>/blobs/`. A prior `<uid>.eml` may be ABSENT from
- *     the prospective tree — that is the warm agent expunging a message.
+ *     the prospective tree — that is a step agent expunging a message.
  *     The raw bytes are not lost: they stay reachable through the parent
  *     commit, and a `workflow-run` repo's objects are never GC'd, so an
  *     expunged message survives in history for the life of the run repo. The
@@ -3137,7 +3137,7 @@ async function enumerateMailboxInbox(
  * Enforces the subtree shape via `enumerateMailboxInbox`, then holds a
  * RETAINED `<uid>.eml` message blob byte-identical against the prior tree
  * by its blob OID. A prior `<uid>.eml` absent from the prospective tree is
- * a legal expunge: the warm agent physically removes a message from the
+ * a legal expunge: a step agent physically removes a message from the
  * live INBOX. The raw bytes are not lost -- they stay reachable through the parent commit, and
  * a `workflow-run` repo's objects are never GC'd, so the
  * expunged message survives in history for the life of the run repo. The

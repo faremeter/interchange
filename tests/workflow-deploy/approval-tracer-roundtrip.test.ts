@@ -66,8 +66,8 @@
 // grant evaluated by the route's `authorize` call.
 //
 // Single-test file. The shared `deploy-flow-env` (real sidecar subprocess + its
-// on-disk warm step-state) is `beforeAll`-scoped, while the DB resets per test.
-// A second test in this describe block would inherit the first run's warm
+// on-disk step state) is `beforeAll`-scoped, while the DB resets per test.
+// A second test in this describe block would inherit the first run's step
 // workspace, and "sentinel written exactly once" would silently stop meaning
 // what it claims. A run-once guard below fails loud if a second test is ever
 // added here rather than letting that assumption rot; a genuinely independent
@@ -108,7 +108,8 @@ import {
 } from "@intx/hub-sessions";
 import { assertWellFormedToolSequence } from "@intx/inference";
 import { readStepState } from "@intx/workflow-host";
-import { signalName } from "@intx/types";
+import { stepWorkspaceDir } from "@intx/workflow-host/child";
+import { deriveWorkflowRunId, signalName } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import { WireGrantRule } from "@intx/types/grant-wire";
 import type {
@@ -396,9 +397,9 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
 describe.skipIf(!harnessDbEnvAvailable())(
   "approval tracer round-trip through the real hub + sidecar stack",
   () => {
-    // Run-once guard. The env (sidecar subprocess + on-disk warm step-state) is
+    // Run-once guard. The env (sidecar subprocess + on-disk step state) is
     // shared across the describe block, so a second test would inherit this
-    // run's warm workspace and the "written exactly once" sentinel assertion
+    // run's step workspace and the "written exactly once" sentinel assertion
     // would silently stop meaning what it claims. Fail loud if a second test is
     // ever added to this block rather than letting the assumption rot.
     let hasRun = false;
@@ -432,8 +433,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("runs the approved tool once and completes with its real result", async () => {
       if (hasRun) {
         throw new Error(
-          "approval capstone assumes a single test per shared env: the warm " +
-            "step-state carries across, so a second test would break the " +
+          "approval capstone assumes a single test per shared env: the step " +
+            "state carries across, so a second test would break the " +
             "written-exactly-once sentinel assertion. Add a new scenario in " +
             "its own file with its own env instead.",
         );
@@ -522,30 +523,33 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      // The sentinel path in the warm single-step agent's stable workspace.
-      // Its absence before approval and single presence after are the
+      // The sentinel path in the step's workspace. The agent is built again
+      // for the resume, but the approval resume reuses the parked attempt, so
+      // the park and the resume share the one workspace of attempt 1. Its
+      // absence before approval and single presence after are the
       // exactly-once-after-approval proof.
       const sentinelPath = path.join(
-        env.sidecar.dataDir,
-        "workflow-step-state",
-        workflowRunRepoId.id,
-        "warm",
-        encodeURIComponent(STEP_ID),
-        "workspace",
+        stepWorkspaceDir({
+          dataDir: env.sidecar.dataDir,
+          workflowRunRepoId,
+          runId: deriveWorkflowRunId(deploymentMailAddress),
+          stepId: STEP_ID,
+          attempt: 1,
+        }),
         SENTINEL_FILENAME,
       );
 
-      // The sidecar's on-disk workflow-run substrate, where the warm agent's
-      // durable conversation mirror lives in the step's state directory under
-      // the deployment's run. `readStepState` reads it the way the warm agent's
-      // own restore does, so the post-resume history it returns is the real
+      // The sidecar's on-disk workflow-run substrate, where the step's
+      // committed conversation lives in the step's state directory under the
+      // deployment's run. `readStepState` reads it the way the step's own
+      // restore does, so the post-resume history it returns is the real
       // conversation, not a re-derivation.
       const sidecarSubstrate = createAgentRepoStore({
         dataDir: env.sidecar.dataDir,
         signingKey: await generateKeyPair(),
       }).repoStore;
 
-      // Guard the single-test warm-state assumption at the source: no prior run
+      // Guard the single-test state assumption at the source: no prior run
       // may have left the sentinel in this env before this test fires.
       expect(fs.existsSync(sentinelPath)).toBe(false);
 
@@ -768,12 +772,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // "parked tool_use is answered, no dangling call" property comes from that
       // validator TOGETHER with the exactly-one-call / exactly-one-result counts
       // below: one call and one result, well-ordered, means the single call is
-      // the one answered. Read the warm agent's durable conversation off the
+      // the one answered. Read the step's committed conversation off the
       // sidecar's on-disk substrate so this runs against the real history.
+      // The resumed agent was built again from that state, so one call and
+      // one result also show that the resume did not run the call a second
+      // time.
       //
-      // The durable mirror is committed at run boundaries and can lag the
-      // terminal event by a mirror flush, so poll until the answered call
-      // surfaces rather than racing the write.
+      // The conversation is committed when the turn settles and can lag the
+      // terminal event, so poll until the answered call surfaces rather than
+      // racing the write.
       const readTurns = async (): Promise<ConversationTurn[]> => {
         const reconstructed = await readStepState({
           substrate: sidecarSubstrate,

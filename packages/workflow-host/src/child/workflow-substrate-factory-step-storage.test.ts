@@ -1,23 +1,15 @@
-// Per-step scratch keying for `createSidecarStepBuildEnv` (#3 leak fix).
-//
-// `stepStorageRoot` rooted every step invocation's workspace + tool
-// scratch under the per-message `runId`, and nothing ever reclaimed it,
-// so a long-lived deployment's `workflow-step-state/` grew without
-// bound. The fix keys the warm single-step agent's scratch STABLY per
-// agent (so the cached agent reuses one workspace across runs and the
-// warm case is bounded to one dir per agent) while the cold/multi-step
-// path keeps its per-run keying (reclaimed at run completion / undeploy
-// elsewhere).
+// Per-step scratch keying for `createSidecarStepBuildEnv`.
 //
 // These tests pin the keying directly off the production `buildEnv` the
 // substrate factory wires:
-//   - WARM (`durableConversation` present): two different runIds produce
+//   - COLD (no `durableConversation`, as the sidecar builds every step):
+//     two different runIds produce DIFFERENT `env.workdir`s, each under
+//     that run's subtree -- the per-run keying the run-completion cleanup
+//     reclaims. A workspace lives for one attempt: a retry does not see
+//     the files of the attempt before it.
+//   - WARM (`durableConversation` injected): two different runIds produce
 //     the SAME `env.workdir`, and a file written for run-1 is visible in
-//     the env built for run-2 -- the workspace-continuity the stable key
-//     buys.
-//   - COLD (no `durableConversation`): two different runIds produce
-//     DIFFERENT `env.workdir`s, each under that run's subtree -- the
-//     per-run keying the run-completion cleanup reclaims.
+//     the env built for run-2.
 //
 // The cold path also backs each invocation's `ContextStore` with the step's
 // committed state in the workflow-run substrate, under the deployment's
@@ -52,6 +44,7 @@ import type {
 import type { MailSigner } from "@intx/types/mail-signer";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 import { generateKeyPair } from "@intx/crypto";
+import { createInboundMessage } from "@intx/mime";
 import {
   createRepoStore,
   workflowRunKindHandler,
@@ -89,6 +82,7 @@ import {
 
 import {
   createSidecarStepBuildEnv,
+  stepWorkspaceDir,
   type SidecarStepBuildEnvDeps,
 } from "./substrate-factory";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
@@ -240,6 +234,23 @@ function requestForRun(runId: string, attempt = 1): StepInvokeRequest {
 
 const tempDirs: string[] = [];
 
+/** Count the WAL entries of the state directory at `stateDir` on disk. */
+async function countWalEntries(stateDir: string): Promise<number> {
+  const walRoot = path.join(stateDir, "wal");
+  let buckets: string[];
+  try {
+    buckets = await fs.readdir(walRoot);
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  for (const bucket of buckets) {
+    const entries = await fs.readdir(path.join(walRoot, bucket));
+    count += entries.filter((entry) => entry.endsWith(".json")).length;
+  }
+  return count;
+}
+
 afterAll(async () => {
   for (const dir of tempDirs.splice(0)) {
     await fs.rm(dir, { recursive: true, force: true });
@@ -312,6 +323,71 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     expect(env2.workdir).toContain(path.join("runs", "run-2"));
     // The cold path never parks scratch under the warm sub-root.
     expect(env1.workdir).not.toContain(path.join("warm", STEP_ID));
+  });
+
+  test("a retried attempt does not see the files of the attempt before it", async () => {
+    const dataDir = await makeTempDir();
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
+    );
+    const sourcesRef = sourcesRefFor();
+
+    const { env: first } = await buildEnv(
+      requestForRun("run-1", 1),
+      sourcesRef,
+    );
+    expect(first.workdir).toBe(
+      stepWorkspaceDir({
+        dataDir,
+        workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+        runId: "run-1",
+        stepId: STEP_ID,
+        attempt: 1,
+      }),
+    );
+    await fs.writeFile(path.join(first.workdir, "attempt-1.txt"), "lost");
+
+    const { env: retry } = await buildEnv(
+      requestForRun("run-1", 2),
+      sourcesRef,
+    );
+    expect(retry.workdir).toBe(
+      stepWorkspaceDir({
+        dataDir,
+        workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+        runId: "run-1",
+        stepId: STEP_ID,
+        attempt: 2,
+      }),
+    );
+    expect(await fs.readdir(retry.workdir)).toEqual([]);
+  });
+
+  test("an input resume of the same attempt keeps the attempt's files", async () => {
+    const dataDir = await makeTempDir();
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
+    );
+    const sourcesRef = sourcesRefFor();
+
+    const { env: first } = await buildEnv(requestForRun("run-1"), sourcesRef);
+    await fs.writeFile(path.join(first.workdir, "turn-1.txt"), "kept");
+
+    const { env: resumed } = await buildEnv(
+      {
+        ...requestForRun("run-1"),
+        resume: {
+          kind: "input",
+          correlationId: "input-1",
+          decision: "next",
+        },
+      },
+      sourcesRef,
+    );
+    expect(resumed.workdir).toBe(first.workdir);
+    expect(
+      await fs.readFile(path.join(resumed.workdir, "turn-1.txt"), "utf8"),
+    ).toBe("kept");
   });
 
   test("feeds the reactor the whole failover chain with the head pinned as default", async () => {
@@ -1117,6 +1193,97 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       stepId: STEP_ID,
       attempt: 1,
     });
+  });
+
+  test("state an earlier version wrote with no stamp and no park continues, with its thread", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const mailboxAddress = `${TOP_LEVEL_RUN_ID}@example.com`;
+    const mail = (opts: {
+      messageId: string;
+      inReplyTo?: string;
+      references?: string[];
+    }) =>
+      createInboundMessage({
+        from: "alice@example.com",
+        to: mailboxAddress,
+        content: "hello",
+        messageId: opts.messageId,
+        interchangeType: "conversation.message",
+        ...(opts.inReplyTo !== undefined ? { inReplyTo: opts.inReplyTo } : {}),
+        ...(opts.references !== undefined
+          ? { references: opts.references }
+          : {}),
+      });
+    // An earlier version kept the step of a one-step deployment in a store
+    // that lives as long as the deployment and stamps no invocation.
+    const earlier = await createDurableConversationStore({
+      localStoreDir: await makeTempDir(),
+      signer,
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: TOP_LEVEL_RUN_ID,
+      stepId: STEP_ID,
+      lifetime: { kind: "deployment" },
+      mailboxAddress,
+    });
+    await earlier.restoreFromSubstrate();
+    await earlier.beginTurn({});
+    await earlier.seedInbound(mail({ messageId: "<a1@example.com>" }));
+    const firstReply = earlier.composeReply();
+    if (firstReply === null) throw new Error("expected a reply address");
+    await earlier.storage.writeTurns([turn("first")]);
+    await earlier.storage.commit({ message: "turn" });
+    await earlier.onReplySent(
+      { messageId: "<r1@example.com>", status: "delivered" },
+      firstReply.references ?? [],
+    );
+    await earlier.mirrorToSubstrate();
+    const before = await readKey(substrate, TOP_LEVEL_RUN_ID, STEP_ID);
+    expect(before?.invocation).toBeUndefined();
+    expect(before?.pendingOperations).toEqual([]);
+    expect(before?.connectorState?.lastMessageId).toBe("<r1@example.com>");
+    const stateDir = path.join(
+      substrate.getRepoDir(WORKFLOW_RUN_REPO_ID),
+      workflowRunStepStatePrefix(TOP_LEVEL_RUN_ID, STEP_ID),
+    );
+    const walBefore = await countWalEntries(stateDir);
+
+    const build = await (
+      await host(substrate)
+    )(requestForRun("run-1"), sourcesRefFor());
+    expect((await build.env.storage.load()).turns).toEqual([turn("first")]);
+    if (build.conversation === undefined) {
+      throw new Error("a cold step build returns its conversation");
+    }
+    // Alice answers the earlier reply, so her mail continues the thread.
+    await build.conversation.beginTurn({});
+    await build.conversation.seedInbound(
+      mail({
+        messageId: "<a2@example.com>",
+        inReplyTo: "<r1@example.com>",
+        references: ["<a1@example.com>", "<r1@example.com>"],
+      }),
+    );
+    expect(build.conversation.composeReply()).toMatchObject({
+      to: "alice@example.com",
+      inReplyTo: "<a2@example.com>",
+    });
+    await takeTurn(build, [turn("first"), turn("second")]);
+
+    const after = await readKey(substrate, TOP_LEVEL_RUN_ID, STEP_ID);
+    expect(after?.turns).toEqual([turn("first"), turn("second")]);
+    expect(after?.connectorState?.threadRoot).toBe("<a1@example.com>");
+    expect(after?.connectorState?.lastMessageId).toBe("<a2@example.com>");
+    expect(after?.invocation).toEqual({
+      runId: "run-1",
+      stepId: STEP_ID,
+      attempt: 1,
+    });
+    // The first cold mirror appends the turn and does not rewrite the
+    // conversation.
+    expect(await countWalEntries(stateDir)).toBe(walBefore + 1);
   });
 
   test("a cold build's conversation sends through the bridge as the deployment mailbox", async () => {

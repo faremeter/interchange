@@ -15,7 +15,7 @@
 //      child (the source-ref deploy path). Identity preserved (deploy-ack
 //      for the run's `run_<hex>` address); grants enforced (the granted tool
 //      runs in-child).
-//   2. MAIL IN (4.2): an inbound mail with a KNOWN body reaches the warm
+//   2. MAIL IN (4.2): an inbound mail with a KNOWN body reaches the step
 //      agent's `agent.send` as the step input -- proven by the
 //      tool-driven reply round-trip completing for that message's run.
 //   3. TOOL-DRIVEN SIGNED REPLY OUT (4.3): the agent's model turn calls
@@ -28,34 +28,30 @@
 //      across the real OS process boundary. (The fixture's inline `mail_send`
 //      tool in its transport variant replaces the filesystem-only variant for
 //      this test.)
-//   4. DURABLE CONVERSATION SNAPSHOT (4.4): the completed turn is mirrored
-//      from the warm agent's conversation store into the workflow-run
-//      substrate at the run boundary.
-//   5. KILL + RESPAWN (4.5): the conversation RESUMES from the substrate.
-//      A FRESH process (a `createDurableConversationRegistry` built
-//      in-process against the subprocess's on-disk substrate, with a fresh
-//      local store dir -- the strengthened 4.5 pattern) restores the warm
-//      agent's prior conversation from the workflow-run substrate the
-//      spawned child committed. The fresh local store starts empty, so the
-//      restored turns can come ONLY from the substrate -- closing the hole
-//      where a surviving local store would mask a broken restore. This is
-//      a CROSS-PROCESS durability proof: the durable substrate the real
-//      subprocess wrote is read back by a genuinely separate process.
+//   4. DURABLE CONVERSATION SNAPSHOT (4.4): the completed turn is committed
+//      from the step's conversation store into the workflow-run substrate
+//      once the turn settles.
+//   5. KILL + RESPAWN (4.5): the state a respawn restores is durable. A
+//      FRESH process reads the step's committed state from the
+//      subprocess's on-disk substrate with the production `readStepState`,
+//      which every turn's build restores from. The state carries the turn
+//      and the stamp of the invocation that committed it. This is a
+//      CROSS-PROCESS durability proof: the durable substrate the real
+//      subprocess wrote is read back by a genuinely separate process. The
+//      stage runs no second turn, so it does not prove a resume; the
+//      conversation-durability test does.
 //   6. EVENTS (4.1 sessionId wiring): inference events reached the hub's
 //      `agent.event` sink keyed to the deploy's sessionId, across the
 //      lifecycle.
 //
 // Harness justification. Stages 1-4 and 6 are SPAWN-REAL: a real hub, a
 // real sidecar subprocess, a real workflow-process child, and a test
-// inference provider. Stage 5's respawn restore is exercised in-process
-// against the SAME on-disk substrate the subprocess wrote, mirroring the
-// 4.5 conversation-durability test's deliberate choice: a respawn IS a
-// fresh process building a fresh `createDurableConversationRegistry`
-// against the durable substrate, and reading the snapshot the prior
-// process committed proves continuity without the OS kill-timing
+// inference provider. Stage 5's respawn read is exercised in-process
+// against the SAME on-disk substrate the subprocess wrote: a respawn IS a
+// fresh process reading the durable substrate, and reading the state the
+// prior process committed proves continuity without the OS kill-timing
 // nondeterminism a hard subprocess kill would inject into the durability
-// assertion. The restore path is the REAL production wiring
-// (`createDurableConversationRegistry.acquire` -> `restoreFromSubstrate`).
+// assertion.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -65,7 +61,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
-import { createSSHSignature } from "@intx/crypto";
 import { isRunAddress } from "@intx/types";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { WireGrantRule } from "@intx/types/grant-wire";
@@ -74,15 +69,12 @@ import {
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import {
-  createDurableConversationRegistry,
-  readStepState,
-} from "@intx/workflow-host";
+import { readStepState } from "@intx/workflow-host";
+import { stepWorkspaceDir } from "@intx/workflow-host/child";
 import {
   createAgentRepoStore,
   type RepoId,
   type RepoStore,
-  type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
@@ -333,9 +325,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // would reject inside `send`, leaving no sentinel and failing the run.
       // The sentinel content is the receipt JSON, so a non-empty messageId
       // proves the signed send completed.
-      const firstSentinelPath = stepWorkspaceSentinelPath(
-        env,
-        workflowRunRepoId.id,
+      // The step's first attempt in the run wrote it into that attempt's
+      // workspace.
+      const firstSentinelPath = path.join(
+        stepWorkspaceDir({
+          dataDir: env.sidecar.dataDir,
+          workflowRunRepoId,
+          runId: firstRunId,
+          stepId: STEP_ID,
+          attempt: 1,
+        }),
         SENTINEL_FILENAME_FIRST,
       );
       if (!fs.existsSync(firstSentinelPath)) {
@@ -348,9 +347,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // ---- STAGE 4: DURABLE CONVERSATION SNAPSHOT (4.4) ----
 
-      // The run-boundary hook mirrors the warm agent's conversation into the
-      // step's state directory under the deployment's top-level run, keyed
-      // by stepId rather than by the attempt. Read it from the sidecar's
+      // The turn's settle commits the step's conversation into the step's
+      // state directory under the deployment's top-level run, keyed by
+      // stepId rather than by the attempt. Read it from the sidecar's
       // on-disk workflow-run substrate (the supervisor's single-writer
       // substrate): deterministic, no hub pack-push timing dependency.
       const sidecarSubstrate = createAgentRepoStore({
@@ -369,85 +368,44 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(afterBoundary.some((t) => t.includes(FIRST_BODY))).toBe(true);
 
-      // The warm agent's conversation `.git` lives at the stable per-agent
-      // durable store root, NOT under any per-run `attempt-*` dir -- the
-      // store that survives respawn.
-      const durableConversationDir = path.join(
-        env.sidecar.dataDir,
-        "agent-conversation-state",
-        workflowRunRepoId.id,
-        encodeURIComponent(STEP_ID),
-      );
-      expect(fs.existsSync(path.join(durableConversationDir, ".git"))).toBe(
-        true,
-      );
-
       // ---- STAGE 5: KILL + RESPAWN -> resume from substrate (4.5) ----
       //
-      // Model a fresh-process respawn: build a fresh
-      // `createDurableConversationRegistry` (the REAL production wiring)
-      // against the subprocess's on-disk workflow-run substrate, with a
-      // BRAND-NEW local store dir. The fresh local store starts empty, so the
-      // restored turns can come ONLY from the durable substrate the spawned
-      // child committed -- a cross-process durability proof.
-      const freshLocalDataDir = await fs.promises.mkdtemp(
-        path.join(env.sidecar.dataDir, "respawn-local-"),
-      );
-      const freshLocalStoreDir = path.join(
-        freshLocalDataDir,
-        "agent-conversation-state",
-        workflowRunRepoId.id,
-        encodeURIComponent(STEP_ID),
-      );
-      // The fresh local store genuinely has no conversation on disk yet.
-      expect(fs.existsSync(freshLocalStoreDir)).toBe(false);
-
-      // Reopen the subprocess's substrate in-process. The durable registry's
-      // restore path only reads the substrate's committed tree, so a throwaway
-      // signing key is sufficient.
+      // Model a fresh-process respawn: reopen the subprocess's on-disk
+      // workflow-run substrate in-process and read the step's committed
+      // state the way every turn's build restores it. Only the substrate
+      // holds it, so the read is a cross-process durability proof. A
+      // throwaway signing key is enough, because the read writes nothing.
       const respawnSubstrate = createAgentRepoStore({
         dataDir: env.sidecar.dataDir,
         signingKey: await generateKeyPair(),
       }).repoStore;
-      const respawnSigner = await sshSigner();
-      const respawnPrincipal: WorkflowRunWorkflowProcessPrincipal = {
-        kind: "workflow-process",
-        anchorRunId: workflowRunRepoId.id,
-      };
-      const respawnRegistry = createDurableConversationRegistry({
-        dataDir: freshLocalDataDir,
+      const restored = await readStepState({
+        substrate: respawnSubstrate,
         workflowRunRepoId,
         workflowRunRef: WORKFLOW_RUN_REF,
+        principal: { kind: "hub" },
         runId: DEPLOYMENT_ID,
-        substrate: respawnSubstrate,
-        principal: respawnPrincipal,
-        signer: respawnSigner,
-        mailboxAddress: "agent@example.com",
+        stepId: STEP_ID,
       });
-
-      // The first acquire builds the store and restores its prior
-      // conversation snapshot from the substrate -- the exact lazy-rebuild /
-      // respawn-restore path the warm agent takes after a child respawn.
-      const respawnStore = await respawnRegistry.acquire(STEP_ID);
-      const restored = await respawnStore.storage.load();
+      if (restored === null) {
+        throw new Error("stage 5: the step committed no state");
+      }
       const restoredUserTexts = restored.turns
         .filter((t) => t.role === "user")
         .flatMap((t) =>
           t.content.map((c) => (c.type === "text" ? c.text : "")),
         );
 
-      // THE durability dividend: the post-respawn agent's conversation
-      // reflects the PRE-respawn turn. The fresh local
-      // store started EMPTY, so the only possible source is the substrate
-      // restore. A broken restore would have loaded zero turns.
+      // THE durability dividend: the substrate holds the PRE-respawn turn
+      // that the next turn's build restores.
       expect(restoredUserTexts.some((t) => t.includes(FIRST_BODY))).toBe(true);
-
-      // The restore wrote the prior conversation into the previously-empty
-      // fresh local store, confirming the restore path (not a surviving local
-      // store) reconstructed continuity.
-      expect(fs.existsSync(path.join(freshLocalStoreDir, ".git"))).toBe(true);
-
-      await fs.promises.rm(freshLocalDataDir, { recursive: true, force: true });
+      // The invocation that committed the turn stamped the state, so the
+      // next invocation of the step continues it.
+      expect(restored.invocation).toEqual({
+        runId: firstRunId,
+        stepId: STEP_ID,
+        attempt: 1,
+      });
 
       // ---- STAGE 6: EVENTS reached the sink with the sessionId (4.1) ----
 
@@ -472,29 +430,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
   },
 );
-
-/**
- * Warm single-step workspace path under the sidecar data dir where the
- * transport-backed `mail_send` tool writes its receipt sentinel. The warm
- * agent's workspace is keyed STABLY per agent
- * (`workflow-step-state/<repoId>/warm/<stepId>/workspace`), not per
- * message, so the path is independent of the run that wrote the sentinel.
- */
-function stepWorkspaceSentinelPath(
-  deployEnv: DeployFlowEnv,
-  workflowRunRepoSlug: string,
-  filename: string,
-): string {
-  return path.join(
-    deployEnv.sidecar.dataDir,
-    "workflow-step-state",
-    workflowRunRepoSlug,
-    "warm",
-    encodeURIComponent(STEP_ID),
-    "workspace",
-    filename,
-  );
-}
 
 const ReceiptSentinel = type({
   messageId: "string",
@@ -526,7 +461,7 @@ const TurnShape = type({
  * Reconstruct the durable conversation from the two-tier substrate layout
  * (checkpoint + WAL) in the step's state directory and return the
  * user-turn texts. Goes through the production `readStepState` so the test
- * reads the conversation the same way the warm agent's restore does.
+ * reads the conversation the same way a step's restore does.
  */
 async function readSnapshotUserTexts(
   substrate: RepoStore,
@@ -551,19 +486,6 @@ async function readSnapshotUserTexts(
     texts.push(turn.content.map((c) => c.text ?? "").join(""));
   }
   return texts;
-}
-
-/**
- * SSH-shaped commit signer for the in-process durable store's local isogit
- * repo. The respawn restore writes the restored turns into a fresh local
- * store and commits them; the signer attributes that commit.
- */
-async function sshSigner(): Promise<(payload: string) => Promise<string>> {
-  const keyPair = await generateKeyPair();
-  return (payload: string) =>
-    Promise.resolve(
-      createSSHSignature(payload, keyPair.privateKey, keyPair.publicKey),
-    );
 }
 
 function isInferenceStart(event: unknown): boolean {

@@ -486,12 +486,13 @@ export function createMultistepDrainRouter(): MultistepDrainRouter {
 /**
  * Per-deployment sources-rotation handler the deploy router installs
  * against the `MultistepSourcesRouter` after a supervisor's `spawn`
- * succeeds -- but ONLY for a single-step (warm launched-agent)
- * deployment. The handler hands the rotated list off to the supervisor's
- * `deliverSources`, which sends a `sources-updated` control IPC frame to
- * the workflow-process child, where the warm agent's live sources are
- * swapped in place. A multi-step deployment has no single warm agent to
- * rotate, so the router registers no handler for it and an inbound
+ * succeeds -- but ONLY for a single-step (launched-agent) deployment. The
+ * handler hands the rotated list off to the supervisor's `deliverSources`,
+ * which sends a `sources-updated` control IPC frame to the
+ * workflow-process child, which replaces its sources table; the step's next
+ * turn builds its agent on the new sources. A multi-step deployment has no
+ * single source identity to rotate, so the router registers no handler for
+ * it and an inbound
  * `sources.update` for a multi-step address is unrouted.
  */
 export type MultistepSourcesHandler = (args: {
@@ -501,7 +502,7 @@ export type MultistepSourcesHandler = (args: {
 
 /**
  * Per-deployment-address sources-rotation handler registry. Only a
- * single-step warm deployment registers a handler (after
+ * single-step deployment registers a handler (after
  * `wired.supervisor.spawn` succeeds); a multi-step deployment never
  * does, so `tryRoute` resolves a rotation only for a registered
  * single-step address and returns `false` for any other.
@@ -573,7 +574,7 @@ export function createMultistepSourcesRouter(): MultistepSourcesRouter {
  *
  * Unlike sources rotation, this registers for ANY deployment (single- or
  * multi-step): the material cell is per-child and read by every step's tool
- * capabilities, so there is no single-warm-agent restriction.
+ * capabilities, so there is no single-step restriction.
  */
 export type MultistepCredentialsHandler = (args: {
   delivery: CredentialDelivery;

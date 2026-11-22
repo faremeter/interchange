@@ -876,7 +876,7 @@ export interface WorkflowRuntimeEnv {
    * BEFORE the `SignalAwaited` flushed -- resumable, by reconstructing the
    * missing `SignalAwaited` and re-parking -- from a genuine crash mid-agent
    * turn, which stays a terminal failure. Production wires it to the sidecar's
-   * durable step store (cold isogit / warm substrate). A host that does not
+   * durable step store. A host that does not
    * wire it -- runLocal -- leaves every crashed invocation a terminal failure,
    * the pre-recovery behavior.
    */

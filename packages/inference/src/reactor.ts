@@ -2014,16 +2014,17 @@ export function createReactor(config: ReactorConfig): Reactor {
     if (abandonedTurns.has(turnId)) unannouncedGates.add(gateId);
 
     // Emit `reactor.gate.blocked` only AFTER the commit. This event resolves
-    // the `send()` awaiter as "suspended", and a downstream consumer (the warm
-    // agent's run-boundary durability mirror) reads the pending operation back
-    // out of the just-committed context store the instant `send()` settles.
-    // Emitting before the commit would resolve `send()` first, letting that
-    // mirror read a store that has not yet persisted the pending op -- it would
-    // durably mirror an empty pending-operation set and lose the approval
-    // snapshot, so a parked correlation could not be re-registered after a hub
-    // reconnect. This upholds persist-before-settle: the durable commit the
-    // header promises before returning to the loop lands before the suspension
-    // settles.
+    // the `send()` awaiter as "suspended", and a downstream consumer (a
+    // workflow step's `conversation.parkTurn`, which writes the parked turn
+    // mode into the store's metadata) reads the pending operations back out
+    // of the just-committed context store the instant `send()` settles and
+    // writes them again. Emitting before the commit would resolve `send()`
+    // first, letting that write read a store that has not yet persisted the
+    // pending op -- it would durably write an empty pending-operation set
+    // and lose the approval snapshot, so a parked correlation could not be
+    // re-registered after a hub reconnect. This upholds persist-before-settle:
+    // the durable commit the header promises before returning to the loop
+    // lands before the suspension settles.
     emit({
       type: "reactor.gate.blocked",
       seq: nextSeq(),

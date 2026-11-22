@@ -4,12 +4,12 @@
 >
 > This document is the design of record. The unified single-agent path it
 > describes is built: the sidecar spawns a child that runs a real agent for
-> a workflow step with materialized tools, threads agent events up, keeps
-> the agent warm across messages, and persists its conversation durably
-> across a child respawn. The per-message latency hardening the design
-> implies was measured and landed, save one residual substrate
-> optimization tracked as a separate follow-up. The recursive per-rung
-> sandbox model in the later sections remains forward-looking.
+> a workflow step with materialized tools, threads agent events up, builds
+> the step's agent for each turn, and persists its conversation durably
+> across turns and across a child respawn. The per-message latency
+> hardening the design implies was measured and landed, save one residual
+> substrate optimization tracked as a separate follow-up. The recursive
+> per-rung sandbox model in the later sections remains forward-looking.
 >
 > References are by file path and symbol name, deliberately without line
 > numbers, so the document outlives the code's line numbering.
@@ -144,7 +144,7 @@ boundary than the current rung_ (§3f).
  │   │  - REAL step-invoker: createAgent + tools +       │    │
  │   │      inference + event firehose                   │    │
  │   │  - tool materialization (in-process)              │    │
- │   │  - warm-agent cache (long-lived single)           │    │
+ │   │  - one agent per turn (none kept live)            │    │
  │   │  - proxy RepoStore (writes -> supervisor)         │    │
  │   │  - IS A SPAWNER: spawnChild / createSidecarRunChild│   │
  │   │                                                   │    │
@@ -189,7 +189,8 @@ threads up through every rung to the hub timeline.
    dispatch loop emits `trigger.fired`. The child opens a `runtimeRun` for the
    one-step workflow; the **real step-invoker** instantiates the agent with
    tools + inference, delivers the message as the step input, and runs a real
-   turn. The agent is **kept warm** across triggers (§3b).
+   turn. The agent lives for one turn: the next turn builds it again and
+   continues the conversation the last turn committed (§3b, §3c).
 5. Inference events flow up the event channel -> supervisor -> hub timeline.
    Conversation state is committed to the workflow-run substrate (§3a, §3c),
    so kill+respawn resumes via `discoverInFlightRuns`.
@@ -222,9 +223,10 @@ events up to the hub timeline. The sub-child can recurse again. Depth is bounded
 only by the definitions' nesting and any operator ceiling (§6).
 
 The workloads converge on one recursive host: one step-invoker, one durability
-model, one spawner shape at every rung. The single agent becomes "a long-lived,
-warm-kept, one-step workflow"; a `childWorkflow` becomes "a nested rung that
-runs in-process unless its isolation says otherwise."
+model, one spawner shape at every rung. The single agent becomes "a one-step
+workflow whose conversation continues across turns"; a `childWorkflow`
+becomes "a nested rung that runs in-process unless its isolation says
+otherwise."
 
 ## 3. Load-bearing design decisions
 
@@ -249,14 +251,14 @@ sole mail owner. The harness's transport-subscription + INBOX-ownership half
 is dropped. The agent receives synthesized step inputs, never its own
 transport subscription.**
 
-**Chosen model — supervisor owns mail; agent runs as a warm step:**
+**Chosen model — supervisor owns mail; agent runs as a step:**
 
 - Mail for _every_ address (single-agent and multi-step) lands at the
   supervisor and enters the durable inbox claim-check. The supervisor's
   dispatch loop is the only thing that pulls a message and turns it into a
   `trigger.fired`.
 - For a single-agent deploy, each `trigger.fired` delivers the inbound
-  message as the step input to the warm agent via the step path
+  message as the step input to the step's agent via the step path
   (`agent.send`-shaped delivery inside the real step-invoker), not via the
   agent's own transport.
 - **Multi-turn conversation state** is no longer the harness's in-memory
@@ -264,9 +266,9 @@ transport subscription.**
   conversation/connector state for the agent is committed under the
   workflow-run repo (the same substrate the run log uses), so it is durable
   and resumable. The connector router's `snapshot()` /`restore()` surface
-  (`packages/harness/src/harness.ts`,
-  `createWrappedStorageOverrides`) is reused, but its persistence sink changes
-  from the agent's in-memory storage to the workflow-run substrate write path.
+  (`packages/harness/src/harness.ts`) is reused, and the step's conversation
+  store (`packages/workflow-host/src/conversation-state.ts`) persists the
+  snapshot with the conversation to the workflow-run substrate write path.
 - **Connector/reply semantics map onto the step path** as follows. Today the
   harness routes an agent's outbound `connector.reply` back through its
   transport. Under the unified host, the agent's reply becomes the step
@@ -312,23 +314,21 @@ its failure modes and the open question about reply latency.
 "inbound side is a no-op" surface above was the initial cut. It has since
 been replaced by a per-workflow IMAP mailbox committed to the workflow-run
 substrate: the supervisor stays the sole mail owner and eager-commits each
-inbound message into the mailbox (durable, replicated to the hub). The warm
+inbound message into the mailbox (durable, replicated to the hub). A step
 agent's mail tools ask that supervisor and take its answer, with no hub
 round-trip, so `mail_read`, `mail_search`, and `mail_wait` work. Search,
 fetch, flag changes, folder operations, and attachment reads all go that
 way; the child does not open the run repo to answer them. When a step
 sets `replyByMail` and its turn answers mail, the step invoker sends the
 turn's reply through the outbound bridge before the turn returns. This
-holds for the warm agent and for each cold step: each step of a
-multi-step deployment, and each step of a spawned child run such as an
-`onTrigger` body, also in a deployment whose only top-level step is the
-section. A cold step's turn runs over a connector thread in the step's
-attempt-scoped store. A reply that no turn waits for is not sent: the step
-invoker logs a warning when a warm turn is aborted, because its cycle can
-still reply. An aborted cold step closes its agent, so its cycle cannot
-reply. A cold step sends its reply before it commits its turn, so a crash
-between the two fails the step without running it again: the reply goes
-out at most once. The child builds the reply's `References`
+holds for every step: each top-level step, and each step of a spawned
+child run such as an `onTrigger` body, also in a deployment whose only
+top-level step is the section. A step's turn runs over a connector thread
+in the step's attempt-scoped store. A reply that no turn waits for is not
+sent. An aborted step closes its agent, so its cycle cannot reply. A step
+sends its reply before it commits its turn, so a crash between the two
+fails the step without running it again: the reply goes out at most once.
+The child builds the reply's `References`
 from the connector thread state, and the supervisor sends the chain as the
 child named it. This does not reopen the ownership decision: the child does
 not open the mailbox, and there is still exactly one mail owner.
@@ -346,6 +346,14 @@ The conversational loop has two first-class shapes, both delivered:
   independent of turn dispatch.
 
 ### 3b. Warm-agent lifecycle
+
+> **Superseded.** No agent stays live between turns. Every agent step, the
+> step of a one-step workflow included, builds its agent and tools for each
+> turn and closes them when the turn ends. The conversation continues through
+> the step's committed state (§3c), and the step's workspace lives for one
+> attempt. The per-turn build cost is measured by
+> `tests/workflow-deploy/latency-gate.bench.ts`. The text below records the
+> earlier warm-keep design.
 
 Today the step-invoker is instantiate-send-teardown:
 `packages/workflow-host/src/adapters/step-invoker.ts` builds the env, calls
@@ -408,31 +416,34 @@ multi-step durability model:
   `driveTrivialRunChain` projector hand-rolled; the runtime now emits it
   natively because a real `runtimeRun` drives the step, and that projector has
   been deleted (§4).
-- **Conversation state across trigger occurrences.** The agent's
+- **Conversation state across invocations.** The step's
   connector/conversation state is committed to the workflow-run substrate at
-  turn boundaries, once per turn. The live stable run reads that state before
-  delivering the next message, so multi-turn continuity survives child
-  respawns without creating another top-level run.
+  turn boundaries, once per turn. No agent stays live between turns: each
+  invocation of the step's place builds the agent and restores that state
+  before its turn, so multi-turn continuity survives child respawns without
+  creating another top-level run.
 - **Where step state lives.** A step's conversation state lives under the
   deployment's top-level run at the step's key,
   `runs/<topLevelRunId>/steps/<key>/`, whichever run the step runs in. The
   key is the step's path of step ids joined with `.`, plus `[i]` for a map
   item, so a top-level step's key is its step id. Each invocation of the
-  place continues the conversation the last one committed. A cold step
+  place continues the conversation the last one committed. A step
   stamps the state with the invocation that wrote it (its run, step id and
   attempt); another invocation rolls back a turn that invocation left parked
-  on an approval.
+  on an approval. State with no stamp was written by an earlier version; an
+  invocation continues it.
 - **Kill+respawn mid-conversation.** If the child dies mid-turn, the in-flight
   run's log lacks a terminal event; `discoverInFlightRuns`
   (`packages/workflow-host/src/child/run-child.ts`) finds it on respawn and
-  resumes via `runtimeRun(..., { resumeFromEvents })`. The warm-agent cache is
-  rebuilt lazily; the resumed run replays from its event log. The agent's
-  conversation state is restored from the substrate. This is strictly more
+  resumes via `runtimeRun(..., { resumeFromEvents })`. The resumed run replays
+  from its event log, and the step's next turn builds its agent again and
+  restores its conversation state from the substrate. This is strictly more
   durable than the in-process runtime, which had no durable run log at all.
 
-**Commit granularity is per turn (§3h).** The warm step-invoker's per-send hook
-fires after each `agent.send`, so the conversation is mirrored **per turn**
-whether a run services one trigger or many. Whether one substrate mirror per
+**Commit granularity is per turn (§3h).** The step invoker commits a turn's
+conversation once the turn settles (with output or on a park), so the
+conversation is mirrored **per turn** whether a run services one trigger or
+many. A turn that fails commits nothing. Whether one substrate mirror per
 turn is acceptable write load on the single-writer ref is an empirical question
 flagged in §6.
 
@@ -480,9 +491,8 @@ is exactly why the isolation unit and the sandbox boundary (§3f and Decision
   `@intx/storage-isogit` stores, the inference runtime. None of these are
   re-implemented; the substrate factory the child binary runs calls them.
 - **Rooting.** A step's tools run rooted per step under the run (see
-  `createSidecarStepBuildEnv`). A single long-lived agent keeps its tools across
-  triggers (warm-keep, §3b). For multi-step, tools are built per step
-  invocation.
+  `createSidecarStepBuildEnv`). Tools are built for each turn of every step,
+  the step of a one-step workflow included (§3b).
 
 **Layering — why `@intx/workflow-host` stays portable (the clarification
 strengthens the call).** `@intx/workflow-host` takes substrate, spawner, mail
@@ -724,10 +734,8 @@ channel.** As built:
   `InferenceEvent` to the sink. Forwarding is best-effort observability: a sink
   that throws is logged and swallowed rather than aborting the step, and
   `message.received` is excluded as an assembly-internal dequeue signal.
-  Omitting the sink leaves the agent's `stream()` unconsumed. In warm-keep mode
-  the cache holds a mutable per-entry sink that each invocation points at its
-  own step before `agent.send` and clears after, so a stray event between
-  messages is dropped rather than delivered to a torn-down channel.
+  Omitting the sink leaves the agent's `stream()` unconsumed. The agent lives
+  for one turn, so no event reaches the sink after the turn ends.
 - `packages/workflow-host/src/child/substrate-factory.ts` supplies the sink instead of
   discarding it, threading it through the per-step env builder and the
   child-run env to the child's event sender. A missing sink on the child path
@@ -993,7 +1001,7 @@ own child.
 **Sequencing.** The `isolation` field, its defaulting/validation/hashing, and
 the domain-key derivation are designed now. Start the build at **per-deployment
 (today's behavior)**, which is the degenerate `per-agent` case, and widen to the
-declared `per-tenant` sharing once warm-agent durability is proven (§5), so
+declared `per-tenant` sharing once single-agent durability is proven (§5), so
 multiplexing is the _last_ capability added, not entangled with the harder
 mailbox/durability work.
 
@@ -1074,9 +1082,9 @@ correlationId so the reactor correlates it with the rehydrated gate; an
 `"input"` resume delivers the decision as a plain next user turn (no gate to
 match).
 
-**Conversation state is committed per turn.** The warm step-invoker's per-send
-hook (§3c) fires after each `agent.send`, so a long-lived run's conversation is
-mirrored to the substrate per turn, however many turns the run spans.
+**Conversation state is committed per turn.** The step invoker commits each
+turn that settles (§3c), so a long-lived run's conversation is mirrored to the
+substrate per turn, however many turns the run spans.
 
 **Bounds and failure shape.** `step.timeout` spans the whole multi-turn
 attempt, including time parked awaiting the next trigger, so on a long-lived
@@ -1198,14 +1206,14 @@ special case — or deleted where the in-process branch it served is gone:
 ## 5. Phased build path
 
 > **Build status.** Phases 1–4 have landed: the sidecar spawns a child that runs
-> a real agent with materialized tools, threads events up, keeps the agent warm,
-> and persists conversation durably across a respawn. Phase 5's retirement of the
-> in-process runtime has landed — `provisionAgent`, the trivial deploy branch,
-> and the `driveTrivialRunChain` projector are gone. Phase 5's workflow-declared
-> multiplex (isolation-domain keying) and Phases 4b/4c (isolation declaration and
-> the sandbox-boundary abstraction) are not built yet; that work is refined into
-> capability-based placement (see §3f). Phase 6 (hardened per-rung boundaries)
-> remains deferred.
+> a real agent with materialized tools, threads events up, builds the agent for
+> each turn, and persists conversation durably across turns and a respawn.
+> Phase 5's retirement of the in-process runtime has landed — `provisionAgent`,
+> the trivial deploy branch, and the `driveTrivialRunChain` projector are gone.
+> Phase 5's workflow-declared multiplex (isolation-domain keying) and
+> Phases 4b/4c (isolation declaration and the sandbox-boundary abstraction) are
+> not built yet; that work is refined into capability-based placement (see §3f).
+> Phase 6 (hardened per-rung boundaries) remains deferred.
 
 The whole thing ships together (INTR-209 held until done), but the build is
 phased so each phase is independently verifiable and the risky work is
@@ -1267,6 +1275,9 @@ buildEnv, agentFactory: createAgent })`. Tools empty for now.
   single agent) — gate it hardest.
 - **Riskiest sub-item.** The mailbox-ownership reconciliation (§3a) and reply
   latency through the inbox/dispatch path (§6).
+- **Later change.** No deployment uses the warm-agent cache: every step
+  builds its agent for each turn, and conversation state continues through
+  the substrate (§3b, §3c).
 
 ### Phase 4b — Isolation declaration (workflow + per-node) + sandbox-boundary abstraction (pure additions)
 
@@ -1473,9 +1484,8 @@ but a deeply nested authored chain can still overflow the shared rung-0 stack, a
 the ceiling backstops it. The counter reports absolute depth across both spawn
 seams (the suspendable body rung and the terminal childWorkflow rung).
 
-**No warm-keep.** The child invoker is built cold, with no `warmCache` /
-`durableConversation`: a fan-out branch has no long-lived mail loop to warm-keep
-for, so it instantiates, sends, and tears down per invocation (§6).
+**One agent per turn.** The child invoker builds the agent for each turn and
+closes it when the turn ends, as for every other step (§3b).
 
 ### Phase 5 — Workflow-declared multiplex + retire the in-process runtime
 
@@ -1526,7 +1536,12 @@ INTR-209 end state; the hardened boundaries (Phase 6) are a follow-on.
    reply on the full claim-check? This must be measured early (Phase 4).
    Second failure mode: conversation-state commit volume on the single-writer
    workflow-run ref (§3c open question) — committing connector state on every
-   change could overwhelm the single writer.
+   turn could overwhelm the single writer. Third failure mode: every turn
+   builds the agent and its tools (LSP included) again and restores its
+   conversation (§3b), so each turn pays that cost on the reply path, and the
+   restore grows with the conversation.
+   `tests/workflow-deploy/latency-gate.bench.ts` measures the per-turn cost,
+   also for a long conversation.
 
 2. **Tool materialization in the child (§3d).** Failure mode: the
    LSP-subprocess-inside-the-child lifecycle. The child already manages one
@@ -1669,14 +1684,18 @@ INTR-209 end state; the hardened boundaries (Phase 6) are a follow-on.
   multi-step on the child, single interactive agents in-process. This is the
   most likely thing that makes the project bigger than scoped.
 - **Always-spawn-naive.** Route the single agent through the existing
-  instantiate-send-teardown step-invoker with no warm-keep. Rejected:
-  re-materializes tools and re-spawns LSP per message; loses conversation
-  continuity. (§3b.)
+  instantiate-send-teardown step-invoker with no warm-keep. Rejected at
+  first because it re-materializes tools and re-spawns LSP per message and
+  lost conversation continuity. This is now the chosen design: the
+  conversation continues through the step's committed state (§3c), so a
+  per-turn build keeps continuity, and the per-turn build cost is measured by
+  `tests/workflow-deploy/latency-gate.bench.ts`. (§3b.)
 
 ### What could make this bigger than scoped
 
 - The mailbox round-trip latency forcing a single-agent fast-path or a
   hybrid (the in-process fallback above). **This is the biggest scope risk.**
+- The per-turn agent build (§3b) proving too slow for an interactive agent.
 - LSP lifecycle in the child proving to need real supervision.
 - Conversation-state durability granularity forcing a substrate-write-volume
   redesign on the single-writer ref.
@@ -1725,19 +1744,15 @@ decisions. It does not — confirmed against the code:
   takes a materialized `input` and a parent-allocated `childRunId`, never a mail
   subscription. So there is still exactly one mailbox owner regardless of nesting
   depth; the single-owner invariant is untouched.
-- **Warm-agent lifecycle (§3b) holds, with a clarification.** Warm-keep applies
-  to the **rung-0 long-lived single agent** (the one driven by repeated
-  `trigger.fired` from mail). Per-node sub-children are **per-invocation**: a
+- **Agent lifecycle (§3b) holds.** No agent stays live between turns at any
+  rung. Per-node sub-children are **per-invocation**: a
   `childWorkflow` / `map` node spawns its sub-child when `runtimeRun` reaches the
   node and tears it down when that node's run reaches a terminal phase
   (`createSidecarRunChild`'s `runChild` already `stop()`s the per-run signal
-  channel in a `finally`). They are not warm-kept across invocations, which is
-  correct — a fan-out branch or a one-shot child workflow has no long-lived mail
-  loop to warm-keep for. So warm-keep (long-lived, rung 0) and per-invocation
-  sub-children (rung ≥ 1) coexist without conflict.
+  channel in a `finally`).
 
 No earlier decision is broken by the recursion. The recursion sits strictly
-below mail and strictly below the rung-0 warm agent; it reuses the existing
+below mail and strictly below the rung-0 run; it reuses the existing
 `spawnChild` seam and only adds the per-rung pluggable boundary on top.
 
 ## 7. Verification and acceptance
@@ -1752,10 +1767,10 @@ The unified host is proven by four classes of check:
    to work, now with **real** step output instead of placeholder. A passing
    fixture with real step execution is the multi-step acceptance gate.
 
-2. **New warm-agent durability integration tests** (spawned child, test
+2. **New single-agent durability integration tests** (spawned child, test
    inference provider):
-   - Two sequential messages reuse one warm agent; conversation state
-     preserved.
+   - Two sequential messages continue one conversation; each turn builds the
+     agent again.
    - Multi-turn conversation produces a durable, resumable workflow-run log.
    - Kill + respawn mid-conversation: `discoverInFlightRuns` resumes and
      conversation state is restored from the substrate.

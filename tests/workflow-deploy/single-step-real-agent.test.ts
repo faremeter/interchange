@@ -22,7 +22,6 @@
 // store cannot clobber the run-event tree.
 
 import fs from "node:fs";
-import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -35,6 +34,7 @@ import {
 } from "@intx/workflow-deploy";
 import { createAgentRepoStore } from "@intx/hub-sessions";
 import { readStepState } from "@intx/workflow-host";
+import { stepWorkspaceDir } from "@intx/workflow-host/child";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -228,39 +228,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // the reply is real model output rather than a synthesized constant.
       expect(env.inference.requests.length).toBeGreaterThan(0);
 
-      // The warm single-step agent's workspace/tools are rooted at a STABLE
-      // per-agent path under `workflow-step-state/<repoId>/warm/<stepId>/`
-      // (keyed by the step identity like the durable conversation store, NOT
-      // the per-message runId) so the cached agent reuses one workspace
-      // across messages and the scratch is bounded to one dir per agent
-      // rather than leaking a fresh per-run subtree. The subtree is a sibling
-      // of the workflow-run repo's git directory; the run-event log lives
-      // inside the workflow-run repo's own tree, so the warm root cannot
-      // overlap it.
-      const stepStoreDir = path.join(
-        env.sidecar.dataDir,
-        "workflow-step-state",
-        workflowRunRepoId.id,
-        "warm",
-        encodeURIComponent(STEP_ID),
-      );
-      expect(fs.existsSync(stepStoreDir)).toBe(true);
-      expect(fs.existsSync(path.join(stepStoreDir, "workspace"))).toBe(true);
-
-      // The warm single-step agent's conversation ContextStore is durable
-      // (Phase 4.5): its `.git` lives at the stable per-agent durable store
-      // root, NOT under the per-run `attempt-1` dir, so the conversation
-      // survives across runs and child respawn. The per-run dir therefore
-      // carries the workspace + tool state but no conversation `.git`.
-      const durableConversationDir = path.join(
-        env.sidecar.dataDir,
-        "agent-conversation-state",
-        workflowRunRepoId.id,
-        encodeURIComponent(STEP_ID),
-      );
-      expect(fs.existsSync(path.join(durableConversationDir, ".git"))).toBe(
-        true,
-      );
+      // The step's workspace lives for one attempt, under the run, the step
+      // and the attempt. The subtree is a sibling of the workflow-run repo's
+      // git directory; the run-event log lives inside the workflow-run
+      // repo's own tree, so the step root cannot overlap it.
+      const stepWorkspace = stepWorkspaceDir({
+        dataDir: env.sidecar.dataDir,
+        workflowRunRepoId,
+        runId,
+        stepId: STEP_ID,
+        attempt: 1,
+      });
+      expect(fs.existsSync(stepWorkspace)).toBe(true);
 
       // The conversation is mirrored through the real proxy -> supervisor
       // single-writer path to the step's state directory in the workflow-run
@@ -285,13 +264,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       expect(durableConversation.turns.length).toBeGreaterThan(0);
 
-      // Neither the per-step root nor the durable conversation store lives
-      // inside the workflow-run repo's working tree (where
-      // `runs/<runId>/events/...` is committed).
+      // The step root does not live inside the workflow-run repo's working
+      // tree (where `runs/<runId>/events/...` is committed).
       const workflowRunRepoDir =
         env.hub.agentRepoStore.repoStore.getRepoDir(workflowRunRepoId);
-      expect(stepStoreDir.startsWith(workflowRunRepoDir)).toBe(false);
-      expect(durableConversationDir.startsWith(workflowRunRepoDir)).toBe(false);
+      expect(stepWorkspace.startsWith(workflowRunRepoDir)).toBe(false);
     });
   },
 );

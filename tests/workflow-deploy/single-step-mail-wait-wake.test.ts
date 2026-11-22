@@ -1,11 +1,11 @@
-// Single-step warm-agent mail_wait mid-turn wake (INTR-480).
+// Single-step agent mail_wait mid-turn wake (INTR-480).
 //
 // Proves that the supervisor's eager-commit + `mailbox.notify` decouples mail
 // VISIBILITY from turn dispatch: a `mail_wait` blocked mid-turn wakes on a
 // SECOND inbound mail that arrives while the agent is still inside that turn,
 // with no second turn dispatched to carry it.
 //
-// Shape. The warm agent's mock provider calls `mail_wait` on its first turn,
+// Shape. The step agent's mock provider calls `mail_wait` on its first turn,
 // querying for a sender (`WAKE_FROM`) that has NOT written yet -- so the
 // initial mailbox search finds nothing and the wait registers a watch and
 // blocks. The trigger mail (mail 1, from a DIFFERENT sender) opened the run
@@ -137,7 +137,7 @@ afterAll(async () => {
 });
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "warm single-step agent's mail_wait wakes mid-turn on a newly-arrived mail",
+  "single-step agent's mail_wait wakes mid-turn on a newly-arrived mail",
   () => {
     test("sidecar registers with hub", () => {
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);

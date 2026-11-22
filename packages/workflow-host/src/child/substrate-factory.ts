@@ -113,7 +113,6 @@ import {
   type StepEnvBase,
 } from "../adapters/step-invoker";
 import {
-  createDurableConversationRegistry,
   createDurableConversationStore,
   isLocalStateCurrent,
   isOwnStepState,
@@ -160,7 +159,6 @@ import {
 } from "./credentials-backed-authorize";
 import {
   eagerlyResolveActionHandlers,
-  isWarmKeptDeployment,
   type CredentialWiring,
   type RunWorkflowChildBindings,
   type SourcesSnapshotRef,
@@ -178,7 +176,6 @@ import {
   type SupervisorBackedTransportInbound,
 } from "./supervisor-backed-transport";
 import { createStoreStepConversation } from "./store-step-conversation";
-import { createWarmConnectorHooks } from "./warm-connector-hooks";
 
 // The child does not construct a workflow-run pack-push pipeline of
 // its own. The supervisor owns the workflow-run repo's write
@@ -348,8 +345,8 @@ export function parseAdapterManifest(raw: string): AdapterManifest {
 
 /**
  * Resolve the per-step inference-source failover chain from the table a
- * build reads. The supervisor's multi-step branch only invokes
- * a step whose `stepId` appears in `frame.workflow.sources`; a lookup
+ * build reads. The supervisor only invokes a step whose `stepId`
+ * appears in `frame.workflow.sources`; a lookup
  * miss here is a programmer error in the supervisor, not a wire-side
  * failure, and the resolver surfaces it with the missing base step id
  * named (plus the scoped invocation id, for a map iteration). The
@@ -505,14 +502,34 @@ export function stepStorageRoot(args: {
   );
 }
 
+const STEP_WORKSPACE_DIRNAME = "workspace";
+
+/**
+ * The workspace (the step's working directory) of one step invocation's
+ * attempt, inside its `stepStorageRoot`. A workspace lives for one attempt:
+ * a retry gets a new one and does not see the files of the attempt before
+ * it. Only the step's conversation continues across attempts and
+ * invocations.
+ */
+export function stepWorkspaceDir(args: {
+  dataDir: string;
+  workflowRunRepoId: RepoId;
+  runId: string;
+  stepId: string;
+  attempt: number;
+}): string {
+  return path.join(stepStorageRoot(args), STEP_WORKSPACE_DIRNAME);
+}
+
 /**
  * Root directory for a single workflow-run subtree's per-step scratch:
- * `<dataDir>/workflow-step-state/<repoId>/runs/<runId>/`. The cold
- * (multi-step) path's per-step `stepStorageRoot` nests under this, so
- * reclaiming this subtree on run completion drops every step/attempt the
- * run produced in one `rm -rf`. Kept distinct from `stepStorageRoot` so
- * the deletion granularity (a whole run, not a single step/attempt) is
- * expressed at the call site that owns run-completion cleanup.
+ * `<dataDir>/workflow-step-state/<repoId>/runs/<runId>/`. Each step's
+ * per-attempt `stepStorageRoot` nests under this, so reclaiming this
+ * subtree when an internal run completes drops every step/attempt the run
+ * produced in one `rm -rf`. The top-level run's subtree is not reclaimed
+ * on run completion. Kept distinct from `stepStorageRoot` so the deletion
+ * granularity (a whole run, not a single step/attempt) is expressed at the
+ * call site that owns run-completion cleanup.
  */
 function runStepStorageRoot(args: {
   dataDir: string;
@@ -617,8 +634,8 @@ async function readColdOwnState(
 }
 
 /**
- * Read a cold (multi-step) parked step's durable pending operations. Every
- * cold invocation commits the step's state to the workflow-run substrate
+ * Read a cold parked step's durable pending operations. Every cold
+ * invocation commits the step's state to the workflow-run substrate
  * before it returns, including one that suspends on an approval, but the
  * reactor records a suspension in the attempt's local store first. A crash
  * between the two leaves the park only in the local store, so the attempt's
@@ -819,14 +836,11 @@ export interface ParkedApprovalHooks {
  * The durable park reads, and the recovered-park write, for every run of a
  * deployment. Every step's state lives under the deployment's top-level run,
  * `topLevelRunId`, at the key of the step's place. Each run's steps are
- * stored by the invoker that ran them. A warm-kept deployment's warm invoker
- * runs its top-level run, which is then also `warmRunId`. The cold invoker
- * runs every run the warm invoker does not: the top-level run of a
- * deployment that is not warm-kept, each loop iteration body, each
- * `childWorkflow` child and each onTrigger body. It stamps each step's state
- * with the invocation that wrote it. No loop iteration, which would inherit
- * the top-level env, runs warm: a loop names another step at its level to run
- * once exhausted, so a warm-kept deployment's one step is never a loop.
+ * stored by the invoker that ran them. The cold invoker runs every run of
+ * the sidecar's deployments: the top-level run, each loop iteration body,
+ * each `childWorkflow` child and each onTrigger body. It stamps each step's
+ * state with the invocation that wrote it. With `warmRunId`, the warm
+ * readers answer for that run instead; the sidecar does not pass it.
  */
 export function createParkedApprovalHooks(args: {
   dataDir: string;
@@ -918,8 +932,8 @@ export interface SidecarStepBuildEnvDeps {
   outboundMailBridge: ChildOutboundMailBridge;
   /**
    * Composes mail signed as `mailboxAddress`, offered to the step's
-   * tools as the `mail.signer` capability. A warm single-step agent is
-   * a deployment with a run principal too, so its tools get it as well.
+   * tools as the `mail.signer` capability. Every agent step's tools get
+   * it.
    */
   mailSigner: MailSigner;
   /**
@@ -944,14 +958,14 @@ export interface SidecarStepBuildEnvDeps {
    */
   adapters: AdapterRegistry;
   /**
-   * Durable-conversation registry for the warm single-step agent
-   * (design §3c). When present, the env builder swaps the per-run isogit
+   * Durable-conversation registry for a warm agent. When present, the env
+   * builder swaps the per-run isogit
    * `ContextStore` for a per-agent durable store whose conversation is
    * mirrored to the workflow-run substrate, and restores the prior
    * conversation from the substrate before returning the env (so the
    * agent's reactor `load()` and the warm cache's lazy build see the
-   * restored turns -- including the respawn-rebuild path). Absent for a
-   * multi-step deploy, whose steps each open a durable store per invocation,
+   * restored turns -- including the respawn-rebuild path). The sidecar
+   * leaves it absent, so every step opens a durable store per invocation,
    * scoped to the invocation, whose conversation's `settle` commits it.
    */
   durableConversation?: DurableConversationRegistry;
@@ -1071,19 +1085,18 @@ export function createSidecarStepBuildEnv(
       );
     }
 
-    // Root the per-step scratch (the workspace). The cold (multi-step) path
-    // keys it per
-    // run/step/attempt: each run rebuilds the agent and its scratch, and
-    // the run's whole `runs/<runId>/` subtree is reclaimed on run
-    // completion. The warm single-step path (`durableConversation`
-    // present) keys it STABLY per agent so the cached agent reuses one
-    // workspace across every message -- bounding the warm case to one
-    // dir per agent and letting that workspace survive child respawn --
-    // and the subtree is reclaimed on undeploy. The two keyings live
-    // under disjoint `runs/` and `warm/` sub-roots so neither sweep
-    // touches the other's tree, and the durable conversation under
-    // `agent-conversation-state/` is a different root that neither
-    // sweep touches.
+    // Root the per-step scratch (the workspace). The cold path, which the
+    // sidecar uses for every agent step, keys it per run/step/attempt:
+    // each turn builds the agent over its attempt's scratch. An internal
+    // run's whole `runs/<runId>/` subtree is reclaimed when the run
+    // completes. The top-level run's subtree is kept until allocation
+    // cleanup. The warm path (`durableConversation` present) keys it
+    // STABLY per agent so the cached agent reuses one workspace across
+    // every message, and the subtree is reclaimed on undeploy. The two
+    // keyings live under disjoint `runs/` and `warm/` sub-roots so neither
+    // sweep touches the other's tree, and the durable conversation under
+    // `agent-conversation-state/` is a different root that neither sweep
+    // touches.
     const storeDir =
       deps.durableConversation !== undefined
         ? warmStepStorageRoot({
@@ -1183,7 +1196,7 @@ export function createSidecarStepBuildEnv(
       }
     }
 
-    const workdir = path.join(storeDir, "workspace");
+    const workdir = path.join(storeDir, STEP_WORKSPACE_DIRNAME);
     await fs.promises.mkdir(workdir, { recursive: true });
 
     // Assemble the step's tool runtime from the step agent's OWN evaluated tool
@@ -2480,8 +2493,6 @@ export function createSidecarSubstrateFactory(
         `sidecar workflow-child substrate config failed validation: ${validated.summary}`,
       );
     }
-    const warmKeep = isWarmKeptDeployment(env.definition);
-
     const stepInferenceSources = parseStepInferenceSources(
       validated.STEP_INFERENCE_SOURCES,
     );
@@ -2571,35 +2582,11 @@ export function createSidecarSubstrateFactory(
     // `InferenceSource`. The tool-bearing `agentFactory` below attaches
     // the agent's evaluated factories to the step's `AgentDefinition`
     // and builds the plugin chain.
-    // Durable-conversation registry for the warm single-step agent
-    // (design §3c). Built only when the deployment is warm-kept: the
-    // sole long-lived agent's conversation must survive child respawn,
-    // so it is mirrored to the workflow-run substrate under the top-level
-    // run's steps. A multi-step deploy leaves this `undefined` -- its
-    // per-step agents are not warm/long-lived (§3b), so each cold invocation
-    // opens a store scoped to the invocation and its conversation's `settle`
-    // commits it once the turn settles. The registry lives for the child's
-    // lifetime; on respawn the child rebuilds it empty and each store
-    // restores its prior snapshot from the substrate on first acquire.
     const conversationSigner = createStepStorageSigner(signingKey);
     // The deployment's one addressable top-level run, whose id is the local
     // part of the deployment mailbox address. Every step's durable state is
-    // filed under its steps, and a warm agent serves this run.
+    // filed under its steps.
     const topLevelRunId = deriveWorkflowRunId(env.spawn.mailboxAddress);
-    const warmRunId = warmKeep ? topLevelRunId : undefined;
-    const durableConversation: DurableConversationRegistry | undefined =
-      warmRunId !== undefined
-        ? createDurableConversationRegistry({
-            dataDir: validated.SIDECAR_DATA_DIR,
-            workflowRunRepoId,
-            workflowRunRef: validated.WORKFLOW_RUN_REF,
-            runId: warmRunId,
-            substrate,
-            principal,
-            signer: conversationSigner,
-            mailboxAddress: env.spawn.mailboxAddress,
-          })
-        : undefined;
 
     // The step env's director registry is the closure-composed one, built
     // from the SAME frozen closure the run-child runs, so a step agent's
@@ -2611,8 +2598,8 @@ export function createSidecarSubstrateFactory(
       definition: env.definition,
     });
 
-    // The top-level build and the spawned-child build share every dependency
-    // except `durableConversation`, which only the warm top-level agent owns.
+    // The top-level build and the spawned-child build share every
+    // dependency, and neither keeps a conversation across turns in memory.
     // Both get the deployment's inbound mailbox surface: a body step's mail
     // tools ask the supervisor through the same bundle a top-level step does.
     const stepBuildEnvBase: Omit<
@@ -2637,10 +2624,7 @@ export function createSidecarSubstrateFactory(
       inbound: transportInbound,
     };
 
-    const buildStepEnv = createSidecarStepBuildEnv({
-      ...stepBuildEnvBase,
-      ...(durableConversation !== undefined ? { durableConversation } : {}),
-    });
+    const buildStepEnv = createSidecarStepBuildEnv(stepBuildEnvBase);
 
     // The tool-bearing agent factory reads the tool
     // runtime off the per-step env (set by `buildStepEnv` via
@@ -2753,27 +2737,11 @@ export function createSidecarSubstrateFactory(
     // factory are pinned (closed over above); the event sink and the
     // authorize closure vary per step.
     //
-    // The `warmCache` (design §3b) is the run-loop's per-deployment
-    // warm-agent cache, present only for a single-step deployment's
-    // long-lived agent. When supplied, the adapter builds the agent once
-    // and reuses it across messages; when absent, it keeps
-    // instantiate-send-teardown per step. Forwarding it here is the only
-    // warm-keep wiring this binding needs -- the adapter and the run-loop
-    // own the rest of the lifecycle.
-    // Connector hooks (design §3c). When the deployment is warm-kept, the
-    // durable store drives the warm agent's connector thread: the seed, the
-    // turn start and park, the reply that each turn sends, and the
-    // run-boundary mirror. Replies go through the outbound bridge
-    // (`bridge.submit`, the same signed-send path the agent's own
-    // supervisor-backed transport uses).
-    // Absent for a multi-step deploy (no durable registry).
-    const warmConnectorHooks =
-      durableConversation !== undefined
-        ? createWarmConnectorHooks(durableConversation, (message) =>
-            env.outboundMailBridge.submit(env.spawn.mailboxAddress, message),
-          )
-        : undefined;
-
+    // Every agent step is built for each turn: the run loop passes no warm
+    // cache, so the adapter builds the agent, runs one turn, and closes it.
+    // The step's conversation continues through the store `buildStepEnv`
+    // opens, which restores the committed state and commits the turn once it
+    // settles.
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (
       req,
       onEvent,
@@ -2801,7 +2769,6 @@ export function createSidecarSubstrateFactory(
         sourcesRef,
         mailPartReader,
         ...(warmCache !== undefined ? { warmCache } : {}),
-        ...(warmConnectorHooks !== undefined ? warmConnectorHooks : {}),
       })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = createGrantEvaluator();
@@ -2820,7 +2787,6 @@ export function createSidecarSubstrateFactory(
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
       topLevelRunId,
-      ...(warmRunId !== undefined ? { warmRunId } : {}),
     });
 
     const childRunDeps: SidecarRunChildDeps = {
@@ -2867,24 +2833,21 @@ export function createSidecarSubstrateFactory(
       createSidecarSpawnSuspendableChild(childRunDeps);
 
     // The top-level run's scratch belongs to the deployment and survives
-    // termination for inspection until allocation cleanup. Internal cold runs
-    // can reclaim their own local scratch once they finish. That scratch is
-    // local only: a body step's durable state lives in the repo under the
+    // termination for inspection until allocation cleanup. Internal runs
+    // reclaim their own local scratch once they finish. That scratch is
+    // local only: a step's durable state lives in the repo under the
     // top-level run, which nothing here removes.
-    let cleanupRunStorage: ((runId: string) => Promise<void>) | undefined;
-    if (!warmKeep) {
-      cleanupRunStorage = async (runId) => {
-        if (runId === topLevelRunId) return;
-        await fs.promises.rm(
-          runStepStorageRoot({
-            dataDir: validated.SIDECAR_DATA_DIR,
-            workflowRunRepoId,
-            runId,
-          }),
-          { recursive: true, force: true },
-        );
-      };
-    }
+    const cleanupRunStorage = async (runId: string): Promise<void> => {
+      if (runId === topLevelRunId) return;
+      await fs.promises.rm(
+        runStepStorageRoot({
+          dataDir: validated.SIDECAR_DATA_DIR,
+          workflowRunRepoId,
+          runId,
+        }),
+        { recursive: true, force: true },
+      );
+    };
 
     const bindings: RunWorkflowChildBindings = {
       substrate,
@@ -2920,10 +2883,10 @@ export function createSidecarSubstrateFactory(
       stopScheduler: () => hostScheduler.stop(),
       evaluateGrants: evaluateGrantsAdapter,
       ...parkHooks,
-      // The same registry the warm agent's transport registers `watch`
+      // The same registry each step agent's transport registers `watch`
       // callbacks into; `runWorkflowChild` routes each `mailbox.notify` to it.
       mailboxWatchRegistry,
-      ...(cleanupRunStorage !== undefined ? { cleanupRunStorage } : {}),
+      cleanupRunStorage,
     };
     return bindings;
   };

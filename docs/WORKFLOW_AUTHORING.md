@@ -193,19 +193,19 @@ again:
 - An `onTrigger` body step continues it at the next event.
 - The body steps of a `childWorkflow` step continue it each time the
   `childWorkflow` step runs again, as in a loop.
-- In a multi-step workflow, a turn that fails commits nothing, so a retry
-  continues from the last committed turn and does not see the failed turn's
-  partial work. A turn whose reply by mail was sent commits like any settled
-  turn, and its record of the send on the connector thread commits with it.
-  The step is not retried after the send, because a retry would send a
-  second, different reply. If that commit fails, the step fails without a
-  retry, and the next invocation does not see the turn: not its inbound mail
-  and not its reply. The thread continues when the recipient answers,
-  because their References name the thread.
-- In a multi-step workflow, the next invocation rolls back a turn that
-  parked on an approval to the start of that turn. This applies when the
-  park was never resumed, for example because its step failed after the
-  park. It also applies when a resume parks again, because the resume keeps
+- A turn that fails commits nothing, so a retry continues from the last
+  committed turn and does not see the failed turn's partial work. A turn
+  whose reply by mail was sent commits like any settled turn, and its record
+  of the send on the connector thread commits with it. The step is not
+  retried after the send, because a retry would send a second, different
+  reply. If that commit fails, the step fails without a retry, and the next
+  invocation does not see the turn: not its inbound mail and not its reply.
+  The thread continues when the recipient answers, because their References
+  name the thread.
+- The next invocation rolls back a turn that parked on an approval to the
+  start of that turn. This applies when the park was never resumed, for
+  example because its step failed after the park. It also applies when a
+  resume parks again, because the resume keeps
   the start of the original turn, and when a resume fails, because that
   resume commits nothing. Thus the conversation that the next invocation
   sees can lack an approved action that a resume ran. The effects of that
@@ -213,6 +213,13 @@ again:
 
 The conversation lives as long as the deployment's run repository. The same
 address and the same step path mean the same conversation.
+
+The files of a step do not continue with its conversation. A step's
+workspace, its working directory, lives for one attempt, for every step,
+also the step of a one-step workflow. A retry starts with a new workspace
+and does not see the files of the attempt before it. Input resumes in the
+same attempt keep the files. A step that must keep data across turns keeps
+it in its conversation or in its output.
 
 Where it lives today: `loopBodyRunId`,
 `packages/workflow/src/runtime/step-scope.ts` (`runLoop` in
@@ -758,10 +765,8 @@ answer the same Mail both reply, so a deployment that must answer each Mail
 once sets the option on one step only. A reply goes out at most once: a
 step that builds its agent for each turn sends its reply before it commits
 its turn, and a crash between the two fails the step without running it
-again, so the conversation does not hold that turn. Every step builds its agent for each turn except the one step of
-a single-step deployment. Each step of a section body, such as an
-`onTrigger` body, builds its agent for each turn, also when the section is
-the only top-level step.
+again, so the conversation does not hold that turn. Every agent step builds
+its agent for each turn.
 The singular shorthand takes the option next to `agent`.
 
 ```ts

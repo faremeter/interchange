@@ -80,6 +80,7 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
+import { stepWorkspaceDir } from "@intx/workflow-host/child";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A single-agent run id: `run_` + a hex-shaped local part. The
@@ -326,17 +327,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(terminal.type).toBe("RunCompleted");
 
       // The granted tool actually executed in the child (proof the
-      // authorize allowed it): the tool wrote a sentinel into the warm
-      // single-step agent's STABLE per-agent workspace, rooted at
-      // `workflow-step-state/<repoId>/warm/<stepId>/workspace` (keyed by the
-      // step identity, not the per-message runId).
+      // authorize allowed it): the tool wrote a sentinel into the step's
+      // workspace for this attempt (`stepWorkspaceDir`, keyed by the run, the
+      // step and the attempt).
       const sentinelPath = path.join(
-        env.sidecar.dataDir,
-        "workflow-step-state",
-        workflowRunRepoId.id,
-        "warm",
-        encodeURIComponent(STEP_ID),
-        "workspace",
+        stepWorkspaceDir({
+          dataDir: env.sidecar.dataDir,
+          workflowRunRepoId,
+          runId,
+          stepId: STEP_ID,
+          attempt: 1,
+        }),
         SENTINEL_FILENAME,
       );
       if (!fs.existsSync(sentinelPath)) {

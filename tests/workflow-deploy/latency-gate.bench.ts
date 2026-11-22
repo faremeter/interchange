@@ -1,21 +1,31 @@
 // Phase 4.7 LATENCY GATE benchmark (NOT a CI test).
 //
-// Measures the per-message round-trip latency of an interactive single
+// Measures the per-turn round-trip latency of an interactive single-step
 // agent on two paths, with the inference TEST PROVIDER so inference cost
 // is fixed and near-zero -- the measured delta is the INFRASTRUCTURE the
 // unified host adds over the in-process runtime, not inference.
 //
-//   BASELINE (in-process): a warm `@intx/agent` agent driven directly via
-//     `agent.send(text)` -- the in-process mail->reactor->reply turn. No
-//     IPC, no claim-check substrate, no dispatch loop. The same HTTP mock
-//     inference server the unified path uses, in echo mode, so the
+// No agent stays live between turns. Every turn builds the agent, restores
+// the conversation from the step's store, runs one turn, and closes the
+// agent. So each sample is the per-turn build and restore cost, and the
+// conversation grows by one turn per message: a late sample pays the
+// restore of a long conversation. Both agents have no tools, so a sample
+// does not include the start cost of tools or of an LSP server.
+//
+//   BASELINE (in-process): per turn, a fresh `@intx/agent` agent built
+//     over ONE persistent isogit ContextStore (so its reactor restores
+//     every earlier turn), driven via `agent.send(text)` and then closed.
+//     No IPC, no claim-check substrate, no dispatch loop. The same HTTP
+//     mock inference server the unified path uses, in echo mode, so the
 //     provider is byte-for-byte identical and inference is ~0.
 //
 //   UNIFIED (child): the real 4.6 spawn-real path -- hub routeMail ->
 //     sidecar hub-link -> supervisor inbox claim-check write+read ->
 //     dispatch loop -> trigger.fire IPC -> child reads bytes from the
-//     processing entry -> WARM agent.send -> reply -> terminal.event IPC
-//     back to the supervisor. Timed inside the supervisor (which runs in
+//     processing entry -> step build (agent, conversation restore
+//     from the workflow-run substrate) -> agent.send -> settle (commit of
+//     the turn) -> close -> reply -> terminal.event IPC back to the
+//     supervisor. Timed inside the supervisor (which runs in
 //     the sidecar subprocess, so both ends of the IPC round-trip are
 //     visible in one process) via the `onDispatchTiming` observability
 //     hook, gated by `SIDECAR_LATENCY_BENCH_FILE`. The supervisor appends
@@ -23,23 +33,28 @@
 //     this harness reads after the run.
 //
 // Boundary equivalence (documented; kept equivalent across paths):
-//   - BASELINE measured interval: the wall-clock around one `agent.send`,
-//     from just before the call to its resolution (the reply is produced
-//     -- `agent.send` resolves on the director's `connector.reply`).
+//   - BASELINE measured interval: from just before `createAgent` to the
+//     resolution of `agent.close()` -- the build, the restore, the one
+//     `agent.send` (which resolves on the director's `connector.reply`),
+//     and the close.
 //   - UNIFIED measured interval: `dispatch-start` (the inbox entry is
 //     dequeued for dispatch, claim-check read complete, `trigger.fire`
 //     about to forward) to `reply-produced` (the child's terminal-event
 //     frame for that run lands back at the supervisor). This brackets the
-//     SAME warm `agent.send` the baseline times, PLUS exactly the infra
-//     the unified path adds: claim-check read, IPC down, child bytes-read,
-//     warm-cache acquire + step env, agent.send, terminal IPC up + commit.
+//     SAME build-send-close turn the baseline times, PLUS exactly the
+//     infra the unified path adds: claim-check read, IPC down, child
+//     bytes-read, step env and durable conversation restore, the settle
+//     commit to the substrate, terminal IPC up + commit.
 //   So DELTA = UNIFIED - BASELINE isolates the unified infra tax.
 //
 // Both paths measure the SUSTAINED interactive case: back-to-back
-// messages on ONE warm agent, message N+1 fired only after reply N (no
-// pipelining), and the FIRST (cold) message is discarded so the agent
-// build / tool construction / LSP spawn cost is excluded -- the
-// steady-state per-message round-trip is what the gate is about.
+// messages to ONE step, message N+1 fired only after reply N (no
+// pipelining). The FIRST message is discarded on each path: it pays
+// one-time process costs (module load, JIT, the first inference
+// connection) that no later turn pays. The agent build is not one of
+// them -- every measured turn pays it. The trend (OLS slope) and the
+// early/late window rows show how the per-turn cost grows as the
+// conversation gets longer.
 //
 // Run:
 //   bun run tests/workflow-deploy/latency-gate.bench.ts \
@@ -187,6 +202,24 @@ function computeStats(samples: number[]): Stats {
   };
 }
 
+/**
+ * The stats of the first and the last `windowFraction` of `samples`: the
+ * per-turn cost of a short conversation against that of a long one.
+ */
+function computeWindows(
+  samples: number[],
+  windowFraction: number,
+): { early: Stats; late: Stats } {
+  const size = Math.max(1, Math.floor(samples.length * windowFraction));
+  return {
+    early: computeStats(samples.slice(0, size)),
+    late: computeStats(samples.slice(samples.length - size)),
+  };
+}
+
+// The share of the samples in each of the early and late windows.
+const WINDOW_FRACTION = 0.1;
+
 function fmt(ms: number): string {
   return ms.toFixed(3);
 }
@@ -196,9 +229,9 @@ type Trend = {
   lastSample: number;
   /**
    * Ordinary-least-squares slope of round-trip-ms vs message index
-   * (ms added per additional sustained message). A near-zero slope is a
-   * stationary steady-state; a positive slope means the per-message cost
-   * grows with accumulated history -- the percentiles then describe only
+   * (ms added per additional sustained message). Each turn restores the
+   * whole conversation, so the slope is the cost of one more earlier turn
+   * in the restore. A positive slope means the percentiles describe only
    * the measured window, not a stable distribution.
    */
   slopeMsPerMessage: number;
@@ -237,13 +270,14 @@ function computeTrend(samples: number[]): Trend {
   };
 }
 
-// --- baseline: warm in-process agent driven via agent.send ----------------
+// --- baseline: one in-process agent built per turn -------------------------
 
 /**
- * Build ONE warm agent against the supplied HTTP mock inference URL and
- * drive `messages + 1` back-to-back sends, discarding the first (cold)
- * sample. Returns the steady-state per-message `agent.send` round-trip
- * samples in milliseconds.
+ * Drive `messages + 1` back-to-back turns against the supplied HTTP mock
+ * inference URL. Each turn builds a fresh agent over one persistent store,
+ * sends one message, and closes the agent, so each turn restores every
+ * earlier turn. The first sample is discarded. Returns the per-turn
+ * build-send-close round-trip samples in milliseconds.
  */
 async function runBaseline(opts: {
   messages: number;
@@ -263,14 +297,13 @@ async function runBaseline(opts: {
 
   // A real isogit ContextStore (the same store kind the unified step
   // agent uses for its conversation) so the baseline pays the same
-  // per-turn context-commit cost the in-process runtime pays today.
+  // per-turn context-commit and restore cost the in-process runtime pays.
   // Sign each commit's sshsig exactly as `agent-repo.ts` does for the
   // unified path; without a signer the baseline would skip the
   // per-commit signature and undercount its own floor.
   const signingKey = await generateKeyPair();
   const signer: CommitSigner = (payload) =>
     createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey);
-  const storage = await createIsogitStore(storeDir, signer);
 
   const def = defineAgent({
     id: "latency-baseline-agent",
@@ -280,31 +313,43 @@ async function runBaseline(opts: {
     inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
   });
 
-  const env: BaseEnv = {
-    sources: [source],
-    defaultSource: source.id,
-    storage,
-    workdir: storeDir,
-    audit: noopAuditStore(),
-    authorize: permissiveAuthorize(),
-    directors: createDefaultDirectorRegistry(),
+  // One turn: open the store, build the agent (its reactor restores every
+  // earlier turn), send one message, close. The store is reopened each
+  // turn, as the step build reopens its store for each invocation.
+  const runTurn = async (): Promise<void> => {
+    const env: BaseEnv = {
+      sources: [source],
+      defaultSource: source.id,
+      storage: await createIsogitStore(storeDir, signer),
+      workdir: storeDir,
+      audit: noopAuditStore(),
+      authorize: permissiveAuthorize(),
+      directors: createDefaultDirectorRegistry(),
+      // The mock inference server ignores the secret, but the harness asks
+      // for one before each call.
+      readCurrentMaterial: () => ({ secret: "sk-mock" }),
+    };
+    const agent: Agent = await createAgent(def, env);
+    try {
+      await agent.send(BODY);
+    } finally {
+      await agent.close();
+    }
   };
 
-  const agent: Agent = await createAgent(def, env);
   const samples: number[] = [];
   try {
-    // Cold warm-up send (discarded): the first send pays one-time
-    // reactor/source/context warm costs the steady-state must exclude.
-    await agent.send(BODY);
+    // First turn (discarded): it pays one-time process costs no later
+    // turn pays.
+    await runTurn();
 
     for (let i = 0; i < opts.messages; i += 1) {
       const t0 = performance.now();
-      await agent.send(BODY);
+      await runTurn();
       const t1 = performance.now();
       samples.push(t1 - t0);
     }
   } finally {
-    await agent.close();
     fs.rmSync(workDir, { recursive: true, force: true });
   }
   return samples;
@@ -313,12 +358,12 @@ async function runBaseline(opts: {
 // --- unified: real spawn-real child path, timed in the supervisor ---------
 
 /**
- * Deploy a single warm agent on the unified child path, fire
- * `messages + 1` back-to-back mails (one warm agent, sustained), and
- * recover the supervisor's per-message dispatch round-trip from the
- * timing file the `onDispatchTiming` hook appends. The first run's
- * sample is discarded (cold agent build). Returns steady-state samples
- * in milliseconds.
+ * Deploy a single-step agent on the unified child path, fire
+ * `messages + 1` back-to-back mails (one step, sustained), and recover
+ * the supervisor's per-turn dispatch round-trip from the timing file the
+ * `onDispatchTiming` hook appends. Every turn builds, restores, runs and
+ * closes the step's agent. The first sample is discarded (one-time
+ * process costs). Returns per-turn samples in milliseconds.
  */
 async function runUnified(opts: {
   messages: number;
@@ -359,7 +404,7 @@ async function runUnified(opts: {
       workflowId: `wf_${DEPLOYMENT_ID}`,
     });
 
-    // Deploy the single warm agent BY SOURCE-REF, the same code-sourced front
+    // Deploy the single-step agent BY SOURCE-REF, the same code-sourced front
     // production drives. The helper registers the deployment on the env, so the
     // fire loop resolves it by `anchorRunId` with no manual registration.
     const handle = await deployWorkflowSourceForTest(env, {
@@ -390,8 +435,8 @@ async function runUnified(opts: {
     // with the measured interval). Exactly one message is in flight at a
     // time -- the sustained interactive case, no pipelining. The supervisor
     // keys the timing file on the inbound mail's `Message-Id` verbatim, so
-    // the messageId we mint is the timing key. The first message's sample is
-    // the cold agent build, discarded below.
+    // the messageId we mint is the timing key. The first message's sample
+    // pays one-time process costs and is discarded below.
     const orderedMessageIds: string[] = [];
     for (let i = 0; i < opts.messages + 1; i += 1) {
       const messageId = `<latency-${String(i)}@integration.interchange>`;
@@ -413,7 +458,7 @@ async function runUnified(opts: {
 
     const byMessage = parseTimingFile(opts.timingFile);
     const samples: number[] = [];
-    // Discard the first (cold) run; steady-state is the 2nd..Nth.
+    // Discard the first run; the measured turns are the 2nd..Nth.
     for (let i = 1; i < orderedMessageIds.length; i += 1) {
       const messageId = orderedMessageIds[i];
       if (messageId === undefined) continue;
@@ -426,7 +471,7 @@ async function runUnified(opts: {
       samples.push(pair.replyProduced - pair.dispatchStart);
     }
     if (samples.length === 0) {
-      throw new Error("unified bench: zero steady-state samples collected");
+      throw new Error("unified bench: zero per-turn samples collected");
     }
     return samples;
   } finally {
@@ -622,6 +667,8 @@ async function main(): Promise<void> {
   const unifiedStats = computeStats(unified);
   const baselineTrend = computeTrend(baseline);
   const unifiedTrend = computeTrend(unified);
+  const baselineWindows = computeWindows(baseline, WINDOW_FRACTION);
+  const unifiedWindows = computeWindows(unified, WINDOW_FRACTION);
 
   const delta: Stats = {
     n: Math.min(baselineStats.n, unifiedStats.n),
@@ -647,7 +694,7 @@ async function main(): Promise<void> {
     generatedAt: new Date().toISOString(),
     messagesPerPath: opts.messages,
     sampleNote:
-      "first (cold) message discarded on each path; samples are the steady-state 2nd..Nth back-to-back messages on one warm agent",
+      "first message discarded on each path; samples are the 2nd..Nth back-to-back turns of one step, each of which builds, restores, runs and closes the agent",
     inference: "HTTP mock (echo mode); inference cost fixed/~0 on both paths",
     machine: {
       platform: `${os.type()} ${os.release()} ${os.arch()}`,
@@ -660,9 +707,14 @@ async function main(): Promise<void> {
     unified: unifiedStats,
     delta_unified_minus_baseline: delta,
     trend: {
-      note: "OLS fit of per-message round-trip vs message index over the measured window; a positive unified slope means the per-message cost grows with accumulated history (not a stationary steady-state)",
+      note: "OLS fit of per-turn round-trip vs message index over the measured window; each turn restores the whole conversation, so a positive slope is the cost of a longer conversation",
       baseline: baselineTrend,
       unified: unifiedTrend,
+    },
+    conversationLength: {
+      note: `stats of the first and the last ${String(WINDOW_FRACTION * 100)}% of the samples: the per-turn cost of a short conversation against that of a long one`,
+      baseline: baselineWindows,
+      unified: unifiedWindows,
     },
   };
   fs.writeFileSync(
@@ -679,9 +731,11 @@ async function main(): Promise<void> {
     "min".padStart(10),
     "max".padStart(10),
   ].join("  ");
-  process.stdout.write(`\nPer-message round-trip latency (ms)\n`);
   process.stdout.write(
-    `messages/path=${String(opts.messages)} (cold first message discarded)\n`,
+    `\nPer-turn round-trip latency (ms); every turn builds, restores, runs and closes the agent\n`,
+  );
+  process.stdout.write(
+    `messages/path=${String(opts.messages)} (first message discarded)\n`,
   );
   process.stdout.write(
     `loadavg before=${loadBefore.map((v) => v.toFixed(2)).join(",")} after=${loadAfter.map((v) => v.toFixed(2)).join(",")}\n\n`,
@@ -691,7 +745,17 @@ async function main(): Promise<void> {
   process.stdout.write(statsRow("unified (child)", unifiedStats) + "\n");
   process.stdout.write(statsRow("DELTA (unified-base)", delta) + "\n\n");
   process.stdout.write(
-    `growth (OLS slope, ms added per sustained message):\n` +
+    `conversation length (first vs last ${String(WINDOW_FRACTION * 100)}% of turns):\n`,
+  );
+  process.stdout.write(header + "\n");
+  process.stdout.write(
+    statsRow("baseline early", baselineWindows.early) + "\n",
+  );
+  process.stdout.write(statsRow("baseline late", baselineWindows.late) + "\n");
+  process.stdout.write(statsRow("unified early", unifiedWindows.early) + "\n");
+  process.stdout.write(statsRow("unified late", unifiedWindows.late) + "\n\n");
+  process.stdout.write(
+    `growth (OLS slope, ms added per earlier turn in the conversation):\n` +
       `  baseline  first=${fmt(baselineTrend.firstSample)} last=${fmt(baselineTrend.lastSample)} slope=${fmt(baselineTrend.slopeMsPerMessage)}\n` +
       `  unified   first=${fmt(unifiedTrend.firstSample)} last=${fmt(unifiedTrend.lastSample)} slope=${fmt(unifiedTrend.slopeMsPerMessage)}\n\n`,
   );

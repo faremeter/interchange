@@ -1,6 +1,6 @@
-// Single-step warm-agent INTERACTIVE multi-turn conversation (INTR-480).
+// Single-step agent INTERACTIVE multi-turn conversation (INTR-480).
 //
-// Proves the interactive conversational mail path for a warm single-step agent
+// Proves the interactive conversational mail path for a single-step agent
 // whose step declares `triggers: "unbounded"`. Unlike the two-turn-thread
 // sibling -- which holds the conversation open WITHIN one turn via `mail_wait`
 // -- this agent replies to each inbound and RETURNS. The runtime re-arms the
@@ -23,7 +23,7 @@
 // The scripted mock drives that loop deterministically: on each turn it returns
 // a plain text reply (no tool call, so the step produces an OUTPUT and the
 // runtime re-arms; NO `mail_wait`, so the run does not stay inside one turn).
-// Each turn sends its reply through the warm agent's connector reply path, which
+// Each turn sends its reply through the step's connector reply path, which
 // composes the outbound `In-Reply-To`/`To`/`Cc` from the durable connector
 // thread the `seedInbound` hook advanced -- so the delivered wire headers are a
 // faithful proof of which mail each turn's reply threaded onto.
@@ -215,7 +215,7 @@ function inputRearmCount(events: WorkflowRunEvent[]): number {
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "warm single-step unbounded agent services two inbound mails as re-armed turns on one run",
+  "single-step unbounded agent services two inbound mails as re-armed turns on one run",
   () => {
     test("sidecar registers with hub", () => {
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);

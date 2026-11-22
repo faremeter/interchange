@@ -1,33 +1,29 @@
 // Durable conversation state for agent steps (design §3c, §4 Phase D1).
 //
-// A long-lived single-step agent holds its multi-turn conversation in
-// the reactor's in-memory turn buffer, backed by a per-step isogit
-// `ContextStore`. That store is rooted per run/attempt, so it is lost
-// the moment the warm agent's child is killed and respawned: the
-// rebuilt agent loads a fresh, empty per-run store and the conversation
-// continuity is gone.
+// An agent step's agent holds its multi-turn conversation in the reactor's
+// in-memory turn buffer, backed by a per-step isogit `ContextStore` rooted
+// per run/attempt. Every agent step builds its agent for each turn and closes
+// it when the turn ends, so that local store alone does not carry the
+// conversation to the next turn, a child respawn, or a replacement host.
 //
-// This module makes the warm agent's conversation DURABLE in the
-// workflow-run substrate (the single-writer proxy `RepoStore`, written
-// through the supervisor). The durable copy lives under the deployment's
-// top-level run, in the state directory of the step's key
+// This module makes the step's conversation DURABLE in the workflow-run
+// substrate (the single-writer proxy `RepoStore`, written through the
+// supervisor). The durable copy lives under the deployment's top-level run,
+// in the state directory of the step's key
 // (`runs/<topLevelRunId>/steps/<key>/state/`). The key is the step's path of
 // step ids joined with `.`, plus `[i]` for a map item (`stepPlaceKey`), so a
 // top-level step's key is its step id. The Hub's copy of the repo carries
-// the state to a replacement host. After a child respawn, once the warm
-// agent is rebuilt lazily, the conversation is restored from the substrate
-// into the agent's local store BEFORE the agent's reactor loads, so
-// multi-turn continuity holds across respawn and failover.
+// the state to a replacement host.
 //
-// A multi-step workflow's agent steps run cold -- a fresh agent per
-// invocation -- and use the same store for each invocation, scoped to one
-// invocation (`DurableConversationLifetime`): it restores the key's committed
-// conversation before the agent loads and is mirrored once the turn settles,
-// so a conversational step continues on a replacement host. Many invocations
-// share one key (loop iterations, onTrigger events, a childWorkflow step run
-// again, retries), and each continues the conversation the last one
-// committed. A turn that fails commits nothing, so a retry continues from the
-// last committed turn. The committed state is stamped with the invocation
+// Each invocation opens the store scoped to that invocation
+// (`DurableConversationLifetime`): it restores the key's committed
+// conversation into the agent's local store BEFORE the agent's reactor loads,
+// and is mirrored once the turn settles, so a conversational step continues
+// across turns, respawns and failover. Many invocations share one key (loop
+// iterations, onTrigger events, a childWorkflow step run again, retries, the
+// turns of a one-step workflow), and each continues the conversation the last
+// one committed. A turn that fails commits nothing, so a retry continues from
+// the last committed turn. The committed state is stamped with the invocation
 // that wrote it. An invocation continues its own state as it is; any other
 // invocation drops the pending operations and parked reply targets, and rolls
 // back a turn parked on an approval to that turn's start
@@ -48,6 +44,9 @@
 // and that history is never replaced under it: the workflow-run pack
 // restorer refuses Hub history that would move a branch the host already
 // holds.
+//
+// The deployment-lifetime store (`createDurableConversationRegistry`) keeps
+// one store for a deployment's life. The sidecar does not build it.
 //
 // A step can carry a seed: a snapshot the Hub commits beside its state
 // directory for the step to start from. A restore that continues no committed
@@ -93,11 +92,12 @@
 //     the same atomic commit. The truncate needs no nested read: omitting
 //     the WAL paths from the returned set IS the truncate.
 //
-// Persistence sink (the riskiest part, design §6). The connector router's
-// `snapshot()` / `restore()` surface and the harness's
-// `createWrappedStorageOverrides` are reused, but the persistence sink is
-// repointed from the agent's local isogit store to the workflow-run
-// substrate. Both the WAL append and the checkpoint write route through
+// Persistence sink (the riskiest part, design §6). The store keeps its own
+// connector router and persists the router's `snapshot()` with the
+// conversation; a restore hands the committed connector state to the
+// router's `restore()`. The harness's `createWrappedStorageOverrides` is not
+// used: the sink is the workflow-run substrate, not the agent's local
+// isogit store. Both the WAL append and the checkpoint write route through
 // the proxy `writeTreePreservingPrefix`; because the supervisor is the
 // single writer and serializes every write to the workflow-run ref under
 // a per-repo lock, and the state directory is disjoint from the run-event

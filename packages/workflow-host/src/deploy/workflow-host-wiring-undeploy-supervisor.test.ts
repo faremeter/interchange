@@ -20,7 +20,7 @@ import {
   createNoopCredentialCipher,
   generateKeyPair,
 } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { deriveWorkflowRunId, hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -44,6 +44,7 @@ import {
   sendDefinition,
 } from "@intx/workflow-host/testing";
 import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
+import { stepWorkspaceDir } from "../child/substrate-factory";
 import { createSidecarDeployRouter } from "./workflow-host-wiring";
 import {
   createMultistepDrainRouter,
@@ -358,15 +359,26 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       }
 
       // Pre-seed the on-disk per-step scratch the child roots under
-      // `<dataDir>/workflow-step-state/<anchorRunId>/` and the local
-      // conversation copy under `<dataDir>/agent-conversation-state/<anchorRunId>/`.
-      // The warm subtree is the stable per-agent workspace (one dir, not
-      // one-per-message); a stale cold `runs/<runId>/` subtree models a
-      // multi-step leftover the per-run cleanup did not drop. An unrelated
-      // deployment's step state and conversation copy must survive the sweep.
+      // `<dataDir>/workflow-step-state/<anchorRunId>/`. The top-level run's
+      // step workspace is the one the child writes now, and the per-run
+      // cleanup keeps it; a stale `runs/<runId>/` subtree models a leftover
+      // the per-run cleanup did not drop. The `warm/` workspace and the local
+      // conversation copy under `<dataDir>/agent-conversation-state/<anchorRunId>/`
+      // model directories an earlier version wrote. An unrelated deployment's
+      // step state and conversation copy must survive the sweep.
       const anchorRunId = deriveWorkflowRunRepoId(frame.agentAddress);
       const stepStateRoot = path.join(dataDir, "workflow-step-state");
-      const warmWorkspaceFile = path.join(
+      const topRunWorkspaceFile = path.join(
+        stepWorkspaceDir({
+          dataDir,
+          workflowRunRepoId: { kind: "workflow-run", id: anchorRunId },
+          runId: deriveWorkflowRunId(frame.agentAddress),
+          stepId: "step-1",
+          attempt: 1,
+        }),
+        "notes.txt",
+      );
+      const legacyWarmWorkspaceFile = path.join(
         stepStateRoot,
         anchorRunId,
         "warm",
@@ -375,14 +387,13 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         "notes.txt",
       );
       const coldLeftoverFile = path.join(
-        stepStateRoot,
-        anchorRunId,
-        "runs",
-        "run-stale",
-        "steps",
-        "step-1",
-        "attempt-1",
-        "workspace",
+        stepWorkspaceDir({
+          dataDir,
+          workflowRunRepoId: { kind: "workflow-run", id: anchorRunId },
+          runId: "run-stale",
+          stepId: "step-1",
+          attempt: 1,
+        }),
         "scratch.txt",
       );
       const otherDeploymentFile = path.join(
@@ -407,7 +418,8 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         "checkpoint.json",
       );
       for (const file of [
-        warmWorkspaceFile,
+        topRunWorkspaceFile,
+        legacyWarmWorkspaceFile,
         coldLeftoverFile,
         otherDeploymentFile,
         conversationFile,
@@ -503,7 +515,8 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       expect(spawn.exitedResolved).toBe(true);
 
       if (operation === "stop then undeploy") {
-        expect(await fs.readFile(warmWorkspaceFile, "utf8")).toBe("x");
+        expect(await fs.readFile(topRunWorkspaceFile, "utf8")).toBe("x");
+        expect(await fs.readFile(legacyWarmWorkspaceFile, "utf8")).toBe("x");
         expect(await fs.readFile(coldLeftoverFile, "utf8")).toBe("x");
         await undeploy({
           type: "agent.undeploy",
@@ -513,13 +526,13 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
           reason: "Release retained scratch after stop",
         });
       }
-      // Undeploy reclaims warm and cold scratch even after stop has already
-      // removed the supervisor registration.
+      // Undeploy reclaims the step scratch, the legacy `warm/` workspace
+      // included, even after stop has already removed the supervisor
+      // registration.
       await expect(
         fs.stat(path.join(stepStateRoot, anchorRunId)),
       ).rejects.toMatchObject({ code: "ENOENT" });
-      // The local conversation copy goes too: only this deployment's
-      // respawns and restarts read it.
+      // The legacy local conversation copy goes too.
       await expect(
         fs.stat(path.join(conversationRoot, anchorRunId)),
       ).rejects.toThrow();

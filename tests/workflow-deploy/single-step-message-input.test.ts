@@ -1,6 +1,6 @@
 // Single-step message-input round-trip integration test (Phase 4.2).
 //
-// The proof that the inbound mail's BODY reaches the warm agent's
+// The proof that the inbound mail's BODY reaches the step agent's
 // `agent.send` as the step input -- not an empty or placeholder input.
 // Deploys a one-step workflow through `deployWorkflowSourceForTest` (which
 // spawns the workflow-process subprocess)

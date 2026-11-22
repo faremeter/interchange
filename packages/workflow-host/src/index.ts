@@ -158,6 +158,7 @@ export {
   createMailboxWatchRegistry,
   createProxyWorkflowRunRepoStore,
   createSnapshotGrantsResolver,
+  createStoreStepConversation,
   createSupervisorBackedTransport,
   createWarmAgentCache,
   discoverInFlightRuns,

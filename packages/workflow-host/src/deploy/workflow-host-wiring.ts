@@ -980,11 +980,12 @@ export function createSidecarDeployRouter<
   multistepGrantsRouter?: MultistepGrantsRouter;
   /**
    * Per-deployment-address sources-rotation handler registry. Only a
-   * single-step warm deployment registers a handler (against the
+   * single-step deployment registers a handler (against the
    * deployment's mail address once `supervisor.spawn` succeeds) so a
    * rotation resolved for its address flows into
-   * `wired.supervisor.deliverSources` and on to the child's warm agent. A
-   * multi-step deployment registers none -- it has no single warm agent to
+   * `wired.supervisor.deliverSources` and on to the child's sources table,
+   * which the step's next turn builds its agent from. A multi-step
+   * deployment registers none -- it has no single source identity to
    * rotate -- so `tryRoute` reports its address as unrouted.
    *
    * Optional so tests that exercise deploys without a rotation loop can
@@ -995,7 +996,7 @@ export function createSidecarDeployRouter<
   /**
    * Optional per-deployment credential-delivery handler registry. Every
    * deployment with a supervisor registers a handler after `spawn` (not only
-   * warm single-step ones -- the material cell is per-child and read by every
+   * single-step ones -- the material cell is per-child and read by every
    * step's tool capabilities), and an inbound `credentials.update` for an
    * unregistered (torn-down) address is unrouted. Optional so tests without a
    * credential-delivery loop can omit the binding.
@@ -2050,11 +2051,10 @@ export function createSidecarDeployRouter<
           `sidecar deploy router: ${spec.agentAddress}'s child started without its steps being laid out`,
         );
       }
-      // Warm-keep is the single-step launched-agent deploy: the sole step
-      // IS the long-lived agent, so the child warm-keeps it across
-      // messages and its sources can rotate in place. A multi-step deploy
-      // keeps instantiate-send-teardown per step.
-      const warmKeep = establishedDefinition.stepOrder.length === 1;
+      // A single-step deploy has one source identity: its sole step's id is
+      // the only key in its sources table, so a rotation replaces the whole
+      // table. A multi-step deploy has no single source identity to rotate.
+      const singleSourceIdentity = establishedDefinition.stepOrder.length === 1;
 
       // Bind the deployment's mail address to this supervisor's
       // `routeInbound` so the hub-link dispatches inbound mail into the
@@ -2126,12 +2126,12 @@ export function createSidecarDeployRouter<
         // floor for good.
         await wired.supervisor.deliverGrants(args.runId);
       });
-      // Register the sources-rotation handler ONLY for a single-step warm
-      // deployment: it has one long-lived agent whose sources can be
-      // swapped in place. A multi-step deployment has no single warm agent,
-      // so it registers no handler and `tryRoute` reports its address as
-      // unrouted.
-      if (warmKeep) {
+      // Register the sources-rotation handler ONLY for a deployment with a
+      // single source identity: the child replaces its one table entry, and
+      // the step's next turn builds its agent on the new sources. A
+      // multi-step deployment registers no handler, so `tryRoute` reports
+      // its address as unrouted.
+      if (singleSourceIdentity) {
         // A single-step deployment's source table has exactly one entry,
         // keyed by the head step. Derive that key once here (the layer that
         // owns the single-key invariant); `deliverSources` stays flat and
@@ -2206,7 +2206,7 @@ export function createSidecarDeployRouter<
       }
 
       // Register the credential-delivery handler for EVERY deployment (not only
-      // warm single-step ones): the material cell is per-child and read by
+      // single-step ones): the material cell is per-child and read by
       // every step's tool capabilities. The handler hands the delivery to the
       // supervisor's `deliverCredentials`, which sends a `credentials-updated`
       // control frame to the child and advances the supervisor's mirror.
@@ -2790,15 +2790,15 @@ export function createSidecarDeployRouter<
           await attempt("deleting its agent directory", () =>
             deps.sessions.deleteAgentDir(frame.agentAddress),
           );
-          // Reclaim the deployment's local state: its per-step scratch (the warm
-          // agent's workspace and any cold run subtrees), its materialized
-          // closure, its source stores and its local conversation copy, which
-          // only that deployment's respawns and restarts read. Cleanup also
-          // runs without a live supervisor, so state an interrupted deploy or a
-          // failed restore left is reclaimed too. No child holds any of it: a
-          // live one was shut down above.
+          // Reclaim the deployment's local state: its per-step scratch (each
+          // run's step workspaces), its materialized closure and its source
+          // stores, which only that deployment's respawns and restarts read.
+          // Cleanup also runs without a live supervisor, so state an
+          // interrupted deploy or a failed restore left is reclaimed too. No
+          // child holds any of it: a live one was shut down above.
           if (dataDir !== undefined) {
             const localState: [string, string][] = [
+              // Also removes the `warm/` workspaces an earlier version wrote.
               [
                 "removing its step scratch",
                 pathJoin(dataDir, "workflow-step-state", runId),
@@ -2815,6 +2815,7 @@ export function createSidecarDeployRouter<
                 "removing its source repository",
                 deploymentSourceGitRoot(dataDir, runId),
               ],
+              // Removes the conversation copies an earlier version wrote.
               [
                 "removing its conversation copy",
                 conversationStateRoot(dataDir, runId),

@@ -190,7 +190,7 @@ const MAILBOX_FLAG_SEEN = "\\Seen";
  */
 const MAILBOX_FLAG_PROCESSED = "$Processed";
 /**
- * IMAP system flag marking a mailbox entry for expunge. The warm agent sets it
+ * IMAP system flag marking a mailbox entry for expunge. A step agent sets it
  * (via `mail_flag`) to consume a processed message; a subsequent `expunge`
  * sweeps every entry carrying it out of the live INBOX.
  */
@@ -366,8 +366,9 @@ export interface WorkflowSupervisor {
    */
   deliverSignal(opts: DeliverSignalOpts): Promise<void>;
   /**
-   * Push a rotated inference-source list to the child's warm single-step
-   * agent. Mirrors `deliverSignal`: the supervisor is the single producer
+   * Push a rotated inference-source list to the child of a single-step
+   * deployment, whose step's next turn builds its agent on it. Mirrors
+   * `deliverSignal`: the supervisor is the single producer
    * of `sources-updated` control frames, and delivery is phase-guarded to
    * starting/running so a frame is never written into a recycling child's
    * closing pipe. While in standby it returns at once, since the respawn reads
@@ -1647,7 +1648,7 @@ export function createWorkflowSupervisor(
 
   // Eager per-run mailbox (§3b inbound). On arrival the supervisor commits each
   // fresh inbound message into the deployment's substrate-backed INBOX and fires
-  // a one-way `mailbox.notify` to the child, so the warm agent's `watch` /
+  // a one-way `mailbox.notify` to the child, so a step agent's `watch` /
   // `mail_wait` observes the arrival mid-turn -- decoupled from the FIFO claim-
   // check dispatch that resolves a run's step input. The supervisor is the sole
   // mailbox writer; the store is its long-lived in-memory mirror over the
@@ -1736,7 +1737,7 @@ export function createWorkflowSupervisor(
   /**
    * Eager-commit one freshly-arrived inbound message into the deployment's
    * substrate mailbox, then notify the child. Runs on the mail-arrival path,
-   * before and independent of FIFO dispatch, so the warm agent's `mail_wait`
+   * before and independent of FIFO dispatch, so a step agent's `mail_wait`
    * observes the message mid-turn. Best-effort: the claim-check inbox is the
    * durable delivery contract, so a decode or substrate fault here is logged
    * loudly and never withholds the mail's ack -- the message still reaches the
@@ -1927,7 +1928,7 @@ export function createWorkflowSupervisor(
     // outcomes: both mean the bytes are durably accounted for, so both ack.
     if (outcome.outcome === "enqueued") {
       // Eager-commit the fresh message into the per-run mailbox and notify the
-      // child BEFORE waking dispatch, so the warm agent's mail_wait can observe
+      // child BEFORE waking dispatch, so a step agent's mail_wait can observe
       // it committed. Non-fatal by contract: the enqueue above already secured
       // the durable delivery, so this never withholds the ack.
       await commitInboundToMailbox(

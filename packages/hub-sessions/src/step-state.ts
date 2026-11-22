@@ -22,20 +22,21 @@
 // directory's size, so no commit re-hashes a tree that grows with the
 // conversation.
 //
-// A cold step stamps its metadata with the invocation that wrote the state:
-// the run it ran in, its scoped step id and its attempt. Many invocations
-// share one state directory (loop iterations, onTrigger events, retries), and
-// each continues the conversation the last one committed. The stamp tells an
+// A step stamps its metadata with the invocation that wrote the state: the
+// run it ran in, its scoped step id and its attempt. Many invocations share
+// one state directory (loop iterations, onTrigger events, retries), and each
+// continues the conversation the last one committed. The stamp tells an
 // invocation whether a pending approval in the state is its own park, which
-// it resumes, or another invocation's, which it rolls back. An agent whose
-// conversation spans a deployment leaves the stamp unset. State written
-// before the stamp existed carries a bare `attempt` instead. The types below
-// ignore that key, so such state reads as stamped by no invocation. An
+// it resumes, or another invocation's, which it rolls back. State with no
+// stamp was written by an earlier version of the sidecar: one that kept a
+// one-step deployment's agent live across turns left the stamp unset, and
+// one from before the stamp existed wrote a bare `attempt` instead. The types
+// below ignore that key, so such state reads as stamped by no invocation. An
 // invocation continues state with no stamp as another invocation's state,
 // except that an approval resume of a gate the state is parked on continues
 // it as its own, since the gate's correlation id names the park.
 //
-// A cold step's state that holds a pending approval also records
+// A step's state that holds a pending approval also records
 // `parkedTurnStart`: the turn count at the start of the turn that parked, so
 // another invocation can roll the state back to that turn's start. The WAL
 // cannot supply it: a fold drops the entries, the first mirror over a seed or

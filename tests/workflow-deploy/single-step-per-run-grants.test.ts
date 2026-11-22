@@ -56,6 +56,7 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
+import { stepWorkspaceDir } from "@intx/workflow-host/child";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_single-step-per-run-grants-1";
@@ -224,18 +225,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(terminal.type).toBe("RunCompleted");
 
       // The granted tool authorized in the child and executed: its `run`
-      // wrote a sentinel into the warm step's stable workspace. If the
+      // wrote a sentinel into the step's workspace for this attempt. If the
       // per-run grants push had not landed, the child's before-tool authz
       // gate would have blocked the call (or its authorize closure would have
       // thrown on a null snapshot) and no sentinel would exist.
-      const stepWorkspace = path.join(
-        env.sidecar.dataDir,
-        "workflow-step-state",
-        workflowRunRepoId.id,
-        "warm",
-        encodeURIComponent(STEP_ID),
-        "workspace",
-      );
+      const stepWorkspace = stepWorkspaceDir({
+        dataDir: env.sidecar.dataDir,
+        workflowRunRepoId,
+        runId,
+        stepId: STEP_ID,
+        attempt: 1,
+      });
       const sentinelPath = path.join(stepWorkspace, SENTINEL_FILENAME);
       if (!fs.existsSync(sentinelPath)) {
         throw new Error(
