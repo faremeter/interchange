@@ -254,6 +254,12 @@ export {
   readCommittedStepStateSeed,
   readStepStateSnapshot,
 } from "./step-state-snapshot";
+export {
+  buildStepStateSeeds,
+  checkStepStateKey,
+  writeStepStateSeeds,
+  type StepStateSeedsResult,
+} from "./step-state-import";
 export { MAILBOX_INDEX_VERSION, MailboxIndex } from "./mailbox-index";
 export {
   buildStepStateCheckpoint,

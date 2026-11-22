@@ -16,11 +16,13 @@ import type {
   PrincipalKeyStore,
   RunTokenStore,
 } from "@intx/db";
-import { runPrincipalActiveKeySql } from "@intx/db";
+import {
+  createWorkflowRunLaunchSpecStore,
+  runPrincipalActiveKeySql,
+} from "@intx/db";
 import { getLogger } from "@intx/log";
 import type { MailSendAuthorizer } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
-import { isTopLevelStepPlaceKey } from "@intx/types/step-place";
 import { extractPartByPath } from "@intx/mime";
 
 import {
@@ -42,6 +44,7 @@ import {
   type WorkflowLifecycleService,
   findRoutableById,
   readStepStateSnapshot,
+  checkStepStateKey,
   resolveRunIdForSession,
   runRowToRoutableRecord,
   type EventCollectorRegistry,
@@ -239,6 +242,7 @@ export function createRunRoutes({
     grantStore,
     conditionRegistry,
   });
+  const launchSpecs = createWorkflowRunLaunchSpecStore(db);
 
   // The run-event log reader is available only when the workflow-run substrate
   // is; a null reader makes the turns/events routes answer 503, never an empty
@@ -1141,11 +1145,11 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "Export a step's state",
       description:
-        "Returns an agent step's durable state as last committed to the Hub: its conversation turns, token usage, and reply-thread state. A later deployment can import the snapshot through its `stepState` field once its `connectorState` is set to null. The run may be live or stopped; a live run's snapshot may trail the agent by the turns the Hub has not received yet. `runId` must be a deployment's top-level run: a step of a run that another run spawned, such as a child workflow, cannot be exported. A step that has not run since its deployment imported state for it returns that imported state. Pending operations and the reply targets of parked turns are not exported, since their correlation ids only mean something inside the run that registered them. Tool output the size cap spilled out of a turn is not part of step state, so the turn carries only the text left inline and its `tool-output:///` reference does not resolve on a replacement host or after an import.",
+        "Returns an agent step's durable state as last committed to the Hub: its conversation turns, token usage, and reply-thread state. A later deployment can import the snapshot through its `stepState` field once its `connectorState` is set to null. The run may be live or stopped; a live run's snapshot may trail the agent by the turns the Hub has not received yet. `runId` must be a deployment's top-level run: a step of a run that another run spawned, such as a child workflow, cannot be exported. `stepId` is the id of a top-level agent step, or `<section>.<step>` for an agent step in the inline body of a top-level onTrigger section, such as `section.reply`. A map item, a step in a loop body, a step more than one level down, and a step in a `{ ref }` body cannot be exported, since a deployment cannot import them. A step that has not run since its deployment imported state for it returns that imported state. Pending operations and the reply targets of parked turns are not exported, since their correlation ids only mean something inside the run that registered them. Tool output the size cap spilled out of a turn is not part of step state, so the turn carries only the text left inline and its `tool-output:///` reference does not resolve on a replacement host or after an import.",
       responses: {
         200: jsonResponse("Step state snapshot", StepStateSnapshot),
         404: jsonResponse(
-          "Run not found, or the step has no committed state",
+          "Run not found, the step has no committed state, or `stepId` names neither a top-level agent step nor an agent step in an onTrigger section's inline body",
           ErrorResponse,
         ),
         500: jsonResponse(
@@ -1164,10 +1168,19 @@ export function createRunRoutes({
       if (record === undefined) {
         return errorResponse(c, "not_found", "Run not found");
       }
-      // A nested step's state lives under the top-level run at its key, but
-      // only the top-level run's own steps are exported.
-      if (!isTopLevelStepPlaceKey(stepId)) {
+      // Every step's state lives under the top-level run at its key, map
+      // items and loop body steps too. Only the keys the deploy accepts for
+      // an import are exported, so the route applies the import's rule.
+      const spec = await launchSpecs.get(runId);
+      if (spec === null) {
         return errorResponse(c, "not_found", "The step has no committed state");
+      }
+      const key = checkStepStateKey(
+        spec.frozenApprovalBundle.projection,
+        stepId,
+      );
+      if (!key.ok) {
+        return errorResponse(c, "not_found", key.reason);
       }
       if (repoStore === null) {
         return errorResponse(

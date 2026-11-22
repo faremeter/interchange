@@ -5,6 +5,13 @@
 // history before the deployment first starts, so the history the deploy
 // restores onto its sidecar already carries it and the step starts from it.
 //
+// A snapshot is keyed by the key of the step's place (`stepPlaceKey`). The
+// key is a top-level agent step's id, or `<section>.<step>` for an agent step
+// in the inline body of a top-level onTrigger section. Each event of such a
+// section runs its body again at the same place, so the body step continues
+// the imported conversation. A loop body step and a map item also have keys,
+// but the import and the export refuse them.
+//
 // Imported turns can name messages by their mailbox UID (the mail tools
 // address a message as `{ uid, mailbox }`), and those UIDs belong to the
 // exporting deployment's mailbox. A fresh mailbox numbers from 1, so such a
@@ -22,7 +29,18 @@ import {
 } from "@intx/inference";
 import type { StepStateImport, StepStateSnapshot } from "@intx/types";
 import type { ConversationTurn, InferenceSource } from "@intx/types/runtime";
-import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import type {
+  WorkflowProjectionDefinition,
+  WorkflowProjectionWithSources,
+} from "@intx/types/sidecar";
+import {
+  isTopLevelStepPlaceKey,
+  MAX_STEP_PLACE_SEGMENT_BYTES,
+  measureStepPlaceKey,
+} from "@intx/types/step-place";
+import type { StepWalkDescent } from "@intx/workflow/definition";
+import { inlineBodyRef } from "@intx/workflow/projection";
+import { inertNestedBodies } from "@intx/workflow-deploy";
 
 import { MAILBOX_INDEX_VERSION, type MailboxIndex } from "./mailbox-index";
 import type { LocalRepoStore } from "./repo-store";
@@ -40,6 +58,17 @@ import {
 const HUB_PRINCIPAL = { kind: "hub" } as const;
 
 const AgentStep = type({ kind: "'step'" });
+const StepKind = type({ kind: "string" });
+
+// Only the inline body of an onTrigger section: the key of a body step names
+// its section, so no other body is reached.
+const ON_TRIGGER_BODY_DESCENT: StepWalkDescent = Object.freeze({
+  loopBodies: false,
+  inlineOnTriggerBodies: true,
+  inlineChildWorkflowBodies: false,
+});
+
+const BODY_STEP_KEY_FORM = `a key names a top-level agent step, or an agent step in the body of a top-level onTrigger section as "<section>.<step>"`;
 
 // A refusal is stored on the deployment's probe and returned to the caller,
 // and the text it quotes comes from the request, so it names at most this
@@ -53,6 +82,118 @@ function reportedText(text: string): string {
     : text;
 }
 
+/** An agent step in the inline body of a top-level onTrigger section. */
+export type OnTriggerBodyStepKey =
+  | {
+      readonly ok: true;
+      readonly sectionId: string;
+      readonly stepId: string;
+      /** The body's ref, the id its pinned sources are filed under. */
+      readonly bodyRef: string;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Resolve a step state key that holds a `.` against the deployment's frozen
+ * projection. The key must be `<section>.<step>`, where `<section>` is a
+ * top-level onTrigger step with an inline body and `<step>` is an agent step
+ * of that body. Import and export apply this one rule.
+ *
+ * A key with more than one `.`, a map item's key, a section that is not an
+ * onTrigger step, and a body step that is not an agent step are refused. A
+ * `{ ref }` body is refused too: its steps are in a separately deployed
+ * definition that the projection does not hold, so the Hub cannot check them.
+ */
+export function resolveOnTriggerBodyStepKey(
+  projection: WorkflowProjectionDefinition,
+  key: string,
+): OnTriggerBodyStepKey {
+  const refuse = (problem: string): OnTriggerBodyStepKey => ({
+    ok: false,
+    reason: `Step state key ${JSON.stringify(reportedText(key))} ${problem}`,
+  });
+  const path = key.split(".");
+  const [sectionId, stepId] = path;
+  if (path.length !== 2 || sectionId === undefined || stepId === undefined) {
+    return refuse(
+      `names a step more than one level below the top-level run; ${BODY_STEP_KEY_FORM}`,
+    );
+  }
+  if (key.includes("[")) {
+    return refuse(`names a map item; ${BODY_STEP_KEY_FORM}`);
+  }
+  const { segmentBytes } = measureStepPlaceKey({
+    stepPath: [sectionId, stepId],
+  });
+  if (segmentBytes > MAX_STEP_PLACE_SEGMENT_BYTES) {
+    return refuse(
+      `encodes to ${String(segmentBytes)} bytes; a step's state directory name is limited to ${String(MAX_STEP_PLACE_SEGMENT_BYTES)} bytes`,
+    );
+  }
+  const section = projection.stepOrder.includes(sectionId)
+    ? projection.steps[sectionId]
+    : undefined;
+  const sectionKind = StepKind(section);
+  if (sectionKind instanceof type.errors) {
+    return refuse("names no top-level step of the workflow");
+  }
+  if (sectionKind.kind !== "onTrigger") {
+    return refuse(
+      `names a top-level step of kind ${JSON.stringify(sectionKind.kind)}, not an onTrigger section; ${BODY_STEP_KEY_FORM}`,
+    );
+  }
+  const [body] = inertNestedBodies(section, ON_TRIGGER_BODY_DESCENT);
+  if (body === undefined) {
+    return refuse(
+      "names an onTrigger section whose body is a { ref } to a separately deployed workflow, whose steps the Hub cannot check",
+    );
+  }
+  if (
+    !body.stepOrder.includes(stepId) ||
+    AgentStep(body.steps[stepId]) instanceof type.errors
+  ) {
+    return refuse("names no agent step in the body of its onTrigger section");
+  }
+  return {
+    ok: true,
+    sectionId,
+    stepId,
+    bodyRef: inlineBodyRef(projection.id, sectionId),
+  };
+}
+
+/** Whether `stepId` names one of the workflow's top-level agent steps. */
+function namesTopLevelAgentStep(
+  projection: WorkflowProjectionDefinition,
+  stepId: string,
+): boolean {
+  return (
+    projection.stepOrder.includes(stepId) &&
+    !(AgentStep(projection.steps[stepId]) instanceof type.errors)
+  );
+}
+
+/**
+ * Check one step state key against the deployment's frozen projection with
+ * the rule import and export share. A key with no `.` must name a top-level
+ * agent step, so a top-level map item's key such as `m[2]` is refused. A key
+ * with a `.` must name an agent step in the inline body of a top-level
+ * onTrigger section (`resolveOnTriggerBodyStepKey`).
+ */
+export function checkStepStateKey(
+  projection: WorkflowProjectionDefinition,
+  key: string,
+): { readonly ok: true } | { readonly ok: false; readonly reason: string } {
+  if (!isTopLevelStepPlaceKey(key)) {
+    return resolveOnTriggerBodyStepKey(projection, key);
+  }
+  if (namesTopLevelAgentStep(projection, key)) return { ok: true };
+  return {
+    ok: false,
+    reason: `Step state key ${JSON.stringify(reportedText(key))} names no top-level agent step of the workflow; ${BODY_STEP_KEY_FORM}`,
+  };
+}
+
 export type StepStateSeedsResult =
   | { readonly ok: true; readonly files: Readonly<Record<string, string>> }
   | { readonly ok: false; readonly reason: string };
@@ -60,9 +201,16 @@ export type StepStateSeedsResult =
 /**
  * Build the files that start a new deployment from imported step state,
  * keyed by repo path: a seed per step and, when a snapshot bounds its
- * mailbox UIDs, the deployment's initial mailbox index. Every step id in
- * `stepState` must name one of the workflow's top-level agent steps: those
- * run in the deployment's top-level run, `runId`, where the seeds are filed.
+ * mailbox UIDs, the deployment's initial mailbox index. Every key in
+ * `stepState` must name one of the workflow's top-level agent steps, or an
+ * agent step in the inline body of a top-level onTrigger section as
+ * `<section>.<step>` (`resolveOnTriggerBodyStepKey`). Every step keeps its
+ * state under the deployment's top-level run, `runId`, so the seeds are
+ * filed there at their keys.
+ *
+ * `sources` are the top-level steps' pinned sources, and
+ * `referencedDefinitions` are the inline bodies with the sources pinned to
+ * their steps (`buildReferencedWorkflowSourcePins`).
  *
  * A snapshot continues only on the model that produced it: every assistant
  * turn must record the model the step is pinned to, since the Hub does not
@@ -82,6 +230,7 @@ export type StepStateSeedsResult =
 export function buildStepStateSeeds(args: {
   projection: WorkflowProjectionDefinition;
   sources: Readonly<Record<string, readonly InferenceSource[]>>;
+  referencedDefinitions: readonly WorkflowProjectionWithSources[];
   runId: string;
   stepState: StepStateImport;
   uidValidity: number;
@@ -91,8 +240,8 @@ export function buildStepStateSeeds(args: {
     .map(([stepId]) => stepId)
     .filter(
       (stepId) =>
-        !args.projection.stepOrder.includes(stepId) ||
-        AgentStep(args.projection.steps[stepId]) instanceof type.errors,
+        isTopLevelStepPlaceKey(stepId) &&
+        !namesTopLevelAgentStep(args.projection, stepId),
     );
   if (unknownStepIds.length > 0) {
     const named = unknownStepIds
@@ -106,9 +255,24 @@ export function buildStepStateSeeds(args: {
     };
   }
 
+  const pinnedSources = new Map<string, readonly InferenceSource[]>();
+  for (const [key] of imported) {
+    if (isTopLevelStepPlaceKey(key)) {
+      const stepSources = args.sources[key];
+      if (stepSources !== undefined) pinnedSources.set(key, stepSources);
+      continue;
+    }
+    const place = resolveOnTriggerBodyStepKey(args.projection, key);
+    if (!place.ok) return place;
+    const stepSources = args.referencedDefinitions.find(
+      (body) => body.definition.id === place.bodyRef,
+    )?.sources[place.stepId];
+    if (stepSources !== undefined) pinnedSources.set(key, stepSources);
+  }
+
   const files: Record<string, string> = {};
   for (const [stepId, snapshot] of imported) {
-    const targetModel = args.sources[stepId]?.[0]?.model;
+    const targetModel = pinnedSources.get(stepId)?.[0]?.model;
     if (targetModel === undefined) {
       throw new Error(`agent step ${stepId} was pinned no inference source`);
     }

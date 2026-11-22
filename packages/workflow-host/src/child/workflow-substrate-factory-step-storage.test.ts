@@ -36,14 +36,20 @@ import type {
 } from "@intx/types/runtime";
 import type { MailSigner } from "@intx/types/mail-signer";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
+import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import { deriveWorkflowRunId } from "@intx/types";
 import { generateKeyPair } from "@intx/crypto";
 import { createConnectorRouter } from "@intx/harness";
 import { createInboundMessage } from "@intx/mime";
 import {
+  buildStepStateSeeds,
   createRepoStore,
+  readStepStateSnapshot,
   workflowRunKindHandler,
+  workflowRunRepoIdForAddress,
   workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
+  writeStepStateSeeds,
   WORKFLOW_RUN_GITIGNORE_PATH,
   type RepoId,
   type RepoStore,
@@ -68,6 +74,7 @@ import {
   commitUnstampedStepState,
   createLogCapture,
 } from "@intx/workflow-host/testing";
+import { enumerateInertBodies } from "@intx/workflow-deploy";
 import {
   scopedStepId,
   StepOutcomeCommitError,
@@ -1824,5 +1831,148 @@ describe("a cold step's reply over its attempt's durable store", () => {
     expect(submitted.map((m) => [m.content, m.to, m.inReplyTo])).toEqual([
       ["charged", "alice@example.com", "<a@example.com>"],
     ]);
+  });
+});
+
+// A deployment whose step answered mail with a trigger budget is rewritten
+// with the step in the body of an onTrigger section and redeployed. The
+// client exports the step's conversation from the old run and imports it at
+// the body step's key. This goes through the Hub's export read and its
+// deploy-time import gate, and then through the sidecar's restore of the body
+// step.
+describe("a conversation moved from a top-level step to an onTrigger body step", () => {
+  const REPLY = "reply";
+  const userTurn = (text: string): ConversationTurn => ({
+    role: "user",
+    content: [{ type: "text", text }],
+    timestamp: 1,
+  });
+  const assistantTurn = (text: string): ConversationTurn => ({
+    role: "assistant",
+    content: [{ type: "text", text }],
+    model: SOURCE.model,
+    timestamp: 2,
+  });
+
+  async function takeTurn(build: StepBuild, turns: ConversationTurn[]) {
+    if (build.conversation === undefined) {
+      throw new Error("a cold step build returns its conversation");
+    }
+    await build.env.storage.writeTurns(turns);
+    await build.env.storage.commit({ message: "turn" });
+    await build.conversation.settle();
+  }
+
+  function placedRequest(runId: string, stepPath: string[]): StepInvokeRequest {
+    return {
+      ...requestForRun(runId),
+      authzContext: { stepId: REPLY, runId, attempt: 1 },
+      place: { stepPath },
+    };
+  }
+
+  test("the body's first event continues the turns the one-step deployment exported", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const sources = { [REPLY]: [SOURCE] };
+
+    // --- Two turns of the one-step deployment's step `reply` -------------
+    const oneStep = createSidecarStepBuildEnv(
+      buildDeps({ dataDir: await makeTempDir(), substrate }),
+    );
+    const earlier = [
+      userTurn("first mail"),
+      assistantTurn("first answer"),
+      userTurn("second mail"),
+      assistantTurn("second answer"),
+    ];
+    await takeTurn(
+      await oneStep(placedRequest(TOP_LEVEL_RUN_ID, [REPLY]), sources),
+      earlier,
+    );
+
+    // --- Export it as the Hub's export route reads it --------------------
+    const exported = await readStepStateSnapshot({
+      repoStore: substrate,
+      repoId: WORKFLOW_RUN_REPO_ID,
+      runId: TOP_LEVEL_RUN_ID,
+      stepId: REPLY,
+    });
+    if (exported === null) throw new Error("the step has no committed state");
+    expect(exported.turns).toEqual(earlier);
+
+    // --- Import it at `section.reply` through the deploy's gate ----------
+    const address = "run_moved-conversation@example.com";
+    const topLevelRunId = deriveWorkflowRunId(address);
+    const repoId = workflowRunRepoIdForAddress(address);
+    const projection: WorkflowProjectionDefinition = {
+      id: "wf-moved",
+      triggers: [],
+      stepOrder: ["section"],
+      steps: {
+        section: {
+          kind: "onTrigger",
+          body: {
+            inline: {
+              id: "section-body",
+              triggers: [],
+              stepOrder: [REPLY],
+              steps: { [REPLY]: { kind: "step", agent: { modelSources: [] } } },
+            },
+          },
+        },
+      },
+    };
+    const seeds = buildStepStateSeeds({
+      projection,
+      sources: { section: [SOURCE] },
+      referencedDefinitions: enumerateInertBodies(projection).map((body) => ({
+        definition: body.definition,
+        sources,
+      })),
+      runId: topLevelRunId,
+      stepState: { "section.reply": { ...exported, connectorState: null } },
+      uidValidity: 1,
+    });
+    if (!seeds.ok) throw new Error(`unexpected refusal: ${seeds.reason}`);
+    expect(Object.keys(seeds.files)).toEqual([
+      workflowRunStepSeedPath(topLevelRunId, "section.reply"),
+    ]);
+    await writeStepStateSeeds({
+      repoStore: substrate,
+      deploymentAddress: address,
+      files: seeds.files,
+    });
+
+    // --- The body's first event restores and continues it ----------------
+    const principal: WorkflowRunWorkflowProcessPrincipal = {
+      kind: "workflow-process",
+      anchorRunId: repoId.id,
+    };
+    const sectionHost = createSidecarStepBuildEnv({
+      ...buildDeps({ dataDir: await makeTempDir(), substrate }),
+      workflowRunRepoId: repoId,
+      topLevelRunId,
+      mailboxAddress: address,
+      principal,
+    });
+    const firstEvent = await sectionHost(
+      placedRequest("run_body-1", ["section", REPLY]),
+      sources,
+    );
+    expect((await firstEvent.env.storage.load()).turns).toEqual(earlier);
+    const continued = [
+      ...earlier,
+      userTurn("third mail"),
+      assistantTurn("third answer"),
+    ];
+    await takeTurn(firstEvent, continued);
+
+    const moved = await readStepStateSnapshot({
+      repoStore: substrate,
+      repoId,
+      runId: topLevelRunId,
+      stepId: "section.reply",
+    });
+    expect(moved?.turns).toEqual(continued);
   });
 });

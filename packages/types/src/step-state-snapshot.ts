@@ -26,14 +26,16 @@ export const StepStateSnapshot = type({
 });
 export type StepStateSnapshot = typeof StepStateSnapshot.infer;
 
-// Deploy-time step state: a snapshot per agent step, keyed by the id of the
-// step it seeds. Imported state is committed to the run's history as JSON,
-// which has no encoding for a non-finite number: `JSON.parse` reads an
-// out-of-range literal such as `1e999` as `Infinity`, and serializing it
-// writes `null`. Such a number is rejected here rather than silently
-// changing in the seed. Serializing the seed also recurses once per level
-// of nesting, so client JSON nested deep enough (a tool call's arguments)
-// would overflow the call stack; no real conversation nests near the cap.
+// Deploy-time step state: a snapshot per agent step, keyed by the key of the
+// place of the step it seeds (`stepPlaceKey`): a top-level step's id, or
+// `<section>.<step>` for an agent step in an onTrigger section's body.
+// Imported state is committed to the run's history as JSON, which has no
+// encoding for a non-finite number: `JSON.parse` reads an out-of-range
+// literal such as `1e999` as `Infinity`, and serializing it writes `null`.
+// Such a number is rejected here rather than silently changing in the seed.
+// Serializing the seed also recurses once per level of nesting, so client
+// JSON nested deep enough (a tool call's arguments) would overflow the call
+// stack; no real conversation nests near the cap.
 const MAX_STEP_STATE_DEPTH = 64;
 
 // A step's state is stored under a directory named for its id, and common

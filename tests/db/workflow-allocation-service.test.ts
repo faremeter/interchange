@@ -52,6 +52,7 @@ import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import {
   DEFAULT_SIDECAR_CAPACITY,
   DeploymentRejectedError,
+  type WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
 import {
   createApprovalSet,
@@ -2360,16 +2361,39 @@ describe.skipIf(!harnessDbEnvAvailable())(
       connectorState: null,
     };
 
-    /** `freeze`, approving a definition whose one step is an agent. */
+    type AgentSteps = Pick<WorkflowProjectionDefinition, "stepOrder" | "steps">;
+
+    const AGENT_STEP: AgentSteps = {
+      stepOrder: ["intake"],
+      steps: { intake: { kind: "step", agent: { modelSources: [] } } },
+    };
+
+    // A top-level onTrigger section whose inline body has the agent step
+    // `reply`. Its step state key is `section.reply`.
+    const ON_TRIGGER_SECTION: AgentSteps = {
+      stepOrder: ["section"],
+      steps: {
+        section: {
+          kind: "onTrigger",
+          body: {
+            inline: {
+              id: "section-body",
+              triggers: [],
+              stepOrder: ["reply"],
+              steps: { reply: { kind: "step", agent: { modelSources: [] } } },
+            },
+          },
+        },
+      },
+    };
+
+    /** `freeze`, approving a definition with the agent steps `agentSteps`. */
     async function freezeAgentStep(
       params: InstallAndApproveWorkflowSourceParams,
+      agentSteps: AgentSteps,
     ) {
       const frozen = await freeze(params);
-      const agentProjection = {
-        ...frozen.projection,
-        stepOrder: ["intake"],
-        steps: { intake: { kind: "step", agent: { modelSources: [] } } },
-      };
+      const agentProjection = { ...frozen.projection, ...agentSteps };
       return {
         ...frozen,
         approval: {
@@ -2385,6 +2409,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     function importingService(args: {
       id: string;
+      agentSteps?: AgentSteps;
       destroyCalls: unknown[];
       writeTree: (content: {
         repoId: unknown;
@@ -2410,7 +2435,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           }),
         ]),
         preparedDeployer: {
-          installAndApproveWorkflowSource: (params) => freezeAgentStep(params),
+          installAndApproveWorkflowSource: (params) =>
+            freezeAgentStep(params, args.agentSteps ?? AGENT_STEP),
           deployPreparedCodeSourcedWorkflow: async () => {
             throw new Error("not reached");
           },
@@ -2491,6 +2517,87 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await createSidecarAllocationStore(h.db).findByAnchorRunId(anchorRunId),
       ).not.toBeNull();
       expect(removed).toEqual([]);
+    });
+
+    test("seeds an onTrigger body step's state at the step's place", async () => {
+      const anchorRunId = "run-step-state-body";
+      const writes: unknown[] = [];
+      const service = importingService({
+        id: "step-state-body",
+        agentSteps: ON_TRIGGER_SECTION,
+        destroyCalls: [],
+        async writeTree(write) {
+          writes.push(write);
+        },
+        async removeRepo() {
+          throw new Error("the deploy removes no imported step state");
+        },
+      });
+
+      await service.prepareProvisionedDeployment({
+        ...prepareArgs(anchorRunId),
+        stepState: { "section.reply": IMPORTED_STATE },
+      });
+
+      expect(writes).toEqual([
+        {
+          repoId: importedRepoId(anchorRunId),
+          ref: "refs/heads/main",
+          files: {
+            [`runs/${anchorRunId}/steps/section.reply/seed.json`]:
+              JSON.stringify(IMPORTED_STATE),
+          },
+        },
+      ]);
+      expect(
+        await createSidecarAllocationStore(h.db).findByAnchorRunId(anchorRunId),
+      ).not.toBeNull();
+    });
+
+    test("rejects an onTrigger body step's state from a model other than the body step's pinned model", async () => {
+      const anchorRunId = "run-step-state-body-model";
+      const destroyCalls: unknown[] = [];
+      const writes: unknown[] = [];
+      const service = importingService({
+        id: "step-state-body-model",
+        agentSteps: ON_TRIGGER_SECTION,
+        destroyCalls,
+        async writeTree(write) {
+          writes.push(write);
+        },
+        async removeRepo() {
+          throw new Error("the deploy removes no imported step state");
+        },
+      });
+
+      await expect(
+        service.prepareProvisionedDeployment({
+          ...prepareArgs(anchorRunId),
+          stepState: {
+            "section.reply": {
+              ...IMPORTED_STATE,
+              turns: [
+                ...IMPORTED_STATE.turns,
+                {
+                  role: "assistant",
+                  content: [{ type: "text", text: "answer" }],
+                  model: "sonnet",
+                  timestamp: 2,
+                },
+              ],
+            },
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "invalid_step_state",
+        message: `Step state for "section.reply" was produced by "sonnet", but the step runs on "opus"; the Hub does not convert a conversation between models, so import it into a step that runs on the same model`,
+      });
+
+      expect(writes).toEqual([]);
+      expect(destroyCalls).toHaveLength(1);
+      expect(
+        await createSidecarAllocationStore(h.db).findByAnchorRunId(anchorRunId),
+      ).toBeNull();
     });
 
     test("reports imported step state it cannot store in a fixed message, keeping the storage error as its cause", async () => {

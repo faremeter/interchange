@@ -214,6 +214,17 @@ again:
 The conversation lives as long as the deployment's run repository. The same
 address and the same step path mean the same conversation.
 
+To move a conversation to a new deployment, export it from the old run and
+import it through the deploy's `stepState` field. The key of the import can
+name a different place than the export. For example, export `reply` from a
+one-step deployment and import it as `section.reply` when the new deployment
+puts the agent step `reply` in the body of the `onTrigger` section `section`.
+The first event of the section then continues the conversation. An import or
+export names a top-level agent step, or an agent step in the inline body of a
+top-level `onTrigger` section. It cannot name a map item, a step in a loop
+body, or a step more than one level down. The model of the new
+step must be the model that produced the conversation.
+
 The files of a step do not continue with its conversation. A step's
 workspace, its working directory, lives for one attempt, for every step,
 also the step of a one-step workflow. A retry starts with a new workspace
