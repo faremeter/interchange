@@ -8,7 +8,6 @@ export const ControlPayload = createControlPayloadSchema();
 export type ControlPayload = typeof ControlPayload.infer;
 
 export {
-  SourcesUpdatedData,
   ComposeAttachmentPayload,
   OutboundAttachmentPayload,
   OutboundMessagePayload,

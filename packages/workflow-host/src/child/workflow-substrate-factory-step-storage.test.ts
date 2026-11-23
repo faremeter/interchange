@@ -61,7 +61,7 @@ import {
   createWorkflowStepInvoker,
   readStepState,
   type ChildOutboundMailBridge,
-  type SourcesSnapshotRef,
+  type StepSources,
   type StepBuild,
 } from "@intx/workflow-host";
 import {
@@ -186,10 +186,8 @@ function buildDeps(opts: {
   };
 }
 
-function sourcesRefFor(
-  chain: InferenceSource[] = [SOURCE],
-): SourcesSnapshotRef {
-  return { current: { [STEP_ID]: chain } };
+function stepSourcesFor(chain: InferenceSource[] = [SOURCE]): StepSources {
+  return { [STEP_ID]: chain };
 }
 
 function requestForRun(runId: string, attempt = 1): StepInvokeRequest {
@@ -241,10 +239,10 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     const buildEnv = createSidecarStepBuildEnv(
       buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
     );
-    const sourcesRef = sourcesRefFor();
+    const stepSources = stepSourcesFor();
 
-    const { env: env1 } = await buildEnv(requestForRun("run-1"), sourcesRef);
-    const { env: env2 } = await buildEnv(requestForRun("run-2"), sourcesRef);
+    const { env: env1 } = await buildEnv(requestForRun("run-1"), stepSources);
+    const { env: env2 } = await buildEnv(requestForRun("run-2"), stepSources);
 
     // Per-run keying: each run gets its own workdir, rooted under that
     // run's `runs/<runId>/` subtree -- exactly what the run-completion
@@ -266,11 +264,11 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     const buildEnv = createSidecarStepBuildEnv(
       buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
     );
-    const sourcesRef = sourcesRefFor();
+    const stepSources = stepSourcesFor();
 
     const { env: first } = await buildEnv(
       requestForRun("run-1", 1),
-      sourcesRef,
+      stepSources,
     );
     expect(first.workdir).toBe(
       stepWorkspaceDir({
@@ -285,7 +283,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
 
     const { env: retry } = await buildEnv(
       requestForRun("run-1", 2),
-      sourcesRef,
+      stepSources,
     );
     expect(retry.workdir).toBe(
       stepWorkspaceDir({
@@ -304,9 +302,9 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     const buildEnv = createSidecarStepBuildEnv(
       buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
     );
-    const sourcesRef = sourcesRefFor();
+    const stepSources = stepSourcesFor();
 
-    const { env: first } = await buildEnv(requestForRun("run-1"), sourcesRef);
+    const { env: first } = await buildEnv(requestForRun("run-1"), stepSources);
     await fs.writeFile(path.join(first.workdir, "turn-1.txt"), "kept");
 
     const { env: resumed } = await buildEnv(
@@ -318,7 +316,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
           decision: "next",
         },
       },
-      sourcesRef,
+      stepSources,
     );
     expect(resumed.workdir).toBe(first.workdir);
     expect(
@@ -345,40 +343,13 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
 
     const { env } = await buildEnv(
       requestForRun("run-1"),
-      sourcesRefFor(chain),
+      stepSourcesFor(chain),
     );
 
     // The whole chain reaches the reactor, ordered, with element 0 as the
     // initial source.
     expect(env.sources).toEqual(chain);
     expect(env.defaultSource).toBe(SOURCE.id);
-  });
-
-  test("resolves sources from the mutable ref at build time", async () => {
-    // The build reads the source table through the ref, so a rotation that
-    // writes the ref before a build is reflected in the agent that build
-    // constructs.
-    const dataDir = await makeTempDir();
-    const buildEnv = createSidecarStepBuildEnv(
-      buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
-    );
-    const sourcesRef = sourcesRefFor();
-
-    const { env: before } = await buildEnv(requestForRun("run-1"), sourcesRef);
-    expect(before.sources).toEqual([SOURCE]);
-
-    const rotated: InferenceSource = {
-      id: "rotated",
-      provider: "openai",
-      baseURL: "https://api.openai.com",
-      credentialId: "sk-rotated",
-      model: "gpt-rotated",
-    };
-    sourcesRef.current = { [STEP_ID]: [rotated] };
-
-    const { env: after } = await buildEnv(requestForRun("run-2"), sourcesRef);
-    expect(after.sources).toEqual([rotated]);
-    expect(after.defaultSource).toBe(rotated.id);
   });
 
   test("a map iteration resolves the base step's source while keeping scratch scoped", async () => {
@@ -402,7 +373,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       place: { stepPath: [STEP_ID], mapIndex: 0 },
       signal: new AbortController().signal,
     };
-    const { env } = await buildEnv(scopedRequest, sourcesRefFor());
+    const { env } = await buildEnv(scopedRequest, stepSourcesFor());
 
     // The scoped iteration resolves the base step's pinned source.
     expect(env.sources).toEqual([SOURCE]);
@@ -517,7 +488,7 @@ describe("createSidecarStepBuildEnv capabilities", () => {
       }),
     );
 
-    const { env } = await buildEnv(requestForRun("run-1"), sourcesRefFor());
+    const { env } = await buildEnv(requestForRun("run-1"), stepSourcesFor());
 
     // A tool reads `capabilities` from its own env type; StepEnvBase does
     // not declare it, so narrow it here.
@@ -542,7 +513,7 @@ describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
     );
 
     await expect(
-      buildEnv(approvalResumeRequest("run-1", "corr-1"), sourcesRefFor()),
+      buildEnv(approvalResumeRequest("run-1", "corr-1"), stepSourcesFor()),
     ).rejects.toThrow(/keying violation/);
   });
 
@@ -558,7 +529,7 @@ describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
 
     const { env } = await buildEnv(
       approvalResumeRequest("run-1", "corr-1"),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
 
     expect(env.workdir).toContain(path.join("runs", "run-1"));
@@ -577,7 +548,7 @@ describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
     );
 
     await expect(
-      buildEnv(approvalResumeRequest("run-1", "corr-1"), sourcesRefFor()),
+      buildEnv(approvalResumeRequest("run-1", "corr-1"), stepSourcesFor()),
     ).rejects.toThrow(/keying violation/);
   });
 });
@@ -632,7 +603,7 @@ describe("createSidecarStepBuildEnv approval resume of a park with no stamp", ()
 
     const build = await buildEnv(
       approvalResumeRequest("run-1", "corr-1"),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     const loaded = await build.env.storage.load();
     expect(loaded.turns).toEqual([charge]);
@@ -681,7 +652,7 @@ describe("createSidecarStepBuildEnv approval resume of a park with no stamp", ()
     );
 
     await expect(
-      buildEnv(approvalResumeRequest("run-1", "corr-2"), sourcesRefFor()),
+      buildEnv(approvalResumeRequest("run-1", "corr-2"), stepSourcesFor()),
     ).rejects.toThrow(/keying violation/);
   });
 });
@@ -713,7 +684,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     const substrate = await createSubstrate(await makeTempDir());
     const first = await (
       await host(substrate)
-    )(requestForRun("run-1"), sourcesRefFor());
+    )(requestForRun("run-1"), stepSourcesFor());
     await takeTurn(first, [turn("first")]);
 
     const committed = await readStepState({
@@ -733,7 +704,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
     const replacement = await (
       await host(substrate)
-    )(requestForRun("run-1"), sourcesRefFor());
+    )(requestForRun("run-1"), stepSourcesFor());
     expect((await replacement.env.storage.load()).turns).toEqual([
       turn("first"),
     ]);
@@ -742,11 +713,12 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
   test("a retried attempt continues from the last committed turn", async () => {
     const substrate = await createSubstrate(await makeTempDir());
     const buildEnv = await host(substrate);
-    await takeTurn(await buildEnv(requestForRun("run-1", 1), sourcesRefFor()), [
-      turn("attempt one"),
-    ]);
+    await takeTurn(
+      await buildEnv(requestForRun("run-1", 1), stepSourcesFor()),
+      [turn("attempt one")],
+    );
 
-    const retry = await buildEnv(requestForRun("run-1", 2), sourcesRefFor());
+    const retry = await buildEnv(requestForRun("run-1", 2), stepSourcesFor());
     expect((await retry.env.storage.load()).turns).toEqual([
       turn("attempt one"),
     ]);
@@ -770,7 +742,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       attempt: 2,
     });
     await expect(
-      buildEnv(requestForRun("run-1", 1), sourcesRefFor()),
+      buildEnv(requestForRun("run-1", 1), stepSourcesFor()),
     ).rejects.toThrow(/later than attempt 1/);
   });
 
@@ -829,7 +801,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       const substrate = await createSubstrate(await makeTempDir());
       const build = await (
         await host(substrate)
-      )(placedRequest("run-body-1", stepPath), sourcesRefFor());
+      )(placedRequest("run-body-1", stepPath), stepSourcesFor());
       await takeTurn(build, [turn("body turn")]);
 
       const key = stepPath.join(".");
@@ -862,7 +834,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
     const first = await buildEnv(
       placedRequest("run-body-1", stepPath),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     expect((await first.env.storage.load()).turns).toEqual([turn("seeded")]);
     await takeTurn(first, [turn("seeded"), turn("first event")]);
@@ -870,7 +842,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     // The seed applies only while the key holds no committed state.
     const second = await buildEnv(
       placedRequest("run-body-2", stepPath),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     expect((await second.env.storage.load()).turns).toEqual([
       turn("seeded"),
@@ -902,7 +874,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     const buildEnv = await host(substrate);
 
     await takeTurn(
-      await buildEnv(placedRequest("run_loop__0", stepPath), sourcesRefFor()),
+      await buildEnv(placedRequest("run_loop__0", stepPath), stepSourcesFor()),
       [turn("iteration 0")],
     );
 
@@ -910,7 +882,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     // fails, so its conversation never settles.
     const failed = await buildEnv(
       placedRequest("run_loop__1", stepPath, 1),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     expect((await failed.env.storage.load()).turns).toEqual([
       turn("iteration 0"),
@@ -920,7 +892,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
     const retry = await buildEnv(
       placedRequest("run_loop__1", stepPath, 2),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     expect((await retry.env.storage.load()).turns).toEqual([
       turn("iteration 0"),
@@ -929,7 +901,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
     const next = await buildEnv(
       placedRequest("run_loop__2", stepPath),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     expect((await next.env.storage.load()).turns).toEqual([
       turn("iteration 0"),
@@ -951,12 +923,12 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
     for (const index of [0, 1]) {
       await takeTurn(
-        await buildEnv(item("run_loop__0", index), sourcesRefFor()),
+        await buildEnv(item("run_loop__0", index), stepSourcesFor()),
         [turn(`item ${String(index)} iteration 0`)],
       );
     }
     for (const index of [0, 1]) {
-      const next = await buildEnv(item("run_loop__1", index), sourcesRefFor());
+      const next = await buildEnv(item("run_loop__1", index), stepSourcesFor());
       expect((await next.env.storage.load()).turns).toEqual([
         turn(`item ${String(index)} iteration 0`),
       ]);
@@ -973,13 +945,13 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     const key = stepPath.join(".");
 
     await takeTurn(
-      await buildEnv(placedRequest("run_child_a", stepPath), sourcesRefFor()),
+      await buildEnv(placedRequest("run_child_a", stepPath), stepSourcesFor()),
       [turn("first child run")],
     );
 
     const second = await buildEnv(
       placedRequest("run_child_b", stepPath),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     expect((await second.env.storage.load()).turns).toEqual([
       turn("first child run"),
@@ -1006,7 +978,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       authzContext: { stepId: itemId, runId: TOP_LEVEL_RUN_ID, attempt: 1 },
       place: { stepPath: [STEP_ID], mapIndex: 0 },
     };
-    const build = await (await host(substrate))(request, sourcesRefFor());
+    const build = await (await host(substrate))(request, stepSourcesFor());
     await takeTurn(build, [turn("item turn")]);
 
     const reads = await substrate.openCommittedReads(
@@ -1035,7 +1007,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     const sameHost = await host(substrate);
 
     await takeTurn(
-      await sameHost(placedRequest("run-body-1", stepPath), sourcesRefFor()),
+      await sameHost(placedRequest("run-body-1", stepPath), stepSourcesFor()),
       [turn("body one")],
     );
 
@@ -1043,7 +1015,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     // before the settle commits it to the repo.
     const crashed = await sameHost(
       placedRequest("run-body-2", stepPath),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     expect((await crashed.env.storage.load()).turns).toEqual([
       turn("body one"),
@@ -1053,7 +1025,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
     const rebuilt = await sameHost(
       placedRequest("run-body-2", stepPath),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     expect((await rebuilt.env.storage.load()).turns).toEqual([
       turn("body one"),
@@ -1073,7 +1045,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
     const next = await (
       await host(substrate)
-    )(placedRequest("run-body-3", stepPath), sourcesRefFor());
+    )(placedRequest("run-body-3", stepPath), stepSourcesFor());
     expect((await next.env.storage.load()).turns).toEqual([
       turn("body one"),
       turn("body two"),
@@ -1116,7 +1088,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
     const build = await (
       await host(substrate)
-    )(requestForRun("run-1", 1), sourcesRefFor());
+    )(requestForRun("run-1", 1), stepSourcesFor());
     expect((await build.env.storage.load()).turns).toEqual([turn("legacy")]);
     await takeTurn(build, [turn("legacy"), turn("next")]);
 
@@ -1186,7 +1158,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
     const build = await (
       await host(substrate)
-    )(requestForRun("run-1"), sourcesRefFor());
+    )(requestForRun("run-1"), stepSourcesFor());
     expect((await build.env.storage.load()).turns).toEqual([turn("first")]);
     if (build.conversation === undefined) {
       throw new Error("a cold step build returns its conversation");
@@ -1238,7 +1210,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     );
     const { conversation } = await buildEnv(
       requestForRun("run-1"),
-      sourcesRefFor(),
+      stepSourcesFor(),
     );
     if (conversation === undefined) {
       throw new Error("a cold step build returns its conversation");
@@ -1378,7 +1350,7 @@ describe("a cold step's reply over its attempt's durable store", () => {
     );
     return createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: (req) => buildEnv(req, sourcesRefFor()),
+      buildEnv: (req) => buildEnv(req, stepSourcesFor()),
       agentFactory: async (_def, env) => parkThenReply(env, sends.count++),
     });
   }
@@ -1400,7 +1372,7 @@ describe("a cold step's reply over its attempt's durable store", () => {
     );
     const invoke = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: (req) => buildEnv(req, sourcesRefFor()),
+      buildEnv: (req) => buildEnv(req, stepSourcesFor()),
       agentFactory: async (_def, env) =>
         stepAgent(async () => {
           // The reactor commits each cycle to the local store before the
@@ -1465,7 +1437,7 @@ describe("a cold step's reply over its attempt's durable store", () => {
     let built = 0;
     const invoke = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: (req) => buildEnv(req, sourcesRefFor()),
+      buildEnv: (req) => buildEnv(req, stepSourcesFor()),
       agentFactory: async (_def, env) => {
         const send = agents[built++];
         if (send === undefined) throw new Error("no agent left to build");

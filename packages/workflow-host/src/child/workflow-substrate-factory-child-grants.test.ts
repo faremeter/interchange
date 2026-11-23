@@ -224,7 +224,7 @@ function recordingInvoker(
   return async (
     req,
     authorize,
-    _sourcesRef,
+    _stepSources,
     _onEvent,
   ): Promise<StepInvokeResult> => {
     for (const resource of probeResources) {

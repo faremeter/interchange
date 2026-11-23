@@ -33,13 +33,6 @@ test("payload schemas are constructed on first use and reused by kind", async ()
 });
 
 test("dispatching control payloads preserves validation and parsed values", () => {
-  const source = {
-    id: "source",
-    provider: "anthropic",
-    model: "test-model",
-    baseURL: "https://example.com",
-    credentialId: "credential",
-  };
   const inputs: unknown[] = [
     null,
     [],
@@ -73,18 +66,6 @@ test("dispatching control payloads preserves validation and parsed values", () =
     {
       type: "definition",
       data: { childPid: 1, childPublicKey: "key", result: { ok: false } },
-    },
-    {
-      type: "sources-updated",
-      data: { sources: [source], defaultSource: "source" },
-    },
-    {
-      type: "sources-updated",
-      data: { sources: [source, source], defaultSource: "source" },
-    },
-    {
-      type: "sources-updated",
-      data: { sources: [source], defaultSource: "missing" },
     },
     {
       type: "credentials-updated",

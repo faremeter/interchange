@@ -203,16 +203,11 @@ export type CredentialMaterialRef = {
 };
 
 /**
- * Per-step inference-source table the build path reads through a mutable
- * reference, keyed by stepId. Each value is the step's ordered failover
- * chain (element 0 is the active source). Each step build resolves its
- * sources from `current` at build time, and every agent step is built for
- * each turn, so a rotation that writes `current` reaches the next turn. A
- * turn already in flight keeps the sources it was built with.
+ * Per-step inference-source table keyed by stepId. Each value is the step's
+ * ordered failover chain (element 0 is the active source). The deploy fixes
+ * the table for the life of the child; a change of sources is a redeploy.
  */
-export type SourcesSnapshotRef = {
-  current: Record<string, InferenceSource[]>;
-};
+export type StepSources = Readonly<Record<string, InferenceSource[]>>;
 
 /**
  * The workflow-host child's drain controller is the production
@@ -262,7 +257,7 @@ export type ChildStepInvoker = (
   req: StepInvokeRequest,
   onEvent: (event: EventPayload) => void,
   authorize: WorkflowAuthorizeFn,
-  sourcesRef: SourcesSnapshotRef,
+  stepSources: StepSources,
   credentialWiring: CredentialWiring,
   mailPartReader: MailPartReader,
 ) => Promise<StepInvokeResult>;
@@ -433,13 +428,12 @@ export interface RunWorkflowChildBindings {
   /** Optional id generator override; production wires a monotonic one. */
   newId?: (prefix: string) => string;
   /**
-   * Bootstrap per-step inference-source table (keyed by stepId), parsed
-   * from the spawn env by the host's substrate factory. Seeds the
-   * mutable `sourcesRef` the build path reads. Absent value defers to an
-   * empty table, so a step with no pinned source fails loudly at build
-   * rather than resolving a default.
+   * Per-step inference-source table (keyed by stepId), parsed from the
+   * spawn env by the host's substrate factory. The build path reads it for
+   * each step. An absent value defers to an empty table, so a step with
+   * no pinned source fails loudly at build rather than resolving a default.
    */
-  initialSources?: Record<string, InferenceSource[]>;
+  stepSources?: StepSources;
   /**
    * Optional override for the child's Ed25519 keypair factory, used only
    * when the caller supplies no `upstreamSender`. The child then mints a
@@ -659,9 +653,7 @@ export async function runWorkflowChild(
   // Both refs are set from the supervisor's first `authority.set` frame,
   // which the child reads before it resumes any run.
   const credentialsRef: CredentialsSnapshotRef = { current: null };
-  const sourcesRef: SourcesSnapshotRef = {
-    current: opts.bindings.initialSources ?? {},
-  };
+  const stepSources: StepSources = opts.bindings.stepSources ?? {};
   const credentialMaterialRef: CredentialMaterialRef = { current: null };
   // The run's grants resolver, shared by `authorize` and the credential
   // wiring so both read the same grants.
@@ -973,7 +965,7 @@ export async function runWorkflowChild(
       clock,
       newId,
       drainController,
-      sourcesRef,
+      stepSources,
       credentialWiring,
       credentialsRef,
       mailSigner,
@@ -1089,7 +1081,7 @@ export async function runWorkflowChild(
           resumeDeliveryHold,
           cancellationBarrier,
           quietCheck,
-          sourcesRef,
+          stepSources,
           credentialMaterialRef,
           credentialWiring,
           ...(opts.substrateWriteBridge !== undefined
@@ -1280,7 +1272,7 @@ async function handleControlPayload(
     resumeDeliveryHold: ResumeDeliveryHold;
     cancellationBarrier: ReturnType<typeof createCancellationBarrier>;
     quietCheck: { current: AbortController | null };
-    sourcesRef: SourcesSnapshotRef;
+    stepSources: StepSources;
     credentialMaterialRef: CredentialMaterialRef;
     credentialWiring: CredentialWiring;
     substrateWriteBridge?: SubstrateWriteResponseSink;
@@ -1343,7 +1335,7 @@ async function handleControlPayload(
         clock: ctx.clock,
         newId: ctx.newId,
         drainController: ctx.drainController,
-        sourcesRef: ctx.sourcesRef,
+        stepSources: ctx.stepSources,
         credentialWiring: ctx.credentialWiring,
         credentialsRef: ctx.credentialsRef,
         mailSigner: ctx.mailSigner,
@@ -1591,34 +1583,6 @@ async function handleControlPayload(
         ctx.substrateWriteBridge.cancelAll("workflow-child shutdown requested");
       }
       return true;
-    }
-    case "sources-updated": {
-      // Live inference-source rotation. The wire boundary
-      // (`SourcesUpdatedData`) already guaranteed the list is non-empty, its
-      // ids are unique, and its head is the default, so this trusts the frame
-      // and does not re-validate it. Every agent step is built for each turn
-      // and reads the table at build time, so the next turn uses the new
-      // sources. A turn already in flight keeps the sources it was built with.
-      //
-      // Only a single-step deployment rotates sources: its sole step's id
-      // is the sole key in the sources table, so the whole table is
-      // replaced. A multi-step deployment has no single per-agent source
-      // identity to swap and is never routed a sources-updated frame;
-      // assert it so a mis-route fails loudly rather than corrupting the
-      // table.
-      if (ctx.definition.stepOrder.length !== 1) {
-        throw new Error(
-          `workflow-child sources-updated: only a single-step deployment can rotate sources; got ${String(ctx.definition.stepOrder.length)} steps`,
-        );
-      }
-      const stepId = ctx.definition.stepOrder[0];
-      if (stepId === undefined) {
-        throw new Error(
-          "workflow-child sources-updated: single-step deployment has no step id",
-        );
-      }
-      ctx.sourcesRef.current = { [stepId]: payload.data.sources };
-      return false;
     }
     case "definition":
     case "ready": {
@@ -1943,7 +1907,7 @@ function buildRuntimeEnv(args: {
   clock: () => Date;
   newId: (prefix: string) => string;
   drainController: DrainController;
-  sourcesRef: SourcesSnapshotRef;
+  stepSources: StepSources;
   credentialWiring: CredentialWiring;
   credentialsRef: CredentialsSnapshotRef;
   mailSigner: MailSigner;
@@ -1992,7 +1956,7 @@ function buildRuntimeEnv(args: {
       req,
       args.onEvent,
       args.authorize,
-      args.sourcesRef,
+      args.stepSources,
       args.credentialWiring,
       mailPartReader,
     );

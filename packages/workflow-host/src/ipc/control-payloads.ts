@@ -2,7 +2,6 @@ import { type } from "arktype";
 import {
   BoundedApprovalSnapshot,
   ControlParkKind,
-  InferenceSource,
   InterchangeType,
   MessageTransportCondition,
   SignatureStatus,
@@ -28,43 +27,6 @@ export const CredentialsSnapshotStepPayload = type({
 
 export const CredentialsSnapshotPayload = type({
   steps: CredentialsSnapshotStepPayload.array(),
-});
-
-/**
- * Wire shape of a `sources-updated` frame's `data`: the full ordered
- * inference-source failover chain plus the default source id. Carried
- * inline like the grants snapshot -- a single-producer, single-consumer
- * supervisor->child push, so a substrate round-trip would only add
- * latency. No per-source hash rides along; a source list is flat, with no
- * per-item pin for a receiver to cross-check.
- *
- * The `narrow` pins two frame-structural invariants at this boundary so
- * every consumer can trust them without re-checking: source ids are
- * unique, and the first element is the default source. The head-is-default
- * rule keeps the frame's `defaultSource` and the step build in agreement: the
- * build of the step's next turn pins element 0 as the active source, so it
- * picks the default only when the default is the head.
- */
-export const SourcesUpdatedData = type({
-  sources: InferenceSource.array().atLeastLength(1),
-  defaultSource: "string > 0",
-}).narrow((data, ctx) => {
-  const seen = new Set<string>();
-  for (const source of data.sources) {
-    if (seen.has(source.id)) {
-      return ctx.mustBe(
-        `a source list with unique ids; "${source.id}" appears more than once`,
-      );
-    }
-    seen.add(source.id);
-  }
-  const head = data.sources[0];
-  if (head === undefined || head.id !== data.defaultSource) {
-    return ctx.mustBe(
-      "a source list whose first element is the default source",
-    );
-  }
-  return true;
 });
 
 /**
@@ -656,11 +618,6 @@ const controlPayloadFactories = defineControlPayloadFactories({
         "stepHashes?": "Record<string, string>",
       },
     }),
-  "sources-updated": () =>
-    type({
-      type: "'sources-updated'",
-      data: SourcesUpdatedData,
-    }),
   "credentials-updated": () =>
     type({
       // Refreshed credential material for the deployment's inference sources
@@ -1154,7 +1111,7 @@ const controlPayloadFactories = defineControlPayloadFactories({
     type({
       // Supervisor-to-child one-way notification that new mail landed in a
       // deployment mailbox (INBOUND half of mailbox ownership, §3b). One-way
-      // like `grants-updated`/`sources-updated`: no correlation id, no response.
+      // like `grants-updated`: no correlation id, no response.
       // The supervisor -- the sole mail owner -- commits the arrived message to
       // the workflow-run substrate mailbox, then fires this frame so a registered
       // `watch` observes the arrival decoupled from the FIFO trigger dispatch

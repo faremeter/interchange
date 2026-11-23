@@ -16,7 +16,6 @@ import {
   markWorkflowRunRecord,
   markWorkflowRunRecordInStandby,
   updateWorkflowRunRecordCredentials,
-  updateWorkflowRunRecordSources,
   withWorkflowRunRecord,
   scanWorkflowRunRecords,
 } from "./workflow-run-record";
@@ -513,9 +512,9 @@ describe("workflow run record store", () => {
 
   test("overwriting a record leaves the new one and no temp orphan", async () => {
     const dataDir = await makeDataDir();
-    const anchorRunId = "rotated-1";
+    const anchorRunId = "overwritten-1";
 
-    // A source rotation overwrites the existing record in place. The
+    // A second write for the same run replaces the existing record. The
     // atomic write must replace it cleanly, leaving only the record and
     // no `.tmp` staging file behind.
     await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP, CIPHER);
@@ -581,28 +580,29 @@ describe("workflow run record store", () => {
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 
-  test.each(["sources", "stop"])(
-    "concurrent source and stop updates preserve both when %s starts first",
+  test.each(["credentials", "stop"])(
+    "concurrent credentials and stop updates preserve both when %s starts first",
     async (first) => {
       const dataDir = await makeDataDir();
       const runId = "concurrent-record";
       await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
       await writeWorkflowRunRecord(dataDir, "independent", SINGLE_STEP, CIPHER);
-      const original = await readRawRecord(dataDir, runId);
+      const later = deliveryOf({ "cred-x": "sk-x2" });
       const held = holdRecordWrite(recordPath(dataDir, runId));
       const update = () =>
-        updateWorkflowRunRecordSources(
+        updateWorkflowRunRecordCredentials(
           dataDir,
           runId,
           SINGLE_STEP.generation,
-          MULTI_STEP.sources,
+          later,
+          CIPHER,
         );
       const mark = () =>
         markWorkflowRunRecord(dataDir, runId, {
           state: "stopped",
           error: "The child ended itself",
         });
-      const leading = first === "sources" ? update() : mark();
+      const leading = first === "credentials" ? update() : mark();
       void leading.catch(() => undefined);
       let following: Promise<unknown> | undefined;
       try {
@@ -612,23 +612,25 @@ describe("workflow run record store", () => {
             throw new Error("Record write was not intercepted");
           }),
         ]);
-        following = first === "sources" ? mark() : update();
+        following = first === "credentials" ? mark() : update();
         void following.catch(() => undefined);
         // One blocked record must not stall a different deployment.
-        await updateWorkflowRunRecordSources(
+        await updateWorkflowRunRecordCredentials(
           dataDir,
           "independent",
           SINGLE_STEP.generation,
-          MULTI_STEP.sources,
+          later,
+          CIPHER,
         );
         held.release();
         await Promise.all([leading, following]);
-        expect(await readRawRecord(dataDir, runId)).toEqual({
-          ...original,
-          sources: MULTI_STEP.sources,
-          state: "stopped",
-          error: "The child ended itself",
-        });
+        const raw = await readRawRecord(dataDir, runId);
+        expect(raw.state).toBe("stopped");
+        expect(raw.error).toBe("The child ended itself");
+        const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
+        expect(
+          scanned.find((entry) => entry.runId === runId)?.record.credentials,
+        ).toEqual(later);
       } finally {
         held.release();
         await Promise.allSettled([leading, following]);
@@ -638,7 +640,7 @@ describe("workflow run record store", () => {
     },
   );
 
-  test("repository deletion waits for a marker and rejects later source updates", async () => {
+  test("repository deletion waits for a marker and rejects later credentials updates", async () => {
     const dataDir = await makeDataDir();
     const runId = "deleting-record";
     await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
@@ -660,11 +662,12 @@ describe("workflow run record store", () => {
         await fs.rm(path.dirname(file), { recursive: true, force: true });
       });
       void deleting.catch(() => undefined);
-      updating = updateWorkflowRunRecordSources(
+      updating = updateWorkflowRunRecordCredentials(
         dataDir,
         runId,
         SINGLE_STEP.generation,
-        MULTI_STEP.sources,
+        deliveryOf({ "cred-x": "sk-x2" }),
+        CIPHER,
       ).catch((error: unknown) => error);
       held.release();
       await Promise.all([marking, deleting]);
@@ -679,73 +682,6 @@ describe("workflow run record store", () => {
       held.release();
       await Promise.allSettled([marking, deleting, updating]);
       held.spy.mockRestore();
-      await fs.rm(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  test("a renamed source update succeeds when directory sync fails", async () => {
-    const dataDir = await makeDataDir();
-    const runId = "source-directory-sync";
-    await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
-    const directory = path.dirname(recordPath(dataDir, runId));
-    const open = fs.open;
-    let syncs = 0;
-    const spy = spyOn(fs, "open").mockImplementation(
-      async (target, flags, mode) => {
-        const handle = await open(target, flags, mode);
-        if (target === directory)
-          spyOn(handle, "sync").mockImplementation(async () => {
-            syncs++;
-            throw new Error("directory sync failed");
-          });
-        return handle;
-      },
-    );
-    try {
-      await updateWorkflowRunRecordSources(
-        dataDir,
-        runId,
-        SINGLE_STEP.generation,
-        MULTI_STEP.sources,
-      );
-      expect(syncs).toBe(1);
-      expect((await readRawRecord(dataDir, runId)).sources).toEqual(
-        MULTI_STEP.sources,
-      );
-    } finally {
-      spy.mockRestore();
-      await fs.rm(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  test("a stale source update leaves a newer generation intact without blocking later updates", async () => {
-    const dataDir = await makeDataDir();
-    const runId = "newer-record";
-    try {
-      await writeWorkflowRunRecord(dataDir, runId, SINGLE_STEP, CIPHER);
-      const original = await readRawRecord(dataDir, runId);
-      await expect(
-        updateWorkflowRunRecordSources(
-          dataDir,
-          runId,
-          SINGLE_STEP.generation - 1,
-          MULTI_STEP.sources,
-        ),
-      ).rejects.toThrow("generation changed");
-      expect(await readRawRecord(dataDir, runId)).toEqual(original);
-      await markWorkflowRunRecord(dataDir, runId, { state: "tearing-down" });
-      await updateWorkflowRunRecordSources(
-        dataDir,
-        runId,
-        SINGLE_STEP.generation,
-        MULTI_STEP.sources,
-      );
-      expect(await readRawRecord(dataDir, runId)).toEqual({
-        ...original,
-        sources: MULTI_STEP.sources,
-        state: "tearing-down",
-      });
-    } finally {
       await fs.rm(dataDir, { recursive: true, force: true });
     }
   });

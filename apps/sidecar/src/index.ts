@@ -55,7 +55,6 @@ import {
   createMultistepGrantsRouter,
   createMultistepMailRouter,
   createMultistepSignalRouter,
-  createMultistepSourcesRouter,
   createSidecarDeployRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
@@ -352,14 +351,6 @@ const multistepDrainRouter = createMultistepDrainRouter();
 // FIFO completion means the grants are durable on disk.
 const multistepGrantsRouter = createMultistepGrantsRouter();
 
-// Per-deployment-address sources-rotation handler registry. Only a
-// single-step deployment registers a handler once its supervisor spawns;
-// the handler forwards the rotated list into the supervisor's
-// `deliverSources`, which sends a `sources-updated` control IPC frame to
-// the child, which replaces its sources table so the step's next turn
-// builds its agent on the new sources. A multi-step deployment registers
-// none, so a rotation resolved against its address is unrouted.
-const multistepSourcesRouter = createMultistepSourcesRouter();
 // Per-deployment credential-delivery handler registry. A deployment registers
 // its handler after `spawn` (any deployment with a supervisor, not only
 // single-step ones); a `credentials.update` for an unregistered address is
@@ -523,7 +514,6 @@ const orchestrator = createSidecarOrchestrator({
   signalInboundRouter: multistepSignalRouter,
   drainInboundRouter: multistepDrainRouter,
   grantsInboundRouter: multistepGrantsRouter,
-  sourcesInboundRouter: multistepSourcesRouter,
   credentialsInboundRouter: multistepCredentialsRouter,
   applyWorkflowRunPack: restoreWorkflowRunPack,
   workflowProbeExecutor,
@@ -643,7 +633,6 @@ const orchestrator = createSidecarOrchestrator({
       multistepSignalRouter,
       multistepDrainRouter,
       multistepGrantsRouter,
-      multistepSourcesRouter,
       multistepCredentialsRouter,
       multistepSubstrateEnv,
       multistepSubprocessSpawner: defaultSubprocessSpawner,

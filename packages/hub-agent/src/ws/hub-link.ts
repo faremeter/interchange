@@ -41,7 +41,6 @@ import {
   type SignalCorrelationRegisterFrame,
   type SignalCorrelationRegisterAckFrame,
   type DrainDeliverFrame,
-  type SourcesUpdateFrame,
   type CredentialsUpdateFrame,
   type WelcomeFrame,
   type WorkflowProbeRequestFrame,
@@ -110,11 +109,13 @@ const MalformedRequestEnvelope = type({
 });
 
 /**
- * Inbound request/ack frames the sidecar dispatches that the hub
- * correlates by `requestId`, whose failure reply is a `session.error`.
- * `sources.update` and `credentials.update` qualify -- both are answered with a
- * `session.error`. Frames answered through the other correlation keys live in
- * `LIFECYCLE_ERROR_TYPES` and `PACK_REJECT_REQUEST_TYPES`, and a
+ * Inbound request/ack frames that the hub correlates by `requestId`, whose
+ * failure reply is a `session.error`. `credentials.update` is one.
+ * `sources.update` is not in `HubFrame`, so the schema rejects it; an older
+ * hub can still send it, and it stays here so that the hub gets a
+ * `session.error` and does not wait for its timeout. Frames answered through
+ * the other correlation keys live in `LIFECYCLE_ERROR_TYPES` and
+ * `PACK_REJECT_REQUEST_TYPES`, and a
  * `workflow.control` is answered with its ack; a malformed frame of any other
  * type is dropped unanswered.
  */
@@ -149,8 +150,8 @@ const PACK_REJECT_REQUEST_TYPES: ReadonlySet<string> = new Set([
 /**
  * Answer a malformed inbound request/ack control frame with an error reply
  * so the hub's request does not hang to its timeout. Three control-frame
- * families answer through their `requestId`: sources.update and
- * credentials.update reply `session.error`; agent.deploy and agent.undeploy
+ * families answer through their `requestId`: credentials.update (and an
+ * old sources.update) reply `session.error`; agent.deploy and agent.undeploy
  * reply their typed error, which also needs the frame's address and
  * generation; workflow.control replies its ack with an error, since a
  * standby request has no timeout to end the wait. The fire-and-forget frames
@@ -500,32 +501,10 @@ export interface GrantsInboundRouter {
 }
 
 /**
- * Per-deployment-address sources-rotation registry the link consults on
- * every inbound `sources.update` frame. Unlike signal/drain, `sources.update`
- * is a REQUEST/ACK frame, so the link answers `session.ack` / `session.error`
- * rather than logging and dropping -- a missing answer hangs the hub's
- * request for its full timeout.
- *
- * The shape lives on hub-agent so the link does not import the sidecar
- * host's wiring module, and so tests can substitute a stub.
- */
-export interface SourcesInboundRouter {
-  /**
-   * Attempt to dispatch `frame` to the supervisor registered against
-   * `frame.agentAddress`. Resolves `true` when a handler accepted the
-   * rotation, `false` when no handler is registered (an unrouted address).
-   * Rejects when the handler is registered but the rotation is invalid or
-   * the supervisor's `deliverSources` throws; the link turns a rejection
-   * into a `session.error` carrying the reason.
-   */
-  tryRoute(frame: SourcesUpdateFrame): Promise<boolean>;
-}
-
-/**
  * Per-deployment-address credential-delivery registry the link consults on
- * every inbound `credentials.update` frame. Like `sources.update`, this is a
- * REQUEST/ACK frame, so the link answers `session.ack` / `session.error`
- * rather than logging and dropping -- a missing answer hangs the hub's request.
+ * every inbound `credentials.update` frame. This is a REQUEST/ACK frame, so
+ * the link answers `session.ack` / `session.error` rather than logging and
+ * dropping -- a missing answer hangs the hub's request.
  *
  * The shape lives on hub-agent so the link does not import the sidecar host's
  * wiring module, and so tests can substitute a stub.
@@ -688,16 +667,6 @@ export type HubLinkConfig = {
    * so a misrouted delivery is observable rather than silent.
    */
   grantsInboundRouter?: GrantsInboundRouter;
-  /**
-   * Optional inbound sources-rotation dispatcher. When present, the link
-   * routes every inbound `sources.update` frame through this router and
-   * answers the request/ack frame: `session.ack` when the router accepted
-   * the rotation, `session.error` when no deployment is registered, when
-   * the rotation is invalid, or when delivery throws. Absent means the
-   * link answers `session.error` for every rotation -- required because a
-   * request/ack frame with no reply hangs the hub's request.
-   */
-  sourcesInboundRouter?: SourcesInboundRouter;
   /**
    * Optional inbound credential-delivery dispatcher. When present, the link
    * routes every inbound `credentials.update` frame through this router and
@@ -894,7 +863,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     signalInboundRouter,
     drainInboundRouter,
     grantsInboundRouter,
-    sourcesInboundRouter,
     credentialsInboundRouter,
     applyWorkflowRunPack,
     workflowProbeExecutor = defaultWorkflowProbeExecutor,
@@ -1795,63 +1763,12 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
-  async function handleSourcesUpdate(
-    frame: SourcesUpdateFrame,
-    reply: Reply,
-  ): Promise<void> {
-    // `sources.update` is request/ack (the hub awaits a reply within its
-    // request timeout), so every path answers `session.ack` or
-    // `session.error` -- unlike the fire-and-forget signal/drain frames
-    // that log and drop. A missing router still answers, or the hub hangs.
-    const refused = refusal(frame);
-    if (refused !== null) {
-      reply({
-        type: "session.error",
-        requestId: frame.requestId,
-        error: refused,
-      });
-      return;
-    }
-    if (sourcesInboundRouter === undefined) {
-      reply({
-        type: "session.error",
-        requestId: frame.requestId,
-        error: "no sourcesInboundRouter is wired",
-      });
-      return;
-    }
-    try {
-      const routed = await sourcesInboundRouter.tryRoute(frame);
-      if (routed) {
-        reply({ type: "session.ack", requestId: frame.requestId });
-      } else {
-        reply({
-          type: "session.error",
-          requestId: frame.requestId,
-          error: `no deployment registered for ${frame.agentAddress}`,
-        });
-      }
-    } catch (err) {
-      // A registered address whose rotation was rejected: an invalid list
-      // (the router validates before dispatch) or the supervisor's
-      // `deliverSources` throwing (e.g. a recycling phase). The reason
-      // rides back verbatim so the hub sees why the rotation failed.
-      const msg = err instanceof Error ? err.message : String(err);
-      reply({
-        type: "session.error",
-        requestId: frame.requestId,
-        error: msg,
-      });
-    }
-  }
-
   async function handleCredentialsUpdate(
     frame: CredentialsUpdateFrame,
     reply: Reply,
   ): Promise<void> {
-    // `credentials.update` is request/ack, exactly like `sources.update`: every
-    // path answers `session.ack` or `session.error`. A missing router still
-    // answers, or the hub hangs.
+    // `credentials.update` is request/ack: every path answers `session.ack`
+    // or `session.error`. A missing router still answers, or the hub hangs.
     const refused = refusal(frame);
     if (refused !== null) {
       reply({
@@ -2067,7 +1984,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     const validated = HubFrame(raw);
     if (validated instanceof type.errors) {
       // A malformed request/ack frame must still be answered, or the hub's
-      // request hangs to its timeout. `sources.update` and `agent.deploy`
+      // request hangs to its timeout. `credentials.update` and `agent.deploy`
       // usually keep an intact correlation key even when a nested field is
       // malformed, so reply with the matching error frame; a fire-and-forget
       // frame (or one with no recoverable key) is only logged and dropped.
@@ -2225,9 +2142,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "drain.deliver":
         await handleDrainDeliver(frame);
-        break;
-      case "sources.update":
-        await handleSourcesUpdate(frame, reply);
         break;
       case "credentials.update":
         await handleCredentialsUpdate(frame, reply);

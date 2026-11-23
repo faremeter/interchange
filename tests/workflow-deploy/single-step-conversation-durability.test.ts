@@ -568,7 +568,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         req,
         onEvent,
         authorize,
-        _sourcesRef,
+        _stepSources,
         _credentialWiring,
         mailPartReader,
       ) => {

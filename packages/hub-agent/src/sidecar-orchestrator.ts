@@ -38,7 +38,6 @@ import {
   type SignalInboundRouter,
   type DrainInboundRouter,
   type GrantsInboundRouter,
-  type SourcesInboundRouter,
   type CredentialsInboundRouter,
   type WorkflowRunPackApplier,
   type WorkflowProbeExecutor,
@@ -193,15 +192,6 @@ export type SidecarOrchestratorConfig = {
    * the binding unchanged to `createHubLink`.
    */
   grantsInboundRouter?: GrantsInboundRouter;
-  /**
-   * Optional inbound sources-rotation dispatcher the link consults on
-   * every inbound `sources.update` frame. Production wires this against
-   * the sidecar's single-step deployment sources handler registry so a
-   * deployment-address rotation flows into the supervisor's
-   * `deliverSources`. The orchestrator forwards the binding unchanged to
-   * `createHubLink`.
-   */
-  sourcesInboundRouter?: SourcesInboundRouter;
   /** Apply Hub-authoritative workflow-run refs before a first deploy. */
   applyWorkflowRunPack: WorkflowRunPackApplier;
   /**
@@ -288,7 +278,6 @@ export function createSidecarOrchestrator(
     signalInboundRouter,
     drainInboundRouter,
     grantsInboundRouter,
-    sourcesInboundRouter,
     credentialsInboundRouter,
     applyWorkflowRunPack,
     workflowProbeExecutor,
@@ -416,7 +405,6 @@ export function createSidecarOrchestrator(
     ...(signalInboundRouter !== undefined ? { signalInboundRouter } : {}),
     ...(drainInboundRouter !== undefined ? { drainInboundRouter } : {}),
     ...(grantsInboundRouter !== undefined ? { grantsInboundRouter } : {}),
-    ...(sourcesInboundRouter !== undefined ? { sourcesInboundRouter } : {}),
     ...(credentialsInboundRouter !== undefined
       ? { credentialsInboundRouter }
       : {}),

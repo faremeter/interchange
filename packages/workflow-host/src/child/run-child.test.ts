@@ -66,7 +66,7 @@ import { createParkReleases } from "./park-releases";
 import {
   emitParkNotify,
   emitTerminalEvent,
-  type SourcesSnapshotRef,
+  type StepSources,
 } from "./run-child";
 import { createStoreStepConversation } from "./store-step-conversation";
 import type {
@@ -2864,73 +2864,6 @@ describe("runWorkflowChild", () => {
     );
   });
 
-  test("sources-updated on a multi-step deployment is rejected", async () => {
-    const baseDir = await makeTempDir("child-sources-multistep-");
-    const supervisorKeyPair = await generateKeyPair();
-    const childKeyPair = await generateKeyPair();
-    const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-    const {
-      packageDir: closurePackageDir,
-      approvedHash: definitionHash,
-      definition,
-    } = await materializeClosure("child-sources-multistep-def-", {
-      id: "test-workflow",
-      triggers: [],
-      steps: { "step-1": agentStep("step-1"), "step-2": agentStep("step-2") },
-      stepOrder: ["step-1", "step-2"],
-    });
-
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventStream = createMemoryFrameStream();
-
-    const env = parseSpawnTimeEnv(
-      makeSpawnEnv({
-        channelId,
-        hmacKeyHex: hexEncode(hmacKey),
-        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
-        definitionHash,
-        closurePackageDir,
-      }),
-    );
-    const bindings = buildBindings({ baseDir, childKeyPair });
-    const supervisorSender = createControlChannelSender({
-      privateKeySeed: supervisorKeyPair.privateKey,
-      channelId,
-      writer: supervisorToChild.writer,
-    });
-    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
-
-    const runPromise = runWorkflowChild({
-      env,
-      definition,
-      controlReader: supervisorToChild.reader,
-      controlWriter: childToSupervisor.writer,
-      eventWriter: eventStream.writer,
-      bindings,
-    });
-
-    await supervisorSender.send({
-      type: "sources-updated",
-      data: {
-        sources: [
-          {
-            id: "primary",
-            provider: "anthropic",
-            baseURL: "https://api.anthropic.com",
-            credentialId: "sk-x",
-            model: "claude-test",
-          },
-        ],
-        defaultSource: "primary",
-      },
-    });
-
-    await expect(runPromise).rejects.toThrow(/single-step deployment/);
-    supervisorToChild.close();
-  });
-
   test("the process entry reports its verified definition first, under the key it publishes", async () => {
     const baseDir = await makeTempDir("child-definition-report-");
     const supervisorKeyPair = await generateKeyPair();
@@ -3447,8 +3380,6 @@ interface TurnSpy {
   liveLsps: number;
   closeCount: number;
   readonly replies: string[];
-  /** The default source each build's env carried, in build order. */
-  readonly builtSources: string[];
   /**
    * Fires after every recorded mutation above. The spy's arrays are mutated
    * in place, so there is no event for a test to await; this is the spy
@@ -3476,7 +3407,6 @@ function buildTurnSpy(): {
     liveLsps: 0,
     closeCount: 0,
     replies: [],
-    builtSources: [],
     changed: createChangeNotifier(),
   };
   const agentFactory = async (
@@ -3486,7 +3416,6 @@ function buildTurnSpy(): {
     spy.builds += 1;
     spy.lspSpawnCount += 1;
     spy.liveLsps += 1;
-    spy.builtSources.push(env.defaultSource);
     let lspAlive = true;
     let endStream: () => void = () => undefined;
     const streamEnded = new Promise<void>((resolve) => {
@@ -3717,13 +3646,13 @@ async function startOneStepChild(opts: {
   const { agentFactory, spy } = buildTurnSpy();
   const buildEnv = async (
     req: StepInvokeRequest,
-    sourcesRef: SourcesSnapshotRef,
+    stepSources: StepSources,
   ): Promise<StepBuild> => {
     const { runId, stepId, attempt } = req.authzContext;
     if (runId === undefined || stepId === undefined || attempt === undefined) {
       throw new Error("the runtime stamps every step invocation");
     }
-    const sources = sourcesRef.current[stepId];
+    const sources = stepSources[stepId];
     const head = sources?.[0];
     if (sources === undefined || head === undefined) {
       throw new Error(`no sources pinned for step ${stepId}`);
@@ -3762,13 +3691,13 @@ async function startOneStepChild(opts: {
     req,
     onEvent,
     authorize,
-    sourcesRef,
+    stepSources,
     _credentialWiring,
     mailPartReader,
   ) => {
     return createWorkflowStepInvoker({
       workflowAuthorize: authorize,
-      buildEnv: (buildReq) => buildEnv(buildReq, sourcesRef),
+      buildEnv: (buildReq) => buildEnv(buildReq, stepSources),
       agentFactory,
       onEvent: (event) => onEvent(event),
       mailPartReader,
@@ -3792,7 +3721,7 @@ async function startOneStepChild(opts: {
       matchingGrants: [],
       resolvedBy: null,
     }),
-    initialSources: { [opts.stepId]: [STUB_SOURCE] },
+    stepSources: { [opts.stepId]: [STUB_SOURCE] },
     ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
   };
 
@@ -3846,7 +3775,7 @@ async function startOneStepChild(opts: {
     supervisorToChild.close();
     return runPromise;
   };
-  return { spy, supervisorSender, childToSupervisor, fireMail, shutdown };
+  return { spy, childToSupervisor, fireMail, shutdown };
 }
 
 describe("a one-step deployment's turns", () => {
@@ -3885,40 +3814,6 @@ describe("a one-step deployment's turns", () => {
     const result = await child.shutdown();
     expect(result.triggeredRunIds).toEqual(["run-1", "run-2"]);
     expect(spy.closeCount).toBe(2);
-  });
-
-  test("a sources-updated frame between two mails reaches the second turn's build", async () => {
-    const child = await startOneStepChild({
-      prefix: "one-step-sources-",
-      stepId: "step-1",
-      mails: ["alpha body", "bravo body"],
-    });
-    const { spy } = child;
-
-    await child.fireMail(1, "alpha body");
-    await waitForUpstreamPayload(child.childToSupervisor, "terminal.event");
-
-    const rotated: InferenceSource[] = [
-      {
-        id: "rotated",
-        provider: "openai",
-        baseURL: "https://api.openai.com",
-        credentialId: "sk-rotated",
-        model: "gpt-rotated",
-      },
-    ];
-    await child.supervisorSender.send({
-      type: "sources-updated",
-      data: { sources: rotated, defaultSource: "rotated" },
-    });
-
-    await child.fireMail(2, "bravo body");
-    await waitForUpstreamPayloads(child.childToSupervisor, "terminal.event", 2);
-
-    // The control loop applies frames in order, so the rotation lands
-    // before the second trigger, and the second turn builds on it.
-    expect(spy.builtSources).toEqual([STUB_SOURCE.id, "rotated"]);
-    await child.shutdown();
   });
 });
 

@@ -22,7 +22,7 @@ advertises (`capacity`), and the host-injected deploy-router
 factory (`createDeployRouter`) that routes every `agent.deploy` frame
 on the link. Optional fields supply the multi-step inbound routers
 (`mailInboundRouter`, `signalInboundRouter`, `drainInboundRouter`,
-`sourcesInboundRouter`), the incarnation report the `hello` carries
+`credentialsInboundRouter`), the incarnation report the `hello` carries
 (`getIncarnations`) and the routability hooks, and the reconnect
 cadence. See `SidecarOrchestratorConfig` in
 `src/sidecar-orchestrator.ts` for the full surface.

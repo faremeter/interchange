@@ -1387,12 +1387,12 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
-  const ROTATION_SOURCE = {
+  const OLD_FRAME_SOURCE = {
     id: "primary",
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
-    credentialId: "sk-rotation",
-    model: "claude-rotation",
+    credentialId: "sk-primary",
+    model: "claude-primary",
   };
 
   // An older hub can still send `sources.update`; send it raw and return the
@@ -1406,7 +1406,7 @@ describe("sidecar↔hub integration", () => {
       requestId,
       agentAddress,
       generation: 1,
-      sources: [ROTATION_SOURCE],
+      sources: [OLD_FRAME_SOURCE],
       defaultSource: "primary",
     });
     const answer = () =>
@@ -1421,29 +1421,20 @@ describe("sidecar↔hub integration", () => {
     return found;
   }
 
-  test("sourcesInboundRouter acks an inbound sources.update round-trip", async () => {
+  test("an old sources.update is answered with session.error", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
-    const deploymentAddress = "run_srcack@integration.interchange";
-
-    const routed: { agentAddress: string }[] = [];
-    const sourcesInboundRouter = {
-      async tryRoute(frame: { agentAddress: string }): Promise<boolean> {
-        routed.push({ agentAddress: frame.agentAddress });
-        return true;
-      },
-    };
+    const deploymentAddress = "run_srcold@integration.interchange";
 
     const bindings = withTestDeployBindings();
     const client = createHubLink({
       capacity: DEFAULT_SIDECAR_CAPACITY,
       hubURL: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-sources-ack",
+      sidecarId: "sc-sources-old",
       token: "test-token",
       transport,
       sessions,
       ...bindings,
-      sourcesInboundRouter,
       getIncarnations: () => liveIncarnation(deploymentAddress),
     });
 
@@ -1452,143 +1443,20 @@ describe("sidecar↔hub integration", () => {
       await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
-      // The sidecar answers with session.ack. Without a reply the hub that
-      // sent it would wait for its full request timeout.
-      expect(
-        await answerToSourcesUpdate(deploymentAddress, "sources-ack"),
-      ).toMatchObject({ type: "session.ack" });
-      expect(routed).toHaveLength(1);
-      expect(routed[0]?.agentAddress).toBe(deploymentAddress);
-    } finally {
-      client.close();
-      await waitUntil(
-        () => !env.router.getConnectedSidecars().includes("sc-sources-ack"),
-      );
-    }
-  });
-
-  test("an unrouted sources.update is answered with session.error", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    const deploymentAddress = "run_srcunrouted@integration.interchange";
-
-    const sourcesInboundRouter = {
-      async tryRoute(): Promise<boolean> {
-        return false;
-      },
-    };
-
-    const bindings = withTestDeployBindings();
-    const client = createHubLink({
-      capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-sources-unrouted",
-      token: "test-token",
-      transport,
-      sessions,
-      ...bindings,
-      sourcesInboundRouter,
-      getIncarnations: () => liveIncarnation(deploymentAddress),
-    });
-
-    client.connect();
-    try {
-      await waitUntil(() =>
-        env.router.getRoutableAddresses().includes(deploymentAddress),
-      );
+      // The sidecar does not accept a source change on a live deployment.
+      // It answers the request so that the hub does not wait for its
+      // timeout, and the link stays up for the next frame.
       const answer = await answerToSourcesUpdate(
         deploymentAddress,
-        "sources-unrouted",
+        "sources-old",
       );
       expect(answer.type).toBe("session.error");
-      expect(answer.error).toMatch(/no deployment registered/);
+      expect(answer.error).toMatch(/malformed sources\.update frame/);
+      expect(env.router.getConnectedSidecars()).toContain("sc-sources-old");
     } finally {
       client.close();
       await waitUntil(
-        () =>
-          !env.router.getConnectedSidecars().includes("sc-sources-unrouted"),
-      );
-    }
-  });
-
-  test("a rejected sources.update surfaces the reason as session.error", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    const deploymentAddress = "run_srcreject@integration.interchange";
-
-    const sourcesInboundRouter = {
-      async tryRoute(): Promise<boolean> {
-        throw new Error("supervisor is recycling");
-      },
-    };
-
-    const bindings = withTestDeployBindings();
-    const client = createHubLink({
-      capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-sources-reject",
-      token: "test-token",
-      transport,
-      sessions,
-      ...bindings,
-      sourcesInboundRouter,
-      getIncarnations: () => liveIncarnation(deploymentAddress),
-    });
-
-    client.connect();
-    try {
-      await waitUntil(() =>
-        env.router.getRoutableAddresses().includes(deploymentAddress),
-      );
-      const answer = await answerToSourcesUpdate(
-        deploymentAddress,
-        "sources-reject",
-      );
-      expect(answer.type).toBe("session.error");
-      expect(answer.error).toMatch(/supervisor is recycling/);
-    } finally {
-      client.close();
-      await waitUntil(
-        () => !env.router.getConnectedSidecars().includes("sc-sources-reject"),
-      );
-    }
-  });
-
-  test("a sources.update with no router wired is answered with session.error", async () => {
-    const transport = createInMemoryTransport();
-    const sessions = createMockSessionManager();
-    const deploymentAddress = "run_srcnorouter@integration.interchange";
-
-    const bindings = withTestDeployBindings();
-    const client = createHubLink({
-      capacity: DEFAULT_SIDECAR_CAPACITY,
-      hubURL: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: "sc-sources-norouter",
-      token: "test-token",
-      transport,
-      sessions,
-      ...bindings,
-      // No sourcesInboundRouter: a request/ack frame must still be answered
-      // or the hub hangs on its request timeout.
-      getIncarnations: () => liveIncarnation(deploymentAddress),
-    });
-
-    client.connect();
-    try {
-      await waitUntil(() =>
-        env.router.getRoutableAddresses().includes(deploymentAddress),
-      );
-      const answer = await answerToSourcesUpdate(
-        deploymentAddress,
-        "sources-norouter",
-      );
-      expect(answer.type).toBe("session.error");
-      expect(answer.error).toMatch(/no sourcesInboundRouter/);
-    } finally {
-      client.close();
-      await waitUntil(
-        () =>
-          !env.router.getConnectedSidecars().includes("sc-sources-norouter"),
+        () => !env.router.getConnectedSidecars().includes("sc-sources-old"),
       );
     }
   });
@@ -3252,7 +3120,7 @@ describe("initial handshake on connect", () => {
           return true;
         },
       },
-      sourcesInboundRouter: {
+      credentialsInboundRouter: {
         async tryRoute() {
           return true;
         },
@@ -3273,12 +3141,11 @@ describe("initial handshake on connect", () => {
         deadlineMs: 10,
       });
       hub.send({
-        type: "sources.update",
-        requestId: "sources-stale",
+        type: "credentials.update",
+        requestId: "credentials-stale",
         agentAddress: address,
         generation: 1,
-        sources: TEST_CONFIG.sources,
-        defaultSource: TEST_CONFIG.defaultSource,
+        delivery: { bindings: [], materials: [] },
       });
       hub.send({
         type: "drain.deliver",
@@ -3291,7 +3158,7 @@ describe("initial handshake on connect", () => {
       const answer = () =>
         hub.frames
           .map((s): { requestId?: string } => JSON.parse(s))
-          .find((frame) => frame.requestId === "sources-stale");
+          .find((frame) => frame.requestId === "credentials-stale");
       await waitUntil(() => answer() !== undefined);
       expect(answer()).toMatchObject({
         type: "session.error",
@@ -3327,7 +3194,7 @@ describe("initial handshake on connect", () => {
           return true;
         },
       },
-      sourcesInboundRouter: {
+      credentialsInboundRouter: {
         async tryRoute() {
           return true;
         },
@@ -3340,7 +3207,7 @@ describe("initial handshake on connect", () => {
         hub.frames.some((s) => JSON.parse(s).type === "hello"),
       );
       // Frames for one address are handled in arrival order, so the answer to
-      // each address's sources update proves its drain was handled first.
+      // each address's credentials update proves its drain was handled first.
       for (const address of [stopped, deploying, unknown]) {
         hub.send({
           type: "drain.deliver",
@@ -3349,18 +3216,17 @@ describe("initial handshake on connect", () => {
           deadlineMs: 10,
         });
         hub.send({
-          type: "sources.update",
-          requestId: `sources-${address}`,
+          type: "credentials.update",
+          requestId: `credentials-${address}`,
           agentAddress: address,
           generation: 1,
-          sources: TEST_CONFIG.sources,
-          defaultSource: TEST_CONFIG.defaultSource,
+          delivery: { bindings: [], materials: [] },
         });
       }
       const answer = (address: string) =>
         hub.frames
           .map((s): { requestId?: string } => JSON.parse(s))
-          .find((frame) => frame.requestId === `sources-${address}`);
+          .find((frame) => frame.requestId === `credentials-${address}`);
       await waitUntil(() =>
         [stopped, deploying, unknown].every(
           (address) => answer(address) !== undefined,
@@ -3758,10 +3624,10 @@ describe("answerMalformedRequestFrame", () => {
     | WorkflowControlAckFrame
     | PackRejectFrame;
 
-  test("answers a malformed sources.update with session.error carrying the requestId", () => {
+  test("answers an old sources.update with session.error carrying the requestId", () => {
     const sent: Answer[] = [];
-    // A structurally-invalid sources list (empty source object) that failed
-    // the top-level parse but kept its type + requestId.
+    // `HubFrame` has no `sources.update`, so an older hub's frame fails the
+    // top-level parse but keeps its type and requestId.
     const answered = answerMalformedRequestFrame(
       {
         type: "sources.update",
@@ -3973,12 +3839,12 @@ describe("answerMalformedRequestFrame", () => {
     const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
       {
-        type: "sources.update",
+        type: "credentials.update",
         requestId: "req-9",
         repoId: { kind: "not-a-real-kind" },
-        sources: [{}],
+        delivery: {},
       },
-      "sources invalid",
+      "delivery invalid",
       (frame) => sent.push(frame),
     );
     expect(answered).toBe(true);
@@ -3988,10 +3854,10 @@ describe("answerMalformedRequestFrame", () => {
     });
   });
 
-  test("does not answer a sources.update with no recoverable requestId", () => {
+  test("does not answer a credentials.update with no recoverable requestId", () => {
     const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
-      { type: "sources.update", sources: [{}] },
+      { type: "credentials.update", delivery: {} },
       "bad",
       (frame) => sent.push(frame),
     );

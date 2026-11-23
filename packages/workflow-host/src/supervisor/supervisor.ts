@@ -91,7 +91,6 @@ import {
 import {
   isMessageTransportError,
   type ApprovalSnapshot,
-  type InferenceSource,
   type InboundMessage,
   type Mail,
   type MessageHeaders,
@@ -366,18 +365,8 @@ export interface WorkflowSupervisor {
    */
   deliverSignal(opts: DeliverSignalOpts): Promise<void>;
   /**
-   * Push a rotated inference-source list to the child of a single-step
-   * deployment, whose step's next turn builds its agent on it. Mirrors
-   * `deliverSignal`: the supervisor is the single producer
-   * of `sources-updated` control frames, and delivery is phase-guarded to
-   * starting/running so a frame is never written into a recycling child's
-   * closing pipe. While in standby it returns at once, since the respawn reads
-   * the host's persisted sources; any other phase throws.
-   */
-  deliverSources(opts: DeliverSourcesOpts): Promise<void>;
-  /**
    * Push refreshed credential material to the child's in-memory cell. Mirrors
-   * `deliverSources`: the supervisor is the single producer of
+   * `deliverSignal`: the supervisor is the single producer of
    * `credentials-updated` control frames, phase-guarded to starting/running so
    * a frame is never written into a recycling child's closing pipe. A revoked
    * credential is delivered by omitting its material so the child evicts it.
@@ -387,8 +376,8 @@ export interface WorkflowSupervisor {
    * Refresh a live run's grant floor mid-run by re-reading its durable
    * `runs/<runId>/grants.json` and pushing it as a `grants-updated` frame. The
    * enforcement path for a standing (`scope: "always"`) approval that lowers a
-   * tool's `ask` to `allow` in that file. Unlike `deliverSignal`/
-   * `deliverSources`, a refresh for a non-live child is normal, so this
+   * tool's `ask` to `allow` in that file. Unlike `deliverSignal`, a refresh
+   * for a non-live child is normal, so this
    * NO-OPS (`skipped`) instead of throwing, and a send failure to a live child
    * is logged loudly but stays non-fatal -- the durable file governs the next
    * barrier/respawn. It pushes only that file's contents, never caller-supplied
@@ -404,8 +393,8 @@ export interface WorkflowSupervisor {
    * correlations the stopped child was parked on.
    *
    * Best-effort and safe to call at any time, including concurrently. Unlike
-   * `deliverSignal`/`deliverSources`, which throw when the child is not
-   * addressable, this NO-OPS on a non-addressable phase (idle / stopping /
+   * `deliverSignal`, which throws when the child is not addressable, this
+   * NO-OPS on a non-addressable phase (idle / stopping /
    * stopped / recycling): a re-establishment landing mid-recycle must not
    * crash, and the next spawn re-drives it. A query that fails or times out is
    * logged and dropped; the hub co-write is idempotent, so the next
@@ -569,17 +558,6 @@ export type DeliverSignalOpts = {
    * delivery is name-FIFO and does not complete a correlated park.
    */
   correlationId?: string;
-};
-
-export type DeliverSourcesOpts = {
-  /**
-   * The rotated ordered inference-source failover chain; element 0 is the
-   * active source. The wire boundary enforces a non-empty list with unique
-   * ids whose head is the default.
-   */
-  sources: InferenceSource[];
-  /** The default source id; the wire boundary requires it to equal `sources[0].id`. */
-  defaultSource: string;
 };
 
 export type DeliverCredentialsOpts = {
@@ -3573,7 +3551,6 @@ export function createWorkflowSupervisor(
     try {
       const env = buildChildSpawnEnv({
         substrateEnv: bindings.substrateEnv,
-        dynamicSpawnEnv: bindings.dynamicSpawnEnv,
         channelId,
         hmacKey,
         hostPublicKey: ipcKeypair.publicKey,
@@ -6941,31 +6918,6 @@ export function createWorkflowSupervisor(
     );
   }
 
-  async function deliverSources(opts: DeliverSourcesOpts): Promise<void> {
-    // The supervisor is the single producer of `sources-updated` control
-    // frames. `recycling` is rejected for the same reason as
-    // `deliverSignal`: `state.controlSender` still points at the dying
-    // child, so a frame would either buffer behind the SIGTERM or write
-    // into a closed pipe and be lost. Rejecting surfaces the race so the
-    // caller can retry once the recycle completes. A child in standby has none
-    // to update: its respawn reads the host's persisted sources. A wake
-    // starting the first child of a restored standby is rejected as a
-    // recycle is.
-    if (state.phase === "standby" && !respawning()) return;
-    if (state.phase !== "running" && state.phase !== "starting") {
-      throw new Error(
-        `supervisor: deliverSources called in phase ${state.phase}; expected starting/running`,
-      );
-    }
-    await state.controlSender.send({
-      type: "sources-updated",
-      data: {
-        sources: opts.sources,
-        defaultSource: opts.defaultSource,
-      },
-    });
-  }
-
   async function deliverCredentials(
     opts: DeliverCredentialsOpts,
   ): Promise<void> {
@@ -7119,7 +7071,6 @@ export function createWorkflowSupervisor(
     drain,
     recycle,
     deliverSignal,
-    deliverSources,
     deliverCredentials,
     deliverGrants,
     reEmitParkedCorrelations,

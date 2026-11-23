@@ -157,7 +157,7 @@ import {
   eagerlyResolveActionHandlers,
   type CredentialWiring,
   type RunWorkflowChildBindings,
-  type SourcesSnapshotRef,
+  type StepSources,
 } from "./run-child";
 import {
   attachStepCredentialWiring,
@@ -227,10 +227,10 @@ const SubstrateConfig = type({
  * `frame.workflow.sources` (a `Record<stepId, InferenceSource[]>`) as
  * JSON and threads it through the supervisor's `substrateEnv`; the
  * factory parses and validates the table once at construction time and
- * seeds it into the run loop's mutable sources reference, which each
- * `buildEnv` reads. Each value is the step's ordered
- * failover chain -- element 0 is the active source, the tail are the
- * reactor's forward-only failover targets -- so the list is non-empty.
+ * hands it to the run loop, whose `buildEnv` reads it for each step.
+ * Each value is the step's ordered failover chain -- element 0 is the
+ * active source, the tail are the reactor's forward-only failover
+ * targets -- so the list is non-empty.
  */
 const StepInferenceSourceTable = type({
   "[string]": InferenceSource.array().atLeastLength(1),
@@ -924,20 +924,16 @@ export function createSidecarStepBuildEnv(
   deps: SidecarStepBuildEnvDeps,
 ): (
   req: StepInvokeRequest,
-  sourcesRef: SourcesSnapshotRef,
+  stepSources: StepSources,
   credentialContext?: SidecarStepCredentialContext,
 ) => Promise<StepBuild> {
   return async (
     req: StepInvokeRequest,
-    sourcesRef: SourcesSnapshotRef,
+    stepSources: StepSources,
     credentialContext?: SidecarStepCredentialContext,
   ): Promise<StepBuild> => {
-    // Resolve against the live table each build so a source rotation that
-    // wrote `sourcesRef.current` before this build is reflected in the
-    // agent this build constructs.
-    const resolveStepInferenceSource = createStepInferenceSourceResolver(
-      sourcesRef.current,
-    );
+    const resolveStepInferenceSource =
+      createStepInferenceSourceResolver(stepSources);
     const { stepId, runId, attempt } = req.authzContext;
     if (stepId === undefined) {
       throw new Error(
@@ -1170,15 +1166,15 @@ export function createSidecarStepBuildEnv(
  * and an onTrigger section body alike. It widens the workflow-runtime
  * `StepInvoker` with the child's credentials-backed `authorize` (the seam that
  * resolves each tool call against the run's grants), the child's own per-step
- * inference `sourcesRef` (built fresh per spawn from the env-delivered body
- * sources, disjoint from the top-level's mutable table), and the parent run's
+ * inference sources (built fresh per spawn from the env-delivered body
+ * sources, disjoint from the top-level's table), and the parent run's
  * `onEvent` funnel (so the child's live inference events reach the hub
  * timeline).
  */
 export type SidecarChildStepInvoker = (
   req: StepInvokeRequest,
   authorize: WorkflowAuthorizeFn,
-  sourcesRef: SourcesSnapshotRef,
+  stepSources: StepSources,
   onEvent: (event: InferenceEvent) => void,
   credentialContext?: SidecarStepCredentialContext,
 ) => Promise<StepInvokeResult>;
@@ -2034,13 +2030,13 @@ async function buildChildRunEnv(args: {
     );
   }
   const childOnEvent = onEvent;
-  // Resolve fresh per spawn into a `sourcesRef` disjoint from the top-level's
-  // mutable table, so a top-level source rotation never leaks into a child. The
+  // Resolve fresh per spawn into a table disjoint from the top-level's. The
   // sources are delivered plaintext through the spawn env (`deps.bodySources`),
   // decrypted sidecar-side, so the child never holds the cipher key.
-  const sourcesRef: SourcesSnapshotRef = {
-    current: await resolveBodyStepSources(deps, rewrittenDefinition.id),
-  };
+  const stepSources: StepSources = await resolveBodyStepSources(
+    deps,
+    rewrittenDefinition.id,
+  );
   // Recursive `spawnChild`: a grandchild embedded inline in this rung is
   // resolved from the in-memory map lifted above and flows back into this same
   // `runChild` callback. Inject THIS run's event funnel (mirroring the rung-0
@@ -2073,15 +2069,15 @@ async function buildChildRunEnv(args: {
   // Per-step invocation seam. The runtime body invokes `env.invokeStep` with
   // the request alone; the wrapper forwards the child's credentials-backed
   // authorize (so each tool call gates against the inherited grants), the run's
-  // `sourcesRef`, the event funnel, and the credential context (so the step's
+  // `stepSources`, the event funnel, and the credential context (so the step's
   // inference reads the run's live material). One invoker serves both the
   // childWorkflow path and the onTrigger body path: each runs a real
-  // tool-bearing agent against the same `sourcesRef`.
+  // tool-bearing agent against the same `stepSources`.
   const invokeStep: WorkflowRuntimeEnv["invokeStep"] = (req) =>
     deps.invokeStep(
       req,
       authorize,
-      sourcesRef,
+      stepSources,
       childOnEvent,
       childCredentialContext,
     );
@@ -2526,7 +2522,7 @@ export function createSidecarSubstrateFactory(
     });
     // Spawned-child step invoker (INTR-310). It runs a real agent through
     // `createWorkflowStepInvoker`, resolving inference against the child's own
-    // per-step `sourcesRef` (staged at deploy, read fresh per spawn) and
+    // per-step `stepSources` (staged at deploy, read fresh per spawn) and
     // funnelling live events to the parent run's channel. `buildChildRunEnv`
     // threads in the run's `credentialContext` (the live material cell, the
     // child's capped grants, the sidecar-static providers), so the build
@@ -2540,14 +2536,14 @@ export function createSidecarSubstrateFactory(
     const childInvokeStep: SidecarChildStepInvoker = (
       req,
       authorize,
-      sourcesRef,
+      stepSources,
       onEvent,
       credentialContext,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
         buildEnv: (buildReq) =>
-          buildStepEnv(buildReq, sourcesRef, credentialContext),
+          buildStepEnv(buildReq, stepSources, credentialContext),
         agentFactory: stepAgentFactory,
         onEvent,
         mailPartReader: childMailPartReader,
@@ -2589,7 +2585,7 @@ export function createSidecarSubstrateFactory(
       req,
       onEvent,
       authorize,
-      sourcesRef,
+      stepSources,
       credentialWiring,
       mailPartReader,
     ) =>
@@ -2603,7 +2599,7 @@ export function createSidecarSubstrateFactory(
         buildEnv: (buildReq) =>
           buildStepEnv(
             buildReq,
-            sourcesRef,
+            stepSources,
             runCredentialContext(credentialWiring),
           ),
         agentFactory: stepAgentFactory,
@@ -2698,7 +2694,7 @@ export function createSidecarSubstrateFactory(
       invokeStep,
       actionCredentials: (wiring) =>
         createSidecarActionCredentialsFactory(runCredentialContext(wiring)),
-      initialSources: stepInferenceSources,
+      stepSources: stepInferenceSources,
       runChild,
       runSuspendableChild,
       // A loop iteration runs under the inherited env (not `buildChildRunEnv`),

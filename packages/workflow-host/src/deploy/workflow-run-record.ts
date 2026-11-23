@@ -295,33 +295,6 @@ async function readWorkflowRunRecord(
   return checked;
 }
 
-/** Update sources without replacing lifecycle fields or resealing credentials. */
-export async function updateWorkflowRunRecordSources(
-  dataDir: string,
-  runId: string,
-  generation: number,
-  sources: WorkflowRunRecord["sources"],
-): Promise<void> {
-  return withWorkflowRunRecord(dataDir, runId, async (path) => {
-    const record = await readWorkflowRunRecord(path, runId);
-    if (record === null) {
-      throw new Error(
-        `Cannot update sources for ${runId}: its deployment record is missing or invalid`,
-      );
-    }
-    if (record.generation !== generation) {
-      throw new Error(
-        `Cannot update sources for ${runId}: its deployment generation changed`,
-      );
-    }
-    await writeFileAtomicDurable(
-      path,
-      JSON.stringify({ ...record, sources }, null, 2),
-      { mode: 0o600 },
-    );
-  });
-}
-
 /**
  * Replace a run record's credential cell with `credentials`, sealed under the
  * sidecar `cipher`, so a restart restores the latest delivery the deployment
