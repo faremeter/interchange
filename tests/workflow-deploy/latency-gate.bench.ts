@@ -59,7 +59,8 @@
 // connection) that no later turn pays. The agent build is not one of
 // them -- every measured turn pays it. The trend (OLS slope) and the
 // early/late window rows show how the per-turn cost grows as the
-// conversation gets longer.
+// conversation gets longer. The turn rows give the per-event cost at the
+// 1st, 50th and 200th measured turn, when `--messages` reaches them.
 //
 // Run:
 //   bun run tests/workflow-deploy/latency-gate.bench.ts \
@@ -225,6 +226,38 @@ function computeWindows(
 
 // The share of the samples in each of the early and late windows.
 const WINDOW_FRACTION = 0.1;
+
+// The measured turns whose cost the bench reports on its own row.
+const TURN_CHECKPOINTS: readonly number[] = [1, 50, 200];
+
+// The samples on each side of a checkpoint that its median covers.
+const CHECKPOINT_RADIUS = 2;
+
+type TurnCheckpoint = {
+  /** The 1-based measured turn. */
+  turn: number;
+  sample: number;
+  /** The median of the samples within `CHECKPOINT_RADIUS` of the turn. */
+  median: number;
+};
+
+/**
+ * The cost of each checkpoint turn that `samples` reaches. A single sample is
+ * noisy, so each row also carries the median of its neighbours.
+ */
+function computeTurnCheckpoints(samples: number[]): TurnCheckpoint[] {
+  const out: TurnCheckpoint[] = [];
+  for (const turn of TURN_CHECKPOINTS) {
+    const sample = samples[turn - 1];
+    if (sample === undefined) continue;
+    const near = samples.slice(
+      Math.max(0, turn - 1 - CHECKPOINT_RADIUS),
+      turn + CHECKPOINT_RADIUS,
+    );
+    out.push({ turn, sample, median: computeStats(near).p50 });
+  }
+  return out;
+}
 
 function fmt(ms: number): string {
   return ms.toFixed(3);
@@ -682,6 +715,8 @@ async function main(): Promise<void> {
   const unifiedTrend = computeTrend(unified);
   const baselineWindows = computeWindows(baseline, WINDOW_FRACTION);
   const unifiedWindows = computeWindows(unified, WINDOW_FRACTION);
+  const baselineTurns = computeTurnCheckpoints(baseline);
+  const unifiedTurns = computeTurnCheckpoints(unified);
 
   const delta: Stats = {
     n: Math.min(baselineStats.n, unifiedStats.n),
@@ -729,6 +764,11 @@ async function main(): Promise<void> {
       baseline: baselineWindows,
       unified: unifiedWindows,
     },
+    turns: {
+      note: `per-event cost at measured turns ${TURN_CHECKPOINTS.join(", ")}: the sample and the median of the ${String(CHECKPOINT_RADIUS)} samples on each side`,
+      baseline: baselineTurns,
+      unified: unifiedTurns,
+    },
   };
   fs.writeFileSync(
     path.join(opts.outDir, "results.json"),
@@ -767,6 +807,19 @@ async function main(): Promise<void> {
   process.stdout.write(statsRow("baseline late", baselineWindows.late) + "\n");
   process.stdout.write(statsRow("unified early", unifiedWindows.early) + "\n");
   process.stdout.write(statsRow("unified late", unifiedWindows.late) + "\n\n");
+  process.stdout.write(`per-event cost at measured turns (sample / median):\n`);
+  const turnRows: [string, TurnCheckpoint[]][] = [
+    ["baseline", baselineTurns],
+    ["unified", unifiedTurns],
+  ];
+  for (const [label, rows] of turnRows) {
+    for (const row of rows) {
+      process.stdout.write(
+        `  ${label.padEnd(9)} turn ${String(row.turn).padStart(3)}  ${fmt(row.sample)} / ${fmt(row.median)}\n`,
+      );
+    }
+  }
+  process.stdout.write("\n");
   process.stdout.write(
     `growth (OLS slope, ms added per earlier turn in the conversation):\n` +
       `  baseline  first=${fmt(baselineTrend.firstSample)} last=${fmt(baselineTrend.lastSample)} slope=${fmt(baselineTrend.slopeMsPerMessage)}\n` +
