@@ -296,7 +296,7 @@ describe("collectParkedApprovalCorrelations", () => {
   });
 
   test("skips an input park on a reserved channel without touching the binding", async () => {
-    // An `"input"` park (a long-lived run awaiting its next mail) reduces to
+    // An `"input"` park (an onTrigger section awaiting its next event) reduces to
     // the same `awaiting-signal` on a reserved channel as an approval, but it
     // carries no snapshot and is never hub-registered. Enumeration must skip it
     // BEFORE the snapshot lookup -- so it does not throw even with NO
@@ -320,7 +320,7 @@ describe("collectParkedApprovalCorrelations", () => {
         kind: "StepStarted",
         seq: 2,
         at,
-        stepId: "s",
+        stepId: "section",
         attempt: 1,
         input: { ref: "inline:null" },
       },
@@ -328,7 +328,7 @@ describe("collectParkedApprovalCorrelations", () => {
         kind: "SignalAwaited",
         seq: 3,
         at,
-        stepId: "s",
+        stepId: "section",
         signalName: signalName("corr-input"),
         parkKind: "input",
       },

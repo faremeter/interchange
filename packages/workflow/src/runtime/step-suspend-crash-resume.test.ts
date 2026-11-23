@@ -184,7 +184,6 @@ describe("step suspend crash-resume", () => {
     expect(invocations[0]?.resume).toEqual({
       correlationId: "corr-1",
       decision: { outcome: "approved" },
-      kind: "approval",
     });
 
     // The step completes with the RE-INVOCATION reply, not the raw payload.

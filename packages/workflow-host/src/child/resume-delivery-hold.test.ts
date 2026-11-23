@@ -157,27 +157,6 @@ const scenarios: Scenario[] = [
     ],
   },
   {
-    label: "an agent step's input",
-    definition: defineWorkflow({
-      id: "hold-input",
-      trigger: { type: "manual" },
-      steps: { a: step({ agent, triggers: 2 }) },
-    }),
-    name: signalName("corr-input"),
-    seed: (runId) => [
-      started(runId),
-      stepStarted("a"),
-      {
-        kind: "SignalAwaited",
-        seq: 3,
-        at,
-        stepId: "a",
-        signalName: signalName("corr-input"),
-        parkKind: "input",
-      },
-    ],
-  },
-  {
     label: "an onTrigger section's next event",
     definition: defineWorkflow({
       id: "hold-section",

@@ -1,7 +1,11 @@
 // Single-step conversation-durability integration test (Phase 4.5).
 //
-// A one-step deployment's multi-turn conversation survives a child
-// respawn. No agent stays live between turns: each turn builds the step's
+// The durable conversation store of an agent step continues across the step's
+// invocations and across a child respawn. The test fires three triggers
+// straight at the child, each a new invocation of the same step: two before the
+// respawn and one after it. A deployed one-step workflow answers only its first
+// mail, so this is not a deployed mail conversation; an onTrigger section on
+// mail is. No agent stays live between turns: each turn builds the step's
 // agent, restores the step's committed conversation from the workflow-run
 // substrate (its state directory `runs/<runId>/steps/<stepId>/state/`, a
 // bucket-sharded WAL plus a periodic checkpoint, beside the run's event log),

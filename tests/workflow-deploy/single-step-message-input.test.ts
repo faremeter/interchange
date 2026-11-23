@@ -56,6 +56,7 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import { waitForConsumedEntries } from "./fifo-mail-helpers";
 import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -258,6 +259,35 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(firstReply).toContain(FIRST_BODY);
       expect(firstReply).not.toBe("echo:");
       expect(firstReply).not.toBe("echo:null");
+
+      // A step runs one turn per invocation, so the deployment's one run is
+      // terminal after the first mail. A second mail does not start another
+      // turn: the supervisor rejects it as `workflow_run_terminal`.
+      const secondMessageId =
+        "<single-step-message-input-2@integration.interchange>";
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: secondMessageId,
+        content: "Second inbound body.",
+      });
+      const consumed = await waitForConsumedEntries(
+        env,
+        workflowRunRepoId,
+        deploymentMailAddress,
+        [secondMessageId],
+        { diagnostics: env.sidecarDiagnostics },
+      );
+      expect(
+        consumed.find((entry) => entry.messageId === secondMessageId)?.rejection
+          ?.code,
+      ).toBe("workflow_run_terminal");
+      const afterSecond = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID,
+        firstRunId,
+      );
+      expect(afterSecond.filter((e) => e.type === "StepStarted")).toHaveLength(
+        1,
+      );
     });
 
     // A message with NO conversation body -- here an attachment with an empty

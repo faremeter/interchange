@@ -385,9 +385,7 @@ async function runConversationTurn(
   const { conversation } = turn;
   if (conversation !== undefined) {
     await conversation.beginTurn(
-      req.resume?.kind === "approval"
-        ? { resume: req.resume.correlationId }
-        : {},
+      req.resume !== undefined ? { resume: req.resume.correlationId } : {},
     );
   }
   const sendResult = await sendWithAbort(agent, req, {
@@ -442,17 +440,14 @@ async function buildStepAgent(
 /**
  * Drive one `agent.send`, racing it against the step's abort signal.
  *
- * The message sent depends on `req.resume` and its kind. A first invocation
- * sends the synthesized `req.input` content. An `"approval"` resume sends the
- * full correlated `InboundMessage` built from `req.resume`, whose
+ * The message sent depends on `req.resume`. A first invocation sends the
+ * synthesized `req.input` content. An approval resume sends the full
+ * correlated `InboundMessage` built from `req.resume`, whose
  * `headers.interchangeCorrelationId` is correlated by the reactor with the
- * rehydrated gate and resumes the parked cycle --
- * no second inference cycle. An `"input"` resume sends the decision as plain
- * synthesized content, exactly like a first invocation: it is the step's next
- * turn, with no gate to correlate. Because every path goes through
- * `agent.send`, the returned `SendResult` carries the reactor's full settle
- * arm set: a cycle that parks on a gate settles as `"suspended"` regardless
- * of how the turn was delivered.
+ * rehydrated gate and resumes the parked cycle -- no second inference cycle.
+ * Because every path goes through `agent.send`, the returned `SendResult`
+ * carries the reactor's full settle arm set: a cycle that parks on a gate
+ * settles as `"suspended"` regardless of how the turn was delivered.
  *
  * On an abort, the in-flight send is left to settle via `agent.close()` in
  * the caller's cleanup, which aborts the reactor and drains the send queue
@@ -597,10 +592,8 @@ function wrapAuthorize(
  */
 function stepResultFromSend(result: SendResult): StepInvokeResult {
   if (result.type === "suspended") {
-    // The reactor parks only on a tool/authz gate -- an APPROVAL. It never
-    // parks awaiting the next mail (that "input" park is the workflow-host's
-    // decision to re-arm a conversational step, not a reactor outcome), so a
-    // suspended `SendResult` is always an approval and MUST carry a snapshot.
+    // The reactor parks only on a tool/authz gate -- an APPROVAL -- so a
+    // suspended `SendResult` MUST carry a snapshot.
     // A snapshot-less suspend (e.g. a director `caps.suspend` wired with no
     // tool definitions) is not a supported approval; classify the failure here
     // at the producer rather than emitting an ambiguous suspend that the
@@ -625,20 +618,19 @@ function stepResultFromSend(result: SendResult): StepInvokeResult {
 
 /**
  * Resolve the step input into the value `agent.send` receives. The delivery
- * depends on the resume kind and the input shape:
+ * depends on the resume and the input shape:
  *
- * - `"approval"` resume: the reactor is parked mid-turn on a tool/authz gate.
+ * - An approval resume: the reactor is parked mid-turn on a tool/authz gate.
  *   Build the full `InboundMessage` stamped with `resume.correlationId` so the
  *   header reaches the reactor, which correlates it with the rehydrated
  *   gate. The object form is load-bearing -- a plain string would drop the
  *   correlation id and the resumed cycle would never match. An approval
  *   decision is never a mail-derived `Mail`, so it stays on this branch.
- * - A mail-derived `Mail` (first invocation or `"input"` resume): project its
- *   parts into a real `InboundMessage` (text and/or attachments), resolving
- *   each non-text part's bytes through the reader.
- * - Anything else (a first invocation or `"input"` resume carrying an
- *   arbitrary step value): synthesize plain text; `agent.send` stamps its own
- *   synthetic addressing.
+ * - A mail-derived `Mail` on a first invocation: project its parts into a
+ *   real `InboundMessage` (text and/or attachments), resolving each non-text
+ *   part's bytes through the reader.
+ * - Anything else (a first invocation carrying an arbitrary step value):
+ *   synthesize plain text; `agent.send` stamps its own synthetic addressing.
  */
 async function buildSendMessage(
   req: StepInvokeRequest,
@@ -647,7 +639,7 @@ async function buildSendMessage(
   message: string | InboundMessage;
   mailInbound: InboundMessage | null;
 }> {
-  if (req.resume !== undefined && req.resume.kind !== "input") {
+  if (req.resume !== undefined) {
     return {
       message: createInboundMessage({
         from: "signal@local",
@@ -659,16 +651,18 @@ async function buildSendMessage(
       mailInbound: null,
     };
   }
-  const rawInput = req.resume === undefined ? req.input : req.resume.decision;
   // A step whose input is a decoded `Mail` is projected into the agent's
   // inbound message; the strict `isMail` guard keeps an arbitrary step value
   // from matching. This is the one branch that carries real threading headers,
   // so `mailInbound` surfaces the message for the connector seed.
-  if (isMail(rawInput)) {
-    const message = await buildInboundMessageFromMail(rawInput, mailPartReader);
+  if (isMail(req.input)) {
+    const message = await buildInboundMessageFromMail(
+      req.input,
+      mailPartReader,
+    );
     return { message, mailInbound: message };
   }
-  return { message: synthesizeInputContent(rawInput), mailInbound: null };
+  return { message: synthesizeInputContent(req.input), mailInbound: null };
 }
 
 function usableAddr(raw: string | undefined): string | undefined {

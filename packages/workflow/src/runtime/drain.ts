@@ -19,11 +19,7 @@
 // resolves `behaviorFor` against the live `RunState` plus the loaded
 // `WorkflowDefinition`.
 
-import {
-  stepTriggerBudget,
-  type DrainBehavior,
-  type WorkflowDefinition,
-} from "../definition/index";
+import type { DrainBehavior, WorkflowDefinition } from "../definition/index";
 import { baseStepId } from "./step-scope";
 
 /**
@@ -60,9 +56,7 @@ export interface DrainController {
  *     for the whole time it is in flight, including a parked relay and a
  *     child that is still mid-step.
  *   - `awaitSignal` defaults to `"wait"` (the human-in-the-loop case).
- *   - `step` defaults to `"cancel"` when its trigger budget is `1`
- *     (batch) and to `"wait"` when the budget is larger (multi-turn
- *     or unbounded).
+ *   - `step` defaults to `"cancel"`.
  *   - `gate`, `escalation`, `map` carry no `drainBehavior` of their
  *     own; the runtime never blocks inside them long enough for
  *     drain to matter, so the function returns `"cancel"` so the
@@ -77,14 +71,7 @@ export function resolveDrainBehavior(
   const primitive = lookupPrimitive(definition, stepId);
   if (primitive === null) return "cancel";
   switch (primitive.kind) {
-    case "step": {
-      // A step with a budget other than 1 (multi-turn or unbounded) is
-      // definitionally long-lived; draining it means "stop feeding new
-      // input", not "abort the paused waiter". The author can still
-      // override with an explicit `drainBehavior`.
-      const budget = stepTriggerBudget(primitive);
-      return primitive.drainBehavior ?? (budget !== 1 ? "wait" : "cancel");
-    }
+    case "step":
     case "action":
       return primitive.drainBehavior ?? "cancel";
     case "loop":
@@ -96,7 +83,7 @@ export function resolveDrainBehavior(
     case "onTrigger":
       // A live event-driven section is definitionally interactive;
       // draining means "stop feeding new events", not "abort the paused
-      // waiter". Mirrors awaitSignal and the long-lived step budget.
+      // waiter". Mirrors awaitSignal.
       return primitive.drainBehavior ?? "wait";
     case "awaitSignal":
       return primitive.drainBehavior ?? "wait";

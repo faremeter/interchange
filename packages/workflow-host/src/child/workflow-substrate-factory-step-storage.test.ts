@@ -304,10 +304,14 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     expect(await fs.readdir(retry.workdir)).toEqual([]);
   });
 
-  test("an input resume of the same attempt keeps the attempt's files", async () => {
+  test("an approval resume of the same attempt keeps the attempt's files", async () => {
     const dataDir = await makeTempDir();
+    const substrate = await createSubstrate(dataDir);
+    await seedColdStore(substrate, "run-1", [
+      approvalOp("corr-1", { suspendedCall: SUSPENDED_CALL }),
+    ]);
     const buildEnv = createSidecarStepBuildEnv(
-      buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
+      buildDeps({ dataDir, substrate }),
     );
     const stepSources = stepSourcesFor();
 
@@ -315,14 +319,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     await fs.writeFile(path.join(first.workdir, "turn-1.txt"), "kept");
 
     const { env: resumed } = await buildEnv(
-      {
-        ...requestForRun("run-1"),
-        resume: {
-          kind: "input",
-          correlationId: "input-1",
-          decision: "next",
-        },
-      },
+      approvalResumeRequest("run-1", "corr-1"),
       stepSources,
     );
     expect(resumed.workdir).toBe(first.workdir);
@@ -466,7 +463,6 @@ function approvalResumeRequest(
     resume: {
       correlationId,
       decision: { outcome: "approved" },
-      kind: "approval",
     },
     signal: new AbortController().signal,
   };

@@ -743,10 +743,11 @@ export type ApprovalSnapshot = typeof ApprovalSnapshot.infer;
  * - `"approval"` -- the step parked on a tool/authz gate and REQUIRES an
  *   {@link ApprovalSnapshot}; the runtime notifies the host (`env.onPark`) so
  *   the sidecar co-writes the approval/correlation rows the hub registers.
- * - `"input"` -- the step parked awaiting its next input (e.g. a long-lived
- *   agent run awaiting the next mail so it can take another turn). It carries
- *   NO snapshot and does NOT notify the host: the run's owner delivers the
- *   input on the same channel and the step re-arms. It is a runtime-local
+ * - `"input"` -- an onTrigger section container parked awaiting its next
+ *   event (e.g. the next mail, which starts the next body run). An agent step
+ *   never parks on it. It carries NO snapshot and does NOT notify the host:
+ *   the run's owner delivers the input on the same channel and the section
+ *   re-arms. It is a runtime-local
  *   concept -- deliberately NOT a {@link SignalKind}, so it never touches the
  *   approval-routing machinery (IPC register frames, the hub co-write, the
  *   approval columns).

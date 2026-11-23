@@ -1045,7 +1045,7 @@ export function createSidecarStepBuildEnv(
       lifetime: {
         kind: "invocation",
         invocation: { runId, stepId, attempt },
-        ...(req.resume?.kind === "approval"
+        ...(req.resume !== undefined
           ? { resumes: req.resume.correlationId }
           : {}),
       },
@@ -1070,13 +1070,8 @@ export function createSidecarStepBuildEnv(
     // match is an async marker, so the gate clears and the approved call is
     // silently skipped. Make either loud here, at the single seam that both
     // opened the store AND knows an approval resume must find its gate,
-    // rather than letting it surface as a hang or a skipped call. An
-    // `"input"` resume is exempt by construction: its correlationId names the
-    // runtime-minted re-arm channel awaiting the step's next trigger, not a
-    // reactor gate, so no pending operation ever exists for it and the
-    // delivered decision is sent as a plain next turn (no correlation to
-    // rehydrate).
-    if (req.resume !== undefined && req.resume.kind === "approval") {
+    // rather than letting it surface as a hang or a skipped call.
+    if (req.resume !== undefined) {
       const resumeCorrelationId = req.resume.correlationId;
       const loaded = await storage.load();
       const hasPendingGate = loaded.pendingOperations.some(

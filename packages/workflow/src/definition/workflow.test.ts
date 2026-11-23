@@ -22,8 +22,6 @@ import {
   onTrigger,
   sleep,
   step,
-  stepTriggerBudget,
-  validateRetryTriggerCombination,
   type Primitive,
   type WorkflowDefinition,
 } from "./index";
@@ -206,128 +204,17 @@ describe("onTrigger primitive", () => {
   });
 });
 
-describe("step triggers budget", () => {
-  test("defaults to 1 when unspecified", () => {
-    expect(stepTriggerBudget(step({ agent: makeAgent("a") }))).toBe(1);
-  });
-
-  test("carries a declared finite budget", () => {
-    expect(
-      stepTriggerBudget(step({ agent: makeAgent("a"), triggers: 5 })),
-    ).toBe(5);
-  });
-
-  test("carries the unbounded budget", () => {
-    expect(
-      stepTriggerBudget(step({ agent: makeAgent("a"), triggers: "unbounded" })),
-    ).toBe("unbounded");
-  });
-
-  test("rejects a non-positive or fractional trigger count", () => {
-    expect(() => step({ agent: makeAgent("a"), triggers: 0 })).toThrow(
-      /positive integer or "unbounded"/,
-    );
-    expect(() => step({ agent: makeAgent("a"), triggers: -1 })).toThrow(
-      /positive integer or "unbounded"/,
-    );
-    expect(() => step({ agent: makeAgent("a"), triggers: 1.5 })).toThrow(
-      /positive integer or "unbounded"/,
-    );
-  });
-
-  test("rejects an invalid trigger count at the read point too", () => {
-    // A definition hydrated from workflow.json never passes through `step()`
-    // (the envelope schema checks structure only), so `stepTriggerBudget` --
-    // the single read point -- must fail loud on a persisted invalid value
-    // rather than silently coercing (0 would behave as 1; 1.5 would service
-    // an extra trigger). Build the primitive directly, as hydration does.
-    const hydrated = { ...step({ agent: makeAgent("a") }), triggers: 0 };
-    expect(() => stepTriggerBudget(hydrated)).toThrow(
-      /positive integer or "unbounded"/,
-    );
-    const fractional = { ...step({ agent: makeAgent("a") }), triggers: 1.5 };
-    expect(() => stepTriggerBudget(fractional)).toThrow(
-      /positive integer or "unbounded"/,
-    );
-  });
-
-  test("rejects a retry policy on a multi-trigger step", () => {
-    // A retried attempt re-invokes the step with its launch input and starts
-    // with no resume, so on a step with a trigger budget other than 1 a
-    // mid-run failure would re-service the launch trigger and never
-    // re-service the consumed one -- the combination fails loud.
-    const retry = { maxAttempts: 2, initialBackoffMs: 100 };
-    expect(() => step({ agent: makeAgent("a"), triggers: 3, retry })).toThrow(
-      /cannot combine with a trigger budget/,
-    );
-    expect(() =>
-      step({ agent: makeAgent("a"), triggers: "unbounded", retry }),
-    ).toThrow(/cannot combine with a trigger budget/);
-    // A batch step retries fine: re-invoking with the launch input IS the
-    // retry semantics for a single trigger.
-    step({ agent: makeAgent("a"), retry });
-    step({ agent: makeAgent("a"), triggers: 1, retry });
-    // A declared maxAttempts of 1 never retries, so it combines with any
-    // budget.
-    step({
-      agent: makeAgent("a"),
-      triggers: "unbounded",
-      retry: { maxAttempts: 1, initialBackoffMs: 100 },
-    });
-  });
-
-  test("rejects the retry/budget combination at the read point too", () => {
-    // Hydrated definitions never pass through `step()`, so the runtime's
-    // read-point guard (applied at runStep entry) must reject the persisted
-    // combination. Build the primitive directly, as hydration does.
-    const hydrated = {
-      ...step({ agent: makeAgent("a"), triggers: 3 }),
-      retry: { maxAttempts: 2, initialBackoffMs: 100 },
-    };
-    expect(() => validateRetryTriggerCombination(hydrated)).toThrow(
-      /cannot combine with a trigger budget/,
-    );
-  });
-
-  test("rejects a map-level retry over a multi-trigger inner step", () => {
-    // The map's retry applies to each fan-out instance of an inner step that
-    // declares none, so `map()` must validate the COMPOSED shape -- `step()`
-    // alone never sees a map-level retry, and without the map-side check the
-    // forbidden combination would surface only at the run's first execution.
-    const retry = { maxAttempts: 2, initialBackoffMs: 100 };
-    expect(() =>
-      map({
-        over: { from: "trigger.payload" },
-        step: step({ agent: makeAgent("a"), triggers: 2 }),
-        retry,
-      }),
-    ).toThrow(/cannot combine with a trigger budget/);
-    // The inner step's OWN retry wins over the map's, so a budget-1 inner
-    // step with its own retry composes fine under a map-level retry...
-    map({
-      over: { from: "trigger.payload" },
-      step: step({ agent: makeAgent("a"), retry }),
-      retry,
-    });
-    // ...and a multi-trigger inner step is fine when no retry reaches it.
-    map({
-      over: { from: "trigger.payload" },
-      step: step({ agent: makeAgent("a"), triggers: 2 }),
-    });
-  });
-
-  test("triggers participates in the definition hash", () => {
-    const one = defineWorkflow({
-      id: "w",
-      trigger: { type: "manual" },
-      steps: { s: step({ agent: makeAgent("a") }) },
-    });
-    const unbounded = defineWorkflow({
-      id: "w",
-      trigger: { type: "manual" },
-      steps: { s: step({ agent: makeAgent("a"), triggers: "unbounded" }) },
-    });
-    expect(hashDefinition(one)).not.toEqual(hashDefinition(unbounded));
+describe("step triggers", () => {
+  test("step() rejects triggers and names onTrigger on mail", () => {
+    // A definition written for a step trigger budget must not run as a
+    // one-turn step without notice. The options object is not a literal, so
+    // the old key reaches `step()` as it does from untyped author code.
+    for (const triggers of [1, 2, "unbounded"]) {
+      const opts = { agent: makeAgent("a"), triggers };
+      expect(() => step(opts)).toThrow(
+        /step does not accept triggers.*onTrigger\(\{ on: mail, body \}\).*replyByMail: true/,
+      );
+    }
   });
 });
 
@@ -2031,36 +1918,14 @@ describe("onFailure validation", () => {
 });
 
 describe("primitive defaults", () => {
-  test("step defaults drainBehavior to cancel (batch)", () => {
+  test("step defaults drainBehavior to cancel", () => {
     const s = step({ agent: makeAgent("a") });
     expect(s.drainBehavior).toBe("cancel");
-    const explicitOne = step({ agent: makeAgent("a"), triggers: 1 });
-    expect(explicitOne.drainBehavior).toBe("cancel");
   });
 
-  test("step defaults drainBehavior to wait when triggers is not 1", () => {
-    const multi = step({ agent: makeAgent("a"), triggers: 5 });
-    expect(multi.drainBehavior).toBe("wait");
-    const unbounded = step({
-      agent: makeAgent("a"),
-      triggers: "unbounded",
-    });
-    expect(unbounded.drainBehavior).toBe("wait");
-  });
-
-  test("explicit drainBehavior overrides the trigger-budget default", () => {
-    const multiExplicit = step({
-      agent: makeAgent("a"),
-      triggers: 5,
-      drainBehavior: "cancel",
-    });
-    expect(multiExplicit.drainBehavior).toBe("cancel");
-    const batchExplicit = step({
-      agent: makeAgent("a"),
-      triggers: 1,
-      drainBehavior: "wait",
-    });
-    expect(batchExplicit.drainBehavior).toBe("wait");
+  test("an explicit step drainBehavior wins over the default", () => {
+    const explicit = step({ agent: makeAgent("a"), drainBehavior: "wait" });
+    expect(explicit.drainBehavior).toBe("wait");
   });
 
   test("awaitSignal defaults drainBehavior to wait", () => {

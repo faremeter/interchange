@@ -20,8 +20,8 @@
 // conversation into the agent's local store BEFORE the agent's reactor loads,
 // and is mirrored once the turn settles, so a conversational step continues
 // across turns, respawns and failover. Many invocations share one key (loop
-// iterations, onTrigger events, a childWorkflow step run again, retries, the
-// turns of a one-step workflow), and each continues the conversation the last
+// iterations, onTrigger events, a childWorkflow step run again, retries),
+// and each continues the conversation the last
 // one committed. A turn that fails commits nothing, so a retry continues from
 // the last committed turn. The committed state is stamped with the invocation
 // that wrote it. An invocation continues its own state as it is; any other

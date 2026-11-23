@@ -32,8 +32,6 @@ import {
   hashDefinition,
   onFailureOf,
   RUN_ID_PATTERN,
-  stepTriggerBudget,
-  validateRetryTriggerCombination,
 } from "../definition/index";
 import {
   evaluate,
@@ -893,13 +891,8 @@ async function executeRunBody(
   // correlation re-registers exactly once through the durable-state re-emit. The
   // agent turn is never re-invoked, preserving at-most-once.
   //
-  // This recovery is APPROVAL-only: `recoverableParks` come from the reactor's
-  // durable approval pending-op store, which reconstructs an approval park. An
-  // "input" park has no equivalent durable pending-op yet, so a crash in its
-  // pre-flush window (StepStarted flushed, SignalAwaited not) leaves it in
-  // `crashedInFlight` and it settles as a terminal StepFailed below rather than
-  // re-parking. The durable input substrate that closes this window is future
-  // work; input-park crash-safety today holds only for the post-flush window.
+  // `recoverableParks` come from the reactor's durable approval pending-op
+  // store, the only park an agent step makes.
   for (const {
     stepId,
     attempt,
@@ -1812,10 +1805,6 @@ async function runStep(
   abort: AbortSignal,
   completion: "durable" | "buffered",
 ): Promise<unknown> {
-  // Re-apply the retry/budget cross-field guard here as a defensive
-  // re-check, at the runtime's single read point for both fields, rather
-  // than trust that every definition reached it through `step()`.
-  validateRetryTriggerCombination(step);
   let attempt = 1;
   const maxAttempts = step.retry?.maxAttempts ?? 1;
   // StepStarted is committed exactly once per step -- the entry to
@@ -1841,9 +1830,7 @@ async function runStep(
   // `invokeStep` re-invokes the agent against the delivered decision.
   const entryState = await reloadState(env, runId);
   const entryStepState = entryState.steps.get(step.id);
-  let resumeFromPark:
-    | { signalName: string; correlationId: string; parkKind: ControlParkKind }
-    | undefined;
+  let resumeFromPark: { signalName: string; correlationId: string } | undefined;
   if (entryStepState?.phase === "awaiting-signal") {
     const parkedSignalName = findAwaitedSignalNameForStep(entryState, step.id);
     if (parkedSignalName === undefined) {
@@ -1868,11 +1855,22 @@ async function runStep(
         `runStep resume: step ${step.id} is awaiting-signal but has no awaitingSignal in the reduced state`,
       );
     }
-    resumeFromPark = {
-      signalName: parkedSignalName,
-      correlationId,
-      parkKind: controlParkKindOf(awaited),
-    };
+    const parkKind = controlParkKindOf(awaited);
+    // An agent step parks only on an approval. A step-level input park comes
+    // from a version that let a step service more than one trigger. This
+    // version cannot continue it as one more turn, so the run fails and the
+    // operator must redeploy.
+    if (parkKind === "input") {
+      throw new Error(
+        `runStep resume: step ${step.id} is parked on an input channel, which a step no longer uses; a step runs one turn per invocation, so redeploy the deployment with the step inside onTrigger`,
+      );
+    }
+    if (parkKind !== "approval") {
+      throw new Error(
+        `runStep resume: step ${step.id} is parked as ${parkKind}; an agent step suspends only on an approval`,
+      );
+    }
+    resumeFromPark = { signalName: parkedSignalName, correlationId };
     // Recover the attempt the step suspended on. The suspend committed its
     // pending-op + turns under the cold-path ContextStore keyed by this
     // attempt (`stepStorageRoot({runId, stepId, attempt})`); the resume
@@ -1967,9 +1965,7 @@ async function runStep(
       // is the step output. A resume that parks again re-parks, mirroring
       // runAwaitSignal's re-park.
       let output: unknown;
-      let resume:
-        | { correlationId: string; decision: unknown; kind: ControlParkKind }
-        | undefined;
+      let resume: { correlationId: string; decision: unknown } | undefined;
       // A crash-resume re-entry re-parks on the recovered channel FIRST,
       // before any `invokeStep`, so the agent is never re-sent the original
       // input. The delivered decision seeds `resume` so the bridge loop's
@@ -1992,32 +1988,8 @@ async function runStep(
         resume = {
           correlationId: resumeFromPark.correlationId,
           decision,
-          kind: resumeFromPark.parkKind,
         };
         resumeFromPark = undefined;
-      }
-      // Trigger budget: how many triggers this step services before it
-      // completes (`stepTriggerBudget` owns the absent-means-1 default). A
-      // batch step (1) completes on its first output; an `"unbounded"` step
-      // re-arms after every output and never self-completes. For a finite
-      // budget > 1 the count of triggers already serviced must survive a
-      // respawn, so it is seeded from the durable log -- the number of
-      // input-park `SignalAwaited`s the step has emitted equals the turns it
-      // has serviced, because the runtime's re-arm below is the ONLY minter
-      // of input parks (`StepInvokeResult` offers invokers no input arm), and
-      // it emits exactly one per completed turn. A budget of 1 never re-arms
-      // (its count is 0 by construction) and unbounded never counts, so both
-      // skip the log read -- the batch default pays nothing.
-      const triggerBudget = stepTriggerBudget(step);
-      let servicedTriggers = 0;
-      if (triggerBudget !== "unbounded" && triggerBudget > 1) {
-        const priorEvents = await env.repoStore.read(runId);
-        servicedTriggers = priorEvents.filter(
-          (e) =>
-            e.kind === "SignalAwaited" &&
-            e.stepId === step.id &&
-            e.parkKind === "input",
-        ).length;
       }
       // The one place an absent `replyByMail` becomes `false`.
       const replyByMail = step.replyByMail ?? false;
@@ -2038,40 +2010,7 @@ async function runStep(
         });
         if ("output" in result) {
           output = result.output;
-          servicedTriggers += 1;
-          // Budget spent -> complete (the batch case: one trigger, one turn,
-          // done). Budget remaining -> re-arm: park the step on a fresh input
-          // control-plane channel awaiting its next trigger, which becomes the
-          // next turn's input. The park is snapshot-less (`kind: "input"`) and
-          // fires no host notify -- the run's owner delivers the next trigger
-          // on this channel. `env.newId` mints a unique channel per turn so
-          // deliveries never collide; the run's owner discovers the current
-          // channel from the reduced `awaitingSignal.name`.
-          const hasMoreTriggers =
-            triggerBudget === "unbounded" || servicedTriggers < triggerBudget;
-          if (!hasMoreTriggers) break;
-          const inputCorrelationId = env.newId("corr");
-          const rearmState = await reloadState(env, runId);
-          const decision = await parkOnSignal(
-            env,
-            runId,
-            {
-              stepId: step.id,
-              signalName: signalName(inputCorrelationId),
-              parkKind: "input",
-              claimsRunInputChannel: {
-                sectionInputStepIds: sectionInputStepIds(definition),
-              },
-            },
-            rearmState,
-            stepAbort.signal,
-          );
-          resume = {
-            correlationId: inputCorrelationId,
-            decision,
-            kind: "input",
-          };
-          continue;
+          break;
         }
         // The reactor parked. Park the step on the reserved signal channel
         // for this correlation. Unlike runAwaitSignal, the agent step
@@ -2087,9 +2026,8 @@ async function runStep(
           {
             stepId: step.id,
             signalName: signalName(result.suspend.correlationId),
-            // An invoker can only suspend as an approval (the input park is
-            // minted by the trigger-budget re-arm above, never by an
-            // invoker), and the approval arm carries a mandatory snapshot.
+            // An invoker can only suspend as an approval, and the approval
+            // arm carries a mandatory snapshot.
             parkKind: result.suspend.kind,
             approvalSnapshot: result.suspend.approvalSnapshot,
           },
@@ -2099,7 +2037,6 @@ async function runStep(
         resume = {
           correlationId: result.suspend.correlationId,
           decision,
-          kind: result.suspend.kind,
         };
       }
       // Wrap the success terminalization -- recording the output, pruning the
@@ -5988,8 +5925,8 @@ async function parkOnSignalResult(
      */
     parkKind?: ControlParkKind;
     /**
-     * Set when this park is the run's one deployment input: a trigger-budget
-     * re-arm, or a childWorkflow relay of that park. An onTrigger section's
+     * Set when this park is the run's one deployment input: a childWorkflow
+     * relay of a child's input park. An onTrigger section's
      * event re-arm is a separate channel, and several of those stay open
      * together. `sectionInputStepIds` names those sections so an open
      * section park does not hold this channel.
@@ -6821,9 +6758,9 @@ class ChildRelayRetiredError extends Error {
 
 /**
  * Step ids whose input park is an onTrigger event channel, not the run's
- * deployment input. Several sections re-arm at once. A trigger-budget
- * re-arm and a childWorkflow relay of that park do not count those parks
- * as holding the one deployment channel.
+ * deployment input. Several sections re-arm at once. A childWorkflow relay
+ * of an input park does not count those parks as holding the one deployment
+ * channel.
  */
 function sectionInputStepIds(
   definition: WorkflowDefinition,

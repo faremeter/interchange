@@ -24,7 +24,9 @@ import {
   sleep,
   step,
   type BodyFailurePolicy,
+  type DrainBehavior,
   type Primitive,
+  type StepPrimitive,
   type WorkflowDefinition,
 } from "./definition/index";
 import {
@@ -648,6 +650,126 @@ describe("unreifiable shapes throw", () => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- simulates the JSON-round-tripped toolFactories:[null] grant-loss bug
     const bad = raw as WorkflowDefinition;
     expect(() => projectLiveToInert(bad)).toThrow(/not a function/);
+  });
+});
+
+describe("a step that carries triggers is refused", () => {
+  const agent = mkAgent([], baseCapabilities, [OPENAI]);
+
+  // A deployed bundle carries its own copy of @intx/workflow. This is the
+  // primitive that `step({ agent, triggers: "unbounded" })` returned in a
+  // version whose step() accepted the key, so the current step() check
+  // never sees it.
+  function oldBundleStep(): StepPrimitive {
+    const drainBehavior: DrainBehavior = "wait";
+    const old = { ...step({ agent }), drainBehavior, triggers: "unbounded" };
+    return old;
+  }
+
+  function refusal(path: string): RegExp {
+    return new RegExp(
+      `step ${JSON.stringify(path).replace(/[.]/g, "[.]")} sets triggers, ` +
+        `which a step no longer accepts: a step runs one turn per ` +
+        `invocation[.] Put the step in onTrigger\\(\\{ on: mail, body \\}\\) ` +
+        `and set replyByMail: true on it, then redeploy`,
+    );
+  }
+
+  test("a top-level step", () => {
+    const definition = defineWorkflow({
+      id: "wf_old",
+      trigger: { type: "mail", to: "run_x@acme.test" },
+      steps: { reply: oldBundleStep() },
+    });
+    expect(() => projectLiveToInert(definition)).toThrow(refusal("reply"));
+  });
+
+  test("a step in an inline onTrigger body", () => {
+    const definition = defineWorkflow({
+      id: "wf_old_section",
+      trigger: { type: "manual" },
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: "sect@acme.test" },
+          body: defineWorkflow({
+            id: "body",
+            steps: { reply: oldBundleStep() },
+          }),
+        }),
+      },
+    });
+    expect(() => projectLiveToInert(definition)).toThrow(
+      refusal("section.reply"),
+    );
+  });
+
+  test("a step in a loop body", () => {
+    const definition = defineWorkflow({
+      id: "wf_old_loop",
+      trigger: { type: "manual" },
+      steps: {
+        rework: loop({
+          body: defineWorkflow({
+            id: "body",
+            steps: { work: oldBundleStep() },
+          }),
+          while: "loop.again",
+          carry: "loop.carry",
+          maxIterations: 3,
+          onExhausted: "done",
+        }),
+        done: step({ agent, after: ["rework"] }),
+      },
+    });
+    expect(() => projectLiveToInert(definition)).toThrow(
+      refusal("rework.work"),
+    );
+  });
+
+  test("a step in an inline childWorkflow definition", () => {
+    const definition = defineWorkflow({
+      id: "wf_old_child",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "authored-child",
+            steps: { work: oldBundleStep() },
+          }),
+        }),
+      },
+    });
+    expect(() => projectLiveToInert(definition)).toThrow(refusal("spawn.work"));
+  });
+
+  test("the step of a map", () => {
+    const definition = defineWorkflow({
+      id: "wf_old_map",
+      trigger: { type: "manual" },
+      steps: {
+        plan: step({ agent }),
+        fan: map({
+          over: { from: "steps.plan.output" },
+          step: oldBundleStep(),
+          after: ["plan"],
+        }),
+      },
+    });
+    expect(() => projectLiveToInert(definition)).toThrow(refusal("fan.step"));
+  });
+
+  test("the refusal comes before the hash, so no hash approves the step", async () => {
+    const definition = defineWorkflow({
+      id: "wf_old",
+      trigger: { type: "mail", to: "run_x@acme.test" },
+      steps: { reply: oldBundleStep() },
+    });
+    let refused: unknown;
+    await computeLiveDefinitionHash(definition).catch((err: unknown) => {
+      refused = err;
+    });
+    expect(refused).toBeInstanceOf(Error);
+    expect(String(refused)).toMatch(/sets triggers/);
   });
 });
 

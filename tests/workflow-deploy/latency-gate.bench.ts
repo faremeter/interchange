@@ -1,7 +1,7 @@
 // Phase 4.7 LATENCY GATE benchmark (NOT a CI test).
 //
-// Measures the per-turn round-trip latency of an interactive single-step
-// agent on two paths, with the inference TEST PROVIDER so inference cost
+// Measures the per-turn round-trip latency of an interactive mail agent on
+// two paths, with the inference TEST PROVIDER so inference cost
 // is fixed and near-zero -- the measured delta is the INFRASTRUCTURE the
 // unified host adds over the in-process runtime, not inference.
 //
@@ -19,13 +19,17 @@
 //     mock inference server the unified path uses, in echo mode, so the
 //     provider is byte-for-byte identical and inference is ~0.
 //
-//   UNIFIED (child): the real 4.6 spawn-real path -- hub routeMail ->
-//     sidecar hub-link -> supervisor inbox claim-check write+read ->
-//     dispatch loop -> trigger.fire IPC -> child reads bytes from the
-//     processing entry -> step build (agent, conversation restore
-//     from the workflow-run substrate) -> agent.send -> settle (commit of
-//     the turn) -> close -> reply -> terminal.event IPC back to the
-//     supervisor. Timed inside the supervisor (which runs in
+//   UNIFIED (child): an `onTrigger({ on: mail, body })` deployment whose
+//     body is one agent step, the shape of an interactive mail agent. A step
+//     runs one turn per invocation, so each mail is a new body run on the
+//     real spawn-real path -- hub routeMail -> sidecar hub-link ->
+//     supervisor inbox claim-check write+read -> dispatch loop ->
+//     trigger.fire (the first mail) or signal.deliver (each later mail) IPC
+//     -> the section spawns the body run -> step build (agent, conversation
+//     restore from the workflow-run substrate) -> agent.send -> settle
+//     (commit of the turn) -> close -> body terminal -> the section parks
+//     for the next event, which the supervisor sees as the run's park.
+//     Timed inside the supervisor (which runs in
 //     the sidecar subprocess, so both ends of the IPC round-trip are
 //     visible in one process) via the `onDispatchTiming` observability
 //     hook, gated by `SIDECAR_LATENCY_BENCH_FILE`. The supervisor appends
@@ -38,13 +42,14 @@
 //     `agent.send` (which resolves on the director's `connector.reply`),
 //     and the close.
 //   - UNIFIED measured interval: `dispatch-start` (the inbox entry is
-//     dequeued for dispatch, claim-check read complete, `trigger.fire`
-//     about to forward) to `reply-produced` (the child's terminal-event
-//     frame for that run lands back at the supervisor). This brackets the
-//     SAME build-send-close turn the baseline times, PLUS exactly the
-//     infra the unified path adds: claim-check read, IPC down, child
-//     bytes-read, step env and durable conversation restore, the settle
-//     commit to the substrate, terminal IPC up + commit.
+//     dequeued for dispatch, claim-check read complete, the trigger or
+//     signal about to forward) to `reply-produced` (the section's park for
+//     the next event lands back at the supervisor). This brackets the SAME
+//     build-send-close turn the baseline times, PLUS exactly the infra the
+//     unified path adds per event: claim-check read, IPC down, child
+//     bytes-read, the body run's spawn and log, step env and durable
+//     conversation restore, the settle commit to the substrate, the park
+//     IPC up + commit.
 //   So DELTA = UNIFIED - BASELINE isolates the unified infra tax.
 //
 // Both paths measure the SUSTAINED interactive case: back-to-back
@@ -102,10 +107,11 @@ import {
   type DeployFlowEnv,
   type MockInference,
 } from "../hub-agent/lib/deploy-flow-env";
-import { singleStepAgentEntry } from "./fixtures/single-step-agent";
+import { onTriggerBodyEntry } from "./fixtures/on-trigger-body";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_latency-gate-bench";
+const SECTION_ID = "section";
 const STEP_ID = "step1";
 
 // The definition's own tenant, the caller principal that creates the
@@ -358,12 +364,13 @@ async function runBaseline(opts: {
 // --- unified: real spawn-real child path, timed in the supervisor ---------
 
 /**
- * Deploy a single-step agent on the unified child path, fire
- * `messages + 1` back-to-back mails (one step, sustained), and recover
- * the supervisor's per-turn dispatch round-trip from the timing file the
- * `onDispatchTiming` hook appends. Every turn builds, restores, runs and
- * closes the step's agent. The first sample is discarded (one-time
- * process costs). Returns per-turn samples in milliseconds.
+ * Deploy an onTrigger mail agent on the unified child path, fire
+ * `messages + 1` back-to-back mails (one body step, sustained), and recover
+ * the supervisor's per-event dispatch round-trip from the timing file the
+ * `onDispatchTiming` hook appends. Every event is a new body run that
+ * builds, restores, runs and closes the step's agent. The first sample is
+ * discarded (one-time process costs). Returns per-turn samples in
+ * milliseconds.
  */
 async function runUnified(opts: {
   messages: number;
@@ -396,17 +403,23 @@ async function runUnified(opts: {
       defaultSource: "anthropic:mock-model",
     };
 
-    const entryModule = singleStepAgentEntry({
-      stepId: STEP_ID,
-      systemPrompt: "You are the latency-gate unified agent.",
+    const entryModule = onTriggerBodyEntry({
       address: deploymentMailAddress,
-      agentId: `agent-${DEPLOYMENT_ID}-${STEP_ID}`,
+      sectionId: SECTION_ID,
+      body: {
+        variant: "agent",
+        stepId: STEP_ID,
+        systemPrompt: "You are the latency-gate unified agent.",
+        agentId: `agent-${DEPLOYMENT_ID}-${STEP_ID}`,
+      },
       workflowId: `wf_${DEPLOYMENT_ID}`,
+      bodyWorkflowId: `wf_${DEPLOYMENT_ID}_body`,
     });
 
-    // Deploy the single-step agent BY SOURCE-REF, the same code-sourced front
-    // production drives. The helper registers the deployment on the env, so the
-    // fire loop resolves it by `anchorRunId` with no manual registration.
+    // Deploy the onTrigger mail agent BY SOURCE-REF, the same code-sourced
+    // front production drives. The helper registers the deployment on the
+    // env, so the fire loop resolves it by `anchorRunId` with no manual
+    // registration.
     const handle = await deployWorkflowSourceForTest(env, {
       entryModule,
       db: opts.db,
@@ -417,7 +430,7 @@ async function runUnified(opts: {
       agentAddress: deploymentMailAddress,
       approvals: "approve-probed",
       config,
-      sources: { [STEP_ID]: [inferenceSource] },
+      sources: { [SECTION_ID]: [inferenceSource] },
     });
     if (!handle.publicKey) {
       throw new Error("unified bench: deploy did not return a public key");

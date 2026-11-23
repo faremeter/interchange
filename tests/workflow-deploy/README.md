@@ -3,14 +3,16 @@
 Two off-by-default measurement benches profile the sustained per-turn
 latency of the workflow-run substrate. They are `*.bench.ts`, not
 `*.test.ts`, so `make test` never runs them; `make build` type-checks
-them via this directory's tsconfig. Both drive one single-step
-deployment back-to-back with inference mocked -- message N+1 fires only
-after reply N (no pipelining). No agent stays live between turns: every
-turn builds the agent, restores the conversation, runs one turn and
-closes. The conversation grows by one turn per message, so a late turn
-pays the restore of a long conversation. The per-turn round-trip is what
-they measure. The bench agents have no tools, so the round-trip does not
-include the start cost of tools or of an LSP server.
+them via this directory's tsconfig. Both drive one interactive mail
+agent back-to-back with inference mocked -- message N+1 fires only after
+reply N (no pipelining). The agent is an `onTrigger({ on: mail, body })`
+deployment whose body is one agent step, so each mail is a new body run.
+No agent stays live between turns: every turn builds the agent, restores
+the conversation, runs one turn and closes. The body step continues its
+conversation at its place, so it grows by one turn per message, and a
+late turn pays the restore of a long conversation. The per-turn
+round-trip is what they measure. The bench agents have no tools, so the
+round-trip does not include the start cost of tools or of an LSP server.
 
 ## Running
 

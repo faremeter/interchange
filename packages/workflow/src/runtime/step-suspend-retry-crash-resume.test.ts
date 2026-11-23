@@ -243,7 +243,6 @@ describe("step suspend retry crash-resume", () => {
     expect(resumeInvocation.resume).toEqual({
       correlationId: "corr-1",
       decision: { outcome: "approved" },
-      kind: "approval",
     });
 
     // The step completes with the resume re-invocation reply.

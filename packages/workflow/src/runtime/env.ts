@@ -209,14 +209,12 @@ export interface StepInvokeRequest {
   signal: AbortSignal;
   /**
    * Present only on a resume re-invocation of a step that previously
-   * suspended. `kind` carries the park kind the step suspended on, so the
-   * invoker synthesizes the right inbound: an `"approval"` resume delivers a
-   * body stamped with `correlationId` so the reactor correlates it with
-   * the rehydrated gate; an `"input"` resume delivers the `decision` as a
-   * plain next user turn (there is no gate to match). Absent on the first
-   * invocation, where the invoker drives a plain `agent.send`.
+   * suspended on an approval. The invoker delivers a body stamped with
+   * `correlationId` so the reactor correlates it with the rehydrated gate.
+   * Absent on the first invocation, where the invoker drives a plain
+   * `agent.send`.
    */
-  resume?: { correlationId: string; decision: unknown; kind: ControlParkKind };
+  resume?: { correlationId: string; decision: unknown };
 }
 
 /**
@@ -228,13 +226,8 @@ export interface StepInvokeRequest {
  * as mandatory), so a snapshot-less approval is unrepresentable here rather
  * than resting on the runtime guard alone.
  *
- * An invoker can ONLY suspend as an approval. The `"input"` control-plane
- * park (a long-lived step awaiting its next trigger) is minted exclusively by
- * the RUNTIME's trigger-budget re-arm -- never by an invoker -- which is what
- * keeps the finite-budget respawn seed sound: every input `SignalAwaited` in
- * the durable log is a runtime re-arm, so counting them counts turns
- * serviced. Offering an input arm here would let a host invoker emit input
- * parks that inflate that count.
+ * An invoker can ONLY suspend as an approval: a step runs one turn per
+ * invocation, and the workflow decides when it runs again.
  */
 export type StepInvokeResult =
   | { output: unknown }

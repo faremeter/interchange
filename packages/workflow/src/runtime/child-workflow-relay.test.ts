@@ -1,20 +1,17 @@
 // A childWorkflow stays unaddressable. The parent run relays each park the
-// child surfaces: an author awaitSignal, an approval carrying the body's
-// snapshot, and a trigger-budget input park. The relay climbs through a
-// nested childWorkflow and through a loop inside the child. A loop body
-// still rejects an input re-arm, and a run holds one input park. The spawn
-// step awaits one signal at a time, so a second park that is already live
-// stays queued until the first decision is relayed. A queued park whose
-// gate has already moved on is not given a signal that arrived while it
-// waited. An untimed relay is
-// refused when the parent's own flag says nothing upstream can answer it,
-// and that parent writes no suspension. A child that dies during an
-// approval relay fails the spawn step. A parked child survives a process
-// restart: resume reattaches the same child run and reestablishes the
-// relay. The child stays unaddressable; the parent is the resume root.
-// A timed gate keeps its deadline across that resume. That includes a
-// gate inside a loop whose parent has not recorded the relay, and a
-// deadline that has already passed.
+// child surfaces: an author awaitSignal and an approval carrying the body's
+// snapshot. The relay climbs through a nested childWorkflow and through a
+// loop inside the child. The spawn step awaits one signal at a time, so a
+// second park that is already live stays queued until the first decision is
+// relayed. A queued park whose gate has already moved on is not given a
+// signal that arrived while it waited. An untimed relay is refused when the
+// parent's own flag says nothing upstream can answer it, and that parent
+// writes no suspension. A child that dies during an approval relay fails the
+// spawn step. A parked child survives a process restart: resume reattaches
+// the same child run and reestablishes the relay. The child stays
+// unaddressable; the parent is the resume root. A timed gate keeps its
+// deadline across that resume. That includes a gate inside a loop whose
+// parent has not recorded the relay, and a deadline that has already passed.
 
 import { describe, expect, test } from "bun:test";
 
@@ -507,7 +504,7 @@ describe("childWorkflow signal relay", () => {
       steps: { spawn: childWorkflow({ definition: child }) },
     });
     const sink = parkSink();
-    let resumeKind: string | undefined;
+    let resumedCorrelationId: string | undefined;
     const invokeStep: StepInvoker = async (req) => {
       if (req.resume === undefined) {
         return {
@@ -518,7 +515,7 @@ describe("childWorkflow signal relay", () => {
           },
         };
       }
-      resumeKind = req.resume.kind;
+      resumedCorrelationId = req.resume.correlationId;
       return { output: null };
     };
     const { run } = startRelayed({
@@ -542,148 +539,11 @@ describe("childWorkflow signal relay", () => {
     );
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");
-    expect(resumeKind).toBe("approval");
+    expect(resumedCorrelationId).toBe("corr-body");
     expect(spawnOutput(result.outputs.spawn).terminalStatus).toBe("completed");
     expect(
       relayed(result.events, "spawn", "approval", signalName("corr-body")),
     ).toBeDefined();
-  });
-
-  test("relays a trigger-budget input park and delivers the next turn", async () => {
-    const child = defineWorkflow({
-      id: "input-child",
-      trigger: { type: "manual" },
-      steps: { chat: step({ agent, triggers: 2 }) },
-    });
-    const parent = defineWorkflow({
-      id: "input-parent",
-      trigger: { type: "manual" },
-      steps: { spawn: childWorkflow({ definition: child }) },
-    });
-    const sink = parkSink();
-    const decisions: unknown[] = [];
-    const invokeStep: StepInvoker = async (req) => {
-      if (req.resume !== undefined) {
-        decisions.push(req.resume.decision);
-        expect(req.resume.kind).toBe("input");
-      }
-      return { output: null };
-    };
-    const { run } = startRelayed({
-      definition: parent,
-      runId: "run-input",
-      invokeStep,
-      onPark: sink.onPark,
-    });
-    const park = await sink.next();
-    expect(park.runId).toBe("run-input");
-    expect(park.parkKind).toBe("input");
-    expect(park.approvalSnapshot).toBeUndefined();
-
-    const nextTurn = { text: "next-turn" };
-    await run.signal(signalName(park.correlationId), nextTurn, "sig-in");
-    const result = await run.complete;
-    expect(result.terminalStatus).toBe("completed");
-    expect(decisions).toEqual([nextTurn]);
-    expect(
-      relayed(result.events, "spawn", "input", signalName(park.correlationId)),
-    ).toBeDefined();
-  });
-
-  test("a loop body that re-arms an input park fails the run", async () => {
-    const parent = defineWorkflow({
-      id: "loop-input",
-      trigger: { type: "manual" },
-      steps: {
-        rework: loop({
-          body: defineWorkflow({
-            id: "loop-input-body",
-            trigger: { type: "manual" },
-            steps: { chat: step({ agent, triggers: 2 }) },
-          }),
-          while: "cont",
-          carry: "next",
-          input: { literal: 0 },
-          maxIterations: 2,
-          onExhausted: "fin",
-        }),
-        fin: step({ agent, after: ["rework"] }),
-      },
-    });
-    const result = await runLocal(parent, {
-      runId: "run-loop-input",
-      authorize: allowAll,
-      hasUpstreamSignalResolver: true,
-      loopFns: loopFnsReturning(false),
-    }).complete;
-
-    expect(result.terminalStatus).toBe("failed");
-    const messages = result.events.flatMap((event) =>
-      event.kind === "StepFailed" ? [event.error.message] : [],
-    );
-    expect(
-      messages.some((message) =>
-        message.includes("may not re-arm an input park"),
-      ),
-    ).toBe(true);
-    expect(
-      result.events.some(
-        (event) => event.kind === "SignalAwaited" && event.parkKind === "input",
-      ),
-    ).toBe(false);
-  });
-
-  test("a second input park on the same run fails the child step", async () => {
-    const child = defineWorkflow({
-      id: "released-chat",
-      trigger: { type: "manual" },
-      steps: {
-        hold: awaitSignal({ name: "release" }),
-        chat: step({ agent, triggers: 2, after: ["hold"] }),
-      },
-    });
-    const parent = defineWorkflow({
-      id: "two-inputs",
-      trigger: { type: "manual" },
-      steps: {
-        chat: step({ agent, triggers: 2 }),
-        spawn: childWorkflow({ definition: child }),
-      },
-    });
-    const { run, repoStore } = startRelayed({
-      definition: parent,
-      runId: "run-two-input",
-      invokeStep: async () => ({ output: null }),
-    });
-    await waitForEvent(
-      repoStore,
-      "run-two-input",
-      (event) =>
-        event.kind === "SignalAwaited" &&
-        event.parkKind === "input" &&
-        event.stepId === "chat",
-    );
-    await waitForEvent(
-      repoStore,
-      "run-two-input",
-      (event) =>
-        event.kind === "SignalAwaited" &&
-        event.parkKind === "signal-relay" &&
-        event.signalName === "release" &&
-        event.stepId === "spawn",
-    );
-    await run.signal("release", { ok: true }, "sig-release");
-    const failed = await waitForEvent(
-      repoStore,
-      "run-two-input",
-      (event) => event.kind === "StepFailed" && event.stepId === "spawn",
-    );
-    if (failed.kind !== "StepFailed") {
-      throw new Error("expected StepFailed");
-    }
-    expect(failed.error.message).toContain("already awaiting an input park");
-    await run.cancel("self", "test teardown");
-    await run.complete;
   });
 
   test("refuses an untimed author relay when the parent has no upstream resolver", async () => {
@@ -784,60 +644,6 @@ describe("childWorkflow signal relay", () => {
 
     expect(result.terminalStatus).toBe("completed");
     expect(relayed(result.events, "spawn", "signal-relay", "go")).toBeDefined();
-  });
-
-  test("two concurrent child input relays leave one park and fail the other", async () => {
-    const leftChild = defineWorkflow({
-      id: "left-chat",
-      trigger: { type: "manual" },
-      steps: { chat: step({ agent, triggers: 2 }) },
-    });
-    const rightChild = defineWorkflow({
-      id: "right-chat",
-      trigger: { type: "manual" },
-      steps: { chat: step({ agent, triggers: 2 }) },
-    });
-    const parent = defineWorkflow({
-      id: "two-chats",
-      trigger: { type: "manual" },
-      steps: {
-        left: childWorkflow({ definition: leftChild }),
-        right: childWorkflow({ definition: rightChild }),
-      },
-    });
-    let started = 0;
-    let release = (): void => {
-      throw new Error("both children were not armed");
-    };
-    const bothStarted = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const { run, repoStore } = startRelayed({
-      definition: parent,
-      runId: "run-two-chats",
-      invokeStep: async () => {
-        started += 1;
-        if (started >= 2) release();
-        await bothStarted;
-        return { output: null };
-      },
-    });
-    const failed = await waitForEvent(
-      repoStore,
-      "run-two-chats",
-      (event) => event.kind === "StepFailed",
-    );
-    if (failed.kind !== "StepFailed") {
-      throw new Error("expected StepFailed");
-    }
-    expect(failed.error.message).toContain("already awaiting an input park");
-    const events = await repoStore.read("run-two-chats");
-    const inputParks = events.filter(
-      (event) => event.kind === "SignalAwaited" && event.parkKind === "input",
-    );
-    expect(inputParks).toHaveLength(1);
-    await run.cancel("self", "test teardown");
-    await run.complete;
   });
 
   test("a child that dies during an approval relay fails the spawn step", async () => {
@@ -1959,77 +1765,6 @@ describe("a parked childWorkflow survives a process restart", () => {
     expect(result.terminalStatus).toBe("completed");
     expect(handedDown).toBe(1);
     expect(resumed).toEqual({ outcome: "approved" });
-  });
-
-  test("reestablishes an input park and delivers the next turn", async () => {
-    const parent = defineWorkflow({
-      id: "resume-input-parent",
-      trigger: { type: "manual" },
-      steps: {
-        spawn: childWorkflow({
-          definition: defineWorkflow({
-            id: "resume-input-child",
-            trigger: { type: "manual" },
-            steps: { chat: step({ agent, triggers: 2 }) },
-          }),
-        }),
-      },
-    });
-    const runId = "run-resume-input";
-    const first = startRelayed({
-      definition: parent,
-      runId,
-      invokeStep: async () => ({ output: null }),
-    });
-    void first.run.complete;
-    await waitForEvent(
-      first.repoStore,
-      runId,
-      (event) =>
-        event.kind === "SignalAwaited" &&
-        event.stepId === "spawn" &&
-        event.parkKind === "input",
-    );
-    const parentLog = await copyLog(first.repoStore, runId);
-    const childId = spawnedChildId(parentLog, "spawn");
-    const childLog = await copyLog(first.repoStore, childId);
-    const awaited = parentLog.find(
-      (event) => event.kind === "SignalAwaited" && event.parkKind === "input",
-    );
-    if (awaited === undefined || awaited.kind !== "SignalAwaited") {
-      throw new Error("parent input await missing");
-    }
-    const correlationId = correlationIdFromSignalName(awaited.signalName);
-    if (correlationId === undefined) {
-      throw new Error("input await is not a reserved name");
-    }
-
-    const decisions: unknown[] = [];
-    let freshInvokes = 0;
-    const repoStore = createInMemoryRepoStore();
-    await seedLog(repoStore, childId, childLog);
-    const { run } = startRelayed({
-      definition: parent,
-      runId,
-      invokeStep: async (req) => {
-        if (req.resume === undefined) {
-          freshInvokes += 1;
-          return { output: null };
-        }
-        decisions.push(req.resume.decision);
-        return { output: null };
-      },
-      repoStore,
-      resumeFromEvents: parentLog,
-    });
-    const nextTurn = { text: "next-turn" };
-    await run.signal(signalName(correlationId), nextTurn, "sig-resume-input");
-    const result = await run.complete;
-
-    expect(result.terminalStatus).toBe("completed");
-    expect(freshInvokes).toBe(0);
-    expect(decisions).toEqual([nextTurn]);
-    expect(countEvents(result.events, "ChildSpawned")).toBe(1);
   });
 
   test("relays a second park the parent had not reached", async () => {

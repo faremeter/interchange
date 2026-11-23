@@ -1497,7 +1497,6 @@ describe("workflow-host StepInvoker adapter - cold reply", () => {
       resume: {
         correlationId,
         decision: { outcome: "approved" },
-        kind: "approval",
       },
     };
   }
@@ -1555,7 +1554,6 @@ describe("workflow-host StepInvoker adapter - cold reply", () => {
       resume: {
         correlationId: "c1",
         decision: { outcome: "approved" },
-        kind: "approval",
       },
     });
 
@@ -1564,7 +1562,7 @@ describe("workflow-host StepInvoker adapter - cold reply", () => {
     ]);
   });
 
-  test("with replyByMail, an input resume between two mail turns sends no mail", async () => {
+  test("with replyByMail, a turn that does not answer mail between two mail turns sends no mail", async () => {
     const w = wire([
       replySendResult("to alice"),
       replySendResult("only output"),
@@ -1572,12 +1570,11 @@ describe("workflow-host StepInvoker adapter - cold reply", () => {
     ]);
 
     await w.invoker(replyRequest(inboundMail(ALICE)));
-    const resumed = await w.invoker({
-      ...buildRequest({ input: "unused", replyByMail: true }),
-      resume: { correlationId: "in-1", decision: "next", kind: "input" },
-    });
+    const plain = await w.invoker(
+      buildRequest({ input: "next", replyByMail: true }),
+    );
 
-    expect(readReply(expectOutput(resumed))).toBe("only output");
+    expect(readReply(expectOutput(plain))).toBe("only output");
     expect(w.sent).toHaveLength(1);
     expect(w.router.snapshot()?.lastMessageId).toBe(
       "<sent-1@agent.example.com>",
@@ -1808,7 +1805,6 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
       resume: {
         correlationId: "corr-1",
         decision: { outcome: "approved" },
-        kind: "approval",
       },
     };
     const result = await invoker(req);
@@ -1882,7 +1878,6 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
       resume: {
         correlationId: "corr-A",
         decision: { outcome: "approved" },
-        kind: "approval",
       },
     };
     const result = await invoker(req);
@@ -1908,57 +1903,6 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
       );
     }
     expect(result.suspend.correlationId).toBe("corr-B");
-  });
-
-  test("an input resume delivers a plain next turn, not a correlated gate inbound", async () => {
-    // An `"input"` resume is the step's next turn (a long-lived agent's next
-    // mail), with no gate to re-correlate. The adapter must send the decision
-    // as PLAIN synthesized content, NOT an InboundMessage stamped with the
-    // correlationId (the approval path). A plain string is the tell: nothing
-    // for the reactor to correlate, just a fresh user turn.
-    const nextTurn = {
-      role: "assistant" as const,
-      content: [{ type: "text" as const, text: "next turn reply" }],
-      model: STUB_SOURCE.model,
-      timestamp: 9,
-    };
-    let sentContent: string | InboundMessage | undefined;
-    const agent = buildResumeStubAgent((content) => {
-      sentContent = content;
-      return {
-        type: "reply",
-        turnId: "turn-test",
-        reply: "next turn reply",
-        turn: nextTurn,
-      };
-    });
-
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      buildEnv: async () => stubStepBuild(),
-      agentFactory: async () => agent,
-    });
-
-    const req: StepInvokeRequest = {
-      ...buildRequest({ input: { goal: "start" } }),
-      resume: {
-        correlationId: "corr-input-1",
-        decision: { text: "the next mail" },
-        kind: "input",
-      },
-    };
-    const result = await invoker(req);
-
-    // Plain content, not a correlated InboundMessage.
-    expect(typeof sentContent).toBe("string");
-    expect(expectOutput(result)).toEqual({
-      reply: "next turn reply",
-      turn: nextTurn,
-    });
   });
 });
 

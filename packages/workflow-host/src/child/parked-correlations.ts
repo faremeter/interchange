@@ -88,7 +88,7 @@ export async function collectParkedApprovalCorrelations(
       if (awaited === undefined) continue;
       const correlationId = correlationIdFromSignalName(awaited.name);
       if (correlationId === undefined) continue;
-      // An `"input"` park (a long-lived run awaiting its next mail) reduces to
+      // An `"input"` park (an onTrigger section awaiting its next event) reduces to
       // the same `awaiting-signal` on a reserved channel as an approval, but it
       // carries NO snapshot and is never hub-registered -- the run's owner
       // delivers the input directly. Skip it: enumerating it would call

@@ -335,15 +335,17 @@ not open the mailbox, and there is still exactly one mail owner.
 
 The conversational loop has two first-class shapes, both delivered:
 
-- **Interactive (`triggers: "unbounded"`).** The run re-arms after each turn
-  (§3c, §3h); each subsequent inbound mail is a dispatched turn
-  (`signal.deliver`) that seeds the connector thread, so replies thread turn
-  to turn. This is the equivalent of the general harness's continuous
-  conversation.
-- **Batch step with `mail_wait`.** An ordinary batch step holds the
-  conversation open within its one run by blocking on `mail_wait`; a
-  newly-arrived mail is eager-committed and its notify wakes the wait,
-  independent of turn dispatch.
+- **An interactive mail agent (`onTrigger({ on: mail, body })`).** The
+  body's agent step sets `replyByMail: true`. The section run parks between
+  events (§3h); each later inbound mail is a dispatched event
+  (`signal.deliver`) that starts a new body run. The body step continues the
+  conversation at its place (§3c) and seeds the connector thread, so replies
+  thread turn to turn. This is the equivalent of the general harness's
+  continuous conversation.
+- **A step with `mail_wait`.** A step holds the conversation open within its
+  one turn by blocking on `mail_wait`; a newly-arrived mail is
+  eager-committed and its notify wakes the wait, independent of turn
+  dispatch.
 
 ### 3b. Warm-agent lifecycle
 
@@ -405,14 +407,15 @@ the persisted config but conversation continuity is whatever the agent's
 isogit store last committed. Under the unified host the single agent gains the
 multi-step durability model:
 
-- **What a "run" means for a long-lived agent.** In the `triggers: 1` (batch)
-  case the deployment's first inbound message drives its one `runtimeRun` — one
+- **What a "run" means for a long-lived agent.** In a one-step deployment
+  the deployment's first inbound message drives its one `runtimeRun` — one
   `RunStarted` -> `StepStarted` -> `StepCompleted` -> `RunCompleted` bracket,
-  committed to the workflow-run repo under `runs/<runId>/...`. For an
-  `"unbounded"` (interactive) step the runtime re-arms rather than completing
-  (§3h), so **one** run spans every turn: a single `RunStarted` ->
-  `StepStarted`, then a park/deliver cycle per turn, and no terminal until the
-  run is torn down. A terminal batch deployment is not fired again. The batch bracket is the one the former
+  committed to the workflow-run repo under `runs/<runId>/...`. The run is
+  then terminal, and the supervisor refuses a later mail as
+  `workflow_run_terminal`. An interactive agent is an onTrigger section on
+  mail (§3h): **one** section run spans every mail, with a park/deliver cycle
+  per event and no terminal until the run is torn down, and each mail is a
+  new body run. The one-step bracket is the one the former
   `driveTrivialRunChain` projector hand-rolled; the runtime now emits it
   natively because a real `runtimeRun` drives the step, and that projector has
   been deleted (§4).
@@ -442,8 +445,8 @@ multi-step durability model:
 
 **Commit granularity is per turn (§3h).** The step invoker commits a turn's
 conversation once the turn settles (with output or on a park), so the
-conversation is mirrored **per turn** whether a run services one trigger or
-many. A turn that fails commits nothing. Whether one substrate mirror per
+conversation is mirrored **per turn**, however many times the step's place
+runs. A turn that fails commits nothing. Whether one substrate mirror per
 turn is acceptable write load on the single-writer ref is an empirical question
 flagged in §6.
 
@@ -1029,72 +1032,68 @@ same child/workflow-run model as the multi-step path:
   (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`), which the
   sidecar writes from the Hub's `run.grants` frames.
 
-### 3h. Trigger budget: how long a step lives
+### 3h. One turn per step invocation
 
-A step declares how many trigger occurrences it services before completing,
-and the runtime re-arms it between occurrences. This is the single knob that
-spans batch and interactive workloads inside a deployment's one stable
-top-level run.
+**Decision: every agent step runs one inference turn per invocation.** The
+workflow decides when a step's place runs again: a retry, an approval
+resume, a `loop` iteration, or an `onTrigger` event. The body steps of a
+`childWorkflow` step run again each time that step runs again. A step that
+runs again continues its conversation, because the conversation is keyed on
+the step's place (§3c).
+The step does not park between turns, and the step-invoker adapter returns a
+reply as `{ output }` or suspends on an approval. An approval resume delivers
+a body stamped with the correlationId, so the reactor correlates it with
+the rehydrated gate.
 
-**Decision: a step carries `triggers: number | "unbounded"` (default 1).**
+**An interactive mail agent is an onTrigger section.** Write it as
+`onTrigger({ on: mail, body })` with an agent step in the body that sets
+`replyByMail: true`. Each mail is a new body run. The body step continues the
+conversation at its place and gets a new workspace, since a workspace lives
+for one attempt.
 
-- `1` (the default) -- a **batch** step: one trigger, one turn, then it
-  completes. If the top-level run becomes terminal, another execution requires
-  a new deployment; the terminal history is not reset.
-- `"unbounded"` -- an **interactive agent**: the step never completes on its
-  own; it absorbs every trigger as another turn until the run is torn down
-  (undeploy/drain). One run spans the whole conversation.
-- a finite `N` -- a **bounded server**: services N triggers, then completes.
+**The section's re-arm.** Between events the runtime parks the section on a
+**snapshot-less input control-plane park** -- a `ControlParkKind` of
+`"input"`, distinct from the approval park (which carries an
+`ApprovalSnapshot` and notifies the host so the sidecar co-writes the hub
+approval rows). An input park carries no snapshot and fires no host notify:
+the run's owner delivers the next event on the park's channel. The park kind
+is recorded on `SignalAwaited`, so parked-correlation recovery reads it and
+**skips** input parks -- a snapshot-less park never reaches the
+approval-snapshot lookup that a mislabelled park would fail the whole
+deployment's re-registration on. The runtime mints a fresh input channel per
+event (`env.newId`); the run's owner finds the current one from the reduced
+`awaitingSignal.name` -- discoverable, not guessable.
 
-The field lives on the `step` primitive
-(`packages/workflow/src/definition/primitives.ts`), rides the content-addressed
-definition hash (`projectForHash` spreads the primitive), and is read through
-the single `stepTriggerBudget` helper that owns the absent-means-1 default.
-
-A step whose budget is not exactly `1` may not carry a `retry` policy with
-`maxAttempts > 1`: a retried attempt re-invokes the step with its launch input
-and starts with no resume, so a mid-run failure would re-service the launch
-trigger and never re-service the already-consumed one -- a wrong conversation
-reported as success. `step()` rejects the combination at authoring time and
-the runtime re-rejects it at the read point
-(`validateRetryTriggerCombination`, applied at `runStep` entry, where the
-closure-evaluated definition is first executed).
-
-**The re-arm mechanism.** Between triggers the runtime parks the step on a
-**snapshot-less input control-plane park** -- a `ControlParkKind` of `"input"`,
-distinct from the approval park (which carries an `ApprovalSnapshot` and
-notifies the host so the sidecar co-writes the hub approval rows). An input park
-carries no snapshot and fires no host notify: the run's owner delivers the next
-trigger on the park's channel and the step re-arms. The park kind is recorded on
-`SignalAwaited`, so parked-correlation recovery reads it and **skips** input
-parks -- a snapshot-less park never reaches the approval-snapshot lookup that a
-mislabelled park would fail the whole deployment's re-registration on. The
-runtime mints a fresh input channel per turn (`env.newId`); the run's owner
-finds the current one from the reduced `awaitingSignal.name` -- discoverable,
-not guessable.
-
-**Who decides re-arm.** The definition declares `triggers`; the **runtime**
-honors it -- after a step's output it re-arms while budget remains, else
-completes. The step-invoker adapter is a translator: it returns a reply as
-`{ output }` and never parks itself. Its only concession to the input kind is
-the resume path -- an `"approval"` resume delivers a body stamped with the
-correlationId so the reactor correlates it with the rehydrated gate; an
-`"input"` resume delivers the decision as a plain next user turn (no gate to
-match).
-
-**Conversation state is committed per turn.** The step invoker commits each
-turn that settles (§3c), so a long-lived run's conversation is mirrored to the
-substrate per turn, however many turns the run spans.
-
-**Bounds and failure shape.** `step.timeout` spans the whole multi-turn
-attempt, including time parked awaiting the next trigger, so on a long-lived
-step it bounds the attempt's wall-clock life rather than any single turn. The
+**Bounds and failure shape.** A step's drain default is `cancel`; an explicit
+`drainBehavior` wins. `step.timeout` bounds one invocation, so a step in an
+onTrigger body has no deadline while the section is idle between events. The
 timer is armed per `runStep` entry, so a crash-resume re-entry arms a fresh
 one: the bound is per process incarnation, not cumulative across respawns. A
 crash mid-turn is run-fatal under the at-most-once settle: the durable
-`StepStarted` without a `StepCompleted` settles the run as terminal
-`StepFailed`, and a trigger whose `SignalReceived` is already durable is not
-re-serviced.
+`StepStarted` without a `StepCompleted` settles the step as terminal
+`StepFailed`.
+
+**Upgrade.** An earlier version let a step declare a `triggers` count and
+re-armed the step on an input park between triggers. `step()` now rejects
+`triggers` with an error that names onTrigger on mail. A deployed bundle
+inlines its own `@intx/workflow`, so a bundle built with an earlier version
+can still give a step the key. The live-to-inert projector refuses such a
+step with the same advice. The Hub probe and the child's verified-definition
+loader both run the projector, so:
+
+- A new deploy of a definition whose step sets `triggers` fails at the
+  probe with that error.
+- An existing deployment whose definition set `triggers` fails with that
+  error when its workflow child starts, before the loader compares the wire
+  hash.
+
+Such a deployment must be rewritten as an onTrigger section and redeployed.
+Its conversation can move with the step-state export and import, from
+`reply` to `section.reply`. `runStep` also refuses to resume a step that a
+run log shows parked on an input channel. A deployed run never reaches that
+check, because its child fails first; the check protects runs in memory,
+such as `runLocal`. The probe cache version changed with this rule, so each
+definition is probed again.
 
 ## 4. What gets retired vs reused
 
@@ -1769,8 +1768,9 @@ The unified host is proven by four classes of check:
 
 2. **New single-agent durability integration tests** (spawned child, test
    inference provider):
-   - Two sequential messages continue one conversation; each turn builds the
-     agent again.
+   - Two sequential mails to an onTrigger section on mail continue the
+     conversation of its body step; each event builds the agent again. A
+     one-step deployment answers the first mail and refuses the second.
    - Multi-turn conversation produces a durable, resumable workflow-run log.
    - Kill + respawn mid-conversation: `discoverInFlightRuns` resumes and
      conversation state is restored from the substrate.
