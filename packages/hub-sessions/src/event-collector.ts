@@ -144,7 +144,9 @@ export function createEventCollector(
   // The row a tool result belongs to: the open row of the turn that asked
   // for the call. For a call the collector never saw (a new collector after
   // a restart, before any inference of that turn), the open row of the
-  // latest started turn, else the row of the latest inference.
+  // latest started turn, else the row of the latest inference. A resumed
+  // turn has no row before its first inference, so its result then goes to
+  // the latest inference's row, which can be another turn's parked row.
   function rowForCall(callId: string): Row | null {
     const turnId = calls.get(callId)?.reactorTurnId;
     const own = turnId !== undefined ? openRows.get(turnId) : undefined;
@@ -292,11 +294,13 @@ export function createEventCollector(
         await finalizeOpenRows("completed", true);
         break;
       case "reactor.error": {
-        // An error with no open row gets a row of its own, so the user sees
-        // why the agent failed: before any inference of the started turn
-        // (e.g. a director error), or before any inference at all (e.g. a
-        // context store load failure). An error after a row was finalized,
-        // with no new turn, opens none.
+        // An error goes to the open row. With no open row it gets a row of
+        // its own, so the user sees why the agent failed: before any
+        // inference of the started turn (e.g. a director error), or before
+        // any inference at all (e.g. a context store load failure). An
+        // error after a row was finalized, with no new turn, opens none.
+        // Another turn's parked row counts as open, so an error of a started
+        // turn with no row goes to that parked row.
         const row = current ?? (await rowForError());
         if (row === null) {
           if (event.data.fatal) await finalizeOpenRows("failed", true);
