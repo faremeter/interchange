@@ -130,7 +130,6 @@ async function makeStore(
     runId: RUN_ID,
     stepId: STEP_ID,
     lifetime: {
-      kind: "invocation",
       invocation: { runId: RUN_ID, stepId: STEP_ID, attempt: 1 },
     },
     mailboxAddress: "agent@example.com",

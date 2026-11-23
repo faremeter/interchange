@@ -5,7 +5,7 @@
 // substrate, under the top-level run at the key of the step's place, stamped
 // with the invocation that parked; the read reconstructs it and ignores
 // another invocation's state. A read for a park's gate also takes state with
-// no stamp parked on that gate. A step that parked before cold step state was
+// no stamp parked on that gate. A step that parked before step state was
 // committed is read from its local per-attempt store instead.
 
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
@@ -157,8 +157,8 @@ const testSigner = (payload: string): Promise<string> =>
   Promise.resolve(`sig:${payload.length}`);
 
 /**
- * Park attempt `attempt` of step "s" in `runId`, at `stepPath`, the way the
- * cold path does: its durable store commits the pending operations to the
+ * Park attempt `attempt` of step "s" in `runId`, at `stepPath`, the way a
+ * step invocation does: its durable store commits the pending operations to the
  * state of the step's place under the top-level run.
  */
 async function parkColdStep(
@@ -178,7 +178,6 @@ async function parkColdStep(
     runId: RUN_ID,
     stepId: stepPlaceKey({ stepPath }),
     lifetime: {
-      kind: "invocation",
       invocation: { runId, stepId: "s", attempt },
     },
     mailboxAddress: "agent@example.com",
@@ -392,7 +391,7 @@ describe("readColdParkedPendingOperations", () => {
   }
 
   /**
-   * Park a step the way a sidecar that predates committed cold step state
+   * Park a step the way a sidecar that predates committed step state
    * did: the pending operations live only in its local per-attempt store.
    */
   async function parkLocally(
@@ -475,7 +474,7 @@ describe("readColdParkedPendingOperations", () => {
   }
 
   /**
-   * One cold invocation over a local store (the attempt's own unless
+   * One step invocation over a local store (the attempt's own unless
    * `localStoreDir` names another host's): restore, record the turn's
    * conversation and pending operations locally, and mirror them to the
    * substrate unless the invocation crashed first.
@@ -497,7 +496,6 @@ describe("readColdParkedPendingOperations", () => {
       runId: at.topLevelRunId,
       stepId: stepPlaceKey(at.place),
       lifetime: {
-        kind: "invocation",
         invocation: { runId: at.runId, stepId: at.stepId, attempt: at.attempt },
       },
       mailboxAddress: "agent@example.com",
@@ -593,7 +591,6 @@ describe("readColdParkedPendingOperations", () => {
       runId: at.topLevelRunId,
       stepId: stepPlaceKey(at.place),
       lifetime: {
-        kind: "invocation",
         invocation: { runId: at.runId, stepId: at.stepId, attempt: at.attempt },
       },
       mailboxAddress: "agent@example.com",
@@ -919,7 +916,7 @@ describe("createParkedApprovalHooks", () => {
       ["child", "loop", "s"],
     ],
   ])(
-    "%s reads its parks from its cold step state",
+    "%s reads its parks from its committed step state",
     async (_name, runId, stepPath) => {
       const { substrate, hooks } = await deployment();
       await parkColdStep(

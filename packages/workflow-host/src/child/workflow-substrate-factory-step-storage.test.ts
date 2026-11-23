@@ -241,7 +241,7 @@ async function makeTempDir(): Promise<string> {
 }
 
 describe("createSidecarStepBuildEnv per-step scratch keying", () => {
-  test("cold path keys a distinct per-run workdir under that run's subtree", async () => {
+  test("keys a distinct per-run workdir under that run's subtree", async () => {
     const dataDir = await makeTempDir();
     const buildEnv = createSidecarStepBuildEnv(
       buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
@@ -390,8 +390,8 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
 // A re-dispatchable ask-rail approval gate always carries a `suspendedCall`
 // (the call to re-run on approval). An async-tool pending marker uses the
 // same `kind: "approval"` but never sets `suspendedCall`, and on resume the
-// reactor clears its gate WITHOUT re-dispatching. The cold-path resume
-// keying assertion must therefore find a `suspendedCall`-bearing op for the
+// reactor clears its gate WITHOUT re-dispatching. The resume keying
+// assertion must therefore find a `suspendedCall`-bearing op for the
 // resumed correlationId, mirroring the reactor's own discriminator.
 const SUSPENDED_CALL: ToolCall = {
   id: "call-1",
@@ -418,7 +418,7 @@ function approvalOp(
 
 /**
  * Commit a step's state for attempt 1 of the step in `runId` through the
- * production cold-path store, from a local store the env under test never
+ * production durable store, from a local store the env under test never
  * sees, so the env can only find it by restoring from the substrate.
  */
 async function seedColdStore(
@@ -436,7 +436,6 @@ async function seedColdStore(
     runId: TOP_LEVEL_RUN_ID,
     stepId: STEP_ID,
     lifetime: {
-      kind: "invocation",
       invocation: { runId, stepId: STEP_ID, attempt: 1 },
     },
     mailboxAddress: "agent@example.com",
@@ -503,7 +502,7 @@ describe("createSidecarStepBuildEnv capabilities", () => {
   });
 });
 
-describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
+describe("createSidecarStepBuildEnv approval-resume keying", () => {
   test("rejects a resume whose matching pending op carries no suspendedCall", async () => {
     const dataDir = await makeTempDir();
     const substrate = await createSubstrate(dataDir);
@@ -611,7 +610,7 @@ describe("createSidecarStepBuildEnv approval resume of a park with no stamp", ()
     const loaded = await build.env.storage.load();
     expect(loaded.turns).toEqual([charge]);
     if (build.conversation === undefined) {
-      throw new Error("a cold step build returns its conversation");
+      throw new Error("a step build returns its conversation");
     }
     const done = {
       role: "user" as const,
@@ -660,7 +659,7 @@ describe("createSidecarStepBuildEnv approval resume of a park with no stamp", ()
   });
 });
 
-describe("createSidecarStepBuildEnv cold-path step state", () => {
+describe("createSidecarStepBuildEnv step state", () => {
   const turn = (text: string) => ({
     role: "user" as const,
     content: [{ type: "text" as const, text }],
@@ -676,7 +675,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
 
   async function takeTurn(build: StepBuild, turns: ReturnType<typeof turn>[]) {
     if (build.conversation === undefined) {
-      throw new Error("a cold step build returns its conversation");
+      throw new Error("a step build returns its conversation");
     }
     await build.env.storage.writeTurns(turns);
     await build.env.storage.commit({ message: "turn" });
@@ -1035,7 +1034,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       turn("body two"),
     ]);
     if (rebuilt.conversation === undefined) {
-      throw new Error("a cold step build returns its conversation");
+      throw new Error("a step build returns its conversation");
     }
     await rebuilt.conversation.settle();
     const committed = await readKey(substrate, TOP_LEVEL_RUN_ID, key);
@@ -1164,7 +1163,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
     )(requestForRun("run-1"), stepSourcesFor());
     expect((await build.env.storage.load()).turns).toEqual([turn("first")]);
     if (build.conversation === undefined) {
-      throw new Error("a cold step build returns its conversation");
+      throw new Error("a step build returns its conversation");
     }
     // Alice answers the earlier reply, so her mail continues the thread.
     await build.conversation.beginTurn({});
@@ -1190,12 +1189,12 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       stepId: STEP_ID,
       attempt: 1,
     });
-    // The first cold mirror appends the turn and does not rewrite the
+    // The first mirror appends the turn and does not rewrite the
     // conversation.
     expect(await countWalEntries(stateDir)).toBe(walBefore + 1);
   });
 
-  test("a cold build's conversation sends through the bridge as the deployment mailbox", async () => {
+  test("a build's conversation sends through the bridge as the deployment mailbox", async () => {
     const dataDir = await makeTempDir();
     const submitted: { sender: string; message: OutboundMessage }[] = [];
     const buildEnv = createSidecarStepBuildEnv(
@@ -1216,7 +1215,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
       stepSourcesFor(),
     );
     if (conversation === undefined) {
-      throw new Error("a cold step build returns its conversation");
+      throw new Error("a step build returns its conversation");
     }
     const message: OutboundMessage = {
       to: "alice@example.com",
@@ -1234,7 +1233,7 @@ describe("createSidecarStepBuildEnv cold-path step state", () => {
   });
 });
 
-describe("a cold step's reply over its attempt's durable store", () => {
+describe("a step's reply over its attempt's durable store", () => {
   const MAIL: Mail = {
     headers: {
       from: "alice@example.com",
@@ -1258,7 +1257,7 @@ describe("a cold step's reply over its attempt's durable store", () => {
   });
 
   // A step agent whose one send runs `send` against the env it was built
-  // with. The cold path closes it after the turn.
+  // with. The invoker closes it after the turn.
   function stepAgent(send: () => Promise<SendResult>): Agent {
     return {
       send,
@@ -1286,7 +1285,7 @@ describe("a cold step's reply over its attempt's durable store", () => {
       async readAt() {
         return [];
       },
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the cold path never reads blobs
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the step build never reads blobs
       blobReader: {} as BlobReader,
     };
   }
@@ -1852,7 +1851,7 @@ describe("a conversation moved from a top-level step to an onTrigger body step",
 
   async function takeTurn(build: StepBuild, turns: ConversationTurn[]) {
     if (build.conversation === undefined) {
-      throw new Error("a cold step build returns its conversation");
+      throw new Error("a step build returns its conversation");
     }
     await build.env.storage.writeTurns(turns);
     await build.env.storage.commit({ message: "turn" });

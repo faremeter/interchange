@@ -187,7 +187,6 @@ function invocation(
   runId = RUN_ID,
 ): DurableConversationLifetime {
   return {
-    kind: "invocation",
     invocation: { runId, stepId: STEP_ID, attempt },
   };
 }
@@ -1937,7 +1936,6 @@ for (const [label, legacyStamp] of [
 
     function resumeOf(correlationId: string): DurableConversationLifetime {
       return {
-        kind: "invocation",
         invocation: { runId: RUN_ID, stepId: STEP_ID, attempt: 1 },
         resumes: correlationId,
       };

@@ -1871,7 +1871,7 @@ async function runStep(
     }
     resumeFromPark = { signalName: parkedSignalName, correlationId };
     // Recover the attempt the step suspended on. The suspend committed its
-    // pending-op + turns under the cold-path ContextStore keyed by this
+    // pending-op + turns under the ContextStore keyed by this
     // attempt (`stepStorageRoot({runId, stepId, attempt})`); the resume
     // re-invoke must reopen that SAME `attempt-N` store so `rehydrateGates`
     // finds the pending-op and the delivered decision correlates. A step

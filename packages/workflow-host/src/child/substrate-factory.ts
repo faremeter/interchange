@@ -480,8 +480,8 @@ function createStepStorageSigner(signingKey: {
  * suspending; a retried-then-suspended step lives under `attempt-2`+, and
  * reopening `attempt-1` would rehydrate an empty store and hang on a
  * decision that correlates nothing. `createSidecarStepBuildEnv` asserts
- * this invariant loudly on the cold path (a resume opening a store that
- * lacks the resumed correlationId's pending-op throws).
+ * this invariant loudly (a resume opening a store that lacks the resumed
+ * correlationId's pending-op throws).
  */
 export function stepStorageRoot(args: {
   dataDir: string;
@@ -598,7 +598,7 @@ function findApprovalSnapshot(
 }
 
 /**
- * Where a cold step invocation's state lives and which invocation it is. The
+ * Where a step invocation's state lives and which invocation it is. The
  * state lives under the deployment's top-level run at the key of the step's
  * place, which many invocations share. The invocation (`runId`, the scoped
  * `stepId` and `attempt`) names the one invocation whose stamp makes that
@@ -622,7 +622,7 @@ function coldInvocation(args: ColdStepStateArgs): StepStateInvocation {
 }
 
 /**
- * The committed state of a cold step invocation's key, or `null` when the
+ * The committed state of a step invocation's key, or `null` when the
  * key holds none or holds state another invocation wrote. A read for the
  * approval park `correlationId` also takes state with no stamp that is parked
  * on that gate as the invocation's own (`isOwnStepState`).
@@ -649,8 +649,8 @@ async function readColdOwnState(
 }
 
 /**
- * Read a cold parked step's durable pending operations. Every cold
- * invocation commits the step's state to the workflow-run substrate
+ * Read a parked step's durable pending operations. Every invocation
+ * commits the step's state to the workflow-run substrate
  * before it returns, including one that suspends on an approval, but the
  * reactor records a suspension in the attempt's local store first. A crash
  * between the two leaves the park only in the local store, so the attempt's
@@ -676,7 +676,7 @@ export async function readColdParkedPendingOperations(
 }
 
 /**
- * Commit the state behind a cold step's recovered park before the runtime
+ * Commit the state behind a step's recovered park before the runtime
  * records the park. `readColdParkedPendingOperations` answers from the
  * attempt's local store when a crash beat the settle mirror, and a park
  * recorded over state only this host holds names a pending operation a
@@ -715,7 +715,7 @@ export async function persistColdRecoveredPark(
     principal: args.principal,
     runId: args.topLevelRunId,
     stepId: key,
-    lifetime: { kind: "invocation", invocation: coldInvocation(args) },
+    lifetime: { invocation: coldInvocation(args) },
     mailboxAddress: args.mailboxAddress,
   });
   await store.restoreFromSubstrate();
@@ -740,7 +740,7 @@ function holdsPendingOperation(
 }
 
 /**
- * The conversation and pending operations in a cold step attempt's local
+ * The conversation and pending operations in a step attempt's local
  * store, or `null` when the store directory is absent. Checked first rather
  * than manufacturing an empty repo on the read path: `createIsogitStore`
  * calls `initAgentRepo`, which would `mkdir` and init a fresh repo for a
@@ -808,11 +808,10 @@ export interface ParkedApprovalHooks {
 /**
  * The durable park reads, and the recovered-park write, for every run of a
  * deployment. Every step's state lives under the deployment's top-level run,
- * `topLevelRunId`, at the key of the step's place. Each run's steps are
- * stored by the invoker that ran them. The cold invoker runs every run of
- * the sidecar's deployments: the top-level run, each loop iteration body,
- * each `childWorkflow` child and each onTrigger body. It stamps each step's
- * state with the invocation that wrote it.
+ * `topLevelRunId`, at the key of the step's place. One step invoker runs
+ * every run of the sidecar's deployments: the top-level run, each loop
+ * iteration body, each `childWorkflow` child and each onTrigger body. It
+ * stamps each step's state with the invocation that wrote it.
  */
 export function createParkedApprovalHooks(args: {
   dataDir: string;
@@ -841,15 +840,15 @@ export interface SidecarStepBuildEnvDeps {
   dataDir: string;
   workflowRunRepoId: RepoId;
   /**
-   * Proxy workflow-run substrate, ref, and principal a cold step's durable
-   * state is committed through.
+   * Proxy workflow-run substrate, ref, and principal a step's durable state
+   * is committed through.
    */
   substrate: RepoStore;
   workflowRunRef: string;
   principal: Principal;
   signer: (payload: string) => Promise<string>;
   /**
-   * The deployment's one top-level run. Every cold step's durable state
+   * The deployment's one top-level run. Every step's durable state
    * lives under it, at the key of the step's place, whichever run the step
    * runs in.
    */
@@ -1043,7 +1042,6 @@ export function createSidecarStepBuildEnv(
       runId: deps.topLevelRunId,
       stepId: stepPlaceKey(req.place),
       lifetime: {
-        kind: "invocation",
         invocation: { runId, stepId, attempt },
         ...(req.resume !== undefined
           ? { resumes: req.resume.correlationId }
@@ -1081,7 +1079,7 @@ export function createSidecarStepBuildEnv(
       );
       if (!hasPendingGate) {
         throw new Error(
-          `sidecar workflow-child step invoker buildEnv: resume of step ${JSON.stringify(stepId)} (run ${JSON.stringify(runId)}, attempt ${String(attempt)}) reopened a ContextStore with no re-dispatchable approval gate for correlationId ${JSON.stringify(resumeCorrelationId)}. The cold-path store is keyed by attempt (${storeDir}); a resume that finds no suspendedCall-bearing pending operation here means it reopened the wrong attempt's store (the reactor would come up gateless and the decision would correlate against nothing) or matched only an async pending marker (the reactor would clear the gate without re-running the approved call). This is a keying violation, not a recoverable state.`,
+          `sidecar workflow-child step invoker buildEnv: resume of step ${JSON.stringify(stepId)} (run ${JSON.stringify(runId)}, attempt ${String(attempt)}) reopened a ContextStore with no re-dispatchable approval gate for correlationId ${JSON.stringify(resumeCorrelationId)}. The local store is per invocation, keyed by run, step and attempt (${storeDir}), and the durable conversation is keyed by the step's place; a resume that finds no suspendedCall-bearing pending operation here means it reopened the wrong attempt's store (the reactor would come up gateless and the decision would correlate against nothing) or matched only an async pending marker (the reactor would clear the gate without re-running the approved call). This is a keying violation, not a recoverable state.`,
         );
       }
     }

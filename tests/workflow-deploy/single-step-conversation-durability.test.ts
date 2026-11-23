@@ -546,7 +546,6 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
           runId: DEPLOYMENT_ID,
           stepId: stepPlaceKey(req.place),
           lifetime: {
-            kind: "invocation",
             invocation: { runId, stepId, attempt },
           },
           mailboxAddress: MAILBOX,

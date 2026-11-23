@@ -1919,7 +1919,7 @@ describe("runWorkflowChild", () => {
   test.each([0, 1, 2])(
     "fires cleanupRunStorage once per run at run granularity, never before terminal, for a deployment of %i steps",
     async (stepCount) => {
-      const baseDir = await makeTempDir("child-cold-cleanup-");
+      const baseDir = await makeTempDir("child-run-cleanup-");
       const supervisorKeyPair = await generateKeyPair();
       const childKeyPair = await generateKeyPair();
       const channelId = generateChannelId();
@@ -3801,7 +3801,6 @@ async function startOneStepChild(opts: {
       runId: topLevelRunId,
       stepId: stepPlaceKey(req.place),
       lifetime: {
-        kind: "invocation",
         invocation: { runId, stepId, attempt },
       },
       mailboxAddress: "deployment-x@example.com",

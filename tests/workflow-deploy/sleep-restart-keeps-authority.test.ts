@@ -511,8 +511,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       // The tool's own return value is the only tool result. A refused call
-      // also completes the run, but its result is an error text. The cold
-      // multi-step path removes the run's workspace when the run ends, so
+      // also completes the run, but its result is an error text. The step
+      // invoker removes the run's workspace when the run ends, so
       // the result text, which the tool returns only after its write, is the
       // proof that the tool ran.
       const texts = env.inference.requests.flatMap(toolResultTexts);

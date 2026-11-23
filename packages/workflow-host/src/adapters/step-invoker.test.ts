@@ -489,7 +489,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
 
   test("surfaces the send error, not the teardown close error, when both fail", async () => {
     // The wrapped agent close now rejects when a plugin/LSP disposer fails.
-    // In the cold path that close runs in the adapter's teardown; a close
+    // That close runs in the adapter's teardown; a close
     // failure must not mask a step error already unwinding from the send.
     let closeCalls = 0;
     const agent: Agent = {
@@ -774,7 +774,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
   });
 });
 
-describe("workflow-host StepInvoker adapter - cold settle hook", () => {
+describe("workflow-host StepInvoker adapter - settle hook", () => {
   const replyTurn = {
     role: "assistant" as const,
     content: [{ type: "text" as const, text: "ok" }],
@@ -1388,7 +1388,7 @@ describe("workflow-host StepInvoker adapter - reply send", () => {
   });
 });
 
-describe("workflow-host StepInvoker adapter - cold reply", () => {
+describe("workflow-host StepInvoker adapter - reply", () => {
   const allow: WorkflowAuthorizeFn = async () => ({
     effect: "allow",
     matchingGrants: [],
@@ -1421,7 +1421,7 @@ describe("workflow-host StepInvoker adapter - cold reply", () => {
   const SUSPENDED = suspended("c1");
 
   /**
-   * Wire a cold step invoker whose builds return a conversation over one
+   * Wire a step invoker whose builds return a conversation over one
    * real connector router, as the attempt-scoped durable store does. Each
    * invocation builds a new agent that settles its send with the next
    * result. `events` records the reply send, each close, and each settle.

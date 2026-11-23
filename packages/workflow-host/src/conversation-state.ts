@@ -197,7 +197,6 @@ const MAX_UNCOMPACTED_WAL = 2 * CHECKPOINT_INTERVAL;
  * and rolls back a turn it left parked on an approval.
  */
 export type DurableConversationLifetime = {
-  readonly kind: "invocation";
   readonly invocation: StepStateInvocation;
   readonly resumes?: string;
 };
