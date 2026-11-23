@@ -12890,7 +12890,7 @@ describe("createReactor — gate.cleared of an ask-flow gate", () => {
     await waitFor("reactor.done");
   });
 
-  test("an approval admitted during its park's commit emits gate.cleared after gate.blocked", async () => {
+  test("an approval admitted during its park's commit announces neither the park nor its clear", async () => {
     const cell = emptyCell();
     const store = makePersistingContextStore(cell);
     const baseCommit = store.commit.bind(store);
@@ -12930,10 +12930,60 @@ describe("createReactor — gate.cleared of an ask-flow gate", () => {
     release.resolve(true);
     await waitForTurnEnd(events, "turn-a");
 
-    const cleared = clearedOf(events);
-    expect(cleared.map(({ reason }) => reason)).toEqual(["resolved"]);
-    expect(cleared[0]?.index).toBeGreaterThan(
-      indexOfType(events, "reactor.gate.blocked"),
+    expect(clearedOf(events)).toEqual([]);
+    expect(indexOfType(events, "reactor.gate.blocked")).toBe(-1);
+    expect(turnEnds(events).find((e) => e.turnId === "turn-a")?.outcome).toBe(
+      "replied",
+    );
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
+  test("an abandon after an approval admitted during the park's commit announces no clear", async () => {
+    const cell = emptyCell();
+    const store = makePersistingContextStore(cell);
+    const baseCommit = store.commit.bind(store);
+    const release = Promise.withResolvers<boolean>();
+    let held = false;
+    let holding = false;
+    store.commit = async (options) => {
+      if (
+        !held &&
+        cell.pendingOperations.some((op) => op.suspendedCall !== undefined)
+      ) {
+        held = true;
+        holding = true;
+        await release.promise;
+        holding = false;
+      }
+      return baseCommit(options);
+    };
+    const { reactor, events, waitFor } = createTestReactor({
+      contextStore: store,
+      director: turnDirector(),
+      inferenceRunner: turnRunner(),
+      toolRunner: chargeRunner(),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    await waitUntil(() => holding);
+    const correlationId = cell.pendingOperations.find(
+      (op) => op.suspendedCall !== undefined,
+    )?.correlationId;
+    if (correlationId === undefined) throw new Error("expected a park");
+
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-d" });
+    await waitFor("message.correlated");
+    reactor.abandonTurn("turn-a");
+    release.resolve(true);
+    await waitForTurnEnd(events, "turn-a");
+
+    expect(clearedOf(events)).toEqual([]);
+    expect(indexOfType(events, "reactor.gate.blocked")).toBe(-1);
+    expect(turnEnds(events).find((e) => e.turnId === "turn-a")?.outcome).toBe(
+      "abandoned",
     );
 
     reactor.abort("admin_kill");
