@@ -679,10 +679,33 @@ describe("createAgent send() follows its own turn", () => {
 
   function scriptedDirector(opts: { repark?: boolean } = {}): ReactorDirector {
     let parks = 0;
+    // "J" runs a job tool whose marker always carries `corr-note`, and parks
+    // on that correlation. When the gate clears, the job runs again and
+    // parks again on the same correlation.
+    let jobParks = 0;
+    const jobPark = (caps: ReactorCapabilities) => {
+      jobParks += 1;
+      return caps.suspend({
+        type: "message_response",
+        gateId: `gate-job-${String(jobParks)}`,
+        timeoutMs: 60_000,
+        correlationId: "corr-note",
+      });
+    };
     return {
       async decide(event, _state, caps) {
+        if (event.type === "reactor.gate.cleared" && jobParks === 1) {
+          return caps.executeTools([
+            { id: "call-job-2", name: "send_note", arguments: {} },
+          ]);
+        }
         if (event.type === "message.received") {
           const content = event.message.content ?? "";
+          if (content === "J") {
+            return caps.executeTools([
+              { id: "call-job-1", name: "send_note", arguments: {} },
+            ]);
+          }
           if (content === "T") {
             parks += 1;
             return caps.executeTools([
@@ -708,6 +731,7 @@ describe("createAgent send() follows its own turn", () => {
           return caps.executeTools(event.calls, false, true);
         }
         if (event.type === "tool.done") {
+          if (event.result.callId.startsWith("call-job-")) return jobPark(caps);
           if (event.result.callId === "call-marker") return caps.reply("sent");
           if (opts.repark === true && event.result.callId === "call-1") {
             parks += 1;
@@ -904,6 +928,34 @@ describe("createAgent send() follows its own turn", () => {
       await agent.close();
     }
   });
+
+  test.each([
+    ["under its own turn id", false],
+    ["under the parked turn's id", true],
+  ])(
+    "a send that resumes a park settles suspended when the turn parks again on the same correlation %s",
+    async (_name, namesParkedTurn) => {
+      const agent = await buildAgent(scriptedDirector());
+      const events = collect(agent);
+      try {
+        agent.deliver(message("J"));
+        const parked = await firstGate(events);
+        expect(parked.correlationId).toBe("corr-note");
+
+        const result = await agent.send(
+          message("answer", "corr-note"),
+          namesParkedTurn ? { turnId: parked.turnId } : {},
+        );
+        if (result.type !== "suspended") {
+          throw new Error(`expected suspended, got ${result.type}`);
+        }
+        expect(result.correlationId).toBe("corr-note");
+        expect(result.turnId).toBe(parked.turnId);
+      } finally {
+        await agent.close();
+      }
+    },
+  );
 
   test("a send whose turn ends unanswered rejects with TurnEndedWithoutReplyError", async () => {
     const agent = await buildAgent(scriptedDirector());

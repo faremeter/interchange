@@ -1138,7 +1138,8 @@ export function createReactor(config: ReactorConfig): Reactor {
             // re-dispatched call, or the synthetic error result of a denied
             // call, is the resumption, so a gate.cleared-driven re-infer would
             // double the continuation. The gate.cleared is still emitted for
-            // observers, after the gate's blocked (see InFlightSuspend).
+            // observers, unless the gate's suspend is still committing: that
+            // park is never announced (see InFlightSuspend).
             gates.clearSilently(gate.gateId);
             if (suspendingGate?.gateId === gate.gateId) {
               suspendingGate.clearedOnAdmission = true;
@@ -1790,9 +1791,9 @@ export function createReactor(config: ReactorConfig): Reactor {
   // deferred until `blocked` has fired.
   //
   // An approval can also be admitted while its own suspend commits. Its
-  // admission clears the gate silently at once, but the `reactor.gate.cleared`
-  // it announces is held here (`clearedOnAdmission`) and emitted right after
-  // `blocked`.
+  // admission clears the gate silently at once and marks it here
+  // (`clearedOnAdmission`). That park is over before it was announced, so
+  // the suspend emits neither its `blocked` nor its `cleared`.
   type InFlightSuspend = {
     gateId: string;
     deferredClear: { reason: "resolved" | "timeout" | "shutdown" } | null;
@@ -1998,6 +1999,15 @@ export function createReactor(config: ReactorConfig): Reactor {
     // across restart.
     await commitCycle();
 
+    // A delivery admitted during the commit already resolved this park, so
+    // the park is over before anyone saw it: announce neither its block nor
+    // its clear. A late `reactor.gate.blocked` would settle a send that
+    // already answered the park as suspended.
+    if (inFlightSuspend.clearedOnAdmission) {
+      suspendingGate = null;
+      return "parked";
+    }
+
     // An abandon of this turn that landed during the commit drops the
     // gate.blocked below. Record the gate, so the abandon does not announce
     // the clear of a gate no observer saw.
@@ -2033,13 +2043,6 @@ export function createReactor(config: ReactorConfig): Reactor {
     // now, in order. The deferred clear belongs to this suspend's gate, so it
     // carries this suspend's turn.
     suspendingGate = null;
-    if (inFlightSuspend.clearedOnAdmission) {
-      emit({
-        type: "reactor.gate.cleared",
-        seq: nextSeq(),
-        data: { gateId, reason: "resolved" },
-      });
-    }
     if (inFlightSuspend.deferredClear !== null) {
       onGateCleared(gateId, inFlightSuspend.deferredClear.reason, turnId);
     }

@@ -327,9 +327,8 @@ describe("@intx/agent sends settle on their own turn", () => {
       // The commit that persists the first approval park is held. A send
       // that carries that approval's correlation arrives while the commit is
       // held and resumes the parked turn: it joins the parked turn, or it
-      // names that turn. The park's reactor.gate.blocked comes after the
-      // resume, and it must not settle the send: the send already answered
-      // that correlation.
+      // names that turn. The park is over before its commit ends, so the
+      // reactor never announces it, and the send settles on the reply.
       const release = Promise.withResolvers<boolean>();
       let parkedOps: PersistedPendingOperation[] | undefined;
       let holding = false;
@@ -399,11 +398,9 @@ describe("@intx/agent sends settle on their own turn", () => {
           throw new Error(`expected a reply, got ${result.type}`);
         }
         expect(result.reply).toBe("T done");
-        const blocked = events.find((e) => e.type === "reactor.gate.blocked");
-        expect(
-          blocked?.type === "reactor.gate.blocked" &&
-            blocked.data.correlationId,
-        ).toBe(correlationId);
+        expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(
+          false,
+        );
       } finally {
         release.resolve(true);
         await agent.close();
