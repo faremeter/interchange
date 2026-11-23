@@ -13084,6 +13084,44 @@ describe("createReactor — an approval passed to the re-run", () => {
     await waitFor("reactor.done");
   });
 
+  test("the approved call object run twice in one batch runs once on its approval", async () => {
+    const ran: string[] = [];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (e, _s, caps) => {
+            const calls = e.turn.content.flatMap((b) =>
+              b.type === "tool_call"
+                ? [{ id: b.id, name: b.name, arguments: b.arguments }]
+                : [],
+            );
+            return calls.length > 0
+              ? caps.executeTools(calls)
+              : caps.reply("done");
+          },
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools([...e.calls, ...e.calls], false, true),
+          "tool.done": (_e, _s, caps) => caps.wait(),
+        },
+        "wait",
+      ),
+      inferenceRunner: turnRunner(),
+      toolRunner: recordingRunner(ran),
+      beforeToolExtensions: [askExtension()],
+    });
+    reactor.start();
+    reactor.deliver(makeTurnMessage("park"), { turnId: "turn-a" });
+    const correlationId = await parkedCorrelationOf(waitFor);
+    reactor.deliver(makeApprovalMessage(correlationId), { turnId: "turn-d" });
+    await waitUntil(() => blockedFor(events, "turn-a") === 2);
+
+    expect(ran).toEqual(["call-ask"]);
+
+    reactor.abort("admin_kill");
+    await waitFor("reactor.done");
+  });
+
   test("after an approved re-run fails, a later call with the same id parks", async () => {
     let attempts = 0;
     const { reactor, events, waitFor } = createTestReactor({

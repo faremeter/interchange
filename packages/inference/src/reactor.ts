@@ -1431,8 +1431,8 @@ export function createReactor(config: ReactorConfig): Reactor {
   }
 
   // `approved` holds the calls (by identity) whose suspension an approver
-  // approved and that this batch now runs; their before-tool runs get
-  // `approved: true`.
+  // approved and that this batch now runs; the first before-tool run of each
+  // gets `approved: true`.
   async function executeTools(
     calls: ToolCall[],
     parallel: boolean,
@@ -1466,9 +1466,16 @@ export function createReactor(config: ReactorConfig): Reactor {
           : ABORTED_CALL_RESULT,
       );
 
+    // Each approval covers one run. The same call object can appear twice
+    // in a batch, and only its first run takes the approval.
+    const unusedApprovals = new Set(approved);
+
     const runOne = async (
       call: ToolCall,
     ): Promise<ToolResult | typeof SUSPENDED> => {
+      // Read before the first await, so the runs take approvals in call
+      // order on the parallel path too.
+      const isApproved = unusedApprovals.delete(call);
       // Run before-tool extensions. The first non-allow decision terminates
       // the chain: `block` answers the call with an error result, `suspend`
       // parks it (no result, no tool.done). A suspend that the gate limit
@@ -1478,7 +1485,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         let decision: BeforeToolDecision;
         try {
           decision = await ext.beforeTool(call, state.snapshot(), signal, {
-            approved: approved.has(call),
+            approved: isApproved,
           });
         } catch (cause) {
           const msg = cause instanceof Error ? cause.message : String(cause);
