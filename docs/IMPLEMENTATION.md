@@ -949,8 +949,9 @@ and that run writes no suspension. A `childWorkflow` spawner forces the
 child's flag true: the parent relays, and inheriting a parent false would
 refuse a gate the relay can answer. The child may already have written
 its own `SignalAwaited`; the parent's refusal then tears the child down.
-A loop or `onTrigger` body still inherits its container's flag, and an
-input park in one of those bodies is rejected rather than relayed.
+A loop or `onTrigger` body still inherits its container's flag. An input
+park in a `childWorkflow` child, a loop body or an `onTrigger` body is
+rejected rather than relayed.
 
 A timed gate is exempt. Its scheduler timer resolves it in process, so
 it needs nothing upstream.

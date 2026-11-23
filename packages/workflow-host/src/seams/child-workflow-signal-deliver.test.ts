@@ -235,7 +235,6 @@ function startCapture(args: {
           ? { resumeFromEvents: input.resumeFromEvents }
           : {}),
         signal: input.signal,
-        surfaceInputPark: true,
       });
     },
     clock,
@@ -395,7 +394,6 @@ async function resumeOnHost(args: {
           : {}),
         signal: input.signal,
         cleanup: () => channel.stop(),
-        surfaceInputPark: true,
       });
     },
     clock,

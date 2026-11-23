@@ -30,6 +30,7 @@ import {
   createNoopDrainController,
   createSpawnLoopIteration,
   createSuspendableChildHandle,
+  createTerminalChildHandle,
   defineWorkflow,
   enumerateInlineLoopBodies,
   loop,
@@ -128,7 +129,6 @@ function holdSpawnUntilChildAwaits(
       maxChildSpawnDepth: input.maxChildSpawnDepth,
       stepPathPrefix: input.stepPathPrefix,
       signal: input.signal,
-      surfaceInputPark: true,
     });
     for (const name of parkNames) {
       await waitForEvent(
@@ -172,7 +172,7 @@ function spawnOutput(output: unknown): {
 function relayed(
   events: readonly WorkflowEvent[],
   stepId: string,
-  parkKind: "approval" | "input" | "signal-relay",
+  parkKind: "approval" | "signal-relay",
   signal: string,
 ): WorkflowEvent | undefined {
   return events.find(
@@ -184,8 +184,8 @@ function relayed(
   );
 }
 
-// runLocal does not expose the repo or the park sink. An approval or input
-// park mints a reserved name, so the test has to read the parent's notify
+// runLocal does not expose the repo or the park sink. An approval park
+// mints a reserved name, so the test has to read the parent's notify
 // and the parent's log. The wiring matches the local spawner: inline
 // children are lifted, the child forces its resolver flag, and a loop body
 // is enumerated before the run starts.
@@ -1263,7 +1263,6 @@ describe("park-release watch", () => {
       maxChildSpawnDepth: 32,
       stepPathPrefix: [],
       signal: new AbortController().signal,
-      surfaceInputPark: true,
     });
     await waitForEvent(
       inner,
@@ -2593,5 +2592,291 @@ describe("a parked childWorkflow survives a process restart", () => {
     expect(result.events.some((event) => event.kind === "StepFailed")).toBe(
       false,
     );
+  });
+});
+
+// A run that relays an input park waits forever. The race turns that hang
+// into a test failure.
+async function settleOrFail(run: RuntimeWorkflowRun) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run.complete,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("the run hung")), 3000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function failureMessage(events: readonly WorkflowEvent[]): string {
+  for (const event of events) {
+    if (event.kind === "StepFailed") return event.error.message;
+    if (event.kind === "RunFailed") return JSON.stringify(event);
+  }
+  return "";
+}
+
+// A child or loop body log from an older version can hold an open input
+// park. Resume must fail the container step with the refusal rather than
+// relay the park or hang.
+describe("an old child log with an open input park", () => {
+  async function parkedLogs(id: string) {
+    const parent = defineWorkflow({
+      id: `${id}-parent`,
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: `${id}-child`,
+            trigger: { type: "manual" },
+            steps: { hold: step({ agent }) },
+          }),
+        }),
+      },
+    });
+    const runId = `run-${id}`;
+    const suspending: StepInvoker = async () => ({
+      suspend: {
+        correlationId: "corr-body",
+        kind: "approval",
+        approvalSnapshot: snapshot,
+      },
+    });
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: suspending,
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "spawn" &&
+        event.parkKind === "approval",
+    );
+    const parentLog = await copyLog(first.repoStore, runId);
+    const childId = spawnedChildId(parentLog, "spawn");
+    const childLog = (await copyLog(first.repoStore, childId)).map((event) =>
+      event.kind === "SignalAwaited"
+        ? { ...event, parkKind: "input" as const }
+        : event,
+    );
+    return { parent, runId, parentLog, childId, childLog, suspending };
+  }
+
+  async function resume(
+    logs: Awaited<ReturnType<typeof parkedLogs>>,
+    parentLog: WorkflowEvent[],
+  ) {
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, logs.childId, logs.childLog);
+    const { run } = startRelayed({
+      definition: logs.parent,
+      runId: logs.runId,
+      invokeStep: logs.suspending,
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    return { result: await settleOrFail(run) };
+  }
+
+  test("fails the spawn step when the parent already relays the input park", async () => {
+    const logs = await parkedLogs("old-input-relayed");
+    const parentLog = logs.parentLog.map((event) =>
+      event.kind === "SignalAwaited" && event.stepId === "spawn"
+        ? { ...event, parkKind: "input" as const }
+        : event,
+    );
+    const { result } = await resume(logs, parentLog);
+    expect(result.terminalStatus).toBe("failed");
+    expect(failureMessage(result.events)).toContain(
+      "is parked on an input channel",
+    );
+    expect(
+      result.events.filter(
+        (e) => e.kind === "SignalAwaited" && e.stepId === "spawn",
+      ).length,
+    ).toBe(1);
+  });
+
+  test("fails the spawn step when the parent never relayed the input park", async () => {
+    const logs = await parkedLogs("old-input-fresh");
+    const parentLog = logs.parentLog.filter(
+      (event) => !(event.kind === "SignalAwaited" && event.stepId === "spawn"),
+    );
+    const { result } = await resume(logs, parentLog);
+    expect(result.terminalStatus).toBe("failed");
+    expect(failureMessage(result.events)).toContain(
+      "is parked on an input channel",
+    );
+    expect(
+      result.events.some(
+        (e) => e.kind === "SignalAwaited" && e.stepId === "spawn",
+      ),
+    ).toBe(false);
+  });
+
+  test("fails the loop step when its body log holds an open input park", async () => {
+    const parent = defineWorkflow({
+      id: "old-input-loop-parent",
+      trigger: { type: "manual" },
+      steps: {
+        rework: loop({
+          body: defineWorkflow({
+            id: "old-input-loop-body",
+            trigger: { type: "manual" },
+            steps: { hold: step({ agent }) },
+          }),
+          while: "cont",
+          carry: "next",
+          input: { literal: 0 },
+          maxIterations: 2,
+          onExhausted: "fin",
+        }),
+        fin: step({ agent, after: ["rework"] }),
+      },
+    });
+    const runId = "run-old-input-loop";
+    const suspending: StepInvoker = async () => ({
+      suspend: {
+        correlationId: "corr-loop-body",
+        kind: "approval",
+        approvalSnapshot: snapshot,
+      },
+    });
+    const first = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: suspending,
+      loopFns: loopFnsReturning(false),
+    });
+    void first.run.complete;
+    await waitForEvent(
+      first.repoStore,
+      runId,
+      (event) =>
+        event.kind === "SignalAwaited" &&
+        event.stepId === "rework" &&
+        event.parkKind === "approval",
+    );
+    const parentLog = (await copyLog(first.repoStore, runId)).filter(
+      (event) => !(event.kind === "SignalAwaited" && event.stepId === "rework"),
+    );
+    const bodyId = loopBodyRunId(runId, "rework", 0);
+    const bodyLog = (await copyLog(first.repoStore, bodyId)).map((event) =>
+      event.kind === "SignalAwaited"
+        ? { ...event, parkKind: "input" as const }
+        : event,
+    );
+
+    const repoStore = createInMemoryRepoStore();
+    await seedLog(repoStore, bodyId, bodyLog);
+    const { run } = startRelayed({
+      definition: parent,
+      runId,
+      invokeStep: suspending,
+      loopFns: loopFnsReturning(false),
+      repoStore,
+      resumeFromEvents: parentLog,
+    });
+    const result = await settleOrFail(run);
+    expect(result.terminalStatus).toBe("failed");
+    expect(failureMessage(result.events)).toContain(
+      "is parked on an input channel",
+    );
+    expect(
+      result.events.some(
+        (e) => e.kind === "SignalAwaited" && e.stepId === "rework",
+      ),
+    ).toBe(false);
+  });
+});
+
+// No current definition makes an input park inside a child: a nested
+// onTrigger section fails validation. A `{ ref }` child definition is not
+// validated against its parent, so this child is one with an onTrigger
+// section. Its body ends at once, and the section then parks on its input
+// channel for the next event.
+describe("a live child that makes an input park", () => {
+  const sectionChild = defineWorkflow({
+    id: "live-input-child",
+    trigger: { type: "manual" },
+    steps: {
+      section: {
+        kind: "onTrigger",
+        id: "",
+        on: { type: "mail", to: "run_live-input@t.example" },
+        body: { ref: "live-input-body" },
+        drainBehavior: "wait",
+      },
+    },
+  });
+
+  const spawnSectionChild: SpawnChildWorkflow = async (input) => {
+    const repoStore = createInMemoryRepoStore();
+    const clock = (): Date => new Date();
+    const env: WorkflowRuntimeEnv = {
+      repoStore,
+      scheduler: createInMemoryScheduler({ repoStore, clock }),
+      signalChannel: createInMemorySignalChannel(),
+      blobs: createInMemoryBlobSubstrate(),
+      directors: createDefaultDirectorRegistry(),
+      authorize: allowAll,
+      invokeStep: async () => ({ output: null }),
+      spawnChild: () =>
+        Promise.reject(new Error("this test child does not spawn")),
+      spawnSuspendableChild: async () => createTerminalChildHandle("completed"),
+      clock,
+      newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
+      drain: createNoopDrainController(sectionChild),
+      hasUpstreamSignalResolver: true,
+    };
+    return createSuspendableChildHandle(env, {
+      definition: sectionChild,
+      childRunId: input.childRunId,
+      input: input.input,
+      depth: input.depth,
+      maxChildSpawnDepth: input.maxChildSpawnDepth,
+      stepPathPrefix: input.stepPathPrefix,
+      signal: input.signal,
+    });
+  };
+
+  test("fails the childWorkflow step with the handle's error", async () => {
+    const parent = defineWorkflow({
+      id: "live-input-parent",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: {
+          kind: "childWorkflow",
+          id: "",
+          definition: { ref: "live-input-child" },
+        },
+      },
+    });
+    const parks: WorkflowPark[] = [];
+    const { run } = startRelayed({
+      definition: parent,
+      runId: "run-live-input",
+      invokeStep: async () => ({ output: null }),
+      spawnChild: spawnSectionChild,
+      onPark: (park) => parks.push(park),
+    });
+    const result = await settleOrFail(run);
+    expect(result.terminalStatus).toBe("failed");
+    expect(failureMessage(result.events)).toContain(
+      "parked on a control-plane input channel",
+    );
+    expect(
+      result.events.some(
+        (e) => e.kind === "SignalAwaited" && e.stepId === "spawn",
+      ),
+    ).toBe(false);
+    expect(parks).toEqual([]);
   });
 });

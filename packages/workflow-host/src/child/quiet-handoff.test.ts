@@ -250,10 +250,7 @@ async function childStack(
       ...enumerateInlineLoopBodies(rewrite.workflow),
     ].map((b) => [b.ref, b.definition]),
   );
-  const spawnBody = async (
-    spawn: Parameters<SpawnSuspendableChild>[0],
-    surfaceInputPark: boolean,
-  ) => {
+  const spawnBody = async (spawn: Parameters<SpawnSuspendableChild>[0]) => {
     const body = bodies.get(spawn.definitionRef);
     if (body === undefined) {
       throw new Error(`no child workflow ${spawn.definitionRef}`);
@@ -269,7 +266,6 @@ async function childStack(
         ? { resumeFromEvents: spawn.resumeFromEvents }
         : {}),
       signal: spawn.signal,
-      surfaceInputPark,
     });
   };
 
@@ -295,9 +291,9 @@ async function childStack(
     }),
     invokeStep,
     invokeAction: async () => ({ output: "done" }),
-    spawnChild: (spawn) => spawnBody(spawn, true),
-    spawnSuspendableChild: (spawn) => spawnBody(spawn, false),
-    spawnLoopIteration: (spawn) => spawnBody(spawn, false),
+    spawnChild: (spawn) => spawnBody(spawn),
+    spawnSuspendableChild: (spawn) => spawnBody(spawn),
+    spawnLoopIteration: (spawn) => spawnBody(spawn),
     loopFns: (ref) => (ref === "again" ? () => true : () => null),
     clock: () => new Date(AT),
     newId: (idPrefix) => `${idPrefix}-id`,

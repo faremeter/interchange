@@ -1079,7 +1079,6 @@ describe("createParkedApprovalHooks", () => {
             ...(spawn.resumeFromEvents !== undefined
               ? { resumeFromEvents: spawn.resumeFromEvents }
               : {}),
-            surfaceInputPark: true,
           }),
       });
 

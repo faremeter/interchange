@@ -578,8 +578,8 @@ as `hasUpstreamSignalResolver`. The deployment's own run sets it true. A
 `childWorkflow` spawner forces it true as well, because the parent relays,
 and inheriting a parent false would refuse a gate the relay can answer. A
 loop or `onTrigger` body inherits its container's flag. An input park inside
-a loop or `onTrigger` body is still rejected: those handles do not re-arm an
-input park.
+a `childWorkflow` child, a loop body or an `onTrigger` body is rejected: no
+container relays an input park.
 
 Where it lives today: the "Crash and suspension behavior of a `loop` body"
 section of `packages/workflow/README.md`, the `hasUpstreamSignalResolver`

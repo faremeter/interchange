@@ -1532,7 +1532,6 @@ export function createSidecarRunChild(
       stepPathPrefix,
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
-      surfaceInputPark: true,
       cleanup: createSpawnedRunCleanup({
         signalChannel,
         cleanupRunStorage: deps.cleanupRunStorage,
@@ -1554,12 +1553,15 @@ export function createSidecarRunChild(
  * park is queued for the caller to proxy up on the same correlation; the
  * caller's granted decision returns through `resume`, which delivers it on
  * the child's own signal channel so the parked step unblocks. A body that
- * parks on a control-plane `"input"` channel is a nested onTrigger re-arm
- * the suspendable seam does not service -- the caller proxies approvals
- * only, so nothing would ever deliver that input and the child would park
- * forever. Rather than drop the park and hang, `onPark` surfaces it as a
- * hard error on `next()` and tears the child down locally so the section run
- * ends loudly (failed).
+ * parks on a control-plane `"input"` channel can come only from a run log
+ * that an earlier version wrote. Definition validation rejects a nested
+ * onTrigger and `runStep` refuses a step-level input park, so no current
+ * version makes a body input park. The caller proxies approvals only, so
+ * nothing would ever deliver that input and the child would park forever.
+ * Rather than drop the park and hang, `onPark` surfaces it as a hard error
+ * on `next()` and tears the child down locally so the section run ends
+ * loudly (failed). The `childWorkflow` handle from
+ * {@link createSidecarRunChild} rejects an input park the same way.
  *
  * Signal-channel lifecycle: the channel stays up until the child settles,
  * so `resume` can deliver on an open park. Teardown is the handle's
@@ -1658,7 +1660,6 @@ export function createSidecarSpawnSuspendableChild(
         cleanupRunStorage: deps.cleanupRunStorage,
         childRunId,
       }),
-      surfaceInputPark: false,
     });
   };
 }

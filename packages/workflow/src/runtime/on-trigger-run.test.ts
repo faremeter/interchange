@@ -1039,6 +1039,58 @@ describe("runOnTrigger", () => {
     );
   });
 
+  test("fails a resume whose body log holds an open input park", async () => {
+    const runId = "sec-old-input-park";
+    const seed = midSleepSeed(runId);
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    // Only a log from an older version holds a body input park. Nothing
+    // delivers that input, so resume fails rather than relay the park.
+    const bodyRunId = sectionEventRunId(runId, 0);
+    const corr = "body-input-corr";
+    await repoStore.appendBatch(
+      bodyRunId,
+      bodyChildLog(bodyRunId, {
+        phase: "awaiting-signal",
+        signalName: signalName(corr),
+      }).map((event) =>
+        event.kind === "SignalAwaited"
+          ? { ...event, parkKind: "input" as const }
+          : event,
+      ),
+    );
+    const body = parkedBody([signalName(corr)]);
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: createInMemorySignalChannel(),
+        spawnSuspendableChild: body.spawn,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+    // A resume that relays the input park waits forever. The race turns that
+    // hang into a test failure.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      run.complete,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("resume hung")), 3000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+
+    expect(result.terminalStatus).toBe("failed");
+    const log = await repoStore.read(runId);
+    expect(log.some((e) => e.kind === "SignalAwaited")).toBe(false);
+    const failure = log.find((e) => e.kind === "StepFailed");
+    if (failure?.kind !== "StepFailed")
+      throw new Error("expected a StepFailed");
+    expect(failure.error.message).toContain("is parked on an input channel");
+  });
+
   test("a body handle that rejects fails loud even under tolerate", async () => {
     const runId = "sec-tolerate-refuse";
     const seed = midSleepSeed(runId);

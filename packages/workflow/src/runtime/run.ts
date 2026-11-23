@@ -573,9 +573,8 @@ function commit(
   env: WorkflowRuntimeEnv,
   runId: string,
   event: WorkflowEvent,
-  guard?: (state: RunState) => void,
 ): Promise<ReturnType<typeof resumeFromLog>> {
-  return commitBufferedToChain(env, runId, event, guard);
+  return commitBufferedToChain(env, runId, event);
 }
 
 // Intra-segment commit of the events `build` returns for the state the
@@ -2752,16 +2751,10 @@ async function driveSuspendableOccurrence(
           child,
           relay,
           abort,
-          new Set(),
           signalRelayAddressing,
         );
       } catch (cause) {
-        if (
-          !(cause instanceof ChildRelayRetiredError) ||
-          cause.parkKind !== "approval"
-        ) {
-          throw cause;
-        }
+        if (!(cause instanceof ChildRelayRetiredError)) throw cause;
         // The body left this approval and goes on, so the container does too.
         await abandonRelayIfOpen(env, runId, containerStepId, cause.parkName);
         continue;
@@ -2829,26 +2822,14 @@ async function driveSuspendableOccurrence(
           containerStepId,
           child,
           bodyEvent.park.correlationId,
-          "approval",
           bodyEvent.park.approvalSnapshot,
           abort,
-          new Set(),
         );
       } catch (cause) {
         if (!(cause instanceof ChildRelayRetiredError)) throw cause;
         await abandonRelayIfOpen(env, runId, containerStepId, cause.parkName);
       }
       continue;
-    }
-    if (bodyEvent.kind === "input-park") {
-      // Unreachable. Loop and onTrigger handles are built with
-      // `surfaceInputPark: false`, so `next` aborts the body and throws
-      // before this arm. The throw here does not abort: the handle already
-      // did, and a second teardown would race the one that owns the child.
-      throw new Error(
-        `suspendable body ${childRunId} surfaced an input park; a loop or ` +
-          `onTrigger body cannot re-arm an input park`,
-      );
     }
     // A body step parked on an author `awaitSignal` gate. Proxy it up as a
     // signal-relay await on THIS container run over the SAME author name and
@@ -3975,7 +3956,6 @@ async function finishOnTriggerResume(
     sinceSeq,
     "retire",
   );
-  refuseInputRelays(`onTrigger ${primitive.id}`, childRunId, relays);
   return { kind: "relink-body", eventIndex, relays };
 }
 
@@ -4064,7 +4044,7 @@ function finishLoopResume(
       childSpawnSeq(log, childRunId),
     );
   }
-  const relays = planChildRelays(
+  return planChildRelays(
     `loop ${primitive.id}`,
     primitive.id,
     childRunId,
@@ -4076,29 +4056,27 @@ function finishLoopResume(
     childSpawnSeq(log, childRunId),
     "retire",
   );
-  refuseInputRelays(`loop ${primitive.id}`, childRunId, relays);
-  return relays;
 }
 
-// A loop or onTrigger body never parks on an input channel; the live drive
-// refuses one, so a log that holds one is not this container's.
+// Only a top-level onTrigger section parks on an input channel, and the live
+// drive of a child or body run refuses one. A child log that holds an open
+// input park comes from an older version, so its resume fails here and the
+// container does not relay the park.
 function refuseInputRelays(
   container: string,
   childRunId: string,
-  relays: readonly PlannedChildRelay[],
-): void {
-  for (const relay of relays) {
-    const input =
-      relay.kind === "input-fresh" ||
-      ((relay.kind === "control-reestablish" ||
-        relay.kind === "control-deliver") &&
-        relay.parkKind === "input");
-    if (input) {
+  parks: readonly OpenChildPark[],
+): RelayableChildPark[] {
+  const relayable: RelayableChildPark[] = [];
+  for (const park of parks) {
+    if (park.kind === "input") {
       throw new Error(
-        `${container} resume: body child ${childRunId} is parked on an input channel; a loop or onTrigger body cannot re-arm an input park`,
+        `${container} resume: child run ${childRunId} is parked on an input channel; a child or body run cannot re-arm an input park`,
       );
     }
+    relayable.push(park);
   }
+  return relayable;
 }
 
 /**
@@ -5924,16 +5902,6 @@ async function parkOnSignalResult(
      * the durable `SignalAwaited` without re-deriving the kind.
      */
     parkKind?: ControlParkKind;
-    /**
-     * Set when this park is the run's one deployment input: a childWorkflow
-     * relay of a child's input park. An onTrigger section's
-     * event re-arm is a separate channel, and several of those stay open
-     * together. `sectionInputStepIds` names those sections so an open
-     * section park does not hold this channel.
-     */
-    claimsRunInputChannel?: {
-      sectionInputStepIds: ReadonlySet<string>;
-    };
     /** An input the caller races with this park; its waker ends the wait too. */
     race?: { idle: IdleWait; waker: () => void };
   },
@@ -5995,21 +5963,7 @@ async function parkOnSignalResult(
       // approval one after a crash/reconnect (see parked-correlations).
       ...(opts.parkKind !== undefined ? { parkKind: opts.parkKind } : {}),
     };
-    const claim = opts.claimsRunInputChannel;
-    state = await commit(
-      env,
-      runId,
-      awaited,
-      claim !== undefined
-        ? (fresh) => {
-            assertNoOpenInputPark(
-              fresh,
-              opts.stepId,
-              claim.sectionInputStepIds,
-            );
-          }
-        : undefined,
-    );
+    state = await commit(env, runId, awaited);
     // Only a park on a reserved `signalName(correlationId)` channel (the
     // agent-step suspend arm) carries a correlation the resolver routes a
     // decision back on; a plain `awaitSignal` gate parked on an
@@ -6622,17 +6576,16 @@ async function flushParkedChildWorkflowFailure(
 }
 
 /**
- * Park the parent on a control-plane relay and race that wait against the
- * named park leaving the child. A sibling park stays queued. `next` would
- * treat it as this park ending, and the spawn step can await only one
- * signal. A child that ends while the parent is parked wins the race, and
- * the caller continues from that terminal without reading the queue. A
- * release while the child run is still going throws
- * `ChildRelayRetiredError`, since parking the next signal on a step that is
- * still awaiting this one would wait on the old name. It fails a spawn step; a
- * loop or onTrigger drive retires the approval. A failure of the park itself
- * (nothing upstream can answer it, or a second input park) is not a body event.
- * `next` is not started on that path: the child is still parked, and the
+ * Park the parent on a relay of a child's approval and race that wait against
+ * the named park leaving the child. A sibling park stays queued. `next` would
+ * treat it as this park ending, and the spawn step can await only one signal. A
+ * child that ends while the parent is parked wins the race, and the caller
+ * continues from that terminal without reading the queue. A release while the
+ * child run is still going throws `ChildRelayRetiredError`, since parking the
+ * next signal on a step that is still awaiting this one would wait on the old
+ * name. It fails a spawn step; a loop or onTrigger drive retires the approval.
+ * A failure of the park itself (nothing upstream can answer it) is not a body
+ * event. `next` is not started on that path: the child is still parked, and the
  * failure path's later `next` takes the one wake slot.
  */
 async function awaitChildPark(
@@ -6641,10 +6594,8 @@ async function awaitChildPark(
   stepId: string,
   handle: SuspendableChildHandle,
   correlationId: string,
-  parkKind: "approval" | "input",
   approvalSnapshot: ApprovalSnapshot | undefined,
   abort: AbortSignal,
-  sectionSteps: ReadonlySet<string>,
   pull: ChildRelayPull = "next",
   handDown: "at-once" | "after-rearm" = "at-once",
 ): Promise<ChildDriveResult> {
@@ -6654,7 +6605,7 @@ async function awaitChildPark(
     return { kind: "terminal", terminalStatus: before.terminalStatus };
   }
   if (before.kind === "released") {
-    throw new ChildRelayRetiredError(stepId, parkKind, name);
+    throw new ChildRelayRetiredError(stepId, name);
   }
   const parkAbort = new AbortController();
   const detachParkAbort = bridgeAbort(abort, () => {
@@ -6673,11 +6624,8 @@ async function awaitChildPark(
     {
       stepId,
       signalName: name,
-      parkKind,
+      parkKind: "approval",
       ...(approvalSnapshot !== undefined ? { approvalSnapshot } : {}),
-      ...(parkKind === "input"
-        ? { claimsRunInputChannel: { sectionInputStepIds: sectionSteps } }
-        : {}),
       race: { idle, waker: onRelease },
     },
     parkRearm,
@@ -6711,7 +6659,7 @@ async function awaitChildPark(
         terminalStatus: outcome.rel.terminalStatus,
       };
     }
-    throw new ChildRelayRetiredError(stepId, parkKind, name);
+    throw new ChildRelayRetiredError(stepId, name);
   }
   // Stop the watch before resume. The child's own receipt would otherwise
   // look like the park ending without a decision. Re-read before resume:
@@ -6724,7 +6672,7 @@ async function awaitChildPark(
     return { kind: "terminal", terminalStatus: again.terminalStatus };
   }
   if (again.kind === "released") {
-    throw new ChildRelayRetiredError(stepId, parkKind, name);
+    throw new ChildRelayRetiredError(stepId, name);
   }
   // A body still resuming acts on a park it read before this decision lands,
   // so the decision waits until the body waits on it again.
@@ -6735,7 +6683,7 @@ async function awaitChildPark(
       return { kind: "terminal", terminalStatus: rearm.terminalStatus };
     }
     if (rearm.kind === "released") {
-      throw new ChildRelayRetiredError(stepId, parkKind, name);
+      throw new ChildRelayRetiredError(stepId, name);
     }
   }
   await handle.resume(correlationId, outcome.payload);
@@ -6745,54 +6693,13 @@ async function awaitChildPark(
 class ChildRelayRetiredError extends Error {
   constructor(
     stepId: string,
-    readonly parkKind: "approval" | "input",
     readonly parkName: string,
   ) {
     super(
-      `step ${stepId} ${parkKind} relay on ${parkName} ended while the child ` +
+      `step ${stepId} approval relay on ${parkName} ended while the child ` +
         `run was still going; a control-plane relay cannot be retired`,
     );
     this.name = "ChildRelayRetiredError";
-  }
-}
-
-/**
- * Step ids whose input park is an onTrigger event channel, not the run's
- * deployment input. Several sections re-arm at once. A childWorkflow relay
- * of an input park does not count those parks as holding the one deployment
- * channel.
- */
-function sectionInputStepIds(
-  definition: WorkflowDefinition,
-): ReadonlySet<string> {
-  const ids = new Set<string>();
-  for (const [id, step] of Object.entries(definition.steps)) {
-    if (step.kind === "onTrigger") ids.add(id);
-  }
-  return ids;
-}
-
-/**
- * The run has one deployment input channel. The caller is claiming it.
- * Another holder fails the commit. Section event channels are not holders.
- */
-function assertNoOpenInputPark(
-  state: RunState,
-  stepId: string,
-  sectionSteps: ReadonlySet<string>,
-): void {
-  for (const [otherId, step] of state.steps) {
-    if (otherId === stepId || sectionSteps.has(otherId)) continue;
-    if (
-      step.phase === "awaiting-signal" &&
-      step.awaitingSignal !== undefined &&
-      controlParkKindOf(step.awaitingSignal) === "input"
-    ) {
-      throw new Error(
-        `step ${stepId} input park: step ${otherId} is already awaiting ` +
-          `an input park; a run holds one input channel`,
-      );
-    }
   }
 }
 
@@ -6810,14 +6717,19 @@ type OpenChildPark =
       awaitSeq: number;
       timeoutAt?: string;
     }
-  | {
-      kind: "approval" | "input";
-      name: string;
-      correlationId: string;
-      awaitSeq: number;
-      stepId: string;
-      attempt: number;
-    };
+  | ({ kind: "approval" } & ReservedChildPark)
+  | ({ kind: "input" } & ReservedChildPark);
+
+type ReservedChildPark = {
+  name: string;
+  correlationId: string;
+  awaitSeq: number;
+  stepId: string;
+  attempt: number;
+};
+
+/** An open child park that a container can relay. */
+type RelayableChildPark = Exclude<OpenChildPark, { kind: "input" }>;
 
 /**
  * What the parent still has to do for one child park, or for a relay the
@@ -6836,18 +6748,8 @@ type ChildRelay =
       signalId: string;
     }
   | { kind: "signal-fresh"; name: string; timeout?: number }
-  | {
-      kind: "control-reestablish";
-      parkKind: "approval" | "input";
-      correlationId: string;
-    }
-  | {
-      kind: "control-deliver";
-      parkKind: "approval" | "input";
-      correlationId: string;
-      decision: unknown;
-    }
-  | { kind: "input-fresh"; correlationId: string }
+  | { kind: "control-reestablish"; correlationId: string }
+  | { kind: "control-deliver"; correlationId: string; decision: unknown }
   | {
       kind: "approval-fresh";
       correlationId: string;
@@ -7082,7 +6984,6 @@ function relayName(relay: ChildRelay | PlannedChildRelay): string {
       return relay.name;
     case "control-reestablish":
     case "control-deliver":
-    case "input-fresh":
     case "approval-fresh":
       return signalName(relay.correlationId);
     default: {
@@ -7135,7 +7036,8 @@ function parentSignalAwait(
  * which a restart can leave several. Only the container's awaits after
  * `sinceSeq`, the body's spawn, are this body's. A loop or onTrigger body can
  * leave an approval and go on, as a timed step does, so `approvalLeft` retires
- * that relay; a spawn step fails on it, with or without a restart.
+ * that relay; a spawn step fails on it, with or without a restart. An open
+ * input park in the child log fails the plan (see `refuseInputRelays`).
  */
 function planChildRelays(
   container: string,
@@ -7149,7 +7051,11 @@ function planChildRelays(
   sinceSeq: number,
   approvalLeft: "retire" | "fail",
 ): PlannedChildRelay[] {
-  const parks = openChildParks(childLog, childState);
+  const parks = refuseInputRelays(
+    container,
+    childRunId,
+    openChildParks(childLog, childState),
+  );
   const parentAwait = parentSignalAwait(parentState, stepId);
   const childTerminal = isTerminalRunPhase(childState.phase);
   const relays: PlannedChildRelay[] = [];
@@ -7178,7 +7084,6 @@ function planChildRelays(
       }
       relays.push({
         kind: "control-reestablish",
-        parkKind: park.kind,
         correlationId: park.correlationId,
       });
       continue;
@@ -7198,20 +7103,10 @@ function planChildRelays(
       } else {
         relays.push({
           kind: "control-deliver",
-          parkKind: park.kind,
           correlationId: park.correlationId,
           decision: delivered.payload,
         });
       }
-      continue;
-    }
-    if (park.kind === "approval") {
-      relays.push({
-        kind: "approval-fresh",
-        correlationId: park.correlationId,
-        stepId: park.stepId,
-        attempt: park.attempt,
-      });
       continue;
     }
     if (park.kind === "author") {
@@ -7224,8 +7119,10 @@ function planChildRelays(
       continue;
     }
     relays.push({
-      kind: "input-fresh",
+      kind: "approval-fresh",
       correlationId: park.correlationId,
+      stepId: park.stepId,
+      attempt: park.attempt,
     });
   }
   if (parentAwait !== undefined) {
@@ -7458,7 +7355,6 @@ async function drivePlannedChildRelay(
   handle: SuspendableChildHandle,
   relay: ChildRelay,
   abort: AbortSignal,
-  sectionSteps: ReadonlySet<string>,
   addressing: SignalRelayAddressing,
 ): Promise<ChildDriveResult> {
   switch (relay.kind) {
@@ -7536,10 +7432,8 @@ async function drivePlannedChildRelay(
         stepId,
         handle,
         relay.correlationId,
-        relay.parkKind,
         undefined,
         abort,
-        sectionSteps,
         "hold",
         "after-rearm",
       );
@@ -7561,27 +7455,6 @@ async function drivePlannedChildRelay(
       await handle.resume(relay.correlationId, relay.decision);
       return { kind: "held" };
     }
-    case "input-fresh": {
-      const name = signalName(relay.correlationId);
-      const snapshot = await handle.readParkRelease(name);
-      if (snapshot.kind === "terminal") {
-        return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
-      }
-      if (snapshot.kind === "released") return { kind: "held" };
-      return awaitChildPark(
-        env,
-        parentRunId,
-        stepId,
-        handle,
-        relay.correlationId,
-        "input",
-        undefined,
-        abort,
-        sectionSteps,
-        "hold",
-        "after-rearm",
-      );
-    }
     case "approval-fresh": {
       const name = signalName(relay.correlationId);
       const snapshot = await handle.readParkRelease(name);
@@ -7595,10 +7468,8 @@ async function drivePlannedChildRelay(
         stepId,
         handle,
         relay.correlationId,
-        "approval",
         relay.approvalSnapshot,
         abort,
-        sectionSteps,
         "hold",
         "after-rearm",
       );
@@ -7630,7 +7501,6 @@ async function runChildWorkflow(
     primitive.id,
     lineage.maxChildSpawnDepth,
   );
-  const sectionSteps = sectionInputStepIds(parent);
   // Post-extraction the child definition is the internal `{ ref }` handle: the
   // deploy step lifts the authored inline child to a standalone definition and
   // the host resolves it from an in-memory closure map keyed by this ref. An
@@ -7750,7 +7620,6 @@ async function runChildWorkflow(
               spawnedHandle,
               relay,
               childAbort.signal,
-              sectionSteps,
               "name",
             );
             if (driven.kind === "terminal") {
@@ -7787,24 +7656,8 @@ async function runChildWorkflow(
                 primitive.id,
                 spawnedHandle,
                 bodyEvent.park.correlationId,
-                "approval",
                 bodyEvent.park.approvalSnapshot,
                 childAbort.signal,
-                sectionSteps,
-              );
-              continue;
-            }
-            if (bodyEvent.kind === "input-park") {
-              pending = await awaitChildPark(
-                env,
-                parentRunId,
-                primitive.id,
-                spawnedHandle,
-                bodyEvent.correlationId,
-                "input",
-                undefined,
-                childAbort.signal,
-                sectionSteps,
               );
               continue;
             }

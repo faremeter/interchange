@@ -89,14 +89,6 @@ export function createSuspendableChildHandle(
      * caller can keep state that recovery of an `uncommitted` run reads.
      */
     cleanup?: (settlement: SuspendableChildSettlement) => void | Promise<void>;
-    /**
-     * Whether an input park is returned to the caller. Required, with no
-     * default: the safe direction is to reject, and a caller that forgot
-     * the flag would otherwise climb a park the container cannot answer.
-     * `childWorkflow` passes true. A loop iteration and an `onTrigger`
-     * body pass false, and `next` aborts the body on the input park.
-     */
-    surfaceInputPark: boolean;
   },
 ): SuspendableChildHandle {
   const {
@@ -109,7 +101,6 @@ export function createSuspendableChildHandle(
     resumeFromEvents,
     signal,
     cleanup,
-    surfaceInputPark,
   } = args;
 
   if (
@@ -131,7 +122,6 @@ export function createSuspendableChildHandle(
   type BodyEvent =
     | { kind: "park"; park: SuspendableChildPark }
     | { kind: "signal-park"; name: string; timeout?: number }
-    | { kind: "input-park"; correlationId: string }
     | { kind: "error"; error: Error };
   const events: BodyEvent[] = [];
   let nextWaiter: { resolve: () => void; resume: () => void } | null = null;
@@ -192,11 +182,6 @@ export function createSuspendableChildHandle(
               ? { approvalSnapshot: park.approvalSnapshot }
               : {}),
           },
-        });
-      } else if (surfaceInputPark && park.parkKind === "input") {
-        events.push({
-          kind: "input-park",
-          correlationId: park.correlationId,
         });
       } else {
         events.push({
@@ -505,9 +490,6 @@ export function createSuspendableChildHandle(
                   ? { timeout: event.timeout }
                   : {}),
               };
-            }
-            if (event.kind === "input-park") {
-              return { kind: "input-park", correlationId: event.correlationId };
             }
             return { kind: "park", park: event.park };
           }

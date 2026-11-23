@@ -439,9 +439,8 @@ export type SpawnChildWorkflow = (input: {
  * An approval park surfaced from a suspendable child body: the reserved
  * correlation the child parked on and the approver-facing snapshot, so the
  * parent (runOnTrigger) can proxy the approval up its OWN run's park
- * machinery on the same correlation. An input park is not an approval: a
- * handle built with `surfaceInputPark` returns it as its own event, and
- * every other handle rejects it.
+ * machinery on the same correlation. An input park is not an approval, and
+ * every handle rejects it.
  */
 export type SuspendableChildPark = {
   correlationId: string;
@@ -464,8 +463,7 @@ export type SuspendableChildSettlement =
  * time the child parks on an approval (the caller proxies it up and, once
  * granted, calls `resume`), parks on an author `awaitSignal` gate (surfaced as
  * `signal-park` so the caller proxies it up as a signal-relay await and
- * `deliverSignal`s the resolved signal back), surfaces an input park when the
- * handle was built to, or reaches a terminal. `resume`
+ * `deliverSignal`s the resolved signal back), or reaches a terminal. `resume`
  * delivers the granted decision to the child's reserved correlation channel;
  * `deliverSignal` delivers a signal on the body's own author-chosen name.
  * Both unblock the body's awaiter so it continues.
@@ -486,7 +484,6 @@ export type SuspendableChildHandle = {
   ): Promise<
     | { kind: "park"; park: SuspendableChildPark }
     | { kind: "signal-park"; name: string; timeout?: number }
-    | { kind: "input-park"; correlationId: string }
     | { kind: "terminal"; terminalStatus: "completed" | "failed" | "cancelled" }
   >;
   resume(correlationId: string, decision: unknown): Promise<void>;
@@ -768,11 +765,9 @@ export interface WorkflowRuntimeEnv {
    * {@link SpawnSuspendableChild}). Optional: a host that does not wire it
    * does not support onTrigger sections, and `runOnTrigger` fails loudly.
    *
-   * Both seams return a {@link SuspendableChildHandle}. `runChildWorkflow`
-   * drives `spawnChild` across the child's parks, including an input park.
-   * This callback is driven across approval and author-signal parks. An
-   * input park here is rejected: a loop or `onTrigger` body has no separate
-   * input channel of its own.
+   * Both seams return a {@link SuspendableChildHandle}, driven across
+   * approval and author-signal parks. Both reject an input park: a child or
+   * body run has no input channel of its own.
    */
   spawnSuspendableChild?: SpawnSuspendableChild;
   /**

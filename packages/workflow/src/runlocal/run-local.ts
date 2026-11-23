@@ -604,7 +604,6 @@ export function createInMemorySpawnChild(
       stepPathPrefix,
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
-      surfaceInputPark: true,
     });
   };
 }
