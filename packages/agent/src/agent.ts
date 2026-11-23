@@ -529,8 +529,9 @@ export async function createAgent<EnvReq extends BaseEnv>(
       lastAssistantTurn: AssistantTurn | undefined;
       // The correlation that the send's own message carries, if any.
       messageCorrelationId: string | undefined;
-      // The correlation the send answered by joining a parked turn: set
-      // only after a `joined` end. A park on it after the join is over.
+      // The correlation the send answered by resuming a parked turn: set
+      // when the reactor correlates the send's message, or after a `joined`
+      // end. A park on it after the resume is over.
       answeredCorrelationId: string | undefined;
     };
     let activeCycle: ActiveCycle | null = null;
@@ -690,6 +691,16 @@ export async function createAgent<EnvReq extends BaseEnv>(
             cycle.lastAssistantTurn = event.data.turn;
           }
           return;
+        case "message.correlated":
+          // The reactor correlated the send's own message, so a park on that
+          // correlation is over: the send resumed the parked turn, or the
+          // park had already ended and the message resumed nothing. A send
+          // that names the parked turn resumes it with no `joined` end, so
+          // this event is what marks the park as answered.
+          if (event.data.correlationId === cycle.messageCorrelationId) {
+            cycle.answeredCorrelationId = event.data.correlationId;
+          }
+          return;
         case "connector.reply": {
           if (event.data.turnId !== cycle.turnId) return;
           const turn: ConversationTurn =
@@ -705,7 +716,7 @@ export async function createAgent<EnvReq extends BaseEnv>(
         }
         case "reactor.gate.blocked": {
           if (event.data.turnId !== cycle.turnId) return;
-          // A park whose blocked event comes after the send joined the
+          // A park whose blocked event comes after the send resumed the
           // parked turn by answering its correlation: the send's message
           // arrived while the park's commit ran. That park is over, so it
           // does not settle the send. A send that did not join settles on
