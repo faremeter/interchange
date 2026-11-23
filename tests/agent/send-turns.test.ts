@@ -318,89 +318,96 @@ describe("@intx/agent sends settle on their own turn", () => {
     }
   });
 
-  test("a send that resumes a park during its suspend commit settles on the parked turn's reply", async () => {
-    // The commit that persists the first approval park is held. A send
-    // that carries that approval's correlation arrives while the commit is
-    // held, resumes the parked turn and joins it. The park's
-    // reactor.gate.blocked comes after the join, and it must not settle
-    // the send: the send already answered that correlation.
-    const release = Promise.withResolvers<boolean>();
-    let parkedOps: PersistedPendingOperation[] | undefined;
-    let holding = false;
-    let held = false;
-    const holdParkCommit = (store: ContextStore): ContextStore =>
-      new Proxy(store, {
-        get(target, prop, receiver) {
-          if (prop === "writeMetadata") {
-            return async (
-              metadata: Parameters<ContextStore["writeMetadata"]>[0],
-              signal?: AbortSignal,
-            ) => {
-              if (
-                !held &&
-                metadata.pendingOperations.some(
-                  (op) => op.suspendedCall !== undefined,
-                )
-              ) {
-                parkedOps = metadata.pendingOperations;
-              }
-              return target.writeMetadata(metadata, signal);
-            };
-          }
-          if (prop === "commit") {
-            return async (options: Parameters<ContextStore["commit"]>[0]) => {
-              if (parkedOps !== undefined && !held) {
-                held = true;
-                holding = true;
-                await release.promise;
-                holding = false;
-              }
-              return target.commit(options);
-            };
-          }
-          const value: unknown = Reflect.get(target, prop, receiver);
-          return typeof value === "function" ? value.bind(target) : value;
-        },
-      });
+  test.each([
+    ["under its own turn id", false],
+    ["under the parked turn's id", true],
+  ])(
+    "a send that resumes a park during its suspend commit settles on the parked turn's reply %s",
+    async (_name, namesParkedTurn) => {
+      // The commit that persists the first approval park is held. A send
+      // that carries that approval's correlation arrives while the commit is
+      // held and resumes the parked turn: it joins the parked turn, or it
+      // names that turn. The park's reactor.gate.blocked comes after the
+      // resume, and it must not settle the send: the send already answered
+      // that correlation.
+      const release = Promise.withResolvers<boolean>();
+      let parkedOps: PersistedPendingOperation[] | undefined;
+      let holding = false;
+      let held = false;
+      const holdParkCommit = (store: ContextStore): ContextStore =>
+        new Proxy(store, {
+          get(target, prop, receiver) {
+            if (prop === "writeMetadata") {
+              return async (
+                metadata: Parameters<ContextStore["writeMetadata"]>[0],
+                signal?: AbortSignal,
+              ) => {
+                if (
+                  !held &&
+                  metadata.pendingOperations.some(
+                    (op) => op.suspendedCall !== undefined,
+                  )
+                ) {
+                  parkedOps = metadata.pendingOperations;
+                }
+                return target.writeMetadata(metadata, signal);
+              };
+            }
+            if (prop === "commit") {
+              return async (options: Parameters<ContextStore["commit"]>[0]) => {
+                if (parkedOps !== undefined && !held) {
+                  held = true;
+                  holding = true;
+                  await release.promise;
+                  holding = false;
+                }
+                return target.commit(options);
+              };
+            }
+            const value: unknown = Reflect.get(target, prop, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
 
-    const agent = await buildAgent(
-      join(workDir, "ctx"),
-      harness,
-      holdParkCommit,
-    );
-    const events = collect(agent);
-    try {
-      harness.scenario.replyOnce("anthropic", {
-        toolCalls: [{ callId: "call-charge", name: "charge_card", args: {} }],
-      });
-      agent.deliver(message("T"));
-      await runUntil(harness, () => holding);
-      const correlationId = parkedOps?.find(
-        (op) => op.suspendedCall !== undefined,
-      )?.correlationId;
-      if (correlationId === undefined) throw new Error("expected a park");
-
-      harness.scenario.replyOnce("anthropic", { text: "T done" });
-      const sent = agent.send(approval(correlationId), { turnId: "turn-d" });
-      await waitUntil(() =>
-        events.some(
-          (e) => e.type === "reactor.turn.ended" && e.data.turnId === "turn-d",
-        ),
+      const agent = await buildAgent(
+        join(workDir, "ctx"),
+        harness,
+        holdParkCommit,
       );
-      release.resolve(true);
+      const events = collect(agent);
+      try {
+        harness.scenario.replyOnce("anthropic", {
+          toolCalls: [{ callId: "call-charge", name: "charge_card", args: {} }],
+        });
+        agent.deliver(message("T"));
+        await runUntil(harness, () => holding);
+        const parked = parkedOps?.find((op) => op.suspendedCall !== undefined);
+        if (parked?.turnId === undefined) throw new Error("expected a park");
+        const { correlationId } = parked;
 
-      const result = await settled(harness, sent);
-      if (result.type !== "reply") {
-        throw new Error(`expected a reply, got ${result.type}`);
+        harness.scenario.replyOnce("anthropic", { text: "T done" });
+        const sent = agent.send(approval(correlationId), {
+          turnId: namesParkedTurn ? parked.turnId : "turn-d",
+        });
+        await waitUntil(() =>
+          events.some((e) => e.type === "message.correlated"),
+        );
+        release.resolve(true);
+
+        const result = await settled(harness, sent);
+        if (result.type !== "reply") {
+          throw new Error(`expected a reply, got ${result.type}`);
+        }
+        expect(result.reply).toBe("T done");
+        const blocked = events.find((e) => e.type === "reactor.gate.blocked");
+        expect(
+          blocked?.type === "reactor.gate.blocked" &&
+            blocked.data.correlationId,
+        ).toBe(correlationId);
+      } finally {
+        release.resolve(true);
+        await agent.close();
       }
-      expect(result.reply).toBe("T done");
-      const blocked = events.find((e) => e.type === "reactor.gate.blocked");
-      expect(
-        blocked?.type === "reactor.gate.blocked" && blocked.data.correlationId,
-      ).toBe(correlationId);
-    } finally {
-      release.resolve(true);
-      await agent.close();
-    }
-  });
+    },
+  );
 });
