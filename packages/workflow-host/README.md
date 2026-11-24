@@ -348,12 +348,33 @@ in the inbox, for the child to commit it, or in `processing/`, the run's
 history or the inbox cannot be read, the child does not report what it is
 parked on, the standby cannot be recorded, or the child reports that its
 quiet check failed. Its subclass `StandbyAbandonedError` is used when
-`wake()`, `abandonStandby()`, a cancellation or a shutdown calls it off,
+`wake()`, `abandonStandby()`, a cancellation, a shutdown or, for a conditional
+attempt, an explicit `enterStandby()` calls it off,
 and `StandbyDeferredError` is used while the child is
 starting or restarting, so the host can ask again once it runs.
 `abandonStandby()` does nothing to a finished standby attempt, and runs the
 child again when it comes after the stop began; `wake()` and a cancellation
 that abandon one run the child themselves.
+
+`enterStandby({ minQuietMs })` makes the attempt conditional: instead of
+waiting for work in progress to finish, it refuses immediately with
+`StandbyNotIdleError` (carrying `quietForMs`, 0 while working, while mail
+waits, or while a timer is due) unless the child is already in standby or has
+been quiet for at least `minQuietMs` with no timer due within it. A child
+stopped for a timer due sooner would wake before it stayed stopped as long as
+its runs had to wait. Its first check looks at the supervisor's own activity
+and held mail, asks the child with a memory-only quiet probe (`probe: true`),
+and then reads the inbox. It holds nothing back. Only then does the attempt
+run the frozen final check, which applies the same rules, and stop. An explicit `enterStandby()` calls off a
+conditional attempt before the stop begins and defers with
+`StandbyDeferredError` so the host can ask again once it settles, and shares a
+stop that has already begun.
+
+`checkIdle(minQuietMs)` runs only that first check and starts no attempt, so
+it stops and holds back nothing. It resolves when a conditional attempt would
+go on to its final check, or when the child is in standby already, and rejects
+as the attempt would have. While a standby attempt runs it defers, and an
+attempt that starts calls a pending check off.
 
 A supervisor in standby respawns its child through the recycle path for mail,
 a signal (delivered to the new child), a cancellation (committed first),

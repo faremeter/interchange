@@ -108,6 +108,7 @@ import {
   beginDelivery,
   flushAllBuffers,
   isQuiet,
+  quietFor,
   whenDelivered,
   whenQuiet,
 } from "@intx/workflow/runtime";
@@ -1205,10 +1206,11 @@ function stopHostScheduler(bindings: RunWorkflowChildBindings): void {
 }
 
 // Whether every run only waits on input from outside, for a supervisor that
-// stops the child once it is. Buffered events are made durable and input on
-// its way to a run is delivered first, so the answer holds for the log the
-// stopped child would leave. A check that fails is reported, not retried:
-// the supervisor refuses the standby attempt with it.
+// stops the child once it is. Unless the request is a probe, buffered events
+// are made durable and input on its way to a run is delivered first, so the
+// answer holds for the log the stopped child would leave. A check that fails
+// is reported, not retried: the supervisor refuses the standby attempt with
+// it.
 async function answerQuiet(
   ctx: {
     bindings: RunWorkflowChildBindings;
@@ -1218,12 +1220,36 @@ async function answerQuiet(
   },
   data: Extract<ControlPayload, { type: "quiet.request" }>["data"],
 ): Promise<void> {
-  // The supervisor runs one standby attempt at a time, so a check still
-  // waiting when the next arrives belongs to one it gave up on.
+  // The supervisor has one standby attempt or idle check out at a time, so a
+  // check still waiting when the next arrives belongs to one it gave up on.
   ctx.quietCheck.current?.abort();
+  // A probe is answered from memory alone, so a busy child reads no history
+  // to say it works. It cannot tell that the run has ended either; the full
+  // check that follows an idle answer reports that.
+  if (data.probe === true) {
+    ctx.quietCheck.current = null;
+    const nextTimer = ctx.bindings.earliestQueuedTimer();
+    await ctx.upstreamSender.send({
+      type: "quiet.response",
+      data: {
+        requestId: data.requestId,
+        ...(isQuiet()
+          ? {
+              quiet: true as const,
+              quietForMs: quietFor(),
+              ...(nextTimer !== undefined
+                ? { wakeAt: nextTimer.toISOString() }
+                : {}),
+            }
+          : { quiet: false as const }),
+      },
+    });
+    return;
+  }
   const superseded = new AbortController();
   ctx.quietCheck.current = superseded;
   let quiet = false;
+  let quietForMs = 0;
   let ended = false;
   let wakeAt: Date | undefined;
   let error: string | undefined;
@@ -1234,7 +1260,7 @@ async function answerQuiet(
           .phase,
       );
     ended = await runEnded();
-    while (!ended) {
+    for (let looks = 1; !ended; looks += 1) {
       if (data.wait) await whenQuiet(superseded.signal);
       // Taken before the flush: work that starts and ends during these waits
       // can leave an event buffered that the flush did not see.
@@ -1242,6 +1268,7 @@ async function answerQuiet(
       await flushAllBuffers();
       await whenDelivered();
       quiet = isQuiet();
+      quietForMs = quietFor();
       // Read with `quiet`: a timer that leaves the queue after the decision
       // is still reported, and wakes the deployment at once.
       wakeAt = ctx.bindings.earliestQueuedTimer();
@@ -1250,7 +1277,12 @@ async function answerQuiet(
       // Work that started meanwhile, such as a step a timer began, may
       // already have written history, so the decision no longer holds.
       if (activityStarts() !== startsAtDecision) quiet = false;
-      if (quiet || !data.wait) break;
+      if (quiet) break;
+      // A check that does not wait gives up on a working child at once. What
+      // started may only have been the delivery of what this check's own
+      // flush wrote, which leaves the child quiet with nothing more to
+      // flush, so it looks once more before answering.
+      if (!data.wait && (!isQuiet() || looks > 1)) break;
     }
   } catch (cause) {
     if (superseded.signal.aborted) return;
@@ -1267,9 +1299,13 @@ async function answerQuiet(
       ? { requestId: data.requestId, ended: true }
       : {
           requestId: data.requestId,
-          quiet,
+          ...(quiet
+            ? { quiet: true as const, quietForMs }
+            : {
+                quiet: false as const,
+                ...(error !== undefined ? { error } : {}),
+              }),
           ...(wakeAt !== undefined ? { wakeAt: wakeAt.toISOString() } : {}),
-          ...(error !== undefined ? { error } : {}),
         },
   });
 }

@@ -2,6 +2,7 @@ export {
   createWorkflowSupervisor,
   StandbyAbandonedError,
   StandbyDeferredError,
+  StandbyNotIdleError,
   StandbyRefusedError,
   type CancelCommitInfo,
   type CancelRequestOpts,

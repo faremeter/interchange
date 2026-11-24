@@ -2748,7 +2748,19 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         if (query === undefined) throw new Error("quiet query missing");
         await sender.send({
           type: "quiet.response",
-          data: { requestId: query.data.requestId, ...answer },
+          data:
+            answer.ended === true
+              ? { requestId: query.data.requestId, ended: true }
+              : answer.quiet
+                ? {
+                    requestId: query.data.requestId,
+                    quiet: true,
+                    quietForMs: 0,
+                  }
+                : {
+                    requestId: query.data.requestId,
+                    quiet: false,
+                  },
         });
       },
       // Answer a standby attempt as the real child does: quiet for the wait and
@@ -2772,7 +2784,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           if (query === undefined) throw new Error("quiet query missing");
           await sender.send({
             type: "quiet.response",
-            data: { requestId: query.data.requestId, quiet: true },
+            data: {
+              requestId: query.data.requestId,
+              quiet: true,
+              quietForMs: 0,
+            },
           });
         }
         // The first correlation query is the one the child's start asks.

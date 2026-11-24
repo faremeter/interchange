@@ -874,7 +874,7 @@ describe("runWorkflowChild", () => {
     },
   );
 
-  test("answers a quiet check with the earliest queued timer, and one for an ended run as ended", async () => {
+  test("answers a quiet check and a probe with the earliest queued timer, and one for an ended run as ended", async () => {
     const baseDir = await makeTempDir("child-quiet-");
     const supervisorKeyPair = await generateKeyPair();
     const childKeyPair = await generateKeyPair();
@@ -935,7 +935,25 @@ describe("runWorkflowChild", () => {
     });
     expect(
       (await waitForUpstreamPayload(childToSupervisor, "quiet.response")).data,
-    ).toEqual({ requestId: "quiet-1", quiet: true, wakeAt });
+    ).toEqual({
+      requestId: "quiet-1",
+      quiet: true,
+      quietForMs: expect.any(Number),
+      wakeAt,
+    });
+    await supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "probe-1", runId: "run-1", wait: false, probe: true },
+    });
+    expect(
+      (await waitForUpstreamPayloads(childToSupervisor, "quiet.response", 2))[1]
+        ?.data,
+    ).toEqual({
+      requestId: "probe-1",
+      quiet: true,
+      quietForMs: expect.any(Number),
+      wakeAt,
+    });
 
     await supervisorSender.send({
       type: "trigger.fire",
@@ -954,10 +972,10 @@ describe("runWorkflowChild", () => {
     const answers = await waitForUpstreamPayloads(
       childToSupervisor,
       "quiet.response",
-      2,
+      3,
     );
     // An ended run decides nothing about quiet, so it reports no timer.
-    expect(answers[1]?.data).toEqual({ requestId: "quiet-2", ended: true });
+    expect(answers[2]?.data).toEqual({ requestId: "quiet-2", ended: true });
 
     await supervisorSender.send({
       type: "shutdown",
@@ -1225,7 +1243,7 @@ describe("runWorkflowChild", () => {
     await runPromise;
   });
 
-  test("answers a quiet check as not quiet when work starts while it reads the run's history", async () => {
+  test("a quiet check that does not wait looks once more when something starts while it reads the run's history, and answers not quiet if it starts again", async () => {
     const baseDir = await makeTempDir("child-quiet-read-");
     const supervisorKeyPair = await generateKeyPair();
     const childKeyPair = await generateKeyPair();
@@ -1248,20 +1266,17 @@ describe("runWorkflowChild", () => {
       }),
     );
     const base = buildBindings({ baseDir, childKeyPair });
-    // The check reads the run's log before it decides and again after; the
-    // second read is held.
-    let reads: number | null = null;
-    const held = Promise.withResolvers<undefined>();
-    const release = Promise.withResolvers<undefined>();
+    // The check reads the run's log before it decides and again after each
+    // look, so the second read is the first look's and the third the second's.
+    let reads = 0;
+    let onRead: ((read: number) => void) | null = null;
     const bindings: RunWorkflowChildBindings = {
       ...base,
       substrate: {
         ...base.substrate,
         openCommittedReads: async (...args) => {
-          if (reads !== null && (reads += 1) === 2) {
-            held.resolve(undefined);
-            await release.promise;
-          }
+          reads += 1;
+          onRead?.(reads);
           return base.substrate.openCommittedReads(...args);
         },
       },
@@ -1282,19 +1297,41 @@ describe("runWorkflowChild", () => {
     });
     await waitForUpstreamPayload(childToSupervisor, "ready");
 
+    // Activity that starts and ends during a read, as a step a timer began
+    // can; nothing is working by the time the answer goes out.
     reads = 0;
+    onRead = (read) => {
+      if (read >= 2) beginDelivery()();
+    };
     await supervisorSender.send({
       type: "quiet.request",
       data: { requestId: "quiet-1", runId: "run-1", wait: false },
     });
-    await held.promise;
-    // Activity that starts and ends during the read, as a step a timer began
-    // can; nothing is working by the time the answer goes out.
-    beginDelivery()();
-    release.resolve(undefined);
     expect(
-      (await waitForUpstreamPayload(childToSupervisor, "quiet.response")).data,
+      (
+        await waitForUpstreamPayloads(childToSupervisor, "quiet.response", 1)
+      ).at(-1)?.data,
     ).toEqual({ requestId: "quiet-1", quiet: false });
+
+    // During the first look only: the second look is still.
+    reads = 0;
+    onRead = (read) => {
+      if (read === 2) beginDelivery()();
+    };
+    await supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "quiet-2", runId: "run-1", wait: false },
+    });
+    expect(
+      (
+        await waitForUpstreamPayloads(childToSupervisor, "quiet.response", 2)
+      ).at(-1)?.data,
+    ).toEqual({
+      requestId: "quiet-2",
+      quiet: true,
+      quietForMs: expect.any(Number),
+    });
+    onRead = null;
 
     await supervisorSender.send({
       type: "shutdown",
@@ -1304,7 +1341,7 @@ describe("runWorkflowChild", () => {
     await runPromise;
   });
 
-  test("a quiet check counts activity that starts and ends during its flush", async () => {
+  test("a quiet check that does not wait looks once more after its own flush, and answers not quiet if that look finds more", async () => {
     const baseDir = await makeTempDir("child-quiet-flush-");
     const supervisorKeyPair = await generateKeyPair();
     const childKeyPair = await generateKeyPair();
@@ -1342,33 +1379,60 @@ describe("runWorkflowChild", () => {
     });
     await waitForUpstreamPayload(childToSupervisor, "ready");
 
-    // Work that starts and ends while the check flushes may have buffered an
-    // event that flush did not see.
+    // Every flush is delivered to a waiting run, as a write to a log a run
+    // watches is. Flushing `run-chained-from` also leaves another event
+    // buffered, as work the delivery set off would.
     const inner = createInMemoryRepoStore();
+    const buffer = (runId: string) =>
+      commitBuffered({ repoStore }, runId, {
+        kind: "RunStarted",
+        seq: 1,
+        at: "2026-01-01T00:00:00.000Z",
+        runId,
+        definitionHash: "definition-hash-abc",
+        trigger: { type: "manual", payload: null },
+      });
     const repoStore: typeof inner = {
       read: (id) => inner.read(id),
       append: (id, event) => inner.append(id, event),
       appendBatch: async (id, events) => {
         beginDelivery()();
         await inner.appendBatch(id, events);
+        if (id === "run-chained-from") await buffer("run-chained-to");
       },
       subscribe: (id, opts) => inner.subscribe(id, opts),
     };
-    await commitBuffered({ repoStore }, "run-buffered", {
-      kind: "RunStarted",
-      seq: 1,
-      at: "2026-01-01T00:00:00.000Z",
-      runId: "run-buffered",
-      definitionHash: "definition-hash-abc",
-      trigger: { type: "manual", payload: null },
-    });
+    const answerTo = async (requestId: string) =>
+      (
+        await waitForUpstreamPayloads(
+          childToSupervisor,
+          "quiet.response",
+          requestId === "quiet-1" ? 1 : 2,
+        )
+      ).at(-1)?.data;
+
+    // The second look finds the event the first flush left behind.
+    await buffer("run-chained-from");
     await supervisorSender.send({
       type: "quiet.request",
       data: { requestId: "quiet-1", runId: "run-1", wait: false },
     });
-    expect(
-      (await waitForUpstreamPayload(childToSupervisor, "quiet.response")).data,
-    ).toEqual({ requestId: "quiet-1", quiet: false });
+    expect(await answerTo("quiet-1")).toEqual({
+      requestId: "quiet-1",
+      quiet: false,
+    });
+
+    // Only the check's own flush moved, so the second look is still.
+    await buffer("run-buffered");
+    await supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "quiet-2", runId: "run-1", wait: false },
+    });
+    expect(await answerTo("quiet-2")).toEqual({
+      requestId: "quiet-2",
+      quiet: true,
+      quietForMs: expect.any(Number),
+    });
 
     await supervisorSender.send({
       type: "shutdown",
@@ -3219,6 +3283,131 @@ describe("a signal for a park a resumed run holds", () => {
     );
     expect(committedAt).toBeGreaterThanOrEqual(0);
     expect(answeredAt).toBeGreaterThan(committedAt);
+    await child.shutDown();
+  });
+
+  test("a probe's quiet time starts over once the run works on a signal", async () => {
+    const child = await resumeParkedRun();
+    child.releaseRead();
+    await child.supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "parked", runId: RUN_ID, wait: true },
+    });
+    await waitForUpstreamPayload(child.childToSupervisor, "quiet.response");
+    // Spin rather than sleep, so the earlier quiet start lies strictly
+    // before the signal.
+    const spinFrom = performance.now();
+    let spun = performance.now();
+    while (spun - spinFrom < 5) spun = performance.now();
+    await child.supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "probe-1", runId: RUN_ID, wait: false, probe: true },
+    });
+    const first = (
+      await waitForUpstreamPayloads(
+        child.childToSupervisor,
+        "quiet.response",
+        2,
+      )
+    )[1]?.data;
+    const beforeSignal = performance.now();
+    await child.supervisorSender.send({
+      type: "signal.deliver",
+      data: {
+        runId: RUN_ID,
+        signalName: NAME,
+        signalId: "sig-1",
+        payload: { outcome: "approved" },
+        requestId: "signal-1",
+      },
+    });
+    await waitForUpstreamPayload(child.childToSupervisor, "terminal.event");
+    await child.supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "probe-2", runId: RUN_ID, wait: false, probe: true },
+    });
+    const second = (
+      await waitForUpstreamPayloads(
+        child.childToSupervisor,
+        "quiet.response",
+        3,
+      )
+    )[2]?.data;
+    const bound = performance.now() - beforeSignal;
+    expect(first).toMatchObject({ quiet: true });
+    expect(second).toMatchObject({ quiet: true });
+    if (second === undefined || !("quietForMs" in second))
+      throw new Error("no quietForMs");
+    expect(second.quietForMs).toBeLessThanOrEqual(bound);
+    await child.shutDown();
+  });
+
+  test("does not delay a probe, which is answered from memory at once", async () => {
+    const child = await resumeParkedRun();
+    child.releaseRead();
+    await child.supervisorSender.send({
+      type: "quiet.request",
+      data: { requestId: "parked", runId: RUN_ID, wait: true },
+    });
+    await waitForUpstreamPayload(child.childToSupervisor, "quiet.response");
+    await child.supervisorSender.send({
+      type: "quiet.request",
+      data: {
+        requestId: "probe-quiet",
+        runId: RUN_ID,
+        wait: false,
+        probe: true,
+      },
+    });
+    expect(
+      (
+        await waitForUpstreamPayloads(
+          child.childToSupervisor,
+          "quiet.response",
+          2,
+        )
+      )[1]?.data,
+    ).toEqual({
+      requestId: "probe-quiet",
+      quiet: true,
+      quietForMs: expect.any(Number),
+    });
+
+    child.writeHold.on = true;
+    await child.supervisorSender.send({
+      type: "signal.deliver",
+      data: {
+        runId: RUN_ID,
+        signalName: NAME,
+        signalId: "sig-1",
+        payload: { outcome: "approved" },
+        requestId: "signal-1",
+      },
+    });
+    await child.writeHold.reached.promise;
+    await child.supervisorSender.send({
+      type: "quiet.request",
+      data: {
+        requestId: "probe-busy",
+        runId: RUN_ID,
+        wait: false,
+        probe: true,
+      },
+    });
+    // Answered with the commit still held, which a full check waits out.
+    expect(
+      (
+        await waitForUpstreamPayloads(
+          child.childToSupervisor,
+          "quiet.response",
+          3,
+        )
+      )[2]?.data,
+    ).toEqual({ requestId: "probe-busy", quiet: false });
+
+    child.writeHold.on = false;
+    child.writeHold.release.resolve(undefined);
+    await waitForUpstreamPayload(child.childToSupervisor, "terminal.event");
     await child.shutDown();
   });
 

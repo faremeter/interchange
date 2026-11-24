@@ -58,6 +58,7 @@ export {
   beginDelivery,
   isQuiet,
   isWorking,
+  quietFor,
   whenDelivered,
   whenQuiet,
 } from "./activity";

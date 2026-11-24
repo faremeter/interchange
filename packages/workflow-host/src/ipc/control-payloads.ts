@@ -1114,31 +1114,43 @@ const controlPayloadFactories = defineControlPayloadFactories({
       // so it can stop the child. With `wait` the child answers once it is
       // quiet; without, it answers at once. While the run lives it first
       // makes every buffered event durable. `runId` is the deployment's run.
-      // One check is out at a time: a new request supersedes one still
-      // waiting, which gets no answer.
+      // With `probe` it answers at once from memory, reading no history and
+      // making nothing durable: the check before a conditional attempt, and
+      // an idle check, need only whether it is quiet, for how long, and when
+      // its earliest timer is due. One check is out at a time: a new request
+      // supersedes one still waiting, which gets no answer.
       type: "'quiet.request'",
       data: {
         requestId: "string > 0",
         runId: "string > 0",
         wait: "boolean",
+        "probe?": "true",
       },
     }),
   "quiet.response": () =>
     type({
       // `ended` alone when the deployment's run has ended, so there is
       // nothing to stop it for. Otherwise `wakeAt` is the earliest timer the
-      // child has queued, and `error` says the child could not check, which
-      // refuses the standby attempt.
+      // child has queued, `quietForMs` how long a quiet child has been quiet,
+      // and `error` says the child could not check, which refuses the standby
+      // attempt.
       type: "'quiet.response'",
       data: type({
         requestId: "string > 0",
         ended: "true",
-      }).or({
-        requestId: "string > 0",
-        quiet: "boolean",
-        "wakeAt?": "string.date.iso",
-        "error?": "string",
-      }),
+      })
+        .or({
+          requestId: "string > 0",
+          quiet: "true",
+          quietForMs: "number >= 0",
+          "wakeAt?": "string.date.iso",
+        })
+        .or({
+          requestId: "string > 0",
+          quiet: "false",
+          "wakeAt?": "string.date.iso",
+          "error?": "string",
+        }),
     }),
   "resumed.runs": () =>
     type({
