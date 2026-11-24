@@ -29,8 +29,8 @@ import {
   SidecarCapabilityRule,
   type AdapterManifest,
   type CredentialCipher,
-  type ResolvedWorkflowLifecyclePolicy,
   type StepStateImport,
+  type WorkflowLifecycleDefaults,
 } from "@intx/types";
 import {
   DeploymentRejectedError,
@@ -176,8 +176,11 @@ export type WorkflowAllocationServiceDeps = {
     | "waitForSidecarInventory"
   >;
   readonly hubWebSocketUrl: string;
-  /** Fills lifecycle fields no tenant or installed workflow sets. */
-  readonly defaultLifecyclePolicy: ResolvedWorkflowLifecyclePolicy;
+  /**
+   * Fills the lifecycle fields that have a default when no tenant or installed
+   * workflow sets them.
+   */
+  readonly defaultLifecyclePolicy: WorkflowLifecycleDefaults;
   /**
    * Operator-declared custom adapter manifest forwarded to every provisioned
    * sidecar via the ensure request. Opaque here — the sidecar's adapter

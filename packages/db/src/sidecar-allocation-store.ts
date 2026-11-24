@@ -1724,9 +1724,10 @@ function buildSidecarAllocationStore(
           .where(eq(workflowRun.id, updated.anchorRunId));
         await retireRunPrincipalKey(tx, updated.tenantId, updated.anchorRunId);
         // The replacement copy starts awake: a standby request still wanted is
-        // carried out there, and a wake has nothing left to do. A JS date,
-        // since an answer is matched against this value read back, which
-        // drops microseconds.
+        // carried out there, a wake has nothing left to do, and an automatic
+        // standby still being confirmed is dropped for a fresh check. A JS
+        // date, since an answer is matched against this value read back,
+        // which drops microseconds.
         const standbyChangedAt = args.now ?? new Date();
         await tx
           .update(workflowRun)
@@ -1752,7 +1753,7 @@ function buildSidecarAllocationStore(
           .where(
             and(
               eq(workflowRun.id, updated.anchorRunId),
-              eq(workflowRun.standbyState, "waking"),
+              inArray(workflowRun.standbyState, ["waking", "confirming"]),
             ),
           );
 

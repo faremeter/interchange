@@ -20,9 +20,9 @@ import {
   validateLifecyclePolicyEdit,
 } from "@intx/db";
 import { tenant, workflowDefinition } from "@intx/db/schema";
-import type { ResolvedWorkflowLifecyclePolicy } from "@intx/types";
+import type { WorkflowLifecycleDefaults } from "@intx/types";
 
-const DEFAULTS: ResolvedWorkflowLifecyclePolicy = {
+const DEFAULTS: WorkflowLifecycleDefaults = {
   maxLifetime: "5d",
   maxDisconnected: "20m",
   capacityRetention: { completed: "10m", failed: "12h", cancelled: "2h" },
@@ -105,6 +105,31 @@ describe.skipIf(!harnessDbEnvAvailable())(
         maxDisconnected: "20m",
         capacityRetention: { completed: "10m", failed: "12h", cancelled: "2h" },
       });
+    });
+
+    test("standbyAfter has no default and comes only from a level that sets it", async () => {
+      const standbyAfter = async () =>
+        (
+          await resolveDeploymentLifecyclePolicy(
+            h.db,
+            "child",
+            "definition",
+            DEFAULTS,
+          )
+        ).standbyAfter;
+      expect(await standbyAfter()).toBeUndefined();
+
+      await h.db
+        .update(tenant)
+        .set({ config: { lifecycle: { standbyAfter: "1h" } } })
+        .where(eq(tenant.id, "child"));
+      expect(await standbyAfter()).toBe("1h");
+
+      await h.db
+        .update(workflowDefinition)
+        .set({ lifecyclePolicy: { standbyAfter: "10m" } })
+        .where(eq(workflowDefinition.id, "definition"));
+      expect(await standbyAfter()).toBe("10m");
     });
 
     test("the defaults are not a ceiling", async () => {

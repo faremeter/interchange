@@ -766,6 +766,15 @@ describe("SidecarRouter allocation control protocols", () => {
     const ws = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
+    expect(router.getIdleStandbyCandidates()).toEqual([
+      {
+        allocationId: TEST_IDENTITY.allocationId,
+        generation: TEST_IDENTITY.generation,
+        sidecarId: TEST_IDENTITY.sidecarId,
+        runId: TEST_IDENTITY.anchorRunId,
+      },
+    ]);
+
     const refused = router.putAllocationInStandbyIfIdle(
       TEST_IDENTITY,
       60_000,
@@ -901,6 +910,29 @@ describe("SidecarRouter allocation control protocols", () => {
     await check({});
     expect(admissionCalls).toBe(0);
     expect(historyReads).toBe(readsBefore);
+  });
+
+  test("only a deployment the sidecar reports live is an idle standby candidate", async () => {
+    const router = createAllocatedRouter();
+    const wsUnrouted = await connectAllocated(router, []);
+    expect(router.getIdleStandbyCandidates()).toEqual([]);
+    router.handleClose(wsUnrouted);
+
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    expect(router.getIdleStandbyCandidates()).toHaveLength(1);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "deployment.stopped",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation,
+        error: "child exited",
+      }),
+    );
+    await tick();
+    expect(router.getIdleStandbyCandidates()).toEqual([]);
   });
 
   test("an invalid answer to a standby request fails it at once", async () => {

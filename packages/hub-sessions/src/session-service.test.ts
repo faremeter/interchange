@@ -209,6 +209,7 @@ function createMockAllocationRouter(
     async wakeAllocation() {
       throw new Error("mock wake is not used by session service");
     },
+    getIdleStandbyCandidates: () => [],
     retireAllocation() {
       throw new Error(
         "mock allocation retirement is not used by session service",

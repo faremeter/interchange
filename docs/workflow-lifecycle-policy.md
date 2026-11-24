@@ -2,7 +2,8 @@
 
 A lifecycle policy releases capacity when a workflow finishes, keeps a failed
 environment around for inspection, stops deployments that have lived too long,
-and fails deployments whose sidecar has been out of contact too long. Tenant
+fails deployments whose sidecar has been out of contact too long, and can put a
+deployment in standby once its runs have waited long enough. Tenant
 and installed-workflow policy decide when those things happen. These settings
 belong to the deployment configuration, outside the workflow's executable
 definition.
@@ -15,6 +16,7 @@ type LifecycleDuration = `${number}${"s" | "m" | "h" | "d"}`;
 type WorkflowLifecyclePolicy = {
   maxLifetime?: LifecycleDuration;
   maxDisconnected?: LifecycleDuration;
+  standbyAfter?: LifecycleDuration;
   capacityRetention?: {
     completed?: LifecycleDuration;
     failed?: LifecycleDuration;
@@ -26,10 +28,13 @@ type WorkflowLifecyclePolicy = {
 Both tenants and installed workflows accept a `lifecycle` field with this
 shape. The API validates durations as non-negative whole numbers with a unit,
 at most `36500d` (the same limit applies in seconds, minutes, or hours);
-`maxLifetime` and `maxDisconnected` must be greater than zero. This fixed range leaves headroom when
-a duration is added to a deployment or terminal timestamp. Omit a field to
-inherit it, or to take the platform default when it is absent throughout the
-hierarchy.
+`maxLifetime` and `maxDisconnected` must be greater than zero, and
+`standbyAfter` at least `10s`, which bounds how often the Hub checks each busy
+deployment. This fixed range leaves headroom when a duration is added to a
+deployment or terminal timestamp. Omit a field to inherit it, or to take the
+platform default when it is absent throughout the hierarchy. `standbyAfter`
+has no platform default: absent throughout, the deployment is never put in
+standby unasked.
 
 A tenant config can contain:
 
@@ -100,6 +105,43 @@ valid duration or the maximum lifetime or disconnect limit is zero:
 
 The platform default is not a ceiling: a tenant or installed workflow may set a
 longer duration. To effectively disable an action, set its field to `36500d`.
+
+`standbyAfter` puts a deployment in standby, as `POST .../standby` does, once
+every run has only waited on input from outside for that long. The workflow
+child tracks how long every run has been quiet, and the Hub's lifecycle sweep
+asks the sidecar about eligible deployments once that interval has elapsed.
+Asking stops nothing and leaves the deployment's status as it was: if the child
+is still working, has not been quiet long enough yet, or has mail waiting, the
+deployment stays running and the Hub schedules its next check from the remaining
+wait. The same holds while the child's next timer is due within `standbyAfter`:
+the child would wake again before it stayed stopped that long, so a run that
+sleeps on a repeating timer is stopped only when the timer is at least
+`standbyAfter` away. Once every run has been quiet long enough, the status reads
+`entering`, with `standby.reason` saying that every run waited long enough or
+why the Hub's last attempt was put off, while the sidecar checks once more with
+input held back and stops the child. The Hub records `standby` once it holds
+its history, with `standby.reason` noting that the Hub put the deployment in
+standby because every run waited for `standbyAfter`. Whatever keeps an
+explicit standby request waiting, such as a map or a step with a timeout, also
+keeps the wait from ending. Mail, a signal,
+an approval decision, a due timer, a wake request, or a cancellation wakes the
+child as from any standby, and the wait starts over. The child measures the
+wait, so one that restarts for any other reason, such as a crash, starts it
+over too. A deployment in standby or
+entering it for a standby request when it moves to replacement capacity is put
+in standby again there, as after a request; an awake deployment, or one still
+entering standby for `standbyAfter`, starts a fresh wait on replacement
+capacity. If the sidecar refuses an automatic standby or an idle check for an
+unexpected reason (such as failing to record the standby on disk), or does not
+answer an idle check, as a sidecar too old to know the command does, the Hub
+backs off exponentially and stops trying automatic standby for that allocation
+generation after three such failures (forgetting prior ones once 16 times
+`standbyAfter` has passed since the last), until a standby succeeds or the
+allocation moves to a new generation. That refusal state is held in memory
+per Hub, so a Hub restart clears it, as does an hour without the deployment
+live on a sidecar connected to that Hub. A standby the sidecar refuses leaves
+the status as it was, except that after a Hub restart during the standby
+`changedAt` stays at the time that standby began.
 
 `maxLifetime` measures wall-clock time from creation of the deployment's anchor
 run. Provisioning, waiting, and standby count; restarts do not reset the
@@ -362,7 +404,10 @@ an accepted terminal event.
 `POST /api/tenants/:tenantId/workflows/runs/:runId/standby` puts a
 live deployment in standby: its sidecar stops the workflow child once every run
 only waits on input from outside, a signal, an approval, a timer, or mail, and
-the deployment keeps its capacity. Work in progress goes on until then,
+the deployment keeps its capacity. Standby frees only what the workflow child
+used, such as its memory. That helps when other work shares the sidecar's
+host; on a sidecar that runs only this deployment, nothing else can use what
+standby frees. Work in progress goes on until then,
 including input that just arrived, and a map or a step with a timeout counts as
 work until it ends, since a fresh child could not continue the map or keep the
 step's deadline. So does a step waiting to retry, since a fresh child would not
@@ -395,7 +440,8 @@ the child running ends a recorded standby but leaves a pending request to
 its command. The lifecycle status's `standby` field shows the state, when
 it last changed, the earliest timer a child in standby wakes for by itself
 (`wakeAt`), and the reason for a refused standby or wake request, for an
-input that woke the child, or for a cancellation or replacement capacity that
+input that woke the child, for an automatic `standbyAfter` standby, or for a
+cancellation or replacement capacity that
 ended the standby. A command that gets no answer goes out again after a
 wait that doubles up to 30 seconds, and the reason says why, unless all it waits
 for is history still on its way. The sidecar refuses a standby request while mail
@@ -405,13 +451,19 @@ child in standby stays so across a sidecar restart: the sidecar restores it
 without starting the child while the run's history is where the stopped child
 left it and the recorded definition still hashes to the approved one, and
 reports it in standby. History written since starts the child,
-which the sidecar reports as a wake. Replacement capacity starts awake: a deployment in standby or entering it is put in standby again
-there once it is deployed and every run waits, and a pending wake has nothing
+which the sidecar reports as a wake. Replacement capacity starts awake: a
+deployment in standby, or entering it for a standby request, is put in standby
+again there once it is deployed and every run waits, one entering it for
+`standbyAfter` starts a fresh wait, and a pending wake has nothing
 left to do.
 Cancellation and expiry end standby. Both routes need `manage` on the
 run and return `202` while the change is pending, `204` when the deployment is
 already in the requested state, and `409` for a terminal or cancelling run,
-or one whose allocation no sidecar can carry the request out on. Like DELETE,
+or one whose allocation no sidecar can carry the request out on. A wake
+request while the Hub is only asking whether the deployment is idle returns
+`204`, as for any awake deployment; once the status reads `entering` for
+`standbyAfter`, it returns `202` and sends `wake` to abandon or reverse the
+standby. Like DELETE,
 a request takes only the anchor run's row lock and reads no history, so it
 does not wait for a pack receive; one for a run whose accepted history has
 ended returns `202`, and the sweep records the run's own outcome instead.

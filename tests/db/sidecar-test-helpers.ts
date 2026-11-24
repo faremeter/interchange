@@ -39,4 +39,5 @@ export const NO_STANDBY_ROUTER = {
     Promise.reject(new Error("no standby here")),
   checkAllocationIdle: () => Promise.reject(new Error("no standby here")),
   wakeAllocation: () => Promise.reject(new Error("no standby here")),
+  getIdleStandbyCandidates: () => [],
 };

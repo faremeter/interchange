@@ -73,8 +73,9 @@ async function seedAllocation(
   });
 }
 
-// A lifecycle service for one deployment, whose allocation this records, and
-// the sweep that carries out its standby and wake requests.
+// A lifecycle service for one deployment, whose allocation this records, the
+// sweep that carries out its standby and wake requests and its automatic
+// standby, and the commands it has sent the sidecar.
 export async function startStandbySweep(
   env: DeployFlowEnv,
   db: TestDb["db"],
@@ -82,40 +83,77 @@ export async function startStandbySweep(
     tenantId: string;
     deploymentId: string;
     target: AllocationTarget;
+    realClock?: boolean;
   },
 ) {
-  const { tenantId, deploymentId, target } = opts;
+  const { tenantId, deploymentId, target, realClock = false } = opts;
   await seedAllocation(db, { tenantId, deploymentId }, target);
+  // The commands sent and not yet settled, and the next one to settle.
+  let inFlight = 0;
   let commandSettled = Promise.withResolvers<undefined>();
-  // The sweep pauses between passes on this clock, which the sweep moves.
+  // The sweep pauses between passes on this clock, which `settled` moves,
+  // unless `realClock` is set.
   let nowMs = Date.now();
+  type Sent = "standby" | "idle-check" | "idle-standby" | "wake";
+  const sent: Sent[] = [];
+  const send = (action: Sent) => {
+    sent.push(action);
+    inFlight += 1;
+  };
+  const router = env.hub.router;
   const lifecycle = createWorkflowLifecycleService({
     db,
-    retentionRouter: env.hub.router,
+    retentionRouter: router,
     runReader: createWorkflowRunReader(env.hub.agentRepoStore.repoStore),
     historyReceives: createWorkflowHistoryReceiveTracker(),
-    standbyRouter: env.hub.router,
-    onStandbyCommandSettled: (runId) => {
-      if (runId === deploymentId) commandSettled.resolve(undefined);
+    standbyRouter: {
+      putAllocationInStandby: (...args) => {
+        send("standby");
+        return router.putAllocationInStandby(...args);
+      },
+      putAllocationInStandbyIfIdle: (...args) => {
+        send("idle-standby");
+        return router.putAllocationInStandbyIfIdle(...args);
+      },
+      checkAllocationIdle: (...args) => {
+        send("idle-check");
+        return router.checkAllocationIdle(...args);
+      },
+      wakeAllocation: (...args) => {
+        send("wake");
+        return router.wakeAllocation(...args);
+      },
+      getIdleStandbyCandidates: () => router.getIdleStandbyCandidates(),
+      holdsAllocatedBinding: (target) => router.holdsAllocatedBinding(target),
     },
-    now: () => new Date(nowMs),
+    onStandbyCommandSettled: () => {
+      inFlight -= 1;
+      commandSettled.resolve(undefined);
+      commandSettled = Promise.withResolvers<undefined>();
+    },
+    now: () => new Date(realClock ? Date.now() : nowMs),
   });
   const standby = async () =>
     (await lifecycle.getStatus(tenantId, deploymentId))?.standby;
-  // The state once the sweep has carried out the pending request. This run is
-  // the only one the sweep has work for, so a pass that selects a run sends its
-  // command, and sends it again once that settles unanswered: the sidecar's
-  // first answer can wait on history the child is still pushing.
+  // The state once the pending request is carried out. This run is the only
+  // one the sweep has work for, so a pass that selects a run sends its command,
+  // and sends it again once that settles unanswered: the sidecar's first answer
+  // can wait on history the child is still pushing.
   const settled = async () => {
     for (;;) {
       const current = await standby();
       if (current?.state !== "entering" && current?.state !== "waking")
         return current;
-      commandSettled = Promise.withResolvers<undefined>();
-      if (await lifecycle.reconcileNext()) await commandSettled.promise;
+      if (inFlight > 0) await commandSettled.promise;
       // The sweep selects nothing while it pauses between passes.
-      else nowMs += 1_000;
+      else if (!(await lifecycle.reconcileNext())) {
+        if (realClock) await new Promise((resolve) => setTimeout(resolve, 50));
+        else nowMs += 1_000;
+      }
     }
+  };
+  const drainInFlight = async (): Promise<void> => {
+    while (inFlight > 0) await commandSettled.promise;
   };
   const untilInStandby = async (): Promise<void> => {
     const current = await settled();
@@ -126,5 +164,12 @@ export async function startStandbySweep(
       throw new Error(`standby was refused: ${String(current.reason)}`);
     }
   };
-  return { lifecycle, standby, settled, untilInStandby };
+  return {
+    lifecycle,
+    standby,
+    settled,
+    drainInFlight,
+    untilInStandby,
+    commands: () => [...sent],
+  };
 }

@@ -599,6 +599,14 @@ export type SidecarAllocationRouter = {
     timeoutMs: number,
     onAnswered?: () => void,
   ): Promise<void>;
+  /**
+   * Allocations this Hub holds a live, routed connection for and has not
+   * stopped.
+   */
+  getIdleStandbyCandidates(): readonly (AllocatedSidecarTarget & {
+    readonly sidecarId: string;
+    readonly runId: string;
+  })[];
   /** Concurrent callers share the existing request and its deadline. */
   retainAllocation(
     target: AllocatedSidecarTarget,
@@ -4818,6 +4826,32 @@ export function createSidecarRouter(
     return { capacity: conn.capacity, retainedIncarnations };
   }
 
+  function getIdleStandbyCandidates() {
+    const candidates: (AllocatedSidecarTarget & {
+      sidecarId: string;
+      runId: string;
+    })[] = [];
+    for (const [allocationId, current] of allocatedConnections) {
+      const conn = connections.get(current.ws);
+      if (
+        current.identity.kind !== "allocated" ||
+        !isFencedAsCurrent(current.identity) ||
+        conn?.bindings.get(allocationId) !== current.identity ||
+        conn.workflowAddresses.get(current.identity.workflowRunAddress) !==
+          allocationId
+      )
+        continue;
+      const target = { allocationId, generation: current.identity.generation };
+      if (stoppedAllocations.get(allocationId) === target.generation) continue;
+      candidates.push({
+        ...target,
+        sidecarId: current.identity.sidecarId,
+        runId: current.identity.anchorRunId,
+      });
+    }
+    return candidates;
+  }
+
   function getRetentionCandidates() {
     const candidates: (AllocatedSidecarTarget & { sidecarId: string })[] = [];
     for (const [allocationId, current] of allocatedConnections) {
@@ -6487,6 +6521,7 @@ export function createSidecarRouter(
     putAllocationInStandbyIfIdle,
     checkAllocationIdle,
     wakeAllocation,
+    getIdleStandbyCandidates,
     retainAllocation,
     getAllocationRetention,
     getRetentionCandidates,

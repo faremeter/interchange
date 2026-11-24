@@ -10,7 +10,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
-import type { WorkflowStandbyState } from "@intx/types";
+import { workflowStandbyStates } from "@intx/types";
 
 import { principal } from "./principals";
 import { sidecar } from "./sidecar";
@@ -32,6 +32,17 @@ export type WorkflowRunCredentialRefs = {
    */
   hubConsumers?: string[];
 };
+
+// Stored standby states on `workflow_run.standby_state`. `confirming` is
+// Hub-internal from an idle check finding the deployment idle until the
+// automatic `standby-if-idle` it leads to is answered and its history
+// confirmed, and is exposed publicly as `entering`.
+export const storedWorkflowStandbyStates = [
+  ...workflowStandbyStates,
+  "confirming",
+] as const;
+export type StoredWorkflowStandbyState =
+  (typeof storedWorkflowStandbyStates)[number];
 
 // The legacy mail accept rules a pre-gate deployment can hold. A deployment
 // that received mail before the gate admits its deployer as invoker and
@@ -149,10 +160,12 @@ export const workflowRun = pgTable(
     cancellationReason: text("cancellation_reason"),
     cancellationDeadline: timestamp("cancellation_deadline"),
     // Where a deployment anchor's workflow child stands on the way into or out
-    // of standby: `entering` until its sidecar stops the child, `standby` once
-    // the Hub holds the history the child left, `waking` until the child runs
-    // again. Null while the child runs and no standby is asked for.
-    standbyState: text("standby_state").$type<WorkflowStandbyState>(),
+    // of standby: `entering` until its sidecar stops the child for a request,
+    // `confirming` while an automatic `standbyAfter` standby is in flight or
+    // awaiting confirmation, `standby` once the Hub holds the history the child
+    // left, `waking` until the child runs again. Null while the child runs and
+    // no standby is asked for, which includes an idle check.
+    standbyState: text("standby_state").$type<StoredWorkflowStandbyState>(),
     standbyStateAt: timestamp("standby_state_at"),
     // The earliest pending timer a child in standby is woken for.
     standbyWakeAt: timestamp("standby_wake_at"),
