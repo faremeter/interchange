@@ -32,3 +32,11 @@ export const Timestamps = type({
   createdAt: "string",
   updatedAt: "string",
 });
+
+/**
+ * `Omit` applied to each member of a union. Plain `Omit` merges the members
+ * first, which loses the fields only some of them have.
+ */
+export type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never;
