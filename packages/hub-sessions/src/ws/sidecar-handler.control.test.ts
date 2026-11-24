@@ -15,6 +15,7 @@ import {
   WorkflowControlHistoryPendingError,
   WorkflowControlInitializingError,
   WorkflowControlNotConnectedError,
+  WorkflowControlNotIdleError,
   WorkflowControlRejectedError,
   type AllocatedSidecarTarget,
   type SidecarRouterConfig,
@@ -746,6 +747,160 @@ describe("SidecarRouter allocation control protocols", () => {
     expect(router.getRoutableAddresses()).toContain(
       TEST_IDENTITY.workflowRunAddress,
     );
+  });
+
+  test("putAllocationInStandbyIfIdle sends minQuietMs without the work-admission lock, arms timeout, rejects a not-idle answer with quietForMs, and resolves an accepted one with wakeAt", async () => {
+    const armed: number[] = [];
+    let admissionCalls = 0;
+    const router = createAllocatedRouter({
+      withExecutableWorkflowRun: async (_target, send) => {
+        admissionCalls += 1;
+        return send();
+      },
+      scheduleTimeout: (_handler, ms) => {
+        armed.push(ms);
+        return () => undefined;
+      },
+      lookups: { readWorkflowRunRefTips: async () => TEST_REF_TIPS },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const refused = router.putAllocationInStandbyIfIdle(
+      TEST_IDENTITY,
+      60_000,
+      7_000,
+    );
+    await tick();
+    expect(admissionCalls).toBe(0);
+    expect(armed).toContain(7_000);
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    expect(frame.action).toBe("standby-if-idle");
+    expect(frame.minQuietMs).toBe(60_000);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        error: "not idle long enough",
+        quietForMs: 12_500,
+      }),
+    );
+    const error = await refused.catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(WorkflowControlNotIdleError);
+    if (!(error instanceof WorkflowControlNotIdleError))
+      throw new Error("expected WorkflowControlNotIdleError");
+    expect(error.quietForMs).toBe(12_500);
+
+    const accepted = router.putAllocationInStandbyIfIdle(
+      TEST_IDENTITY,
+      60_000,
+      7_000,
+    );
+    await tick();
+    const secondFrame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    expect(secondFrame.action).toBe("standby-if-idle");
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: secondFrame.requestId,
+        refTips: TEST_REF_TIPS,
+        wakeAt: "2026-10-02T00:00:00.000Z",
+      }),
+    );
+    expect(await accepted).toEqual({ wakeAt: "2026-10-02T00:00:00.000Z" });
+    expect(router.getRoutableAddresses()).toContain(
+      TEST_IDENTITY.workflowRunAddress,
+    );
+  });
+
+  test("a refusal carrying quietForMs is not-idle only for the two idle actions", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.putAllocationInStandby(
+      TEST_IDENTITY,
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    expect(frame.action).toBe("standby");
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        error: "refused",
+        quietForMs: 5,
+      }),
+    );
+    const error = await pending.catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(WorkflowControlRejectedError);
+    expect(error).not.toBeInstanceOf(WorkflowControlNotIdleError);
+  });
+
+  test("checkAllocationIdle asks without the work-admission lock, takes an idle answer without reading history, and rejects with WorkflowControlNotIdleError carrying quietForMs", async () => {
+    let admissionCalls = 0;
+    let historyReads = 0;
+    const router = createAllocatedRouter({
+      withExecutableWorkflowRun: async (_target, send) => {
+        admissionCalls += 1;
+        return send();
+      },
+      lookups: {
+        readWorkflowRunRefTips: async () => {
+          historyReads += 1;
+          return TEST_REF_TIPS;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const readsBefore = historyReads;
+    const check = async (answer: { error?: string; quietForMs?: number }) => {
+      const pending = router.checkAllocationIdle(
+        TEST_IDENTITY,
+        60_000,
+        CONTROL_TIMEOUT_MS,
+      );
+      await tick();
+      const frame = WorkflowControlFrame.assert(
+        framesOfType(ws, "workflow.control").at(-1),
+      );
+      expect(frame.action).toBe("idle-check");
+      expect(frame.minQuietMs).toBe(60_000);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "workflow.control.ack",
+          requestId: frame.requestId,
+          ...answer,
+        }),
+      );
+      await pending;
+    };
+
+    const error = await check({
+      error: "not idle long enough",
+      quietForMs: 12_500,
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(WorkflowControlNotIdleError);
+    if (!(error instanceof WorkflowControlNotIdleError))
+      throw new Error("expected WorkflowControlNotIdleError");
+    expect(error.quietForMs).toBe(12_500);
+
+    await check({});
+    expect(admissionCalls).toBe(0);
+    expect(historyReads).toBe(readsBefore);
   });
 
   test("an invalid answer to a standby request fails it at once", async () => {

@@ -858,19 +858,35 @@ export type AgentUndeployFrame = typeof AgentUndeployFrame.infer;
  * retained pool, or put its workflow child in standby or wake it. Retention
  * reports kept/refused only after its decision is durable. `standby` answers
  * once the child is stopped and the standby mark is durable, or with the reason
- * it was abandoned; `wake` answers once a standby request in progress is
- * abandoned or the child is running again. The sidecar refuses a command for
- * another generation.
+ * it was abandoned; `standby-if-idle` does the same only when every run has
+ * been quiet for at least `minQuietMs` with no timer due within it, or the
+ * child is in standby already, otherwise refusing immediately with
+ * `quietForMs`; `idle-check` answers whether `standby-if-idle` would go on to
+ * stop the child, and stops or holds back nothing; `wake` answers once a
+ * standby request in progress is abandoned or the child is running again. The
+ * sidecar refuses a command for another generation.
  */
-export const WorkflowControlFrame = type({
+const workflowControlBase = {
   type: "'workflow.control'",
   requestId: "string",
   agentAddress: "string",
   generation: Generation,
   runId: "string",
-  action: "'cancel' | 'stop' | 'retain' | 'standby' | 'wake'",
   reason: "string",
-});
+} as const;
+
+export const WorkflowControlFrame = type({
+  ...workflowControlBase,
+  action: "'cancel' | 'stop' | 'retain' | 'standby' | 'wake'",
+  "minQuietMs?": "undefined",
+}).or(
+  type({
+    ...workflowControlBase,
+    action: "'standby-if-idle' | 'idle-check'",
+    // How long every run must have been quiet, in milliseconds.
+    minQuietMs: "number.integer > 0",
+  }),
+);
 export type WorkflowControlFrame = typeof WorkflowControlFrame.infer;
 
 export const WORKFLOW_CONTROL_INITIALIZING_ERROR = "workflow_initializing";
@@ -912,7 +928,18 @@ export const WorkflowControlAckFrame = type({
    * The earliest pending timer of the child in standby, which wakes it.
    */
   "wakeAt?": WakeAtTime,
-});
+  /**
+   * How long the child had been quiet when `standby-if-idle` or `idle-check`
+   * was refused as not idle: 0 unless the child was quiet, but for less than
+   * `minQuietMs`.
+   */
+  "quietForMs?": "number.integer >= 0",
+}).narrow(
+  (frame, ctx) =>
+    frame.quietForMs === undefined ||
+    frame.error !== undefined ||
+    ctx.mustBe("an error ack when it carries quietForMs"),
+);
 export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
 
 /**

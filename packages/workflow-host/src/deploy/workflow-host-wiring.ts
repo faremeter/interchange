@@ -70,7 +70,9 @@ import {
 } from "../supervisor/credentials";
 import {
   createWorkflowSupervisor,
+  StandbyAbandonedError,
   StandbyDeferredError,
+  StandbyNotIdleError,
   StandbyRefusedError,
   type StandbyOutcome,
   type SpawnOpts,
@@ -678,6 +680,7 @@ type WorkflowControlOutcome = {
   refTips?: WorkflowRunRefTips;
   retention?: DeploymentRetention;
   wakeAt?: string;
+  notIdle?: { reason: string; quietForMs: number };
 };
 
 type ResolvedInboundMailPolicy = Record<InboundMailOutcome, "reject" | "admit">;
@@ -2481,41 +2484,80 @@ export function createSidecarDeployRouter<
     }
   }
 
+  // What the Hub hears of a standby attempt or idle check the supervisor
+  // refused. A conditional attempt that was called off counts as not idle.
+  function refusedStandby(
+    cause: unknown,
+    conditional: boolean,
+  ): WorkflowControlOutcome {
+    // The Hub asks again for an attempt or check that was put off.
+    if (cause instanceof StandbyDeferredError) {
+      throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR, { cause });
+    }
+    if (
+      cause instanceof StandbyNotIdleError ||
+      (conditional && cause instanceof StandbyAbandonedError)
+    ) {
+      return {
+        notIdle: {
+          reason: `The deployment was not put in standby: ${cause.message}`,
+          quietForMs:
+            cause instanceof StandbyNotIdleError ? cause.quietForMs : 0,
+        },
+      };
+    }
+    if (cause instanceof StandbyRefusedError) {
+      throw new Error(
+        `The deployment was not put in standby: ${cause.message}`,
+        { cause },
+      );
+    }
+    throw cause;
+  }
+
+  // Nothing is stopped for an idle check, so a Hub that disconnects before
+  // the answer has nothing to call off.
+  async function checkDeploymentIdle(
+    minQuietMs: number,
+    wired: SidecarWorkflowSupervisor,
+  ): Promise<WorkflowControlOutcome> {
+    try {
+      await wired.supervisor.checkIdle(minQuietMs);
+    } catch (cause) {
+      return refusedStandby(cause, true);
+    }
+    return {};
+  }
+
   // A Hub that disconnects before the attempt it asked for settles calls it
   // off, since it would not hear the answer, and a child the attempt already
   // stopped is woken again. One that disconnects later leaves the child
-  // stopped and asks again. The supervisor records the standby before anything
-  // can wake the child.
+  // stopped and asks again. A Hub that only stops waiting stays connected, so
+  // the attempt runs on and its repeat shares the attempt or the standby it
+  // reached. The supervisor records the standby before anything can wake the
+  // child.
   async function putDeploymentInStandby(
     frame: WorkflowControlFrame,
     hosted: HostedDeployment,
     wired: SidecarWorkflowSupervisor,
     signal: AbortSignal | undefined,
   ): Promise<WorkflowControlOutcome> {
+    const minQuietMs =
+      frame.action === "standby-if-idle" ? frame.minQuietMs : undefined;
     const abandon = (): void => {
       wired.supervisor.abandonStandby("the Hub that asked for it disconnected");
     };
     signal?.addEventListener("abort", abandon, { once: true });
     let outcome: StandbyOutcome;
     try {
-      const enteringStandby = wired.supervisor.enterStandby();
+      const enteringStandby = wired.supervisor.enterStandby(
+        minQuietMs !== undefined ? { minQuietMs } : undefined,
+      );
       // Only an attempt that exists can be called off.
       if (signal?.aborted === true) abandon();
       outcome = await enteringStandby;
     } catch (cause) {
-      // The Hub asks again for a standby attempt the child's restart put off.
-      if (cause instanceof StandbyDeferredError) {
-        throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR, { cause });
-      }
-      if (cause instanceof StandbyRefusedError) {
-        throw new Error(
-          `The deployment was not put in standby: ${cause.message}`,
-          {
-            cause,
-          },
-        );
-      }
-      throw cause;
+      return refusedStandby(cause, minQuietMs !== undefined);
     } finally {
       signal?.removeEventListener("abort", abandon);
     }
@@ -2542,10 +2584,14 @@ export function createSidecarDeployRouter<
     // A wake reports itself only after a record write, so this answer reaches
     // the Hub before it. A child that already ran again ended its standby
     // before the Hub heard of it.
-    if (hosted.inStandby !== true)
-      throw new Error(
-        "The deployment was not put in standby: its child ran again before the standby attempt was answered",
-      );
+    if (hosted.inStandby !== true) {
+      const reason =
+        "The deployment was not put in standby: its child ran again before the standby attempt was answered";
+      if (minQuietMs !== undefined) {
+        return { notIdle: { reason, quietForMs: 0 } };
+      }
+      throw new Error(reason);
+    }
     return {
       refTips,
       ...(outcome.wakeAt !== undefined ? { wakeAt: outcome.wakeAt } : {}),
@@ -2589,7 +2635,12 @@ export function createSidecarDeployRouter<
     const stopping = workflowStopTasks.get(frame.agentAddress);
     if (hosted?.state === "tearing-down")
       throw new Error("The deployment is being removed");
-    if (frame.action === "standby" || frame.action === "wake") {
+    if (
+      frame.action === "standby" ||
+      frame.action === "standby-if-idle" ||
+      frame.action === "idle-check" ||
+      frame.action === "wake"
+    ) {
       if (stopping !== undefined) throw new Error("The deployment is stopping");
       if (hosted?.state === "deploying") {
         throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR);
@@ -2601,11 +2652,13 @@ export function createSidecarDeployRouter<
         hosted.state !== "live"
       )
         throw new Error(
-          `The deployment has no workflow child to ${frame.action === "standby" ? "put in standby" : "wake"}`,
+          `The deployment has no workflow child to ${frame.action === "wake" ? "wake" : "put in standby"}`,
         );
-      return frame.action === "standby"
-        ? putDeploymentInStandby(frame, hosted, wired, opts.signal)
-        : wakeDeployment(frame, wired);
+      if (frame.action === "wake") return wakeDeployment(frame, wired);
+      if (frame.action === "idle-check") {
+        return checkDeploymentIdle(frame.minQuietMs, wired);
+      }
+      return putDeploymentInStandby(frame, hosted, wired, opts.signal);
     }
     if (stopping !== undefined) {
       await stopping;
