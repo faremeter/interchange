@@ -118,6 +118,36 @@ afterAll(async () => {
   await env.teardown();
 });
 
+describe("createFixtureIdentity", () => {
+  function leafStrings(value: unknown): string[] {
+    if (typeof value === "string") return [value];
+    if (typeof value === "object" && value !== null) {
+      return Object.values(value).flatMap(leafStrings);
+    }
+    return [];
+  }
+
+  test("two identities share no value", () => {
+    const first = leafStrings(createFixtureIdentity());
+    const second = new Set(leafStrings(createFixtureIdentity()));
+    expect(first.filter((value) => second.has(value))).toEqual([]);
+  });
+
+  test("the primary and second credentials differ", () => {
+    const { primary, second } = createFixtureIdentity();
+    expect(primary.sidecarId).not.toBe(second.sidecarId);
+    expect(primary.token).not.toBe(second.token);
+    expect(primary.credentialKey).not.toBe(second.credentialKey);
+  });
+
+  test("each credential key is 32 bytes of hex", () => {
+    const { primary, second } = createFixtureIdentity();
+    for (const key of [primary.credentialKey, second.credentialKey]) {
+      expect(key).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+});
+
 describe("deploy-flow-env helpers smoke tests", () => {
   test("WORKFLOW_RUN_TERMINAL_TYPES matches the kind handler's vocabulary", () => {
     expect(WORKFLOW_RUN_TERMINAL_TYPES.has("RunCompleted")).toBe(true);

@@ -145,28 +145,37 @@ type AllocationTargetIds = {
   readonly generation: number;
 };
 
+function randomHex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/**
+ * A fresh identity of random values, which another call repeats only by
+ * chance (64 random bits on every id, 128 on every token). A sidecar holding
+ * one env's credentials is therefore refused by another env's hub, in this
+ * worker, another worker, or another checkout running the suites.
+ */
 export function createFixtureIdentity(): FixtureIdentity {
-  const credentialKey =
-    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+  const suffix = randomHex(8);
+  // The sidecar parses its credential key as 32 bytes of hex.
+  const credentials = (ordinal: number): SidecarCredentials => ({
+    sidecarId: `sc-integration-${String(ordinal)}-${suffix}`,
+    token: randomHex(16),
+    credentialKey: randomHex(32),
+  });
   return {
-    primary: {
-      sidecarId: "sc-integration-1",
-      token: "test-token",
-      credentialKey,
-    },
-    second: {
-      sidecarId: "sc-integration-2",
-      token: "test-token-2",
-      credentialKey,
-    },
-    sessionId: "ses_integration-1",
-    tenantId: "tenant-integration",
+    primary: credentials(1),
+    second: credentials(2),
+    sessionId: `ses_integration-${suffix}`,
+    tenantId: `tenant-integration-${suffix}`,
     primaryAllocationTarget: {
-      allocationId: "allocation-integration-1",
+      allocationId: `allocation-integration-1-${suffix}`,
       generation: 1,
     },
     secondAllocationTarget: {
-      allocationId: "allocation-integration-2",
+      allocationId: `allocation-integration-2-${suffix}`,
       generation: 1,
     },
   };
