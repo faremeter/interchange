@@ -7,15 +7,21 @@
 
 import { spawn } from "node:child_process";
 
-import { startSidecarSubprocess } from "../hub-agent/lib/deploy-flow-env";
+import {
+  createFixtureIdentity,
+  startSidecarSubprocess,
+} from "../hub-agent/lib/deploy-flow-env";
 
 const hubPort = Number.parseInt(process.argv[2] ?? "", 10);
 if (!Number.isInteger(hubPort)) {
   throw new Error(`orphaned-sidecar-parent: bad hub port ${process.argv[2]}`);
 }
 
+// The hub at `hubPort` refuses every upgrade, so the credentials are never
+// checked.
 const sidecar = await startSidecarSubprocess({
   hubPort,
+  credentials: createFixtureIdentity().primary,
   registerTempDir: () => undefined,
 });
 const bunBystander = Bun.spawn(["sleep", "600"]);

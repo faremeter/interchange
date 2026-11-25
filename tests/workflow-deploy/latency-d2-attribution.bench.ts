@@ -64,7 +64,6 @@ import {
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   startDeployFlowEnv,
@@ -374,7 +373,7 @@ async function runUnifiedD2(opts: {
     };
 
     const config: HarnessConfig = {
-      sessionId: SESSION_ID,
+      sessionId: env.identity.sessionId,
       agentAddress: deploymentMailAddress,
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",

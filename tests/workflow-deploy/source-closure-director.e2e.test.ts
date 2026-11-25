@@ -56,7 +56,6 @@ import {
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   fireMailTrigger,
   readWorkflowRunEvents,
   seedInferenceCredentials,
@@ -351,7 +350,7 @@ async function deployAndRun(spec: {
     model: "mock-model",
   };
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: spec.address,
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
@@ -369,10 +368,7 @@ async function deployAndRun(spec: {
     source,
     resolveAttachment,
     sidecarAllocationRouter: env.hub.router,
-    allocationTarget: {
-      allocationId: "allocation-integration-1",
-      generation: 1,
-    },
+    allocationTarget: env.identity.primaryAllocationTarget,
     agentAddress: spec.address,
     config,
     sources: { [spec.stepId]: [inferenceSource] },

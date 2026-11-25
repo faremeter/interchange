@@ -50,8 +50,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -168,7 +166,7 @@ async function deployCustomProviderWorkflow(opts: {
   };
 
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: deploymentMailAddress,
     sources: [inferenceSource],
     defaultSource: sourceId,
@@ -201,7 +199,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "cross-process custom inference adapter (INTR-233)",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("a manifest custom adapter resolves in the forked child", async () => {

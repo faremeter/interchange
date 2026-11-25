@@ -15,6 +15,7 @@ import {
   WORKFLOW_RUN_TERMINAL_TYPES,
   assertPinnedSidecarEnvReached,
   buildSidecarSubprocessEnv,
+  createFixtureIdentity,
   currentWaitMark,
   injectSignal,
   readWorkflowRunEvents,
@@ -49,7 +50,8 @@ async function startSmokeEnv(): Promise<{
   const registerTempDir = (dir: string): void => {
     tempDirs.push(dir);
   };
-  const hub = await startHub(registerTempDir);
+  const identity = createFixtureIdentity();
+  const hub = await startHub(registerTempDir, identity);
   const deployments = new Map<string, DeploymentHandle>();
   const registerDeployment = (handle: DeploymentHandle): void => {
     if (deployments.has(handle.anchorRunId)) {
@@ -60,6 +62,7 @@ async function startSmokeEnv(): Promise<{
     deployments.set(handle.anchorRunId, handle);
   };
   const env: DeployFlowEnv = {
+    identity,
     hub,
     // The fields below are unused by the helpers exercised here.
     // Construct narrow stand-ins so the env-shape type is satisfied
@@ -516,7 +519,11 @@ describe("stopping in-flight waits at teardown", () => {
 // string into the option, and `hub-link.test.ts` asserts the option is the
 // delay the reconnect scheduler receives.
 describe("spawned sidecar reconnect delay", () => {
-  const baseOpts = { hubPort: 4321, dataDir: "/sidecar-data" };
+  const baseOpts = {
+    hubPort: 4321,
+    dataDir: "/sidecar-data",
+    credentials: createFixtureIdentity().primary,
+  };
 
   test("defaults to the short test backoff", () => {
     const env = buildSidecarSubprocessEnv(baseOpts);
@@ -536,7 +543,11 @@ describe("spawned sidecar reconnect delay", () => {
 // against the real env builder rather than a hand-written map, so a break in
 // the merge reaches this test the same way it would reach a survival test.
 describe("assertPinnedSidecarEnvReached", () => {
-  const baseOpts = { hubPort: 4321, dataDir: "/sidecar-data" };
+  const baseOpts = {
+    hubPort: 4321,
+    dataDir: "/sidecar-data",
+    credentials: createFixtureIdentity().primary,
+  };
   const pinProduction = {
     SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
   };

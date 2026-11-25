@@ -72,8 +72,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
@@ -248,7 +246,7 @@ async function deployAndPark(opts: {
   }
 
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: deploymentMailAddress,
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
@@ -340,7 +338,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "onTrigger body author-signal delivered to the parent run reaches the body via the section",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("a name-only delivery leaves the new park and the correlation completes it", async () => {

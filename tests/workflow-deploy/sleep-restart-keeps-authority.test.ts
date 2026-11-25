@@ -53,7 +53,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   killWorkflowHostChild,
@@ -232,7 +231,7 @@ function mockSource(env: DeployFlowEnv): InferenceSource {
 
 function harnessConfig(env: DeployFlowEnv, mailAddress: string): HarnessConfig {
   return {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: mailAddress,
     sources: [mockSource(env)],
     defaultSource: "anthropic:mock-model",

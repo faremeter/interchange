@@ -24,7 +24,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   listRunIds,
@@ -121,7 +120,7 @@ export async function startBodyActionRestartEnv(opts: {
       domain: DEPLOYMENT_DOMAIN,
     });
     const config: HarnessConfig = {
-      sessionId: SESSION_ID,
+      sessionId: startedEnv.identity.sessionId,
       agentAddress: mailAddress,
       sources: [
         {

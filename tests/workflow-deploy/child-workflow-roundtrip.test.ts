@@ -42,8 +42,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -283,7 +281,7 @@ afterAll(async () => {
 
 function makeConfig(address: string): HarnessConfig {
   return {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: address,
     sources: [
       {
@@ -351,7 +349,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "parent -> child workflow round-trip",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("parent run spawns child, child run lands under runs/<childRunId>/", async () => {

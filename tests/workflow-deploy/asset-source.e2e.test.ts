@@ -54,7 +54,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   fireMailTrigger,
   seedInferenceCredentials,
   startDeployFlowEnv,
@@ -359,7 +358,7 @@ describe.skipIf(!harnessDbEnvAvailable())("asset-sourced workflow e2e", () => {
       model: "mock-model",
     };
     const config: HarnessConfig = {
-      sessionId: SESSION_ID,
+      sessionId: env.identity.sessionId,
       agentAddress: deploymentMailAddress,
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
@@ -377,10 +376,7 @@ describe.skipIf(!harnessDbEnvAvailable())("asset-sourced workflow e2e", () => {
       source,
       resolveAttachment,
       sidecarAllocationRouter: env.hub.router,
-      allocationTarget: {
-        allocationId: "allocation-integration-1",
-        generation: 1,
-      },
+      allocationTarget: env.identity.primaryAllocationTarget,
       agentAddress: deploymentMailAddress,
       config,
       sources: { [STEP_ID]: [inferenceSource] },

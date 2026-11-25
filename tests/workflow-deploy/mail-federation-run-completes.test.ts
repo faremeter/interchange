@@ -89,9 +89,6 @@ import {
 } from "@intx/workflow-deploy";
 
 import {
-  SECOND_SIDECAR_ID,
-  SIDECAR_ID,
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   startDeployFlowEnv,
@@ -324,7 +321,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // sidecar happens to be connected: the receiver and the sender must
         // end up on DIFFERENT ones, and inference cannot guarantee that once
         // the primary starts reconnecting underneath the placement below.
-        sidecarId: SIDECAR_ID,
+        sidecarId: env.identity.primary.sidecarId,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: receiverAddress,
         approvals: buildApprovals(receiverAddress, [
@@ -335,9 +332,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       // Bring up a second sidecar and wait for it to register.
-      sidecar2 = await env.startSidecar({ identity: "second" });
+      sidecar2 = await env.startSidecar({ role: "second" });
       await waitFor(
-        () => env.hub.router.getConnectedSidecars().includes(SECOND_SIDECAR_ID),
+        () =>
+          env.hub.router
+            .getConnectedSidecars()
+            .includes(env.identity.second.sidecarId),
         { diagnostics: env.sidecarDiagnostics },
       );
 
@@ -348,8 +348,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // regardless of when sidecar 1 comes back.
       //
       // DO NOT "simplify" this wait away: `getConnectedSidecars()[0] ===
-      // SECOND_SIDECAR_ID` is exactly the predicate `findSidecarForNewAgent`
-      // evaluates to place a new deploy (first entry of the connections map).
+      // env.identity.second.sidecarId` is exactly the predicate
+      // `findSidecarForNewAgent` evaluates to place a new deploy (first entry
+      // of the connections map).
       // Waiting on that precise invariant -- not a sleep, not "sidecar 2 is
       // connected" -- is what makes the placement deterministic rather than
       // racy against sidecar 1's reconnect. Dropping or loosening it silently
@@ -358,7 +359,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // coupling to this internal placement rule is tracked in INTR-395.
       sidecar1Handle.close();
       await waitFor(
-        () => env.hub.router.getConnectedSidecars()[0] === SECOND_SIDECAR_ID,
+        () =>
+          env.hub.router.getConnectedSidecars()[0] ===
+          env.identity.second.sidecarId,
         { diagnostics: env.sidecarDiagnostics },
       );
 
@@ -383,7 +386,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // The second sidecar, named. This is what makes the send remote to
         // the sender's own transport and so routes it through
         // deliverMailToRecipient -- the seam under test.
-        sidecarId: SECOND_SIDECAR_ID,
+        sidecarId: env.identity.second.sidecarId,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: senderAddress,
         approvals: buildApprovals(senderAddress, [`tool:${MAIL_TOOL_NAME}`]),
@@ -480,7 +483,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     function buildConfig(address: string, credentialId: string): HarnessConfig {
       return {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: address,
         sources: [inferenceSource(credentialId)],
         defaultSource: "anthropic:mock-model",

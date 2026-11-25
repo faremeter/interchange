@@ -59,7 +59,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -255,7 +254,7 @@ async function deploy(opts: {
     domain: DEPLOYMENT_DOMAIN,
   });
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: mailAddress,
     sources: [
       {

@@ -30,7 +30,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   startDeployFlowEnv,
@@ -113,7 +112,7 @@ async function deployMarkingWorkflow(
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: address,
     sources: [
       {

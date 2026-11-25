@@ -97,8 +97,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -208,7 +206,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "single-step full lifecycle on the unified child path (Phase 4.6)",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("deploy -> mail -> signed tool reply -> durable snapshot -> respawn restore -> events", async () => {
@@ -227,7 +227,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
 
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
@@ -456,7 +456,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           env.hub.agentEvents.some(
             (e) =>
               e.addr === deploymentMailAddress &&
-              e.sid === SESSION_ID &&
+              e.sid === env.identity.sessionId &&
               isInferenceStart(e.event),
           ),
         { diagnostics: env.sidecarDiagnostics },
@@ -464,11 +464,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const inferenceStart = env.hub.agentEvents.find(
         (e) =>
           e.addr === deploymentMailAddress &&
-          e.sid === SESSION_ID &&
+          e.sid === env.identity.sessionId &&
           isInferenceStart(e.event),
       );
       expect(inferenceStart).toBeDefined();
-      expect(inferenceStart?.sid).toBe(SESSION_ID);
+      expect(inferenceStart?.sid).toBe(env.identity.sessionId);
     });
   },
 );

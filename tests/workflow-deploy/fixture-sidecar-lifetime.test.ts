@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
 
 import {
+  createFixtureIdentity,
   hasExited,
   listProcessSubtree,
   pidAlive,
@@ -143,6 +144,7 @@ describe("deploy-flow fixture sidecar lifetime", () => {
     const dialed = nextDial();
     const sidecar = await startSidecarSubprocess({
       hubPort: refusingHubPort,
+      credentials: createFixtureIdentity().primary,
       registerTempDir: (dir) => tempDirs.push(dir),
     });
     try {
@@ -210,11 +212,11 @@ describe("deploy-flow fixture sidecar lifetime", () => {
       );
       tempDirs.push(secondDataDir);
       const second = await env.startSidecar({
-        identity: "second",
+        role: "second",
         dataDir: secondDataDir,
       });
       expect(second.dataDir).toBe(secondDataDir);
-      await expect(env.startSidecar({ identity: "second" })).rejects.toThrow(
+      await expect(env.startSidecar({ role: "second" })).rejects.toThrow(
         /still running/,
       );
 
@@ -224,8 +226,8 @@ describe("deploy-flow fixture sidecar lifetime", () => {
       // the start that finds the other still spawning is refused.
       await terminateSidecarSubprocess(second);
       const starts = await Promise.allSettled([
-        env.startSidecar({ identity: "second", dataDir: secondDataDir }),
-        env.startSidecar({ identity: "second", dataDir: secondDataDir }),
+        env.startSidecar({ role: "second", dataDir: secondDataDir }),
+        env.startSidecar({ role: "second", dataDir: secondDataDir }),
       ]);
       const [replacement, ...extra] = starts.flatMap((result) =>
         result.status === "fulfilled" ? [result.value] : [],

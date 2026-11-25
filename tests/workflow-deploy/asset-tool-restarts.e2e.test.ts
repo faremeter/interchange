@@ -51,7 +51,6 @@ import {
 
 import { bundleWorkflowEntry } from "../hub-agent/lib/bundle-workflow-entry";
 import {
-  SESSION_ID,
   WORKFLOW_RUN_TERMINAL_TYPES,
   fireMailTrigger,
   injectSignal,
@@ -349,7 +348,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         model: "mock-model",
       };
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: mailAddress,
         sources: [inferenceSource],
         defaultSource: inferenceSource.id,
@@ -368,10 +367,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         source,
         resolveAttachment,
         sidecarAllocationRouter: env.hub.router,
-        allocationTarget: {
-          allocationId: "allocation-integration-1",
-          generation: 1,
-        },
+        allocationTarget: env.identity.primaryAllocationTarget,
         agentAddress: mailAddress,
         config,
         sources,

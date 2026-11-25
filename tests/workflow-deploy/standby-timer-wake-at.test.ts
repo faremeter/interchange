@@ -32,8 +32,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   listWorkflowHostChildren,
@@ -108,7 +106,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         model: "mock-model",
       };
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: address,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
@@ -156,7 +154,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const target = env.hub.prepareAllocationIdentity(
         DEPLOYMENT_ID,
         address,
-        SIDECAR_ID,
+        env.identity.primary.sidecarId,
       );
       const { lifecycle, standby, untilInStandby } = await startStandbySweep(
         env,

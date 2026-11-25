@@ -56,8 +56,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   listRunIds,
@@ -175,7 +173,7 @@ async function deploySingleStepWorkflow(
     model: "mock-model",
   };
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: deploymentMailAddress,
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
@@ -248,7 +246,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "interrupted workflow-run pack recovers on reconnect",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("armed mid-pack drop: run completes after reconnect with no fresh trigger", async () => {

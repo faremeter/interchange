@@ -50,7 +50,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   startDeployFlowEnv,
   type DeployFlowEnv,
@@ -179,7 +178,7 @@ async function measureOneDeploy(
   };
 
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: mailAddress,
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
