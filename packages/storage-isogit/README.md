@@ -35,6 +35,7 @@ type IsogitRuntime = {
     resolve(filepath: string): string;
   };
   flush?: () => Promise<void>;
+  sync?: (path: string) => Promise<void>;
 };
 ```
 
@@ -42,7 +43,12 @@ The storage layer derives its other filesystem operations from `FsClient`,
 including recursive directory creation and removal, existence checks, and
 UTF-8 text reads. `rename` remains explicit because completed packs require an
 atomic publish primitive. Persistent backends can implement `flush` to make
-completed mutations durable before the API call resolves.
+completed mutations durable before the API call resolves. A backend whose
+writes reach the disk only once a file or directory is synced, such as a POSIX
+filesystem, must implement `sync` to make one path's contents or entries
+durable: the storage syncs each file before it renames it into place and each
+directory after an entry lands in it, and a runtime without `sync` skips those
+steps. The Node runtime from `/node` implements it with `fsync`.
 
 Audit and error record paths are append-only. Repeating a byte-identical
 record is an idempotent retry, including after an uncertain persistence

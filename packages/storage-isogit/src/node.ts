@@ -11,10 +11,7 @@ import { IsogitStore as RuntimeIsogitStore } from "./store";
 import { assertPackInflationWithinBounds } from "./pack-inflation-guard";
 import type { PackMaterializationLimits } from "./materialization-limits";
 export { createNodeIsogitRuntime } from "./node-runtime";
-export {
-  syncDirectoryDurable,
-  syncRemovedPathDurable,
-} from "./node-durability";
+export { syncPathDurable, syncRemovedPathDurable } from "./node-durability";
 export { countLooseObjects, gitBytes } from "./node-metrics";
 
 export {

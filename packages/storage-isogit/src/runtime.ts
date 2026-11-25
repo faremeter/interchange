@@ -21,6 +21,12 @@ export interface IsogitRuntime {
   rename(oldPath: string, newPath: string): Promise<void>;
   /** Flush pending backend writes at a completed mutation boundary. */
   flush?(): Promise<void>;
+  /**
+   * Make a file's contents, or a directory's entries, durable. A runtime
+   * whose writes are durable once they return, or that makes them durable
+   * in `flush`, leaves it out.
+   */
+  sync?(path: string): Promise<void>;
 }
 
 export interface FileSystemStat {
@@ -181,6 +187,7 @@ export interface StorageRuntime {
   readonly fs: StorageFileSystem;
   readonly path: IsogitPath;
   flush?(): Promise<void>;
+  sync?(path: string): Promise<void>;
 }
 
 function createStorageFileSystem(runtime: IsogitRuntime): StorageFileSystem {
@@ -296,7 +303,17 @@ export function normalizeRuntime(runtime: IsogitRuntime): StorageRuntime {
     ...(runtime.flush === undefined
       ? {}
       : { flush: () => runtime.flush?.() ?? Promise.resolve() }),
+    ...(runtime.sync === undefined
+      ? {}
+      : { sync: (path: string) => runtime.sync?.(path) ?? Promise.resolve() }),
   };
+}
+
+export async function syncPath(
+  runtime: StorageRuntime,
+  path: string,
+): Promise<void> {
+  await runtime.sync?.(path);
 }
 
 export async function pathExists(

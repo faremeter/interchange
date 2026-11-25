@@ -11,7 +11,7 @@ import { dirname } from "node:path";
 
 import { getLogger } from "@intx/log";
 import {
-  syncDirectoryDurable,
+  syncPathDurable,
   syncRemovedPathDurable,
 } from "@intx/storage-isogit/node";
 import { hasCode } from "@intx/types/has-code";
@@ -73,7 +73,7 @@ export async function writeFileAtomicDurable(
   }
 
   try {
-    await syncDirectoryDurable(dirname(path));
+    await syncPathDurable(dirname(path));
   } catch (err) {
     if (options.requireDirectorySync === true) throw err;
     logger.warn`parent-dir fsync failed for ${path}; durability is degraded but the file is renamed and fsynced — ${err instanceof Error ? err.message : String(err)}`;
@@ -105,7 +105,7 @@ export async function removeFileAtomicDurable(
 
   try {
     if (requireDirectorySync) await syncRemovedPathDurable(path);
-    else await syncDirectoryDurable(dirname(path));
+    else await syncPathDurable(dirname(path));
   } catch (err) {
     if (requireDirectorySync) throw err;
     logger.warn`parent-dir fsync failed for ${path}; durability is degraded but the file is unlinked — ${err instanceof Error ? err.message : String(err)}`;

@@ -27,7 +27,7 @@ import { dirname, join as pathJoin, resolve } from "node:path";
 import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
-import { syncDirectoryDurable } from "@intx/storage-isogit/node";
+import { syncPathDurable } from "@intx/storage-isogit/node";
 import {
   credentialAad,
   type CredentialCipher,
@@ -263,8 +263,8 @@ export async function writeWorkflowRunRecord(
     });
     // Sync the containing links too: syncing the run directory alone does
     // not persist its creation inside workflow-runs or that directory's link.
-    await syncDirectoryDurable(pathJoin(dataDir, "workflow-runs"));
-    await syncDirectoryDurable(dataDir);
+    await syncPathDurable(pathJoin(dataDir, "workflow-runs"));
+    await syncPathDurable(dataDir);
   });
 }
 
@@ -477,7 +477,7 @@ export async function scanWorkflowRunRecords(
     entries = await readdir(runsDir, { withFileTypes: true });
   } catch (cause) {
     if (isENOENT(cause)) {
-      await syncDirectoryDurable(dataDir);
+      await syncPathDurable(dataDir);
       return [];
     }
     throw cause;
@@ -491,7 +491,7 @@ export async function scanWorkflowRunRecords(
     const runId = entry.name;
     const path = recordPath(dataDir, runId);
     // This also commits an absent record's unlink before the scan skips it.
-    await syncDirectoryDurable(dirname(path));
+    await syncPathDurable(dirname(path));
 
     let raw: string;
     try {
@@ -548,7 +548,7 @@ export async function scanWorkflowRunRecords(
     }
     scanned.push({ runId, record: restored });
   }
-  await syncDirectoryDurable(runsDir);
-  await syncDirectoryDurable(dataDir);
+  await syncPathDurable(runsDir);
+  await syncPathDurable(dataDir);
   return scanned;
 }

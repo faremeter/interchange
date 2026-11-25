@@ -14,7 +14,7 @@ import {
   removeOrphanPackIndexes,
   removeStagedPacks,
   stagePack,
-  syncDirectoryDurable,
+  syncPathDurable,
   syncRemovedPathDurable,
   type CommitSigner,
   type ObjectPresence,
@@ -3074,7 +3074,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
             });
           }
           // Keep the recovery record until the other entries are durably gone.
-          if (entries.length > 0) await syncDirectoryDurable(dir);
+          if (entries.length > 0) await syncPathDurable(dir);
           await fs.promises.rm(path.join(dir, last), {
             recursive: true,
             force: true,
