@@ -6,7 +6,7 @@ import path from "node:path";
 import git, { type CallbackFsClient, type FsClient } from "isomorphic-git";
 import { createIsogitStorage } from "./index";
 import { createNodeIsogitRuntime } from "./node-runtime";
-import { normalizeRuntime, type IsogitRuntime } from "./runtime";
+import { normalizeRuntime, syncPaths, type IsogitRuntime } from "./runtime";
 
 const tempDirs: string[] = [];
 
@@ -261,4 +261,52 @@ test("checkpoints and their rollback run through a callback filesystem client", 
     "tool-output/first",
     "tool-output/second",
   ]);
+});
+
+describe("syncPaths", () => {
+  const withSync = (sync: (p: string) => Promise<void>) =>
+    normalizeRuntime({ ...createNodeIsogitRuntime(), sync });
+  const paths = Array.from({ length: 40 }, (_, i) => `p${String(i)}`);
+
+  test("syncs every path, at most 16 at once", async () => {
+    let running = 0;
+    let most = 0;
+    const synced: string[] = [];
+    await syncPaths(
+      withSync(async (p) => {
+        running += 1;
+        most = Math.max(most, running);
+        await Promise.resolve();
+        running -= 1;
+        synced.push(p);
+      }),
+      paths,
+    );
+    expect(most).toBe(16);
+    expect(synced.sort()).toEqual([...paths].sort());
+  });
+
+  test("after a failure it starts no more, and throws once the running syncs settle", async () => {
+    const started: string[] = [];
+    const finished: string[] = [];
+    const gate = Promise.withResolvers<undefined>();
+    let finishedAtSettle: number | undefined;
+    const syncing = syncPaths(
+      withSync(async (p) => {
+        started.push(p);
+        if (p === "p3") throw new Error("sync failed");
+        await gate.promise;
+        finished.push(p);
+      }),
+      paths,
+    ).finally(() => {
+      finishedAtSettle = finished.length;
+    });
+    expect(started).toHaveLength(16);
+
+    gate.resolve(undefined);
+    await expect(syncing).rejects.toThrow("sync failed");
+    expect(finishedAtSettle).toBe(15);
+    expect(started).toHaveLength(16);
+  });
 });

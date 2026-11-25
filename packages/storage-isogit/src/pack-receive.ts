@@ -6,7 +6,9 @@ import {
   type StorageRuntime,
 } from "./runtime";
 import { hasCode } from "@intx/types/has-code";
+import { REF_WRITE_PREFIX } from "./commit-helpers";
 import { createLooseObjectWriter, stagingRootOf } from "./loose-objects";
+import { forgetSyncRecord, syncObjectsAndRefs } from "./sync-record";
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 
@@ -101,12 +103,13 @@ export type StagedPack = {
  * synced, and only then the index, since a reader finds a pack by its
  * index. Then `objects/pack/` and `objects/` are synced.
  *
- * A throw before a moved pack's index lands takes the pack back out. A
- * throw or a crash can leave objects in place whose directories may not
- * be synced, and a crash a pack without its index, which no read uses. No ref names
- * them yet, and a retried receive keeps such an object and syncs its
- * directory. The staging directory is removed on a
- * throw, on `discard`, and after `publish`; one left by a crash stays
+ * A throw before a moved pack's index lands takes the pack back out; a
+ * throw after it leaves the pair in place. Every publish ends with
+ * `syncObjectsAndRefs`. A throw or a crash can leave objects in place in
+ * unsynced directories, and a crash can leave a pack without its index,
+ * which no read uses. No ref names them yet, and a retried receive keeps
+ * such an object and syncs its directory. The staging directory is removed
+ * on a throw, on `discard`, and after `publish`; one left by a crash stays
  * until a caller runs `removeStagedPacks` on the repository.
  *
  * The caller serializes receives on `dir` (e.g. `withRepoLock` in
@@ -321,9 +324,10 @@ export async function stagePack(
       throw cause;
     }
     // Readers can list the pack from here on, so a failed sync leaves the
-    // whole pair in place.
-    await syncPath(runtime, packDir);
-    await syncPath(runtime, objectsDir);
+    // pair in place; the publish forgets the sync record, so the next
+    // `syncObjectsAndRefs` here syncs it. Naming `objects/pack/` makes this
+    // one sync it and flush, even when the record has nothing else unsynced.
+    await syncObjectsAndRefs(runtime, dir, [packDir]);
   }
 
   return {
@@ -346,6 +350,7 @@ export async function stagePack(
           await writeLooseObjects(cache);
         }
       } catch (err) {
+        forgetSyncRecord(runtime, dir);
         state = "discarded";
         await runtime.fs
           .remove(stagingDir, { recursive: true, force: true })
@@ -370,10 +375,10 @@ export async function stagePack(
 }
 
 /**
- * Remove every staged pack under `dir`. A staged pack lives only as long
- * as the receive that holds its handle, so the caller must know that no
- * handle for `dir` is live, for example on the first receive for `dir`
- * after a process start.
+ * Remove every staged pack under `dir`, and the temporary file of any
+ * unfinished ref write. Each lives only as long as the receive or write
+ * that made it, so the caller must know that none is live for `dir`, for
+ * example on the first receive for `dir` after a process start.
  */
 export async function removeStagedPacks(
   runtime: StorageRuntime,
@@ -383,6 +388,16 @@ export async function removeStagedPacks(
     recursive: true,
     force: true,
   });
+  const gitdir = runtime.path.join(dir, ".git");
+  const names = await runtime.fs.readdir(gitdir).catch((cause: unknown) => {
+    if (hasCode(cause) && cause.code === "ENOENT") return [];
+    throw cause;
+  });
+  for (const name of names) {
+    if (name.startsWith(REF_WRITE_PREFIX)) {
+      await runtime.fs.remove(runtime.path.join(gitdir, name), { force: true });
+    }
+  }
 }
 
 /**

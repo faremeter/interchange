@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import git, { type TreeEntry } from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
-import { collectReachableObjects } from "@intx/storage-isogit/node";
+import {
+  collectReachableObjects,
+  RefNotDurableError,
+} from "@intx/storage-isogit/node";
 import { deriveDeliveryKey } from "@intx/types/message-id";
 import type { KeyPair } from "@intx/types/runtime";
 import { signalName } from "@intx/types/signals";
@@ -3609,6 +3612,42 @@ describe("claim-check substrate FIFO invariant", () => {
   // (e.g. `100-<key of msg-B>` < `99-<key of msg-A>` because
   // '1' < '9'). After the fix the substrate sorts by parsed numeric
   // receivedAt and the earlier message wins.
+  test("a dequeue whose move lands but cannot sync still hands on the entry it moved", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore(
+      "cc-dequeue-unsynced-",
+    );
+    await enqueueInbox(store, principal, repoId, {
+      address: ADDRESS,
+      messageId: "msg-A",
+      authenticatedSender: SENDER,
+      receivedAt: 1,
+    });
+    const unsynced = {
+      ...store,
+      writeTreeDelta: async (
+        ...args: Parameters<typeof store.writeTreeDelta>
+      ) => {
+        const written = await store.writeTreeDelta(...args);
+        throw new RefNotDurableError(
+          args[2],
+          written.commitSha,
+          new Error("sync failed"),
+        );
+      },
+    };
+
+    const dequeued = await dequeueToProcessing(
+      unsynced,
+      principal,
+      repoId,
+      ADDRESS,
+    );
+    expect(dequeued?.envelope.messageId).toBe("msg-A");
+    expect(
+      await dequeueToProcessing(store, principal, repoId, ADDRESS),
+    ).toBeNull();
+  });
+
   test("non-uniform receivedAt widths still respect FIFO (msg-A at 99 dequeues before msg-B at 100)", async () => {
     const { store, repoId, principal } =
       await makeClaimCheckStore("cc-fifo-width-");

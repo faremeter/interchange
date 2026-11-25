@@ -12,6 +12,7 @@ import {
 } from "./node";
 import { collectReachableObjects } from "./node";
 import { createNodeIsogitRuntime } from "./node-runtime";
+import { syncObjectsAndRefs } from "./sync-record";
 import {
   PACK_COUNT_LIMIT,
   stagePack as stagePackOn,
@@ -194,6 +195,10 @@ describe("stagePack", () => {
     await fs.promises.mkdir(path.dirname(held), { recursive: true });
     await fs.promises.copyFile(loosePath(source.dir, source.commitSha), held);
     const { runtime, steps } = recordingRuntime(targetDir);
+    // Synced once already, so the publish does not sweep every object
+    // directory, and only `keep` makes it sync the held object's.
+    await syncObjectsAndRefs(runtime, targetDir);
+    steps.length = 0;
 
     const staged = await stagePackOn(runtime, targetDir, pack, "held");
     await staged.publish();
@@ -309,6 +314,21 @@ describe("stagePack", () => {
       ),
     ).rejects.toThrow();
     expect(await packDirEntries(targetDir)).toEqual([]);
+  });
+
+  test("removeStagedPacks removes the temporary file of a ref write a crash cut short", async () => {
+    const targetDir = await tempDir();
+    await initAgentRepo(targetDir);
+    const gitdir = path.join(targetDir, ".git");
+    const before = (await fs.promises.readdir(gitdir)).sort();
+    await fs.promises.writeFile(
+      path.join(gitdir, "ref-write-0123456789abcdef"),
+      `${"e".repeat(40)}\n`,
+    );
+
+    await removeStagedPacks(targetDir);
+
+    expect((await fs.promises.readdir(gitdir)).sort()).toEqual(before);
   });
 
   test("removeOrphanPackIndexes removes only an index whose pack is gone", async () => {
@@ -431,6 +451,10 @@ test("a publish syncs each object before it moves it into place, and every direc
   const targetDir = await tempDir();
   await initAgentRepo(targetDir);
   const { runtime, steps } = recordingRuntime(targetDir);
+  // Synced once already, so the publish does not sweep every object
+  // directory.
+  await syncObjectsAndRefs(runtime, targetDir);
+  steps.length = 0;
 
   const staged = await stagePackOn(runtime, targetDir, pack, "durable");
   await staged.publish();
@@ -521,6 +545,8 @@ test("a publish moves a pack of UNPACK_LIMIT objects into objects/pack, synced a
   await initAgentRepo(targetDir);
   const { runtime, steps } = recordingRuntime(targetDir);
 
+  await syncObjectsAndRefs(runtime, targetDir);
+  steps.length = 0;
   const staged = await stagePackOn(runtime, targetDir, pack, "large");
   await staged.publish();
 
@@ -539,6 +565,35 @@ test("a publish moves a pack of UNPACK_LIMIT objects into objects/pack, synced a
   for (const oid of source.oids) {
     expect((await git.readObject({ fs, dir: targetDir, oid })).oid).toBe(oid);
   }
+});
+
+test("a publish that moves a pack flushes on a runtime that only flushes", async () => {
+  const source = await makeLargeSourceRepo(UNPACK_LIMIT - 2);
+  const pack = await createPackFromRepo(source.dir, source.oids);
+  const targetDir = await tempDir();
+  await initAgentRepo(targetDir);
+  const { sync: _sync, ...node } = createNodeIsogitRuntime();
+  const steps: string[] = [];
+  const runtime = normalizeRuntime({
+    ...node,
+    rename: async (from, to) => {
+      steps.push(`rename ${path.basename(to)}`);
+      await node.rename(from, to);
+    },
+    flush: async () => {
+      steps.push("flush");
+    },
+  });
+  await syncObjectsAndRefs(runtime, targetDir);
+  steps.length = 0;
+
+  await (await stagePackOn(runtime, targetDir, pack, "flushed")).publish();
+
+  expect(steps).toEqual([
+    "rename pack-recv-flushed.pack",
+    "rename pack-recv-flushed.idx",
+    "flush",
+  ]);
 });
 
 test("a publish unpacks a pack of UNPACK_LIMIT - 1 objects", async () => {
@@ -604,6 +659,63 @@ test("a publish whose sync fails once the index lands keeps the pack and its ind
   for (const oid of source.oids) {
     expect((await git.readObject({ fs, dir: targetDir, oid })).oid).toBe(oid);
   }
+});
+
+test("the first publish into a repository in a process syncs its pack directory, and a later one does not", async () => {
+  const first = await makeSourceRepo();
+  const second = await makeSourceRepo();
+  const targetDir = await tempDir();
+  await initAgentRepo(targetDir);
+  // A runtime of its own stands for a process that has not published here.
+  const { runtime, steps } = recordingRuntime(targetDir);
+  const packDirSync = `sync ${path.join(".git", "objects", "pack")}`;
+  const publish = async (repo: { dir: string; oids: string[] }, id: string) =>
+    (
+      await stagePackOn(
+        runtime,
+        targetDir,
+        await createPackFromRepo(repo.dir, repo.oids),
+        id,
+      )
+    ).publish();
+
+  await publish(first, "first");
+  expect(steps).toContain(packDirSync);
+  steps.length = 0;
+  await publish(second, "second");
+  expect(steps).not.toContain(packDirSync);
+});
+
+test("the next publish after a pack directory sync failed syncs that directory before it returns", async () => {
+  const before = await makeSourceRepo();
+  const large = await makeLargeSourceRepo(UNPACK_LIMIT - 2);
+  const after = await makeSourceRepo();
+  const targetDir = await tempDir();
+  await initAgentRepo(targetDir);
+  const { runtime, steps, failing } = recordingRuntime(targetDir);
+  const packDir = path.join(targetDir, ".git", "objects", "pack");
+  const stage = async (repo: { dir: string; oids: string[] }, id: string) =>
+    stagePackOn(
+      runtime,
+      targetDir,
+      await createPackFromRepo(repo.dir, repo.oids),
+      id,
+    );
+  // This process has synced the pack directory once already.
+  await (await stage(before, "before")).publish();
+  // The second sync of objects/pack, once the index lands, fails.
+  let packDirSyncs = 0;
+  failing.sync = (p) => p === packDir && ++packDirSyncs === 2;
+  await expect((await stage(large, "late")).publish()).rejects.toThrow(
+    "sync failed",
+  );
+  failing.sync = () => false;
+
+  steps.length = 0;
+  await (await stage(after, "after")).publish();
+
+  expect(steps).toContain(`sync ${path.join(".git", "objects", "pack")}`);
+  expect(steps).toContain(`sync ${path.join(".git", "objects")}`);
 });
 
 test("a stage refuses a transfer ID whose pack the repository holds", async () => {

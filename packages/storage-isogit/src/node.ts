@@ -30,6 +30,7 @@ export {
   DEFAULT_PACK_MATERIALIZATION_LIMITS,
   type PackMaterializationLimits,
   HUB_REF_NAMESPACE,
+  RefNotDurableError,
 } from "./index";
 
 export const runtime = createNodeIsogitRuntime();
@@ -43,6 +44,7 @@ export const {
   createNegotiatedPack,
   createObjectPresence,
   currentBranch,
+  holdSyncRecord,
   initAgentRepo,
   initRepo,
   listBranches,
@@ -51,6 +53,9 @@ export const {
   removeStagedPacks,
   stagePack,
   switchBranch,
+  syncObjectsAndRefs,
+  syncRefs,
+  writeRefDurably,
   writeTreeToDisk,
   indexPackIntoGitDir: rawIndexPackIntoGitDir,
 } = storage;

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { createNodeIsogitRuntime } from "./node-runtime";
 import { normalizeRuntime } from "./runtime";
@@ -25,4 +26,17 @@ export function recordingRuntime(dir: string) {
     },
   });
   return { runtime, steps, failing };
+}
+
+/** `root` and every file and directory under it, relative to `dir`. */
+export async function treeOf(dir: string, root: string): Promise<string[]> {
+  const entries = [path.relative(dir, root)];
+  for (const entry of await fs.promises.readdir(root, {
+    withFileTypes: true,
+  })) {
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) entries.push(...(await treeOf(dir, full)));
+    else entries.push(path.relative(dir, full));
+  }
+  return entries;
 }

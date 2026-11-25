@@ -2952,6 +2952,50 @@ describe("createWorkflowSupervisor", () => {
     await wired.supervisor.shutdown();
   });
 
+  test("a redelivery that finds its message still in the inbox wakes dispatch", async () => {
+    const baseDir = await makeTempDir("supervisor-redelivery-wake-");
+    await seedStepGrants(baseDir, "step-1", [
+      { resource: "thing", action: "read" },
+    ]);
+    const memory = createMemoryInboxPrimitives();
+    // The first enqueue lands its entry and then fails, as one whose ref
+    // lands but cannot be synced does.
+    let failAfterLanding = true;
+    const inboxPrimitives: MemoryInboxPrimitives = {
+      ...memory,
+      async enqueueInbox(store, principal, repoId, args) {
+        const outcome = await memory.enqueueInbox(
+          store,
+          principal,
+          repoId,
+          args,
+        );
+        if (failAfterLanding) {
+          failAfterLanding = false;
+          throw new Error("ref landed but was not synced");
+        }
+        return outcome;
+      },
+    };
+    const mailBus = createSettleableMailBus();
+    const wired = await spawnWithRunStart({
+      baseDir,
+      inboxPrimitives,
+      mailBus,
+    });
+    const address = "run_deployment-x@example.com";
+    const delivery = () =>
+      inboundDelivery(new TextEncoder().encode("m-landed"));
+
+    await expect(mailBus.settle(address, delivery())).rejects.toThrow(
+      /not synced/,
+    );
+    await expect(mailBus.settle(address, delivery())).resolves.toBeUndefined();
+
+    await memory.awaitState(() => memory.snapshot(address).inbox.size === 0);
+    await wired.supervisor.shutdown();
+  });
+
   test("durable receipt rejects for a transient failure and a stale refusal, and self-heals on redelivery", async () => {
     const baseDir = await makeTempDir("supervisor-withhold-");
     await seedStepGrants(baseDir, "step-1", [

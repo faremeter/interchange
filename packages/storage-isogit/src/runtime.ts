@@ -316,6 +316,61 @@ export async function syncPath(
   await runtime.sync?.(path);
 }
 
+// How many paths `syncPaths` syncs at once, so a large set does not run
+// out of file descriptors.
+const SYNC_CONCURRENCY = 16;
+
+/**
+ * Sync each of `paths`, a bounded number at once. After a failure it
+ * starts no more, and it throws the first failure only once the syncs
+ * already running have settled, so a caller that cleans up on failure
+ * does not race them.
+ */
+export async function syncPaths(
+  runtime: StorageRuntime,
+  paths: readonly string[],
+): Promise<void> {
+  if (runtime.sync === undefined) return;
+  const failures: unknown[] = [];
+  let next = 0;
+  await Promise.all(
+    Array.from(
+      { length: Math.min(SYNC_CONCURRENCY, paths.length) },
+      async () => {
+        while (failures.length === 0) {
+          const p = paths[next++];
+          if (p === undefined) return;
+          try {
+            await syncPath(runtime, p);
+          } catch (cause) {
+            failures.push(cause);
+          }
+        }
+      },
+    ),
+  );
+  if (failures.length > 0) throw failures[0];
+}
+
+/** Sync every file and directory under `root`, and `root` itself. */
+export async function syncTree(
+  runtime: StorageRuntime,
+  root: string,
+): Promise<void> {
+  if (runtime.sync === undefined) return;
+  const paths: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const name of await runtime.fs.readdir(dir)) {
+      const entry = runtime.path.join(dir, name);
+      if ((await runtime.fs.stat(entry)).isDirectory()) await walk(entry);
+      else paths.push(entry);
+    }
+    paths.push(dir);
+  };
+  await walk(root);
+  await syncPaths(runtime, paths);
+}
+
 export async function pathExists(
   runtime: StorageRuntime,
   filepath: string,

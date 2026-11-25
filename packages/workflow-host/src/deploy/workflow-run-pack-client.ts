@@ -17,6 +17,7 @@ import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import { PackRejectedError } from "@intx/pack-transport";
+import { RefNotDurableError } from "@intx/storage-isogit";
 import { SourcesUpdatedData } from "../ipc/control-payloads";
 import type { InferenceSource } from "@intx/types/runtime";
 import type { InboundDelivery } from "@intx/types/message-id";
@@ -27,6 +28,7 @@ import {
   type RepoId,
   type RepoStore,
   type WorkflowRunSupervisorPrincipal,
+  type WriteResult,
 } from "@intx/hub-sessions/substrate";
 
 const logger = getLogger([
@@ -152,6 +154,10 @@ export function createWorkflowRunPackClient(
           repoId,
           ref,
         );
+        // A write can have moved the ref to this commit without syncing
+        // it. Synced now, the ref names this commit or one after it, so a
+        // crash cannot leave the sidecar behind the tip the Hub accepts.
+        await substrate.resolveRef(principal, repoId, ref, { durable: true });
         await hubLink.pushWorkflowRunPack({
           agentAddress,
           generation,
@@ -968,6 +974,36 @@ export function createWorkflowRunPackPushingRepoStore(
     return tips;
   }
 
+  // A write whose ref landed but could not be synced changed the ref all
+  // the same, so its push is due; the push syncs the ref before it ships.
+  async function writeAndPush(
+    repoId: RepoId,
+    ref: string,
+    write: () => Promise<WriteResult>,
+  ): Promise<WriteResult> {
+    if (repoId.kind !== "workflow-run") return write();
+    const latched = takeLatchedError(repoId, ref);
+    if (latched !== null) throw latched;
+    let result: WriteResult;
+    try {
+      result = await write();
+    } catch (cause) {
+      const incarnation = registry.resolve(repoId.id);
+      if (cause instanceof RefNotDurableError && incarnation !== null) {
+        schedulePush(incarnation, repoId, ref);
+      }
+      throw cause;
+    }
+    const incarnation = registry.resolve(repoId.id);
+    if (incarnation === null) {
+      throw new Error(
+        `workflow-run pack push: no run address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
+      );
+    }
+    schedulePush(incarnation, repoId, ref);
+    return result;
+  }
+
   const wrapped: WorkflowRunPackPushingRepoStore = {
     initRepo: underlying.initRepo.bind(underlying),
     writeTree: underlying.writeTree.bind(underlying),
@@ -988,56 +1024,14 @@ export function createWorkflowRunPackPushingRepoStore(
     markAddressUnroutable,
     reportWorkflowRunRefTips,
     forgetDeployment,
-    async writeTreePreservingPrefix(principal, repoId, ref, args) {
-      if (repoId.kind === "workflow-run") {
-        const latched = takeLatchedError(repoId, ref);
-        if (latched !== null) {
-          throw latched;
-        }
-      }
-      const result = await underlying.writeTreePreservingPrefix(
-        principal,
-        repoId,
-        ref,
-        args,
-      );
-      if (repoId.kind !== "workflow-run") {
-        return result;
-      }
-      const incarnation = registry.resolve(repoId.id);
-      if (incarnation === null) {
-        throw new Error(
-          `workflow-run pack push: no run address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
-        );
-      }
-      schedulePush(incarnation, repoId, ref);
-      return result;
-    },
-    async writeTreeDelta(principal, repoId, ref, args) {
-      if (repoId.kind === "workflow-run") {
-        const latched = takeLatchedError(repoId, ref);
-        if (latched !== null) {
-          throw latched;
-        }
-      }
-      const result = await underlying.writeTreeDelta(
-        principal,
-        repoId,
-        ref,
-        args,
-      );
-      if (repoId.kind !== "workflow-run") {
-        return result;
-      }
-      const incarnation = registry.resolve(repoId.id);
-      if (incarnation === null) {
-        throw new Error(
-          `workflow-run pack push: no run address registered for deployment ${repoId.id}; the deploy router must record the mapping before the supervisor commits run events`,
-        );
-      }
-      schedulePush(incarnation, repoId, ref);
-      return result;
-    },
+    writeTreePreservingPrefix: (principal, repoId, ref, args) =>
+      writeAndPush(repoId, ref, () =>
+        underlying.writeTreePreservingPrefix(principal, repoId, ref, args),
+      ),
+    writeTreeDelta: (principal, repoId, ref, args) =>
+      writeAndPush(repoId, ref, () =>
+        underlying.writeTreeDelta(principal, repoId, ref, args),
+      ),
   };
   return wrapped;
 }

@@ -10,9 +10,10 @@ import type { RepoId, RepoStore } from "./repo-store/types";
 const REF = "refs/heads/main";
 const REPO_ID: RepoId = { kind: "workflow-run", id: "run_test" };
 
-// The reader only consults `getRepoDir`; the remaining RepoStore methods
-// throw so any drift onto a substrate method this read path does not own
-// fails loudly rather than returning a misleading empty result.
+// The reader only consults `getRepoDir` and `resolveRef`; the remaining
+// RepoStore methods throw so any drift onto a substrate method this read
+// path does not own fails loudly rather than returning a misleading empty
+// result.
 function repoStoreFor(dirById: Map<string, string>): RepoStore {
   const unused = () =>
     Promise.reject(new Error("workflow-run reader test: method not wired"));
@@ -29,7 +30,17 @@ function repoStoreFor(dirById: Map<string, string>): RepoStore {
     forgetPackedTip: () => {
       throw new Error("workflow-run reader test: method not wired");
     },
-    resolveRef: unused,
+    resolveRef: async (_principal, repoId, ref) => {
+      const dir = dirById.get(repoId.id);
+      if (dir === undefined || !fs.existsSync(path.join(dir, ".git")))
+        return null;
+      try {
+        return await git.resolveRef({ fs, dir, ref });
+      } catch (cause) {
+        if (cause instanceof git.Errors.NotFoundError) return null;
+        throw cause;
+      }
+    },
     listRefs: unused,
     resolveHead: unused,
     getRepoDir: (repoId) => {

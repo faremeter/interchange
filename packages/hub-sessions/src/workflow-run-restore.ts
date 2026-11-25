@@ -16,7 +16,11 @@ export const WORKFLOW_RUN_RESTORE_REFS = [
   "refs/heads/events",
 ] as const;
 
-/** Read the Hub's tip of each authoritative ref of a deployment's history. */
+/**
+ * Read the Hub's tip of each authoritative ref of a deployment's history.
+ * They are read durably: the Hub confirms from them that it holds a
+ * worker's whole history, after which the worker may let its copy go.
+ */
 export async function readWorkflowRunRefTips(
   repoStore: Pick<RepoStore, "resolveRef">,
   agentAddress: string,
@@ -24,7 +28,9 @@ export async function readWorkflowRunRefTips(
   const repoId = workflowRunRepoIdForAddress(agentAddress);
   const tips: WorkflowRunRefTips = {};
   for (const ref of WORKFLOW_RUN_RESTORE_REFS)
-    tips[ref] = await repoStore.resolveRef({ kind: "hub" }, repoId, ref);
+    tips[ref] = await repoStore.resolveRef({ kind: "hub" }, repoId, ref, {
+      durable: true,
+    });
   return tips;
 }
 

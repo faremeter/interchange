@@ -10,7 +10,10 @@ import { createAgentRepoStore } from "./agent-repo";
 import { enqueueInbox, WORKFLOW_RUN_GITIGNORE_PATH } from "./workflow-run-kind";
 import type { Principal, RepoId } from "./repo-store";
 import type { SidecarAllocationRouter } from "./ws/sidecar-handler";
-import { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
+import {
+  readWorkflowRunRefTips,
+  restoreWorkflowRunToAllocation,
+} from "./workflow-run-restore";
 
 test("sends the Hub's main and events refs sequentially to the exact allocation", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "hub-wfr-restore-"));
@@ -124,4 +127,25 @@ test("does not send anything for a prepared deployment with no prior run refs", 
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("reads each restore ref's tip durably", async () => {
+  const reads: unknown[] = [];
+  const tips = await readWorkflowRunRefTips(
+    {
+      resolveRef: async (_principal, _repoId, ref, opts) => {
+        reads.push([ref, opts]);
+        return "a".repeat(40);
+      },
+    },
+    "run_hub_tips@workflow.test",
+  );
+  expect(reads).toEqual([
+    ["refs/heads/main", { durable: true }],
+    ["refs/heads/events", { durable: true }],
+  ]);
+  expect(tips).toEqual({
+    "refs/heads/main": "a".repeat(40),
+    "refs/heads/events": "a".repeat(40),
+  });
 });

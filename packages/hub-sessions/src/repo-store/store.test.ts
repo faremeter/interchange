@@ -156,6 +156,37 @@ function gate(): {
   };
 }
 
+// What `run` returns, and the paths synced while it runs, relative to
+// `base` when one is given. A sync of `failing` fails.
+async function syncedDuring<T>(
+  run: () => Promise<T>,
+  opts: { base?: string; failing?: string } = {},
+): Promise<{ result: T; synced: string[] }> {
+  const synced: string[] = [];
+  const open = fs.promises.open;
+  const spy = spyOn(fs.promises, "open").mockImplementation(
+    async (target, flags, mode) => {
+      const handle = await open(target, flags, mode);
+      const sync = handle.sync.bind(handle);
+      spyOn(handle, "sync").mockImplementation(async () => {
+        if (String(target) === opts.failing) throw new Error("sync failed");
+        synced.push(
+          opts.base === undefined
+            ? String(target)
+            : path.relative(opts.base, String(target)),
+        );
+        await sync();
+      });
+      return handle;
+    },
+  );
+  try {
+    return { result: await run(), synced };
+  } finally {
+    spy.mockRestore();
+  }
+}
+
 function looseObjectPath(repoDir: string, oid: string): string {
   return path.join(repoDir, ".git", "objects", oid.slice(0, 2), oid.slice(2));
 }
@@ -3882,6 +3913,7 @@ describe("RepoStore", () => {
         sourceDir,
         targetStore,
         targetDir,
+        refDir: path.join(targetDir, ".git", ...REF.split("/").slice(0, -1)),
         targetHandler,
         firstSha,
         secondSha,
@@ -3979,6 +4011,87 @@ describe("RepoStore", () => {
       expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
         firstSha,
       );
+    });
+
+    test("a receive whose ref lands but cannot sync runs its hooks, fails, and a retry syncs the ref and answers already_applied", async () => {
+      const {
+        targetStore,
+        refDir,
+        targetHandler,
+        secondSha,
+        newObjects,
+        packOf,
+      } = await setUp();
+      const pack = await packOf(newObjects);
+      await syncedDuring(
+        async () => {
+          const prepared = await prepareOn(targetStore, pack, secondSha);
+          await expect(prepared.commit()).rejects.toThrow("not durable");
+        },
+        { failing: refDir },
+      );
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        secondSha,
+      );
+      expect(targetHandler.onRefUpdatedCalls.at(-1)).toMatchObject({
+        newSha: secondSha,
+      });
+
+      const retry = await syncedDuring(() =>
+        targetStore.prepareReceivePack(
+          principal,
+          wfRepoId,
+          REF,
+          pack,
+          secondSha,
+        ),
+      );
+      expect(retry.result).toEqual({ kind: "already_applied" });
+      expect(retry.synced).toContain(refDir);
+    });
+
+    test("a receive retried with its old tip after its ref did not sync syncs the ref before it is refused", async () => {
+      const { targetStore, refDir, firstSha, secondSha, newObjects, packOf } =
+        await setUp();
+      const pack = await packOf(newObjects);
+      const send = () =>
+        targetStore.receivePack(
+          principal,
+          wfRepoId,
+          REF,
+          pack,
+          secondSha,
+          firstSha,
+        );
+      await syncedDuring(
+        async () => {
+          await expect(send()).rejects.toThrow("not durable");
+        },
+        { failing: refDir },
+      );
+
+      const { synced } = await syncedDuring(async () => {
+        await expect(send()).rejects.toThrow("non_fast_forward");
+      });
+      expect(synced).toContain(refDir);
+    });
+
+    test("a receive that expects the ref at the pack tip already answers without moving it", async () => {
+      const { targetStore, targetHandler, sourceDir, firstSha, packOf } =
+        await setUp();
+      const updates = targetHandler.onRefUpdatedCalls.length;
+
+      expect(
+        await targetStore.receivePack(
+          principal,
+          wfRepoId,
+          REF,
+          await packOf(await collectReachableObjects(sourceDir, firstSha)),
+          firstSha,
+          firstSha,
+        ),
+      ).toEqual([]);
+      expect(targetHandler.onRefUpdatedCalls).toHaveLength(updates);
     });
 
     test("a retried tip the ref holds is rejected while it lacks a lost object, and the full history restores it without moving the ref", async () => {
@@ -6096,6 +6209,55 @@ describe("RepoStore prepared pack receive", () => {
     expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
     expect(await holdsLoose(repoDirOf(repoId), tip)).toBe(true);
     expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
+  });
+
+  // A copy of the data dir stands in for a process that stopped before it
+  // synced the ref it renamed into place: this process has synced nothing
+  // there yet.
+  test("an already applied answer from a repository this process has not synced syncs its refs first", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const handler = runsHandler();
+    const { store, dataDir } = await targetStore(handler);
+    const pack = await line.packAt(tip);
+    await (await prepare(store, repoId, pack, tip)).commit();
+    const copiedDataDir = await makeTempDir("repo-store-prepared-copy-");
+    await fs.promises.cp(dataDir, copiedDataDir, { recursive: true });
+    const copied = createRepoStore({
+      dataDir: copiedDataDir,
+      signingKey,
+      handlers: { "workflow-run": handler },
+      authorize: allowAll,
+    });
+    const refFile = path.join(
+      copied.getRepoDir(repoId),
+      ".git",
+      ...REF.split("/"),
+    );
+    const synced: string[] = [];
+    const open = fs.promises.open;
+    const spy = spyOn(fs.promises, "open").mockImplementation(
+      async (target, flags, mode) => {
+        const handle = await open(target, flags, mode);
+        const sync = handle.sync.bind(handle);
+        spyOn(handle, "sync").mockImplementation(async () => {
+          synced.push(String(target));
+          await sync();
+        });
+        return handle;
+      },
+    );
+    try {
+      expect(
+        await copied.prepareReceivePack(principal, repoId, REF, pack, tip),
+      ).toEqual({ kind: "already_applied" });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(synced).toEqual(
+      expect.arrayContaining([refFile, path.dirname(refFile)]),
+    );
   });
 
   test("two prepares of one pack commit once and then answer already_applied", async () => {

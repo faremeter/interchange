@@ -1,5 +1,10 @@
 import { hasCode } from "@intx/types/has-code";
 import { syncPath, type StorageRuntime } from "./runtime";
+import {
+  forgetSyncRecord,
+  noteFanoutWrite,
+  syncObjectsAndRefs,
+} from "./sync-record";
 
 // Inside objects/, so a rename from here into objects/pack/ or a fan-out
 // directory stays in one storage namespace, where the runtime makes it atomic.
@@ -16,8 +21,10 @@ export function stagingRootOf(runtime: StorageRuntime, dir: string): string {
  * which is trusted to be whole although its directory entry may not be
  * synced yet: a file that a write which does not sync left torn after a
  * crash stays torn, and a read of it fails. `finish` syncs `objects/` and
- * the fan-out directory of every object written or kept, so each is
- * durable once it returns on a runtime that syncs.
+ * the fan-out directory of every object written or kept, with what
+ * `syncObjectsAndRefs` finds unsynced, so each is durable once it returns
+ * on a runtime that syncs. A writer dropped before `finish` leaves its
+ * fan-out directories to the next `syncObjectsAndRefs` of the repository.
  */
 export type LooseObjectWriter = {
   write(oid: string, deflated: Uint8Array): Promise<void>;
@@ -49,31 +56,41 @@ export function createLooseObjectWriter(
     return made;
   };
   let temps = 0;
+  const forgettingOnFailure = async (step: () => Promise<void>) => {
+    try {
+      await step();
+    } catch (cause) {
+      forgetSyncRecord(runtime, dir);
+      throw cause;
+    }
+  };
   return {
-    async write(oid, deflated) {
-      const fanout = runtime.path.join(objectsDir, oid.slice(0, 2));
-      const temp = `${tempPrefix}${String(temps++)}`;
-      try {
-        await runtime.fs.writeFile(temp, deflated);
-        await syncPath(runtime, temp);
-        await ensureFanout(fanout);
-        await runtime.fs.rename(temp, runtime.path.join(fanout, oid.slice(2)));
-      } catch (cause) {
-        await runtime.fs.remove(temp, { force: true }).catch(() => undefined);
-        throw cause;
-      }
-    },
+    write: (oid, deflated) =>
+      forgettingOnFailure(async () => {
+        const fanout = runtime.path.join(objectsDir, oid.slice(0, 2));
+        noteFanoutWrite(runtime, dir, fanout);
+        const temp = `${tempPrefix}${String(temps++)}`;
+        try {
+          await runtime.fs.writeFile(temp, deflated);
+          await syncPath(runtime, temp);
+          await ensureFanout(fanout);
+          await runtime.fs.rename(
+            temp,
+            runtime.path.join(fanout, oid.slice(2)),
+          );
+        } catch (cause) {
+          await runtime.fs.remove(temp, { force: true }).catch(() => undefined);
+          throw cause;
+        }
+      }),
     keep(oid) {
       const fanout = runtime.path.join(objectsDir, oid.slice(0, 2));
       if (!fanouts.has(fanout)) fanouts.set(fanout, Promise.resolve());
     },
-    async finish() {
-      if (fanouts.size === 0) return;
-      await Promise.all(fanouts.values());
-      await syncPath(runtime, objectsDir);
-      await Promise.all(
-        [...fanouts.keys()].map((fanout) => syncPath(runtime, fanout)),
-      );
-    },
+    finish: () =>
+      forgettingOnFailure(async () => {
+        await Promise.all(fanouts.values());
+        await syncObjectsAndRefs(runtime, dir, [...fanouts.keys()]);
+      }),
   };
 }

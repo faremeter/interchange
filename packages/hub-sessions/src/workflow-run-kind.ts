@@ -188,6 +188,7 @@
 import fs from "node:fs";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
+import { RefNotDurableError } from "@intx/storage-isogit";
 import { deriveDeliveryKey } from "@intx/types/message-id";
 import { ControlParkKind } from "@intx/types/runtime-core";
 import { correlationIdFromSignalName } from "@intx/types/signals";
@@ -209,6 +210,7 @@ import {
   type RepoId,
   type RepoStore,
   type ValidatePushResult,
+  type WriteTreeDeltaArgs,
 } from "./repo-store";
 import {
   WORKFLOW_RUN_EVENTS_FILE,
@@ -4052,8 +4054,10 @@ export type EnqueueAlreadyPresentReason =
  * for a caller gating a durable-receipt ack: a returned outcome is safe to
  * acknowledge (the bytes are on disk -- freshly written or already present),
  * a throw is not (the write could not complete or its disposition cannot be
- * decided). `enqueued` is the only outcome that added a new inbox entry, so
- * it is the only one a dispatch-driving caller wakes its loop on.
+ * decided). `enqueued` is the only outcome that added a new inbox entry. A
+ * dispatch-driving caller wakes its loop on it, and on `duplicate` or
+ * `already_inbox`: an earlier call can have landed that entry and failed
+ * before its caller woke the loop.
  */
 export type EnqueueInboxOutcome =
   | ({ outcome: "enqueued" } & EnqueueInboxResult)
@@ -4314,7 +4318,7 @@ export async function dequeueToProcessing(
   const addressSegment = addressSegmentFor(address);
   const ref = claimCheckCommitRef();
   let dequeued: { key: string; envelope: ClaimCheckEnvelope } | null = null;
-  const { commitSha } = await store.writeTreeDelta(principal, repoId, ref, {
+  const delta: WriteTreeDeltaArgs = {
     changedPathPrefixes: new Set([addressPrefix(addressSegment)]),
     message: `dequeue ${address}`,
     computeDelta: async (_parentCommitSha, prior) => {
@@ -4361,7 +4365,20 @@ export async function dequeueToProcessing(
         deletes: [firstPath],
       };
     },
-  });
+  };
+  const commitSha = await store
+    .writeTreeDelta(principal, repoId, ref, delta)
+    .then(
+      (written) => written.commitSha,
+      (cause: unknown) => {
+        // The move landed and only its sync failed, so the entry is in
+        // processing/ and no later dequeue takes it. A crash that rolls the
+        // ref back leaves it in the inbox for the next dispatch instead.
+        if (!(cause instanceof RefNotDurableError)) throw cause;
+        logger.warn`Dequeued mail for ${address}, but its ref is not durable: ${cause.message}`;
+        return cause.oid;
+      },
+    );
   if (dequeued === null) return null;
   const captured: { key: string; envelope: ClaimCheckEnvelope } = dequeued;
   return { commitSha, key: captured.key, envelope: captured.envelope };

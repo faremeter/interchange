@@ -308,6 +308,7 @@ export type {
   PreparedReceivePack,
   Principal,
   RefEntry,
+  RefReadOpts,
   RepoAction,
   RepoId,
   RepoStore,

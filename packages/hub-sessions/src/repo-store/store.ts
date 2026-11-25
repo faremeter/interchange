@@ -10,12 +10,16 @@ import {
   initRepo as storageInitRepo,
   createDeployPack,
   createObjectPresence,
+  holdSyncRecord,
   HUB_REF_NAMESPACE,
+  RefNotDurableError,
   removeOrphanPackIndexes,
   removeStagedPacks,
   stagePack,
+  syncObjectsAndRefs,
   syncPathDurable,
   syncRemovedPathDurable,
+  writeRefDurably,
   type CommitSigner,
   type ObjectPresence,
   type StagedPack,
@@ -34,6 +38,7 @@ import type {
   Principal,
   PushFindings,
   RefEntry,
+  RefReadOpts,
   RepoAction,
   RepoId,
   RepoKind,
@@ -189,13 +194,14 @@ export type LocalRepoStore = RepoStore & {
    *
    * The returned `commit()` takes the repo lock, publishes the pack,
    * mostly as loose objects, and moves `ref` to `commitSha`, with the
-   * live tip as the old value. The ref can move while the pack validates,
-   * so there is no `expectedOldSha`: when the live tip already holds
-   * `commitSha`, `commit()` answers `already_applied`, and publishes the
-   * pack only when it brings objects the store lacks; when the live tip
-   * is a commit of this pack, it returns only the findings of the later
-   * commits. Any other live tip gets the pack tip, because the sender is
-   * authoritative for the shape of its history.
+   * live tip as the old value. Both are durable before `commit()`
+   * returns. The ref can move while the pack validates, so there is no
+   * `expectedOldSha`: when the live tip already holds `commitSha`,
+   * `commit()` answers `already_applied`, and publishes the pack only
+   * when it brings objects the store lacks; when the live tip is a commit
+   * of this pack, it returns only the findings of the later commits. Any
+   * other live tip gets the pack tip, because the sender is authoritative
+   * for the shape of its history.
    *
    * `discard()` takes the repo lock and removes the staged pack. It does
    * nothing when called again or once `commit()` is called. `commit()`
@@ -2052,13 +2058,36 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // The pack's new commits, oldest first. Empty when the store already
     // held `commitSha`.
     readonly chain: readonly string[];
+    // Releases the hold on the repository's sync record, taken when the
+    // pack was staged.
+    readonly releaseSyncRecord: () => void;
   };
+
+  // Move `ref` to `commitSha`, and answer the error when the ref landed
+  // but could not be synced: readers already see it, so the caller still
+  // runs the move's hooks before it fails. The failed write marked the
+  // repository's refs unsynced, so a retry syncs every ref before it is
+  // answered.
+  async function moveRef(
+    dir: string,
+    ref: string,
+    commitSha: string,
+  ): Promise<RefNotDurableError | null> {
+    try {
+      await writeRefDurably(dir, ref, commitSha);
+      return null;
+    } catch (cause) {
+      if (cause instanceof RefNotDurableError) return cause;
+      throw cause;
+    }
+  }
 
   function repoStillHolds(s: StagedReceive): boolean {
     return existingCommitsCache.get(indexCacheKey(s.repoId)) === s.incarnation;
   }
 
   async function discardStaged(s: StagedReceive): Promise<void> {
+    s.releaseSyncRecord();
     await s.staged.discard().catch((cause: unknown) => {
       // The pack is not in objects/pack, so no reader finds it. The
       // first receive for this dir in the next process removes it.
@@ -2173,6 +2202,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const dir = repoDir(repoId);
     await storageInitRepo(dir, storageOptsFor(repoId, undefined));
     const handler = handlerFor(repoId);
+    // Held from before the sync below until the staged receive is
+    // discarded, so no other repository's sync evicts what it recorded.
+    const releaseSyncRecord = holdSyncRecord(dir);
     return withReceiveCache(dir, async (cache) => {
       chargePrebuiltScan(dir, prebuilt);
       // A receive syncs a pack's rename before it renames the index, so an
@@ -2203,15 +2235,25 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         await removeStagedPacks(dir);
         cleanedStagingDirs.add(dir);
       }
+      // Here, not in the commit step, which can run while its caller holds
+      // a database lock: the first sync of a repository in a process
+      // covers every object directory and ref. It runs before the receive
+      // answers, so no answer comes from a ref that a failed write here,
+      // or a process that stopped, left unsynced.
+      await syncObjectsAndRefs(dir);
       // The tip is read under the lock, not taken from the caller, which
       // read it outside the lock. A held tip still stages its pack: the
       // store may have lost objects of that tip after it acked them, and
       // only the pack can bring them back.
       const priorTip = await resolveRefSha(dir, ref);
+      // A caller that expects the ref at the pack tip already, such as a
+      // restore retried after a ref that landed but was not synced, holds
+      // it too.
       const held =
-        mode.kind === "prepared" &&
-        existingCommits.has(commitSha) &&
-        (await refHoldsCommit(dir, cache, priorTip, commitSha, new Set()));
+        mode.kind === "prepared"
+          ? existingCommits.has(commitSha) &&
+            (await refHoldsCommit(dir, cache, priorTip, commitSha, new Set()))
+          : mode.expectedOldSha === commitSha && priorTip === commitSha;
 
       const transferId = crypto.randomUUID().replace(/-/g, "");
       const staged = await stagePack(dir, pack, transferId);
@@ -2278,11 +2320,15 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           priorTip,
           held,
           chain,
+          releaseSyncRecord,
         };
       } catch (err) {
         await staged.discard().catch(() => undefined);
         throw err;
       }
+    }).catch((err: unknown) => {
+      releaseSyncRecord();
+      throw err;
     });
   }
 
@@ -2457,6 +2503,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const { repoId, ref, commitSha, dir, handler } = s;
     if (!repoStillHolds(s)) throw new RepoRemovedDuringReceiveError(repoId);
     const liveTip = await resolveRefSha(dir, ref);
+    // The validation counted this pack's objects toward the tip, so the
+    // pack lands when it brings any the store lacks.
+    const answerHeld = async (): Promise<PackCommitResult> => {
+      if (await packBringsObjects(s)) await s.staged.publish();
+      // Does nothing unless a write here failed since the stage.
+      await syncObjectsAndRefs(dir);
+      return { kind: "already_applied" };
+    };
     let firstNew = 0;
     if (mode.kind === "prepared") {
       // Another receive can move the ref while this one validates. A
@@ -2474,22 +2528,22 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           refHoldsCommit(dir, cache, liveTip, commitSha, stopAt),
         ))
       ) {
-        // The validation counted this pack's objects toward the tip, so
-        // the pack lands when it brings any the store lacks.
-        if (await packBringsObjects(s)) await s.staged.publish();
-        return { kind: "already_applied" };
+        return answerHeld();
       }
       // A live tip inside this pack's chain already applied the commits
       // up to it, so only the later commits' findings are new. Any other
       // live tip takes the whole chain: the sender is authoritative for the
       // shape of its history.
       firstNew = liveTip === null ? 0 : s.chain.indexOf(liveTip) + 1;
+    } else if (s.held) {
+      return answerHeld();
     }
 
-    // The store runs on the node runtime, which defines no flush, so no
-    // flush step comes between the publish and the ref write.
+    // The publish syncs the objects before the ref names them. A ref that
+    // lands unsynced is thrown after the hooks, so the caller never acks
+    // a ref a crash could roll back.
     await withReceiveCache(dir, (cache) => s.staged.publish(cache()));
-    await git.writeRef({ fs, dir, ref, value: commitSha, force: true });
+    const notDurable = await moveRef(dir, ref, commitSha);
 
     for (const sha of s.chain) s.incarnation.add(sha);
     await handler.onRefUpdated({
@@ -2499,6 +2553,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       newSha: commitSha,
     });
     await emitRefUpdate(repoId, ref, liveTip, commitSha);
+    if (notDurable !== null) throw notDurable;
     const applied = findings.slice(firstNew);
     return {
       kind: "applied",
@@ -2540,7 +2595,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       try {
         const findings = await validateStaged(s);
         const result = await commitStaged(s, findings, mode);
-        // A receive that checks `expectedOldSha` always moves the ref.
+        // A tip the ref already held adds no runs.
         return result.kind === "applied" ? result.newlyTerminalRuns : [];
       } finally {
         await discardStaged(s);
@@ -2598,7 +2653,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       throw err;
     }
     if (!needed) {
-      await withRepoLock(repoId, () => discardStaged(s));
+      await withRepoLock(repoId, async () => {
+        await discardStaged(s);
+        // Does nothing unless a write here failed since the stage.
+        await syncObjectsAndRefs(s.dir);
+      });
       return { kind: "already_applied" };
     }
 
@@ -2800,9 +2859,25 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
+    opts?: RefReadOpts,
   ): Promise<string | null> {
     gateAccess(principal, repoId, ref, "resolveRef");
+    if (opts?.durable === true) return resolveDurably(repoId, ref);
     return resolveRefSha(repoDir(repoId), ref);
+  }
+
+  // Under the repo lock, a write has either synced what it wrote or marked
+  // it unsynced, and those are synced before the read.
+  async function resolveDurably(
+    repoId: RepoId,
+    ref: string,
+  ): Promise<string | null> {
+    const dir = repoDir(repoId);
+    return withRepoLock(repoId, async () => {
+      if (!(await repoHasGitDir(dir))) return null;
+      await syncObjectsAndRefs(dir);
+      return resolveRefSha(dir, ref);
+    });
   }
 
   // Build the committed-read closures pinned to a commit. Shared by the
@@ -2840,11 +2915,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
+    opts?: RefReadOpts,
   ): Promise<CommittedReads | null> {
     gateAccess(principal, repoId, ref, "resolveRef");
     const dir = repoDir(repoId);
-    if (!(await repoHasGitDir(dir))) return null;
-    const commitSha = await resolveRefSha(dir, ref);
+    const commitSha =
+      opts?.durable === true
+        ? await resolveDurably(repoId, ref)
+        : (await repoHasGitDir(dir))
+          ? await resolveRefSha(dir, ref)
+          : null;
     if (commitSha === null) return null;
     return committedReadsAt(dir, commitSha);
   }

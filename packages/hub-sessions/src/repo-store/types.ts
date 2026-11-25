@@ -166,6 +166,17 @@ export type InitRepoOpts = {
 };
 
 /**
+ * How `resolveRef` and `openCommittedReads` read a ref. Pass `durable`
+ * before recording in SQL what the ref names: a failed ref write or a
+ * stopped process can leave a ref that a crash rolls back. The ref is then
+ * read under the repo lock once what the repo's failed or earlier writes
+ * left unsynced is synced, so the caller must hold no database lock.
+ */
+export type RefReadOpts = {
+  readonly durable?: boolean;
+};
+
+/**
  * A single ref entry returned by `RepoStore.listRefs`. `name` is the
  * fully-qualified ref name (`refs/heads/main`, `refs/tags/v1`, ...);
  * `sha` is the SHA-1 the ref currently resolves to.
@@ -424,6 +435,11 @@ export type CommittedReads = {
   treeOid(relPath: string): Promise<string | null>;
 };
 
+/**
+ * A call that moves a ref but cannot sync it, a prepared receive's
+ * `commit()` included, still runs the ref's hooks, since readers already
+ * see the ref, and then throws `RefNotDurableError`.
+ */
 export interface RepoStore {
   /**
    * Bookkeeping primitive. Idempotent. Creates the repo directory
@@ -502,7 +518,9 @@ export interface RepoStore {
    * produce none.
    *
    * The pack is validated before it enters the repo's pack directory, so
-   * a rejected pack is never visible to any reader.
+   * a pack that fails validation is never visible to any reader. One whose
+   * ref lands but cannot be synced is visible, and the call then throws
+   * `RefNotDurableError`.
    */
   receivePack(
     principal: Principal,
@@ -543,6 +561,7 @@ export interface RepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
+    opts?: RefReadOpts,
   ): Promise<string | null>;
   /**
    * Enumerate the repo's refs (branches and tags), lexicographically
@@ -600,6 +619,7 @@ export interface RepoStore {
     principal: Principal,
     repoId: RepoId,
     ref: string,
+    opts?: RefReadOpts,
   ): Promise<CommittedReads | null>;
   /**
    * Open cache-backed reads of the committed tree at an explicit commit,
