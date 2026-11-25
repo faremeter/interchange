@@ -41,18 +41,18 @@ type IsogitRuntime = {
 
 The storage layer derives its other filesystem operations from `FsClient`,
 including recursive directory creation and removal, existence checks, and
-UTF-8 text reads. `rename` remains explicit because packs, loose objects and
-refs are published by an atomic rename. Persistent backends can implement
-`flush` to make completed mutations durable before the API call resolves. A
-backend whose writes reach the disk only once a file or directory is synced,
-such as a POSIX filesystem, must implement `sync` to make one path's contents or
-entries durable. A pack publish and `writeRefDurably` sync each file before they
-rename it into place and each directory after an entry lands in it. A runtime
-without `sync` skips those steps. The Node runtime from `/node` implements it
-with `fsync`. `syncObjectsAndRefs` and `syncRefs` sync what a repository already
-holds, skipping what this process has synced since; a caller runs one before it
-answers from a ref that an earlier process or a failed write may have left
-unsynced.
+UTF-8 text reads. `rename` remains explicit because packs, loose objects, refs
+and new repositories are published by an atomic rename. Persistent backends can
+implement `flush` to make completed mutations durable before the API call
+resolves. A backend whose writes reach the disk only once a file or directory is
+synced, such as a POSIX filesystem, must implement `sync` to make one path's
+contents or entries durable. A pack publish, `writeRefDurably` and `initRepo`
+sync each file before they rename it into place and each directory after an
+entry lands in it. A runtime without `sync` skips those steps. The Node runtime
+from `/node` implements it with `fsync`. `syncObjectsAndRefs` and `syncRefs`
+sync what a repository already holds, skipping what this process has synced
+since; a caller runs one before it answers from a ref that an earlier process or
+a failed write may have left unsynced.
 
 Audit and error record paths are append-only. Repeating a byte-identical
 record is an idempotent retry, including after an uncertain persistence

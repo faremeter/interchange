@@ -877,8 +877,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   function storageOptsFor(
     repoId: RepoId,
     opts: InitRepoOpts | undefined,
-  ): { signer?: CommitSigner; gitignore?: string } {
-    const out: { signer?: CommitSigner; gitignore?: string } = {};
+  ): { signer?: CommitSigner; gitignore?: string; durableRoot: string } {
+    const out: {
+      signer?: CommitSigner;
+      gitignore?: string;
+      durableRoot: string;
+    } = { durableRoot: dataDir };
     const signer = signerFor(repoId);
     if (signer !== undefined) out.signer = signer;
     if (opts?.gitignore !== undefined) out.gitignore = opts.gitignore;
@@ -2867,7 +2871,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
 
   // Under the repo lock, a write has either synced what it wrote or marked
-  // it unsynced, and those are synced before the read.
+  // it unsynced, and those are synced before the read. As a write does,
+  // the read also syncs the directories that hold the repository.
   async function resolveDurably(
     repoId: RepoId,
     ref: string,
@@ -2875,6 +2880,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const dir = repoDir(repoId);
     return withRepoLock(repoId, async () => {
       if (!(await repoHasGitDir(dir))) return null;
+      await storageInitRepo(dir, storageOptsFor(repoId, undefined));
       await syncObjectsAndRefs(dir);
       return resolveRefSha(dir, ref);
     });
