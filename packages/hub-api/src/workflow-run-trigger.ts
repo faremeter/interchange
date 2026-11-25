@@ -32,6 +32,7 @@ import type {
   RunTokenStore,
 } from "@intx/db";
 import {
+  createWorkflowRunDispatchStore,
   loadDeploymentGrantSnapshot,
   resolveFrameSenderKey,
   WorkflowRunDispatchPayloadConflictError,
@@ -43,6 +44,7 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import { createDetachedSignatureWithSigner } from "@intx/crypto";
+import { getLogger } from "@intx/log";
 import {
   base64Encode,
   deriveWorkflowRunId,
@@ -54,10 +56,12 @@ import {
 } from "@intx/types";
 import type { MessageAttachment } from "@intx/types/runtime";
 import type { RunGrantsFrame } from "@intx/types/sidecar";
-import type {
-  RepoStore,
-  SidecarRouter,
-  WorkflowDispatchService,
+import {
+  settleQueuedMailFromGit,
+  type RepoStore,
+  type SidecarRouter,
+  type WorkflowDispatchProjection,
+  type WorkflowDispatchService,
 } from "@intx/hub-sessions";
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 import { deriveRunAddress } from "@intx/workflow-deploy";
@@ -108,6 +112,18 @@ export const WorkflowRunTriggerResponse = type({
 /** The error code of a run mail the caller's `mail.send` grants refuse. */
 export const MAIL_SEND_DENIED_CODE = "mail_send_denied";
 
+const logger = getLogger(["hub", "workflow-run-trigger"]);
+
+/**
+ * Durable dispatch for provisioned deployments: the queue a trigger
+ * enqueues onto, and the projection that revisits a deployment whose
+ * queued mail could not be checked against Git.
+ */
+export type WorkflowDispatch = {
+  service: WorkflowDispatchService;
+  projection: Pick<WorkflowDispatchProjection, "revisit">;
+};
+
 export type TriggerWorkflowRunDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
@@ -116,7 +132,7 @@ export type TriggerWorkflowRunDeps = {
   // Decides whether the caller may send the mail that starts the run.
   authorizeMailSend: MailSendAuthorizer;
   sidecarRouter: SidecarRouter;
-  workflowDispatchService?: WorkflowDispatchService;
+  workflowDispatch?: WorkflowDispatch;
   repoStore: RepoStore;
 };
 
@@ -201,9 +217,10 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     grantStoreFor,
     authorizeMailSend,
     sidecarRouter,
-    workflowDispatchService,
+    workflowDispatch,
     repoStore,
   } = deps;
+  const dispatchStore = createWorkflowRunDispatchStore(db);
 
   async function readRunLifecycle(
     anchorRunId: string,
@@ -611,7 +628,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
 
     const allocationId = anchor.allocationId;
     if (allocationId !== null) {
-      if (workflowDispatchService === undefined) {
+      if (workflowDispatch === undefined) {
         return {
           ok: false,
           status: 503,
@@ -654,7 +671,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           const canonicalStepGrants = await commitFirstOrCanonical(tx);
           if (canonicalStepGrants === "not-ready") return "not-ready" as const;
           if (!Array.isArray(canonicalStepGrants)) return canonicalStepGrants;
-          await workflowDispatchService.enqueue(
+          const queued = await workflowDispatch.service.enqueue(
             {
               anchorRunId: anchorRunId,
               messageId,
@@ -665,7 +682,12 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
             },
             tx,
           );
-          return "committed" as const;
+          // A repeat of a request whose answer was lost finds its row
+          // queued, and the first request's Git check may never have run.
+          const unsettled =
+            queued.dispatch.status === "pending" ||
+            queued.dispatch.status === "acknowledged";
+          return { queuedMail: unsettled ? queued.dispatch : null };
         });
       } catch (error) {
         // A caller chooses the Message-ID of the mail it signs. The store
@@ -687,7 +709,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         }
         throw error;
       }
-      if (typeof committed === "object") {
+      if (typeof committed === "object" && "rejected" in committed) {
         return grantRejectionResponse(committed.rejected);
       }
       if (committed === "not-ready") {
@@ -707,7 +729,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         return runUnavailable(runId, "terminal");
       if (committed === "run-stopping")
         return runUnavailable(runId, "stopping");
-      if (committed !== "committed") {
+      if (typeof committed !== "object") {
         return {
           ok: false,
           status: 409,
@@ -719,8 +741,34 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           },
         };
       }
+      const { queuedMail } = committed;
+      // Mail can be consumed before its row is queued, for example mail
+      // another sidecar relayed. A receive that moved Git before this
+      // enqueue took the allocation lock is visible here, and one after it
+      // sees the row, so the read needs no lock. A Message-ID the Hub
+      // minted for this call names no mail before its row, so only a
+      // caller's is looked up: the read lists every consumed entry.
+      if (queuedMail !== null && callerSigned !== null) {
+        try {
+          const checked = await settleQueuedMailFromGit(
+            repoStore,
+            dispatchStore,
+            db,
+            { id: anchorRunId, address },
+            queuedMail,
+            now,
+          );
+          if (checked === "in-processing")
+            workflowDispatch.projection.revisit(anchorRunId);
+        } catch (error) {
+          workflowDispatch.projection.revisit(anchorRunId);
+          const message =
+            error instanceof Error ? error.message : String(error);
+          logger.warn`Cannot check queued mail ${messageId} of ${anchorRunId} against Git; the dispatch projection revisits it: ${message}`;
+        }
+      }
       // enqueue may wake before the transaction commits.
-      workflowDispatchService.wake();
+      workflowDispatch.service.wake();
       return {
         ok: true,
         status: 202,

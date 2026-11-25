@@ -8,7 +8,9 @@ export {
   type WorkflowHistoryReceiveTracker,
 } from "./workflow-history-receives";
 export {
+  settleQueuedMailFromGit,
   createWorkflowDispatchProjection,
+  type WorkflowDispatchProjection,
   DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
 } from "./workflow-dispatch-projection";
 export { createAgentRepoStore, type AgentRepoStore } from "./agent-repo";

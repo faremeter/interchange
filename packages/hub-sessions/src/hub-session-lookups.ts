@@ -657,9 +657,9 @@ export function createHubSessionLookups(
             }
           }
           // Settled under the same lock as approvals, so mail queued after
-          // the lock is released is left to the periodic pass. A failure
-          // keeps the pending row for lifecycle recovery. Each kind of
-          // evidence counts only on the ref recovery reads it from.
+          // the lock is released finds the ref moved and checks Git itself.
+          // A failure keeps the pending row for lifecycle recovery. Each kind
+          // of evidence counts only on the ref recovery reads it from.
           let dispatchesSettled = true;
           if (committed.kind === "applied") {
             const { consumed, accepted } = prepared.dispatchEvidence;

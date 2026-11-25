@@ -41,7 +41,6 @@ import {
   type RepoStore,
   type SidecarRouter,
   type WorkflowAllocationService,
-  type WorkflowDispatchService,
   WorkflowProvisioningError,
   WORKFLOW_RUN_REF,
   workflowSourceRepoKind,
@@ -74,6 +73,7 @@ import {
   createWorkflowRunTrigger,
   MAX_MAIL_BODY_BYTES,
   WorkflowRunTriggerResponse,
+  type WorkflowDispatch,
 } from "../workflow-run-trigger";
 import { jsonResponse } from "../openapi";
 
@@ -232,7 +232,7 @@ export type CreateWorkflowRoutesDeps = {
   principalKeyStore: PrincipalKeyStore;
   runTokenStore: RunTokenStore;
   workflowAllocationService?: WorkflowAllocationService;
-  workflowDispatchService?: WorkflowDispatchService;
+  workflowDispatch?: WorkflowDispatch;
   sidecarRouter: SidecarRouter;
   repoStore: RepoStore;
   // Builds a grant store that reads through the given executor; the trigger
@@ -249,7 +249,7 @@ export function createWorkflowRoutes({
   principalKeyStore,
   runTokenStore,
   workflowAllocationService,
-  workflowDispatchService,
+  workflowDispatch,
   sidecarRouter,
   repoStore,
   grantStoreFor,
@@ -266,9 +266,7 @@ export function createWorkflowRoutes({
     grantStoreFor,
     authorizeMailSend,
     sidecarRouter,
-    ...(workflowDispatchService !== undefined
-      ? { workflowDispatchService }
-      : {}),
+    ...(workflowDispatch !== undefined ? { workflowDispatch } : {}),
     repoStore,
   });
 
@@ -710,7 +708,7 @@ export function createWorkflowRoutes({
 
       const allocationId = deployment.allocationId;
       if (allocationId !== null) {
-        if (workflowDispatchService === undefined) {
+        if (workflowDispatch === undefined) {
           return errorResponse(
             c,
             "workflow_dispatch_unavailable",
@@ -740,7 +738,7 @@ export function createWorkflowRoutes({
             ) {
               return "run-not-running" as const;
             }
-            await workflowDispatchService.enqueueSignal(
+            await workflowDispatch.service.enqueueSignal(
               {
                 anchorRunId,
                 signal: {
@@ -776,7 +774,7 @@ export function createWorkflowRoutes({
             );
           }
           // enqueueSignal may wake before the transaction commits.
-          workflowDispatchService.wake();
+          workflowDispatch.service.wake();
           return c.body(null, 202);
         } catch (error) {
           if (error instanceof WorkflowRunDispatchPayloadConflictError) {

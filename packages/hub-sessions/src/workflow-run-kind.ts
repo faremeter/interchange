@@ -694,7 +694,7 @@ function sameMessage(
  * Parse an inbox or processing filename into its receivedAt and identity,
  * or `null` when the name does not have the queue shape.
  */
-function parseQueueFilename(
+export function parseQueueFilename(
   name: string,
 ): { receivedAt: number; identity: string } | null {
   const match = QUEUE_FILENAME_RE.exec(name);

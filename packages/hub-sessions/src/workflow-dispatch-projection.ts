@@ -5,9 +5,12 @@ import {
   eq,
   exists,
   gt,
+  inArray,
   lte,
+  notExists,
   notInArray,
   sql,
+  type SQL,
 } from "drizzle-orm";
 
 import {
@@ -19,7 +22,9 @@ import {
 } from "@intx/db";
 import {
   isLiveWorkflowRunStatus,
+  liveWorkflowRunStatuses,
   sidecarAllocation,
+  workflowPendingProjection,
   workflowRun,
   workflowRunDispatch,
 } from "@intx/db/schema";
@@ -34,6 +39,7 @@ import type {
 } from "./workflow-dispatch-evidence";
 import {
   listAcceptedWorkflowDispatches,
+  processingHoldsWorkflowDispatch,
   readConsumedWorkflowDispatches,
   rowsNamedByEvidence,
   settleFromEvidence,
@@ -50,6 +56,7 @@ import {
 
 const logger = getLogger(["hub", "workflow-dispatch-projection"]);
 export const DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY = 8;
+const DEFAULT_VISIT_BATCH = 1000;
 
 export type WorkflowDispatchProjection = ReturnType<
   typeof createWorkflowDispatchProjection
@@ -88,8 +95,8 @@ async function writeOutcomes(
 }
 
 /**
- * Settle a deployment's unsettled dispatches from the evidence a receive
- * found, in `tx`.
+ * Settle a deployment's unsettled dispatches from evidence a receive or an
+ * enqueue found, in `tx`.
  */
 export async function applyWorkflowDispatchEvidence(
   dispatches: WorkflowRunDispatchStore,
@@ -150,22 +157,87 @@ export async function closeSignalsToEndedRuns(
   await writeOutcomes(dispatches, anchor.id, outcomes, now, db);
 }
 
+/**
+ * Settle mail queued in a transaction that has committed, from a consumed
+ * record already in Git. The same sender can relay mail with this
+ * Message-ID between sidecars, which takes no row, and a sidecar that
+ * predates the delivery key filed records under the bare Message-ID;
+ * either way the sidecar dedupes the delivery without recording anything
+ * new. The enqueue held the deployment's allocation lock, which every
+ * receive holds to move Git, so a receive that moved Git before it is
+ * visible here, and one after it lists the row.
+ *
+ * Returns `in-processing` for mail the deployment holds in processing
+ * with no record yet: a run may already have accepted it in a log this
+ * check does not read, so the caller asks the dispatch projection to
+ * revisit the deployment. It reads the ref durably, so it runs outside
+ * database locks.
+ */
+export async function settleQueuedMailFromGit(
+  repoStore: Pick<RepoStore, "openCommittedReads">,
+  dispatches: WorkflowRunDispatchStore,
+  db: DBExecutor,
+  anchor: { readonly id: string; readonly address: string },
+  queued: { readonly deliveryKey: string; readonly messageId: string },
+  now: Date,
+): Promise<"checked" | "in-processing"> {
+  const consumedReads = await repoStore.openCommittedReads(
+    { kind: "hub" },
+    workflowRunRepoIdForAddress(anchor.address),
+    WORKFLOW_RUN_CLAIM_CHECK_REF,
+    { durable: true },
+  );
+  if (consumedReads === null) return "checked";
+  const identities = new Set([queued.deliveryKey, queued.messageId]);
+  const consumed = await readConsumedWorkflowDispatches(
+    consumedReads,
+    anchor.address,
+    identities,
+  );
+  if (consumed.length > 0) {
+    await applyWorkflowDispatchEvidence(
+      dispatches,
+      db,
+      anchor,
+      { consumed, accepted: [] },
+      now,
+    );
+    return "checked";
+  }
+  return (await processingHoldsWorkflowDispatch(
+    consumedReads,
+    anchor.address,
+    identities,
+  ))
+    ? "in-processing"
+    : "checked";
+}
+
 /** Projects accepted Git evidence without depending on a live worker or allocation. */
 export function createWorkflowDispatchProjection({
   db,
   repoStore,
   maxConcurrentProjections = DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
+  maxVisitBatch = DEFAULT_VISIT_BATCH,
 }: {
   db: DB["db"];
   repoStore: Pick<RepoStore, "openCommittedReads">;
   /** Bounds background scans and their unfinished work; ingestion owns its own queue. */
   maxConcurrentProjections?: number;
+  /**
+   * Bounds the deployments to visit that one eligibility query names, well
+   * under the database's limit on bound parameters.
+   */
+  maxVisitBatch?: number;
 }) {
   if (
     !Number.isSafeInteger(maxConcurrentProjections) ||
     maxConcurrentProjections <= 0
   ) {
     throw new Error("Projection concurrency must be a positive integer");
+  }
+  if (!Number.isSafeInteger(maxVisitBatch) || maxVisitBatch <= 0) {
+    throw new Error("Projection visit batch must be a positive integer");
   }
   const dispatches = createWorkflowRunDispatchStore(db);
   const pendingProjections = createWorkflowPendingProjectionStore(db);
@@ -359,34 +431,122 @@ export function createWorkflowDispatchProjection({
     return true;
   }
 
-  function eligibleRuns(activeRunIds: string[]) {
+  // SQL literals, so a plan made without parameter values can still use the
+  // partial index on unresolved dispatches.
+  const unresolvedDispatch = () =>
+    sql`(${workflowRunDispatch.status} in ('pending', 'acknowledged') or (${workflowRunDispatch.status} = 'abandoned' and ${workflowRunDispatch.nextAttemptAt} is not null))`;
+  const dispatchesWhere = (condition: SQL) =>
+    exists(
+      db
+        .select({ id: workflowRunDispatch.id })
+        .from(workflowRunDispatch)
+        .where(
+          and(eq(workflowRunDispatch.anchorRunId, workflowRun.id), condition),
+        ),
+    );
+
+  // Live deployments the pass visits until one visit succeeds, however long
+  // a pending row or a failed visit holds them back. Each maps to the number
+  // of its latest request, so a visit that began before a later request does
+  // not answer it. A query names at most `maxVisitBatch` of them, and each
+  // pass names the next ones, so deployments a pending row holds back cannot
+  // starve the rest.
+  const toVisit = new Map<string, number>();
+  let visitRequests = 0;
+  let seeded = false;
+  let visitOffset = 0;
+  let visitBatch: string[] = [];
+  const nextVisitBatch = (): string[] => {
+    const ids = [...toVisit.keys()];
+    if (ids.length <= maxVisitBatch) return ids;
+    const start = visitOffset % ids.length;
+    visitOffset = start + maxVisitBatch;
+    return [...ids, ...ids].slice(start, start + maxVisitBatch);
+  };
+
+  // The background pass decides what only final history can: the
+  // dispatches of a deployment that ended, and abandoned dispatches owed a
+  // scan. A live deployment's dispatches settle as its receives bring their
+  // evidence, and a receive cut short after its ref moved keeps a pending
+  // row, which lifecycle recovery reconciles, so the pass waits while one is
+  // open.
+  function eligibleRuns(activeRunIds: string[], visitIds: string[]) {
     return and(
       eq(workflowRun.id, workflowRun.anchorRunId),
       ...(activeRunIds.length === 0
         ? []
         : [notInArray(workflowRun.id, activeRunIds)]),
-      exists(
+      notExists(
         db
-          .select({ id: workflowRunDispatch.id })
-          .from(workflowRunDispatch)
-          .where(
-            and(
-              eq(workflowRunDispatch.anchorRunId, workflowRun.id),
-              // A SQL literal, so a plan made without parameter values can
-              // still use the partial index on unresolved dispatches.
-              sql`(${workflowRunDispatch.status} in ('pending', 'acknowledged') or (${workflowRunDispatch.status} = 'abandoned' and ${workflowRunDispatch.nextAttemptAt} is not null))`,
-            ),
-          ),
+          .select({ id: workflowPendingProjection.id })
+          .from(workflowPendingProjection)
+          .where(eq(workflowPendingProjection.anchorRunId, workflowRun.id)),
+      ),
+      // One EXISTS over the unresolved rows, which the partial index
+      // serves, so the planner can start from them instead of every
+      // deployment.
+      dispatchesWhere(
+        sql`${unresolvedDispatch()} and (${sql.join(
+          [
+            sql`(${workflowRunDispatch.status} = 'abandoned' and ${workflowRunDispatch.nextAttemptAt} is not null)`,
+            notInArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+            ...(visitIds.length === 0
+              ? []
+              : [inArray(workflowRun.id, visitIds)]),
+          ],
+          sql` or `,
+        )})`,
       ),
     );
   }
 
   const sweep = createAnchorRunSweep({
     async findPassEnd(activeRunIds) {
+      // Revisit requests do not survive a restart, and older rows can have
+      // unresolved dispatches with no pending row, so the first pass visits
+      // every live deployment that has some.
+      if (!seeded) {
+        const live = await db
+          .select({ id: workflowRun.id })
+          .from(workflowRun)
+          .where(
+            and(
+              eq(workflowRun.id, workflowRun.anchorRunId),
+              inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+              dispatchesWhere(unresolvedDispatch()),
+            ),
+          );
+        for (const run of live) revisit(run.id);
+        seeded = true;
+      }
+      // A deployment whose dispatches resolved some other way needs no
+      // visit, and would otherwise hold its place in the batch.
+      const batch = nextVisitBatch();
+      if (batch.length > 0) {
+        const requested = new Map(batch.map((id) => [id, toVisit.get(id)]));
+        const open = new Set(
+          (
+            await db
+              .select({ id: workflowRun.id })
+              .from(workflowRun)
+              .where(
+                and(
+                  inArray(workflowRun.id, batch),
+                  dispatchesWhere(unresolvedDispatch()),
+                ),
+              )
+          ).map((run) => run.id),
+        );
+        for (const id of batch) {
+          if (!open.has(id) && toVisit.get(id) === requested.get(id))
+            toVisit.delete(id);
+        }
+      }
+      visitBatch = batch.filter((id) => toVisit.has(id));
       const [last] = await db
         .select({ id: workflowRun.id })
         .from(workflowRun)
-        .where(eligibleRuns(activeRunIds))
+        .where(eligibleRuns(activeRunIds, visitBatch))
         .orderBy(desc(workflowRun.id))
         .limit(1);
       return last?.id;
@@ -397,7 +557,7 @@ export function createWorkflowDispatchProjection({
         .from(workflowRun)
         .where(
           and(
-            eligibleRuns(activeRunIds),
+            eligibleRuns(activeRunIds, visitBatch),
             lte(workflowRun.id, passEnd),
             ...(afterRunId === undefined
               ? []
@@ -416,7 +576,11 @@ export function createWorkflowDispatchProjection({
     let run: { id: string } | null = null;
     try {
       run = await sweep.select();
-      if (run !== null) await project(run.id);
+      if (run !== null) {
+        const requests = toVisit.get(run.id);
+        await project(run.id);
+        if (toVisit.get(run.id) === requests) toVisit.delete(run.id);
+      }
     } catch (cause) {
       logger.error`Dispatch projection failed for ${run?.id ?? "candidate selection"}: ${cause instanceof Error ? cause.message : String(cause)}`;
     } finally {
@@ -426,17 +590,28 @@ export function createWorkflowDispatchProjection({
   }
 
   /**
+   * Have the pass visit a live deployment until one visit succeeds, for a
+   * dispatch whose evidence could not be checked when it was queued, or a
+   * recovery whose projection failed.
+   */
+  function revisit(anchorRunId: string): void {
+    visitRequests += 1;
+    toVisit.set(anchorRunId, visitRequests);
+  }
+
+  /**
    * Settle a deployment's dispatches for lifecycle recovery. A failure must
-   * not hold back the run outcomes recovery decides; the background pass
-   * visits every deployment with unresolved dispatches, so it retries.
+   * not hold back the run outcomes recovery decides, so it is logged and the
+   * pass revisits the deployment until a visit succeeds.
    */
   async function recover(anchorRunId: string): Promise<void> {
     try {
       await project(anchorRunId);
     } catch (cause) {
       logger.error`Dispatch recovery failed for ${anchorRunId}; the projection pass retries it: ${cause instanceof Error ? cause.message : String(cause)}`;
+      revisit(anchorRunId);
     }
   }
 
-  return { project, reconcileNext, recover };
+  return { project, reconcileNext, revisit, recover };
 }

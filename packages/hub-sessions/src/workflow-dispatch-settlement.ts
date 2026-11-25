@@ -16,9 +16,11 @@ import {
 } from "./workflow-run-event-log";
 import {
   addressSegmentFor,
+  parseQueueFilename,
   WORKFLOW_RUN_ADDRESSES_PREFIX,
   WORKFLOW_RUN_CONSUMED_DIR,
   WORKFLOW_RUN_EVENTS_DIR,
+  WORKFLOW_RUN_PROCESSING_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "./workflow-run-kind";
 
@@ -151,6 +153,21 @@ export async function listReceivedWorkflowSignals(
 
 function consumedPathFor(address: string): string {
   return `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegmentFor(address)}/${WORKFLOW_RUN_CONSUMED_DIR}`;
+}
+
+/** Whether `address` holds mail filed under one of `identities` in processing. */
+export async function processingHoldsWorkflowDispatch(
+  reads: CommittedReads,
+  address: string,
+  identities: ReadonlySet<string>,
+): Promise<boolean> {
+  const processing = await reads.listDir(
+    `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${addressSegmentFor(address)}/${WORKFLOW_RUN_PROCESSING_DIR}`,
+  );
+  return processing.some((entry) => {
+    const identity = parseQueueFilename(entry.name)?.identity;
+    return identity !== undefined && identities.has(identity);
+  });
 }
 
 /**

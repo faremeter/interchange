@@ -259,7 +259,7 @@ describe("triggerWorkflowRun first-trigger staging", () => {
     routeMail?: (...args: unknown[]) => Promise<boolean>;
     // A provisioned deployment takes the durable path through this service.
     allocationId?: string;
-    workflowDispatchService?: TriggerWorkflowRunDeps["workflowDispatchService"];
+    workflowDispatch?: TriggerWorkflowRunDeps["workflowDispatch"];
     // Replaces the durable transaction, to drive how its failure maps.
     transactionError?: Error;
   }) {
@@ -351,8 +351,8 @@ describe("triggerWorkflowRun first-trigger staging", () => {
       repoStore: {
         openCommittedReads: async () => null,
       } as unknown as TriggerWorkflowRunDeps["repoStore"],
-      ...(opts.workflowDispatchService !== undefined
-        ? { workflowDispatchService: opts.workflowDispatchService }
+      ...(opts.workflowDispatch !== undefined
+        ? { workflowDispatch: opts.workflowDispatch }
         : {}),
     });
     return { trigger, tx };
@@ -371,9 +371,9 @@ describe("triggerWorkflowRun first-trigger staging", () => {
       txRows: [],
       grantStoreFor: unusedDep("grantStoreFor"),
       allocationId: "alc_durable",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the transaction fails before the service is used
-      workflowDispatchService: {} as unknown as NonNullable<
-        TriggerWorkflowRunDeps["workflowDispatchService"]
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the transaction fails before dispatch is used
+      workflowDispatch: {} as unknown as NonNullable<
+        TriggerWorkflowRunDeps["workflowDispatch"]
       >,
       transactionError: new WorkflowRunDispatchPayloadConflictError(
         "<reused@guard.interchange>",

@@ -653,7 +653,10 @@ export async function createHubServer({
     sidecarRouter,
     sessionService,
     workflowAllocationService,
-    workflowDispatchService,
+    workflowDispatch: {
+      service: workflowDispatchService,
+      projection: dispatchProjection,
+    },
     workflowLifecycleService,
     eventCollectors,
     credentialCipher,

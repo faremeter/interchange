@@ -464,12 +464,16 @@ function createTestApp(opts: TestAppOpts = {}) {
     ),
     ...(opts.workflowSignalEnqueues !== undefined
       ? {
-          workflowDispatchService: createMockWorkflowDispatchService(
-            opts.workflowSignalEnqueues,
-            opts.transactionalEnqueues ?? [],
-            opts.dispatchWakeCalls ?? [],
-            opts.operationOrder,
-          ),
+          workflowDispatch: {
+            service: createMockWorkflowDispatchService(
+              opts.workflowSignalEnqueues,
+              opts.transactionalEnqueues ?? [],
+              opts.dispatchWakeCalls ?? [],
+              opts.operationOrder,
+            ),
+            // An approval decision queues no mail, so nothing revisits.
+            projection: { revisit: () => undefined },
+          },
         }
       : {}),
     ...(opts.workflowSignalEnqueues !== undefined
