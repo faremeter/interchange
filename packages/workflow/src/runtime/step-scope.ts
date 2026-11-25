@@ -36,6 +36,16 @@ export function baseStepId(stepId: string): string {
 }
 
 /**
+ * Recover the iteration index from a scoped iteration id, or `undefined` for
+ * an unscoped id. A map item and a loop iteration share the format, so the
+ * index alone does not tell which one the id names.
+ */
+export function scopedStepIndex(stepId: string): number | undefined {
+  const index = /\[(\d+)\]$/.exec(stepId)?.[1];
+  return index === undefined ? undefined : Number(index);
+}
+
+/**
  * Encode a loop iteration's body-child run id from the loop's own run id, the
  * loop step id, and the zero-based iteration index. Unlike the scoped STEP id
  * (which lives inside a single run's step namespace), the body run id is a

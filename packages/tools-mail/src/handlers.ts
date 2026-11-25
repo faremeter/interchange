@@ -1156,7 +1156,7 @@ export function makeMailExpungeHandler(
       return errorResult(call.id, args.summary, "invalid_arguments");
     }
 
-    // The warm agent owns exactly one mailbox; expunge sweeps its INBOX.
+    // The agent owns exactly one mailbox; expunge sweeps its INBOX.
     let outcome;
     try {
       outcome = await transport.expunge("INBOX", signal);

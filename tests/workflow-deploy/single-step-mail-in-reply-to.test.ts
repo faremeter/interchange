@@ -1,6 +1,6 @@
-// Single-step warm-agent In-Reply-To wire proof (INTR-480).
+// Single-step agent In-Reply-To wire proof (INTR-480).
 //
-// Proves that the warm single-step agent's auto-reply carries an
+// Proves that the single-step agent's auto-reply carries an
 // `In-Reply-To` header whose value EQUALS the inbound message's `Message-Id`
 // -- observed on the delivered wire bytes, not inferred from a hub mail row.
 //
@@ -16,10 +16,10 @@
 // accept them -- so the header read is a faithful on-the-wire observation, not
 // a harness-side reconstruction.
 //
-// Why the reply threads onto the inbound: the warm agent's connector thread
+// Why the reply threads onto the inbound: the step's connector thread
 // opens on the first inbound (its `Message-Id` becomes the thread's
-// `lastMessageId`), and the reply drain composes the outbound `inReplyTo` from
-// that thread state. The outbound send path stamps it into the wire
+// `lastMessageId`), and the step invoker composes the outbound `inReplyTo`
+// from that thread state. The outbound send path stamps it into the wire
 // `In-Reply-To` header. So the reply's `In-Reply-To` must equal the inbound's
 // `Message-Id`; this test fires a mail with a distinctive id and asserts that
 // exact equality on the delivered bytes.
@@ -125,7 +125,7 @@ afterAll(async () => {
 });
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "warm single-step agent stamps the inbound Message-Id as the reply In-Reply-To",
+  "single-step agent stamps the inbound Message-Id as the reply In-Reply-To",
   () => {
     test("sidecar registers with hub", () => {
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
@@ -157,6 +157,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         systemPrompt: "You are the single-step mail-inbox agent.",
         address: deploymentMailAddress,
         agentId: AGENT_ID,
+        replyByMail: true,
       });
 
       const handle = await deployWorkflowSourceForTest(env, {
@@ -208,7 +209,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
 
-      // The reply drained back out as a signed outbound send; wait for the
+      // The reply went back out as a signed outbound send; wait for the
       // delivered `mail.outbound` frame the hub retained (raw signed MIME).
       await waitFor(
         () =>

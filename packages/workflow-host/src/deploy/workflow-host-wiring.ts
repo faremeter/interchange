@@ -88,7 +88,6 @@ import type {
   MultistepGrantsRouter,
   MultistepMailRouter,
   MultistepSignalRouter,
-  MultistepSourcesRouter,
   MultistepCredentialsRouter,
 } from "./workflow-run-pack-client";
 import {
@@ -97,7 +96,6 @@ import {
   markWorkflowRunRecordInStandby,
   scanWorkflowRunRecords,
   updateWorkflowRunRecordCredentials,
-  updateWorkflowRunRecordSources,
   withWorkflowRunRecord,
   writeWorkflowRunRecord,
   type WorkflowRunRecord,
@@ -405,12 +403,6 @@ export type CreateSidecarWorkflowSupervisorOpts = {
   ) => Promise<readonly string[]>;
   /** Substrate-config keys propagated to the child via spawn-time env. */
   substrateEnv: Record<string, string>;
-  /**
-   * Dynamic spawn-env fragment the supervisor recomputes on every spawn and
-   * recycle respawn (e.g. a live-rotated inference-source list). Its keys
-   * layer over `substrateEnv`. See the `dynamicSpawnEnv` supervisor binding.
-   */
-  dynamicSpawnEnv: () => Record<string, string>;
   /**
    * Subprocess spawner. The booting process passes the Bun-backed
    * spawner; tests pass a deterministic mock.
@@ -833,9 +825,9 @@ export function createSidecarDeployRouter<
    * Substrate-config env keys the multi-step branch propagates into
    * the workflow-process child's spawn-time env (see
    * `SIDECAR_SUBSTRATE_CONFIG_KEYS` in `substrate-factory.ts`).
-   * The router merges `STEP_INFERENCE_SOURCES` on top per multi-step
-   * frame. Defaults to an empty record so a router built without
-   * substrate config (e.g. a test) needs no boot-edge threading.
+   * The router adds `STEP_INFERENCE_SOURCES` per deploy. Defaults to an
+   * empty record so a router built without substrate config (e.g. a
+   * test) needs no boot-edge threading.
    */
   multistepSubstrateEnv?: Record<string, string>;
   /**
@@ -979,23 +971,9 @@ export function createSidecarDeployRouter<
    */
   multistepGrantsRouter?: MultistepGrantsRouter;
   /**
-   * Per-deployment-address sources-rotation handler registry. Only a
-   * single-step warm deployment registers a handler (against the
-   * deployment's mail address once `supervisor.spawn` succeeds) so a
-   * rotation resolved for its address flows into
-   * `wired.supervisor.deliverSources` and on to the child's warm agent. A
-   * multi-step deployment registers none -- it has no single warm agent to
-   * rotate -- so `tryRoute` reports its address as unrouted.
-   *
-   * Optional so tests that exercise deploys without a rotation loop can
-   * omit the binding; an absent registry means no rotation handler is
-   * installed for any deployment.
-   */
-  multistepSourcesRouter?: MultistepSourcesRouter;
-  /**
    * Optional per-deployment credential-delivery handler registry. Every
    * deployment with a supervisor registers a handler after `spawn` (not only
-   * warm single-step ones -- the material cell is per-child and read by every
+   * single-step ones -- the material cell is per-child and read by every
    * step's tool capabilities), and an inbound `credentials.update` for an
    * unregistered (torn-down) address is unrouted. Optional so tests without a
    * credential-delivery loop can omit the binding.
@@ -1034,14 +1012,6 @@ export function createSidecarDeployRouter<
    * the deploy or boot-time restore.
    */
   readyTimeoutMs?: number;
-  /**
-   * Run-record source updater, injectable so a test can block or fail the
-   * persist at a controlled point -- the natural seam for exercising a
-   * recycle that interleaves the source-rotation persist window. Defaults
-   * to the real `updateWorkflowRunRecordSources`; production never overrides
-   * it.
-   */
-  updateWorkflowRunRecordSources?: typeof updateWorkflowRunRecordSources;
   /**
    * Run-record credentials updater, injectable so a test can fail the seal of
    * a credentials update. Defaults to the real
@@ -1186,8 +1156,6 @@ export function createSidecarDeployRouter<
       "sidecar deploy router: multistepBinaryPath must name the workflow child binary",
     );
   }
-  const persistWorkflowRunSources =
-    deps.updateWorkflowRunRecordSources ?? updateWorkflowRunRecordSources;
   const persistWorkflowRunCredentials =
     deps.updateWorkflowRunRecordCredentials ??
     updateWorkflowRunRecordCredentials;
@@ -1393,7 +1361,6 @@ export function createSidecarDeployRouter<
     deps.multistepSignalRouter?.unregister(agentAddress);
     deps.multistepDrainRouter?.unregister(agentAddress);
     deps.multistepGrantsRouter?.unregister(agentAddress);
-    deps.multistepSourcesRouter?.unregister(agentAddress);
     deps.multistepCredentialsRouter?.unregister(agentAddress);
   }
 
@@ -1804,9 +1771,9 @@ export function createSidecarDeployRouter<
       // the boot-edge constants; the two workflow-run identity keys are
       // derived per-deploy here.
       // Spawned bodies' plaintext inference sources, serialized once for the
-      // deployment's lifetime (bodies do not live-rotate, unlike the top-level
-      // sources below). The child looks each body up by definition id and never
-      // holds the sidecar's cipher key. Guarded against the OS argument-string
+      // deployment's lifetime, like the top-level sources below. The child
+      // looks each body up by definition id and never holds the sidecar's
+      // cipher key. Guarded against the OS argument-string
       // ceiling here, at deploy, so an over-large deployment fails loudly rather
       // than at a later child `execve`.
       const bodySourcesEnv = JSON.stringify(spec.bodySources ?? {});
@@ -1829,14 +1796,10 @@ export function createSidecarDeployRouter<
         // deployment's lifetime.
         CLOSURE_PACKAGE_DIR: spec.closurePackageDir,
         [WORKFLOW_BODY_SOURCES_ENV_KEY]: bodySourcesEnv,
+        // The per-step inference sources are fixed at deploy for every step.
+        // A change of sources is a redeploy.
+        [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(spec.sources),
       };
-      // Live-rotatable per-step inference sources. Seeded from the deploy
-      // spec, then revised in place by the single-step sources-rotation
-      // handler below. `STEP_INFERENCE_SOURCES` is NOT in the frozen
-      // `substrateEnv`: it is recomputed on every spawn and recycle respawn
-      // via `dynamicSpawnEnv`, so a rotation survives a recycle instead of
-      // reverting to the deploy-time list.
-      let currentSources = spec.sources;
 
       // RunIds whose `run.grants` write was attempted and failed. The grants
       // handler below records a runId here on a write failure; the grants
@@ -1945,13 +1908,6 @@ export function createSidecarDeployRouter<
           }
         },
         substrateEnv,
-        // Recomputed on every spawn AND recycle respawn. The rotation
-        // handler below revises `currentSources` in place, so a respawn
-        // re-serializes the current (possibly rotated) list rather than the
-        // frozen deploy-time value.
-        dynamicSpawnEnv: () => ({
-          [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(currentSources),
-        }),
         subprocessSpawner: multistepSpawner,
         binaryPath: deps.multistepBinaryPath,
         ...(deps.onDispatchTiming !== undefined
@@ -2050,11 +2006,6 @@ export function createSidecarDeployRouter<
           `sidecar deploy router: ${spec.agentAddress}'s child started without its steps being laid out`,
         );
       }
-      // Warm-keep is the single-step launched-agent deploy: the sole step
-      // IS the long-lived agent, so the child warm-keeps it across
-      // messages and its sources can rotate in place. A multi-step deploy
-      // keeps instantiate-send-teardown per step.
-      const warmKeep = establishedDefinition.stepOrder.length === 1;
 
       // Bind the deployment's mail address to this supervisor's
       // `routeInbound` so the hub-link dispatches inbound mail into the
@@ -2126,87 +2077,8 @@ export function createSidecarDeployRouter<
         // floor for good.
         await wired.supervisor.deliverGrants(args.runId);
       });
-      // Register the sources-rotation handler ONLY for a single-step warm
-      // deployment: it has one long-lived agent whose sources can be
-      // swapped in place. A multi-step deployment has no single warm agent,
-      // so it registers no handler and `tryRoute` reports its address as
-      // unrouted.
-      if (warmKeep) {
-        // A single-step deployment's source table has exactly one entry,
-        // keyed by the head step. Derive that key once here (the layer that
-        // owns the single-key invariant); `deliverSources` stays flat and
-        // stepId-agnostic.
-        const rotationStepId = establishedDefinition.stepOrder[0];
-        if (rotationStepId === undefined) {
-          throw new Error(
-            "single-step deploy has no step id for sources rotation",
-          );
-        }
-        deps.multistepSourcesRouter?.register(
-          spec.agentAddress,
-          async (args) => {
-            const rotated = { [rotationStepId]: args.sources };
-            // Swap `currentSources` synchronously BEFORE the durable persist.
-            // `currentSources` is the process-local respawn hint the
-            // supervisor reads synchronously through `dynamicSpawnEnv`, so a
-            // recycle that interleaves the persist `await` must respawn the
-            // child on the SAME sources being persisted, not the stale prior
-            // table. The obvious inverse -- persist first, then swap -- is
-            // rejected: it leaves the child on the OLD sources during the
-            // persist window while the record has already moved to NEW, so a
-            // recycle there respawns stale and a restart would "correct" it,
-            // i.e. the running child contradicts durable intent. Swapping
-            // first makes the only residual disagreement child-ahead-of-
-            // durable on a failed persist, which the next recycle heals down
-            // to the rolled-back durable truth -- the benign direction. The
-            // wire boundary guarantees `args.sources[0]` is the default,
-            // which the recycle env form pins as the active source.
-            const prevSources = currentSources;
-            currentSources = rotated;
-            // The durable write still precedes the LIVE swap
-            // (`deliverSources`), preserving persist-before-externally-visible
-            // for state that outlives the process; only the process-local
-            // respawn hint moves ahead. On a failed persist, roll the hint
-            // back so `currentSources` and the record stay in agreement in the
-            // common (no interleaved recycle) failure case -- the invariant
-            // restart consistency depends on. Persistence lets the rotation
-            // survive a full sidecar restart, not just a recycle: the boot
-            // scan reseeds spec.sources from record.sources. Updates only the
-            // sources, preserving a concurrent stop. Skipped when no data dir
-            // was wired (a test router that never persists), matching the
-            // restore guard.
-            if (stepStateDataDir !== undefined) {
-              try {
-                await persistWorkflowRunSources(
-                  stepStateDataDir,
-                  runId,
-                  spec.generation,
-                  rotated,
-                );
-              } catch (cause) {
-                // Restoring unconditionally is safe because rotations for one
-                // deployment are serialized by the link's per-address frame
-                // lane: each hub frame for the deployment's address,
-                // sources.update included, runs its handler to completion
-                // before the next one for that address starts, so no second
-                // rotation is in flight whose committed table this rollback
-                // could clobber. This does NOT rely on the hub pacing its
-                // sends; the frame lane is the sole serializer. Handling one
-                // address's frames concurrently would break this rollback.
-                currentSources = prevSources;
-                throw cause;
-              }
-            }
-            await wired.supervisor.deliverSources({
-              sources: args.sources,
-              defaultSource: args.defaultSource,
-            });
-          },
-        );
-      }
-
       // Register the credential-delivery handler for EVERY deployment (not only
-      // warm single-step ones): the material cell is per-child and read by
+      // single-step ones): the material cell is per-child and read by
       // every step's tool capabilities. The handler hands the delivery to the
       // supervisor's `deliverCredentials`, which sends a `credentials-updated`
       // control frame to the child and advances the supervisor's mirror.
@@ -2222,7 +2094,7 @@ export function createSidecarDeployRouter<
       // so after one the record's content is unknown and the next update
       // writes even when the mirror matches the last confirmed seal.
       // Updates for one deployment run one at a time on the link's
-      // per-address frame lane, as the sources handler above relies on.
+      // per-address frame lane.
       // Skipped when no data dir was wired, matching the restore guard.
       let sealedCredentials: string | undefined = JSON.stringify(
         wired.supervisor.credentialDelivery(),
@@ -2277,11 +2149,6 @@ export function createSidecarDeployRouter<
           deps.multistepSignalRouter?.unregister(spec.agentAddress);
           deps.multistepDrainRouter?.unregister(spec.agentAddress);
           deps.multistepGrantsRouter?.unregister(spec.agentAddress);
-          // Unregister unconditionally: the sources handler was registered
-          // only for a single-step deploy, but `unregister` is a no-op for
-          // an address that never registered one, so a multi-step unwind
-          // safely calls it too.
-          deps.multistepSourcesRouter?.unregister(spec.agentAddress);
           deps.multistepCredentialsRouter?.unregister(spec.agentAddress);
         }
         if (supervisorRegistered) {
@@ -2790,15 +2657,15 @@ export function createSidecarDeployRouter<
           await attempt("deleting its agent directory", () =>
             deps.sessions.deleteAgentDir(frame.agentAddress),
           );
-          // Reclaim the deployment's local state: its per-step scratch (the warm
-          // agent's workspace and any cold run subtrees), its materialized
-          // closure, its source stores and its local conversation copy, which
-          // only that deployment's respawns and restarts read. Cleanup also
-          // runs without a live supervisor, so state an interrupted deploy or a
-          // failed restore left is reclaimed too. No child holds any of it: a
-          // live one was shut down above.
+          // Reclaim the deployment's local state: its per-step scratch (each
+          // run's step workspaces), its materialized closure and its source
+          // stores, which only that deployment's respawns and restarts read.
+          // Cleanup also runs without a live supervisor, so state an
+          // interrupted deploy or a failed restore left is reclaimed too. No
+          // child holds any of it: a live one was shut down above.
           if (dataDir !== undefined) {
             const localState: [string, string][] = [
+              // Also removes the `warm/` workspaces an earlier version wrote.
               [
                 "removing its step scratch",
                 pathJoin(dataDir, "workflow-step-state", runId),
@@ -2815,6 +2682,7 @@ export function createSidecarDeployRouter<
                 "removing its source repository",
                 deploymentSourceGitRoot(dataDir, runId),
               ],
+              // Removes the conversation copies an earlier version wrote.
               [
                 "removing its conversation copy",
                 conversationStateRoot(dataDir, runId),
@@ -2988,10 +2856,7 @@ export function createSidecarDeployRouter<
               // spawn core threads into the child's env so it re-evaluates the
               // pinned code.
               closurePackageDir: applied.packageDir,
-              // Carry the source-ref pin so a post-restore source rotation --
-              // which rebuilds the record from the spec -- re-persists it;
-              // without this a rotation would silently drop it and wedge the
-              // NEXT restart.
+              // Carry the source-ref pin, as a deploy's spec does.
               sourceRef: record.sourceRef,
               ...(record.standby !== undefined
                 ? { standby: record.standby }
@@ -3210,7 +3075,6 @@ export function createSidecarWorkflowSupervisor(
     subprocessSpawner: opts.subprocessSpawner,
     binaryPath: opts.binaryPath,
     substrateEnv: opts.substrateEnv,
-    dynamicSpawnEnv: opts.dynamicSpawnEnv,
     workflowRunRepoId: opts.workflowRunRepoId,
     workflowRunRef: opts.workflowRunRef,
     anchorRunId: opts.runId,

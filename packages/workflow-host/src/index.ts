@@ -31,9 +31,11 @@ export {
 } from "./adapters/substrate-mailbox-store";
 export {
   createWorkflowStepInvoker,
+  type StepBuild,
   type StepEnvBase,
   type WorkflowStepInvokerOpts,
 } from "./adapters/step-invoker";
+export type { StepConversation } from "./adapters/step-conversation";
 export {
   createInMemorySpawnChild,
   createInMemorySpawnSuspendableChild,
@@ -63,7 +65,6 @@ export {
   type CredentialsSnapshot,
   type CredentialsSnapshotStep,
   type DeliverSignalOpts,
-  type DeliverSourcesOpts,
   type DrainOpts,
   type DrainTimeoutAccumulator,
   type DrainTimeoutAccumulatorFactory,
@@ -116,7 +117,6 @@ export {
   FrameEnvelope,
   IPC_CRYPTO,
   MailboxNotifyHeaders,
-  SourcesUpdatedData,
   MacedEnvelope,
   OutboundAttachmentPayload,
   OutboundMessagePayload,
@@ -156,8 +156,8 @@ export {
   createMailboxWatchRegistry,
   createProxyWorkflowRunRepoStore,
   createSnapshotGrantsResolver,
+  createStoreStepConversation,
   createSupervisorBackedTransport,
-  createWarmAgentCache,
   discoverInFlightRuns,
   parseSpawnTimeEnv,
   runWorkflowChild,
@@ -183,7 +183,7 @@ export {
   type RunWorkflowChildFromProcessEnvOpts,
   type RunWorkflowChildOpts,
   type RunWorkflowChildResult,
-  type SourcesSnapshotRef,
+  type StepSources,
   type SpawnTimeEnv,
   type StepGrantsResolver,
   type SubstrateFactory,
@@ -191,8 +191,6 @@ export {
   type SubstrateWriteRequest,
   type SubstrateWriteResponseSink,
   type SupervisorBackedTransportInbound,
-  type WarmAgentCache,
-  type WarmEventSinkRef,
 } from "./child/index";
 
 export {
@@ -206,12 +204,9 @@ export {
   type SignalChannelOpts,
 } from "./seams/index";
 export {
-  createDurableConversationRegistry,
   createDurableConversationStore,
   readStepState,
   type DurableConversationLifetime,
-  type DurableConversationRegistry,
-  type DurableConversationRegistryOpts,
   type DurableConversationStore,
   type DurableConversationStoreOpts,
 } from "./conversation-state";

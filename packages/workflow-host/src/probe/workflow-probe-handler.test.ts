@@ -132,6 +132,29 @@ export default defineWorkflow({
 });
 `;
 
+// A step built the way a bundle with an earlier `@intx/workflow` built it:
+// that `step()` accepted `triggers`, so the current `step()` check never
+// runs for it. The projector must refuse it, or the probe approves a step
+// that answers one mail and then refuses every later one.
+const OLD_BUNDLE_TRIGGERS_ENTRY = `
+import { defineWorkflow, step } from "@intx/workflow/definition";
+import { defineAgent } from "@intx/agent";
+const agent = defineAgent({
+  id: "agent_reply",
+  systemPrompt: "reply",
+  tools: [],
+  capabilities: [],
+  inference: { sources: [{ provider: "openai", model: "gpt-4o" }] },
+});
+export default defineWorkflow({
+  id: "probe-old-bundle",
+  trigger: { type: "mail", to: "probe@example.com" },
+  steps: {
+    reply: { ...step({ agent }), drainBehavior: "wait", triggers: "unbounded" },
+  },
+});
+`;
+
 async function layoutClosureFixture(entrySource: string): Promise<string> {
   const packageDir = await fs.mkdtemp(path.join(os.tmpdir(), "wf-probe-"));
   createdDirs.push(packageDir);
@@ -373,6 +396,22 @@ describe("createWorkflowProbeExecutor", () => {
       // re-gate director:<id> against the approved set.
       await expect(executor.probe(probeFrame())).rejects.toThrow(
         /unresolvable director/,
+      );
+    },
+    SPAWN_TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "refuses a step that sets triggers with an error that names onTrigger",
+    async () => {
+      const executor = createWorkflowProbeExecutor({
+        binaryPath: PROBE_CHILD_BINARY,
+        materialize: fixtureMaterializer(OLD_BUNDLE_TRIGGERS_ENTRY),
+        spawnProbeChild: recordingSpawner([]),
+      });
+
+      await expect(executor.probe(probeFrame())).rejects.toThrow(
+        /workflow probe evaluation failed: .*step "reply" sets triggers, which a step no longer accepts.*onTrigger\(\{ on: mail, body \}\).*replyByMail: true.*redeploy/,
       );
     },
     SPAWN_TEST_TIMEOUT_MS,

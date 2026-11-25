@@ -250,6 +250,9 @@ function extractRuntimeOptions(options: RunLocalOptions): RuntimeRunOptions {
   if (options.maxChildSpawnDepth !== undefined) {
     out.maxChildSpawnDepth = options.maxChildSpawnDepth;
   }
+  if (options.stepPathPrefix !== undefined) {
+    out.stepPathPrefix = options.stepPathPrefix;
+  }
   return out;
 }
 
@@ -514,6 +517,7 @@ export function createSpawnLoopIteration(
     input,
     depth,
     maxChildSpawnDepth,
+    stepPathPrefix,
     signal,
     resumeFromEvents,
   }) => {
@@ -530,6 +534,7 @@ export function createSpawnLoopIteration(
       input,
       depth,
       maxChildSpawnDepth,
+      stepPathPrefix,
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
       signalChannel: createInMemorySignalChannel({
@@ -551,6 +556,7 @@ export function createInMemorySpawnChild(
     signal,
     depth,
     maxChildSpawnDepth,
+    stepPathPrefix,
     resumeFromEvents,
   }) => {
     // Four awaits separate the child run id allocation from this call, one of
@@ -595,9 +601,9 @@ export function createInMemorySpawnChild(
       input,
       depth,
       maxChildSpawnDepth,
+      stepPathPrefix,
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
-      surfaceInputPark: true,
     });
   };
 }

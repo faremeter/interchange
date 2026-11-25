@@ -61,11 +61,18 @@ export const MAIL_FETCH_FAILED_FLAG = "$FetchFailed";
  * `validateEnv` can blame either at the env entry point.
  *
  * `onReplySendFailed` is invoked when the reply drain catches a failure
- * from `connectorRouter.composeReply` or `transport.send` for an
- * outbound `connector.reply`. The reply is dropped and the router
- * state is not advanced; the callback is the only programmatic surface
- * a caller has to observe the loss. Production deployments that need
- * retry semantics layer them on top of this callback.
+ * from `connectorRouter.composeReply`, `transport.send`, or
+ * `connectorRouter.onReplySent` for an outbound `connector.reply`. A
+ * failure in `composeReply` or `send` drops the reply. A failure in
+ * `onReplySent` comes after the send acked, so that reply already went
+ * out. The callback does not tell the two cases apart, so a retry built
+ * on it can send a reply a second time. The callback is the only
+ * programmatic surface a caller has to observe the failure.
+ *
+ * The harness sets the router's turn mode only when it commits start or
+ * continue mail. Until the first such commit, the agent answers no mail,
+ * also when it restored a thread from disk. A reply in that window gets
+ * `TurnAnswersNoMailError` from `composeReply`, and the harness drops it.
  *
  * The callback may be synchronous or async; the reply drain awaits its
  * resolution so an async callback's rejection is observed (and logged)
@@ -326,12 +333,11 @@ export async function createHarness<EnvReq extends MailEnv>(
     // else flows past unobserved. Other consumers can subscribe to the
     // exposed `stream()` method to see the same events.
     //
-    // The shared `driveConnectorReplies` helper owns the loop: reply
+    // The `driveConnectorReplies` helper owns the loop: reply
     // serialization (a second reply waits for the first's receipt to
     // advance the router before composing its own), per-reply failure
     // surfacing to `onReplySendFailed`, and abnormal-termination
-    // surfacing to `onReplyDrainTerminated`. The warm workflow-host
-    // path drives replies through the same helper.
+    // surfacing to `onReplyDrainTerminated`.
     const replyDrain = driveConnectorReplies({
       stream: agent.stream(),
       composeReply: () => connectorRouter.composeReply(),
@@ -447,14 +453,16 @@ export async function createHarness<EnvReq extends MailEnv>(
           }
 
           if (decision.kind === "passthrough") {
-            // A passthrough commit only sets the router's turn reply target,
-            // which points the reply at this message's sender. This harness
-            // does not commit it. It routes at delivery, and `agent.deliver`
-            // gives it no hook at the point the reactor takes the message
-            // up, so it cannot bind a per-message target to the turn that
-            // answers it: a passthrough that arrived during another
-            // sender's turn would take that sender's reply. Replies to
-            // passthrough mail therefore go to the connector thread.
+            // A passthrough commit only sets the router's turn mode, whose
+            // reply target points the reply at this message's sender. This
+            // harness does not commit it. It routes at delivery, and
+            // `agent.deliver` gives it no hook at the point the reactor takes
+            // the message up, so it cannot bind a per-message target to the
+            // turn that answers it: a passthrough that arrived during another
+            // sender's turn would take that sender's reply. A reply to
+            // passthrough mail therefore goes to the connector thread when
+            // an earlier start or continue commit set the turn mode, and
+            // to nobody before that.
             if (stopped) return;
             agent.deliver(message);
             return;

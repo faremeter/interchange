@@ -1388,6 +1388,32 @@ describe("projectWorkflowDefinitionFromClosure", () => {
   });
 });
 
+// A workflow entry whose step is built the way a bundle with an earlier
+// `@intx/workflow` built it: that `step()` accepted `triggers` and set the
+// drain default to "wait". `extra` adds the `triggers` key, so the same
+// entry without it gives the projection that the old step hashed to, less
+// the key.
+function triggerStepEntry(extra: string): string {
+  return `
+import { defineWorkflow, step } from "@intx/workflow/definition";
+import { defineAgent } from "@intx/agent";
+const agent = defineAgent({
+  id: "agent_reply",
+  systemPrompt: "reply",
+  tools: [],
+  capabilities: [],
+  inference: { sources: [{ provider: "openai", model: "gpt-4o" }] },
+});
+export default defineWorkflow({
+  id: "old-bundle-workflow",
+  trigger: { type: "mail", to: "run_x@example.com" },
+  steps: {
+    reply: { ...step({ agent }), drainBehavior: "wait"${extra} },
+  },
+});
+`;
+}
+
 describe("loadVerifiedWorkflowDefinitionFromClosure", () => {
   test("accepts a closure whose plugin tools match the approved hash", async () => {
     const packageDir = await createPluginClosure([{ name: "lsp" }]);
@@ -1462,5 +1488,45 @@ describe("loadVerifiedWorkflowDefinitionFromClosure", () => {
         approvedHash: nameOnlyHash,
       }),
     ).rejects.toThrow(/does not match the approved hash/);
+  });
+
+  // An earlier projector carried `triggers`, so a deployment approved then
+  // holds the hash of a projection with the key. The child must fail with the
+  // projector's refusal, which says what to do, and not with a hash mismatch.
+  test("refuses a closure whose step sets triggers before it compares the hash", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: triggerStepEntry(', triggers: "unbounded"'),
+    });
+    const withoutTriggers = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: triggerStepEntry(""),
+    });
+    const projection = await projectWorkflowDefinitionFromClosure({
+      packageDir: withoutTriggers,
+      definition: await loadWorkflowDefinitionFromClosure({
+        packageDir: withoutTriggers,
+      }),
+    });
+    const reply = projection.steps["reply"];
+    if (reply === undefined || reply.kind !== "step") {
+      throw new Error("expected a projected `step` at key `reply`");
+    }
+    const oldApprovedHash = await computeWireDefinitionHash({
+      ...projection,
+      steps: {
+        ...projection.steps,
+        reply: { ...reply, triggers: "unbounded" },
+      },
+    });
+
+    const load = loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir,
+      approvedHash: oldApprovedHash,
+    });
+    await expect(load).rejects.toThrow(
+      /step "reply" sets triggers, which a step no longer accepts.*onTrigger\(\{ on: mail, body \}\).*replyByMail: true.*redeploy/,
+    );
+    await expect(load).rejects.not.toThrow(/does not match the approved hash/);
   });
 });

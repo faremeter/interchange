@@ -1,6 +1,6 @@
-// Single-step warm-agent two-turn threaded conversation (INTR-480).
+// Single-step agent two-turn threaded conversation (INTR-480).
 //
-// Proves that a warm single-step agent conducts a two-exchange conversation
+// Proves that a single-step agent conducts a two-exchange conversation
 // inside ONE run and threads each reply onto the message it answers --
 // observed on the delivered wire bytes.
 //
@@ -10,8 +10,8 @@
 // the individual trigger occurrence"). A second inbound mail is therefore NOT
 // a second dispatched run; the conversation is held open WITHIN the one run by
 // `mail_wait`. The agent replies to the first message, waits for the next
-// inbound, and replies to that -- all in a single run whose connector/agent
-// state is warm across the exchange.
+// inbound, and replies to that -- all in a single run, inside one turn of
+// the step agent.
 //
 // The scripted mock provider drives that loop deterministically:
 //   turn 0: mail_send a reply to mail 1, threaded on m1 (inReplyTo = m1).
@@ -207,7 +207,7 @@ async function waitForReplyInReplyTo(
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "warm single-step agent threads a two-turn conversation inside one run",
+  "single-step agent threads a two-turn conversation inside one run",
   () => {
     test("sidecar registers with hub", () => {
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);

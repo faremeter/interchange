@@ -16,7 +16,7 @@ export {
   type RunWorkflowChildBindings,
   type RunWorkflowChildOpts,
   type RunWorkflowChildResult,
-  type SourcesSnapshotRef,
+  type StepSources,
   type SubstrateWriteResponseSink,
 } from "./run-child";
 
@@ -66,6 +66,8 @@ export {
 
 export { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
 
+export { createStoreStepConversation } from "./store-step-conversation";
+
 export {
   discoverInFlightRuns,
   type DiscoverRunsOpts,
@@ -73,12 +75,6 @@ export {
 } from "./self-discovery";
 
 export type { LoadParkedApproval } from "@intx/workflow";
-
-export {
-  createWarmAgentCache,
-  type WarmAgentCache,
-  type WarmEventSinkRef,
-} from "./warm-agent-cache";
 
 export {
   EVENT_CHANNEL_FD,

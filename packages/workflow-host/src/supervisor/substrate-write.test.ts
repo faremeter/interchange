@@ -482,7 +482,6 @@ async function bootSupervisorToReady(
     subprocessSpawner: spawner,
     binaryPath: "/fake/bin/workflow-child",
     substrateEnv: { DATA_DIR: baseDir },
-    dynamicSpawnEnv: () => ({}),
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
     anchorRunId: "deployment-x",

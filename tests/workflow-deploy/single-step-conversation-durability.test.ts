@@ -1,24 +1,29 @@
 // Single-step conversation-durability integration test (Phase 4.5).
 //
-// THE durability dividend: a warm single-step agent's multi-turn
-// conversation survives a child respawn. Today (4.4) the warm agent
-// holds conversation state in memory only; kill the child and the
-// conversation is lost. 4.5 makes that state durable in the workflow-run
-// substrate -- committed at the run boundary to the step's state directory
-// (`runs/<runId>/steps/<stepId>/state/`, a bucket-sharded WAL plus a
-// periodic checkpoint, beside the run's event log) -- and restored
-// (checkpoint load + WAL replay) when the warm agent is rebuilt lazily after
-// respawn.
+// The durable conversation store of an agent step continues across the step's
+// invocations and across a child respawn. The test fires three triggers
+// straight at the child, each a new invocation of the same step: two before the
+// respawn and one after it. A deployed one-step workflow answers only its first
+// mail, so this is not a deployed mail conversation; an onTrigger section on
+// mail is. No agent stays live between turns: each turn builds the step's
+// agent, restores the step's committed conversation from the workflow-run
+// substrate (its state directory `runs/<runId>/steps/<stepId>/state/`, a
+// bucket-sharded WAL plus a periodic checkpoint, beside the run's event log),
+// runs one turn and closes the agent, and the turn's settle commits the
+// conversation once the turn settles.
 //
-// Harness choice (in-process run-loop, mirroring 4.4's warm round-trip
-// test). A respawn IS a second `runWorkflowChild` invocation against the
-// SAME on-disk substrate with a FRESH (empty) warm cache and a FRESH
-// durable-conversation registry. The in-process harness models exactly
-// that, deterministically, and exercises the REAL sidecar wiring
-// (`createSidecarStepBuildEnv` + `createDurableConversationRegistry`)
-// against a real `workflow-run` substrate -- the same production path a
-// spawned child takes, minus the OS process boundary whose kill timing
-// would only add nondeterminism to the durability assertion.
+// Harness choice (in-process run-loop). A respawn IS a second
+// `runWorkflowChild` invocation against the SAME on-disk substrate. The
+// in-process harness models exactly that, deterministically. Its own build
+// opens a durable conversation store for the invocation
+// (`createDurableConversationStore` with an invocation lifetime), restores it
+// from the substrate before the agent is built, and binds the turn's
+// conversation to that store with `createStoreStepConversation`, whose
+// `settle` commits it. This build is not `createSidecarStepBuildEnv`: the
+// step-storage and full-lifecycle tests cover that function. The step
+// invoker takes the same per-turn path a spawned child takes, minus the OS
+// process boundary whose kill timing would only add nondeterminism to the
+// durability assertion.
 //
 // The spy agent is storage-aware: it loads its prior turns from
 // `env.storage` at build (exactly as a real reactor does via
@@ -27,11 +32,7 @@
 // transcript, so a reply reflecting a PRIOR message is the load-bearing
 // proof of continuity. After respawn the rebuilt spy's prior turns come
 // only from the substrate restore -- there is no in-memory carry-over
-// across the two `runWorkflowChild` invocations.
-//
-// Against the pre-4.5 behaviour (per-run/per-attempt isogit storage, no
-// substrate mirror, no restore) the post-respawn reply would reflect
-// ONLY the post-respawn message -- this test fails there.
+// across turns or across the two `runWorkflowChild` invocations.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -47,6 +48,7 @@ import {
   computeLiveDefinitionHash,
   createTerminalChildHandle,
   unavailableActionCredentials,
+  type StepInvokeRequest,
   type WorkflowDefinition,
 } from "@intx/workflow";
 import {
@@ -90,13 +92,15 @@ import {
   parseSpawnTimeEnv,
   runWorkflowChild,
   discoverInFlightRuns,
-  createDurableConversationRegistry,
+  createDurableConversationStore,
+  createStoreStepConversation,
   createWorkflowRunRepoStore,
   readStepState,
   type ChildStepInvoker,
   type RunWorkflowChildBindings,
-  type StepEnvBase,
+  type StepBuild,
 } from "@intx/workflow-host";
+import { stepPlaceKey } from "@intx/types/step-place";
 
 const DEPLOYMENT_ID = "run_durability-deployment";
 const STEP_ID = "step-1";
@@ -153,7 +157,7 @@ const TurnShape = type({
  * Reconstruct the durable conversation from the two-tier substrate layout
  * (checkpoint + WAL) in the step's committed state directory and return the
  * user-turn texts. Goes through the production `readStepState` so the test
- * reads the conversation the same way the warm agent's restore does -- not
+ * reads the conversation the same way each turn's restore does -- not
  * by re-deriving the WAL fold independently. Validating each turn at the read boundary keeps the
  * test honest about the on-disk shape without an unchecked `as`.
  */
@@ -248,8 +252,8 @@ const ONE_STEP_WORKFLOW_DEFINITION = {
       kind: "step",
       id: STEP_ID,
       agent: {
-        id: "warm-agent",
-        systemPrompt: "warm agent",
+        id: "step-agent",
+        systemPrompt: "step agent",
         toolFactories: [],
         capabilities: [],
         inference: { sources: [{ provider: "anthropic", model: "stub" }] },
@@ -309,8 +313,10 @@ function buildStorageAwareSpyAgentFactory(): {
     env: EnvReq,
   ) => Promise<Agent>;
   builds: () => number;
+  replies: () => string[];
 } {
   let builds = 0;
+  const replies: string[] = [];
   const agentFactory = async <EnvReq extends BaseEnv>(
     _def: AgentDefinition<EnvReq>,
     env: EnvReq,
@@ -343,6 +349,7 @@ function buildStorageAwareSpyAgentFactory(): {
           )
           .join("|");
         const reply = `reply:${transcript}`;
+        replies.push(reply);
         const assistant: ConversationTurn = {
           role: "assistant",
           content: [{ type: "text", text: reply }],
@@ -380,7 +387,7 @@ function buildStorageAwareSpyAgentFactory(): {
       async *stream() {
         // One inert event so the step-invoker's forwarder has something
         // to read; the loop ends only when `close()` resolves the
-        // stream, mirroring the 4.4 warm-agent round-trip spy.
+        // stream.
         yield stubStreamEvent();
         await streamEnded;
       },
@@ -405,12 +412,12 @@ function buildStorageAwareSpyAgentFactory(): {
       async readAt() {
         return [];
       },
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the warm spy path never reads blobReader
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the spy path never reads blobReader
       blobReader: {} as Agent["blobReader"],
     };
     return agent;
   };
-  return { agentFactory, builds: () => builds };
+  return { agentFactory, builds: () => builds, replies: () => [...replies] };
 }
 
 interface ChildHandles {
@@ -419,10 +426,11 @@ interface ChildHandles {
   childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
   runPromise: Promise<Awaited<ReturnType<typeof runWorkflowChild>>>;
   builds: () => number;
+  replies: () => string[];
 }
 
 describe("single-step conversation durability across respawn (Phase 4.5)", () => {
-  test("warm agent restores its conversation from the substrate after respawn", async () => {
+  test("each turn restores the step's conversation from the substrate, also after respawn", async () => {
     const baseDir = await fs.mkdtemp(
       path.join(os.tmpdir(), "conversation-durability-"),
     );
@@ -492,53 +500,70 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       );
 
     // Build a child against the shared substrate. Each call models one
-    // process lifetime: a fresh warm cache + a fresh durable-conversation
-    // registry (the registry lives in the child's address space and is
-    // empty on respawn -- the substrate is the durable mirror).
+    // process lifetime. No store outlives a turn: each turn opens the step's
+    // durable store for its invocation and restores it from the substrate.
     //
     // `localDataDir` is the root of the child's LOCAL conversation isogit
-    // store. It defaults to `baseDir` (an in-host recycle that keeps the
-    // local FS), but the respawn case points it at a FRESH dir to model a
-    // fresh-process / fresh-container respawn where the local store is
+    // stores. The respawn case points it at a FRESH dir to model a
+    // fresh-process / fresh-container respawn where the local stores are
     // GONE and the only surviving conversation state is in the shared
     // workflow-run substrate. That makes the substrate restore the SOLE
-    // possible source of continuity -- closing the hole where a surviving
-    // local store would mask a broken substrate restore.
+    // possible source of continuity.
     const startChild = (
       childKeyPair: KeyPair,
       localDataDir: string,
-    ): ChildHandles & {
-      registry: ReturnType<typeof createDurableConversationRegistry>;
-    } => {
+    ): ChildHandles => {
       const channelId = generateChannelId();
       const hmacKey = generateHmacKey();
       const supervisorToChild = createMemoryNdjsonStream();
       const childToSupervisor = createMemoryNdjsonStream();
       const eventStream = createMemoryFrameStream();
 
-      const registry = createDurableConversationRegistry({
-        dataDir: localDataDir,
-        workflowRunRepoId,
-        workflowRunRef: WORKFLOW_RUN_REF,
-        runId: DEPLOYMENT_ID,
-        substrate,
-        principal,
-        signer: conversationSigner,
-        mailboxAddress: "agent@example.com",
-      });
+      const { agentFactory, builds, replies } =
+        buildStorageAwareSpyAgentFactory();
 
-      const { agentFactory, builds } = buildStorageAwareSpyAgentFactory();
-
-      const buildEnv = async (): Promise<StepEnvBase> => {
-        const store = await registry.acquire(STEP_ID);
+      const buildEnv = async (req: StepInvokeRequest): Promise<StepBuild> => {
+        const { runId, stepId, attempt } = req.authzContext;
+        if (
+          runId === undefined ||
+          stepId === undefined ||
+          attempt === undefined
+        ) {
+          throw new Error("the runtime stamps every step invocation");
+        }
+        const store = await createDurableConversationStore({
+          localStoreDir: path.join(
+            localDataDir,
+            "step-state",
+            runId,
+            String(attempt),
+          ),
+          signer: conversationSigner,
+          substrate,
+          workflowRunRepoId,
+          workflowRunRef: WORKFLOW_RUN_REF,
+          principal,
+          runId: DEPLOYMENT_ID,
+          stepId: stepPlaceKey(req.place),
+          lifetime: {
+            invocation: { runId, stepId, attempt },
+          },
+          mailboxAddress: MAILBOX,
+        });
+        await store.restoreFromSubstrate();
         return {
-          sources: [STUB_SOURCE],
-          defaultSource: STUB_SOURCE.id,
-          storage: store.storage,
-          workdir: path.join(localDataDir, "workdir", channelId),
-          audit: store.storage,
-          directors: createDefaultDirectorRegistry(),
-          readCurrentMaterial: () => ({ secret: "test-secret" }),
+          env: {
+            sources: [STUB_SOURCE],
+            defaultSource: STUB_SOURCE.id,
+            storage: store.storage,
+            workdir: path.join(localDataDir, "workdir", runId),
+            audit: store.storage,
+            directors: createDefaultDirectorRegistry(),
+            readCurrentMaterial: () => ({ secret: "test-secret" }),
+          },
+          conversation: createStoreStepConversation(store, () =>
+            Promise.reject(new Error("the step replies by mail to no one")),
+          ),
         };
       };
 
@@ -546,28 +571,25 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         req,
         onEvent,
         authorize,
-        warmCache,
-        _sourcesRef,
+        _stepSources,
         _credentialWiring,
         mailPartReader,
-      ) =>
-        createWorkflowStepInvoker({
+      ) => {
+        return createWorkflowStepInvoker({
           workflowAuthorize: authorize,
           buildEnv,
           agentFactory,
           onEvent: (event) => onEvent(event),
           mailPartReader,
-          ...(warmCache !== undefined ? { warmCache } : {}),
-          onRunBoundary: async (key) => {
-            await registry.get(key).mirrorToSubstrate();
-          },
         })(req);
+      };
 
       const bindings: RunWorkflowChildBindings = {
         substrate,
         workflowRunRepoId,
         workflowRunRef: WORKFLOW_RUN_REF,
         principal,
+        topLevelRunId: DEPLOYMENT_ID,
         invokeStep,
         actionCredentials: () => unavailableActionCredentials,
         spawnChild: async () => createTerminalChildHandle("completed"),
@@ -628,7 +650,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         childToSupervisor,
         runPromise,
         builds,
-        registry,
+        replies,
       };
     };
 
@@ -667,8 +689,8 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     });
     await runEnded(child1, "run-2");
 
-    // The warm agent was built once across the two messages.
-    expect(child1.builds()).toBe(1);
+    // One build for each turn: no agent stays live between turns.
+    expect(child1.builds()).toBe(2);
 
     // The conversation was COMMITTED to the substrate in the step's state
     // directory (checkpoint + WAL), beside the run-event log. Reconstruct it
@@ -715,15 +737,6 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
       path.join(os.tmpdir(), "conversation-durability-respawn-"),
     );
 
-    // The fresh local store genuinely has no prior conversation on disk.
-    const freshLocalStoreDir = path.join(
-      freshLocalDataDir,
-      "agent-conversation-state",
-      workflowRunRepoId.id,
-      encodeURIComponent(STEP_ID),
-    );
-    expect(await dirExists(freshLocalStoreDir)).toBe(false);
-
     const child2 = startChild(await generateKeyPair(), freshLocalDataDir);
     await waitUntil(() => child2.childToSupervisor.flushed().length > 0);
 
@@ -738,9 +751,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     });
     await runEnded(child2, "run-3");
 
-    // The rebuilt warm agent was built fresh (cache was empty on
-    // respawn) -- there is no in-memory carry-over between the two child
-    // lifetimes.
+    // The respawned child built the step's agent once, for its one turn.
     expect(child2.builds()).toBe(1);
 
     // THE durability dividend, now proven LOAD-BEARING: the post-respawn
@@ -756,10 +767,10 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     const afterRespawn = await readSnapshotUserTexts(committedState);
     expect(afterRespawn).toEqual(["alpha", "bravo", "charlie"]);
 
-    // The restore wrote the prior conversation into the previously-empty
-    // fresh local store, confirming the restore path (not a surviving
-    // local store) is what reconstructed continuity.
-    expect(await dirExists(path.join(freshLocalStoreDir, ".git"))).toBe(true);
+    // The turn's store restored the prior conversation into the fresh local
+    // store, so the step's agent loaded it there: its reply names every
+    // earlier body.
+    expect(child2.replies()).toEqual(["reply:alpha|bravo|charlie"]);
 
     await child2.supervisorSender.send({
       type: "shutdown",
@@ -772,12 +783,3 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     await fs.rm(freshLocalDataDir, { recursive: true, force: true });
   });
 });
-
-async function dirExists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p);
-    return true;
-  } catch {
-    return false;
-  }
-}

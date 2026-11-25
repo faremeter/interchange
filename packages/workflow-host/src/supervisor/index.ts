@@ -7,7 +7,6 @@ export {
   type CancelRequestOpts,
   type DeliverCredentialsOpts,
   type DeliverSignalOpts,
-  type DeliverSourcesOpts,
   type DrainOpts,
   type StandbyOutcome,
   type StandbyRestore,

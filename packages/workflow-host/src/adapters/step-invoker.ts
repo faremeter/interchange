@@ -23,36 +23,23 @@
 //      `{ reply, turn }` so downstream consumers can either read the
 //      plain-text reply or walk the full assistant turn (tool calls,
 //      thinking blocks, etc.) without the step output dropping
-//      structure.
+//      structure. When the step sets `replyByMail` and the turn answers
+//      mail, send the reply by mail through the step's conversation
+//      before the turn returns.
 //   5. Tear down the agent (close + lock release) on every exit path,
 //      whether the step completed cleanly, the abort signal fired, or
-//      the underlying `agent.send` rejected, then hand the step's env to
-//      the caller's settle hook so the host can commit the step's durable
-//      state before the result is returned.
+//      the underlying `agent.send` rejected. After a turn that settled,
+//      settle the step's conversation, when `buildEnv` returned one, so the
+//      host can commit the step's durable state before the result is
+//      returned. A turn whose reply by mail was sent commits like any
+//      settled turn, and its record of the send on the connector thread
+//      commits with it.
 //
 // Abort handling: when `signal.aborted` fires mid-step, the adapter
 // closes the agent (which drains the send queue with
 // `AgentClosedError` and releases the workdir lock) and rejects the
 // step with a `DOMException("aborted", "AbortError")`. A pre-aborted
 // signal short-circuits without constructing an agent.
-//
-// Warm-keep mode (design §3b). When `opts.warmCache` is supplied the
-// step is the sole step of a long-lived single-step deployment: the
-// agent is built once on the first message, cached, and reused on every
-// subsequent message rather than torn down per send. The warm path
-// diverges from the per-step path at three points:
-//   - Construction: a cache hit reuses the warm agent (tools loaded,
-//     plugins live, LSP subprocess attached); only a miss builds one.
-//   - Abort: the step's abort signal is threaded into `agent.send` so a
-//     mid-conversation turn abort cancels just that turn -- the warm
-//     agent (and its LSP subprocess) stays alive and usable for the next
-//     message. The agent is NOT closed on abort; closing happens only at
-//     the run-loop's eviction points (shutdown/undeploy/recycle/drain
-//     teardown), which is the abort-one-turn vs teardown distinction.
-//   - Teardown: the `finally` does NOT close the agent and does NOT
-//     drain the event forwarder -- both span messages and are owned by
-//     the warm cache, torn down at eviction.
-// Multi-step steps pass no cache and keep instantiate-send-teardown.
 
 import {
   createAgent,
@@ -63,12 +50,16 @@ import {
   type SendOptions,
   type SendResult,
 } from "@intx/agent";
+import {
+  NoActiveConnectorThreadError,
+  sendConnectorReply,
+  type ReplySettlement,
+} from "@intx/harness";
 import { getLogger } from "@intx/log";
 import { createInboundMessage, extractAddrSpec, isMessageId } from "@intx/mime";
 import type { InferenceEvent } from "@intx/types/inference-events";
 import type {
   InboundMessage,
-  InferenceSource,
   Mail,
   MailPartReader,
   MessageAttachment,
@@ -83,12 +74,8 @@ import {
   type WorkflowAuthorizeFn,
 } from "@intx/workflow";
 
-import type {
-  WarmAgentCache,
-  WarmEventSinkRef,
-  WarmReplyDrive,
-} from "../child/warm-agent-cache";
 import { runBodyThenCleanup } from "../run-body-then-cleanup";
+import type { StepConversation } from "./step-conversation";
 
 const logger = getLogger(["workflow-host", "step-invoker"]);
 
@@ -103,6 +90,18 @@ const logger = getLogger(["workflow-host", "step-invoker"]);
  * without a synchronous-only contract.
  */
 export type StepEnvBase = Omit<BaseEnv, "authorize">;
+
+/**
+ * What `buildEnv` returns for one step invocation: the step's env, and the
+ * connector conversation over the durable store the env's `storage` is
+ * built over. The adapter settles `conversation` after each turn that
+ * settled. It is `undefined` when the step has no durable conversation
+ * state.
+ */
+export type StepBuild = {
+  env: StepEnvBase;
+  conversation: StepConversation | undefined;
+};
 
 export interface WorkflowStepInvokerOpts {
   /**
@@ -121,8 +120,34 @@ export interface WorkflowStepInvokerOpts {
    * The callback receives the `StepInvokeRequest` so it can derive
    * per-step paths (workdir under the run id, per-attempt storage
    * roots) from the workflow runtime's vocabulary.
+   *
+   * The adapter drives the turn through the returned conversation: the turn
+   * start, the mail seed, the approval park, and the reply of a step that sets
+   * `replyByMail`. After a turn that settled, with output or on a park, it
+   * awaits the conversation's `settle` once the agent has closed, and returns
+   * the step's result only once it resolves. The sidecar's `settle` commits
+   * the step's durable state, so every settled turn is durable before the run
+   * records it and a replacement host resumes the step where that turn left
+   * it. It runs whether or not closing the agent succeeded: the agent's own
+   * close waits for its in-flight commits before the tool disposers that can
+   * fail it run. A turn that threw, also on an abort, is not settled, so it
+   * commits nothing, and the step's next invocation, a retry or the next run
+   * of its place, continues from the last committed turn and not from the
+   * failed turn's partial work. A turn whose reply by mail was sent commits
+   * like any settled turn, and its record of the send on the connector
+   * thread commits with it. The step is not retried after the send, because
+   * a retry would send a second, different reply. If that commit fails, the
+   * step fails without a retry, and the next invocation does not see the
+   * turn: not its inbound mail and not its reply. The thread continues when
+   * the recipient answers, because their References name the thread. When
+   * the thread cannot take the send, which only a broken connector state
+   * causes, the turn commits without the thread advance and the step fails
+   * without a retry. A settle failure rejects the step with a
+   * `StepOutcomeCommitError`, which the runtime neither retries nor routes
+   * because the turn's work already happened. A close that fails after a
+   * turn that did not fail rejects the step the same way.
    */
-  buildEnv: (req: StepInvokeRequest) => Promise<StepEnvBase>;
+  buildEnv: (req: StepInvokeRequest) => Promise<StepBuild>;
   /**
    * Optional agent factory override. Defaults to `@intx/agent`'s
    * `createAgent`. Tests inject a stub that returns a deterministic
@@ -153,138 +178,11 @@ export interface WorkflowStepInvokerOpts {
    */
   onEvent?: (event: InferenceEvent) => void;
   /**
-   * Warm-agent cache (design §3b). When supplied, the adapter runs in
-   * warm-keep mode: the step's agent is built once on the first
-   * invocation, cached under the step's identity, and reused on every
-   * subsequent invocation instead of being torn down per send. The
-   * agent's `close()` (the wrapped teardown that kills the LSP
-   * subprocess) runs only when the run-loop that owns the cache evicts
-   * it -- not in this adapter's `finally`.
-   *
-   * Supplying a cache is the explicit warm-keep signal: the run-loop
-   * builds and threads a cache only for a single-step deployment's
-   * long-lived agent. Multi-step steps omit it and keep
-   * instantiate-send-teardown, so a multi-step agent is never warm-kept.
-   */
-  warmCache?: WarmAgentCache;
-  /**
-   * Live per-step inference-source table the run-loop mutates in place on a
-   * rotation. Supplied only on the warm path: after building and storing the
-   * warm agent, the adapter re-applies the current table so a rotation that
-   * landed during the (async) first build -- which the empty-cache
-   * `applySources` no-op could not reach, and which the in-flight build had
-   * already captured the prior sources for -- is not lost for the warm
-   * agent's life.
-   */
-  sourcesRef?: { current: Record<string, InferenceSource[]> };
-  /**
-   * Run-boundary hook for the warm path (design §3c durability). When
-   * supplied, the adapter awaits it once per message, after the agent's
-   * send settles (whether it completed, aborted, or rejected). The sidecar
-   * wires this to flush the warm agent's conversation snapshot to the
-   * durable workflow-run substrate, so the conversation survives a child
-   * respawn between this message and the next. Awaited (not
-   * fire-and-forget) so a respawn landing immediately after the reply
-   * cannot lose this message's turns. A flush failure rejects the step
-   * with a `StepOutcomeCommitError`, which the runtime neither retries nor
-   * routes, unless the step already failed, in which case it is logged.
-   *
-   * The `key` is the step identity (`authzContext.stepId`), the same key
-   * the warm cache uses, so the hook resolves the right per-agent
-   * durable store. The cold path does not call it; `onColdStepSettled`
-   * commits a cold step's state instead.
-   */
-  onRunBoundary?: (key: string) => Promise<void>;
-  /**
-   * Settle hook for the cold path. When supplied, the adapter awaits it after
-   * each cold invocation's agent has closed, handing it the env `buildEnv`
-   * returned for that invocation, and returns the step's result only once it
-   * resolves. The sidecar wires this to commit the step's durable state, so
-   * every turn is durable before the run records it and a replacement host
-   * resumes the step where that turn left it. It runs whether the send
-   * completed, suspended, aborted, or rejected, and whether or not closing
-   * the agent succeeded: the agent's own close waits for its in-flight
-   * commits before the tool disposers that can fail it run. A failure rejects
-   * the step with a `StepOutcomeCommitError`, which the runtime neither
-   * retries nor routes because the turn's work already happened, unless the
-   * step already failed, in which case it is logged. A close that fails after
-   * a turn that did not fail rejects the step the same way. The warm path does
-   * not call it; its run-boundary hook commits the warm agent's state instead.
-   */
-  onColdStepSettled?: (env: StepEnvBase) => Promise<void>;
-  /**
-   * Seed hook for the warm path (design §3c threading). When supplied, the
-   * adapter calls it before `agent.send` on every message whose delivered
-   * input is a mail-derived `InboundMessage`, passing the step identity
-   * (`authzContext.stepId`, the same key `onRunBoundary` and the warm cache
-   * use) and that message. The sidecar wires this to the warm agent's
-   * durable conversation store, which routes the message onto the connector
-   * thread (seeding threadRoot / lastMessageId / replyTo) so the reply path
-   * can compose a threaded reply. Awaited before the send so the thread
-   * state is committed and durably flushed before the reply is produced; a
-   * seed failure surfaces by rejecting the step.
-   *
-   * Only mail-derived inbound messages seed: an approval-resume inbound
-   * carries a synthetic sender and a correlation id, and a synthesized
-   * string input is not a message, so neither advances the connector
-   * thread. Omitted on the cold path, which has no durable connector state
-   * to seed.
-   */
-  seedInbound?: (key: string, message: InboundMessage) => Promise<void>;
-  /**
-   * Turn-start hook for the warm path. When supplied, the adapter awaits it
-   * with the step identity at the start of every warm turn, before
-   * `seedInbound`. `turn.resume` is the correlation id of the gate an
-   * `"approval"` resume resumes, and is absent on every other turn. The
-   * sidecar wires this to the durable store's `beginTurn`: an approval
-   * resume takes the reply target its parked turn filed, and any other
-   * turn clears the reply target a passthrough seed set, so a turn that
-   * seeds no mail does not reply to an earlier turn's sender. Omitted on
-   * the cold path, which has no connector thread.
-   */
-  beginTurn?: (key: string, turn: { resume?: string }) => Promise<void>;
-  /**
-   * Park hook for the warm path. When supplied, the adapter awaits it with
-   * the step identity and the gate's correlation id after a send that
-   * settles as `"suspended"`, before `onRunBoundary`. The sidecar wires this
-   * to the durable store's `parkTurn`, which files the turn's reply target
-   * under that id so the run-boundary mirror persists it and the approval
-   * resume replies to the same target. A park failure rejects the step.
-   * Omitted on the cold path, which has no connector thread.
-   */
-  parkTurn?: (key: string, correlationId: string) => Promise<void>;
-  /**
-   * Connector reply-drain hook for the warm path (design §3c). When supplied,
-   * the adapter invokes it ONCE -- at the warm agent's first-message build --
-   * with the step identity (`authzContext.stepId`, the same key the warm
-   * cache, seed, and run-boundary hooks use) and the agent's lifetime event
-   * stream. The sidecar wires this to the shared connector reply drain: on
-   * every `connector.reply` the agent emits, the drain composes a threaded
-   * reply from the durable store's connector thread and sends it through the
-   * supervisor-backed outbound bridge, then advances the thread from the send
-   * receipt.
-   *
-   * The returned drive handle exposes the drain's lifetime `done` promise --
-   * which settles when the agent's stream ends at eviction, folded into the
-   * warm entry's event-forward promise so the cache drains the reply loop
-   * alongside the observability forwarder -- plus the per-turn settle barrier
-   * (`replySeq` / `waitForReplyAfter`) the warm step gates each reply turn on,
-   * so the run parks only after the reply is durably sent.
-   *
-   * Omitted on the cold path (a torn-down per-step agent has no cross-message
-   * connector thread) and whenever the deployment is not warm-kept.
-   */
-  driveReplies?: (
-    key: string,
-    stream: ReturnType<Agent["stream"]>,
-  ) => WarmReplyDrive;
-  /**
    * Reader for the run's inbound-mail parts. When the step input is a decoded
    * `Mail`, the adapter resolves each part's `ref` to its committed bytes
    * through this reader and delivers a real `InboundMessage` (text and/or
-   * attachments) to `agent.send`. Supplied by the run child for the top-level
-   * run's steps; absent for body steps, where a part whose bytes must be read
-   * is refused loudly rather than silently flattened to text.
+   * attachments) to `agent.send`. When it is absent, a part whose bytes must
+   * be read is refused loudly rather than silently flattened to text.
    */
   mailPartReader?: MailPartReader;
 }
@@ -316,24 +214,10 @@ async function invokeStep(
     throw abortError(req.signal);
   }
 
-  if (opts.warmCache !== undefined) {
-    return invokeWarmStep(opts, opts.warmCache, agentFactory, req);
-  }
-  return invokeColdStep(opts, agentFactory, req);
-}
-
-/**
- * Instantiate-send-teardown path (multi-step steps, and any deployment
- * without a warm cache). The agent is built, sent one message, and torn
- * down on every exit path; the result returns only once the settle hook,
- * when supplied, has resolved.
- */
-async function invokeColdStep(
-  opts: WorkflowStepInvokerOpts,
-  agentFactory: NonNullable<WorkflowStepInvokerOpts["agentFactory"]>,
-  req: StepInvokeRequest,
-): Promise<StepInvokeResult> {
-  const { agent, env } = await buildStepAgent(opts, agentFactory, req);
+  // The agent is built, sent one message, and torn down on every exit
+  // path; the result returns only once the step's conversation, when
+  // `buildEnv` returned one, has settled.
+  const { agent, conversation } = await buildStepAgent(opts, agentFactory, req);
 
   // Subscribe the agent's event stream BEFORE `agent.send` so the
   // inbound `inference.start` and the per-turn / tool-call events are
@@ -361,17 +245,42 @@ async function invokeColdStep(
   // path -- `agent.close()` ends the forwarder's for-await loop, and it
   // never rejects (subscribeAgentEvents swallows), so awaiting it in the
   // cleanup cannot mask either error.
+  //
+  // The turn sends its reply, when it has one to send, in the body, before
+  // the close and the settle. A crash after the send and before the settle
+  // commits leaves the turn uncommitted, and the step fails without
+  // running again, so a step's reply is sent at most once.
+  //
+  // Only a turn that settled, with output or on a park, is committed. A
+  // turn that throws commits nothing, so the next invocation of the step,
+  // a retry or the next run of its place, continues from the last
+  // committed turn and not from the failed turn's partial work. A turn
+  // whose reply by mail was sent commits like any settled turn, and its
+  // record of the send on the connector thread commits with it. The step
+  // is not retried after the send, because a retry would send a second,
+  // different reply. If that commit fails, the step fails without a retry,
+  // and the next invocation does not see the turn: not its inbound mail and
+  // not its reply. The thread continues when the recipient answers, because
+  // their References name the thread. When the connector thread refuses
+  // the send (see `replyFailureError`), the reply still went out, so the
+  // turn commits without the thread advance and the step fails.
+  let turnSettled = false;
   return runBodyThenCleanup(
-    async () =>
-      stepResultFromSend(
-        await sendWithAbort(agent, req, {
-          closeOnAbort: true,
+    async () => {
+      try {
+        const result = await runConversationTurn(agent, req, {
+          conversation,
           mailPartReader: opts.mailPartReader,
-          // Cold-path per-step agents have no durable connector state; the
-          // warm path is the only connector-seeding path.
-          seedInbound: undefined,
-        }),
-      ),
+        });
+        turnSettled = true;
+        return result;
+      } catch (err) {
+        // In a turn, only a reply that was sent and that the connector
+        // thread then refused throws this error (see `replyFailureError`).
+        if (err instanceof StepOutcomeCommitError) turnSettled = true;
+        throw err;
+      }
+    },
     async () => {
       let closeFailure: { cause: unknown } | undefined;
       try {
@@ -381,9 +290,9 @@ async function invokeColdStep(
       } finally {
         await eventForward;
       }
-      if (opts.onColdStepSettled !== undefined) {
+      if (conversation !== undefined && turnSettled) {
         try {
-          await opts.onColdStepSettled(env);
+          await conversation.settle();
         } catch (cause) {
           if (closeFailure !== undefined) {
             logger.error`step invoker: ${describeStep(req)}: closing the step's agent failed before its settle failed: ${closeFailure.cause instanceof Error ? closeFailure.cause.message : String(closeFailure.cause)}`;
@@ -397,7 +306,7 @@ async function invokeColdStep(
       }
     },
     (cause) =>
-      logger.error`step invoker: ${describeStep(req)}: closing or settling the step failed while unwinding a step error; surfacing the step error, cleanup failure: ${cause instanceof Error ? cause.message : String(cause)}`,
+      logger.error`step invoker: ${describeStep(req)}: closing the step's agent or committing its turn failed while unwinding a step error; surfacing the step error, cleanup failure: ${cause instanceof Error ? cause.message : String(cause)}`,
   );
 }
 
@@ -407,232 +316,144 @@ function describeStep(req: StepInvokeRequest): string {
 }
 
 /**
- * The reply drain reports this cause through the structural `WarmReplyDrive`,
- * so the harness error arrives as a value whose class is not part of that
- * contract. Match it by name.
+ * The error a failed reply settlement fails the turn with. A reply that
+ * failed before or during its send did not go out, so the turn fails with a
+ * plain `Error` that the runtime can retry. A reply whose send acked but whose
+ * connector thread advance failed already went out, and a retry would send it
+ * again, so the turn fails with a `StepOutcomeCommitError`, which the runtime
+ * neither retries nor routes. The advance fails only when the connector
+ * router refuses it, which only a broken connector state causes.
  */
-function describeReplyFailure(cause: unknown): string {
-  if (cause instanceof Error && cause.name === "NoActiveConnectorThreadError") {
+function replyFailureError(
+  settlement: Extract<ReplySettlement, { ok: false }>,
+): Error {
+  const { phase, cause } = settlement;
+  switch (phase) {
+    case "compose":
+      return new Error(
+        `workflow step invoker: ${describeComposeFailure(cause)}; failing the turn`,
+        { cause },
+      );
+    case "send":
+      return new Error(
+        "workflow step invoker: the step's auto-reply send failed; failing the turn",
+        { cause },
+      );
+    case "persist":
+      return new StepOutcomeCommitError(
+        new Error(
+          "the step's auto-reply was sent, but advancing the connector " +
+            `thread with it failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          { cause },
+        ),
+        "commit",
+      );
+  }
+}
+
+function describeComposeFailure(cause: unknown): string {
+  if (cause instanceof NoActiveConnectorThreadError) {
     return (
-      "the warm agent has no active connector thread, so its auto-reply " +
+      "the step has no active connector thread, so its auto-reply " +
       "names nobody to reply to and was never sent"
     );
   }
-  return "the warm agent's auto-reply send failed";
+  return "the step's auto-reply was never sent";
 }
 
 /**
- * Warm-keep path (design §3b). The agent is built once on the first
- * invocation and cached under the step's identity; every later
- * invocation reuses it. The cache owns the agent's lifetime: this
- * adapter neither closes the agent nor drains its event forwarder on
- * exit -- both span messages and are torn down by the run-loop at an
- * eviction point.
+ * Drive one turn of a step's agent through its connector conversation, when
+ * the step has one, and return the step result.
  *
- * The agent's single lifetime stream is forwarded through a mutable
- * per-entry event sink the cache holds. This invocation points the sink
- * at THIS step's `onEvent` before `agent.send` and clears it after, so
- * each run's events reach its own channel and a stray event between
- * messages is dropped rather than delivered to a torn-down channel.
- *
- * A mid-conversation abort cancels only the in-flight turn (the abort
- * signal is threaded into `agent.send`); the warm agent and its LSP
- * subprocess survive for the next message. The agent is closed only at
- * eviction -- the abort-one-turn vs teardown distinction.
+ * The turn begins a connector turn (taking the parked turn mode on an
+ * `"approval"` resume), seeds a mail-derived inbound message onto the
+ * connector thread, sends, and on a `"suspended"` send files the turn mode
+ * under the gate. A reply turn of a step that sets `replyByMail`, on a turn
+ * that answers mail, sends its reply through the conversation and returns
+ * only once the send settles. Any other reply is only step output. A failed
+ * settlement rejects the turn with the error `replyFailureError` picks for
+ * its phase.
  */
-async function invokeWarmStep(
-  opts: WorkflowStepInvokerOpts,
-  warmCache: WarmAgentCache,
-  agentFactory: NonNullable<WorkflowStepInvokerOpts["agentFactory"]>,
+async function runConversationTurn(
+  agent: Agent,
   req: StepInvokeRequest,
+  turn: {
+    conversation: StepConversation | undefined;
+    mailPartReader: MailPartReader | undefined;
+  },
 ): Promise<StepInvokeResult> {
-  const key = req.authzContext.stepId;
-  if (key === undefined) {
-    // The warm cache is keyed by the step's identity; the workflow
-    // runtime threads `stepId` through every step's `AuthorizeContext`,
-    // so an absent id is a runtime-wiring bug. Fail loudly rather than
-    // warm-keep agents under an ambiguous key that would collide
-    // distinct steps onto one cached agent.
-    throw new Error(
-      "workflow step invoker: warm-keep requires authzContext.stepId; the runtime must thread the step id through every invocation",
+  const { conversation } = turn;
+  if (conversation !== undefined) {
+    await conversation.beginTurn(
+      req.resume !== undefined ? { resume: req.resume.correlationId } : {},
     );
   }
-  let agent = warmCache.acquire(key);
-  if (agent === null) {
-    // Lazy first-message build. The agent's stream is consumed once,
-    // for its whole life, through the entry's mutable sink ref; the
-    // forwarder loop ends only when the agent closes at eviction.
-    agent = (await buildStepAgent(opts, agentFactory, req)).agent;
-    const eventSinkRef: WarmEventSinkRef = { current: null };
-    const eventForward = subscribeAgentEvents(agent, (event) => {
-      const sink = eventSinkRef.current;
-      if (sink !== null) sink(event);
-    });
-    // Establish the connector reply drain over the agent's lifetime stream
-    // (design §3c). A second independent consumer of the agent's stream
-    // alongside the observability forwarder: on each `connector.reply` it
-    // composes a threaded reply from the durable connector thread and sends
-    // it through the outbound bridge. Fold its lifetime `done` promise into
-    // the stored forwarder promise so the warm cache drains BOTH when it
-    // closes the agent at eviction -- the cache awaits one promise per entry,
-    // so a caller that wants the reply loop torn down with the agent combines
-    // the two here. The drive handle's per-turn barrier is stored on the entry
-    // so every message (not just this first build) can gate its reply turn on
-    // a durable send. Present only on the warm mail path; a warm deployment
-    // with no durable connector state omits it.
-    const replyDrive =
-      opts.driveReplies !== undefined
-        ? opts.driveReplies(key, agent.stream())
-        : null;
-    const lifetimeForward =
-      replyDrive !== null
-        ? Promise.all([eventForward, replyDrive.done]).then(() => undefined)
-        : eventForward;
-    warmCache.store(key, agent, eventSinkRef, lifetimeForward, replyDrive);
-    // Re-apply the live source table to the just-built agent. A rotation
-    // that arrived during the (async) build hit the still-empty cache as a
-    // no-op `applySources` while the build had already captured the prior
-    // sources; now that the entry exists, this applies any such rotation so
-    // it is not lost for the warm agent's life. No-op when the table is
-    // unchanged. The wire boundary guarantees element 0 is the default.
-    const live = opts.sourcesRef?.current[key];
-    const head = live?.[0];
-    if (live !== undefined && head !== undefined) {
-      warmCache.applySources(live, head.id);
+  const sendResult = await sendWithAbort(agent, req, {
+    mailPartReader: turn.mailPartReader,
+    seedInbound:
+      conversation !== undefined
+        ? (message) => conversation.seedInbound(message)
+        : undefined,
+  });
+  const stepResult = stepResultFromSend(sendResult);
+  if (conversation !== undefined && sendResult.type === "suspended") {
+    await conversation.parkTurn(sendResult.correlationId);
+  }
+  // Send this turn's reply before the step returns, so the run parks -- and
+  // the supervisor consumes the inbound mail -- only after the reply reaches
+  // the transport. A suspended turn has no reply to send. The send does not
+  // take the abort signal: once `agent.send` resolved with a reply, the
+  // reactor committed the reply turn. Fail the turn rather than return a
+  // step result that claims a reply that did not settle; `replyFailureError`
+  // decides whether a retry is safe.
+  if (sendResult.type === "reply" && req.replyByMail) {
+    if (conversation !== undefined && conversation.turnAnswersMail()) {
+      const settlement = await sendConnectorReply(
+        conversation,
+        sendResult.reply,
+      );
+      if (!settlement.ok) throw replyFailureError(settlement);
+    } else {
+      logger.debug`step invoker: ${describeStep(req)}: the step sets replyByMail, but the turn answers no mail, so no reply goes out by mail`;
     }
   }
-
-  if (opts.onEvent !== undefined) {
-    warmCache.setEventSink(key, opts.onEvent);
-  }
-  // Bind the seed hook to this step's identity so it resolves the same
-  // per-agent durable store the warm cache and run-boundary flush use.
-  const seedInbound = opts.seedInbound;
-  // Snapshot the reply barrier BEFORE the send. The agent resolves
-  // `agent.send` in the same synchronous step it pushes `connector.reply`
-  // onto the drain's stream, so the reply is not yet enqueued when the send
-  // resolves -- a snapshot taken after the send would miss this turn's reply.
-  const replyDrive = warmCache.getReplyDrive(key);
-  const replySeqBeforeSend = replyDrive !== null ? replyDrive.replySeq() : 0;
-  const beginTurn = opts.beginTurn;
-  const parkTurn = opts.parkTurn;
-  return runBodyThenCleanup(
-    async () => {
-      if (beginTurn !== undefined) {
-        await beginTurn(
-          key,
-          req.resume?.kind === "approval"
-            ? { resume: req.resume.correlationId }
-            : {},
-        );
-      }
-      const sendResult = await sendWithAbort(agent, req, {
-        closeOnAbort: false,
-        mailPartReader: opts.mailPartReader,
-        seedInbound:
-          seedInbound !== undefined
-            ? (message) => seedInbound(key, message)
-            : undefined,
-      });
-      const stepResult = stepResultFromSend(sendResult);
-      if (parkTurn !== undefined && sendResult.type === "suspended") {
-        await parkTurn(key, sendResult.correlationId);
-      }
-      // Gate the step's return on THIS turn's reply being durably sent, so the
-      // run parks -- and the supervisor consumes the inbound mail -- only after
-      // the auto-reply reaches the transport. Only a reply turn produces a
-      // `connector.reply`; a suspended/gate turn produces none, so it must NOT
-      // await the barrier (that reply never arrives and the wait would hang).
-      // Fail the turn rather than return a step result claiming a reply that
-      // never went out. The mail is still consumed, because a replay would fail
-      // to compose the same reply again. The barrier counts replies, so it
-      // waits on this turn's reply only if no reply of another turn (such as
-      // a resume after a gate timeout) settles after the snapshot.
-      if (replyDrive !== null && sendResult.type === "reply") {
-        const settlement =
-          await replyDrive.waitForReplyAfter(replySeqBeforeSend);
-        if (!settlement.ok) {
-          throw new Error(
-            `workflow step invoker: ${describeReplyFailure(settlement.cause)}; ` +
-              "failing the turn, so the inbound mail is consumed without a " +
-              "reply rather than replayed",
-            { cause: settlement.cause },
-          );
-        }
-      }
-      return stepResult;
-    },
-    async () => {
-      // Do NOT close the agent or drain its forwarder: both span
-      // messages and are owned by the warm cache, torn down at eviction.
-      // Clear the per-message sink so an event emitted between this send
-      // and the next is dropped rather than delivered to this run's
-      // torn-down per-run channel.
-      warmCache.clearEventSink(key);
-      // Run-boundary durability flush (design §3c). Mirror the warm
-      // agent's conversation snapshot to the durable substrate once per
-      // message, after the send settles, so a respawn before the next
-      // message resumes from this message's turns. Awaited so the
-      // durability write completes (or surfaces its failure) before the
-      // step result is observed.
-      if (opts.onRunBoundary !== undefined) {
-        try {
-          await opts.onRunBoundary(key);
-        } catch (cause) {
-          // The turn's work already happened, so a retry would repeat it.
-          throw new StepOutcomeCommitError(cause, "commit");
-        }
-      }
-    },
-    (cause) =>
-      logger.error`step invoker: ${describeStep(req)}: mirroring the warm step's state failed while unwinding a step error; surfacing the step error, mirror failure: ${cause instanceof Error ? cause.message : String(cause)}`,
-  );
+  return stepResult;
 }
 
 /**
  * Build the per-step agent: assemble the `BaseEnv`, wrap the
  * workflow-typed authorize into the agent harness's `AuthorizeFn`, and
- * instantiate the agent through the factory. Shared by the cold path and
- * the warm path's first-message build. Returns the agent with the env
- * `buildEnv` produced, which the cold path hands to its settle hook.
+ * instantiate the agent through the factory. Returns the agent with the
+ * conversation `buildEnv` returned, which the caller settles.
  */
 async function buildStepAgent(
   opts: WorkflowStepInvokerOpts,
   agentFactory: NonNullable<WorkflowStepInvokerOpts["agentFactory"]>,
   req: StepInvokeRequest,
-): Promise<{ agent: Agent; env: StepEnvBase }> {
-  const envBase = await opts.buildEnv(req);
+): Promise<{ agent: Agent; conversation: StepConversation | undefined }> {
+  const { env: envBase, conversation } = await opts.buildEnv(req);
   const authorize = wrapAuthorize(opts.workflowAuthorize, req.authzContext);
   const env: BaseEnv = { ...envBase, authorize };
-  return { agent: await agentFactory(req.agent, env), env: envBase };
+  return { agent: await agentFactory(req.agent, env), conversation };
 }
 
 /**
  * Drive one `agent.send`, racing it against the step's abort signal.
  *
- * The message sent depends on `req.resume` and its kind. A first invocation
- * sends the synthesized `req.input` content. An `"approval"` resume sends the
- * full correlated `InboundMessage` built from `req.resume`, whose
+ * The message sent depends on `req.resume`. A first invocation sends the
+ * synthesized `req.input` content. An approval resume sends the full
+ * correlated `InboundMessage` built from `req.resume`, whose
  * `headers.interchangeCorrelationId` is correlated by the reactor with the
- * rehydrated gate and resumes the parked cycle --
- * no second inference cycle. An `"input"` resume sends the decision as plain
- * synthesized content, exactly like a first invocation: it is the step's next
- * turn, with no gate to correlate. Because every path goes through
- * `agent.send`, the returned `SendResult` carries the reactor's full settle
- * arm set: a cycle that parks on a gate settles as `"suspended"` regardless
- * of how the turn was delivered.
+ * rehydrated gate and resumes the parked cycle -- no second inference cycle.
+ * Because every path goes through `agent.send`, the returned `SendResult`
+ * carries the reactor's full settle arm set: a cycle that parks on a gate
+ * settles as `"suspended"` regardless of how the turn was delivered.
  *
- * `closeOnAbort` selects the abort semantics:
- *   - `true` (cold path): the in-flight send is left to settle via
- *     `agent.close()` in the caller's `finally`, which aborts the
- *     reactor and drains the send queue with `AgentClosedError`. We do
- *     not thread the signal into `agent.send`; the abort attribution is
- *     the `DOMException` rejected here, and close tears the agent down.
- *   - `false` (warm path): the abort signal is threaded into
- *     `agent.send`, so a mid-turn abort cancels only this turn. The warm
- *     agent stays alive for the next message; no `agent.close()` runs.
- *
- * In both modes a pre-send abort (the signal already aborted when the
+ * On an abort, the in-flight send is left to settle via `agent.close()` in
+ * the caller's cleanup, which aborts the reactor and drains the send queue
+ * with `AgentClosedError`. The signal does not go into `agent.send`; the
+ * abort attribution is the `DOMException` rejected here, and close tears the
+ * agent down. A pre-send abort (the signal already aborted when the
  * executor runs) and a mid-send abort reject with the abort error so the
  * step's abort attribution wins regardless of which side settles first.
  */
@@ -640,15 +461,14 @@ async function sendWithAbort(
   agent: Agent,
   req: StepInvokeRequest,
   cfg: {
-    closeOnAbort: boolean;
     mailPartReader: MailPartReader | undefined;
     seedInbound: ((message: InboundMessage) => Promise<void>) | undefined;
   },
 ): Promise<SendResult> {
   // Re-check the abort signal before building the message. `buildEnv` and
-  // `agentFactory` (or a warm-cache acquire) yield to the microtask queue, and
-  // the caller can fire `signal.abort()` in between. Building the message can
-  // itself yield (attachment resolution), so guard here too.
+  // `agentFactory` yield to the microtask queue, and the caller can fire
+  // `signal.abort()` in between. Building the message can itself yield
+  // (attachment resolution), so guard here too.
   if (req.signal.aborted) throw abortError(req.signal);
   // Resolve the step input into the value `agent.send` receives. A build
   // failure (a bad resume shape, an unresolvable attachment) rejects the step.
@@ -656,8 +476,8 @@ async function sendWithAbort(
     req,
     cfg.mailPartReader,
   );
-  // Seed the warm agent's connector thread from a mail-derived inbound before
-  // the send, so the reply path has thread state (design §3c). Only the
+  // Seed the step's connector thread from a mail-derived inbound before the
+  // send, so the reply path has thread state (design §3c). Only the
   // mail branch surfaces `mailInbound`; an approval-resume inbound and a
   // synthesized string do not advance the thread. The seed is awaited so its
   // durable flush completes (or surfaces) before the reply is produced; a
@@ -676,18 +496,15 @@ async function sendWithAbort(
         return;
       }
       const onAbort = (): void => {
-        // The abort signal racing the send. On the cold path the
-        // caller's `finally` close aborts the reactor and the
-        // in-flight `agent.send` rejects shortly after; on the warm
-        // path the signal threaded into `agent.send` rejects the
-        // send. Either way we reject here so the abort attribution
-        // wins regardless of which side settles first.
+        // The abort signal racing the send. The caller's cleanup close
+        // aborts the reactor and the in-flight `agent.send` rejects
+        // shortly after; reject here so the abort attribution wins
+        // regardless of which side settles first.
         reject(abortError(req.signal));
       };
       abortListener = onAbort;
       req.signal.addEventListener("abort", onAbort, { once: true });
       const sendOpts: SendOptions = {
-        ...(cfg.closeOnAbort ? {} : { signal: req.signal }),
         ...(req.inference !== undefined ? { inference: req.inference } : {}),
       };
       agent.send(message, sendOpts).then(resolve, (cause: unknown) => {
@@ -775,10 +592,8 @@ function wrapAuthorize(
  */
 function stepResultFromSend(result: SendResult): StepInvokeResult {
   if (result.type === "suspended") {
-    // The reactor parks only on a tool/authz gate -- an APPROVAL. It never
-    // parks awaiting the next mail (that "input" park is the workflow-host's
-    // decision to re-arm a conversational step, not a reactor outcome), so a
-    // suspended `SendResult` is always an approval and MUST carry a snapshot.
+    // The reactor parks only on a tool/authz gate -- an APPROVAL -- so a
+    // suspended `SendResult` MUST carry a snapshot.
     // A snapshot-less suspend (e.g. a director `caps.suspend` wired with no
     // tool definitions) is not a supported approval; classify the failure here
     // at the producer rather than emitting an ambiguous suspend that the
@@ -803,20 +618,19 @@ function stepResultFromSend(result: SendResult): StepInvokeResult {
 
 /**
  * Resolve the step input into the value `agent.send` receives. The delivery
- * depends on the resume kind and the input shape:
+ * depends on the resume and the input shape:
  *
- * - `"approval"` resume: the reactor is parked mid-turn on a tool/authz gate.
+ * - An approval resume: the reactor is parked mid-turn on a tool/authz gate.
  *   Build the full `InboundMessage` stamped with `resume.correlationId` so the
  *   header reaches the reactor, which correlates it with the rehydrated
  *   gate. The object form is load-bearing -- a plain string would drop the
  *   correlation id and the resumed cycle would never match. An approval
  *   decision is never a mail-derived `Mail`, so it stays on this branch.
- * - A mail-derived `Mail` (first invocation or `"input"` resume): project its
- *   parts into a real `InboundMessage` (text and/or attachments), resolving
- *   each non-text part's bytes through the reader.
- * - Anything else (a first invocation or `"input"` resume carrying an
- *   arbitrary step value): synthesize plain text; `agent.send` stamps its own
- *   synthetic addressing.
+ * - A mail-derived `Mail` on a first invocation: project its parts into a
+ *   real `InboundMessage` (text and/or attachments), resolving each non-text
+ *   part's bytes through the reader.
+ * - Anything else (a first invocation carrying an arbitrary step value):
+ *   synthesize plain text; `agent.send` stamps its own synthetic addressing.
  */
 async function buildSendMessage(
   req: StepInvokeRequest,
@@ -825,7 +639,7 @@ async function buildSendMessage(
   message: string | InboundMessage;
   mailInbound: InboundMessage | null;
 }> {
-  if (req.resume !== undefined && req.resume.kind !== "input") {
+  if (req.resume !== undefined) {
     return {
       message: createInboundMessage({
         from: "signal@local",
@@ -837,16 +651,18 @@ async function buildSendMessage(
       mailInbound: null,
     };
   }
-  const rawInput = req.resume === undefined ? req.input : req.resume.decision;
   // A step whose input is a decoded `Mail` is projected into the agent's
   // inbound message; the strict `isMail` guard keeps an arbitrary step value
   // from matching. This is the one branch that carries real threading headers,
-  // so `mailInbound` surfaces the message for the warm path's connector seed.
-  if (isMail(rawInput)) {
-    const message = await buildInboundMessageFromMail(rawInput, mailPartReader);
+  // so `mailInbound` surfaces the message for the connector seed.
+  if (isMail(req.input)) {
+    const message = await buildInboundMessageFromMail(
+      req.input,
+      mailPartReader,
+    );
     return { message, mailInbound: message };
   }
-  return { message: synthesizeInputContent(rawInput), mailInbound: null };
+  return { message: synthesizeInputContent(req.input), mailInbound: null };
 }
 
 function usableAddr(raw: string | undefined): string | undefined {
@@ -887,9 +703,9 @@ function usableAddrs(raw: string[]): string[] {
  *
  * The reader is required only when a part's bytes must actually be read (a
  * non-text part, or a text part too large to have inlined its `text`). A
- * text-only mail whose parts all inlined -- e.g. one routed to a body step,
- * which is not wired with a reader -- still delivers; a part that needs bytes
- * with no reader is refused loudly rather than silently dropped.
+ * text-only mail whose parts all inlined still delivers without one; a part
+ * that needs bytes with no reader is refused loudly rather than silently
+ * dropped.
  */
 async function buildInboundMessageFromMail(
   mail: Mail,

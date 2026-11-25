@@ -61,6 +61,7 @@ import {
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 import { deriveWireRunGrants } from "./nested-tool-invoke-helpers";
+import { stepWorkspaceDir } from "@intx/workflow-host/child";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_source-inline-tool-1";
@@ -263,20 +264,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(env.inference.requests.length).toBeGreaterThanOrEqual(2);
 
       // Proof 3: the tool's `run` executed IN THE CHILD's filesystem view. The
-      // inline tool wrote its sentinel into `env.workdir`, which for the warm
-      // single-step agent is the stable per-agent workspace rooted at
-      // `workflow-step-state/<repoId>/warm/<stepId>/workspace`. The file's
+      // inline tool wrote its sentinel into `env.workdir`, the step's
+      // workspace for this attempt (`stepWorkspaceDir`). The file's
       // presence (with the content the tool was given) means the source
       // workflow's OWN evaluated tool factory ran -- and that the `tool:<name>`
       // grant authorized the call through the frozen snapshot.
-      const stepWorkspace = path.join(
-        env.sidecar.dataDir,
-        "workflow-step-state",
-        workflowRunRepoId.id,
-        "warm",
-        encodeURIComponent(STEP_ID),
-        "workspace",
-      );
+      const stepWorkspace = stepWorkspaceDir({
+        dataDir: env.sidecar.dataDir,
+        workflowRunRepoId,
+        runId,
+        stepId: STEP_ID,
+        attempt: 1,
+      });
       const sentinelPath = path.join(stepWorkspace, SENTINEL_FILENAME);
       if (!fs.existsSync(sentinelPath)) {
         throw new Error(

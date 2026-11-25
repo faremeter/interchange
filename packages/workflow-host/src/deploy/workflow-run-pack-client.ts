@@ -17,8 +17,6 @@ import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import { PackRejectedError } from "@intx/pack-transport";
-import { SourcesUpdatedData } from "../ipc/control-payloads";
-import type { InferenceSource } from "@intx/types/runtime";
 import type { InboundDelivery } from "@intx/types/message-id";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { WorkflowRunRefTips } from "@intx/types/sidecar";
@@ -484,85 +482,6 @@ export function createMultistepDrainRouter(): MultistepDrainRouter {
 }
 
 /**
- * Per-deployment sources-rotation handler the deploy router installs
- * against the `MultistepSourcesRouter` after a supervisor's `spawn`
- * succeeds -- but ONLY for a single-step (warm launched-agent)
- * deployment. The handler hands the rotated list off to the supervisor's
- * `deliverSources`, which sends a `sources-updated` control IPC frame to
- * the workflow-process child, where the warm agent's live sources are
- * swapped in place. A multi-step deployment has no single warm agent to
- * rotate, so the router registers no handler for it and an inbound
- * `sources.update` for a multi-step address is unrouted.
- */
-export type MultistepSourcesHandler = (args: {
-  sources: InferenceSource[];
-  defaultSource: string;
-}) => Promise<void>;
-
-/**
- * Per-deployment-address sources-rotation handler registry. Only a
- * single-step warm deployment registers a handler (after
- * `wired.supervisor.spawn` succeeds); a multi-step deployment never
- * does, so `tryRoute` resolves a rotation only for a registered
- * single-step address and returns `false` for any other.
- *
- * The registry lives at the sidecar's host layer for the same boundary
- * reason as the mail/signal/drain routers: the routing decision is a
- * concrete sidecar host concern, and the workflow-host package stays
- * agnostic to which transport surface its supervisor handle rides on.
- */
-export type MultistepSourcesRouter = {
-  register(address: string, handler: MultistepSourcesHandler): void;
-  unregister(address: string): void;
-  tryRoute(frame: {
-    type: "sources.update";
-    agentAddress: string;
-    sources: InferenceSource[];
-    defaultSource: string;
-  }): Promise<boolean>;
-};
-
-export function createMultistepSourcesRouter(): MultistepSourcesRouter {
-  const handlers = new Map<string, MultistepSourcesHandler>();
-  return {
-    register(address, handler) {
-      handlers.set(address, handler);
-    },
-    unregister(address) {
-      handlers.delete(address);
-    },
-    async tryRoute(frame) {
-      const handler = handlers.get(frame.agentAddress);
-      // Registration check first: an unregistered (multi-step or torn-down)
-      // address is unrouted -- reported as `false`, its payload never
-      // inspected, because it would not be acted on regardless.
-      if (handler === undefined) return false;
-      // Validate the rotation BEFORE dispatch. This is the only inbound
-      // router that validates its frame, and deliberately so: a bad list
-      // (duplicate ids, or a default that is not the head element) would
-      // reach the child's control-channel receiver and crash it on
-      // `SourcesUpdatedData`'s narrow -- the sources-updated frame is the
-      // only inbound frame carrying a crash-on-invalid narrow downstream,
-      // and the only one that is request/ack. Rejecting here throws, and
-      // the hub-link turns the throw into a truthful `session.error`
-      // instead of acking and detonating the child.
-      const validated = SourcesUpdatedData({
-        sources: frame.sources,
-        defaultSource: frame.defaultSource,
-      });
-      if (validated instanceof type.errors) {
-        throw new Error(validated.summary);
-      }
-      await handler({
-        sources: frame.sources,
-        defaultSource: frame.defaultSource,
-      });
-      return true;
-    },
-  };
-}
-
-/**
  * Per-deployment credential-delivery handler the deploy router installs
  * against the `MultistepCredentialsRouter` after a supervisor's `spawn`
  * succeeds. The handler hands the delivery to the supervisor's
@@ -571,9 +490,9 @@ export function createMultistepSourcesRouter(): MultistepSourcesRouter {
  * and then seals the supervisor's merged delivery into the run record so a
  * restart restores it.
  *
- * Unlike sources rotation, this registers for ANY deployment (single- or
- * multi-step): the material cell is per-child and read by every step's tool
- * capabilities, so there is no single-warm-agent restriction.
+ * This registers for ANY deployment (single- or multi-step): the material
+ * cell is per-child and read by every step's tool capabilities, so there is
+ * no single-step restriction.
  */
 export type MultistepCredentialsHandler = (args: {
   delivery: CredentialDelivery;
@@ -581,10 +500,10 @@ export type MultistepCredentialsHandler = (args: {
 }) => Promise<void>;
 
 /**
- * Per-deployment-address credential-delivery handler registry. Mirrors
- * `MultistepSourcesRouter`: `credentials.update` is a REQUEST/ACK frame, so a
- * registered address that throws surfaces as a `session.error` and an
- * unregistered address returns `false` (unrouted). Lives at the sidecar host
+ * Per-deployment-address credential-delivery handler registry.
+ * `credentials.update` is a REQUEST/ACK frame, so a registered address
+ * that throws surfaces as a `session.error` and an unregistered address
+ * returns `false` (unrouted). Lives at the sidecar host
  * layer for the same boundary reason -- the workflow-host package stays
  * agnostic to the transport surface its supervisor rides on.
  */

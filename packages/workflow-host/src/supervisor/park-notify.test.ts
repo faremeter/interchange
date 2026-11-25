@@ -130,7 +130,6 @@ describe("supervisor park.notify and park.release arms", () => {
       },
       binaryPath: "/fake/bin/workflow-child",
       substrateEnv: {},
-      dynamicSpawnEnv: () => ({}),
       workflowRunRepoId: { kind: "workflow-run", id: DEPLOYMENT_ID },
       workflowRunRef: "refs/heads/main",
       anchorRunId: DEPLOYMENT_ID,

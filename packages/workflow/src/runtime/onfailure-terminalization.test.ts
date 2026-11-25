@@ -286,7 +286,7 @@ describe("onFailure success-terminalization failures do not route", () => {
   });
 
   test("a multi-attempt step whose invoker could not commit its outcome is neither retried nor routed", async () => {
-    // The host commits a cold step's turn inside the invocation, after the
+    // The host commits a step's turn inside the invocation, after the
     // agent ran; losing that commit must not re-run the agent's work.
     const def = defineWorkflow({
       id: "term-uncommitted-outcome",

@@ -31,7 +31,6 @@ import {
   SenderKeyEvictFrame,
   SidecarFrame,
   SignalCorrelationRegisterFrame,
-  SourcesUpdateFrame,
   WorkflowProbeResultFrame,
 } from "./sidecar";
 
@@ -236,35 +235,6 @@ describe("AgentDeployFrame", () => {
         sourceRef: validSourceRef,
       },
     });
-    expect(result instanceof type.errors).toBe(true);
-  });
-});
-
-describe("SourcesUpdateFrame", () => {
-  const source = {
-    id: "src_a",
-    provider: "openai",
-    baseURL: "https://api.openai.test",
-    credentialId: "sk-a",
-    model: "gpt-a",
-  };
-  const base = {
-    type: "sources.update" as const,
-    requestId: "req_1",
-    agentAddress: "agt_1@example.test",
-    generation: 1,
-    defaultSource: "src_a",
-  };
-
-  test("accepts a frame with a non-empty sources list", () => {
-    const result = SourcesUpdateFrame({ ...base, sources: [source] });
-    expect(result instanceof type.errors).toBe(false);
-  });
-
-  test("rejects a frame whose sources list is empty", () => {
-    // The boundary rejects an empty `sources` rather than accepting an
-    // update the agent could not swap to any live source.
-    const result = SourcesUpdateFrame({ ...base, sources: [] });
     expect(result instanceof type.errors).toBe(true);
   });
 });

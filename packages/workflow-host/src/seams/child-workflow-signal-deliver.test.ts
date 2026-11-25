@@ -230,11 +230,11 @@ function startCapture(args: {
         input: input.input,
         depth: input.depth,
         maxChildSpawnDepth: input.maxChildSpawnDepth,
+        stepPathPrefix: input.stepPathPrefix,
         ...(input.resumeFromEvents !== undefined
           ? { resumeFromEvents: input.resumeFromEvents }
           : {}),
         signal: input.signal,
-        surfaceInputPark: true,
       });
     },
     clock,
@@ -388,12 +388,12 @@ async function resumeOnHost(args: {
         input: input.input,
         depth: input.depth,
         maxChildSpawnDepth: input.maxChildSpawnDepth,
+        stepPathPrefix: input.stepPathPrefix,
         ...(input.resumeFromEvents !== undefined
           ? { resumeFromEvents: input.resumeFromEvents }
           : {}),
         signal: input.signal,
         cleanup: () => channel.stop(),
-        surfaceInputPark: true,
       });
     },
     clock,

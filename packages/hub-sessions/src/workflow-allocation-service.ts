@@ -938,12 +938,18 @@ export function createWorkflowAllocationService({
         config,
         operatorApprovals: approved.approval.approvedSurface,
       });
+      const referencedDefinitions = buildReferencedWorkflowSourcePins({
+        projection: approved.projection,
+        config,
+        operatorApprovals: approved.approval.approvedSurface,
+      });
       const stepStateSeeds =
         args.stepState === undefined
           ? null
           : buildStepStateSeeds({
               projection: approved.projection,
               sources: stepSources,
+              referencedDefinitions,
               runId: args.anchorRunId,
               stepState: args.stepState,
               uidValidity: now().getTime(),
@@ -954,11 +960,6 @@ export function createWorkflowAllocationService({
           stepStateSeeds.reason,
         );
       }
-      buildReferencedWorkflowSourcePins({
-        projection: approved.projection,
-        config,
-        operatorApprovals: approved.approval.approvedSurface,
-      });
       const deploymentProvisioner = selectProvisioner(
         await chooseProvisioner(
           deploymentPlugins,

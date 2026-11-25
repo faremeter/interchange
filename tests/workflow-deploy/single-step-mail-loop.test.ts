@@ -1,9 +1,9 @@
 // Single-step INBOUND mail-loop integration test (INTR-480).
 //
-// The proof that the warm single-step agent's inbound mail surface is LIVE:
+// The proof that the single-step agent's inbound mail surface is LIVE:
 // an arrived mail is visible to the agent's `mail_search` read tool WITHIN the
-// same turn, and the agent's reply drains back out as a signed outbound send.
-// Deploys a warm single-step agent (source-ref lineage) that carries the real
+// same turn, and the agent's reply goes back out as a signed outbound send.
+// Deploys a single-step agent (source-ref lineage) that carries the real
 // `@intx/tools-mail` bundle -- so it carries `mail_search` / `mail_read` /
 // `mail_wait` -- against the real hub + real sidecar subprocess + a mock
 // inference fixture, fires a mail, and asserts the loop.
@@ -58,9 +58,9 @@ import {
 import { singleStepMailInboxEntry } from "./fixtures/single-step-mail-inbox-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-// A single-agent run identity: `run_` + a hex-shaped local part. A
-// single-step deployment is warm-kept, so this deployment exercises the warm
-// agent path (durable conversation, connector reply drain, inbound surface).
+// A single-agent run identity: `run_` + a hex-shaped local part. This
+// deployment exercises the step agent path (durable conversation, the turn's
+// reply send, inbound surface).
 const DEPLOYMENT_ID = "run_ma11100dba5eba11cafef00dba5eba11";
 const STEP_ID = "step1";
 const AGENT_ID = "agent-mail-inbox";
@@ -141,7 +141,7 @@ beforeAll(async () => {
       input: {},
       resultPrefix: RESULT_PREFIX,
     },
-    // Record the relay's send checks, so the test can show the warm reply,
+    // Record the relay's send checks, so the test can show the step's reply,
     // which no mail tool sends, passes through the check.
     async authorizeMailSend(args) {
       sendChecks.push({
@@ -159,13 +159,13 @@ afterAll(async () => {
 });
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "single-step inbound mail loop on the warm agent",
+  "single-step inbound mail loop on the step agent",
   () => {
     test("sidecar registers with hub", () => {
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    test("mail_search sees the delivered inbound and the reply drains out signed", async () => {
+    test("mail_search sees the delivered inbound and the reply goes out signed", async () => {
       const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
         domain: DEPLOYMENT_DOMAIN,
@@ -191,6 +191,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         systemPrompt: "You are the single-step mail-inbox agent.",
         address: deploymentMailAddress,
         agentId: AGENT_ID,
+        replyByMail: true,
       });
 
       // approve-probed: approve exactly the surface the probe discovered (the
@@ -263,18 +264,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // the same turn. The mock replied with the tool_result content behind
       // RESULT_PREFIX, so the committed reply carries the delivered message's
       // own Message-Id and sender -- which could only come from the read tool
-      // opening the committed INBOX. A "not wired" inbound surface would have
-      // thrown inside `mail_search` instead, leaving the reply without them.
+      // opening the committed INBOX. A failed search would have left the
+      // reply without them.
       const reply = readStepReply(stepCompletedBody(events));
       expect(reply.startsWith(RESULT_PREFIX)).toBe(true);
       expect(reply).toContain("mail-loop-inbound-7f3a91");
       expect(reply).toContain(INBOUND_FROM);
 
-      // AC3: the reply drained back out as a signed outbound send. The warm
-      // agent's connector reply drain composed a threaded reply from the
-      // seeded inbound and sent it through the outbound bridge; the supervisor
-      // signed it as the deployment address and the hub recorded the delivered
-      // `mail.outbound` frame. A frame reaches `outboundMail` only after the
+      // AC3: the reply went back out as a signed outbound send. The
+      // step invoker composed a threaded reply from the seeded inbound and
+      // sent it through the outbound bridge; the supervisor signed it as the
+      // deployment address and the hub recorded the delivered `mail.outbound`
+      // frame. A frame reaches `outboundMail` only after the
       // sidecar signed and delivered it, so its presence proves the signed
       // outbound composed end to end and is addressed to the original sender.
       await waitFor(

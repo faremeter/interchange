@@ -18,7 +18,7 @@ export const StepStateSnapshot = type({
   ),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null").describe(
-    "Mail thread the agent replies on, or null when no thread is active. An import must carry null: the imported step starts without a thread, and a single-step agent starts one from the sender of its first mail.",
+    "Mail thread the agent replies on, or null when no thread is active. An import must carry null: the imported step starts without a thread, and an agent step starts one from the sender of its first mail.",
   ),
   "mailboxUidNext?": type("1 <= number.integer <= 4294967295").describe(
     "The UID the exporting deployment's mailbox assigns next, so every mailbox UID the turns name is below it. A deployment that imports the snapshot numbers its own mail from at least this UID, so those UIDs never name one of its messages. An import accepts at most 2147483648. Absent when the exporting deployment has no mailbox.",
@@ -26,14 +26,16 @@ export const StepStateSnapshot = type({
 });
 export type StepStateSnapshot = typeof StepStateSnapshot.infer;
 
-// Deploy-time step state: a snapshot per agent step, keyed by the id of the
-// step it seeds. Imported state is committed to the run's history as JSON,
-// which has no encoding for a non-finite number: `JSON.parse` reads an
-// out-of-range literal such as `1e999` as `Infinity`, and serializing it
-// writes `null`. Such a number is rejected here rather than silently
-// changing in the seed. Serializing the seed also recurses once per level
-// of nesting, so client JSON nested deep enough (a tool call's arguments)
-// would overflow the call stack; no real conversation nests near the cap.
+// Deploy-time step state: a snapshot per agent step, keyed by the key of the
+// place of the step it seeds (`stepPlaceKey`): a top-level step's id, or
+// `<section>.<step>` for an agent step in an onTrigger section's body.
+// Imported state is committed to the run's history as JSON, which has no
+// encoding for a non-finite number: `JSON.parse` reads an out-of-range
+// literal such as `1e999` as `Infinity`, and serializing it writes `null`.
+// Such a number is rejected here rather than silently changing in the seed.
+// Serializing the seed also recurses once per level of nesting, so client
+// JSON nested deep enough (a tool call's arguments) would overflow the call
+// stack; no real conversation nests near the cap.
 const MAX_STEP_STATE_DEPTH = 64;
 
 // A step's state is stored under a directory named for its id, and common

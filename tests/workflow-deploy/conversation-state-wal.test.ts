@@ -1,4 +1,4 @@
-// Unit tests for the warm-agent durable conversation store's two-tier
+// Unit tests for the durable conversation store's two-tier
 // WAL + checkpoint layout (Phase D1). These cover the three properties the
 // D1 plan calls out:
 //
@@ -26,12 +26,10 @@ import { generateKeyPair } from "@intx/crypto";
 import { createSSHSignature } from "@intx/crypto";
 import type {
   KeyPair,
-  ConnectorThreadState,
   ConversationTurn,
   PendingOperation,
   TokenUsage,
 } from "@intx/types/runtime";
-import { waitUntil } from "@intx/types/testing";
 import type {
   RepoId,
   RepoStore,
@@ -47,6 +45,7 @@ import {
   workflowRunStepStatePrefix,
 } from "@intx/hub-sessions";
 import { userTurn } from "@intx/inference-testing";
+import { createInboundMessage } from "@intx/mime";
 import {
   createDurableConversationStore,
   readStepState,
@@ -182,10 +181,20 @@ function unvalidatedSubstrate(h: Harness): RepoStore {
   });
 }
 
+/** The lifetime of attempt `attempt` of step `STEP_ID` in run `runId`. */
+function invocation(
+  attempt: number,
+  runId = RUN_ID,
+): DurableConversationLifetime {
+  return {
+    invocation: { runId, stepId: STEP_ID, attempt },
+  };
+}
+
 async function makeStore(
   h: Harness,
   localDir: string,
-  lifetime: DurableConversationLifetime = { kind: "deployment" },
+  lifetime: DurableConversationLifetime = invocation(1),
 ): Promise<DurableConversationStore> {
   return createDurableConversationStore({
     localStoreDir: localDir,
@@ -202,7 +211,7 @@ async function makeStore(
 }
 
 /**
- * Append turns to the store's local isogit store exactly as the warm
+ * Append turns to the store's local isogit store exactly as the step
  * agent's reactor would (writeTurns + writeMetadata + commit), then run the
  * synchronous run-boundary mirror. Returns the full turn list so callers
  * can assert exact reconstruction.
@@ -314,7 +323,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
   test("a turnless boundary still durably persists advanced metadata", async () => {
     // The regression the per-turn keying caused: a mirror boundary with NO
     // new turns dropped its metadata, so a respawn restored STALE metadata.
-    // onRunBoundary -> mirrorToSubstrate runs after the send settles even
+    // The run-boundary mirrorToSubstrate runs after the send settles even
     // when the send throws, so a turnless-but-metadata-mutating boundary is
     // reachable. Each boundary must commit its metadata UNCONDITIONALLY.
     const store = await makeStore(h, localDir);
@@ -497,7 +506,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
         principal: PRINCIPAL,
         runId: RUN_ID,
         stepId: STEP_ID,
-        lifetime: { kind: "deployment" },
+        lifetime: invocation(1),
         mailboxAddress: "agent@example.com",
       });
     }
@@ -636,31 +645,6 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     expect(await store.restoreFromSubstrate()).toBe(false);
     const loaded = await store.storage.load();
     expect(loaded.turns).toEqual([]);
-  });
-
-  test("a restore with neither committed state nor a seed drops a conversation only the local store holds", async () => {
-    // The agent's first turn reached its local store, and the host died
-    // before the run-boundary mirror committed it.
-    const crashed = await makeStore(h, localDir);
-    await crashed.storage.writeTurns([userTurn("never committed")]);
-    await crashed.storage.writeMetadata({
-      pendingOperations: [],
-      tokenUsage: tokenUsage(5),
-    });
-    await crashed.storage.commit({ message: "turn" });
-
-    const respawned = await makeStore(h, localDir);
-    expect(await respawned.restoreFromSubstrate()).toBe(false);
-    const loaded = await respawned.storage.load();
-    expect(loaded.turns).toEqual([]);
-    expect(loaded.tokenUsage).toEqual(tokenUsage(0));
-
-    await pushAndMirror(respawned, [], [userTurn("first committed")], {
-      tokenUsageInput: 1,
-    });
-    expect((await readCommitted(h))?.turns).toEqual([
-      userTurn("first committed"),
-    ]);
   });
 
   test("a corrupt WAL entry throws on reconstruction (no silent fresh start)", async () => {
@@ -802,7 +786,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
-      lifetime: { kind: "deployment" },
+      lifetime: invocation(1),
       mailboxAddress: "agent@example.com",
     });
 
@@ -843,12 +827,12 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
   });
 
   test("overlapping mirror runs serialize onto distinct boundaries and lose no turns", async () => {
-    // The dormant race this guards against: the awaited onRunBoundary mirror
-    // and the fire-and-forget onStateChanged mirror share the mirrored-count
-    // state with no serialization. Two overlapping runs both read the same
-    // boundary seq AND the same mirroredTurnCount, so they collide on one
-    // boundary and double-advance the turn count -- and a following mirror
-    // then slices past a genuinely new turn and drops it from the log.
+    // The race this guards against: two mirrors of one store share the
+    // mirrored-count state with no serialization. Two overlapping runs both
+    // read the same boundary seq AND the same mirroredTurnCount, so they
+    // collide on one boundary and double-advance the turn count -- and a
+    // following mirror then slices past a genuinely new turn and drops it
+    // from the log.
     //
     // The barrier makes the interleave deterministic: the first WAL append is
     // held until a would-be-concurrent second mirror has had time to reach
@@ -891,7 +875,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
-      lifetime: { kind: "deployment" },
+      lifetime: invocation(1),
       mailboxAddress: "agent@example.com",
     });
 
@@ -937,160 +921,12 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual(abc);
   });
-
-  test("a mirror re-entered by restore's connector-state change cannot clobber a concurrent boundary", async () => {
-    // Restore-reentrancy guard. restoreFromSubstrate calls
-    // connectorRouter.restore(), which fires onStateChanged synchronously when
-    // the restored connector state differs from the router's initial null --
-    // and onStateChanged enqueues a (turnless) mirror. That reentrant mirror
-    // shares the mirrored-count state with restore and with the next real
-    // mirror. Unless restore runs on the same serialization tail (and
-    // establishes the counts before the connector restore), the reentrant
-    // append and a following real mirror can land on the SAME boundary seq,
-    // and the turnless one can overwrite the real turn.
-    //
-    // Seed two durable boundaries, the second carrying a non-null connector
-    // state -- exactly the future condition (a non-null connector state) under
-    // which this otherwise-dormant path activates.
-    const seed = await makeStore(h, localDir);
-    await seed.storage.writeTurns([userTurn("a")]);
-    await seed.storage.writeMetadata({
-      pendingOperations: [],
-      tokenUsage: tokenUsage(0),
-    });
-    await seed.storage.commit({ message: "a" });
-    await seed.mirrorToSubstrate();
-
-    const connectorState: ConnectorThreadState = {
-      threadRoot: "<root@example.com>",
-      lastMessageId: "<last@example.com>",
-      replyTo: "user@example.com",
-      cc: [],
-    };
-    seed.storage.setConnectorState(connectorState);
-    await seed.storage.writeTurns([userTurn("a"), userTurn("b")]);
-    await seed.storage.writeMetadata({
-      pendingOperations: [],
-      tokenUsage: tokenUsage(1),
-    });
-    await seed.storage.commit({ message: "b" });
-    await seed.mirrorToSubstrate();
-
-    // A fresh store restores those two boundaries; a barrier holds the first
-    // WAL append (the reentrant turnless mirror) until a real `c` mirror is
-    // enqueued behind it. Every boundary seq the substrate writes is recorded
-    // (parsed from the append's commit message) so a same-seq clobber fails
-    // loud even if a future change masks the turn-loss symptom.
-    const seqsWritten: number[] = [];
-    // Substrate writes that have RETURNED, as opposed to the entries recorded
-    // in `seqsWritten` on the way in. The reentrant mirror is fire-and-forget,
-    // so this is how the assertions below know its append landed.
-    let writesCompleted = 0;
-    let releaseFirstAppend!: () => void;
-    const firstAppendHeld = new Promise<void>((resolve) => {
-      releaseFirstAppend = resolve;
-    });
-    let heldOnce = false;
-    const writeTreePreservingPrefix: RepoStore["writeTreePreservingPrefix"] =
-      async (principal, repoId, ref, args) => {
-        const matched = /WAL boundary (\d+)/.exec(args.message);
-        if (matched !== null) seqsWritten.push(Number(matched[1]));
-        if (!heldOnce && args.preservePrefix.includes("/wal/")) {
-          heldOnce = true;
-          await firstAppendHeld;
-        }
-        const result = await h.substrate.writeTreePreservingPrefix(
-          principal,
-          repoId,
-          ref,
-          args,
-        );
-        writesCompleted += 1;
-        return result;
-      };
-    const wrappedSubstrate = new Proxy(h.substrate, {
-      get(target, prop, receiver): unknown {
-        if (prop === "writeTreePreservingPrefix") {
-          return writeTreePreservingPrefix;
-        }
-        return Reflect.get(target, prop, receiver);
-      },
-    });
-
-    const freshLocalDir = path.join(h.baseDir, "reentry-local");
-    const store = await createDurableConversationStore({
-      localStoreDir: freshLocalDir,
-      signer: h.signer,
-      substrate: wrappedSubstrate,
-      workflowRunRepoId: h.workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      principal: PRINCIPAL,
-      runId: RUN_ID,
-      stepId: STEP_ID,
-      lifetime: { kind: "deployment" },
-      mailboxAddress: "agent@example.com",
-    });
-
-    const restored = await store.restoreFromSubstrate();
-    expect(restored).toBe(true);
-    // Wait until the reentrant mirror's append is parked, so it is
-    // unambiguously the first (held) WAL append.
-    await waitUntil(() => heldOnce);
-    expect(heldOnce).toBe(true);
-
-    // A real mirror carrying a genuinely new turn `c`, enqueued behind the
-    // parked reentrant mirror.
-    await store.storage.writeTurns([
-      userTurn("a"),
-      userTurn("b"),
-      userTurn("c"),
-    ]);
-    await store.storage.writeMetadata({
-      pendingOperations: [],
-      tokenUsage: tokenUsage(2),
-    });
-    await store.storage.commit({ message: "c" });
-    const cMirror = store.mirrorToSubstrate();
-
-    // Let a would-be-concurrent `c` mirror reach and pass its own append
-    // before the reentrant one is released.
-    //
-    // The duration is load-bearing and must stay a sleep: it IS the interleave
-    // window this test measures. Under the correct implementation the `c`
-    // mirror is queued behind the parked reentrant one and does nothing during
-    // it, so there is no state to wait for.
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    releaseFirstAppend();
-    await cMirror;
-    // The reentrant mirror is fire-and-forget, so await its append landing on
-    // the substrate rather than a delay. Exactly two writes run through the
-    // wrapper: `runMirror` appends one WAL entry per boundary unconditionally
-    // (turnless boundaries included), and the live WAL never reaches
-    // CHECKPOINT_INTERVAL here, so neither mirror adds a compaction write.
-    // `heldOnce` proves the first entered and `await cMirror` proves the
-    // second completed, so the count reaches two once the released reentrant
-    // write returns.
-    await waitUntil(() => writesCompleted >= 2);
-
-    const reconstructed = await readCommitted(h);
-    if (reconstructed === null) throw new Error("expected a reconstruction");
-    expect(reconstructed.turns).toEqual([
-      userTurn("a"),
-      userTurn("b"),
-      userTurn("c"),
-    ]);
-    // No two WAL appends targeted the same boundary seq.
-    expect(new Set(seqsWritten).size).toBe(seqsWritten.length);
-  });
 });
 
 describe("durable conversation store attempt-scoped local store", () => {
   let h: Harness;
   let localDir: string;
-  const attemptOne: DurableConversationLifetime = {
-    kind: "attempt",
-    attempt: 1,
-  };
+  const attemptOne = invocation(1);
 
   beforeEach(async () => {
     h = await makeHarness();
@@ -1131,7 +967,7 @@ describe("durable conversation store attempt-scoped local store", () => {
     });
     const committed = await readCommitted(h);
     expect(committed?.turns).toEqual([...localTurns, userTurn("third")]);
-    expect(committed?.attempt).toBe(1);
+    expect(committed?.invocation?.attempt).toBe(1);
   });
 
   test("a restore whose read of the state ref fails throws instead of starting over from the local store", async () => {
@@ -1373,7 +1209,7 @@ describe("durable conversation store with a seed", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
-      lifetime: { kind: "attempt", attempt: 1 },
+      lifetime: invocation(1),
       mailboxAddress: "agent@example.com",
     });
     await store.restoreFromSubstrate();
@@ -1393,7 +1229,7 @@ describe("durable conversation store with a seed", () => {
     });
     const committed = await readCommitted(h);
     expect(committed?.turns).toEqual(two);
-    expect(committed?.attempt).toBe(1);
+    expect(committed?.invocation?.attempt).toBe(1);
     // The retry folds again, so the seeded turns still land in a checkpoint
     // rather than in one WAL entry.
     expect(readCheckpointMeta(h.stateDir)).toMatchObject({
@@ -1419,30 +1255,77 @@ describe("durable conversation store with a seed", () => {
     expect(loaded.tokenUsage).toEqual(tokenUsage(12));
   });
 
-  test("a retried attempt starts over from the seed, not from the earlier attempt", async () => {
-    const attemptOne = await makeStore(h, path.join(h.baseDir, "attempt-1"), {
-      kind: "attempt",
-      attempt: 1,
-    });
+  test("a retried attempt continues the earlier attempt's committed turns, not the seed", async () => {
+    const attemptOne = await makeStore(
+      h,
+      path.join(h.baseDir, "attempt-1"),
+      invocation(1),
+    );
     await attemptOne.restoreFromSubstrate();
     await pushAndMirror(attemptOne, seed.turns, [userTurn("attempt one")], {
       tokenUsageInput: 12,
     });
 
-    const attemptTwo = await makeStore(h, path.join(h.baseDir, "attempt-2"), {
-      kind: "attempt",
-      attempt: 2,
-    });
+    const attemptTwo = await makeStore(
+      h,
+      path.join(h.baseDir, "attempt-2"),
+      invocation(2),
+    );
     expect(await attemptTwo.restoreFromSubstrate()).toBe(true);
     const loaded = await attemptTwo.storage.load();
-    expect(loaded.turns).toEqual(seed.turns);
+    expect(loaded.turns).toEqual([...seed.turns, userTurn("attempt one")]);
 
     await pushAndMirror(attemptTwo, loaded.turns, [userTurn("attempt two")], {
       tokenUsageInput: 13,
     });
     const committed = await readCommitted(h);
-    expect(committed?.turns).toEqual([...seed.turns, userTurn("attempt two")]);
-    expect(committed?.attempt).toBe(2);
+    expect(committed?.turns).toEqual([
+      ...seed.turns,
+      userTurn("attempt one"),
+      userTurn("attempt two"),
+    ]);
+    expect(committed?.invocation?.attempt).toBe(2);
+  });
+
+  test("another run's invocation of the same key continues the committed turns, not the seed", async () => {
+    const first = await makeStore(
+      h,
+      path.join(h.baseDir, "first-run"),
+      invocation(1, "run-body-1"),
+    );
+    await first.restoreFromSubstrate();
+    await pushAndMirror(first, seed.turns, [userTurn("first run")], {
+      tokenUsageInput: 12,
+    });
+
+    const second = await makeStore(
+      h,
+      path.join(h.baseDir, "second-run"),
+      invocation(1, "run-body-2"),
+    );
+    expect(await second.restoreFromSubstrate()).toBe(true);
+    const loaded = await second.storage.load();
+    expect(loaded.turns).toEqual([...seed.turns, userTurn("first run")]);
+
+    await pushAndMirror(second, loaded.turns, [userTurn("second run")], {
+      tokenUsageInput: 13,
+    });
+    const committed = await readCommitted(h);
+    expect(committed?.turns).toEqual([
+      ...seed.turns,
+      userTurn("first run"),
+      userTurn("second run"),
+    ]);
+    // A plain continue appends to the committed history instead of folding.
+    expect(readCheckpointMeta(h.stateDir).checkpointSeq).toBe(1);
+    expect(
+      fs.existsSync(path.join(walBucketDir(h.stateDir, 0), "1.json")),
+    ).toBe(true);
+    expect(committed?.invocation).toEqual({
+      runId: "run-body-2",
+      stepId: STEP_ID,
+      attempt: 1,
+    });
   });
 
   test("a restore reads the committed seed, not the working tree's copy", async () => {
@@ -1466,5 +1349,864 @@ describe("durable conversation store with a seed", () => {
     await expect(store.restoreFromSubstrate()).rejects.toThrow(
       /is not valid JSON/,
     );
+  });
+});
+
+describe("durable conversation store across invocations of one key", () => {
+  let h: Harness;
+
+  beforeEach(async () => {
+    h = await makeHarness();
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(h.baseDir, { recursive: true, force: true });
+  });
+
+  /** A pending approval gate, which carries the call the approval re-runs. */
+  function gate(correlationId: string): PendingOperation {
+    return {
+      correlationId,
+      kind: "approval",
+      registeredAt: 0,
+      gateId: `gate-${correlationId}`,
+      turnId: `turn-${correlationId}`,
+      gated: true,
+      suspendedCall: {
+        id: `call-${correlationId}`,
+        name: "charge",
+        arguments: {},
+      },
+    };
+  }
+
+  function toolCall(correlationId: string): ConversationTurn {
+    return {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_call",
+          id: `call-${correlationId}`,
+          name: "charge",
+          arguments: {},
+        },
+      ],
+      model: "stub-model",
+      timestamp: 0,
+    };
+  }
+
+  function toolResult(correlationId: string): ConversationTurn {
+    return {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          callId: `call-${correlationId}`,
+          content: [{ type: "text", text: "charged" }],
+        },
+      ],
+      timestamp: 0,
+    };
+  }
+
+  function mail(messageId: string) {
+    return createInboundMessage({
+      from: "alice@example.com",
+      to: "agent@example.com",
+      content: "please charge the card",
+      messageId,
+      interchangeType: "conversation.message",
+    });
+  }
+
+  /**
+   * One turn of an invocation the way the step invoker drives it: restore,
+   * begin the turn, seed its mail, record its turns and pending operations
+   * locally, park on `parkOn`, and mirror. A resume passes the gate it
+   * resumes and no mail.
+   */
+  async function runTurn(
+    lifetime: DurableConversationLifetime,
+    turn: {
+      localDir: string;
+      resume?: string;
+      mail?: string;
+      turns: (prior: ConversationTurn[]) => ConversationTurn[];
+      pendingOperations: PendingOperation[];
+      parkOn?: string;
+      outcome?: "mirrored" | "crashed";
+    },
+  ): Promise<DurableConversationStore> {
+    const store = await makeStore(h, turn.localDir, lifetime);
+    await store.restoreFromSubstrate();
+    await store.beginTurn(
+      turn.resume !== undefined ? { resume: turn.resume } : {},
+    );
+    if (turn.mail !== undefined) await store.seedInbound(mail(turn.mail));
+    const prior = (await store.storage.load()).turns;
+    await store.storage.writeTurns(turn.turns(prior));
+    await store.storage.writeMetadata({
+      pendingOperations: turn.pendingOperations,
+      tokenUsage: tokenUsage(prior.length + 1),
+    });
+    await store.storage.commit({ message: "turn" });
+    if (turn.parkOn !== undefined) await store.parkTurn(turn.parkOn);
+    if (turn.outcome !== "crashed") await store.mirrorToSubstrate();
+    return store;
+  }
+
+  function local(name: string): string {
+    return path.join(h.baseDir, name);
+  }
+
+  test("a park records where its turn started, and a resume that parks again keeps it", async () => {
+    const own = invocation(1, "run-body-1");
+    await runTurn(own, {
+      localDir: local("a"),
+      turns: () => [userTurn("earlier")],
+      pendingOperations: [],
+    });
+    await runTurn(own, {
+      localDir: local("a"),
+      mail: "<m1@example.com>",
+      turns: (prior) => [...prior, userTurn("charge it"), toolCall("c1")],
+      pendingOperations: [gate("c1")],
+      parkOn: "c1",
+    });
+    expect((await readCommitted(h))?.parkedTurnStart).toBe(1);
+
+    // The resume answers the first gate and parks on a second one.
+    await runTurn(own, {
+      localDir: local("a"),
+      resume: "c1",
+      turns: (prior) => [...prior, toolResult("c1"), toolCall("c2")],
+      pendingOperations: [gate("c2")],
+      parkOn: "c2",
+    });
+    const committed = await readCommitted(h);
+    expect(committed?.turns).toHaveLength(5);
+    expect(committed?.parkedTurnStart).toBe(1);
+
+    // A turn that settles without a gate records none.
+    await runTurn(own, {
+      localDir: local("a"),
+      resume: "c2",
+      turns: (prior) => [...prior, toolResult("c2")],
+      pendingOperations: [],
+    });
+    expect((await readCommitted(h))?.parkedTurnStart).toBeUndefined();
+  });
+
+  test("another invocation rolls back a turn left parked to the start of that turn", async () => {
+    const first = invocation(1, "run-body-1");
+    await runTurn(first, {
+      localDir: local("first"),
+      turns: () => [userTurn("earlier")],
+      pendingOperations: [],
+    });
+    await runTurn(first, {
+      localDir: local("first"),
+      mail: "<m1@example.com>",
+      turns: (prior) => [...prior, userTurn("charge it"), toolCall("c1")],
+      pendingOperations: [gate("c1")],
+      parkOn: "c1",
+    });
+    await runTurn(first, {
+      localDir: local("first"),
+      resume: "c1",
+      turns: (prior) => [...prior, toolResult("c1"), toolCall("c2")],
+      pendingOperations: [gate("c2")],
+      parkOn: "c2",
+    });
+    const parked = await readCommitted(h);
+    if (parked === null) throw new Error("expected committed step state");
+    expect(Object.keys(parked.parkedReplyTargets)).toEqual(["c2"]);
+    expect(parked.connectorState).not.toBeNull();
+
+    const next = await makeStore(h, local("next"), invocation(1, "run-body-2"));
+    expect(await next.restoreFromSubstrate()).toBe(true);
+    const loaded = await next.storage.load();
+    expect(loaded.turns).toEqual([userTurn("earlier")]);
+    expect(loaded.pendingOperations).toEqual([]);
+    expect(loaded.connectorState).toEqual(parked.connectorState);
+    expect(loaded.tokenUsage).toEqual(parked.tokenUsage);
+
+    await pushAndMirror(next, loaded.turns, [userTurn("next event")], {
+      tokenUsageInput: 9,
+    });
+    const committed = await readCommitted(h);
+    expect(committed?.turns).toEqual([
+      userTurn("earlier"),
+      userTurn("next event"),
+    ]);
+    expect(committed?.pendingOperations).toEqual([]);
+    expect(committed?.parkedReplyTargets).toEqual({});
+    expect(committed?.parkedTurnStart).toBeUndefined();
+    expect(committed?.invocation?.runId).toBe("run-body-2");
+    // The rollback is not a prefix of the committed history, so it folds.
+    expect(countWalEntries(h.stateDir)).toBe(0);
+  });
+
+  test("an invocation keeps its own park, and resumes it", async () => {
+    const own = invocation(1, "run-body-1");
+    await runTurn(own, {
+      localDir: local("a"),
+      turns: () => [userTurn("charge it"), toolCall("c1")],
+      pendingOperations: [gate("c1")],
+    });
+
+    const replacement = await makeStore(h, local("b"), own);
+    await replacement.restoreFromSubstrate();
+    const loaded = await replacement.storage.load();
+    expect(loaded.turns).toEqual([userTurn("charge it"), toolCall("c1")]);
+    expect(loaded.pendingOperations).toEqual([gate("c1")]);
+  });
+
+  test("a park recorded locally over a rolled-back state survives a crash before its mirror", async () => {
+    await runTurn(invocation(1, "run-body-1"), {
+      localDir: local("first"),
+      turns: () => [userTurn("earlier"), userTurn("first"), toolCall("c1")],
+      pendingOperations: [gate("c1")],
+    });
+    // The earlier turn was committed before the park in the same checkpoint,
+    // so the park records the start of a turn that began with nothing.
+    expect((await readCommitted(h))?.parkedTurnStart).toBe(0);
+
+    const second = invocation(1, "run-body-2");
+    await runTurn(second, {
+      localDir: local("second"),
+      turns: (prior) => [...prior, userTurn("second"), toolCall("c2")],
+      pendingOperations: [gate("c2")],
+      outcome: "crashed",
+    });
+
+    const resumed = await makeStore(h, local("second"), second);
+    await resumed.restoreFromSubstrate();
+    const loaded = await resumed.storage.load();
+    expect(loaded.turns).toEqual([userTurn("second"), toolCall("c2")]);
+    expect(loaded.pendingOperations).toEqual([gate("c2")]);
+    await resumed.mirrorToSubstrate();
+    const committed = await readCommitted(h);
+    expect(committed?.turns).toEqual([userTurn("second"), toolCall("c2")]);
+    expect(committed?.pendingOperations).toEqual([gate("c2")]);
+    expect(committed?.parkedTurnStart).toBe(0);
+  });
+
+  test("a park's turn start survives the first mirror's fold over a seed", async () => {
+    const seedTurns = [userTurn("imported question"), userTurn("imported")];
+    await h.substrate.writeTree(
+      { kind: "hub" },
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      {
+        files: {
+          [workflowRunStepSeedPath(RUN_ID, STEP_ID)]: JSON.stringify({
+            version: 1,
+            turns: seedTurns,
+            tokenUsage: tokenUsage(1),
+            connectorState: null,
+          }),
+        },
+        message: "write the step's seed",
+      },
+    );
+    await runTurn(invocation(1, "run-body-1"), {
+      localDir: local("first"),
+      turns: (prior) => [...prior, userTurn("charge it"), toolCall("c1")],
+      pendingOperations: [gate("c1")],
+    });
+    expect(readCheckpointMeta(h.stateDir).checkpointSeq).toBe(1);
+    expect((await readCommitted(h))?.parkedTurnStart).toBe(2);
+
+    const next = await makeStore(h, local("next"), invocation(1, "run-body-2"));
+    await next.restoreFromSubstrate();
+    expect((await next.storage.load()).turns).toEqual(seedTurns);
+  });
+
+  test("a park's turn start survives compaction at the checkpoint interval", async () => {
+    const own = invocation(1, "run-body-1");
+    const store = await makeStore(h, local("a"), own);
+    await store.restoreFromSubstrate();
+    let turns: ConversationTurn[] = [];
+    for (let i = 0; i < CHECKPOINT_INTERVAL - 1; i++) {
+      await store.beginTurn({});
+      turns = await pushAndMirror(store, turns, [userTurn(`t${String(i)}`)], {
+        tokenUsageInput: i,
+      });
+    }
+    await store.beginTurn({});
+    turns = [...turns, userTurn("charge it"), toolCall("c1")];
+    await store.storage.writeTurns(turns);
+    await store.storage.writeMetadata({
+      pendingOperations: [gate("c1")],
+      tokenUsage: tokenUsage(CHECKPOINT_INTERVAL),
+    });
+    await store.storage.commit({ message: "park" });
+    await store.mirrorToSubstrate();
+
+    // The park's boundary reached the interval, so the WAL folded.
+    expect(countWalEntries(h.stateDir)).toBe(0);
+    const raw: unknown = JSON.parse(
+      fs.readFileSync(path.join(h.stateDir, "checkpoint.meta.json"), "utf8"),
+    );
+    expect(raw).toMatchObject({ parkedTurnStart: CHECKPOINT_INTERVAL - 1 });
+
+    const next = await makeStore(h, local("next"), invocation(1, "run-body-2"));
+    await next.restoreFromSubstrate();
+    expect((await next.storage.load()).turns).toEqual(
+      turns.slice(0, CHECKPOINT_INTERVAL - 1),
+    );
+  });
+
+  test("a restore refuses a parked turn start past the committed turns", async () => {
+    await h.substrate.writeTreePreservingPrefix(
+      PRINCIPAL,
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      {
+        preservePrefix: STATE_PREFIX,
+        merge: async () => ({
+          [stepStateWalEntryPath(STATE_PREFIX, 0)]: serializeStepStateWalEntry(
+            0,
+            [userTurn("only")],
+            {
+              pendingOperations: [gate("c1")],
+              tokenUsage: tokenUsage(1),
+              connectorState: null,
+              invocation: { runId: "run-body-1", stepId: STEP_ID, attempt: 1 },
+              parkedTurnStart: 2,
+            },
+          ),
+        }),
+        message: "corrupt park start",
+      },
+    );
+
+    for (const runId of ["run-body-1", "run-body-2"]) {
+      const store = await makeStore(h, local(runId), invocation(1, runId));
+      await expect(store.restoreFromSubstrate()).rejects.toThrow(
+        /parked turn starting at turn 2, past its 1 turns/,
+      );
+    }
+  });
+});
+
+describe("durable conversation store over a gate park with no recorded turn start", () => {
+  let h: Harness;
+  const dangling: ConversationTurn = {
+    role: "assistant",
+    content: [
+      { type: "tool_call", id: "call-c1", name: "charge", arguments: {} },
+    ],
+    model: "stub-model",
+    timestamp: 0,
+  };
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    // A park on a gate the way a store wrote it before `parkedTurnStart`
+    // existed: the pending gate and its tool call, and no turn start.
+    await h.substrate.writeTreePreservingPrefix(
+      PRINCIPAL,
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      {
+        preservePrefix: STATE_PREFIX,
+        merge: async () => ({
+          [stepStateWalEntryPath(STATE_PREFIX, 0)]: serializeStepStateWalEntry(
+            0,
+            [userTurn("charge it"), dangling],
+            {
+              pendingOperations: [
+                {
+                  correlationId: "c1",
+                  kind: "approval",
+                  registeredAt: 0,
+                  gateId: "gate-c1",
+                  suspendedCall: {
+                    id: "call-c1",
+                    name: "charge",
+                    arguments: {},
+                  },
+                },
+              ],
+              tokenUsage: tokenUsage(1),
+              connectorState: null,
+              invocation: { runId: "run-body-1", stepId: STEP_ID, attempt: 1 },
+            },
+          ),
+        }),
+        message: "park a gate with no recorded turn start",
+      },
+    );
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(h.baseDir, { recursive: true, force: true });
+  });
+
+  test("another invocation starts over with no conversation and folds its first mirror", async () => {
+    const next = await makeStore(
+      h,
+      path.join(h.baseDir, "next"),
+      invocation(1, "run-body-2"),
+    );
+    expect(await next.restoreFromSubstrate()).toBe(false);
+    const loaded = await next.storage.load();
+    expect(loaded.turns).toEqual([]);
+    expect(loaded.pendingOperations).toEqual([]);
+
+    await pushAndMirror(next, loaded.turns, [userTurn("next event")], {
+      tokenUsageInput: 9,
+    });
+    const committed = await readCommitted(h);
+    expect(committed?.turns).toEqual([userTurn("next event")]);
+    expect(committed?.pendingOperations).toEqual([]);
+    expect(committed?.invocation?.runId).toBe("run-body-2");
+    expect(countWalEntries(h.stateDir)).toBe(0);
+    expect(readCheckpointMeta(h.stateDir)).toMatchObject({
+      checkpointSeq: 2,
+      turnCount: 1,
+    });
+  });
+
+  test("another invocation starts over from the seed when the step has one", async () => {
+    const seed = {
+      version: 1 as const,
+      turns: [userTurn("imported question")],
+      tokenUsage: tokenUsage(11),
+      connectorState: null,
+    };
+    await h.substrate.writeTree(
+      { kind: "hub" },
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      {
+        files: {
+          [workflowRunStepSeedPath(RUN_ID, STEP_ID)]: JSON.stringify(seed),
+        },
+        message: "write the step's seed",
+      },
+    );
+    const next = await makeStore(
+      h,
+      path.join(h.baseDir, "next"),
+      invocation(1, "run-body-2"),
+    );
+    expect(await next.restoreFromSubstrate()).toBe(true);
+    const loaded = await next.storage.load();
+    expect(loaded.turns).toEqual(seed.turns);
+    expect(loaded.pendingOperations).toEqual([]);
+
+    await pushAndMirror(next, loaded.turns, [userTurn("next event")], {
+      tokenUsageInput: 12,
+    });
+    const committed = await readCommitted(h);
+    expect(committed?.turns).toEqual([...seed.turns, userTurn("next event")]);
+    expect(countWalEntries(h.stateDir)).toBe(0);
+  });
+
+  test("the invocation that parked continues its own park as it is", async () => {
+    const own = await makeStore(
+      h,
+      path.join(h.baseDir, "own"),
+      invocation(1, "run-body-1"),
+    );
+    expect(await own.restoreFromSubstrate()).toBe(true);
+    const loaded = await own.storage.load();
+    expect(loaded.turns).toEqual([userTurn("charge it"), dangling]);
+    expect(loaded.pendingOperations.map((op) => op.correlationId)).toEqual([
+      "c1",
+    ]);
+  });
+
+  test("a resume of the park that parks again records no turn start, so another invocation starts over", async () => {
+    const own = await makeStore(
+      h,
+      path.join(h.baseDir, "own"),
+      invocation(1, "run-body-1"),
+    );
+    await own.restoreFromSubstrate();
+    await own.beginTurn({ resume: "c1" });
+    const prior = (await own.storage.load()).turns;
+    const result: ConversationTurn = {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          callId: "call-c1",
+          content: [{ type: "text", text: "ok" }],
+        },
+      ],
+      timestamp: 0,
+    };
+    const second: ConversationTurn = {
+      role: "assistant",
+      content: [
+        { type: "tool_call", id: "call-c2", name: "charge", arguments: {} },
+      ],
+      model: "stub-model",
+      timestamp: 0,
+    };
+    await own.storage.writeTurns([...prior, result, second]);
+    await own.storage.writeMetadata({
+      pendingOperations: [
+        {
+          correlationId: "c2",
+          kind: "approval",
+          registeredAt: 0,
+          gateId: "gate-c2",
+          suspendedCall: { id: "call-c2", name: "charge", arguments: {} },
+        },
+      ],
+      tokenUsage: tokenUsage(2),
+    });
+    await own.storage.commit({ message: "resume parks again" });
+    await own.mirrorToSubstrate();
+    expect((await readCommitted(h))?.parkedTurnStart).toBeUndefined();
+
+    const next = await makeStore(
+      h,
+      path.join(h.baseDir, "next"),
+      invocation(1, "run-body-2"),
+    );
+    expect(await next.restoreFromSubstrate()).toBe(false);
+    expect((await next.storage.load()).turns).toEqual([]);
+  });
+});
+
+// State an earlier version wrote carries no stamp: a single-step agent's
+// state, and a multi-step step's state that carries only a bare `attempt`.
+for (const [label, legacyStamp] of [
+  ["no stamp", {}],
+  ["a bare attempt", { attempt: 1 }],
+] as const) {
+  describe(`durable conversation store over a gate park with ${label}`, () => {
+    let h: Harness;
+    const dangling: ConversationTurn = {
+      role: "assistant",
+      content: [
+        { type: "tool_call", id: "call-c1", name: "charge", arguments: {} },
+      ],
+      model: "stub-model",
+      timestamp: 0,
+    };
+
+    beforeEach(async () => {
+      h = await makeHarness();
+      await h.substrate.writeTreePreservingPrefix(
+        PRINCIPAL,
+        h.workflowRunRepoId,
+        WORKFLOW_RUN_REF,
+        {
+          preservePrefix: STATE_PREFIX,
+          merge: async () => ({
+            [stepStateWalEntryPath(STATE_PREFIX, 0)]: JSON.stringify({
+              seq: 0,
+              turns: [userTurn("charge it"), dangling],
+              metadata: {
+                pendingOperations: [
+                  {
+                    correlationId: "c1",
+                    kind: "approval",
+                    registeredAt: 0,
+                    gateId: "gate-c1",
+                    suspendedCall: {
+                      id: "call-c1",
+                      name: "charge",
+                      arguments: {},
+                    },
+                  },
+                ],
+                tokenUsage: tokenUsage(1),
+                connectorState: null,
+                ...legacyStamp,
+              },
+            }),
+          }),
+          message: `park a gate with ${label}`,
+        },
+      );
+    });
+
+    afterEach(async () => {
+      await fs.promises.rm(h.baseDir, { recursive: true, force: true });
+    });
+
+    function resumeOf(correlationId: string): DurableConversationLifetime {
+      return {
+        invocation: { runId: RUN_ID, stepId: STEP_ID, attempt: 1 },
+        resumes: correlationId,
+      };
+    }
+
+    test("an approval resume of the gate continues the park and commits the turn stamped", async () => {
+      const own = await makeStore(
+        h,
+        path.join(h.baseDir, "own"),
+        resumeOf("c1"),
+      );
+      expect(await own.restoreFromSubstrate()).toBe(true);
+      const loaded = await own.storage.load();
+      expect(loaded.turns).toEqual([userTurn("charge it"), dangling]);
+      expect(
+        loaded.pendingOperations.some(
+          (op) => op.correlationId === "c1" && op.suspendedCall !== undefined,
+        ),
+      ).toBe(true);
+
+      await own.beginTurn({ resume: "c1" });
+      const result: ConversationTurn = {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            callId: "call-c1",
+            content: [{ type: "text", text: "ok" }],
+          },
+        ],
+        timestamp: 0,
+      };
+      const done: ConversationTurn = {
+        role: "assistant",
+        content: [{ type: "text", text: "charged" }],
+        model: "stub-model",
+        timestamp: 0,
+      };
+      await pushAndMirror(own, loaded.turns, [result, done], {
+        tokenUsageInput: 2,
+      });
+
+      const committed = await readCommitted(h);
+      expect(committed?.turns).toEqual([
+        userTurn("charge it"),
+        dangling,
+        result,
+        done,
+      ]);
+      expect(committed?.pendingOperations).toEqual([]);
+      expect(committed?.invocation).toEqual({
+        runId: RUN_ID,
+        stepId: STEP_ID,
+        attempt: 1,
+      });
+      // The resume continues the committed history, so its mirror appends.
+      expect(countWalEntries(h.stateDir)).toBe(2);
+    });
+
+    test("an invocation that resumes another gate starts over", async () => {
+      const other = await makeStore(
+        h,
+        path.join(h.baseDir, "other"),
+        resumeOf("c2"),
+      );
+      expect(await other.restoreFromSubstrate()).toBe(false);
+      const loaded = await other.storage.load();
+      expect(loaded.turns).toEqual([]);
+      expect(loaded.pendingOperations).toEqual([]);
+    });
+
+    test("an invocation that resumes no gate starts over", async () => {
+      const next = await makeStore(
+        h,
+        path.join(h.baseDir, "next"),
+        invocation(1),
+      );
+      expect(await next.restoreFromSubstrate()).toBe(false);
+      expect((await next.storage.load()).turns).toEqual([]);
+    });
+  });
+}
+
+describe("an invocation's reply by mail", () => {
+  let h: Harness;
+  // Set to make the local store's commits fail, as a full or broken local
+  // disk would. The substrate signs with its own key, so it still commits.
+  let localCommitsFail: boolean;
+  const SENT = "<sent-1@agent.example.com>";
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    localCommitsFail = false;
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(h.baseDir, { recursive: true, force: true });
+  });
+
+  function storeFor(
+    name: string,
+    lifetime: DurableConversationLifetime,
+  ): Promise<DurableConversationStore> {
+    return createDurableConversationStore({
+      localStoreDir: path.join(h.baseDir, name),
+      signer: async (payload) => {
+        if (localCommitsFail) throw new Error("local disk is full");
+        return h.signer(payload);
+      },
+      substrate: h.substrate,
+      workflowRunRepoId: h.workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: RUN_ID,
+      stepId: STEP_ID,
+      lifetime,
+      mailboxAddress: "agent@example.com",
+    });
+  }
+
+  const reply: ConversationTurn = {
+    role: "assistant",
+    content: [{ type: "text", text: "charged" }],
+    model: "stub-model",
+    timestamp: 0,
+  };
+
+  /**
+   * Run a mail turn up to its sent reply: seed the mail, commit the turn
+   * locally the way the reactor does, and compose the reply.
+   */
+  async function replyTurn(store: DurableConversationStore): Promise<{
+    turns: ConversationTurn[];
+    references: readonly string[];
+  }> {
+    await store.restoreFromSubstrate();
+    await store.beginTurn({});
+    await store.seedInbound(
+      createInboundMessage({
+        from: "alice@example.com",
+        to: "agent@example.com",
+        content: "please charge the card",
+        messageId: "<a@example.com>",
+        interchangeType: "conversation.message",
+      }),
+    );
+    const turns = [userTurn("please charge the card"), reply];
+    await store.storage.writeTurns(turns);
+    await store.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(1),
+    });
+    await store.storage.commit({ message: "reply" });
+    const parts = store.composeReply();
+    if (parts === null) throw new Error("expected a reply address");
+    return { turns, references: parts.references ?? [] };
+  }
+
+  test("a reply whose local thread record fails to save commits its turn and the thread advance", async () => {
+    const store = await storeFor("own", invocation(1, "run-body-1"));
+    const { turns, references } = await replyTurn(store);
+
+    localCommitsFail = true;
+    await store.onReplySent(
+      { messageId: SENT, status: "delivered" },
+      references,
+    );
+    await store.mirrorToSubstrate();
+    localCommitsFail = false;
+
+    const committed = await readCommitted(h);
+    expect(committed?.turns).toEqual(turns);
+    expect(committed?.connectorState?.lastMessageId).toBe(SENT);
+
+    const next = await storeFor("next", invocation(1, "run-body-2"));
+    expect(await next.restoreFromSubstrate()).toBe(true);
+    const loaded = await next.storage.load();
+    expect(loaded.turns).toEqual(turns);
+    expect(loaded.connectorState?.lastMessageId).toBe(SENT);
+  });
+
+  test("a same-host restore of the invocation after its local thread record failed commits the thread from before the reply", async () => {
+    const store = await storeFor("own", invocation(1, "run-body-1"));
+    const { turns, references } = await replyTurn(store);
+    await store.onReplySent(
+      { messageId: SENT, status: "delivered" },
+      references,
+    );
+    // The local metadata write fails on the file system, so the local store
+    // keeps the thread from before the reply.
+    fs.chmodSync(path.join(h.baseDir, "own"), 0o555);
+    try {
+      await store.mirrorToSubstrate();
+    } finally {
+      fs.chmodSync(path.join(h.baseDir, "own"), 0o755);
+    }
+    expect((await readCommitted(h))?.connectorState?.lastMessageId).toBe(SENT);
+
+    // An input resume of the same invocation on the same host keeps the
+    // local store, and its next turn commits the older thread.
+    const again = await storeFor("own", invocation(1, "run-body-1"));
+    await again.restoreFromSubstrate();
+    expect((await again.storage.load()).connectorState?.lastMessageId).toBe(
+      "<a@example.com>",
+    );
+    await again.beginTurn({});
+    await again.storage.writeTurns([...turns, userTurn("next input")]);
+    await again.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(2),
+    });
+    await again.storage.commit({ message: "next" });
+    await again.mirrorToSubstrate();
+    expect((await readCommitted(h))?.connectorState?.lastMessageId).toBe(
+      "<a@example.com>",
+    );
+  });
+
+  test("a sent reply's thread advance reaches the local store once its turn commits", async () => {
+    const store = await storeFor("own", invocation(1, "run-body-1"));
+    const { references } = await replyTurn(store);
+
+    await store.onReplySent(
+      { messageId: SENT, status: "delivered" },
+      references,
+    );
+    expect((await store.storage.load()).connectorState?.lastMessageId).toBe(
+      "<a@example.com>",
+    );
+    await store.mirrorToSubstrate();
+
+    expect((await store.storage.load()).connectorState?.lastMessageId).toBe(
+      SENT,
+    );
+  });
+
+  test("a sent reply the thread refuses commits the turn without the thread advance", async () => {
+    const store = await storeFor("own", invocation(1, "run-body-1"));
+    const { turns, references } = await replyTurn(store);
+
+    // A turn that answers no mail has no thread to advance.
+    await store.beginTurn({});
+    await expect(
+      store.onReplySent({ messageId: SENT, status: "delivered" }, references),
+    ).rejects.toThrow();
+    await store.mirrorToSubstrate();
+
+    const committed = await readCommitted(h);
+    expect(committed?.turns).toEqual(turns);
+    expect(committed?.connectorState?.lastMessageId).toBe("<a@example.com>");
+  });
+
+  test("a failed reactor checkpoint still stops the mirror of a turn whose reply was sent", async () => {
+    const store = await storeFor("own", invocation(1, "run-body-1"));
+    const { references } = await replyTurn(store);
+    // The reactor's next local commit fails, so the local files can lag the
+    // agent's state.
+    localCommitsFail = true;
+    await store.storage.writeTurns([userTurn("more")]);
+    await expect(store.storage.commit({ message: "turn" })).rejects.toThrow(
+      /local disk is full/,
+    );
+    localCommitsFail = false;
+
+    await store.onReplySent(
+      { messageId: SENT, status: "delivered" },
+      references,
+    );
+    await expect(store.mirrorToSubstrate()).rejects.toThrow(
+      /failed its last checkpoint/,
+    );
+    expect(await readCommitted(h)).toBeNull();
   });
 });

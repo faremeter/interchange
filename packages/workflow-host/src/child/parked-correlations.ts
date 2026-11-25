@@ -88,7 +88,7 @@ export async function collectParkedApprovalCorrelations(
       if (awaited === undefined) continue;
       const correlationId = correlationIdFromSignalName(awaited.name);
       if (correlationId === undefined) continue;
-      // An `"input"` park (a long-lived run awaiting its next mail) reduces to
+      // An `"input"` park (an onTrigger section awaiting its next event) reduces to
       // the same `awaiting-signal` on a reserved channel as an approval, but it
       // carries NO snapshot and is never hub-registered -- the run's owner
       // delivers the input directly. Skip it: enumerating it would call
@@ -110,10 +110,15 @@ export async function collectParkedApprovalCorrelations(
           `workflow-child parked-correlations: run ${run.runId} step ${step.stepId} is parked on control-plane correlation ${correlationId}, but no loadParkedApproval binding is wired to recover its snapshot`,
         );
       }
+      // Self-discovery returns top-level runs only, so each run's step path
+      // prefix is empty. The walk extends it down to a body that holds the
+      // park.
       const snapshot = await findParkedApprovalSnapshot({
-        repoStore: { read: (id) => bodyLogForRelays(bodyEnv, id) },
+        readLog: (id, stepPathPrefix) =>
+          bodyLogForRelays(bodyEnv, id, stepPathPrefix),
         load: opts.loadParkedApproval,
         runId: run.runId,
+        stepPathPrefix: [],
         state: run.resumedState,
         stepId: step.stepId,
         attempt: step.currentAttempt,

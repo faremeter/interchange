@@ -99,6 +99,7 @@ export {
   type StepInvoker,
   type SuspendableChildHandle,
   type SuspendableChildPark,
+  type SuspendableChildSettlement,
   type WorkflowPark,
   type WorkflowRun,
   type WorkflowRuntimeEnv,

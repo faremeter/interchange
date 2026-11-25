@@ -29,7 +29,7 @@
 //    Supervisor's keypair (downstream: supervisor -> child).
 //    The supervisor mints the keypair at spawn time, signs every
 //    downstream control frame (trigger.fire, signal.deliver, drain,
-//    recycle, shutdown, grants-updated, sources-updated) with the
+//    recycle, shutdown, grants-updated, credentials-updated) with the
 //    private half, and passes the corresponding 32-byte public half
 //    to the child in spawn-time env (`HOST_PUBKEY`). The
 //    SUPERVISOR'S PRIVATE KEY NEVER LEAVES THE SUPERVISOR'S ADDRESS
@@ -142,7 +142,6 @@ export {
   MailboxNotifyHeaders,
   OutboundAttachmentPayload,
   OutboundMessagePayload,
-  SourcesUpdatedData,
   createControlChannelSender,
   receiveControlChannel,
   type ControlChannelSender,

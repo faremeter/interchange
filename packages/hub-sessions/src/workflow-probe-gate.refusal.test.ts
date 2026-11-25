@@ -65,6 +65,15 @@ describe("describeProbeGateRefusal", () => {
     [
       {
         ok: false,
+        reason: "step_place_keys_too_long",
+        overlongStepPlaceKeys: [],
+        message: "key a.b is too long",
+      },
+      "step_place_keys_too_long: key a.b is too long",
+    ],
+    [
+      {
+        ok: false,
         reason: "steps_without_grant_record",
         stepsWithoutGrantRecord: [],
         message: "step b has no record",

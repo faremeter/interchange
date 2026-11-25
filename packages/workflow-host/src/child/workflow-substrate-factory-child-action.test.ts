@@ -89,6 +89,8 @@ const CREDENTIAL_BODY_ID = "body-credential";
 const CREDENTIAL_LOOP_BODY_ID = "body-credential-loop";
 const CREDENTIAL_LOOP_ITERATION_ID = "body-credential-loop-iteration";
 const CREDENTIAL_AFTER_STEP_ID = "body-credential-after-step";
+const PLACE_BODY_ID = "body-place";
+const PLACE_LOOP_ITERATION_ID = "body-place-loop-iteration";
 const CREDENTIAL_HANDLE = "api-token";
 const CREDENTIAL_ID = "cred-child-action";
 const RESOLVE_CONSUMER = actionConsumer("resolveToken");
@@ -323,6 +325,8 @@ function makeDeps(
       [CREDENTIAL_LOOP_BODY_ID]: {},
       [CREDENTIAL_LOOP_ITERATION_ID]: {},
       [CREDENTIAL_AFTER_STEP_ID]: {},
+      [PLACE_BODY_ID]: {},
+      [PLACE_LOOP_ITERATION_ID]: {},
     },
     credentialProviders: createCredentialProviderRegistry(
       builtinCredentialProviders(),
@@ -373,6 +377,7 @@ describe("spawned body action steps", () => {
         signal: new AbortController().signal,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["section"],
       },
       () => undefined,
     );
@@ -411,6 +416,7 @@ describe("spawned body action steps", () => {
         signal: new AbortController().signal,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["section"],
       },
       () => undefined,
     );
@@ -450,6 +456,7 @@ describe("spawned body action steps", () => {
         signal: new AbortController().signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["spawn"],
       },
       () => undefined,
     );
@@ -459,6 +466,76 @@ describe("spawned body action steps", () => {
     if (event.kind !== "terminal") throw new Error("expected a terminal");
     expect(event.terminalStatus).toBe("completed");
     expect(await fs.promises.readFile(marker, "utf8")).toBe("shipped");
+  });
+
+  test("a step in a childWorkflow body, and in a loop inside it, gets its place", async () => {
+    const substrate = await makeSubstrate("child-action-place-");
+    const parentRunId = "run-parent-place";
+    await seedRunGrants(substrate, parentRunId, [grant(SHIP_RESOURCE)]);
+    const agent = defineAgent({
+      id: "place-agent",
+      systemPrompt: "s",
+      tools: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "m" }] },
+    });
+    const body = defineWorkflow({
+      id: PLACE_BODY_ID,
+      trigger: { type: "manual" },
+      steps: {
+        work: step({ agent }),
+        rework: loop({
+          body: defineWorkflow({
+            id: PLACE_LOOP_ITERATION_ID,
+            trigger: { type: "manual" },
+            steps: { inLoop: step({ agent }) },
+          }),
+          while: "once",
+          carry: "next",
+          input: { literal: { pass: 0 } },
+          maxIterations: 2,
+          onExhausted: "exhausted",
+        }),
+        exhausted: escalation({ to: "operator", after: ["rework"] }),
+      },
+    });
+    // `work` and the loop run concurrently, so places are grouped by step.
+    const places = new Map<string | undefined, unknown[]>();
+    const recordPlace: SidecarChildStepInvoker = async (req) => {
+      const stepId = req.authzContext.stepId;
+      places.set(stepId, [...(places.get(stepId) ?? []), req.place]);
+      return { output: null };
+    };
+    const runChild = createSidecarRunChild({
+      ...makeDeps(substrate, closurePackageDir),
+      invokeStep: recordPlace,
+    });
+
+    const result = await runChild(
+      {
+        definition: body,
+        definitionRef: REF,
+        childRunId: "run-child-place",
+        input: null,
+        parentRunId,
+        parentStepId: "spawn",
+        signal: new AbortController().signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+        stepPathPrefix: ["section", "spawn"],
+      },
+      () => undefined,
+    );
+
+    const event = await result.next(noWake);
+    expect(event.kind).toBe("terminal");
+    if (event.kind !== "terminal") throw new Error("expected a terminal");
+    expect(event.terminalStatus).toBe("completed");
+    const inLoop = { stepPath: ["section", "spawn", "rework", "inLoop"] };
+    expect(Object.fromEntries(places)).toEqual({
+      work: [{ stepPath: ["section", "spawn", "work"] }],
+      inLoop: [inLoop, inLoop],
+    });
   });
 
   test("a body action composes mail through the deployment's signer", async () => {
@@ -488,6 +565,7 @@ describe("spawned body action steps", () => {
         signal: new AbortController().signal,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["section"],
       },
       () => undefined,
     );
@@ -683,6 +761,7 @@ function spawnInput(
     signal: new AbortController().signal,
     depth: 0,
     maxChildSpawnDepth: 32,
+    stepPathPrefix: ["section"],
   };
 }
 
@@ -721,6 +800,7 @@ describe("spawned body action credentials", () => {
         ...spawnInput(credentialBody(), "run-child-cred", parentRunId, marker),
         parentStepId: "spawn",
         depth: 1,
+        stepPathPrefix: ["spawn"],
       },
       () => undefined,
       {
@@ -864,6 +944,7 @@ describe("spawned body action credentials", () => {
         ),
         parentStepId: "spawn",
         depth: 1,
+        stepPathPrefix: ["spawn"],
       },
       () => undefined,
       { material: credentialCell(), parentGrants: rootGrantsOf(root) },

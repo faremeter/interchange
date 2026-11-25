@@ -1,6 +1,5 @@
 import { describe, test, expect } from "bun:test";
 
-import type { InferenceSource } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { PackRejectedError } from "@intx/pack-transport";
@@ -12,7 +11,6 @@ import {
   createMultistepDrainRouter,
   createMultistepMailRouter,
   createMultistepSignalRouter,
-  createMultistepSourcesRouter,
   createMultistepCredentialsRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
@@ -1410,102 +1408,6 @@ describe("createMultistepCredentialsRouter", () => {
     await expect(router.tryRoute(frame)).rejects.toThrow(
       /deliverCredentials failed/,
     );
-  });
-});
-
-describe("createMultistepSourcesRouter", () => {
-  const source: InferenceSource = {
-    id: "primary",
-    provider: "anthropic",
-    baseURL: "https://api.anthropic.com",
-    credentialId: "sk-x",
-    model: "claude-test",
-  };
-  const frame = {
-    type: "sources.update" as const,
-    agentAddress: "dep@integration.interchange",
-    sources: [source],
-    defaultSource: "primary",
-  };
-
-  test("tryRoute returns false when no handler is registered", async () => {
-    const router = createMultistepSourcesRouter();
-    expect(await router.tryRoute(frame)).toBe(false);
-  });
-
-  test("a registered handler receives the rotation and tryRoute returns true", async () => {
-    const router = createMultistepSourcesRouter();
-    const received: { sources: InferenceSource[]; defaultSource: string }[] =
-      [];
-    router.register("dep@integration.interchange", async (args) => {
-      received.push(args);
-    });
-    expect(await router.tryRoute(frame)).toBe(true);
-    expect(received).toHaveLength(1);
-    expect(received[0]?.sources).toEqual([source]);
-    expect(received[0]?.defaultSource).toBe("primary");
-  });
-
-  test("registration is per-address; an unrelated address falls through", async () => {
-    const router = createMultistepSourcesRouter();
-    router.register("dep-a@integration.interchange", async () => undefined);
-    expect(
-      await router.tryRoute({
-        ...frame,
-        agentAddress: "dep-b@integration.interchange",
-      }),
-    ).toBe(false);
-  });
-
-  test("unregister removes the handler", async () => {
-    const router = createMultistepSourcesRouter();
-    router.register("dep@integration.interchange", async () => undefined);
-    router.unregister("dep@integration.interchange");
-    expect(await router.tryRoute(frame)).toBe(false);
-  });
-
-  test("rejects a rotation with duplicate ids for a registered address without dispatching", async () => {
-    const router = createMultistepSourcesRouter();
-    let called = false;
-    router.register("dep@integration.interchange", async () => {
-      called = true;
-    });
-    // Duplicate ids would crash the child's control-channel receiver on
-    // its narrow, so the router rejects before dispatch.
-    await expect(
-      router.tryRoute({ ...frame, sources: [source, { ...source }] }),
-    ).rejects.toThrow(/unique ids/);
-    expect(called).toBe(false);
-  });
-
-  test("rejects a rotation whose default is not the head source", async () => {
-    const router = createMultistepSourcesRouter();
-    let called = false;
-    router.register("dep@integration.interchange", async () => {
-      called = true;
-    });
-    const second = { ...source, id: "secondary" };
-    await expect(
-      router.tryRoute({
-        ...frame,
-        sources: [source, second],
-        defaultSource: "secondary",
-      }),
-    ).rejects.toThrow(/first element is the default/);
-    expect(called).toBe(false);
-  });
-
-  test("an invalid rotation for an unregistered address is unrouted, not rejected", async () => {
-    const router = createMultistepSourcesRouter();
-    // Registration is checked before validation: an unregistered address
-    // reports `false` and its (here invalid) payload is never inspected.
-    expect(
-      await router.tryRoute({
-        ...frame,
-        agentAddress: "unregistered@integration.interchange",
-        sources: [source, { ...source }],
-      }),
-    ).toBe(false);
   });
 });
 

@@ -12,6 +12,7 @@ import type {
   CredentialCapability,
   HostCredentialCapability,
   MailSigner,
+  StepPlace,
 } from "@intx/types";
 import type {
   ApprovalSnapshot,
@@ -190,20 +191,30 @@ export interface StepInvokeRequest {
    * agent's defaults.
    */
   inference?: PerCallInferenceOptions;
+  /**
+   * The step's `replyByMail` option, resolved: `false` when the step does
+   * not set it. The invoker sends the step's final text as mail only when
+   * this is `true` and the turn answers mail.
+   */
+  replyByMail: boolean;
   /** Workflow-runtime context for every authz call inside the step. */
   authzContext: AuthorizeContext;
+  /**
+   * The step's place in its deployment's run tree. It is the same each time
+   * the same step runs: on a retry, on a resume, and when a loop or an
+   * onTrigger section runs its body again.
+   */
+  place: StepPlace;
   /** Cancelled when the step is being torn down (timeout, cancellation). */
   signal: AbortSignal;
   /**
    * Present only on a resume re-invocation of a step that previously
-   * suspended. `kind` carries the park kind the step suspended on, so the
-   * invoker synthesizes the right inbound: an `"approval"` resume delivers a
-   * body stamped with `correlationId` so the reactor correlates it with
-   * the rehydrated gate; an `"input"` resume delivers the `decision` as a
-   * plain next user turn (there is no gate to match). Absent on the first
-   * invocation, where the invoker drives a plain `agent.send`.
+   * suspended on an approval. The invoker delivers a body stamped with
+   * `correlationId` so the reactor correlates it with the rehydrated gate.
+   * Absent on the first invocation, where the invoker drives a plain
+   * `agent.send`.
    */
-  resume?: { correlationId: string; decision: unknown; kind: ControlParkKind };
+  resume?: { correlationId: string; decision: unknown };
 }
 
 /**
@@ -215,13 +226,8 @@ export interface StepInvokeRequest {
  * as mandatory), so a snapshot-less approval is unrepresentable here rather
  * than resting on the runtime guard alone.
  *
- * An invoker can ONLY suspend as an approval. The `"input"` control-plane
- * park (a long-lived step awaiting its next trigger) is minted exclusively by
- * the RUNTIME's trigger-budget re-arm -- never by an invoker -- which is what
- * keeps the finite-budget respawn seed sound: every input `SignalAwaited` in
- * the durable log is a runtime re-arm, so counting them counts turns
- * serviced. Offering an input arm here would let a host invoker emit input
- * parks that inflate that count.
+ * An invoker can ONLY suspend as an approval: a step runs one turn per
+ * invocation, and the workflow decides when it runs again.
  */
 export type StepInvokeResult =
   | { output: unknown }
@@ -413,6 +419,12 @@ export type SpawnChildWorkflow = (input: {
   /** The tree-wide spawn-depth ceiling, threaded to the child run. */
   maxChildSpawnDepth: number;
   /**
+   * The child run's step path prefix: the parent run's prefix plus the
+   * `childWorkflow` step id. The spawner threads it into the child run so the
+   * child's steps know their place in the run tree. See `StepPlace`.
+   */
+  stepPathPrefix: readonly string[];
+  /**
    * Re-adopt a child that was mid-flight when the process crashed. Drive
    * `runtimeRun` from this durable log instead of `input`. Omit the field
    * when the child log is empty: an empty array is a resume with no
@@ -427,9 +439,8 @@ export type SpawnChildWorkflow = (input: {
  * An approval park surfaced from a suspendable child body: the reserved
  * correlation the child parked on and the approver-facing snapshot, so the
  * parent (runOnTrigger) can proxy the approval up its OWN run's park
- * machinery on the same correlation. An input park is not an approval: a
- * handle built with `surfaceInputPark` returns it as its own event, and
- * every other handle rejects it.
+ * machinery on the same correlation. An input park is not an approval, and
+ * every handle rejects it.
  */
 export type SuspendableChildPark = {
   correlationId: string;
@@ -437,12 +448,22 @@ export type SuspendableChildPark = {
 };
 
 /**
+ * How a suspendable child body run settled, as its handle's teardown sees it.
+ * `terminal`: the run's `complete` resolved, so its terminal event is in the
+ * log. `uncommitted`: `complete` rejected, for example on a repo write
+ * failure, and the log has no terminal. Recovery drives such a run again from
+ * its durable prefix, so the teardown must keep what that recovery reads.
+ */
+export type SuspendableChildSettlement =
+  | { kind: "terminal"; terminalStatus: "completed" | "failed" | "cancelled" }
+  | { kind: "uncommitted" };
+
+/**
  * A live handle to a running suspendable child body. `next` resolves each
  * time the child parks on an approval (the caller proxies it up and, once
  * granted, calls `resume`), parks on an author `awaitSignal` gate (surfaced as
  * `signal-park` so the caller proxies it up as a signal-relay await and
- * `deliverSignal`s the resolved signal back), surfaces an input park when the
- * handle was built to, or reaches a terminal. `resume`
+ * `deliverSignal`s the resolved signal back), or reaches a terminal. `resume`
  * delivers the granted decision to the child's reserved correlation channel;
  * `deliverSignal` delivers a signal on the body's own author-chosen name.
  * Both unblock the body's awaiter so it continues.
@@ -463,7 +484,6 @@ export type SuspendableChildHandle = {
   ): Promise<
     | { kind: "park"; park: SuspendableChildPark }
     | { kind: "signal-park"; name: string; timeout?: number }
-    | { kind: "input-park"; correlationId: string }
     | { kind: "terminal"; terminalStatus: "completed" | "failed" | "cancelled" }
   >;
   resume(correlationId: string, decision: unknown): Promise<void>;
@@ -567,6 +587,13 @@ export type SpawnSuspendableChild = (input: {
   depth: number;
   /** The tree-wide spawn-depth ceiling, threaded into the body run. */
   maxChildSpawnDepth: number;
+  /**
+   * The body run's step path prefix: the container run's prefix plus the
+   * container step id (the loop or the onTrigger section). Every occurrence
+   * of the same container gets the same prefix, so a body step has the same
+   * place each time the container runs its body. See `StepPlace`.
+   */
+  stepPathPrefix: readonly string[];
   resumeFromEvents?: readonly WorkflowEvent[];
 }) => Promise<SuspendableChildHandle>;
 
@@ -662,12 +689,15 @@ export type ParkedApprovalOp = {
 /**
  * Read-only recovery hook the resume classifier consults: enumerate the durable
  * pending approval operations a step left behind, keyed by
- * `{ runId, stepId, attempt }`. See `WorkflowRuntimeEnv.readParkedApprovalOps`.
+ * `{ runId, stepId, attempt }`. `place` is the step's place in the run tree,
+ * as its `StepInvokeRequest` carried it. See
+ * `WorkflowRuntimeEnv.readParkedApprovalOps`.
  */
 export type ReadParkedApprovalOps = (args: {
   runId: string;
   stepId: string;
   attempt: number;
+  place: StepPlace;
 }) => Promise<ParkedApprovalOp[]>;
 
 /**
@@ -678,6 +708,7 @@ export type LoadParkedApproval = (args: {
   runId: string;
   stepId: string;
   attempt: number;
+  place: StepPlace;
   correlationId: string;
 }) => Promise<ApprovalSnapshot | undefined>;
 
@@ -692,6 +723,7 @@ export type PersistRecoveredPark = (args: {
   runId: string;
   stepId: string;
   attempt: number;
+  place: StepPlace;
   correlationId: string;
 }) => Promise<void>;
 
@@ -733,11 +765,9 @@ export interface WorkflowRuntimeEnv {
    * {@link SpawnSuspendableChild}). Optional: a host that does not wire it
    * does not support onTrigger sections, and `runOnTrigger` fails loudly.
    *
-   * Both seams return a {@link SuspendableChildHandle}. `runChildWorkflow`
-   * drives `spawnChild` across the child's parks, including an input park.
-   * This callback is driven across approval and author-signal parks. An
-   * input park here is rejected: a loop or `onTrigger` body has no separate
-   * input channel of its own.
+   * Both seams return a {@link SuspendableChildHandle}, driven across
+   * approval and author-signal parks. Both reject an input park: a child or
+   * body run has no input channel of its own.
    */
   spawnSuspendableChild?: SpawnSuspendableChild;
   /**
@@ -845,7 +875,7 @@ export interface WorkflowRuntimeEnv {
    * BEFORE the `SignalAwaited` flushed -- resumable, by reconstructing the
    * missing `SignalAwaited` and re-parking -- from a genuine crash mid-agent
    * turn, which stays a terminal failure. Production wires it to the sidecar's
-   * durable step store (cold isogit / warm substrate). A host that does not
+   * durable step store. A host that does not
    * wire it -- runLocal -- leaves every crashed invocation a terminal failure,
    * the pre-recovery behavior.
    */

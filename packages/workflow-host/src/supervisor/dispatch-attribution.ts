@@ -59,7 +59,7 @@ function countEntries(dir: string): number {
  * segment is `urlEncoded(address)` on disk; rather than re-deriving the
  * exact encoding (and risking drift from the kind handler), enumerate the
  * address segments present and sum each one's `consumed/` fan-out. For a
- * single warm deployment there is exactly one segment, but the sum is
+ * single-address deployment there is exactly one segment, but the sum is
  * correct for any number.
  */
 function countConsumed(repoDir: string): number {

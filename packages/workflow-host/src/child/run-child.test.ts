@@ -12,6 +12,7 @@ import {
   computeLiveDefinitionHash,
   createInMemoryRepoStore,
   createTerminalChildHandle,
+  loopBodyRunId,
   unavailableActionCredentials,
 } from "@intx/workflow";
 import { beginDelivery, commitBuffered } from "@intx/workflow/runtime";
@@ -37,18 +38,21 @@ import {
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import {
   createWorkflowStepInvoker,
+  type StepBuild,
   type StepEnvBase,
 } from "../adapters/step-invoker";
+import { createDurableConversationStore } from "../conversation-state";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import { noopAuditStore } from "@intx/agent/testing";
 import type { Agent, SendResult } from "@intx/agent";
 import type {
   BlobReader,
-  ContextStore,
+  ConversationTurn,
   InboundMessage,
   InferenceSource,
   Mail,
 } from "@intx/types/runtime";
+import { stepPlaceKey } from "@intx/types/step-place";
 
 import {
   createMailboxWatchRegistry,
@@ -60,9 +64,15 @@ import {
 } from "./index";
 import type { MailboxEvent } from "@intx/types/runtime";
 import { createParkReleases } from "./park-releases";
-import { emitParkNotify, emitTerminalEvent } from "./run-child";
+import {
+  emitParkNotify,
+  emitTerminalEvent,
+  type StepSources,
+} from "./run-child";
+import { createStoreStepConversation } from "./store-step-conversation";
 import type {
   RunResult,
+  StepInvokeRequest,
   WorkflowDefinition,
   WorkflowEvent,
   WorkflowPark,
@@ -332,6 +342,7 @@ async function materializeClosure(
     steps: Record<string, unknown>;
     stepOrder: string[];
   },
+  loopsSource?: string,
 ): Promise<{
   packageDir: string;
   approvedHash: string;
@@ -343,7 +354,10 @@ async function materializeClosure(
     JSON.stringify({
       name: "@fixture/run-child",
       version: "1.0.0",
-      interchange: { workflow: "workflow.mjs" },
+      interchange: {
+        workflow: "workflow.mjs",
+        ...(loopsSource !== undefined ? { loops: "loops.mjs" } : {}),
+      },
     }),
     "utf8",
   );
@@ -352,6 +366,9 @@ async function materializeClosure(
     `export const workflow = ${JSON.stringify(definition)};\n`,
     "utf8",
   );
+  if (loopsSource !== undefined) {
+    await fs.writeFile(path.join(packageDir, "loops.mjs"), loopsSource, "utf8");
+  }
   const live = await loadWorkflowDefinitionFromClosure({ packageDir });
   const approvedHash = await computeLiveDefinitionHash(live);
   return { packageDir, approvedHash, definition: live };
@@ -478,6 +495,8 @@ const AUTHORITY_SNAPSHOT = {
 function buildBindings(opts: {
   baseDir: string;
   childKeyPair?: { privateKey: Uint8Array; publicKey: Uint8Array };
+  /** The one run the child may discover in flight. */
+  topLevelRunId?: string;
 }): RunWorkflowChildBindings {
   const substrate = createStubRepoStore(opts.baseDir);
   const principal: Principal = { kind: "supervisor" };
@@ -487,6 +506,7 @@ function buildBindings(opts: {
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: "refs/heads/main",
     principal,
+    topLevelRunId: opts.topLevelRunId ?? "run-1",
     invokeStep: async () => ({ output: null }),
     actionCredentials: () => unavailableActionCredentials,
     spawnChild: async () => createTerminalChildHandle("completed"),
@@ -703,6 +723,124 @@ describe("runWorkflowChild", () => {
     expect(result.triggeredRunIds).toEqual(["run-1"]);
     expect(result.finalCredentialsSnapshot).not.toBeNull();
     expect(result.finalCredentialsSnapshot?.steps).toHaveLength(1);
+  });
+
+  test("a step in a top-level loop body gets its place", async () => {
+    const baseDir = await makeTempDir("child-loop-place-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const {
+      packageDir: closurePackageDir,
+      approvedHash: definitionHash,
+      definition,
+    } = await materializeClosure(
+      "child-loop-place-def-",
+      {
+        id: "loop-place",
+        triggers: [],
+        steps: {
+          rework: {
+            kind: "loop",
+            id: "rework",
+            body: {
+              id: "loop-place-body",
+              triggers: [],
+              steps: { inLoop: agentStep("inLoop") },
+              stepOrder: ["inLoop"],
+            },
+            while: "stop",
+            carry: "keep",
+            maxIterations: 1,
+            onExhausted: "done",
+            drainBehavior: "cancel",
+          },
+          done: {
+            kind: "escalation",
+            id: "done",
+            to: "operator",
+            after: ["rework"],
+          },
+        },
+        stepOrder: ["rework", "done"],
+      },
+      [
+        "export const stop = () => false;",
+        "export const keep = (_output, input) => input;",
+        "",
+      ].join("\n"),
+    );
+    await seedProcessingEntry(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      {
+        address: "deployment-x@example.com",
+        messageId: "msg-loop",
+        receivedAt: 1,
+        text: "run the loop",
+      },
+    );
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const { promise: invoked, resolve: onInvoke } =
+      Promise.withResolvers<StepInvokeRequest>();
+    const bindings: RunWorkflowChildBindings = {
+      ...buildBindings({ baseDir, childKeyPair }),
+      invokeStep: async (req) => {
+        onInvoke(req);
+        return { output: null };
+      },
+      // Required once a deployment carries a loop body. The loop host runs
+      // the iteration itself, so no onTrigger body reaches this executor.
+      runSuspendableChild: () =>
+        Promise.reject(new Error("this deployment has no onTrigger body")),
+    };
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+
+    const runPromise = runWorkflowChild({
+      env,
+      definition,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: createMemoryFrameStream().writer,
+      bindings,
+    });
+    await waitForUpstreamPayload(childToSupervisor, "ready");
+    await supervisorSender.send({
+      type: "trigger.fire",
+      data: {
+        runId: "run-loop",
+        mailIdentity: { messageId: "msg-loop" },
+        receivedAt: 1,
+        requestId: "input-loop",
+        payload: textMail("run the loop"),
+      },
+    });
+    const req = await invoked;
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+    await runPromise;
+
+    expect(req.authzContext.stepId).toBe("inLoop");
+    expect(req.place).toEqual({ stepPath: ["rework", "inLoop"] });
   });
 
   test("a later quiet check supersedes one still waiting, which is not answered", async () => {
@@ -1776,117 +1914,265 @@ describe("runWorkflowChild", () => {
     expect(ghostExists).toBe(false);
   });
 
-  test("cold path fires cleanupRunStorage once per run at run granularity, never before terminal", async () => {
-    const baseDir = await makeTempDir("child-cold-cleanup-");
-    const supervisorKeyPair = await generateKeyPair();
-    const childKeyPair = await generateKeyPair();
-    const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-    const {
-      packageDir: closurePackageDir,
-      approvedHash: definitionHash,
-      definition,
-    } = await materializeClosure("child-def-", emptyWorkflowDefinition());
-    for (const messageId of ["msg-1", "msg-2"]) {
+  // A step's workspace lives for one attempt whatever the number of steps,
+  // so every deployment reclaims each run's scratch once the run ends.
+  test.each([0, 1, 2])(
+    "fires cleanupRunStorage once per run at run granularity, never before terminal, for a deployment of %i steps",
+    async (stepCount) => {
+      const baseDir = await makeTempDir("child-run-cleanup-");
+      const supervisorKeyPair = await generateKeyPair();
+      const childKeyPair = await generateKeyPair();
+      const channelId = generateChannelId();
+      const hmacKey = generateHmacKey();
+      const stepIds = Array.from(
+        { length: stepCount },
+        (_, i) => `step-${String(i + 1)}`,
+      );
+      const {
+        packageDir: closurePackageDir,
+        approvedHash: definitionHash,
+        definition,
+      } = await materializeClosure("child-def-", {
+        ...emptyWorkflowDefinition(),
+        steps: Object.fromEntries(stepIds.map((id) => [id, agentStep(id)])),
+        stepOrder: stepIds,
+      });
+      for (const messageId of ["msg-1", "msg-2"]) {
+        await seedProcessingEntry(
+          baseDir,
+          { kind: "workflow-run", id: "deployment-x" },
+          {
+            address: "deployment-x@example.com",
+            messageId,
+            receivedAt: 1,
+            text: `body ${messageId}`,
+          },
+        );
+      }
+
+      const supervisorToChild = createMemoryNdjsonStream();
+      const childToSupervisor = createMemoryNdjsonStream();
+      const eventStream = createMemoryFrameStream();
+
+      const env = parseSpawnTimeEnv(
+        makeSpawnEnv({
+          channelId,
+          hmacKeyHex: hexEncode(hmacKey),
+          hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+          definitionHash,
+          closurePackageDir,
+        }),
+      );
+
+      // Record every runId the run-loop asks to reclaim, in order. A run's
+      // entry must appear only after that run reaches its terminal status,
+      // and exactly once -- proving run (not step) granularity and that no
+      // in-flight run's subtree is touched. The callback reports each
+      // reclamation so the test waits on the reclamation itself.
+      const cleaned: string[] = [];
+      const reclaimed = createChangeNotifier();
+      const bindings: RunWorkflowChildBindings = {
+        ...buildBindings({ baseDir, childKeyPair }),
+        cleanupRunStorage: (runId: string) => {
+          cleaned.push(runId);
+          reclaimed.notify();
+          return Promise.resolve();
+        },
+      };
+
+      const supervisorSender = createControlChannelSender({
+        privateKeySeed: supervisorKeyPair.privateKey,
+        channelId,
+        writer: supervisorToChild.writer,
+      });
+
+      await sendAuthoritySet(supervisorSender, {
+        snapshot: AUTHORITY_SNAPSHOT,
+      });
+
+      const runPromise = runWorkflowChild({
+        env,
+        definition,
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: eventStream.writer,
+        bindings,
+      });
+
+      await waitForUpstreamPayload(childToSupervisor, "ready");
+
+      // Two independent runs. The stub `invokeStep` returns immediately, so
+      // each run reaches terminal on its own; the run-loop fires cleanup per
+      // run with that run's id.
+      await supervisorSender.send({
+        type: "trigger.fire",
+        data: {
+          runId: "run-1",
+          mailIdentity: { messageId: "msg-1" },
+          receivedAt: 1,
+          payload: textMail("body msg-1"),
+        },
+      });
+      await supervisorSender.send({
+        type: "trigger.fire",
+        data: {
+          runId: "run-2",
+          mailIdentity: { messageId: "msg-2" },
+          receivedAt: 2,
+          payload: textMail("body msg-2"),
+        },
+      });
+      // Both runs reach terminal asynchronously; the run-loop fires cleanup
+      // in each run's completion continuation. Wait for both reclamations
+      // before tearing the loop down so the assertion observes the per-run
+      // firing rather than racing the shutdown.
+      await reclaimed.until(() => cleaned.length >= 2);
+      await supervisorSender.send({
+        type: "shutdown",
+        data: { reason: "test done" },
+      });
+      supervisorToChild.close();
+
+      const result = await runPromise;
+      expect(result.triggeredRunIds).toEqual(["run-1", "run-2"]);
+      // Exactly one reclamation per run, keyed by that run's id -- never a
+      // per-step or per-attempt call, never another run's id.
+      expect([...cleaned].sort()).toEqual(["run-1", "run-2"]);
+    },
+  );
+
+  // A top-level loop runs each iteration as a spawned run whose handle the
+  // run loop builds. The iteration's teardown reclaims its storage once the
+  // iteration is terminal, also when its step failed.
+  test.each([
+    { outcome: "completed", fails: false },
+    { outcome: "failed", fails: true },
+  ])(
+    "reclaims a $outcome top-level loop iteration's storage from its teardown",
+    async ({ fails }) => {
+      const baseDir = await makeTempDir("child-loop-cleanup-");
+      const supervisorKeyPair = await generateKeyPair();
+      const childKeyPair = await generateKeyPair();
+      const channelId = generateChannelId();
+      const hmacKey = generateHmacKey();
+      const {
+        packageDir: closurePackageDir,
+        approvedHash: definitionHash,
+        definition,
+      } = await materializeClosure(
+        "child-loop-def-",
+        {
+          id: "test-loop-workflow",
+          triggers: [],
+          steps: {
+            rework: {
+              kind: "loop",
+              id: "rework",
+              body: {
+                id: "test-loop-iteration",
+                triggers: [],
+                steps: { s: agentStep("s") },
+                stepOrder: ["s"],
+              },
+              while: "once",
+              carry: "next",
+              input: { from: "trigger.payload" },
+              maxIterations: 2,
+              onExhausted: "exhausted",
+              drainBehavior: "cancel",
+            },
+            exhausted: {
+              kind: "escalation",
+              id: "exhausted",
+              to: "operator",
+              after: ["rework"],
+            },
+          },
+          stepOrder: ["rework", "exhausted"],
+        },
+        "export const once = () => false;\nexport const next = (_output, input) => input;\n",
+      );
       await seedProcessingEntry(
         baseDir,
         { kind: "workflow-run", id: "deployment-x" },
         {
           address: "deployment-x@example.com",
-          messageId,
+          messageId: "msg-1",
           receivedAt: 1,
-          text: `body ${messageId}`,
+          text: "body msg-1",
         },
       );
-    }
-
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventStream = createMemoryFrameStream();
-
-    const env = parseSpawnTimeEnv(
-      makeSpawnEnv({
+      const supervisorToChild = createMemoryNdjsonStream();
+      const childToSupervisor = createMemoryNdjsonStream();
+      const eventStream = createMemoryFrameStream();
+      const env = parseSpawnTimeEnv(
+        makeSpawnEnv({
+          channelId,
+          hmacKeyHex: hexEncode(hmacKey),
+          hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+          definitionHash,
+          closurePackageDir,
+        }),
+      );
+      const iterationRunId = loopBodyRunId("run-1", "rework", 0);
+      const cleaned: string[] = [];
+      const reclaimed = createChangeNotifier();
+      const bindings: RunWorkflowChildBindings = {
+        ...buildBindings({ baseDir, childKeyPair }),
+        // A loop body registers as a suspendable body, which needs an
+        // executor. The definition has no onTrigger section to run on it.
+        runSuspendableChild: () =>
+          Promise.reject(new Error("the definition has no onTrigger section")),
+        invokeStep: async () => {
+          if (fails) throw new Error("the iteration step failed");
+          return { output: null };
+        },
+        cleanupRunStorage: (runId: string) => {
+          cleaned.push(runId);
+          reclaimed.notify();
+          return Promise.resolve();
+        },
+      };
+      const supervisorSender = createControlChannelSender({
+        privateKeySeed: supervisorKeyPair.privateKey,
         channelId,
-        hmacKeyHex: hexEncode(hmacKey),
-        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
-        definitionHash,
-        closurePackageDir,
-      }),
-    );
+        writer: supervisorToChild.writer,
+      });
+      await sendAuthoritySet(supervisorSender, {
+        snapshot: AUTHORITY_SNAPSHOT,
+      });
+      const runPromise = runWorkflowChild({
+        env,
+        definition,
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: eventStream.writer,
+        bindings,
+      });
+      await waitForUpstreamPayload(childToSupervisor, "ready");
 
-    // Record every runId the run-loop asks to reclaim, in order. A run's
-    // entry must appear only after that run reaches its terminal status,
-    // and exactly once -- proving run (not step) granularity and that no
-    // in-flight run's subtree is touched. The callback reports each
-    // reclamation so the test waits on the reclamation itself.
-    const cleaned: string[] = [];
-    const reclaimed = createChangeNotifier();
-    const bindings: RunWorkflowChildBindings = {
-      ...buildBindings({ baseDir, childKeyPair }),
-      cleanupRunStorage: (runId: string) => {
-        cleaned.push(runId);
-        reclaimed.notify();
-        return Promise.resolve();
-      },
-    };
+      await supervisorSender.send({
+        type: "trigger.fire",
+        data: {
+          runId: "run-1",
+          mailIdentity: { messageId: "msg-1" },
+          receivedAt: 1,
+          payload: textMail("body msg-1"),
+        },
+      });
+      // The iteration's teardown and the run loop's completion handler each
+      // call the cleanup once. The iteration ends before its container.
+      await reclaimed.until(() => cleaned.length >= 2);
+      await supervisorSender.send({
+        type: "shutdown",
+        data: { reason: "test done" },
+      });
+      supervisorToChild.close();
+      await runPromise;
 
-    const supervisorSender = createControlChannelSender({
-      privateKeySeed: supervisorKeyPair.privateKey,
-      channelId,
-      writer: supervisorToChild.writer,
-    });
-
-    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
-
-    const runPromise = runWorkflowChild({
-      env,
-      definition,
-      controlReader: supervisorToChild.reader,
-      controlWriter: childToSupervisor.writer,
-      eventWriter: eventStream.writer,
-      bindings,
-    });
-
-    await waitForUpstreamPayload(childToSupervisor, "ready");
-
-    // Two independent runs. The stub `invokeStep` returns immediately, so
-    // each run reaches terminal on its own; the run-loop fires cleanup per
-    // run with that run's id.
-    await supervisorSender.send({
-      type: "trigger.fire",
-      data: {
-        runId: "run-1",
-        mailIdentity: { messageId: "msg-1" },
-        receivedAt: 1,
-        payload: textMail("body msg-1"),
-      },
-    });
-    await supervisorSender.send({
-      type: "trigger.fire",
-      data: {
-        runId: "run-2",
-        mailIdentity: { messageId: "msg-2" },
-        receivedAt: 2,
-        payload: textMail("body msg-2"),
-      },
-    });
-    // Both runs reach terminal asynchronously; the run-loop fires cleanup
-    // in each run's completion continuation. Wait for both reclamations
-    // before tearing the loop down so the assertion observes the per-run
-    // firing rather than racing the shutdown.
-    await reclaimed.until(() => cleaned.length >= 2);
-    await supervisorSender.send({
-      type: "shutdown",
-      data: { reason: "test done" },
-    });
-    supervisorToChild.close();
-
-    const result = await runPromise;
-    expect(result.triggeredRunIds).toEqual(["run-1", "run-2"]);
-    // Exactly one reclamation per run, keyed by that run's id -- never a
-    // per-step or per-attempt call, never another run's id.
-    expect([...cleaned].sort()).toEqual(["run-1", "run-2"]);
-  });
+      expect(cleaned).toEqual([iterationRunId, "run-1"]);
+    },
+  );
 
   test("RunStarted records the trigger's mail identity in exactly one field", async () => {
     const baseDir = await makeTempDir("child-mail-identity-");
@@ -1977,138 +2263,6 @@ describe("runWorkflowChild", () => {
     expect(legacy.consumedDeliveryKey).toBeUndefined();
   });
 
-  test("warm path never fires cleanupRunStorage on run completion", async () => {
-    const baseDir = await makeTempDir("child-warm-no-cleanup-");
-    const supervisorKeyPair = await generateKeyPair();
-    const childKeyPair = await generateKeyPair();
-    const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-    const {
-      packageDir: closurePackageDir,
-      approvedHash: definitionHash,
-      definition,
-    } = await materializeClosure("child-warm-def-", {
-      id: "test-workflow",
-      triggers: [],
-      steps: { "step-1": agentStep("step-1") },
-      stepOrder: ["step-1"],
-    });
-    await seedProcessingEntry(
-      baseDir,
-      { kind: "workflow-run", id: "deployment-x" },
-      {
-        address: "deployment-x@example.com",
-        messageId: "msg-1",
-        receivedAt: 1,
-        text: "warm body",
-      },
-    );
-
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventStream = createMemoryFrameStream();
-
-    // The warm single-step deployment reuses one stable workspace across
-    // runs, so deleting per run would wipe a live conversation's files. The
-    // run-loop's warm-keep gate must suppress the per-run cleanup entirely
-    // even when a callback is wired.
-    const env = parseSpawnTimeEnv(
-      makeSpawnEnv({
-        channelId,
-        hmacKeyHex: hexEncode(hmacKey),
-        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
-        definitionHash,
-        closurePackageDir,
-      }),
-    );
-
-    const cleaned: string[] = [];
-    const bindings: RunWorkflowChildBindings = {
-      ...buildBindings({ baseDir, childKeyPair }),
-      cleanupRunStorage: (runId: string) => {
-        cleaned.push(runId);
-        return Promise.resolve();
-      },
-    };
-
-    const supervisorSender = createControlChannelSender({
-      privateKeySeed: supervisorKeyPair.privateKey,
-      channelId,
-      writer: supervisorToChild.writer,
-    });
-
-    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
-
-    const runPromise = runWorkflowChild({
-      env,
-      definition,
-      controlReader: supervisorToChild.reader,
-      controlWriter: childToSupervisor.writer,
-      eventWriter: eventStream.writer,
-      bindings,
-    });
-
-    // Decode the child's upstream frames so the test can observe the run
-    // reach TERMINAL. The warm gate lives in the same void-ed
-    // `handle.complete.then(...)` continuation that emits the
-    // `terminal.event`, and that continuation runs the gate BEFORE the
-    // emit. Waiting for `terminal.event` therefore proves the continuation
-    // executed -- so a subsequent `cleaned` assertion fires at exactly the
-    // point the cold path WOULD have deleted, making the suppression proof
-    // non-vacuous rather than passing merely because the continuation never
-    // ran. The receiver verifies against the key `buildBindings` gives the
-    // child; `flushed()`-based waits elsewhere are non-consuming, so every
-    // frame is still queued for this iterator.
-    const recvIter = receiveControlChannel({
-      publicKey: childKeyPair.publicKey,
-      channelId,
-      reader: childToSupervisor.reader,
-      onCrash: (reason) => {
-        throw new Error(`unexpected control channel crash: ${reason}`);
-      },
-    });
-
-    await supervisorSender.send({
-      type: "trigger.fire",
-      data: {
-        runId: "run-1",
-        mailIdentity: { messageId: "msg-1" },
-        receivedAt: 1,
-        payload: textMail("warm body"),
-      },
-    });
-
-    let terminalSeq: number | null = null;
-    for await (const payload of recvIter) {
-      if (payload.type === "terminal.event" && payload.data.runId === "run-1") {
-        terminalSeq = payload.data.seq;
-        break;
-      }
-    }
-    // The frame's seq is sourced from the run's committed terminal event, so
-    // a real (non-zero) seq proves the child test substrate faithfully
-    // persisted and read back the run's event log rather than round-tripping
-    // an empty one.
-    expect(terminalSeq).not.toBeNull();
-    expect(terminalSeq).toBeGreaterThan(0);
-    // The run reached terminal AND the completion continuation ran (it
-    // emitted the terminal.event we just observed). On the cold path the
-    // same continuation would have called cleanupRunStorage by now; the
-    // warm gate suppressed it. Asserting here -- before shutdown -- proves
-    // the suppression, not a race.
-    expect(cleaned).toEqual([]);
-
-    await supervisorSender.send({
-      type: "shutdown",
-      data: { reason: "test done" },
-    });
-    supervisorToChild.close();
-
-    const result = await runPromise;
-    expect(result.triggeredRunIds).toEqual(["run-1"]);
-    expect(cleaned).toEqual([]);
-  });
-
   test("self-discovery resumes non-terminal runs and skips terminal ones", async () => {
     const baseDir = await makeTempDir("child-discover-");
     const supervisorKeyPair = await generateKeyPair();
@@ -2175,6 +2329,7 @@ describe("runWorkflowChild", () => {
     const bindings = buildBindings({
       baseDir,
       childKeyPair,
+      topLevelRunId: "run-live",
     });
 
     const supervisorSender = createControlChannelSender({
@@ -2203,6 +2358,70 @@ describe("runWorkflowChild", () => {
     const result = await runPromise;
     expect(result.resumedRunIds).toEqual(["run-live"]);
     expect(result.resumedRunIds).not.toContain("run-done");
+  });
+
+  test("self-discovery refuses an in-flight run that is not the deployment's top-level run", async () => {
+    const baseDir = await makeTempDir("child-discover-other-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const {
+      packageDir: closurePackageDir,
+      approvedHash: definitionHash,
+      definition,
+    } = await materializeClosure("child-def-", emptyWorkflowDefinition());
+    await seedRun(
+      baseDir,
+      { kind: "workflow-run", id: "deployment-x" },
+      "run-other",
+      [
+        {
+          seq: 1,
+          type: "RunStarted",
+          at: "2026-01-01T00:00:00.000Z",
+          runId: "run-other",
+          definitionHash: "definition-hash-abc",
+          trigger: { type: "manual", payload: null },
+        },
+      ],
+    );
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
+
+    await expect(
+      runWorkflowChild({
+        env,
+        definition,
+        controlReader: supervisorToChild.reader,
+        controlWriter: childToSupervisor.writer,
+        eventWriter: eventStream.writer,
+        bindings: buildBindings({
+          baseDir,
+          childKeyPair,
+          topLevelRunId: "run-top",
+        }),
+      }),
+    ).rejects.toThrow(
+      "discovered in-flight top-level run run-other, but the deployment's top-level run is run-top",
+    );
+    supervisorToChild.close();
   });
 
   test("a re-fired trigger for a self-discovered run does not spawn a second driver", async () => {
@@ -2308,7 +2527,7 @@ describe("runWorkflowChild", () => {
     // counter must stay at zero for the resumed run.
     let invokeCalls = 0;
     const bindings: RunWorkflowChildBindings = {
-      ...buildBindings({ baseDir, childKeyPair }),
+      ...buildBindings({ baseDir, childKeyPair, topLevelRunId: runId }),
       invokeStep: async () => {
         invokeCalls += 1;
         return { output: null };
@@ -2779,73 +2998,6 @@ describe("runWorkflowChild", () => {
     );
   });
 
-  test("sources-updated on a multi-step deployment is rejected", async () => {
-    const baseDir = await makeTempDir("child-sources-multistep-");
-    const supervisorKeyPair = await generateKeyPair();
-    const childKeyPair = await generateKeyPair();
-    const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-    const {
-      packageDir: closurePackageDir,
-      approvedHash: definitionHash,
-      definition,
-    } = await materializeClosure("child-sources-multistep-def-", {
-      id: "test-workflow",
-      triggers: [],
-      steps: { "step-1": agentStep("step-1"), "step-2": agentStep("step-2") },
-      stepOrder: ["step-1", "step-2"],
-    });
-
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventStream = createMemoryFrameStream();
-
-    const env = parseSpawnTimeEnv(
-      makeSpawnEnv({
-        channelId,
-        hmacKeyHex: hexEncode(hmacKey),
-        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
-        definitionHash,
-        closurePackageDir,
-      }),
-    );
-    const bindings = buildBindings({ baseDir, childKeyPair });
-    const supervisorSender = createControlChannelSender({
-      privateKeySeed: supervisorKeyPair.privateKey,
-      channelId,
-      writer: supervisorToChild.writer,
-    });
-    await sendAuthoritySet(supervisorSender, { snapshot: AUTHORITY_SNAPSHOT });
-
-    const runPromise = runWorkflowChild({
-      env,
-      definition,
-      controlReader: supervisorToChild.reader,
-      controlWriter: childToSupervisor.writer,
-      eventWriter: eventStream.writer,
-      bindings,
-    });
-
-    await supervisorSender.send({
-      type: "sources-updated",
-      data: {
-        sources: [
-          {
-            id: "primary",
-            provider: "anthropic",
-            baseURL: "https://api.anthropic.com",
-            credentialId: "sk-x",
-            model: "claude-test",
-          },
-        ],
-        defaultSource: "primary",
-      },
-    });
-
-    await expect(runPromise).rejects.toThrow(/single-step deployment/);
-    supervisorToChild.close();
-  });
-
   test("the process entry reports its verified definition first, under the key it publishes", async () => {
     const baseDir = await makeTempDir("child-definition-report-");
     const supervisorKeyPair = await generateKeyPair();
@@ -3088,7 +3240,7 @@ describe("a signal for a park a resumed run holds", () => {
 
     const decisions: unknown[] = [];
     const bindings: RunWorkflowChildBindings = {
-      ...buildBindings({ baseDir, childKeyPair }),
+      ...buildBindings({ baseDir, childKeyPair, topLevelRunId: RUN_ID }),
       substrate: heldAtFirstRead,
       principal,
       invokeStep: async (req) => {
@@ -3356,28 +3508,12 @@ const STUB_SOURCE: InferenceSource = {
   model: "stub-model",
 };
 
-function stubStepEnv(): StepEnvBase {
-  return {
-    sources: [STUB_SOURCE],
-    defaultSource: STUB_SOURCE.id,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the spy agentFactory never reads the env
-    storage: {} as ContextStore,
-    workdir: "/tmp/warm-agent-roundtrip-stub",
-    audit: noopAuditStore(),
-    directors: createDefaultDirectorRegistry(),
-  };
-}
-
-interface WarmAgentSpy {
+interface TurnSpy {
+  builds: number;
   lspSpawnCount: number;
-  lspAlive: boolean;
+  liveLsps: number;
   closeCount: number;
-  readonly conversation: string[];
   readonly replies: string[];
-  readonly sourceRotations: {
-    sources: InferenceSource[];
-    defaultSource: string;
-  }[];
   /**
    * Fires after every recorded mutation above. The spy's arrays are mutated
    * in place, so there is no event for a test to await; this is the spy
@@ -3387,98 +3523,114 @@ interface WarmAgentSpy {
 }
 
 /**
- * Spy agent that models the warm-keep lifecycle guards for the
- * round-trip integration test: an LSP-subprocess analogue spawned once
- * at construction and disposed on `close()`, an in-memory conversation
- * retained across sends, and a `stream()` that ends only at `close()`.
- * The reply echoes the running conversation so the second reply
- * reflects the first message (continuity).
+ * Spy agent factory that models a step agent built for one turn: each build
+ * spawns an LSP-subprocess analogue that its `close()` disposes, loads the
+ * conversation from `env.storage` (as a reactor does at start), records the
+ * inbound message as a user turn, writes the turns back, and replies with
+ * the running transcript. A reply that names an earlier message proves the
+ * conversation continued through the store, because no agent outlives its
+ * turn.
  */
-function buildWarmAgentSpy(): { agent: Agent; spy: WarmAgentSpy } {
-  const spy: WarmAgentSpy = {
-    lspSpawnCount: 1,
-    lspAlive: true,
+function buildTurnSpy(): {
+  agentFactory: (def: unknown, env: StepEnvBase) => Promise<Agent>;
+  spy: TurnSpy;
+} {
+  const spy: TurnSpy = {
+    builds: 0,
+    lspSpawnCount: 0,
+    liveLsps: 0,
     closeCount: 0,
-    conversation: [],
     replies: [],
-    sourceRotations: [],
     changed: createChangeNotifier(),
   };
-  let endStream: () => void = () => undefined;
-  const streamEnded = new Promise<void>((resolve) => {
-    endStream = resolve;
-  });
-  const agent: Agent = {
-    async send(content): Promise<SendResult> {
-      if (!spy.lspAlive) {
-        throw new Error("warm spy: send after LSP disposed");
-      }
-      // A mail-derived input reaches `agent.send` as an `InboundMessage`; its
-      // `content` carries the conversation text (absent for an attachments-only
-      // message). A plain string arrives verbatim.
-      const text =
-        typeof content === "string" ? content : (content.content ?? "");
-      // The child frames the inbound mail as the conversation text; the
-      // seeded body is the substring we assert on. Record just the
-      // running transcript so continuity is observable.
-      spy.conversation.push(text);
-      const reply = `r${String(spy.conversation.length)}:${spy.conversation.join("|")}`;
-      spy.replies.push(reply);
-      spy.changed.notify();
-      return {
-        type: "reply",
-        turnId: "turn-test",
-        reply,
-        turn: {
+  const agentFactory = async (
+    _def: unknown,
+    env: StepEnvBase,
+  ): Promise<Agent> => {
+    spy.builds += 1;
+    spy.lspSpawnCount += 1;
+    spy.liveLsps += 1;
+    let lspAlive = true;
+    let endStream: () => void = () => undefined;
+    const streamEnded = new Promise<void>((resolve) => {
+      endStream = resolve;
+    });
+    const turns: ConversationTurn[] = [...(await env.storage.load()).turns];
+    const agent: Agent = {
+      async send(content): Promise<SendResult> {
+        if (!lspAlive) throw new Error("turn spy: send after LSP disposed");
+        // A mail-derived input reaches `agent.send` as an `InboundMessage`;
+        // its `content` carries the conversation text.
+        const text =
+          typeof content === "string" ? content : (content.content ?? "");
+        turns.push({
+          role: "user",
+          content: [{ type: "text", text }],
+          timestamp: 0,
+        });
+        const transcript = turns
+          .filter((t) => t.role === "user")
+          .map((t) =>
+            t.content.map((c) => (c.type === "text" ? c.text : "")).join(""),
+          );
+        const reply = `r${String(transcript.length)}:${transcript.join("|")}`;
+        const turn: ConversationTurn = {
           role: "assistant",
           content: [{ type: "text", text: reply }],
           model: STUB_SOURCE.model,
           timestamp: 0,
-        },
-      };
-    },
-    async *stream() {
-      yield stubReactorEvent("inference.start");
-      await streamEnded;
-    },
-    deliver(_message: InboundMessage) {
-      throw new Error("stub deliver() not used");
-    },
-    async close() {
-      spy.closeCount += 1;
-      spy.lspAlive = false;
-      endStream();
-    },
-    setSource(_source: InferenceSource) {
-      throw new Error("stub setSource() not used");
-    },
-    setSources(sources: InferenceSource[], defaultSource: string) {
-      // Live source rotation lands here on the warm agent. Record it so the
-      // sources-updated round-trip can assert the swap reached the agent
-      // in place rather than rebuilding it.
-      spy.sourceRotations.push({ sources, defaultSource });
-      spy.changed.notify();
-    },
-    async history() {
-      return [];
-    },
-    async checkpoints() {
-      return [];
-    },
-    async readAt() {
-      return [];
-    },
-    blobReader: stubWarmBlobReader(),
+        };
+        turns.push(turn);
+        await env.storage.writeTurns(turns);
+        await env.storage.commit({ message: "spy turn" });
+        spy.replies.push(reply);
+        spy.changed.notify();
+        return { type: "reply", turnId: "turn-test", reply, turn };
+      },
+      async *stream() {
+        yield stubReactorEvent("inference.start");
+        await streamEnded;
+      },
+      deliver(_message: InboundMessage) {
+        throw new Error("stub deliver() not used");
+      },
+      async close() {
+        spy.closeCount += 1;
+        if (lspAlive) {
+          lspAlive = false;
+          spy.liveLsps -= 1;
+        }
+        endStream();
+        spy.changed.notify();
+      },
+      setSource(_source: InferenceSource) {
+        throw new Error("stub setSource() not used");
+      },
+      setSources() {
+        throw new Error("stub setSources() not used");
+      },
+      async history() {
+        return turns;
+      },
+      async checkpoints() {
+        return [];
+      },
+      async readAt() {
+        return [];
+      },
+      blobReader: stubBlobReader(),
+    };
+    return agent;
   };
-  return { agent, spy };
+  return { agentFactory, spy };
 }
 
-function stubWarmBlobReader(): BlobReader {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; never read on the warm path
+function stubBlobReader(): BlobReader {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; the spy never reads blobs
   return {} as BlobReader;
 }
 
-// The warm agent's `stream()` yields the reactor's emitted-event type;
+// The spy agent's `stream()` yields the reactor's emitted-event type;
 // the step-invoker forwarder reads only `.type` off each item. A bare
 // shape is enough -- the cast localizes the structural mismatch to the
 // test stub rather than widening the production type.
@@ -3492,29 +3644,29 @@ function stubReactorEvent(type: string): StreamEvent {
 }
 
 /**
- * The one-step warm-roundtrip workflow definition whose sole step's input
- * defaults to the trigger payload, so the child's `trigger.fire` delivers the
- * inbound mail body to `agent.send`. The step's `agent` carries `inference`
- * (the live shape the projector canonicalizes and the child runs); the spy
+ * The one-step workflow definition whose sole step's input defaults to the
+ * trigger payload, so the child's `trigger.fire` delivers the inbound mail
+ * body to `agent.send`. The step's `agent` carries `inference` (the live
+ * shape the projector canonicalizes and the child runs); the spy
  * agentFactory ignores the metadata. Materialized as a source-ref closure the
  * child evaluates and re-verifies at boot.
  */
-function warmWorkflowDefinition(stepId: string): {
+function oneStepWorkflowDefinition(stepId: string): {
   id: string;
   triggers: unknown[];
   steps: Record<string, unknown>;
   stepOrder: string[];
 } {
   return {
-    id: "warm-roundtrip-workflow",
+    id: "one-step-turns-workflow",
     triggers: [{ type: "manual" }],
     steps: {
       [stepId]: {
         kind: "step",
         id: stepId,
         agent: {
-          id: "warm-agent",
-          systemPrompt: "warm agent",
+          id: "turn-agent",
+          systemPrompt: "turn agent",
           toolFactories: [],
           capabilities: [],
           inference: {
@@ -3564,413 +3716,237 @@ async function seedProcessingEntryInDir(
   );
 }
 
-describe("warm-agent round-trip (Phase 4.4)", () => {
-  test("two sequential messages reuse one warm agent, spawn the LSP once, hold continuity, and evict on shutdown", async () => {
-    const baseDir = await makeTempDir("warm-roundtrip-");
-    const supervisorKeyPair = await generateKeyPair();
-    const childKeyPair = await generateKeyPair();
-    const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-    const stepId = "step-1";
-    const anchorRunId = "deployment-x";
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: anchorRunId,
-    };
+/**
+ * A one-step deployment's child over a real workflow-run substrate, whose
+ * step invoker builds each turn the way the sidecar does: it opens the
+ * step's durable store for the invocation, restores the committed
+ * conversation, reads the step's sources from the live table, and hands
+ * the turn's conversation to the invoker, which commits it once the turn
+ * settles.
+ */
+async function startOneStepChild(opts: {
+  prefix: string;
+  stepId: string;
+  mails: string[];
+}) {
+  const baseDir = await makeTempDir(opts.prefix);
+  const supervisorKeyPair = await generateKeyPair();
+  const childKeyPair = await generateKeyPair();
+  const channelId = generateChannelId();
+  const hmacKey = generateHmacKey();
+  const anchorRunId = "deployment-x";
+  const topLevelRunId = "run-1";
+  const workflowRunRepoId: RepoId = { kind: "workflow-run", id: anchorRunId };
 
-    // Real substrate so the runtime body's event commits persist and
-    // read back (the runtime stalls against a non-persisting stub). The
-    // workflow-run kind handler is the same one the production substrate
-    // registers; the allow-all authorize matches the substrate test
-    // pattern. A `workflow-process` principal scoped to the deployment is
-    // what the kind handler accepts as the runtime body's writer.
-    const signingKey: KeyPair = await generateKeyPair();
-    const allowAll: AuthorizeFn = () => ({ allowed: true });
-    const substrate = createRepoStore({
-      dataDir: baseDir,
-      signingKey,
-      handlers: { "workflow-run": workflowRunKindHandler },
-      authorize: allowAll,
-    });
-    // The workflow-run kind handler accepts a `workflow-process`
-    // principal scoped to the deployment as the runtime body's writer;
-    // the anchorRunId satisfies `enforceWorkflowProcessPathScope`.
-    const principalShape = { kind: "workflow-process", anchorRunId };
-    const principal: Principal = principalShape;
-
-    // Genesis the workflow-run repo so the runtime's first append has a
-    // coherent prior tree, then seed the two inbound messages' claim-check
-    // processing entries the child reads at each `trigger.fire`.
-    await substrate.writeTree(
-      { kind: "hub" },
-      workflowRunRepoId,
-      "refs/heads/main",
-      {
-        files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
-        message: "genesis",
-      },
-    );
-    const runRepoDir = substrate.getRepoDir(workflowRunRepoId);
+  // Real substrate so the runtime body's event commits and the step's
+  // committed state persist and read back. A `workflow-process` principal
+  // scoped to the deployment is what the kind handler accepts as the
+  // writer.
+  const signingKey: KeyPair = await generateKeyPair();
+  const allowAll: AuthorizeFn = () => ({ allowed: true });
+  const substrate = createRepoStore({
+    dataDir: baseDir,
+    signingKey,
+    handlers: { "workflow-run": workflowRunKindHandler },
+    authorize: allowAll,
+  });
+  const principalShape = { kind: "workflow-process", anchorRunId };
+  const principal: Principal = principalShape;
+  await substrate.writeTree(
+    { kind: "hub" },
+    workflowRunRepoId,
+    "refs/heads/main",
+    { files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, message: "genesis" },
+  );
+  const runRepoDir = substrate.getRepoDir(workflowRunRepoId);
+  for (const [i, text] of opts.mails.entries()) {
     await seedProcessingEntryInDir(runRepoDir, {
       address: "deployment-x@example.com",
-      messageId: "msg-1",
-      receivedAt: 1,
-      text: "alpha body",
+      messageId: `msg-${String(i + 1)}`,
+      receivedAt: i + 1,
+      text,
     });
-    await seedProcessingEntryInDir(runRepoDir, {
-      address: "deployment-x@example.com",
-      messageId: "msg-2",
-      receivedAt: 2,
-      text: "bravo body",
-    });
+  }
 
-    // The workflow definition the child loads: source-ref is the only deploy
-    // lineage, so the child evaluates a materialized closure and re-verifies
-    // it at boot. The workflow-asset repo is not read on this path.
-    const {
-      packageDir: closurePackageDir,
-      approvedHash: definitionHash,
-      definition,
-    } = await materializeClosure(
-      "warm-roundtrip-def-",
-      warmWorkflowDefinition(stepId),
-    );
+  const {
+    packageDir: closurePackageDir,
+    approvedHash: definitionHash,
+    definition,
+  } = await materializeClosure(
+    `${opts.prefix}def-`,
+    oneStepWorkflowDefinition(opts.stepId),
+  );
 
-    const { agent, spy } = buildWarmAgentSpy();
-    let factoryCalls = 0;
-
-    // The real run-loop wiring: the child's `invokeStep` binding builds
-    // a fresh `createWorkflowStepInvoker` per invocation and forwards the
-    // run-loop's warm cache to it. This mirrors the sidecar's production
-    // binding (`substrate-factory.ts`) minus the tool-bearing
-    // factory -- here the agentFactory is a spy that counts builds.
-    const invokeStep: ChildStepInvoker = async (
-      req,
-      onEvent,
-      authorize,
-      warmCache,
-      _sourcesRef,
-      _credentialWiring,
-      mailPartReader,
-    ) =>
-      createWorkflowStepInvoker({
-        workflowAuthorize: authorize,
-        buildEnv: async () => stubStepEnv(),
-        agentFactory: async () => {
-          factoryCalls += 1;
-          return agent;
-        },
-        onEvent: (event) => onEvent(event),
-        mailPartReader,
-        ...(warmCache !== undefined ? { warmCache } : {}),
-      })(req);
-
-    const bindings: RunWorkflowChildBindings = {
+  const { agentFactory, spy } = buildTurnSpy();
+  const buildEnv = async (
+    req: StepInvokeRequest,
+    stepSources: StepSources,
+  ): Promise<StepBuild> => {
+    const { runId, stepId, attempt } = req.authzContext;
+    if (runId === undefined || stepId === undefined || attempt === undefined) {
+      throw new Error("the runtime stamps every step invocation");
+    }
+    const sources = stepSources[stepId];
+    const head = sources?.[0];
+    if (sources === undefined || head === undefined) {
+      throw new Error(`no sources pinned for step ${stepId}`);
+    }
+    const store = await createDurableConversationStore({
+      localStoreDir: path.join(baseDir, "step-state", runId, String(attempt)),
+      signer: (payload) => Promise.resolve(`sig:${String(payload.length)}`),
       substrate,
       workflowRunRepoId,
       workflowRunRef: "refs/heads/main",
       principal,
-      invokeStep,
-      actionCredentials: () => unavailableActionCredentials,
-      spawnChild: async () => createTerminalChildHandle("completed"),
-      scheduler: { scheduleIn: () => () => undefined },
-      earliestQueuedTimer: () => undefined,
-      stopScheduler: async () => undefined,
-      evaluateGrants: async () => ({
-        effect: "allow" as const,
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
+      runId: topLevelRunId,
+      stepId: stepPlaceKey(req.place),
+      lifetime: {
+        invocation: { runId, stepId, attempt },
+      },
+      mailboxAddress: "deployment-x@example.com",
+    });
+    await store.restoreFromSubstrate();
+    return {
+      env: {
+        sources,
+        defaultSource: head.id,
+        storage: store.storage,
+        workdir: path.join(baseDir, "workdir", runId, String(attempt)),
+        audit: noopAuditStore(),
+        directors: createDefaultDirectorRegistry(),
+      },
+      conversation: createStoreStepConversation(store, () =>
+        Promise.reject(new Error("the step replies by mail to no one")),
+      ),
     };
+  };
+  const invokeStep: ChildStepInvoker = async (
+    req,
+    onEvent,
+    authorize,
+    stepSources,
+    _credentialWiring,
+    mailPartReader,
+  ) => {
+    return createWorkflowStepInvoker({
+      workflowAuthorize: authorize,
+      buildEnv: (buildReq) => buildEnv(buildReq, stepSources),
+      agentFactory,
+      onEvent: (event) => onEvent(event),
+      mailPartReader,
+    })(req);
+  };
 
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventStream = createMemoryFrameStream();
+  const bindings: RunWorkflowChildBindings = {
+    substrate,
+    workflowRunRepoId,
+    workflowRunRef: "refs/heads/main",
+    principal,
+    topLevelRunId,
+    invokeStep,
+    actionCredentials: () => unavailableActionCredentials,
+    spawnChild: async () => createTerminalChildHandle("completed"),
+    scheduler: { scheduleIn: () => () => undefined },
+    earliestQueuedTimer: () => undefined,
+    stopScheduler: async () => undefined,
+    evaluateGrants: async () => ({
+      effect: "allow" as const,
+      matchingGrants: [],
+      resolvedBy: null,
+    }),
+    stepSources: { [opts.stepId]: [STUB_SOURCE] },
+    ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
+  };
 
-    // A single-step definition is the long-lived deployment the child
-    // warm-keeps: the run-loop builds a warm cache and the step-invoker
-    // reuses the agent across messages.
-    const env = parseSpawnTimeEnv(
-      makeSpawnEnv({
-        channelId,
-        hmacKeyHex: hexEncode(hmacKey),
-        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
-        definitionHash,
-        closurePackageDir,
-      }),
-    );
-
-    const supervisorSender = createControlChannelSender({
-      privateKeySeed: supervisorKeyPair.privateKey,
+  const supervisorToChild = createMemoryNdjsonStream();
+  const childToSupervisor = createMemoryNdjsonStream();
+  const eventStream = createMemoryFrameStream();
+  const env = parseSpawnTimeEnv(
+    makeSpawnEnv({
       channelId,
-      writer: supervisorToChild.writer,
-    });
+      hmacKeyHex: hexEncode(hmacKey),
+      hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+      definitionHash,
+      closurePackageDir,
+    }),
+  );
+  const supervisorSender = createControlChannelSender({
+    privateKeySeed: supervisorKeyPair.privateKey,
+    channelId,
+    writer: supervisorToChild.writer,
+  });
+  await sendAuthoritySet(supervisorSender, {
+    snapshot: {
+      steps: [{ stepId: opts.stepId, grants: [], contentHash: "deadbeef" }],
+    },
+  });
+  const runPromise = runWorkflowChild({
+    env,
+    definition,
+    controlReader: supervisorToChild.reader,
+    controlWriter: childToSupervisor.writer,
+    eventWriter: eventStream.writer,
+    bindings,
+  });
+  await waitForUpstreamPayload(childToSupervisor, "ready");
 
-    await sendAuthoritySet(supervisorSender, {
-      snapshot: {
-        steps: [
-          {
-            stepId,
-            grants: [],
-            contentHash: "deadbeef",
-          },
-        ],
-      },
-    });
-
-    const runPromise = runWorkflowChild({
-      env,
-      definition,
-      controlReader: supervisorToChild.reader,
-      controlWriter: childToSupervisor.writer,
-      eventWriter: eventStream.writer,
-      bindings,
-    });
-
-    await waitForUpstreamPayload(childToSupervisor, "ready");
-
-    // First message.
-    await supervisorSender.send({
+  const fireMail = (index: number, text: string) =>
+    supervisorSender.send({
       type: "trigger.fire",
       data: {
-        runId: "run-1",
-        mailIdentity: { messageId: "msg-1" },
-        receivedAt: 1,
-        payload: textMail("alpha body"),
+        runId: `run-${String(index)}`,
+        mailIdentity: { messageId: `msg-${String(index)}` },
+        receivedAt: index,
+        payload: textMail(text),
       },
     });
-    await spy.changed.until(() => spy.replies.length >= 1);
-
-    // After one message the agent was built exactly once, the LSP is
-    // alive (no teardown between messages), and nothing was closed.
-    expect(factoryCalls).toBe(1);
-    expect(spy.lspAlive).toBe(true);
-    expect(spy.closeCount).toBe(0);
-
-    // Second message.
+  const shutdown = async () => {
     await supervisorSender.send({
-      type: "trigger.fire",
-      data: {
-        runId: "run-2",
-        mailIdentity: { messageId: "msg-2" },
-        receivedAt: 2,
-        payload: textMail("bravo body"),
-      },
+      type: "shutdown",
+      data: { reason: "undeploy" },
     });
-    await spy.changed.until(() => spy.replies.length >= 2);
+    supervisorToChild.close();
+    return runPromise;
+  };
+  return { spy, childToSupervisor, fireMail, shutdown };
+}
 
-    // STILL one build -- the warm agent was reused, not rebuilt -- and
-    // the LSP subprocess was spawned once and never torn down between
-    // the two messages. This is exactly what fails against per-message
-    // teardown: there, factoryCalls would be 2 and the LSP would respawn.
-    expect(factoryCalls).toBe(1);
-    expect(spy.lspSpawnCount).toBe(1);
-    expect(spy.lspAlive).toBe(true);
-    expect(spy.closeCount).toBe(0);
+describe("a one-step deployment's turns", () => {
+  test("two sequential mails continue one conversation, with a new agent and LSP for each turn", async () => {
+    const child = await startOneStepChild({
+      prefix: "one-step-turns-",
+      stepId: "step-1",
+      mails: ["alpha body", "bravo body"],
+    });
+    const { spy } = child;
 
-    // Conversation continuity: the warm agent retained the first
-    // message in memory, so the second reply reflects BOTH bodies.
+    await child.fireMail(1, "alpha body");
+    await waitForUpstreamPayload(child.childToSupervisor, "terminal.event");
+
+    // The turn built its agent and closed it, LSP included.
+    expect(spy.builds).toBe(1);
+    expect(spy.closeCount).toBe(1);
+    expect(spy.liveLsps).toBe(0);
+
+    await child.fireMail(2, "bravo body");
+    await waitForUpstreamPayloads(child.childToSupervisor, "terminal.event", 2);
+
+    // One build and one LSP for each turn; no agent stays live between
+    // turns.
+    expect(spy.builds).toBe(2);
+    expect(spy.lspSpawnCount).toBe(2);
+    expect(spy.closeCount).toBe(2);
+    expect(spy.liveLsps).toBe(0);
+
+    // The second turn's agent loaded the first turn from the committed
+    // conversation, so its reply names both bodies.
     expect(spy.replies[0]).toContain("alpha body");
     expect(spy.replies[1]).toContain("alpha body");
     expect(spy.replies[1]).toContain("bravo body");
 
-    // Both runs end before the undeploy, so none is left counted as work
-    // in this process.
-    await waitForUpstreamPayloads(childToSupervisor, "terminal.event", 2);
-    // Undeploy -> shutdown. Eviction runs the wrapped close exactly once
-    // and the LSP subprocess dies.
-    await supervisorSender.send({
-      type: "shutdown",
-      data: { reason: "undeploy" },
-    });
-    supervisorToChild.close();
-    const result = await runPromise;
-
+    const result = await child.shutdown();
     expect(result.triggeredRunIds).toEqual(["run-1", "run-2"]);
-    expect(spy.closeCount).toBe(1);
-    expect(spy.lspAlive).toBe(false);
-  });
-
-  test("a sources-updated frame swaps the built warm agent's sources in place", async () => {
-    const baseDir = await makeTempDir("warm-sources-");
-    const supervisorKeyPair = await generateKeyPair();
-    const childKeyPair = await generateKeyPair();
-    const channelId = generateChannelId();
-    const hmacKey = generateHmacKey();
-    const stepId = "step-1";
-    const anchorRunId = "deployment-x";
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: anchorRunId,
-    };
-
-    const signingKey: KeyPair = await generateKeyPair();
-    const allowAll: AuthorizeFn = () => ({ allowed: true });
-    const substrate = createRepoStore({
-      dataDir: baseDir,
-      signingKey,
-      handlers: { "workflow-run": workflowRunKindHandler },
-      authorize: allowAll,
-    });
-    const principalShape = { kind: "workflow-process", anchorRunId };
-    const principal: Principal = principalShape;
-
-    await substrate.writeTree(
-      { kind: "hub" },
-      workflowRunRepoId,
-      "refs/heads/main",
-      { files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, message: "genesis" },
-    );
-    const runRepoDir = substrate.getRepoDir(workflowRunRepoId);
-    await seedProcessingEntryInDir(runRepoDir, {
-      address: "deployment-x@example.com",
-      messageId: "msg-1",
-      receivedAt: 1,
-      text: "alpha body",
-    });
-    // Source-ref is the only deploy lineage: the child evaluates a
-    // materialized closure and re-verifies it at boot; the workflow-asset repo
-    // is not read on this path.
-    const {
-      packageDir: closurePackageDir,
-      approvedHash: definitionHash,
-      definition,
-    } = await materializeClosure(
-      "warm-sources-def-",
-      warmWorkflowDefinition(stepId),
-    );
-
-    const { agent, spy } = buildWarmAgentSpy();
-    let factoryCalls = 0;
-    const invokeStep: ChildStepInvoker = async (
-      req,
-      onEvent,
-      authorize,
-      warmCache,
-      _sourcesRef,
-      _credentialWiring,
-      mailPartReader,
-    ) =>
-      createWorkflowStepInvoker({
-        workflowAuthorize: authorize,
-        buildEnv: async () => stubStepEnv(),
-        agentFactory: async () => {
-          factoryCalls += 1;
-          return agent;
-        },
-        onEvent: (event) => onEvent(event),
-        mailPartReader,
-        ...(warmCache !== undefined ? { warmCache } : {}),
-      })(req);
-
-    const bindings: RunWorkflowChildBindings = {
-      substrate,
-      workflowRunRepoId,
-      workflowRunRef: "refs/heads/main",
-      principal,
-      invokeStep,
-      actionCredentials: () => unavailableActionCredentials,
-      spawnChild: async () => createTerminalChildHandle("completed"),
-      scheduler: { scheduleIn: () => () => undefined },
-      earliestQueuedTimer: () => undefined,
-      stopScheduler: async () => undefined,
-      evaluateGrants: async () => ({
-        effect: "allow" as const,
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      ipcChildKeyPairFactory: () => Promise.resolve(childKeyPair),
-    };
-
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventStream = createMemoryFrameStream();
-
-    const env = parseSpawnTimeEnv(
-      makeSpawnEnv({
-        channelId,
-        hmacKeyHex: hexEncode(hmacKey),
-        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
-        definitionHash,
-        closurePackageDir,
-      }),
-    );
-
-    const supervisorSender = createControlChannelSender({
-      privateKeySeed: supervisorKeyPair.privateKey,
-      channelId,
-      writer: supervisorToChild.writer,
-    });
-
-    await sendAuthoritySet(supervisorSender, {
-      snapshot: {
-        steps: [
-          {
-            stepId,
-            grants: [],
-            contentHash: "deadbeef",
-          },
-        ],
-      },
-    });
-
-    const runPromise = runWorkflowChild({
-      env,
-      definition,
-      controlReader: supervisorToChild.reader,
-      controlWriter: childToSupervisor.writer,
-      eventWriter: eventStream.writer,
-      bindings,
-    });
-
-    await waitForUpstreamPayload(childToSupervisor, "ready");
-
-    // Build the warm agent with one message so the cache holds an entry.
-    await supervisorSender.send({
-      type: "trigger.fire",
-      data: {
-        runId: "run-1",
-        mailIdentity: { messageId: "msg-1" },
-        receivedAt: 1,
-        payload: textMail("alpha body"),
-      },
-    });
-    await spy.changed.until(() => spy.replies.length >= 1);
-    expect(factoryCalls).toBe(1);
-
-    // Rotate the sources on the live warm agent.
-    const rotated: InferenceSource[] = [
-      {
-        id: "rotated",
-        provider: "openai",
-        baseURL: "https://api.openai.com",
-        credentialId: "sk-rotated",
-        model: "gpt-rotated",
-      },
-    ];
-    await supervisorSender.send({
-      type: "sources-updated",
-      data: { sources: rotated, defaultSource: "rotated" },
-    });
-    await spy.changed.until(() => spy.sourceRotations.length >= 1);
-
-    // The swap reached the built agent in place, carrying the frame's list
-    // and default, and did NOT rebuild the agent.
-    expect(spy.sourceRotations).toHaveLength(1);
-    expect(spy.sourceRotations[0]?.sources).toEqual(rotated);
-    expect(spy.sourceRotations[0]?.defaultSource).toBe("rotated");
-    expect(factoryCalls).toBe(1);
-
-    // The run ends before the undeploy, so it is not left counted as work in
-    // this process.
-    await waitForUpstreamPayload(childToSupervisor, "terminal.event");
-    await supervisorSender.send({
-      type: "shutdown",
-      data: { reason: "undeploy" },
-    });
-    supervisorToChild.close();
-    await runPromise;
+    expect(spy.closeCount).toBe(2);
   });
 });
 

@@ -182,12 +182,62 @@ Where it lives today: `routeLoopOutcome`,
 
 **10.** A loop iteration's `AuthorizeContext.runId` is
 `<parentRunId>__<loopId>__<index>`, distinct per iteration. That is what lets
-a host give each iteration its own workdir, and therefore its own fresh agent
-conversation.
+a host give each iteration its own workdir. The agent conversation does not
+start over with the iteration. An agent step's conversation belongs to its
+place in the deployment: its path of step ids, plus the item index for a
+`map` item. The step continues that conversation each time its place runs
+again:
+
+- A loop body step continues it in the next iteration. A `map` item in a
+  loop body continues the conversation of the same index.
+- An `onTrigger` body step continues it at the next event.
+- The body steps of a `childWorkflow` step continue it each time the
+  `childWorkflow` step runs again, as in a loop.
+- A turn that fails commits nothing, so a retry continues from the last
+  committed turn and does not see the failed turn's partial work. A turn
+  whose reply by mail was sent commits like any settled turn, and its record
+  of the send on the connector thread commits with it. The step is not
+  retried after the send, because a retry would send a second, different
+  reply. If that commit fails, the step fails without a retry, and the next
+  invocation does not see the turn: not its inbound mail and not its reply.
+  The thread continues when the recipient answers, because their References
+  name the thread.
+- The next invocation rolls back a turn that parked on an approval to the
+  start of that turn. This applies when the park was never resumed, for
+  example because its step failed after the park. It also applies when a
+  resume parks again, because the resume keeps
+  the start of the original turn, and when a resume fails, because that
+  resume commits nothing. Thus the conversation that the next invocation
+  sees can lack an approved action that a resume ran. The effects of that
+  action stay.
+
+The conversation lives as long as the deployment's run repository. The same
+address and the same step path mean the same conversation.
+
+To move a conversation to a new deployment, export it from the old run and
+import it through the deploy's `stepState` field. The key of the import can
+name a different place than the export. For example, export `reply` from a
+one-step deployment and import it as `section.reply` when the new deployment
+puts the agent step `reply` in the body of the `onTrigger` section `section`.
+The first event of the section then continues the conversation. An import or
+export names a top-level agent step, or an agent step in the inline body of a
+top-level `onTrigger` section. It cannot name a map item, a step in a loop
+body, or a step more than one level down. The model of the new
+step must be the model that produced the conversation.
+
+The files of a step do not continue with its conversation. A step's
+workspace, its working directory, lives for one attempt, for every step,
+also the step of a one-step workflow. A retry starts with a new workspace
+and does not see the files of the attempt before it. An approval resume in
+the same attempt keeps the files. Each event of an `onTrigger` section is a
+new body run, so a body step gets a new workspace for each event. A step that must keep data across turns keeps
+it in its conversation or in its output.
 
 Where it lives today: `loopBodyRunId`,
 `packages/workflow/src/runtime/step-scope.ts` (`runLoop` in
-`packages/workflow/src/runtime/run.ts` is the caller)
+`packages/workflow/src/runtime/run.ts` is the caller); `stepPlaceKey`,
+`packages/types/src/step-place.ts`; `createDurableConversationStore`,
+`packages/workflow-host/src/conversation-state.ts`
 
 **11.** `escalation` needs no handler ref and no resolver. It is a pure
 runtime node that emits `{ escalatedTo, payload }`. That makes it the cheapest
@@ -238,7 +288,7 @@ const invokeStep = createWorkflowStepInvoker({
       resolveGrants: () => resolveGrants(stepId),
       providers,
     });
-    return env;
+    return { env, conversation: undefined };
   },
 });
 await runLocal(definition, {
@@ -318,8 +368,8 @@ Where it lives today: `wrapAuthorize`,
 
 **16.** An invoker may return
 `{ suspend: { correlationId, kind: "approval", approvalSnapshot } }` instead
-of an output. Only an `"approval"` suspend is representable: the `"input"`
-park is minted exclusively by the runtime's trigger-budget re-arm.
+of an output. Only an `"approval"` suspend is representable: a step runs one
+turn per invocation and does not park between turns.
 
 Where it lives today: `StepInvokeResult`,
 `packages/workflow/src/runtime/env.ts`
@@ -501,8 +551,7 @@ Where it lives today: `sectionBodyRunId`,
 
 **27.** A `childWorkflow` child carries no address of its own. The spawning
 step drives the child across parks and relays each one onto the parent run:
-an approval, with the body's snapshot, an author `awaitSignal`, and the input
-park of a step with a trigger budget. A gate inside a loop in the child
+an approval, with the body's snapshot, and an author `awaitSignal`. A gate inside a loop in the child
 climbs the same way until it reaches the deployment's addressable run. The
 hub approval is registered on that run. A signal posted at the deployment
 run id is what reaches the child. The child run id is not an address. The
@@ -529,8 +578,8 @@ as `hasUpstreamSignalResolver`. The deployment's own run sets it true. A
 `childWorkflow` spawner forces it true as well, because the parent relays,
 and inheriting a parent false would refuse a gate the relay can answer. A
 loop or `onTrigger` body inherits its container's flag. An input park inside
-a loop or `onTrigger` body is still rejected: those handles do not re-arm an
-input park.
+a `childWorkflow` child, a loop body or an `onTrigger` body is rejected: no
+container relays an input park.
 
 Where it lives today: the "Crash and suspension behavior of a `loop` body"
 section of `packages/workflow/README.md`, the `hasUpstreamSignalResolver`
@@ -706,7 +755,9 @@ run from counting as waiting, so its deployment stays out of standby until
 they end: a step with a `timeout`, from its start to its end, even while it
 is parked on an approval; a `map`, until it ends; and a step waiting to
 retry. A fresh child could not keep the step's deadline, continue the map,
-or continue the retry wait. An `awaitSignal` gate's `timeout` does not
+or continue the retry wait. A step's deadline covers one turn, so a step with
+a `timeout` in an `onTrigger` body does not count while the section waits
+for its next event. An `awaitSignal` gate's `timeout` does not
 count, because it is a timer in the run's log.
 
 Where it lives today: the standby paragraph of
@@ -714,3 +765,67 @@ Where it lives today: the standby paragraph of
 `packages/workflow/src/runtime/activity.ts`, called by `runStep` and
 `runMap`, and the doc comment of `waitForTimer`,
 `packages/workflow/src/runtime/run.ts`.
+
+**35.** A step's final model text goes out as mail only when the step sets
+`replyByMail: true`. Without the option, the final text is only the step's
+output, and the deployment sends no mail for the step. The option applies
+only to a turn that answers mail: the step's input is a Mail, or the turn is
+the approval resume of a turn whose input was a Mail. Then the reply goes on
+the inbound thread, or to the sender of a Mail that is not on the thread. A
+turn that answers no mail sends nothing, also when the step sets the option.
+Every agent step can send the reply. Two steps that set the option and
+answer the same Mail both reply, so a deployment that must answer each Mail
+once sets the option on one step only. A reply goes out at most once: a
+step that builds its agent for each turn sends its reply before it commits
+its turn, and a crash between the two fails the step without running it
+again, so the conversation does not hold that turn. Every agent step builds
+its agent for each turn.
+The singular shorthand takes the option next to `agent`.
+
+```ts
+steps: {
+  reply: step({ agent, replyByMail: true }),
+},
+```
+
+A step runs one turn per invocation. A one-step mail deployment answers one
+mail, and then its run is terminal: the deployment refuses a later mail as
+`workflow_run_terminal`. An interactive mail agent is an `onTrigger` section
+on mail whose body has an agent step that sets `replyByMail: true`. Each
+mail is a new body run. The body step continues the conversation at its
+place (entry 10) and gets a new workspace.
+
+```ts
+steps: {
+  section: onTrigger({
+    on: { type: "mail", to: address },
+    body: defineWorkflow({
+      id: "reply-body",
+      trigger: { type: "manual" },
+      steps: { reply: step({ agent, replyByMail: true }) },
+    }),
+  }),
+},
+```
+
+`step()` rejects a `triggers` key, which an earlier version used to let a
+step answer more than one mail. A deployed bundle carries its own copy of
+`@intx/workflow`, so a bundle built with an earlier version can still give
+a step the key. The live-to-inert projector refuses such a step with an
+error that names the step and onTrigger on mail. The Hub probe and the
+workflow child both run the projector:
+
+- A new deploy of a definition whose step sets `triggers` fails at the
+  probe with that error.
+- An existing deployment whose definition set `triggers` fails with that
+  error when its workflow child starts.
+
+Rewrite such a deployment as above and redeploy it. Export its conversation
+as `reply` and import it as `section.reply` to keep it (entry 10).
+
+Where it lives today: `StepPrimitive.replyByMail`,
+`packages/workflow/src/definition/primitives.ts`; the default, `runStep`,
+`packages/workflow/src/runtime/run.ts`; the send, `runConversationTurn`,
+`packages/workflow-host/src/adapters/step-invoker.ts`; the refusal of
+`triggers`, `step()` in `packages/workflow/src/definition/primitives.ts` and
+`rejectStepTriggers` in `packages/workflow/src/live-inert-projector.ts`.

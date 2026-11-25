@@ -45,16 +45,21 @@
 // reply makes the agent's own reply the parent, with the References it went
 // out with. The router never looks a parent up by Message-ID.
 //
-// A passthrough message does not join the thread, so the thread state does
-// not answer it. Its commit sets a turn reply target instead: the reply
-// goes to the passthrough sender, threaded under that message, and the
-// thread state stays as it was. The next start or continue commit clears
-// it, and so does `beginTurn()`.
+// Each agent turn has a turn mode that records which mail the turn
+// answers. `beginTurn()` sets `none`: the turn answers no mail. A start or
+// continue commit sets `thread`: the turn answers the thread. A passthrough
+// message does not join the thread, so the thread state does not answer it.
+// Its commit sets `passthrough` with a reply target instead: the reply goes
+// to the passthrough sender, threaded under that message, and the thread
+// state stays as it was. `turnAnswersMail()` is true for `thread` and
+// `passthrough`. A turn in mode `none` replies to nobody: `composeReply()`
+// and `onReplySent()` throw `TurnAnswersNoMailError`, also when a thread is
+// active.
 //
-// A turn that parks on an approval gate keeps its target across the park:
-// `parkTurn()` files the target under the gate's correlation id, and the
+// A mail turn that parks on an approval gate keeps its mode across the
+// park: `parkTurn()` files the mode under the gate's correlation id, and the
 // `beginTurn()` of the approval resume takes it back. The router holds the
-// parked targets in memory; the caller persists them through
+// parked modes in memory; the caller persists them through
 // `parkedReplyTargets()` and installs them with
 // `restoreParkedReplyTargets()`.
 
@@ -82,6 +87,13 @@ export class NoActiveConnectorThreadError extends Error {
   constructor() {
     super("no active connector thread");
     this.name = "NoActiveConnectorThreadError";
+  }
+}
+
+export class TurnAnswersNoMailError extends Error {
+  constructor() {
+    super("the current turn answers no mail, so it has no reply target");
+    this.name = "TurnAnswersNoMailError";
   }
 }
 
@@ -135,55 +147,60 @@ export interface ConnectorRouter {
 
   /**
    * Apply a decision produced by `route()`. For `start` and `continue`,
-   * advance the thread state and clear the turn reply target; throws if
+   * advance the thread state and set the turn mode to `thread`; throws if
    * the decision was not produced by this router instance.
    *
    * For `passthrough`, leave the thread state unchanged and set the turn
-   * reply target to the passthrough message's sender. A passthrough
-   * decision that names no sender sets a target with no address, so
-   * `composeReply()` returns `null` for the turn. That is the case when
-   * the message had no `From`, or when the caller made the decision itself
-   * after `route()` threw.
+   * mode to `passthrough`, with the passthrough message's sender as the
+   * turn reply target. A passthrough decision that names no sender sets a
+   * target with no address, so `composeReply()` returns `null` for the
+   * turn. That is the case when the message had no `From`, or when the
+   * caller made the decision itself after `route()` threw.
    */
   commit(decision: RouteDecision): void;
 
   /**
    * Mark the start of an agent turn. A turn that resumes the approval gate
-   * `turn.resume` takes the reply target parked under that correlation id
-   * and removes it from the parked targets. When no target is parked
-   * under that id, the parked turn had no turn reply target, so the
-   * resumed turn replies on the thread. Any other turn clears the turn
-   * reply target, so a turn that commits no passthrough decision replies
-   * on the thread. Returns `true` when the parked targets changed.
+   * `turn.resume` takes the turn mode parked under that correlation id and
+   * removes it from the parked modes. When no mode is parked under that
+   * id, the parked turn answered no mail, so the resumed turn's mode is
+   * `none`. Any other turn sets the mode to `none` until a commit sets it.
+   * Returns `true` when the parked modes changed.
    */
   beginTurn(turn?: { resume?: string }): boolean;
 
   /**
    * Park the current turn on the approval gate `correlationId`: file the
-   * turn reply target under that id, so the `beginTurn()` of the approval
-   * resume takes it back. A target with no address is filed as such. When
-   * the turn has no turn reply target, nothing is filed. The turn reply
-   * target stays set until the next `beginTurn()`. Returns `true` when the
-   * parked targets changed.
+   * turn mode under that id, so the `beginTurn()` of the approval resume
+   * takes it back. A `passthrough` mode is filed with its reply target,
+   * also one with no address. When the mode is `none`, nothing is filed.
+   * The turn mode stays set until the next `beginTurn()`. Returns `true`
+   * when the parked modes changed.
    */
   parkTurn(correlationId: string): boolean;
 
   /**
-   * Return a copy of the parked reply targets, keyed by correlation id.
+   * Return `true` when the current turn answers mail: its mode is `thread`
+   * or `passthrough`.
+   */
+  turnAnswersMail(): boolean;
+
+  /**
+   * Return a copy of the parked turn modes, keyed by correlation id.
    */
   parkedReplyTargets(): ParkedReplyTargets;
 
   /**
-   * Replace the parked reply targets. Used at startup to restore the
-   * targets the caller persisted.
+   * Replace the parked turn modes. Used at startup to restore the modes the
+   * caller persisted.
    */
   restoreParkedReplyTargets(targets: ParkedReplyTargets): void;
 
   /**
-   * Produce the threading headers needed to send a reply. When a
-   * passthrough commit set a turn reply target, `to` is the passthrough
-   * sender, `cc` is empty, and the headers thread the reply under that
-   * message; the return is `null` when that sender has no address.
+   * Produce the threading headers needed to send a reply. When the turn
+   * mode is `passthrough`, `to` is the passthrough sender, `cc` is empty,
+   * and the headers thread the reply under that message; the return is
+   * `null` when that sender has no address.
    * Otherwise `to` is the most recent speaker on the active connector
    * thread and `cc` is everyone else who has spoken on the thread
    * (deduplicated). The thread reply answers the most recent message on
@@ -192,7 +209,9 @@ export interface ConnectorRouter {
    * no id, `inReplyTo` is absent and `references` is `lastReferences`
    * alone. Each is absent when it would be empty. The caller composes the
    * full outbound message by adding its own `content` and `type` fields.
-   * Throws `NoActiveConnectorThreadError` when no turn reply target is set
+   * Throws `TurnAnswersNoMailError` when the turn mode is `none`, also when
+   * a thread is active: a turn that answers no mail replies to nobody.
+   * Throws `NoActiveConnectorThreadError` when the turn mode is `thread`
    * and no thread is active.
    */
   composeReply(): ConnectorReplyParts | null;
@@ -200,10 +219,11 @@ export interface ConnectorRouter {
   /**
    * Make a sent thread reply the parent of the next one: `lastMessageId`
    * becomes the receipt's Message-ID, and `lastReferences` becomes
-   * `references`, the References chain the reply was sent with. A reply to
-   * a turn reply target leaves the thread state unchanged. Throws when
-   * called with no turn reply target and no active thread — outbound state
-   * advance has no meaning without a thread.
+   * `references`, the References chain the reply was sent with. A reply in
+   * a `passthrough` turn leaves the thread state unchanged. Throws
+   * `TurnAnswersNoMailError` when the turn mode is `none`, and leaves the
+   * thread state unchanged. Throws `NoActiveConnectorThreadError` when the
+   * turn mode is `thread` and no thread is active.
    */
   onReplySent(receipt: SendReceipt, references: readonly string[]): void;
 
@@ -221,6 +241,13 @@ export interface ConnectorRouter {
    */
   restore(state: ConnectorThreadState | null): void;
 }
+
+// The mail an agent turn answers. `passthrough` carries the reply target:
+// `parts` is `null` for a passthrough sender with no address.
+type MailTurnMode =
+  | { kind: "thread" }
+  | { kind: "passthrough"; parts: ConnectorReplyParts | null };
+type TurnMode = { kind: "none" } | MailTurnMode;
 
 function statesEqual(
   a: ConnectorThreadState | null,
@@ -313,10 +340,8 @@ export function createConnectorRouter(
   const pendingStates = new WeakMap<RouteDecision, ConnectorThreadState>();
   const pendingReplyTargets = new WeakMap<RouteDecision, ConnectorReplyParts>();
 
-  // `null` when no passthrough commit set a target for the current turn.
-  // `parts: null` is a passthrough sender with no address.
-  let turnReplyTarget: ParkedReplyTarget | null = null;
-  const parked = new Map<string, ParkedReplyTarget>();
+  let turnMode: TurnMode = { kind: "none" };
+  const parked = new Map<string, MailTurnMode>();
 
   function applyState(next: ConnectorThreadState | null): void {
     // The null → X transition is what drives bootstrap on restore() — a
@@ -479,7 +504,7 @@ export function createConnectorRouter(
     if (decision.kind === "passthrough") {
       const parts = pendingReplyTargets.get(decision);
       pendingReplyTargets.delete(decision);
-      turnReplyTarget = { parts: parts ?? null };
+      turnMode = { kind: "passthrough", parts: parts ?? null };
       return;
     }
 
@@ -491,30 +516,35 @@ export function createConnectorRouter(
     }
 
     pendingStates.delete(decision);
-    turnReplyTarget = null;
+    turnMode = { kind: "thread" };
     applyState(nextState);
   }
 
   function beginTurn(turn?: { resume?: string }): boolean {
     const resume = turn?.resume;
     if (resume === undefined) {
-      turnReplyTarget = null;
+      turnMode = { kind: "none" };
       return false;
     }
-    turnReplyTarget = parked.get(resume) ?? null;
+    const filed = parked.get(resume);
+    turnMode = filed !== undefined ? copyMode(filed) : { kind: "none" };
     return parked.delete(resume);
   }
 
   function parkTurn(correlationId: string): boolean {
-    if (turnReplyTarget === null) return false;
-    parked.set(correlationId, copyTarget(turnReplyTarget));
+    if (turnMode.kind === "none") return false;
+    parked.set(correlationId, copyMode(turnMode));
     return true;
+  }
+
+  function turnAnswersMail(): boolean {
+    return turnMode.kind !== "none";
   }
 
   function parkedReplyTargets(): ParkedReplyTargets {
     const targets: ParkedReplyTargets = {};
-    for (const [correlationId, target] of parked) {
-      targets[correlationId] = copyTarget(target);
+    for (const [correlationId, mode] of parked) {
+      targets[correlationId] = parkedTarget(mode);
     }
     return targets;
   }
@@ -522,7 +552,7 @@ export function createConnectorRouter(
   function restoreParkedReplyTargets(targets: ParkedReplyTargets): void {
     parked.clear();
     for (const [correlationId, target] of Object.entries(targets)) {
-      parked.set(correlationId, copyTarget(target));
+      parked.set(correlationId, parkedMode(target));
     }
   }
 
@@ -536,13 +566,34 @@ export function createConnectorRouter(
     };
   }
 
-  function copyTarget(target: ParkedReplyTarget): ParkedReplyTarget {
-    return { parts: target.parts === null ? null : copyParts(target.parts) };
+  function copyMode(mode: MailTurnMode): MailTurnMode {
+    if (mode.kind !== "passthrough") return mode;
+    return {
+      kind: "passthrough",
+      parts: mode.parts === null ? null : copyParts(mode.parts),
+    };
+  }
+
+  function parkedTarget(mode: MailTurnMode): ParkedReplyTarget {
+    if (mode.kind === "thread") return { mode: "thread" };
+    return { parts: mode.parts === null ? null : copyParts(mode.parts) };
+  }
+
+  // A parked target with no `mode` is a `passthrough` target.
+  function parkedMode(target: ParkedReplyTarget): MailTurnMode {
+    if ("mode" in target) return { kind: "thread" };
+    return {
+      kind: "passthrough",
+      parts: target.parts === null ? null : copyParts(target.parts),
+    };
   }
 
   function composeReply(): ConnectorReplyParts | null {
-    if (turnReplyTarget !== null) {
-      const { parts } = turnReplyTarget;
+    if (turnMode.kind === "none") {
+      throw new TurnAnswersNoMailError();
+    }
+    if (turnMode.kind === "passthrough") {
+      const { parts } = turnMode;
       if (parts === null) return null;
       return copyParts(parts);
     }
@@ -578,7 +629,10 @@ export function createConnectorRouter(
     receipt: SendReceipt,
     references: readonly string[],
   ): void {
-    if (turnReplyTarget !== null) return;
+    if (turnMode.kind === "none") {
+      throw new TurnAnswersNoMailError();
+    }
+    if (turnMode.kind === "passthrough") return;
     if (state === null) {
       throw new NoActiveConnectorThreadError();
     }
@@ -630,6 +684,7 @@ export function createConnectorRouter(
     commit,
     beginTurn,
     parkTurn,
+    turnAnswersMail,
     parkedReplyTargets,
     restoreParkedReplyTargets,
     composeReply,

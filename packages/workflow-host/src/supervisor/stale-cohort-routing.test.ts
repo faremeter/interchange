@@ -354,7 +354,6 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       subprocessSpawner: tracker.spawner,
       binaryPath: "/fake/bin",
       substrateEnv: { DATA_DIR: baseDir },
-      dynamicSpawnEnv: () => ({}),
       workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
       workflowRunRef: "refs/heads/main",
       anchorRunId: "run_deployment-x",

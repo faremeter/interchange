@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import type { StepStateSnapshot } from "@intx/types";
 import type { ConversationTurn, InferenceSource } from "@intx/types/runtime";
-import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import type {
+  WorkflowProjectionDefinition,
+  WorkflowProjectionWithSources,
+} from "@intx/types/sidecar";
+import { enumerateInertBodies } from "@intx/workflow-deploy";
 
 import { buildStepStateSeeds } from "./step-state-import";
 import {
@@ -16,22 +20,48 @@ const RUN_ID = "run_import";
 const UID_VALIDITY = 1_700_000_000_000;
 const AGENT = { modelSources: [] };
 
+const loopBody = {
+  id: "rounds-body",
+  triggers: [],
+  stepOrder: ["drafter"],
+  steps: { drafter: { kind: "step", agent: AGENT } },
+};
+
 const projection: WorkflowProjectionDefinition = {
   id: "wf-import",
   triggers: [],
-  stepOrder: ["intake", "review", "notify", "fanout", "rounds"],
+  stepOrder: [
+    "intake",
+    "review",
+    "notify",
+    "fanout",
+    "rounds",
+    "section",
+    "linked",
+  ],
   steps: {
     intake: { kind: "step", agent: AGENT },
     review: { kind: "step", agent: AGENT, after: ["intake"] },
     notify: { kind: "action", after: ["review"] },
     fanout: { kind: "map", step: { agent: AGENT } },
-    rounds: {
-      kind: "loop",
+    rounds: { kind: "loop", body: loopBody },
+    section: {
+      kind: "onTrigger",
       body: {
-        stepOrder: ["drafter"],
-        steps: { drafter: { kind: "step", agent: AGENT } },
+        inline: {
+          id: "section-body",
+          triggers: [],
+          stepOrder: ["reply", "notify", "fan", "rounds"],
+          steps: {
+            reply: { kind: "step", agent: AGENT },
+            notify: { kind: "action", after: ["reply"] },
+            fan: { kind: "map", step: { agent: AGENT } },
+            rounds: { kind: "loop", body: loopBody },
+          },
+        },
       },
     },
+    linked: { kind: "onTrigger", body: { ref: "wf-linked" } },
   },
 };
 
@@ -49,6 +79,18 @@ const sources = {
   intake: [source("claude-a")],
   review: [source("claude-b")],
 };
+
+// The deploy pins each inline body's steps under the body's ref.
+const referencedDefinitions: WorkflowProjectionWithSources[] =
+  enumerateInertBodies(projection).map((body) => ({
+    definition: body.definition,
+    sources: Object.fromEntries(
+      body.definition.stepOrder.map((stepId) => [
+        stepId,
+        [source(stepId === "reply" ? "claude-c" : "claude-placeholder")],
+      ]),
+    ),
+  }));
 
 function snapshot(turns: ConversationTurn[]): StepStateSnapshot {
   return {
@@ -87,6 +129,7 @@ function seeds(stepState: Record<string, StepStateSnapshot>) {
   const result = buildStepStateSeeds({
     projection,
     sources,
+    referencedDefinitions,
     runId: RUN_ID,
     stepState,
     uidValidity: UID_VALIDITY,
@@ -130,6 +173,7 @@ describe("buildStepStateSeeds", () => {
     const result = buildStepStateSeeds({
       projection,
       sources,
+      referencedDefinitions,
       runId: RUN_ID,
       uidValidity: UID_VALIDITY,
       stepState: { intake: snapshot([question, orphanResult]) },
@@ -160,6 +204,7 @@ describe("buildStepStateSeeds", () => {
     const result = buildStepStateSeeds({
       projection,
       sources,
+      referencedDefinitions,
       runId: RUN_ID,
       uidValidity: UID_VALIDITY,
       stepState: {
@@ -184,6 +229,7 @@ describe("buildStepStateSeeds", () => {
     const result = buildStepStateSeeds({
       projection,
       sources,
+      referencedDefinitions,
       runId: RUN_ID,
       uidValidity: UID_VALIDITY,
       stepState: { intake: snapshot([question, unrecorded]) },
@@ -253,6 +299,7 @@ describe("buildStepStateSeeds", () => {
       buildStepStateSeeds({
         projection,
         sources,
+        referencedDefinitions,
         runId: RUN_ID,
         uidValidity: UID_VALIDITY,
         stepState: {
@@ -269,11 +316,134 @@ describe("buildStepStateSeeds", () => {
     });
   });
 
+  test("refuses a top-level map item's scoped id", () => {
+    expect(
+      buildStepStateSeeds({
+        projection,
+        sources,
+        referencedDefinitions,
+        runId: RUN_ID,
+        uidValidity: UID_VALIDITY,
+        stepState: { "fanout[0]": snapshot([question]) },
+      }),
+    ).toEqual({
+      ok: false,
+      reason: `Step state names "fanout[0]", which the workflow has no top-level agent step for`,
+    });
+  });
+
+  // Each event of an onTrigger section runs its body at the same place, so
+  // an agent step of the body continues one conversation across events.
+  test("files an onTrigger body step's seed under the deployment's run at the step's place", () => {
+    const reply = snapshot([question, assistant("claude-c", "answer")]);
+
+    const files = seeds({ "section.reply": reply });
+
+    expect(files).toEqual(
+      new Map<string, unknown>([
+        [workflowRunStepSeedPath(RUN_ID, "section.reply"), reply],
+      ]),
+    );
+    expect([...files.keys()]).toEqual([
+      `runs/${RUN_ID}/steps/section.reply/seed.json`,
+    ]);
+  });
+
+  test("checks an onTrigger body step's snapshot against the model pinned to the body step", () => {
+    const result = buildStepStateSeeds({
+      projection,
+      sources,
+      referencedDefinitions,
+      runId: RUN_ID,
+      uidValidity: UID_VALIDITY,
+      // The top-level steps run on claude-a and claude-b; the body step
+      // runs on claude-c.
+      stepState: {
+        "section.reply": snapshot([question, assistant("claude-a", "answer")]),
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: `Step state for "section.reply" was produced by "claude-a", but the step runs on "claude-c"; the Hub does not convert a conversation between models, so import it into a step that runs on the same model`,
+    });
+  });
+
+  const keyForm = `a key names a top-level agent step, or an agent step in the body of a top-level onTrigger section as "<section>.<step>"`;
+  const longKey = `section.${"\u00e9".repeat(100)}`;
+  test.each([
+    [
+      "a loop body step",
+      "rounds.drafter",
+      `names a top-level step of kind "loop", not an onTrigger section; ${keyForm}`,
+    ],
+    [
+      "a step of a loop in a section's body",
+      "section.rounds.drafter",
+      `names a step more than one level below the top-level run; ${keyForm}`,
+    ],
+    [
+      "a map item in a section's body",
+      "section.fan[0]",
+      `names a map item; ${keyForm}`,
+    ],
+    [
+      "a map step in a section's body",
+      "section.fan",
+      "names no agent step in the body of its onTrigger section",
+    ],
+    [
+      "an action step in a section's body",
+      "section.notify",
+      "names no agent step in the body of its onTrigger section",
+    ],
+    [
+      "a step a section's body does not have",
+      "section.missing",
+      "names no agent step in the body of its onTrigger section",
+    ],
+    [
+      "a section that is an agent step",
+      "intake.reply",
+      `names a top-level step of kind "step", not an onTrigger section; ${keyForm}`,
+    ],
+    [
+      "a section the workflow does not have",
+      "missing.reply",
+      "names no top-level step of the workflow",
+    ],
+    [
+      "a section whose body is a { ref }",
+      "linked.reply",
+      "names an onTrigger section whose body is a { ref } to a separately deployed workflow, whose steps the Hub cannot check",
+    ],
+    [
+      "a key whose encoded form is too long for a directory name",
+      longKey,
+      "encodes to 608 bytes; a step's state directory name is limited to 255 bytes",
+    ],
+  ])("refuses the key of %s", (_, key, problem) => {
+    expect(
+      buildStepStateSeeds({
+        projection,
+        sources,
+        referencedDefinitions,
+        runId: RUN_ID,
+        uidValidity: UID_VALIDITY,
+        stepState: { [key]: snapshot([question]) },
+      }),
+    ).toEqual({
+      ok: false,
+      reason: `Step state key ${JSON.stringify(key)} ${problem}`,
+    });
+  });
+
   test("bounds what a refusal quotes from the request", () => {
     const refuse = (stepState: Record<string, StepStateSnapshot>) => {
       const result = buildStepStateSeeds({
         projection,
         sources,
+        referencedDefinitions,
         runId: RUN_ID,
         uidValidity: UID_VALIDITY,
         stepState,

@@ -22,13 +22,33 @@
 // directory's size, so no commit re-hashes a tree that grows with the
 // conversation.
 //
-// A step whose retries start over stamps the attempt that owns the state in
-// its metadata, so a later attempt can tell the stored state is not its own.
-// An agent whose conversation spans attempts leaves it unset.
+// A step stamps its metadata with the invocation that wrote the state: the
+// run it ran in, its scoped step id and its attempt. Many invocations share
+// one state directory (loop iterations, onTrigger events, retries), and each
+// continues the conversation the last one committed. The stamp tells an
+// invocation whether a pending approval in the state is its own park, which
+// it resumes, or another invocation's, which it rolls back. State with no
+// stamp was written by an earlier version of the sidecar: one that kept a
+// one-step deployment's agent live across turns left the stamp unset, and
+// one from before the stamp existed wrote a bare `attempt` instead. The types
+// below ignore that key, so such state reads as stamped by no invocation. An
+// invocation continues state with no stamp as another invocation's state,
+// except that an approval resume of a gate the state is parked on continues
+// it as its own, since the gate's correlation id names the park.
 //
-// Parked reply targets hold the reply target of each turn parked on an
-// approval gate, keyed by the gate's correlation id. State written before
-// they existed omits them, and reads as holding none.
+// A step's state that holds a pending approval also records
+// `parkedTurnStart`: the turn count at the start of the turn that parked, so
+// another invocation can roll the state back to that turn's start. The WAL
+// cannot supply it: a fold drops the entries, the first mirror over a seed or
+// over a rolled-back state is itself a fold, and an approval resume that
+// parks again writes an entry that starts at the first park, not at the
+// turn's start.
+//
+// Parked reply targets hold the mail each turn parked on an approval gate
+// answers, keyed by the gate's correlation id: the connector thread, or a
+// passthrough reply target. State written before they existed omits them,
+// and reads as holding none. State written before the thread variant
+// existed holds only passthrough targets.
 //
 // Every reader reconstructs through `reconstructStepState` behind the
 // `StepStateReader` seam, whatever it reads the files from.
@@ -50,12 +70,34 @@ export const STEP_STATE_CHECKPOINT_META_FILE = "checkpoint.meta.json";
 export const STEP_STATE_WAL_DIR = "wal";
 export const STEP_STATE_WAL_BUCKET_SIZE = 128;
 
+/**
+ * The invocation that wrote a step's state: the run it ran in, its scoped
+ * step id (`<id>[<index>]` for a map item) and its attempt.
+ */
+export const StepStateInvocation = type({
+  runId: "string",
+  stepId: "string",
+  attempt: "number.integer >= 0",
+});
+export type StepStateInvocation = typeof StepStateInvocation.infer;
+
+/** Whether two invocation stamps name the same invocation. */
+export function isSameStepStateInvocation(
+  a: StepStateInvocation,
+  b: StepStateInvocation,
+): boolean {
+  return (
+    a.runId === b.runId && a.stepId === b.stepId && a.attempt === b.attempt
+  );
+}
+
 const StepStateMetadata = type({
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
   "parkedReplyTargets?": ParkedReplyTargets,
-  "attempt?": "number.integer >= 0",
+  "invocation?": StepStateInvocation,
+  "parkedTurnStart?": "number.integer >= 0",
 });
 
 /** The non-turn state stamped on every WAL entry and on the checkpoint. */
@@ -67,7 +109,8 @@ export const StepStateCheckpoint = type({
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
   "parkedReplyTargets?": ParkedReplyTargets,
-  "attempt?": "number.integer >= 0",
+  "invocation?": StepStateInvocation,
+  "parkedTurnStart?": "number.integer >= 0",
 });
 
 export const StepStateCheckpointMeta = type({
@@ -77,7 +120,8 @@ export const StepStateCheckpointMeta = type({
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
   "parkedReplyTargets?": ParkedReplyTargets,
-  "attempt?": "number.integer >= 0",
+  "invocation?": StepStateInvocation,
+  "parkedTurnStart?": "number.integer >= 0",
 });
 
 export const StepStateWalEntry = type({
@@ -100,13 +144,16 @@ export type StepStateContent = {
  * `boundaryCount` is the number of mirror boundaries durably committed, so
  * the next WAL entry uses it as its seq. `checkpointBoundarySeq` is the
  * boundary seq the checkpoint folded to, the first WAL seq to expect.
- * `attempt` is the attempt the latest metadata was stamped with, if any.
+ * `invocation` is the invocation the latest metadata was stamped with, if
+ * any. `parkedTurnStart` is the turn count at the start of the turn the
+ * latest metadata's pending approval parked, if it recorded one.
  */
 export type ReconstructedStepState = StepStateContent & {
   totalTurns: number;
   boundaryCount: number;
   checkpointBoundarySeq: number;
-  attempt?: number;
+  invocation?: StepStateInvocation;
+  parkedTurnStart?: number;
 };
 
 /**
@@ -204,22 +251,28 @@ export function buildStepStateCheckpoint(
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
     parkedReplyTargets?: ParkedReplyTargets;
-    attempt?: number;
+    invocation?: StepStateInvocation;
+    parkedTurnStart?: number;
   },
 ): Record<string, string> {
   const parkedReplyTargets =
     content.parkedReplyTargets !== undefined
       ? { parkedReplyTargets: content.parkedReplyTargets }
       : {};
-  const attempt =
-    content.attempt !== undefined ? { attempt: content.attempt } : {};
+  const invocation =
+    content.invocation !== undefined ? { invocation: content.invocation } : {};
+  const parkedTurnStart =
+    content.parkedTurnStart !== undefined
+      ? { parkedTurnStart: content.parkedTurnStart }
+      : {};
   const snapshot = {
     turns: content.turns,
     pendingOperations: content.pendingOperations,
     tokenUsage: content.tokenUsage,
     connectorState: content.connectorState,
     ...parkedReplyTargets,
-    ...attempt,
+    ...invocation,
+    ...parkedTurnStart,
   };
   const meta = {
     checkpointSeq,
@@ -228,7 +281,8 @@ export function buildStepStateCheckpoint(
     tokenUsage: content.tokenUsage,
     connectorState: content.connectorState,
     ...parkedReplyTargets,
-    ...attempt,
+    ...invocation,
+    ...parkedTurnStart,
   };
   return {
     [`${stateDir}${STEP_STATE_CHECKPOINT_FILE}`]: JSON.stringify(snapshot),
@@ -271,7 +325,12 @@ export async function reconstructStepState(
     totalTurns: turns.length,
     boundaryCount: baseBoundarySeq + wal.length,
     checkpointBoundarySeq: baseBoundarySeq,
-    ...(metadata.attempt !== undefined ? { attempt: metadata.attempt } : {}),
+    ...(metadata.invocation !== undefined
+      ? { invocation: metadata.invocation }
+      : {}),
+    ...(metadata.parkedTurnStart !== undefined
+      ? { parkedTurnStart: metadata.parkedTurnStart }
+      : {}),
   };
 }
 
@@ -327,8 +386,11 @@ async function readCheckpoint(
       ...(validatedSnapshot.parkedReplyTargets !== undefined
         ? { parkedReplyTargets: validatedSnapshot.parkedReplyTargets }
         : {}),
-      ...(validatedSnapshot.attempt !== undefined
-        ? { attempt: validatedSnapshot.attempt }
+      ...(validatedSnapshot.invocation !== undefined
+        ? { invocation: validatedSnapshot.invocation }
+        : {}),
+      ...(validatedSnapshot.parkedTurnStart !== undefined
+        ? { parkedTurnStart: validatedSnapshot.parkedTurnStart }
         : {}),
     },
   };
@@ -388,8 +450,11 @@ async function readWalTail(
           ...(validated.metadata.parkedReplyTargets !== undefined
             ? { parkedReplyTargets: validated.metadata.parkedReplyTargets }
             : {}),
-          ...(validated.metadata.attempt !== undefined
-            ? { attempt: validated.metadata.attempt }
+          ...(validated.metadata.invocation !== undefined
+            ? { invocation: validated.metadata.invocation }
+            : {}),
+          ...(validated.metadata.parkedTurnStart !== undefined
+            ? { parkedTurnStart: validated.metadata.parkedTurnStart }
             : {}),
         },
       });

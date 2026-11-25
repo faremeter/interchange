@@ -49,6 +49,7 @@ export type {
 export {
   createConnectorRouter,
   NoActiveConnectorThreadError,
+  TurnAnswersNoMailError,
 } from "./connector-router";
 export type {
   ConnectorRouter,
@@ -57,10 +58,5 @@ export type {
   RouteDecision,
 } from "./connector-router";
 
-export { driveConnectorReplies } from "./reply-drain";
-export type {
-  AgentEventStream,
-  ConnectorReplyDrain,
-  ConnectorReplyDrainOpts,
-  ReplySettlement,
-} from "./reply-drain";
+export { sendConnectorReply } from "./reply-drain";
+export type { ReplySettlement } from "./reply-drain";

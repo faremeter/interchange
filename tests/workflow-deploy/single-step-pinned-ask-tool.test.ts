@@ -57,6 +57,7 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
+import { stepWorkspaceDir } from "@intx/workflow-host/child";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_single-step-pinned-ask-tool-1";
@@ -241,14 +242,13 @@ describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
 
     // The tool has NOT run: the `ask` effect suspended the call before
     // execution. The sentinel would only appear if the tool executed.
-    const stepWorkspace = path.join(
-      env.sidecar.dataDir,
-      "workflow-step-state",
-      workflowRunRepoId.id,
-      "warm",
-      encodeURIComponent(STEP_ID),
-      "workspace",
-    );
+    const stepWorkspace = stepWorkspaceDir({
+      dataDir: env.sidecar.dataDir,
+      workflowRunRepoId,
+      runId,
+      stepId: STEP_ID,
+      attempt: 1,
+    });
     expect(fs.existsSync(path.join(stepWorkspace, SENTINEL_FILENAME))).toBe(
       false,
     );

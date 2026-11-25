@@ -1,11 +1,16 @@
-// Mail wakes a deployment in standby whose run waits on input, and the new
-// child answers it as the run's next turn.
+// Mail wakes a deployment in standby whose onTrigger section waits on input,
+// and the new child answers it as the section's next event. The answer
+// continues the conversation of the event before the standby.
 //
-// An unbounded single-step mail agent replies to mail 1 and parks on input.
-// The deployment is put in standby, which stops the child. Mail 2 then wakes
-// it: the new child resumes the run parked on input, and the supervisor hands
-// it mail 2 on that input once the child reports the park, though the park
-// was taken before the child started and sends no notice of its own.
+// The workflow has one onTrigger section on mail whose body has one agent
+// step that sets `replyByMail: true`. The body run of mail 1 replies, and the
+// section parks on input. The deployment is put in standby, which stops the
+// child. Mail 2 then wakes it: the new child resumes the section parked on
+// input, and the supervisor hands it mail 2 on that input once the child
+// reports the park, though the park was taken before the child started and
+// sends no notice of its own. The body run of mail 2 replies with the
+// conversation of mail 1 in its context, so the conversation continued across
+// the stop and start of the child process.
 //
 // Harness justification: SPAWN-REAL: real hub, real sidecar subprocess, real
 // workflow-process child, mock inference.
@@ -27,6 +32,8 @@ import {
   seedPrincipal,
   tenantSlugFromId,
 } from "@intx/test-harness/seed";
+import { deriveWorkflowRunId } from "@intx/types";
+import { sectionBodyRunId } from "@intx/workflow";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 
 import {
@@ -39,23 +46,31 @@ import {
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitFor,
-  waitForFirstRunId,
   type DeployFlowEnv,
   type WorkflowRunEvent,
 } from "../hub-agent/lib/deploy-flow-env";
 import { putInStandby } from "./standby-helpers";
-import { singleStepMailInboxEntry } from "./fixtures/single-step-mail-inbox-agent";
+import {
+  messageText,
+  conversationRequestFor,
+  withoutCacheMarkers,
+} from "./fixtures/conversation-requests";
+import { onTriggerBodyEntry } from "./fixtures/on-trigger-body";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_5ba1d0ba11ce5a11b0ba5eba11cafe0f";
 const TENANT_ID = "tnt_standby_mail_input";
 const CALLER_PRINCIPAL_ID = "prn_standby_mail_input";
 const DEFINITION_ASSET_ID = "ast_standby_mail_input_wf";
-const STEP_ID = "step1";
+const SECTION_ID = "section";
+const BODY_STEP_ID = "reply";
 
 const MAIL1_MESSAGE_ID = "<standby-input-m1@integration.interchange>";
 const MAIL2_MESSAGE_ID = "<standby-input-m2@integration.interchange>";
 const MAIL_FROM = "user-standby-input@integration.interchange";
+const MAIL1_BODY = "First turn standby-input-5ba1d0.";
+const MAIL2_BODY = "Second turn standby-input-5ba1d0.";
+const TURN_REPLY = "Acknowledged.";
 
 const ALL_TOOL_GRANTS: WireGrantRule[] = [
   "mail_send",
@@ -100,10 +115,10 @@ beforeAll(async () => {
     name: "standby-mail-input-wf",
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
-  // Each turn replies with plain text and calls no tool, so the unbounded
-  // step parks on input after every turn.
+  // Each turn replies with plain text and calls no tool, so each body run
+  // completes and the section parks on input after every event.
   env = await startDeployFlowEnv({
-    inferenceScriptedTurns: [{ text: "Acknowledged." }],
+    inferenceScriptedTurns: [{ text: TURN_REPLY }],
   });
 });
 
@@ -112,16 +127,23 @@ afterAll(async () => {
   if (h !== undefined) await h.close();
 });
 
-function inputParks(events: WorkflowRunEvent[]): number {
-  return events.filter(
-    (e) => e.type === "SignalAwaited" && e.body["parkKind"] === "input",
-  ).length;
+function inputParkNames(events: WorkflowRunEvent[]): Set<unknown> {
+  return new Set(
+    events
+      .filter(
+        (e) =>
+          e.type === "SignalAwaited" &&
+          e.body["stepId"] === SECTION_ID &&
+          e.body["parkKind"] === "input",
+      )
+      .map((e) => e.body["signalName"]),
+  );
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "mail that wakes a deployment in standby",
   () => {
-    test("reaches the run parked on input as its next turn", async () => {
+    test("reaches the section parked on input as its next event, which continues the conversation", async () => {
       const address = deriveRunAddress({
         runId: DEPLOYMENT_ID,
         domain: DEPLOYMENT_DOMAIN,
@@ -140,12 +162,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
         defaultSource: "anthropic:mock-model",
       };
       const handle = await deployWorkflowSourceForTest(env, {
-        entryModule: singleStepMailInboxEntry({
-          stepId: STEP_ID,
-          systemPrompt: "You are the single-step mail-inbox agent.",
+        entryModule: onTriggerBodyEntry({
           address,
-          agentId: "agent-standby-mail-input",
-          triggers: "unbounded",
+          sectionId: SECTION_ID,
+          body: {
+            variant: "agent",
+            stepId: BODY_STEP_ID,
+            systemPrompt: "You are the onTrigger body mail-inbox agent.",
+            agentId: "agent-standby-mail-input",
+            mailTools: true,
+            replyByMail: true,
+          },
+          workflowId: `wf_${DEPLOYMENT_ID}`,
+          bodyWorkflowId: `wf_${DEPLOYMENT_ID}_body`,
         }),
         db: h.db,
         tenantId: TENANT_ID,
@@ -155,7 +184,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: address,
         approvals: "approve-probed",
         config,
-        sources: { [STEP_ID]: [inferenceSource] },
+        sources: { [SECTION_ID]: [inferenceSource] },
       });
       await waitFor(
         () => env.hub.router.getRoutableAddresses().includes(address),
@@ -173,12 +202,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await fireMailTrigger(env, address, {
         messageId: MAIL1_MESSAGE_ID,
         from: MAIL_FROM,
-        content: "First turn.",
+        content: MAIL1_BODY,
         grants: ALL_TOOL_GRANTS,
       });
-      const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
-        diagnostics: env.sidecarDiagnostics,
-      });
+      const runId = deriveWorkflowRunId(address);
       await waitFor(() => replyTo(MAIL1_MESSAGE_ID) !== undefined, {
         diagnostics: env.sidecarDiagnostics,
       });
@@ -188,8 +215,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       await waitFor(
         async () =>
-          inputParks(await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId)) >=
-          1,
+          inputParkNames(await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId))
+            .size >= 1,
         { diagnostics: env.sidecarDiagnostics },
       );
 
@@ -215,7 +242,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ({ deliveryKey: mail2Key } = await fireMailTrigger(env, address, {
           messageId: MAIL2_MESSAGE_ID,
           from: MAIL_FROM,
-          content: "Second turn.",
+          content: MAIL2_BODY,
           inReplyTo: reply1MessageId,
           references: [MAIL1_MESSAGE_ID, reply1MessageId],
           grants: ALL_TOOL_GRANTS,
@@ -232,11 +259,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
         unsubscribe();
       }
 
-      // The run's history reaches the Hub after the reply does. The run takes
-      // a follow-up mail as a signal named by the mail's delivery key.
+      // The run's history reaches the Hub after the reply does. The section
+      // takes a follow-up mail on its input park as a signal named by the
+      // mail's delivery key.
       const mail2Turns = (events: WorkflowRunEvent[]) =>
         events.filter(
-          (e) => e.type === "SignalReceived" && e.body["signalId"] === mail2Key,
+          (e) =>
+            e.type === "SignalReceived" &&
+            inputParkNames(events).has(e.body["signalName"]) &&
+            e.body["signalId"] === mail2Key,
         ).length;
       await waitFor(
         async () =>
@@ -245,10 +276,39 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
       const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
-      // Mail 2 was the run's next turn on its input, not a run of its own.
+      // Mail 2 was the section's next event on its input, not a run of its
+      // own: the only runs are the container and one body run for each mail.
       expect(mail2Turns(events)).toBe(1);
       expect(events.filter((e) => e.type === "RunStarted")).toHaveLength(1);
-      expect(await listRunIds(env, handle.workflowRunRepoId)).toEqual([runId]);
+      const event0 = sectionBodyRunId(runId, SECTION_ID, 0);
+      const event1 = sectionBodyRunId(runId, SECTION_ID, 1);
+      expect(
+        events.flatMap((e) =>
+          e.type === "ChildSpawned" ? [e.body["childRunId"]] : [],
+        ),
+      ).toEqual([event0, event1]);
+      expect(
+        (await listRunIds(env, handle.workflowRunRepoId)).toSorted(),
+      ).toEqual([runId, event0, event1].toSorted());
+
+      // The body run of mail 2, on the new child, continued the conversation
+      // of mail 1: its request holds the request of mail 1 and the reply to
+      // it, then mail 2.
+      const event0Turn = withoutCacheMarkers(
+        conversationRequestFor(env.inference.requests, MAIL1_BODY, MAIL1_BODY)
+          .messages ?? [],
+      );
+      const event1Request = conversationRequestFor(
+        env.inference.requests,
+        MAIL1_BODY,
+        MAIL2_BODY,
+      );
+      const event1Turn = withoutCacheMarkers(event1Request.messages ?? []);
+      expect(event1Turn.slice(0, event0Turn.length)).toEqual(event0Turn);
+      const carriedReply = event1Request.messages?.[event0Turn.length];
+      expect(carriedReply?.role).toBe("assistant");
+      expect(messageText(carriedReply)).toContain(TURN_REPLY);
+      expect(event1Turn).toHaveLength(event0Turn.length + 2);
     }, 180_000);
   },
 );

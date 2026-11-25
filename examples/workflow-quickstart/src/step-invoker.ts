@@ -12,7 +12,7 @@
 //
 // So this example wires its own. The shape below is what the deployed host
 // does, minus the parts only a sidecar can supply (mail-derived inputs,
-// warm agents kept alive across turns, approval-gate resumption):
+// a conversation that continues across turns, approval-gate resumption):
 //
 //   1. Build a `BaseEnv` for this step.
 //   2. Adapt the workflow-level authorize onto the agent's `AuthorizeFn`

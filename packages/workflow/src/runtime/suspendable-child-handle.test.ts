@@ -93,8 +93,8 @@ describe("createSuspendableChildHandle", () => {
         input: null,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: [],
         signal: new AbortController().signal,
-        surfaceInputPark: false,
       });
       const working = await whenQuiet().then(() => {
         const endParent = beginWork();
@@ -124,8 +124,8 @@ describe("createSuspendableChildHandle", () => {
       input: null,
       depth: 0,
       maxChildSpawnDepth: 32,
+      stepPathPrefix: [],
       signal: stop.signal,
-      surfaceInputPark: false,
     });
     await handle.next(noWake);
     await whenQuiet();

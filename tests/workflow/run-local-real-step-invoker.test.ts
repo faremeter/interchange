@@ -221,7 +221,7 @@ describe("runLocal with the real step invoker", () => {
           resolveGrants: () => resolveGrants(stepId),
           providers,
         });
-        return env;
+        return { env, conversation: undefined };
       },
     });
     const result = await driveUntilSettled(

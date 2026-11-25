@@ -351,6 +351,42 @@ describe("workflowRunKindHandler.validatePush — step state", () => {
     if (!r.ok) throw new Error(r.reason);
   });
 
+  test("accepts a parked turn start on a checkpoint and a WAL entry, and rejects a negative one", async () => {
+    const parked = {
+      ...METADATA,
+      invocation: { runId: RUN, stepId: STEP, attempt: 1 },
+      parkedTurnStart: 2,
+    };
+    const r = await validate(
+      {
+        ...runEvents,
+        ...buildStepStateCheckpoint(stateDir(), 1, {
+          turns: [turn("0"), turn("1"), turn("2")],
+          ...parked,
+        }),
+        [stepStateWalEntryPath(stateDir(), 1)]: serializeStepStateWalEntry(
+          1,
+          [],
+          parked,
+        ),
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    if (!r.ok) throw new Error(r.reason);
+
+    await expectRejected(
+      {
+        ...runEvents,
+        [stepStateWalEntryPath(stateDir(), 0)]: serializeStepStateWalEntry(
+          0,
+          [],
+          { ...parked, parkedTurnStart: -1 },
+        ),
+      },
+      /metadata.parkedTurnStart must be non-negative/,
+    );
+  });
+
   test("accepts a compaction that rewrites the checkpoint and truncates the WAL", async () => {
     const r = await validate(
       { ...runEvents, ...checkpoint(2, 2) },
@@ -2070,7 +2106,7 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
 });
 
 describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
-  // The substrate mailbox backing commits the warm agent's durable inbox
+  // The substrate mailbox backing commits the deployment's durable inbox
   // under `mailbox/INBOX/`: a MUTABLE `index.json` rewritten on each flush
   // plus `<uid>.eml` message blobs carrying raw signed bytes. `<uid>` is a
   // decimal integer >= 1. A RETAINED message blob is held immutable via
@@ -2254,7 +2290,7 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
   });
 
   test("accepts expunging a prior message while the index persists", async () => {
-    // The warm agent physically removes a message from the live INBOX. The
+    // The agent physically removes a message from the live INBOX. The
     // index is rewritten (mutable) and retained; the `<uid>.eml` blob is
     // dropped from the tree but survives in git history because a
     // workflow-run repo is never GC'd.

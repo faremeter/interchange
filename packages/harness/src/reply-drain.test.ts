@@ -1,4 +1,4 @@
-// Unit tests for the shared connector reply drain. The drain is exercised
+// Unit tests for the connector reply drain. The drain is exercised
 // against a plain async stream and stub compose/send/onReplySent seams --
 // no full agent or transport -- so the contract (one send per
 // connector.reply, correct threading headers, serialized ordering, and a
@@ -12,15 +12,13 @@ import type {
   SendReceipt,
 } from "@intx/types/runtime";
 
-import { waitUntil } from "@intx/types/testing";
-
 import { createInboundMessage } from "@intx/mime";
 
 import {
   createConnectorRouter,
   type ConnectorReplyParts,
 } from "./connector-router";
-import { driveConnectorReplies } from "./reply-drain";
+import { driveConnectorReplies, sendConnectorReply } from "./reply-drain";
 
 function replyEvent(seq: number, content: string): InferenceEvent {
   return { type: "connector.reply", seq, data: { content } };
@@ -42,59 +40,6 @@ async function* streamOf(
     // delivery.
     await Promise.resolve();
   }
-}
-
-/**
- * A push-based event stream: a test feeds events with `push` and ends the
- * stream with `end`, so the barrier's capture-then-await ordering can be
- * exercised against a stream that stays open between events.
- *
- * `pulled()` reports how many events the consumer has taken off the queue.
- * The drain consumes serially, so `pulled()` reaching n+1 is a signal that
- * the drain finished its handling of event n -- which is what a test asserting
- * "event n changed nothing" needs, since there is no event of its own to await.
- */
-function pushStream(): {
-  stream: AsyncGenerator<InferenceEvent>;
-  push: (event: InferenceEvent) => void;
-  end: () => void;
-  pulled: () => number;
-} {
-  const queue: InferenceEvent[] = [];
-  let notify: (() => void) | null = null;
-  let ended = false;
-  let pulledCount = 0;
-  const wake = (): void => {
-    const resume = notify;
-    notify = null;
-    resume?.();
-  };
-  async function* gen(): AsyncGenerator<InferenceEvent> {
-    for (;;) {
-      const next = queue.shift();
-      if (next !== undefined) {
-        pulledCount += 1;
-        yield next;
-        continue;
-      }
-      if (ended) return;
-      await new Promise<void>((resolve) => {
-        notify = resolve;
-      });
-    }
-  }
-  return {
-    stream: gen(),
-    push(event) {
-      queue.push(event);
-      wake();
-    },
-    end() {
-      ended = true;
-      wake();
-    },
-    pulled: () => pulledCount,
-  };
 }
 
 describe("driveConnectorReplies", () => {
@@ -238,15 +183,18 @@ describe("driveConnectorReplies", () => {
     ]);
   });
 
-  test("drops a reply with no recipient and settles it with no receipt", async () => {
-    const { stream, push, end } = pushStream();
+  test("drops a reply with no recipient without a send or a failure", async () => {
+    let composeCount = 0;
     let sendCount = 0;
     let sentCount = 0;
     const failures: unknown[] = [];
 
     const drain = driveConnectorReplies({
-      stream,
-      composeReply: () => null,
+      stream: streamOf([replyEvent(1, "no one to answer")]),
+      composeReply: () => {
+        composeCount += 1;
+        return null;
+      },
       send: async () => {
         sendCount += 1;
         return { messageId: "<child@interchange>", status: "delivered" };
@@ -259,17 +207,12 @@ describe("driveConnectorReplies", () => {
       },
     });
 
-    const barrier = drain.waitForReplyAfter(drain.replySeq());
-    push(replyEvent(1, "no one to answer"));
-    const settlement = await barrier;
+    await drain.done;
 
-    expect(settlement).toEqual({ ok: true, receipt: null });
+    expect(composeCount).toBe(1);
     expect(sendCount).toBe(0);
     expect(sentCount).toBe(0);
     expect(failures).toEqual([]);
-
-    end();
-    await drain.done;
   });
 
   test("serializes replies so each composes against the advanced thread", async () => {
@@ -403,122 +346,140 @@ describe("driveConnectorReplies", () => {
     expect(sent.length).toBe(1);
     expect(sent[0]?.content).toBe("first");
   });
+});
 
-  test("the settle barrier resolves with the receipt after the send acks", async () => {
-    // The per-turn barrier: a caller snapshots `replySeq()` before the reply,
-    // then awaits `waitForReplyAfter(snapshot)`, which resolves only once the
-    // reply's send has acked and the thread advanced.
-    const { stream, push, end } = pushStream();
-    let sendAcked = false;
+describe("sendConnectorReply", () => {
+  const PARTS: ConnectorReplyParts = {
+    to: "alice@example.com",
+    cc: [],
+    inReplyTo: "<parent@interchange>",
+    references: ["<root@interchange>", "<parent@interchange>"],
+  };
+  const RECEIPT: SendReceipt = {
+    messageId: "<child@interchange>",
+    status: "delivered",
+  };
 
-    const drain = driveConnectorReplies({
-      stream,
-      composeReply: () => ({
-        to: "alice@example.com",
-        cc: [],
-        inReplyTo: "<parent@interchange>",
-      }),
-      send: async () => {
-        sendAcked = true;
-        return { messageId: "<child@interchange>", status: "delivered" };
+  test("sends the reply and reports the receipt and References", async () => {
+    const sent: OutboundMessage[] = [];
+    const reported: [SendReceipt, readonly string[]][] = [];
+
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => PARTS,
+        send: async (message) => {
+          sent.push(message);
+          return RECEIPT;
+        },
+        onReplySent: (receipt, references) => {
+          reported.push([receipt, references]);
+        },
       },
-      onReplySent: () => undefined,
-    });
+      "the reply body",
+    );
 
-    // Snapshot before the reply is pushed: no reply has settled yet.
-    const before = drain.replySeq();
-    expect(before).toBe(0);
-    const barrier = drain.waitForReplyAfter(before);
-
-    push(replyEvent(1, "the reply"));
-    const settlement = await barrier;
-
-    // The barrier resolved only after the send acked, and carries the receipt.
-    expect(sendAcked).toBe(true);
-    expect(settlement.ok).toBe(true);
-    if (settlement.ok) {
-      expect(settlement.receipt?.messageId).toBe("<child@interchange>");
-    }
-    // The sequence advanced by exactly one.
-    expect(drain.replySeq()).toBe(1);
-
-    end();
-    await drain.done;
+    expect(settlement).toEqual({ ok: true, receipt: RECEIPT });
+    expect(sent).toEqual([
+      { ...PARTS, content: "the reply body", type: "conversation.message" },
+    ]);
+    expect(reported).toEqual([
+      [RECEIPT, ["<root@interchange>", "<parent@interchange>"]],
+    ]);
   });
 
-  test("a turn that emits no reply does not settle the barrier until teardown", async () => {
-    // A suspended / no-reply turn produces no `connector.reply`, so the reply
-    // sequence does not advance and a barrier awaiting that reply stays pending
-    // -- which is why the warm step must NOT await the barrier for such a turn.
-    // When the drain ends before the reply arrives, the barrier resolves as a
-    // failure rather than hanging forever.
-    const { stream, push, end, pulled } = pushStream();
+  test("a reply with no recipient settles with no receipt and no send", async () => {
+    let sendCalled = false;
+    let onReplySentCalled = false;
 
-    const drain = driveConnectorReplies({
-      stream,
-      composeReply: () => ({
-        to: "alice@example.com",
-        cc: [],
-        inReplyTo: "<parent@interchange>",
-      }),
-      send: async () => ({
-        messageId: "<child@interchange>",
-        status: "delivered",
-      }),
-      onReplySent: () => undefined,
-    });
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => null,
+        send: async () => {
+          sendCalled = true;
+          return RECEIPT;
+        },
+        onReplySent: () => {
+          onReplySentCalled = true;
+        },
+      },
+      "no one to answer",
+    );
 
-    const barrier = drain.waitForReplyAfter(0);
-    let settledEarly = false;
-    void barrier.then(() => {
-      settledEarly = true;
-    });
-
-    // A non-reply event flows past without advancing the reply sequence.
-    // The drain consumes the stream serially, so it takes the second noise
-    // event only after it has finished handling the first: waiting for that
-    // second pull puts the assertions strictly after any settlement the first
-    // event could have caused, with no interval to guess at.
-    push(noiseEvent(1));
-    push(noiseEvent(2));
-    await waitUntil(() => pulled() >= 2);
-    expect(settledEarly).toBe(false);
-    expect(drain.replySeq()).toBe(0);
-
-    // Teardown before any reply arrives resolves the barrier as a failure.
-    end();
-    const settlement = await barrier;
-    expect(settlement.ok).toBe(false);
-    await drain.done;
+    expect(settlement).toEqual({ ok: true, receipt: null });
+    expect(sendCalled).toBe(false);
+    expect(onReplySentCalled).toBe(false);
   });
 
-  test("a failed send settles the barrier as not-sent", async () => {
-    // A send failure must NOT count as a durable reply: the barrier resolves
-    // with `ok: false` carrying the cause, distinct from a successful ack, so a
-    // per-turn caller fails the turn rather than treating the reply as sent.
-    const sentinel = new Error("outbound bridge rejected the send");
+  test("a compose failure settles in the compose phase without a send", async () => {
+    const sentinel = new Error("no thread");
+    let sendCalled = false;
 
-    const drain = driveConnectorReplies({
-      stream: streamOf([replyEvent(1, "will fail")]),
-      composeReply: () => ({
-        to: "alice@example.com",
-        cc: [],
-        inReplyTo: "<parent@interchange>",
-      }),
-      send: async () => {
-        throw sentinel;
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => {
+          throw sentinel;
+        },
+        send: async () => {
+          sendCalled = true;
+          return RECEIPT;
+        },
+        onReplySent: () => undefined,
       },
-      onReplySent: () => undefined,
+      "reply",
+    );
+
+    expect(settlement).toEqual({
+      ok: false,
+      phase: "compose",
+      cause: sentinel,
     });
+    expect(sendCalled).toBe(false);
+  });
 
-    await drain.done;
+  test("a send failure settles in the send phase without onReplySent", async () => {
+    const sentinel = new Error("bridge rejected the send");
+    let onReplySentCalled = false;
 
-    // The reply settled (the sequence advanced) but as a failure.
-    expect(drain.replySeq()).toBe(1);
-    const settlement = await drain.waitForReplyAfter(0);
-    expect(settlement.ok).toBe(false);
-    if (!settlement.ok) {
-      expect(settlement.cause).toBe(sentinel);
-    }
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => PARTS,
+        send: async () => {
+          throw sentinel;
+        },
+        onReplySent: () => {
+          onReplySentCalled = true;
+        },
+      },
+      "reply",
+    );
+
+    expect(settlement).toEqual({ ok: false, phase: "send", cause: sentinel });
+    expect(onReplySentCalled).toBe(false);
+  });
+
+  test("an onReplySent failure after the send settles in the persist phase", async () => {
+    const sentinel = new Error("metadata write failed");
+    const sent: OutboundMessage[] = [];
+
+    const settlement = await sendConnectorReply(
+      {
+        composeReply: () => PARTS,
+        send: async (message) => {
+          sent.push(message);
+          return RECEIPT;
+        },
+        onReplySent: async () => {
+          throw sentinel;
+        },
+      },
+      "reply",
+    );
+
+    expect(settlement).toEqual({
+      ok: false,
+      phase: "persist",
+      cause: sentinel,
+    });
+    expect(sent.length).toBe(1);
   });
 });

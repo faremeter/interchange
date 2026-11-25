@@ -177,8 +177,8 @@ import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
 import { createSupervisorBackedMailPartReader } from "./supervisor-backed-mail-part-reader";
 import type { ChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
-import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
 import { mergeCredentialDelivery } from "./credential-cell";
+import { createSpawnedRunCleanup } from "./spawned-run-cleanup";
 import {
   createCredentialsBackedAuthorize,
   createSnapshotGrantsReader,
@@ -204,17 +204,11 @@ export type CredentialMaterialRef = {
 };
 
 /**
- * Per-step inference-source table the build path reads through a mutable
- * reference, keyed by stepId. Each value is the step's ordered failover
- * chain (element 0 is the active source). The single-step build resolves
- * its sources from `current` at build time, so a rotation that writes
- * `current` before the first build is reflected in the built agent. A
- * warm agent that is already built does not re-read this ref, so rotating
- * its live sources is out of this ref's scope.
+ * Per-step inference-source table keyed by stepId. Each value is the step's
+ * ordered failover chain (element 0 is the active source). The deploy fixes
+ * the table for the life of the child; a change of sources is a redeploy.
  */
-export type SourcesSnapshotRef = {
-  current: Record<string, InferenceSource[]>;
-};
+export type StepSources = Readonly<Record<string, InferenceSource[]>>;
 
 /**
  * The workflow-host child's drain controller is the production
@@ -242,14 +236,6 @@ export type DrainController = WorkflowHostDrainController;
  * shape -- the child wraps this binding into a `StepInvoker` inside
  * `buildRuntimeEnv` so the workflow-runtime never sees the
  * host-specific surface.
- *
- * The `warmCache` argument carries the run-loop's per-deployment
- * warm-agent cache (design §3b) when the deployment is a warm candidate,
- * and `undefined` otherwise. The binding forwards it to the step-invoker
- * adapter, which builds-or-reuses the cached agent on a warm cache and
- * keeps instantiate-send-teardown when it is absent. The cache is owned
- * by the run-loop (`runWorkflowChild`), not the binding: the binding
- * only reads it through to the adapter.
  */
 /**
  * Per-run credential inputs the top-level step and action invokers carry to
@@ -272,8 +258,7 @@ export type ChildStepInvoker = (
   req: StepInvokeRequest,
   onEvent: (event: EventPayload) => void,
   authorize: WorkflowAuthorizeFn,
-  warmCache: WarmAgentCache | undefined,
-  sourcesRef: SourcesSnapshotRef,
+  stepSources: StepSources,
   credentialWiring: CredentialWiring,
   mailPartReader: MailPartReader,
 ) => Promise<StepInvokeResult>;
@@ -299,6 +284,12 @@ export interface RunWorkflowChildBindings {
    * the host's substrate accepts for `runs/<runId>/` writes.
    */
   principal: Principal;
+  /**
+   * The deployment's one addressable top-level run. Every step's durable
+   * state is filed under it, so it is the only run the child may discover
+   * in flight as a top-level run.
+   */
+  topLevelRunId: string;
   /**
    * Step-invoker callback the runtime body invokes per step. The
    * shape is the workflow-runtime `StepInvoker` widened with an
@@ -377,14 +368,15 @@ export interface RunWorkflowChildBindings {
    * reached its terminal status. The host owns the on-disk layout
    * (`<dataDir>/workflow-step-state/<repoId>/runs/<runId>/`), so the
    * teardown lives next to the path construction in the substrate
-   * factory and the run-loop merely fires it at the run-completion
-   * moment it observes. Invoked ONLY on the cold (non-warm) path -- a
-   * warm deployment's single agent reuses one stable workspace across
-   * runs, so deleting per run would wipe a live conversation's files
-   * mid-stream. A cleanup failure is logged and swallowed: it is a
-   * disk-reclamation best-effort, never a correctness gate on the run's
-   * terminal status. Optional so tests and the recursive child-workflow
-   * adapter (which roots no per-run scratch of its own) can omit it.
+   * factory (`createRunStorageCleanup`). The run loop fires it when a run
+   * it drives completes, and the top-level loop's iteration handles fire
+   * it from their teardown. The spawned runs that the substrate factory
+   * builds fire it from their own teardown. A step's workspace lives for
+   * one attempt, and its conversation lives in the workflow-run substrate,
+   * which this does not touch. The host keeps the top-level run's scratch.
+   * It must not reject: the cleanup owns its best effort, logs a failure
+   * and resolves, and a caller neither awaits nor catches it. Optional so
+   * tests can omit it.
    */
   cleanupRunStorage?: (runId: string) => Promise<void>;
   /**
@@ -395,7 +387,7 @@ export interface RunWorkflowChildBindings {
    * body's approval the container never relayed. The child owns enumeration
    * -- it walks its own reduced run state for `awaiting-signal` steps on
    * control-plane channels -- but the snapshot lives in per-step durable
-   * storage whose on-disk layout (cold vs warm) the host owns, so the read is
+   * storage whose on-disk layout the host owns, so the read is
    * a host binding next to `cleanupRunStorage`. Optional so tests inject a
    * stub; a production child that enumerates a parked control-plane step with
    * no binding wired throws rather than silently dropping the correlation the
@@ -407,7 +399,7 @@ export interface RunWorkflowChildBindings {
    * step left behind, so the resume classifier can recover a step that crashed
    * across the park boundary (durable `StepStarted`, unflushed `SignalAwaited`)
    * as `awaiting-signal` rather than failing the run. Reads the same per-step
-   * durable storage as `loadParkedApproval` (cold isogit / warm substrate), so
+   * durable storage as `loadParkedApproval`, so
    * it is a host binding for the same reason. Optional so tests inject a stub
    * and the recursive child-workflow adapter can omit it; absent, a crashed
    * invocation step settles as a terminal failure, the pre-recovery behavior.
@@ -417,12 +409,11 @@ export interface RunWorkflowChildBindings {
    * Make durable the step state behind a park the resume classifier
    * recovered through `readParkedApprovalOps`, before the park is committed
    * to the run log. Wired wherever `readParkedApprovalOps` can answer from a
-   * local store the crash left ahead of the durable copy, which is the cold
-   * path only; a warm read answers from committed state, so it is unset there.
+   * local store the crash left ahead of the durable copy.
    */
   persistRecoveredPark?: PersistRecoveredPark;
   /**
-   * Mailbox watch registry backing the warm agent's `mail_wait` (INBOUND half
+   * Mailbox watch registry backing a step agent's `mail_wait` (INBOUND half
    * of mailbox ownership, §3b). The host's substrate factory builds ONE
    * instance at child boot, shares it with the step agent's supervisor-backed
    * transport (whose `watch` registers callbacks into it), and exposes it here
@@ -439,13 +430,12 @@ export interface RunWorkflowChildBindings {
   /** Optional id generator override; production wires a monotonic one. */
   newId?: (prefix: string) => string;
   /**
-   * Bootstrap per-step inference-source table (keyed by stepId), parsed
-   * from the spawn env by the host's substrate factory. Seeds the
-   * mutable `sourcesRef` the build path reads. Absent value defers to an
-   * empty table, so a step with no pinned source fails loudly at build
-   * rather than resolving a default.
+   * Per-step inference-source table (keyed by stepId), parsed from the
+   * spawn env by the host's substrate factory. The build path reads it for
+   * each step. An absent value defers to an empty table, so a step with
+   * no pinned source fails loudly at build rather than resolving a default.
    */
-  initialSources?: Record<string, InferenceSource[]>;
+  stepSources?: StepSources;
   /**
    * Optional override for the child's Ed25519 keypair factory, used only
    * when the caller supplies no `upstreamSender`. The child then mints a
@@ -665,9 +655,7 @@ export async function runWorkflowChild(
   // Both refs are set from the supervisor's first `authority.set` frame,
   // which the child reads before it resumes any run.
   const credentialsRef: CredentialsSnapshotRef = { current: null };
-  const sourcesRef: SourcesSnapshotRef = {
-    current: opts.bindings.initialSources ?? {},
-  };
+  const stepSources: StepSources = opts.bindings.stepSources ?? {};
   const credentialMaterialRef: CredentialMaterialRef = { current: null };
   // The run's grants resolver, shared by `authorize` and the credential
   // wiring so both read the same grants.
@@ -874,20 +862,6 @@ export async function runWorkflowChild(
 
   const drainController = createWorkflowHostDrainController({ definition });
 
-  // Warm-agent cache (design §3b). Built only when the deployment is a
-  // warm candidate (a single-step deployment's long-lived agent). The
-  // cache lives in this run-loop's address space, holds the constructed
-  // agent across messages, and is evicted -- running the wrapped
-  // `agent.close()` that kills the LSP subprocess -- at the loop's
-  // teardown points (the shutdown frame and the exit-path `finally`
-  // below). A multi-step deployment leaves this `undefined`, so its steps
-  // keep instantiate-send-teardown and no multi-step agent is ever
-  // warm-kept.
-  const warmKeep = isWarmKeptDeployment(opts.definition);
-  const warmCache: WarmAgentCache | undefined = warmKeep
-    ? createWarmAgentCache()
-    : undefined;
-
   // Construct the upstream control-channel sender up-front. The
   // supervisor's `waitForReady` consumes the `ready` frame and the
   // upstream-control pump consumes every subsequent upstream payload
@@ -953,6 +927,16 @@ export async function runWorkflowChild(
     repoId: opts.bindings.workflowRunRepoId,
     runtimeRepoStore,
   });
+  // Every step's durable state is filed under the deployment's top-level run
+  // at the key of the step's place, so a second top-level run would share
+  // the state of every step it runs.
+  for (const run of discovered) {
+    if (run.runId !== opts.bindings.topLevelRunId) {
+      throw new Error(
+        `workflow-child: discovered in-flight top-level run ${run.runId}, but the deployment's top-level run is ${opts.bindings.topLevelRunId}; step state is filed under the one top-level run, so the child cannot resume another`,
+      );
+    }
+  }
   const resumedRunIds: string[] = [];
   // One-driver-per-run claim. A runId present here is already being
   // driven by a live `runtimeRun` in this process (a resume below, or an
@@ -983,8 +967,7 @@ export async function runWorkflowChild(
       clock,
       newId,
       drainController,
-      warmCache,
-      sourcesRef,
+      stepSources,
       credentialWiring,
       credentialsRef,
       mailSigner,
@@ -1014,11 +997,7 @@ export async function runWorkflowChild(
     // `terminal.event` upstream frame the child emits below.
     void handle.complete
       .then((result) => {
-        reclaimRunStorageIfCold({
-          warmKeep,
-          cleanupRunStorage: opts.bindings.cleanupRunStorage,
-          runId: run.runId,
-        });
+        void opts.bindings.cleanupRunStorage?.(run.runId);
         runsInFlight.delete(run.runId);
         resumeDeliveryHold.runEnded(run.runId);
         return emitTerminalEvent(upstreamSender, result);
@@ -1066,7 +1045,7 @@ export async function runWorkflowChild(
 
   // Resolve the mailbox watch registry the control loop routes `mailbox.notify`
   // frames to. Production wires it on the bindings (the substrate factory builds
-  // one instance and shares it with the warm agent's supervisor-backed
+  // one instance and shares it with the step agent's supervisor-backed
   // transport); a test may inject one directly through the opts, which wins.
   // Both absent leaves inbound `mailbox.notify` frames logged and dropped -- a
   // deploy with no wired mail surface.
@@ -1101,8 +1080,7 @@ export async function runWorkflowChild(
           resumeDeliveryHold,
           cancellationBarrier,
           quietCheck,
-          warmCache,
-          sourcesRef,
+          stepSources,
           credentialMaterialRef,
           credentialWiring,
           ...(opts.substrateWriteBridge !== undefined
@@ -1167,28 +1145,16 @@ export async function runWorkflowChild(
     if (opts.mailboxCallBridge !== undefined) {
       opts.mailboxCallBridge.cancelAll("workflow-child control loop exited");
     }
-    // Evict the warm-agent cache (design §3b) on every exit path:
-    // graceful (shutdown frame -> iterator end), dirty (thrown error),
-    // or the control channel closing. Eviction runs the wrapped
-    // `agent.close()` that disposes plugins and kills the LSP
-    // subprocess, so no warm agent or LSP outlives the run-loop. On a
-    // production hard kill (recycle/SIGKILL) the process dies before
-    // this runs, but the OS reaps the LSP grandchild regardless; this
-    // path covers the graceful teardown the eviction contract names.
-    if (warmCache !== undefined) {
-      await warmCache.evictAll("workflow-child control loop exited");
-    }
   };
 
   // Run the control loop, then always run the cleanup above. A failing
-  // eviction (the wrapped agent close rejects when a plugin/LSP disposer
-  // fails) surfaces on a clean exit, but must not mask a control-loop
+  // cleanup surfaces on a clean exit, but must not mask a control-loop
   // error already unwinding -- so it is logged, not rethrown, in that case.
   await runBodyThenCleanup(
     runControlLoop,
     cleanupControlLoop,
     (cause) =>
-      logger.error`workflow-child: warm-agent eviction failed while unwinding a control-loop error; surfacing the control-loop error, eviction failure: ${cause instanceof Error ? cause.message : String(cause)}`,
+      logger.error`workflow-child: cleanup failed while unwinding a control-loop error; surfacing the control-loop error, cleanup failure: ${cause instanceof Error ? cause.message : String(cause)}`,
   );
 
   return {
@@ -1305,8 +1271,7 @@ async function handleControlPayload(
     resumeDeliveryHold: ResumeDeliveryHold;
     cancellationBarrier: ReturnType<typeof createCancellationBarrier>;
     quietCheck: { current: AbortController | null };
-    warmCache: WarmAgentCache | undefined;
-    sourcesRef: SourcesSnapshotRef;
+    stepSources: StepSources;
     credentialMaterialRef: CredentialMaterialRef;
     credentialWiring: CredentialWiring;
     substrateWriteBridge?: SubstrateWriteResponseSink;
@@ -1369,8 +1334,7 @@ async function handleControlPayload(
         clock: ctx.clock,
         newId: ctx.newId,
         drainController: ctx.drainController,
-        warmCache: ctx.warmCache,
-        sourcesRef: ctx.sourcesRef,
+        stepSources: ctx.stepSources,
         credentialWiring: ctx.credentialWiring,
         credentialsRef: ctx.credentialsRef,
         mailSigner: ctx.mailSigner,
@@ -1408,11 +1372,7 @@ async function handleControlPayload(
       // peer notification originate from the same code path.
       void handle.complete
         .then((result) => {
-          reclaimRunStorageIfCold({
-            warmKeep: isWarmKeptDeployment(ctx.definition),
-            cleanupRunStorage: ctx.bindings.cleanupRunStorage,
-            runId: payload.data.runId,
-          });
+          void ctx.bindings.cleanupRunStorage?.(payload.data.runId);
           ctx.runsInFlight.delete(payload.data.runId);
           return emitTerminalEvent(ctx.upstreamSender, result);
         })
@@ -1619,48 +1579,6 @@ async function handleControlPayload(
         ctx.substrateWriteBridge.cancelAll("workflow-child shutdown requested");
       }
       return true;
-    }
-    case "sources-updated": {
-      // Live inference-source rotation for the warm single-step agent. The
-      // wire boundary (`SourcesUpdatedData`) already guaranteed the list is
-      // non-empty, its ids are unique, and its head is the default, so this
-      // trusts the frame and does not re-validate it.
-      //
-      // Only a single-step deployment rotates sources: its sole step's id
-      // is the sole key in the sources table, so the whole table is
-      // replaced. A multi-step deployment has no single per-agent source
-      // identity to swap and is never routed a sources-updated frame;
-      // assert it so a mis-route fails loudly rather than corrupting the
-      // table.
-      if (ctx.definition.stepOrder.length !== 1) {
-        throw new Error(
-          `workflow-child sources-updated: only a single-step deployment can rotate sources; got ${String(ctx.definition.stepOrder.length)} steps`,
-        );
-      }
-      const stepId = ctx.definition.stepOrder[0];
-      if (stepId === undefined) {
-        throw new Error(
-          "workflow-child sources-updated: single-step deployment has no step id",
-        );
-      }
-      // A single-step deployment always builds a warm cache, so an absent
-      // cache breaks an invariant rather than being a silent no-op.
-      if (ctx.warmCache === undefined) {
-        throw new Error(
-          "workflow-child sources-updated: no warm cache; a sources rotation must target a warm single-step deployment",
-        );
-      }
-      // Swap the built warm agent first (a no-op when none is built yet),
-      // then update the table the next cold build reads. Applying to the
-      // agent first means a rotation racing eviction -- a closed-agent
-      // `setSources` throw -- leaves the table untouched rather than ahead
-      // of a half-applied swap.
-      ctx.warmCache.applySources(
-        payload.data.sources,
-        payload.data.defaultSource,
-      );
-      ctx.sourcesRef.current = { [stepId]: payload.data.sources };
-      return false;
     }
     case "definition":
     case "ready": {
@@ -1985,8 +1903,7 @@ function buildRuntimeEnv(args: {
   clock: () => Date;
   newId: (prefix: string) => string;
   drainController: DrainController;
-  warmCache: WarmAgentCache | undefined;
-  sourcesRef: SourcesSnapshotRef;
+  stepSources: StepSources;
   credentialWiring: CredentialWiring;
   credentialsRef: CredentialsSnapshotRef;
   mailSigner: MailSigner;
@@ -2035,8 +1952,7 @@ function buildRuntimeEnv(args: {
       req,
       args.onEvent,
       args.authorize,
-      args.warmCache,
-      args.sourcesRef,
+      args.stepSources,
       args.credentialWiring,
       mailPartReader,
     );
@@ -2176,12 +2092,17 @@ function buildRuntimeEnv(args: {
         input: loopInput.input,
         depth: loopInput.depth,
         maxChildSpawnDepth: loopInput.maxChildSpawnDepth,
+        stepPathPrefix: loopInput.stepPathPrefix,
         ...(loopInput.resumeFromEvents !== undefined
           ? { resumeFromEvents: loopInput.resumeFromEvents }
           : {}),
         signal: loopInput.signal,
         signalChannel: childSignalChannel,
-        cleanup: () => childSignalChannel.stop(),
+        cleanup: createSpawnedRunCleanup({
+          signalChannel: childSignalChannel,
+          cleanupRunStorage: args.bindings.cleanupRunStorage,
+          childRunId: loopInput.childRunId,
+        }),
       });
     },
   });
@@ -2368,42 +2289,6 @@ export function emitTerminalEvent(
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`terminal.event upstream send failed for runId=${result.runId}: ${message}`;
     });
-}
-
-/**
- * Whether a deployment's agent is warm-kept across messages (design §3b): the
- * sole step of a single-step deployment is the long-lived agent, and every
- * multi-step agent runs instantiate-send-teardown per step.
- */
-export function isWarmKeptDeployment(definition: WorkflowDefinition): boolean {
-  return definition.stepOrder.length === 1;
-}
-
-/**
- * Reclaim a completed run's local-disk scratch on the COLD path.
- *
- * Gated on `!warmKeep`: a warm deployment's single agent reuses one
- * stable workspace across runs (the substrate factory roots its scratch
- * per agent, not per run), so per-run deletion there would wipe a live
- * conversation's files mid-stream. On the cold path each run rebuilds
- * its agent + scratch, so once the run is terminal nothing reopens its
- * `runs/<runId>/` subtree (resume reads the substrate run log, not local
- * step state) and the subtree is safe to drop.
- *
- * Best-effort: a reclamation failure is logged and swallowed -- it must
- * never gate the run's terminal status or the upstream terminal.event.
- */
-function reclaimRunStorageIfCold(opts: {
-  warmKeep: boolean;
-  cleanupRunStorage: ((runId: string) => Promise<void>) | undefined;
-  runId: string;
-}): void {
-  if (opts.warmKeep) return;
-  if (opts.cleanupRunStorage === undefined) return;
-  void opts.cleanupRunStorage(opts.runId).catch((cause) => {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    logger.warn`workflow-step-state cleanup failed for runId=${opts.runId}: ${message}`;
-  });
 }
 
 function defaultClock(): Date {

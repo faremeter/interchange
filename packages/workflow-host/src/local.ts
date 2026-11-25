@@ -19,6 +19,7 @@
 // filesystem and process.
 export {
   createWorkflowStepInvoker,
+  type StepBuild,
   type StepEnvBase,
   type WorkflowStepInvokerOpts,
 } from "./adapters/step-invoker";

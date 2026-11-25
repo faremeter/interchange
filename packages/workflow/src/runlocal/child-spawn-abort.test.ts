@@ -70,6 +70,7 @@ describe("the local child spawner", () => {
         signal: ctrl.signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["spawn"],
       }),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(authorizeCalls).toBe(0);
@@ -94,6 +95,7 @@ describe("the local child spawner", () => {
         signal: ctrl.signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["spawn"],
       }),
     ).rejects.toThrow("parent cancelled");
   });

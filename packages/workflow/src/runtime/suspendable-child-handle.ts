@@ -20,6 +20,7 @@ import type { WorkflowDefinition } from "../definition/index";
 import type {
   SuspendableChildHandle,
   SuspendableChildPark,
+  SuspendableChildSettlement,
   WorkflowRuntimeEnv,
 } from "./env";
 import { resumeFromLog, type WorkflowEvent } from "../state-machine/index";
@@ -75,23 +76,19 @@ export function createSuspendableChildHandle(
      */
     depth: number;
     maxChildSpawnDepth: number;
+    /** The body run's step path prefix, forwarded to the body run. */
+    stepPathPrefix: readonly string[];
     resumeFromEvents?: readonly WorkflowEvent[];
     signal: AbortSignal;
     /**
      * Channel teardown, run once the body settles. `signalChannel.stop()` is a
      * concrete-channel method (not on the `SignalChannel` interface), so the
      * caller that created the child's channel supplies its teardown here rather
-     * than the helper reaching for it on `env.signalChannel`.
+     * than the helper reaching for it on `env.signalChannel`. The handle
+     * calls it on every settlement and passes how the run settled, so a
+     * caller can keep state that recovery of an `uncommitted` run reads.
      */
-    cleanup?: () => void | Promise<void>;
-    /**
-     * Whether an input park is returned to the caller. Required, with no
-     * default: the safe direction is to reject, and a caller that forgot
-     * the flag would otherwise climb a park the container cannot answer.
-     * `childWorkflow` passes true. A loop iteration and an `onTrigger`
-     * body pass false, and `next` aborts the body on the input park.
-     */
-    surfaceInputPark: boolean;
+    cleanup?: (settlement: SuspendableChildSettlement) => void | Promise<void>;
   },
 ): SuspendableChildHandle {
   const {
@@ -100,10 +97,10 @@ export function createSuspendableChildHandle(
     input,
     depth,
     maxChildSpawnDepth,
+    stepPathPrefix,
     resumeFromEvents,
     signal,
     cleanup,
-    surfaceInputPark,
   } = args;
 
   if (
@@ -125,7 +122,6 @@ export function createSuspendableChildHandle(
   type BodyEvent =
     | { kind: "park"; park: SuspendableChildPark }
     | { kind: "signal-park"; name: string; timeout?: number }
-    | { kind: "input-park"; correlationId: string }
     | { kind: "error"; error: Error };
   const events: BodyEvent[] = [];
   let nextWaiter: { resolve: () => void; resume: () => void } | null = null;
@@ -187,11 +183,6 @@ export function createSuspendableChildHandle(
               : {}),
           },
         });
-      } else if (surfaceInputPark && park.parkKind === "input") {
-        events.push({
-          kind: "input-park",
-          correlationId: park.correlationId,
-        });
       } else {
         events.push({
           kind: "error",
@@ -248,6 +239,7 @@ export function createSuspendableChildHandle(
     ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
     depth,
     maxChildSpawnDepth,
+    stepPathPrefix,
   };
   const handle = runtimeRun(definition, runEnv, {
     ...baseOptions,
@@ -284,7 +276,13 @@ export function createSuspendableChildHandle(
     })
     .finally(() => {
       detachParentAbort();
-      if (cleanup !== undefined) void cleanup();
+      if (cleanup !== undefined) {
+        const settlement: SuspendableChildSettlement =
+          settled === null
+            ? { kind: "uncommitted" }
+            : { kind: "terminal", terminalStatus: settled.terminalStatus };
+        void cleanup(settlement);
+      }
       notify();
       notifyReleaseWaiters();
       rejectAwaiterWaiters(
@@ -492,9 +490,6 @@ export function createSuspendableChildHandle(
                   ? { timeout: event.timeout }
                   : {}),
               };
-            }
-            if (event.kind === "input-park") {
-              return { kind: "input-park", correlationId: event.correlationId };
             }
             return { kind: "park", park: event.park };
           }

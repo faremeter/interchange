@@ -258,6 +258,7 @@ async function runLoopDelivery(args: {
     input,
     depth,
     maxChildSpawnDepth,
+    stepPathPrefix,
     signal,
     resumeFromEvents,
   }) => {
@@ -274,6 +275,7 @@ async function runLoopDelivery(args: {
       input,
       depth,
       maxChildSpawnDepth,
+      stepPathPrefix,
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
       signalChannel: channel,

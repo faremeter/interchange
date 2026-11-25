@@ -416,7 +416,6 @@ async function buildBindings(opts: {
       DATA_DIR: opts.baseDir,
       CLOSURE_PACKAGE_DIR: "/fake/closure/package",
     },
-    dynamicSpawnEnv: () => ({}),
     workflowRunRepoId: { kind: "workflow-run", id: "run_deployment-x" },
     workflowRunRef: "refs/heads/main",
     anchorRunId: "run_deployment-x",

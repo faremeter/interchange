@@ -403,7 +403,7 @@ Specificity still decides between grants: a broad conditioned `deny` loses to a 
 
 ### Mail send grants
 
-A `mail.send` grant decides which recipients a principal may send mail to. Two gates apply to mail that a run sends through its sidecar. The sidecar's tool gate decides whether a step may send mail at all: a run's `tool:mail_send` and `tool:mail_reply` grants. The hub's send gate decides which recipients the sender may reach: its `mail.send` grants. The hub checks every send the sidecar relays, from a mail tool, a warm agent's reply, a plugin tool or a director.
+A `mail.send` grant decides which recipients a principal may send mail to. Two gates apply to mail that a run sends through its sidecar. The sidecar's tool gate decides whether a step may send mail at all: a run's `tool:mail_send` and `tool:mail_reply` grants. The hub's send gate decides which recipients the sender may reach: its `mail.send` grants. The hub checks every send the sidecar relays, from a mail tool, an agent step's reply, a plugin tool or a director.
 
 The resource is `mail.send:<coord type>:<id>` with the action `send`. A recipient has these coordinates:
 

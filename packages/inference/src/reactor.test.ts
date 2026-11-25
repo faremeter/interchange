@@ -1188,11 +1188,12 @@ describe("createReactor — gate lifecycle", () => {
 
   test("does not emit reactor.gate.blocked until the suspend is durably committed", async () => {
     // Persist-before-settle. The `reactor.gate.blocked` event resolves the
-    // `send()` awaiter as "suspended", and a downstream consumer (the warm
-    // agent's run-boundary durability mirror) reads the pending operation back
-    // out of the context store the instant `send()` settles. So the durable
-    // commit must land BEFORE the event is emitted -- otherwise the mirror
-    // reads an uncommitted store and durably loses the approval snapshot. This
+    // `send()` awaiter as "suspended", and a downstream consumer (a workflow
+    // step's `conversation.parkTurn`, which writes the parked turn mode into
+    // the store's metadata) reads the pending operations back out of the
+    // context store the instant `send()` settles. So the durable commit must
+    // land BEFORE the event is emitted -- otherwise that write reads an
+    // uncommitted store and durably loses the approval snapshot. This
     // test gates the commit's `writeMetadata`: `blocked` must not appear while
     // the commit is pending, and must appear once it is released. A regression
     // that emits before committing would fire `blocked` while the gate is held.

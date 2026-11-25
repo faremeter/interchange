@@ -102,11 +102,12 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import { onTriggerBodyEntry } from "./fixtures/on-trigger-body";
 import { singleStepAgentEntry } from "./fixtures/single-step-agent";
-import { singleStepMailInboxEntry } from "./fixtures/single-step-mail-inbox-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const STEP_ID = "edgeStep";
+const SECTION_ID = "section";
 const EDGE_SENDER = "edge@integration.interchange";
 
 const NO_HEADER_DEPLOYMENT_ID = "run_mail-edge-no-header-1";
@@ -421,7 +422,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     const ctx = await deployEdgeWorkflow(
       env,
       CROSS_SENDER_DEPLOYMENT_ID,
-      "unbounded",
+      "onTrigger",
     );
 
     const messageId = "<cross-sender-1@integration.interchange>";
@@ -459,10 +460,10 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     );
 
     // The run id is stable per deployment, so both mails reach the same run.
-    // A's mail started it; the unbounded step re-armed, so B's mail resumed
-    // it as a `signal.deliver` whose signalId is B's delivery key. A
-    // Message-ID-only identity would have deduped B, and no signal for it
-    // would exist.
+    // A's mail started it; the onTrigger section parked on its input after
+    // the body of A's mail, so B's mail resumed it as a `signal.deliver`
+    // whose signalId is B's delivery key. A Message-ID-only identity would
+    // have deduped B, and no signal for it would exist.
     let events: WorkflowRunEvent[] = [];
     await waitFor(
       async () => {
@@ -644,17 +645,18 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
 });
 
 /**
- * Deploy a trivial single-step workflow BY SOURCE-REF and register its handle
- * on the env. Returns a context with the deployment's derived mail address and
- * the workflow-run repo id. A `batch` step goes terminal after its first turn,
- * and its callers fire raw bytes at the mail address via `routeRaw`. An
- * `unbounded` step stays live and takes each later mail as a new turn, and its
- * caller fires signed mail through `fireMailTrigger`.
+ * Deploy a trivial workflow BY SOURCE-REF and register its handle on the env.
+ * Returns a context with the deployment's derived mail address and the
+ * workflow-run repo id. A `batch` workflow is one agent step that goes
+ * terminal after its first turn, and its callers fire raw bytes at the mail
+ * address via `routeRaw`. An `onTrigger` workflow is one onTrigger section on
+ * mail whose body is one agent step. It stays live and takes each later mail
+ * as a new event, and its caller fires signed mail through `fireMailTrigger`.
  */
 async function deployEdgeWorkflow(
   env: DeployFlowEnv,
   anchorRunId: string,
-  step: "batch" | "unbounded" = "batch",
+  shape: "batch" | "onTrigger" = "batch",
 ): Promise<{
   deploymentMailAddress: string;
   workflowRunRepoId: RepoId;
@@ -692,21 +694,24 @@ async function deployEdgeWorkflow(
     `mail.address:${deploymentMailAddress}`,
   ]);
 
-  // An unbounded step re-arms on an input park after each turn, so a later
-  // mail reaches the same live run as a `signal.deliver`. Its inbound mail is
-  // signed through `fireMailTrigger`, which co-delivers the sender key, so
-  // the default admission policy admits it. The mail-inbox fixture is the
-  // single-step fixture that takes a trigger budget; it pins the mail
-  // toolset, so the deploy approves what the probe reports.
+  // An onTrigger section parks on its input after each event's body run, so
+  // a later mail reaches the same live run as a `signal.deliver`. Its inbound
+  // mail is signed through `fireMailTrigger`, which co-delivers the sender
+  // key, so the default admission policy admits it. The deploy approves what
+  // the probe reports.
   const entryModule =
-    step === "unbounded"
-      ? singleStepMailInboxEntry({
-          stepId: STEP_ID,
-          systemPrompt: `Edge-case agent for ${anchorRunId}.`,
+    shape === "onTrigger"
+      ? onTriggerBodyEntry({
           address: deploymentMailAddress,
-          agentId: `agent-${anchorRunId}-step`,
+          sectionId: SECTION_ID,
+          body: {
+            variant: "agent",
+            stepId: STEP_ID,
+            systemPrompt: `Edge-case agent for ${anchorRunId}.`,
+            agentId: `agent-${anchorRunId}-step`,
+          },
           workflowId: `wf_${anchorRunId}`,
-          triggers: "unbounded",
+          bodyWorkflowId: `wf_${anchorRunId}_body`,
         })
       : singleStepAgentEntry({
           stepId: STEP_ID,
@@ -734,9 +739,11 @@ async function deployEdgeWorkflow(
     anchorRunId,
     deploymentDomain: DEPLOYMENT_DOMAIN,
     agentAddress: deploymentMailAddress,
-    approvals: step === "unbounded" ? "approve-probed" : operatorApprovals,
+    approvals: shape === "onTrigger" ? "approve-probed" : operatorApprovals,
     config,
-    sources: { [STEP_ID]: [inferenceSource] },
+    sources: {
+      [shape === "onTrigger" ? SECTION_ID : STEP_ID]: [inferenceSource],
+    },
   });
   expect(handle.publicKey).toBeTruthy();
 

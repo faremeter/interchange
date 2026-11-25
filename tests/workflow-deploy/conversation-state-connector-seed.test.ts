@@ -1,12 +1,14 @@
-// Unit tests for the warm-agent durable conversation store's connector-seed
-// hook (design §3c threading). Seeding drives the store's connector router
-// from each mail-derived inbound message so the warm agent's reply path has
-// thread state, and the seeded state persists to the workflow-run substrate
-// so it survives a child respawn.
+// Unit tests for the durable conversation store's connector-seed hook
+// (design §3c threading). Seeding drives the store's connector router from
+// each mail-derived inbound message so the step agent's reply path has
+// thread state, and the turn's mirror commits the router's state to the
+// workflow-run substrate so it survives a child respawn. Every store here
+// serves one invocation, so a respawned store continues the state that
+// invocation committed.
 //
 // The tests drive a REAL `createRepoStore` workflow-run substrate and a REAL
 // isogit local store (the production path), so the connector-state flush, the
-// change-driven + run-boundary mirrors, and the committed-tree reconstruction
+// run-boundary mirror, and the committed-tree reconstruction
 // are exercised end to end -- not mocked. This mirrors the harness in
 // conversation-state-wal.test.ts; the substrate dependency is why these live
 // under tests/ rather than co-located in apps/sidecar/src (co-location would
@@ -18,7 +20,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair, createSSHSignature } from "@intx/crypto";
-import type { ConnectorReplyParts } from "@intx/harness";
+import {
+  TurnAnswersNoMailError,
+  type ConnectorReplyParts,
+} from "@intx/harness";
 import { createInboundMessage } from "@intx/mime";
 import type {
   KeyPair,
@@ -124,7 +129,9 @@ async function makeStore(
     principal: PRINCIPAL,
     runId: RUN_ID,
     stepId: STEP_ID,
-    lifetime: { kind: "deployment" },
+    lifetime: {
+      invocation: { runId: RUN_ID, stepId: STEP_ID, attempt: 1 },
+    },
     mailboxAddress: "agent@example.com",
   });
 }
@@ -174,7 +181,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
 
   test("composeReply throws before any inbound has been seeded", async () => {
     const store = await makeStore(h, localDir);
-    expect(() => store.composeReply()).toThrow(/no active connector thread/);
+    expect(() => store.composeReply()).toThrow(TurnAnswersNoMailError);
   });
 
   test("seeding an inbound starts a thread that composeReply targets at its sender", async () => {
@@ -186,9 +193,6 @@ describe("durable conversation store connector seed (design §3c)", () => {
         subject: "hi there",
       }),
     );
-    // Drain the change-driven mirror the seed enqueued so it does not outlive
-    // the test's substrate.
-    await store.mirrorToSubstrate();
 
     const reply = requireReply(store);
     // The first inbound starts the thread: reply to its sender, in-reply-to
@@ -319,7 +323,7 @@ describe("durable conversation store connector seed (design §3c)", () => {
     });
   });
 
-  test("a turn that seeds no mail after a passthrough replies on the thread", async () => {
+  test("a turn that seeds no mail after a passthrough replies to nobody", async () => {
     const store = await makeStore(h, localDir);
     await store.seedInbound(
       inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
@@ -331,13 +335,12 @@ describe("durable conversation store connector seed (design §3c)", () => {
     );
     expect(requireReply(store).to).toBe("carol@example.com");
 
-    // The next turn starts from a non-mail input, so it seeds nothing.
+    // The next turn starts from a non-mail input, so it seeds nothing and
+    // answers no mail.
     await store.beginTurn({});
 
-    const reply = requireReply(store);
-    expect(reply.to).toBe("alice@example.com");
-    expect(reply.inReplyTo).toBe("<a@example.com>");
-    expect(reply.cc).toEqual([]);
+    expect(store.turnAnswersMail()).toBe(false);
+    expect(() => store.composeReply()).toThrow(TurnAnswersNoMailError);
   });
 
   test("seeded connector state persists to the substrate and restores into a fresh store", async () => {
@@ -360,6 +363,9 @@ describe("durable conversation store connector seed (design §3c)", () => {
         inReplyTo: "<a@example.com>",
       }),
     );
+    // Bob's turn parks on an approval gate, so its resume answers the thread
+    // after the respawn.
+    await store.parkTurn("t1");
     await store.mirrorToSubstrate();
 
     // The substrate carries the advanced connector thread, not a stale null.
@@ -383,14 +389,12 @@ describe("durable conversation store connector seed (design §3c)", () => {
     });
 
     // A fresh store (a respawn with an empty local FS) restores the seeded
-    // thread and composes the same reply -- the cross-respawn continuity the
-    // warm mail loop depends on.
+    // thread, and the approval resume composes the same reply -- the
+    // cross-respawn continuity a parked mail turn depends on.
     const freshLocalDir = path.join(h.baseDir, "respawn-local");
     const fresh = await makeStore(h, freshLocalDir);
     expect(await fresh.restoreFromSubstrate()).toBe(true);
-    // Restoring a non-null connector state fires the router's change-driven
-    // mirror; drain it so it does not outlive the test's substrate.
-    await fresh.mirrorToSubstrate();
+    await fresh.beginTurn({ resume: "t1" });
 
     const reply = requireReply(fresh);
     expect(reply.to).toBe("bob@example.com");
@@ -489,7 +493,12 @@ describe("durable conversation store connector seed (design §3c)", () => {
       const parked = await readCommitted();
       expect(parked.pendingOperations).toEqual([gate]);
       expect(parked.tokenUsage).toEqual(usage);
-      expect(parked.parkedReplyTargets.c1?.parts?.to).toBe("carol@example.com");
+      const parkedC1 = parked.parkedReplyTargets.c1;
+      expect(
+        parkedC1 !== undefined && "parts" in parkedC1
+          ? parkedC1.parts?.to
+          : undefined,
+      ).toBe("carol@example.com");
 
       await store.beginTurn({ resume: "c1" });
       await store.mirrorToSubstrate();
@@ -508,28 +517,24 @@ describe("durable conversation store connector seed (design §3c)", () => {
 
       const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
       expect(await fresh.restoreFromSubstrate()).toBe(true);
-      // Restoring a non-null connector state fires the router's
-      // change-driven mirror; drain it so it does not outlive the substrate.
-      await fresh.mirrorToSubstrate();
 
+      // The first resume took the target off `c1`, so a second resume of it
+      // answers no mail.
       await fresh.beginTurn({ resume: "c1" });
-      const onThread = requireReply(fresh);
-      expect(onThread.to).toBe("alice@example.com");
-      expect(onThread.inReplyTo).toBe("<a@example.com>");
+      expect(() => fresh.composeReply()).toThrow(TurnAnswersNoMailError);
 
       await fresh.beginTurn({ resume: "c2" });
       expect(requireReply(fresh)).toEqual(CAROL_REPLY);
     });
 
-    test("a resume of an id with no filed target replies on the thread", async () => {
+    test("a resume of an id with no filed target replies to nobody", async () => {
       const store = await makeStore(h, localDir);
       await parkCarolOnC1(store);
 
       await store.beginTurn({ resume: "unknown" });
 
-      const reply = requireReply(store);
-      expect(reply.to).toBe("alice@example.com");
-      expect(reply.inReplyTo).toBe("<a@example.com>");
+      expect(store.turnAnswersMail()).toBe(false);
+      expect(() => store.composeReply()).toThrow(TurnAnswersNoMailError);
     });
 
     test("a respawned store resumes the parked turn to the passthrough sender", async () => {
@@ -538,9 +543,6 @@ describe("durable conversation store connector seed (design §3c)", () => {
 
       const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
       expect(await fresh.restoreFromSubstrate()).toBe(true);
-      // Restoring a non-null connector state fires the router's
-      // change-driven mirror; drain it so it does not outlive the substrate.
-      await fresh.mirrorToSubstrate();
       await fresh.beginTurn({ resume: "c1" });
 
       expect(requireReply(fresh)).toEqual(CAROL_REPLY);
@@ -602,6 +604,40 @@ describe("durable conversation store connector seed (design §3c)", () => {
       await expect(store.restoreFromSubstrate()).rejects.toThrow(
         /parkedReplyTargets/,
       );
+    });
+  });
+
+  describe("a thread turn parked on an approval gate", () => {
+    test("the parked thread mode survives the mirror and a respawned store's restore", async () => {
+      const store = await makeStore(h, localDir);
+      await store.beginTurn({});
+      await store.seedInbound(
+        inbound({ from: "alice@example.com", messageId: "<a@example.com>" }),
+      );
+      expect(store.turnAnswersMail()).toBe(true);
+      await store.parkTurn("c1");
+      await store.mirrorToSubstrate();
+
+      const committed = await readStepState({
+        substrate: h.substrate,
+        workflowRunRepoId: h.workflowRunRepoId,
+        workflowRunRef: WORKFLOW_RUN_REF,
+        principal: PRINCIPAL,
+        runId: RUN_ID,
+        stepId: STEP_ID,
+      });
+      expect(committed?.parkedReplyTargets).toEqual({ c1: { mode: "thread" } });
+
+      const fresh = await makeStore(h, path.join(h.baseDir, "respawn-local"));
+      expect(await fresh.restoreFromSubstrate()).toBe(true);
+      await fresh.beginTurn({});
+      expect(fresh.turnAnswersMail()).toBe(false);
+      await fresh.beginTurn({ resume: "c1" });
+
+      expect(fresh.turnAnswersMail()).toBe(true);
+      const reply = requireReply(fresh);
+      expect(reply.to).toBe("alice@example.com");
+      expect(reply.inReplyTo).toBe("<a@example.com>");
     });
   });
 });

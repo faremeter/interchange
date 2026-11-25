@@ -8,11 +8,10 @@
  * `cleanup` failure propagates -- there is no primary error to protect, so
  * a failing teardown is the error worth surfacing.
  *
- * This exists so teardown in a `finally` (agent close, warm-cache
- * eviction) can surface its own failure without a `throw` inside a
- * `finally` block, which `no-unsafe-finally` forbids precisely because it
- * silently swallows the in-flight exception -- the masking bug this guards
- * against.
+ * This exists so teardown in a `finally` (agent close) can surface its
+ * own failure without a `throw` inside a `finally` block, which
+ * `no-unsafe-finally` forbids precisely because it silently swallows the
+ * in-flight exception -- the masking bug this guards against.
  */
 export async function runBodyThenCleanup<T>(
   body: () => Promise<T>,

@@ -6,8 +6,11 @@
 //
 // The section spawns its body as a child run per event; the body variant
 // selects what that child does:
-//   - "agent":       a single tool-less agent step, exercising the body-agent
-//                    invoker (the model reply commits as the step output).
+//   - "agent":       a single agent step, exercising the body-agent invoker
+//                    (the model reply commits as the step output). The agent
+//                    is tool-less unless `mailTools` pins the production
+//                    `@intx/tools-mail` sidecar bundle, and replies by mail
+//                    only when `replyByMail` is set.
 //   - "awaitSignal": a single `awaitSignal` gate, exercising the signal-relay
 //                    capability. An optional `timeout` adds an `onTimeout`
 //                    route to a completing `sleep` step.
@@ -28,6 +31,15 @@ export type OnTriggerAgentBody = {
   systemPrompt: string;
   /** The body agent's `defineAgent` id. Defaults to a stable fixture-local id. */
   agentId?: string;
+  /**
+   * When true, the body agent carries the production `@intx/tools-mail`
+   * sidecar bundle (`mail_search`, `mail_read`, `mail_wait`, and the rest),
+   * so its inbound mail tools ask the supervisor through the deployment's
+   * mailbox. Defaults to a tool-less agent.
+   */
+  mailTools?: boolean;
+  /** When true, the body agent step sets `replyByMail: true`. */
+  replyByMail?: boolean;
 };
 
 export type OnTriggerAwaitSignalBody = {
@@ -90,15 +102,23 @@ function renderAgentBody(
 ): { imports: string; body: string } {
   const stepId = body.stepId ?? "work";
   const agentId = body.agentId ?? "on-trigger-body-agent";
+  const mailTools = body.mailTools === true;
+  const stepOpts =
+    body.replyByMail === true
+      ? "{ agent: bodyAgent, replyByMail: true }"
+      : "{ agent: bodyAgent }";
   return {
     imports:
       `import { defineWorkflow, step } from "@intx/workflow/definition";\n` +
-      `import { defineAgent } from "@intx/agent";\n`,
+      `import { defineAgent } from "@intx/agent";\n` +
+      (mailTools
+        ? `import { mail } from "@intx/tools-mail/sidecar-bundle";\n`
+        : ""),
     body: `
 const bodyAgent = defineAgent({
   id: ${JSON.stringify(agentId)},
   systemPrompt: ${JSON.stringify(body.systemPrompt)},
-  tools: [],
+  tools: [${mailTools ? "mail" : ""}],
   capabilities: [],
   inference: {
     sources: [{ provider: "anthropic", model: "mock-model" }],
@@ -109,7 +129,7 @@ const body = defineWorkflow({
   id: ${JSON.stringify(bodyWorkflowId)},
   trigger: { type: "manual" },
   steps: {
-    [${JSON.stringify(stepId)}]: step({ agent: bodyAgent }),
+    [${JSON.stringify(stepId)}]: step(${stepOpts}),
   },
 });
 `,

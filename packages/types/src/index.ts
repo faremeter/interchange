@@ -9,6 +9,7 @@ export * from "./signals";
 export * from "./instances";
 export * from "./workflows";
 export * from "./step-state-snapshot";
+export * from "./step-place";
 export * from "./attachments";
 export * from "./attachment-validation";
 export * from "./mail-signer";

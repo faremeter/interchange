@@ -309,6 +309,7 @@ describe("in-process child parent-abort", () => {
         signal: abort.signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["s"],
       },
       noopOnEvent,
     );
@@ -345,6 +346,7 @@ describe("in-process child parent-abort", () => {
         signal: abort.signal,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["section"],
       },
       () => undefined,
     );

@@ -135,6 +135,8 @@ type MockDBOpts = {
   /** Rows the approvals-list route's `approvalStore.listByRunId` returns
    * (query.approval.findMany). Defaults to `[]`. */
   approvals?: Record<string, unknown>[];
+  /** The run's launch spec row (`query.workflowRunLaunchSpec.findFirst`). */
+  launchSpec?: Record<string, unknown>;
   /** The row the blob route's `query.sessionMail.findFirst` returns. */
   mail?: {
     id: string;
@@ -239,6 +241,10 @@ function createMockDB(opts: MockDBOpts) {
       sessionMail: {
         findFirst: async () => opts.mail,
         findMany: notImplemented("db.query.sessionMail.findMany"),
+      },
+      workflowRunLaunchSpec: {
+        findFirst: async () => opts.launchSpec,
+        findMany: notImplemented("db.query.workflowRunLaunchSpec.findMany"),
       },
     },
     select: selectChain,
@@ -1215,13 +1221,80 @@ describe("GET /workflows/runs/:runId/steps/:stepId/state", () => {
     },
   ];
 
+  const AGENT = { modelSources: [] };
+  // The run's deployment: a top-level agent step, a loop, an onTrigger
+  // section with an inline body, and an onTrigger section whose body is a
+  // `{ ref }`.
+  const launchSpec = {
+    anchorRunId: RUN_ID,
+    schemaVersion: 1,
+    sessionId: "ses_test",
+    deploymentDomain: testTenant.domain,
+    sourceAuthorityPrincipalId: PRINCIPAL_ID,
+    frozenApprovalBundle: {
+      source: {
+        kind: "asset",
+        assetId: "ast_test",
+        package: { format: "source", commitSha: "c0ffee".padEnd(40, "0") },
+      },
+      entry: "./workflow.mjs",
+      projection: {
+        id: "wf-export",
+        triggers: [],
+        stepOrder: ["specialist", "rounds", "section", "linked"],
+        steps: {
+          specialist: { kind: "step", agent: AGENT },
+          rounds: {
+            kind: "loop",
+            body: {
+              id: "rounds-body",
+              triggers: [],
+              stepOrder: ["drafter"],
+              steps: { drafter: { kind: "step", agent: AGENT } },
+            },
+          },
+          section: {
+            kind: "onTrigger",
+            body: {
+              inline: {
+                id: "section-body",
+                triggers: [],
+                stepOrder: ["reply", "notify", "fan"],
+                steps: {
+                  reply: { kind: "step", agent: AGENT },
+                  notify: { kind: "action", after: ["reply"] },
+                  fan: { kind: "map", step: { agent: AGENT } },
+                },
+              },
+            },
+          },
+          linked: { kind: "onTrigger", body: { ref: "wf-linked" } },
+        },
+      },
+      closure: { schemaVersion: "1", topLevel: [], entries: [] },
+      approvedWireHash: "a".repeat(64),
+      approvedGrants: [],
+    },
+    definitionArtifactId: null,
+    grantSnapshot: null,
+    sourceOfferingIds: ["offering-primary"],
+    defaultSourceOfferingId: "offering-primary",
+    createdAt: new Date("2025-01-01"),
+  };
+
   /** An app over a Hub repo holding `stepId`'s committed state for the test run. */
   async function appWithState(
     stepId: string,
     {
       grants = [makeGrant({ resource: "workflow-run:*", action: "read" })],
       run = makeTestRun(),
-    }: { grants?: GrantRule[]; run?: Record<string, unknown> } = {},
+      spec = launchSpec,
+    }: {
+      grants?: GrantRule[];
+      run?: Record<string, unknown>;
+      /** The run's launch spec row; null when the run has none. */
+      spec?: Record<string, unknown> | null;
+    } = {},
   ) {
     const dataDir = await fs.promises.mkdtemp(
       path.join(os.tmpdir(), "runs-step-state-"),
@@ -1256,6 +1329,7 @@ describe("GET /workflows/runs/:runId/steps/:stepId/state", () => {
         principal: testPrincipal,
         definition: testDefinition,
         run,
+        ...(spec !== null ? { launchSpec: spec } : {}),
       },
       repoStore,
     });
@@ -1271,14 +1345,6 @@ describe("GET /workflows/runs/:runId/steps/:stepId/state", () => {
       tokenUsage,
       connectorState: null,
     });
-  });
-
-  test("addresses a map iteration's scoped step id", async () => {
-    const app = await appWithState("review[0]");
-    const res = await app.request(
-      `${runURL()}/steps/${encodeURIComponent("review[0]")}/state`,
-    );
-    expect(res.status).toBe(200);
   });
 
   test("answers a structured error when the committed state cannot be read", async () => {
@@ -1297,6 +1363,7 @@ describe("GET /workflows/runs/:runId/steps/:stepId/state", () => {
         principal: testPrincipal,
         definition: testDefinition,
         run: makeTestRun(),
+        launchSpec,
       },
       repoStore: {
         ...repoStore,
@@ -1324,11 +1391,117 @@ describe("GET /workflows/runs/:runId/steps/:stepId/state", () => {
     }
   });
 
-  test("404s a step with no committed state", async () => {
-    const app = await appWithState("specialist");
-    const res = await app.request(`${runURL()}/steps/other-step/state`);
+  test("serves an onTrigger body step's state at its key in either form", async () => {
+    const app = await appWithState("section.reply");
+    for (const segment of ["section.reply", "section%2Ereply"]) {
+      const res = await app.request(`${runURL()}/steps/${segment}/state`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        version: 1,
+        turns,
+        tokenUsage,
+        connectorState: null,
+      });
+    }
+  });
+
+  // A nested step's state lives under the run at its key, so each case
+  // holds committed state at the key it asks for.
+  const keyForm = `a key names a top-level agent step, or an agent step in the body of a top-level onTrigger section as "<section>.<step>"`;
+  test.each([
+    [
+      "a loop body step",
+      "rounds.drafter",
+      `names a top-level step of kind "loop", not an onTrigger section; ${keyForm}`,
+    ],
+    [
+      "a step more than one level down",
+      "section.reply.inner",
+      `names a step more than one level below the top-level run; ${keyForm}`,
+    ],
+    [
+      "a map item in a section's body",
+      "section.fan[0]",
+      `names a map item; ${keyForm}`,
+    ],
+    [
+      "a step in a section's body that is not an agent step",
+      "section.notify",
+      "names no agent step in the body of its onTrigger section",
+    ],
+    [
+      "a section that is not an onTrigger step",
+      "specialist.reply",
+      `names a top-level step of kind "step", not an onTrigger section; ${keyForm}`,
+    ],
+    [
+      "a section whose body is a { ref }",
+      "linked.reply",
+      "names an onTrigger section whose body is a { ref } to a separately deployed workflow, whose steps the Hub cannot check",
+    ],
+  ])("404s the key of %s", async (_, key, problem) => {
+    const app = await appWithState(key);
+    const res = await app.request(
+      `${runURL()}/steps/${encodeURIComponent(key)}/state`,
+    );
     expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({ error: { code: "not_found" } });
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: "not_found",
+        message: `Step state key ${JSON.stringify(key)} ${problem}`,
+      },
+    });
+  });
+
+  test("404s a key of a run with no launch specification", async () => {
+    for (const key of ["specialist", "section.reply"]) {
+      const app = await appWithState(key, { spec: null });
+      const res = await app.request(`${runURL()}/steps/${key}/state`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({
+        error: {
+          code: "not_found",
+          message: "The step has no committed state",
+        },
+      });
+    }
+  });
+
+  // An import refuses a top-level map item's key, so the export refuses it
+  // too, though the item's state lives under the run at that key.
+  test("404s a top-level map item's key in either form", async () => {
+    const app = await appWithState("m[2]");
+    for (const segment of ["m%5B2%5D", "m[2]"]) {
+      const res = await app.request(`${runURL()}/steps/${segment}/state`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({
+        error: {
+          code: "not_found",
+          message: `Step state key "m[2]" names no top-level agent step of the workflow; ${keyForm}`,
+        },
+      });
+    }
+  });
+
+  test("404s a top-level key that names no agent step", async () => {
+    const app = await appWithState("rounds");
+    const res = await app.request(`${runURL()}/steps/rounds/state`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: "not_found",
+        message: `Step state key "rounds" names no top-level agent step of the workflow; ${keyForm}`,
+      },
+    });
+  });
+
+  test("404s an agent step with no committed state", async () => {
+    const app = await appWithState("section.reply");
+    const res = await app.request(`${runURL()}/steps/specialist/state`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({
+      error: { code: "not_found", message: "The step has no committed state" },
+    });
   });
 
   test("404s an unknown run", async () => {
@@ -1356,6 +1529,7 @@ describe("GET /workflows/runs/:runId/steps/:stepId/state", () => {
         principal: testPrincipal,
         definition: testDefinition,
         run: makeTestRun(),
+        launchSpec,
       },
     });
     const res = await app.request(`${runURL()}/steps/specialist/state`);

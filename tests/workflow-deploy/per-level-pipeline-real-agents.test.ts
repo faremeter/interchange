@@ -889,18 +889,21 @@ describe("per-level pipeline with real agents", () => {
 
     const invokeStep: StepInvoker = createWorkflowStepInvoker({
       workflowAuthorize,
-      buildEnv: async (): Promise<Omit<BaseEnv, "authorize">> => {
+      buildEnv: async () => {
         const dir = join(envBaseDir, `step-${String(stepDir++)}`);
         const storage = await createIsogitStore(join(dir, "ctx"));
         return {
-          sources: [SOURCE],
-          defaultSource: SOURCE.id,
-          storage,
-          workdir: join(dir, "workspace"),
-          audit: noopAuditStore(),
-          directors: createDefaultDirectorRegistry(),
-          readCurrentMaterial: () => ({ secret: "test-secret" }),
-          deps: harness.deps,
+          env: {
+            sources: [SOURCE],
+            defaultSource: SOURCE.id,
+            storage,
+            workdir: join(dir, "workspace"),
+            audit: noopAuditStore(),
+            directors: createDefaultDirectorRegistry(),
+            readCurrentMaterial: () => ({ secret: "test-secret" }),
+            deps: harness.deps,
+          },
+          conversation: undefined,
         };
       },
       agentFactory: createAgent,

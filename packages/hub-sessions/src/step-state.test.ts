@@ -4,7 +4,10 @@ import type { TokenUsage } from "@intx/types/runtime";
 
 import {
   buildStepStateCheckpoint,
+  isSameStepStateInvocation,
   reconstructStepState,
+  STEP_STATE_CHECKPOINT_FILE,
+  STEP_STATE_CHECKPOINT_META_FILE,
   serializeStepStateWalEntry,
   stepStateWalEntryPath,
   type StepStateReader,
@@ -114,5 +117,115 @@ describe("step state parked reply targets", () => {
 
     expect(state.boundaryCount).toBe(2);
     expect(state.parkedReplyTargets).toEqual({});
+  });
+});
+
+describe("step state invocation stamp", () => {
+  const INVOCATION = { runId: "run_body", stepId: "work", attempt: 2 };
+
+  test("a checkpoint and a WAL entry carry their invocation stamp", async () => {
+    const checkpointed = await reconstruct(
+      buildStepStateCheckpoint("", 1, {
+        turns: [],
+        pendingOperations: [],
+        tokenUsage: USAGE,
+        connectorState: null,
+        invocation: INVOCATION,
+      }),
+    );
+    expect(checkpointed.invocation).toEqual(INVOCATION);
+
+    const appended = await reconstruct({
+      [stepStateWalEntryPath("", 0)]: serializeStepStateWalEntry(0, [], {
+        pendingOperations: [],
+        tokenUsage: USAGE,
+        connectorState: null,
+        invocation: INVOCATION,
+      }),
+    });
+    expect(appended.invocation).toEqual(INVOCATION);
+  });
+
+  test("a checkpoint and a WAL entry carry the start of a parked turn", async () => {
+    const checkpointed = await reconstruct(
+      buildStepStateCheckpoint("", 1, {
+        turns: [],
+        pendingOperations: [],
+        tokenUsage: USAGE,
+        connectorState: null,
+        invocation: INVOCATION,
+        parkedTurnStart: 0,
+      }),
+    );
+    expect(checkpointed.parkedTurnStart).toBe(0);
+
+    const appended = await reconstruct({
+      [stepStateWalEntryPath("", 0)]: serializeStepStateWalEntry(0, [], {
+        pendingOperations: [],
+        tokenUsage: USAGE,
+        connectorState: null,
+        invocation: INVOCATION,
+        parkedTurnStart: 3,
+      }),
+    });
+    expect(appended.parkedTurnStart).toBe(3);
+
+    const unparked = await reconstruct({
+      [stepStateWalEntryPath("", 0)]: serializeStepStateWalEntry(0, [], {
+        pendingOperations: [],
+        tokenUsage: USAGE,
+        connectorState: null,
+        invocation: INVOCATION,
+      }),
+    });
+    expect("parkedTurnStart" in unparked).toBe(false);
+  });
+
+  test("state stamped with a bare attempt reads as stamped by no invocation", async () => {
+    const meta = {
+      checkpointSeq: 1,
+      turnCount: 0,
+      pendingOperations: [],
+      tokenUsage: USAGE,
+      connectorState: null,
+      attempt: 1,
+    };
+    const state = await reconstruct({
+      [STEP_STATE_CHECKPOINT_FILE]: JSON.stringify({
+        turns: [],
+        pendingOperations: [],
+        tokenUsage: USAGE,
+        connectorState: null,
+        attempt: 1,
+      }),
+      [STEP_STATE_CHECKPOINT_META_FILE]: JSON.stringify(meta),
+      [stepStateWalEntryPath("", 1)]: JSON.stringify({
+        seq: 1,
+        turns: [],
+        metadata: {
+          pendingOperations: [],
+          tokenUsage: USAGE,
+          connectorState: null,
+          attempt: 1,
+        },
+      }),
+    });
+
+    expect(state.boundaryCount).toBe(2);
+    expect(state.invocation).toBeUndefined();
+    expect("attempt" in state).toBe(false);
+  });
+
+  test("two stamps name the same invocation only when every field matches", () => {
+    expect(isSameStepStateInvocation(INVOCATION, { ...INVOCATION })).toBe(true);
+    expect(
+      isSameStepStateInvocation(INVOCATION, { ...INVOCATION, runId: "other" }),
+    ).toBe(false);
+    expect(
+      isSameStepStateInvocation(INVOCATION, { ...INVOCATION, stepId: "m[1]" }),
+    ).toBe(false);
+    expect(
+      isSameStepStateInvocation(INVOCATION, { ...INVOCATION, attempt: 1 }),
+    ).toBe(false);
   });
 });

@@ -70,10 +70,11 @@ import {
   startDeployFlowEnv,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { singleStepAgentEntry } from "./fixtures/single-step-agent";
+import { onTriggerBodyEntry } from "./fixtures/on-trigger-body";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_latency-d2-bench";
+const SECTION_ID = "section";
 const STEP_ID = "step1";
 const BODY = "Latency-d2 per-leg attribution probe body 0xD2D2D2.";
 
@@ -380,17 +381,26 @@ async function runUnifiedD2(opts: {
       defaultSource: "anthropic:mock-model",
     };
 
-    const entryModule = singleStepAgentEntry({
-      stepId: STEP_ID,
-      systemPrompt: "You are the latency-d2 attribution agent.",
+    // A one-step deployment answers one mail, so the bench deploys an
+    // interactive mail agent: an onTrigger section on mail whose body is one
+    // agent step. Each mail is a new body run.
+    const entryModule = onTriggerBodyEntry({
       address: deploymentMailAddress,
-      agentId: `agent-${DEPLOYMENT_ID}-${STEP_ID}`,
+      sectionId: SECTION_ID,
+      body: {
+        variant: "agent",
+        stepId: STEP_ID,
+        systemPrompt: "You are the latency-d2 attribution agent.",
+        agentId: `agent-${DEPLOYMENT_ID}-${STEP_ID}`,
+      },
       workflowId: `wf_${DEPLOYMENT_ID}`,
+      bodyWorkflowId: `wf_${DEPLOYMENT_ID}_body`,
     });
 
-    // Deploy the single warm agent BY SOURCE-REF, the same code-sourced front
-    // production drives. The helper registers the deployment on the env, so the
-    // fire loop resolves it by `anchorRunId` with no manual registration.
+    // Deploy the onTrigger mail agent BY SOURCE-REF, the same code-sourced
+    // front production drives. The helper registers the deployment on the
+    // env, so the fire loop resolves it by `anchorRunId` with no manual
+    // registration.
     const handle = await deployWorkflowSourceForTest(env, {
       entryModule,
       db: opts.db,
@@ -401,7 +411,7 @@ async function runUnifiedD2(opts: {
       agentAddress: deploymentMailAddress,
       approvals: "approve-probed",
       config,
-      sources: { [STEP_ID]: [inferenceSource] },
+      sources: { [SECTION_ID]: [inferenceSource] },
     });
     if (!handle.publicKey) {
       throw new Error("d2 bench: deploy did not return a public key");

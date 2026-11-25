@@ -56,8 +56,8 @@
 // calls to the same tool.
 //
 // Single-test file. The `deploy-flow-env` (real sidecar subprocess + its on-disk
-// warm step-state) is `beforeAll`-scoped, while the DB resets per test. A second
-// test would inherit the first run's warm workspace and live parked/completed
+// step state) is `beforeAll`-scoped, while the DB resets per test. A second
+// test would inherit the first run's step workspace and live parked/completed
 // run, so the sentinel and single-park assertions would stop meaning what they
 // claim. A run-once guard below fails loud if a second test is ever added here
 // rather than letting that assumption rot.
@@ -82,7 +82,8 @@ import {
 } from "@intx/db/schema";
 import { createApp, createRunGrantsLoader } from "@intx/hub-api";
 import { createAssetService } from "@intx/hub-sessions";
-import { signalName } from "@intx/types";
+import { deriveWorkflowRunId, signalName } from "@intx/types";
+import { stepWorkspaceDir } from "@intx/workflow-host/child";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   createTestDb,
@@ -123,7 +124,7 @@ import {
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A single-agent run id: `run_` + a hex-shaped local part, matching the other
-// warm single-step approval fixtures so the sidecar's deploy router applies the
+// single-step approval fixtures so the sidecar's deploy router applies the
 // single-agent identity strategy. The run collapses onto its anchor, so the
 // deployment id, the anchor `workflow_run` id, and the run id are all this value.
 const DEPLOYMENT_ID = "run_5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e";
@@ -172,9 +173,9 @@ const deploymentMailAddress = deriveRunAddress({
 describe.skipIf(!harnessDbEnvAvailable())(
   "a scope:always approval is run-local: the same run does not ask again",
   () => {
-    // Run-once guard. The env (sidecar subprocess + on-disk warm step-state +
-    // the live run) is shared across the describe block, so a second test would
-    // inherit this run's warm workspace and completed run and the sentinel /
+    // Run-once guard. The env (sidecar subprocess + on-disk step state + the
+    // live run) is shared across the describe block, so a second test would
+    // inherit this run's step workspace and completed run and the sentinel /
     // single-park assertions would stop meaning what they claim.
     let hasRun = false;
 
@@ -211,7 +212,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (hasRun) {
         throw new Error(
           "scope-always round-trip assumes a single test per shared env: the " +
-            "warm step-state and live run carry across, so a second test would " +
+            "step state and live run carry across, so a second test would " +
             "break the sentinel and single-park assertions. Add a new scenario " +
             "in its own file with its own env instead.",
         );
@@ -340,19 +341,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      // The two per-call sentinel paths in the warm agent's stable workspace.
-      const workspaceDir = path.join(
-        env.sidecar.dataDir,
-        "workflow-step-state",
-        workflowRunRepoId.id,
-        "warm",
-        encodeURIComponent(STEP_ID),
-        "workspace",
-      );
+      // The two per-call sentinel paths in the step's workspace. The agent is
+      // built again for the resume, but the approval resume reuses the parked
+      // attempt, so both calls write into the one workspace of attempt 1.
+      const workspaceDir = stepWorkspaceDir({
+        dataDir: env.sidecar.dataDir,
+        workflowRunRepoId,
+        runId: deriveWorkflowRunId(deploymentMailAddress),
+        stepId: STEP_ID,
+        attempt: 1,
+      });
       const firstCallSentinel = path.join(workspaceDir, FIRST_CALL.body);
       const secondCallSentinel = path.join(workspaceDir, SECOND_CALL.body);
 
-      // Guard the single-test warm-state assumption: no prior run left a sentinel.
+      // Guard the single-test state assumption: no prior run left a sentinel.
       expect(fs.existsSync(firstCallSentinel)).toBe(false);
       expect(fs.existsSync(secondCallSentinel)).toBe(false);
 

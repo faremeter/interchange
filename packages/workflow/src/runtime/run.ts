@@ -8,6 +8,7 @@
 // us swap the env implementations underneath without re-validating the
 // body.
 
+import type { StepPlace } from "@intx/types";
 import { correlationIdFromSignalName, signalName } from "@intx/types/signals";
 import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
 
@@ -31,8 +32,6 @@ import {
   hashDefinition,
   onFailureOf,
   RUN_ID_PATTERN,
-  stepTriggerBudget,
-  validateRetryTriggerCombination,
 } from "../definition/index";
 import {
   evaluate,
@@ -86,7 +85,7 @@ import {
 } from "./errors";
 import { loopBodyRunId, scopedStepId, sectionBodyRunId } from "./step-scope";
 import { inlineBodyRef } from "../inline-body-ref";
-import { findParkedApprovalSnapshot } from "./parked-approval";
+import { findParkedApprovalSnapshot, parkedStepPlace } from "./parked-approval";
 import {
   applyEvent,
   controlParkKindOf,
@@ -162,6 +161,14 @@ export interface RuntimeRunOptions {
    * ceiling. Default `MAX_CHILD_SPAWN_DEPTH`.
    */
   maxChildSpawnDepth?: number;
+  /**
+   * This run's step path prefix: the step ids of the container steps
+   * (loop, onTrigger, childWorkflow) from the top-level run down to this
+   * run. The top-level triggered run's prefix is empty. Carried on the spawn
+   * seam, not in the durable log. The spawning parent passes the prefix when
+   * it reattaches a child. Default `[]`. See `StepPlace`.
+   */
+  stepPathPrefix?: readonly string[];
   /**
    * A parent-supplied abort that tears this run down LOCALLY on fire: it
    * aborts the run's own cancel controller directly, so an in-flight or parked
@@ -566,9 +573,8 @@ function commit(
   env: WorkflowRuntimeEnv,
   runId: string,
   event: WorkflowEvent,
-  guard?: (state: RunState) => void,
 ): Promise<ReturnType<typeof resumeFromLog>> {
-  return commitBufferedToChain(env, runId, event, guard);
+  return commitBufferedToChain(env, runId, event);
 }
 
 // Intra-segment commit of the events `build` returns for the state the
@@ -651,10 +657,12 @@ async function executeRunBody(
   // injected override can only tighten it). Both thread down to the
   // childWorkflow spawn site, which checks the child's depth before it
   // commits anything and passes the incremented depth to the child run.
-  const depth = options.depth ?? 0;
-  const maxChildSpawnDepth = resolveMaxChildSpawnDepth(
-    options.maxChildSpawnDepth,
-  );
+  // The step path prefix is empty at the top level.
+  const lineage: RunLineage = {
+    depth: options.depth ?? 0,
+    maxChildSpawnDepth: resolveMaxChildSpawnDepth(options.maxChildSpawnDepth),
+    stepPathPrefix: options.stepPathPrefix ?? [],
+  };
 
   // Restore prior events to the repo store on resume so a downstream
   // read sees the historical log alongside any newly-appended events.
@@ -826,6 +834,8 @@ async function executeRunBody(
           runId,
           stepId,
           stepState.currentAttempt,
+          // A crashed invocation is a definition step, never a map item.
+          { stepPath: [...lineage.stepPathPrefix, stepId] },
           readRunLog,
         );
         if (parked !== undefined) {
@@ -880,13 +890,8 @@ async function executeRunBody(
   // correlation re-registers exactly once through the durable-state re-emit. The
   // agent turn is never re-invoked, preserving at-most-once.
   //
-  // This recovery is APPROVAL-only: `recoverableParks` come from the reactor's
-  // durable approval pending-op store, which reconstructs an approval park. An
-  // "input" park has no equivalent durable pending-op yet, so a crash in its
-  // pre-flush window (StepStarted flushed, SignalAwaited not) leaves it in
-  // `crashedInFlight` and it settles as a terminal StepFailed below rather than
-  // re-parking. The durable input substrate that closes this window is future
-  // work; input-park crash-safety today holds only for the post-flush window.
+  // `recoverableParks` come from the reactor's durable approval pending-op
+  // store, the only park an agent step makes.
   for (const {
     stepId,
     attempt,
@@ -898,6 +903,7 @@ async function executeRunBody(
         runId,
         stepId,
         attempt,
+        place: { stepPath: [...lineage.stepPathPrefix, stepId] },
         correlationId,
       });
     } catch (cause) {
@@ -1185,8 +1191,7 @@ async function executeRunBody(
           primitive,
           ctx,
           stepLocalAbort.signal,
-          depth,
-          maxChildSpawnDepth,
+          lineage,
         )
           .then((output) => {
             stepOutputs[primitive.id] = output;
@@ -1522,6 +1527,22 @@ function createStepAbort(
 // Per-primitive execution
 // =========================================================================
 
+/**
+ * The lineage of a run in its run tree, resolved once at the `runtimeRun`
+ * edge and passed to each primitive that starts a child run or invokes a
+ * step. `depth` is this run's depth in the childWorkflow spawn chain: a
+ * `childWorkflow` child runs one deeper, and a loop or onTrigger body runs at
+ * its container's depth. `maxChildSpawnDepth` is the same for the whole run
+ * tree. `stepPathPrefix` is the start of the `StepPlace.stepPath` of each step
+ * of this run: a loop, onTrigger or childWorkflow child's prefix is this
+ * prefix plus the container step id.
+ */
+type RunLineage = {
+  depth: number;
+  maxChildSpawnDepth: number;
+  stepPathPrefix: readonly string[];
+};
+
 async function runPrimitive(
   definition: WorkflowDefinition,
   env: WorkflowRuntimeEnv,
@@ -1529,8 +1550,7 @@ async function runPrimitive(
   primitive: Primitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   switch (primitive.kind) {
     case "step":
@@ -1539,6 +1559,7 @@ async function runPrimitive(
         env,
         runId,
         primitive,
+        { stepPath: [...lineage.stepPathPrefix, primitive.id] },
         selectorCtx,
         abort,
         "durable",
@@ -1553,21 +1574,20 @@ async function runPrimitive(
         primitive,
         selectorCtx,
         abort,
-        depth,
-        maxChildSpawnDepth,
+        lineage,
       );
     case "onTrigger":
-      return runOnTrigger(
+      return runOnTrigger(env, runId, primitive, selectorCtx, abort, lineage);
+    case "map":
+      return runMap(
+        definition,
         env,
         runId,
         primitive,
         selectorCtx,
         abort,
-        depth,
-        maxChildSpawnDepth,
+        lineage,
       );
-    case "map":
-      return runMap(definition, env, runId, primitive, selectorCtx, abort);
     case "gate":
       return runGate(definition, env, runId, primitive, selectorCtx, abort);
     case "awaitSignal":
@@ -1582,8 +1602,7 @@ async function runPrimitive(
         primitive,
         selectorCtx,
         abort,
-        depth,
-        maxChildSpawnDepth,
+        lineage,
       );
     case "escalation":
       return runEscalation(env, runId, primitive, selectorCtx);
@@ -1604,8 +1623,7 @@ async function runPrimitiveSafe(
   primitive: Primitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   try {
     return await runPrimitive(
@@ -1615,8 +1633,7 @@ async function runPrimitiveSafe(
       primitive,
       selectorCtx,
       abort,
-      depth,
-      maxChildSpawnDepth,
+      lineage,
     );
   } catch (cause) {
     // Only this run's failed flush. A nested run stamps the same
@@ -1782,14 +1799,11 @@ async function runStep(
   env: WorkflowRuntimeEnv,
   runId: string,
   step: StepPrimitive,
+  place: StepPlace,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
   completion: "durable" | "buffered",
 ): Promise<unknown> {
-  // Re-apply the retry/budget cross-field guard here as a defensive
-  // re-check, at the runtime's single read point for both fields, rather
-  // than trust that every definition reached it through `step()`.
-  validateRetryTriggerCombination(step);
   let attempt = 1;
   const maxAttempts = step.retry?.maxAttempts ?? 1;
   // StepStarted is committed exactly once per step -- the entry to
@@ -1815,9 +1829,7 @@ async function runStep(
   // `invokeStep` re-invokes the agent against the delivered decision.
   const entryState = await reloadState(env, runId);
   const entryStepState = entryState.steps.get(step.id);
-  let resumeFromPark:
-    | { signalName: string; correlationId: string; parkKind: ControlParkKind }
-    | undefined;
+  let resumeFromPark: { signalName: string; correlationId: string } | undefined;
   if (entryStepState?.phase === "awaiting-signal") {
     const parkedSignalName = findAwaitedSignalNameForStep(entryState, step.id);
     if (parkedSignalName === undefined) {
@@ -1842,13 +1854,24 @@ async function runStep(
         `runStep resume: step ${step.id} is awaiting-signal but has no awaitingSignal in the reduced state`,
       );
     }
-    resumeFromPark = {
-      signalName: parkedSignalName,
-      correlationId,
-      parkKind: controlParkKindOf(awaited),
-    };
+    const parkKind = controlParkKindOf(awaited);
+    // An agent step parks only on an approval. A step-level input park comes
+    // from a version that let a step service more than one trigger. This
+    // version cannot continue it as one more turn, so the run fails and the
+    // operator must redeploy.
+    if (parkKind === "input") {
+      throw new Error(
+        `runStep resume: step ${step.id} is parked on an input channel, which a step no longer uses; a step runs one turn per invocation, so redeploy the deployment with the step inside onTrigger`,
+      );
+    }
+    if (parkKind !== "approval") {
+      throw new Error(
+        `runStep resume: step ${step.id} is parked as ${parkKind}; an agent step suspends only on an approval`,
+      );
+    }
+    resumeFromPark = { signalName: parkedSignalName, correlationId };
     // Recover the attempt the step suspended on. The suspend committed its
-    // pending-op + turns under the cold-path ContextStore keyed by this
+    // pending-op + turns under the ContextStore keyed by this
     // attempt (`stepStorageRoot({runId, stepId, attempt})`); the resume
     // re-invoke must reopen that SAME `attempt-N` store so `rehydrateGates`
     // finds the pending-op and the delivered decision correlates. A step
@@ -1941,9 +1964,7 @@ async function runStep(
       // is the step output. A resume that parks again re-parks, mirroring
       // runAwaitSignal's re-park.
       let output: unknown;
-      let resume:
-        | { correlationId: string; decision: unknown; kind: ControlParkKind }
-        | undefined;
+      let resume: { correlationId: string; decision: unknown } | undefined;
       // A crash-resume re-entry re-parks on the recovered channel FIRST,
       // before any `invokeStep`, so the agent is never re-sent the original
       // input. The delivered decision seeds `resume` so the bridge loop's
@@ -1966,82 +1987,29 @@ async function runStep(
         resume = {
           correlationId: resumeFromPark.correlationId,
           decision,
-          kind: resumeFromPark.parkKind,
         };
         resumeFromPark = undefined;
       }
-      // Trigger budget: how many triggers this step services before it
-      // completes (`stepTriggerBudget` owns the absent-means-1 default). A
-      // batch step (1) completes on its first output; an `"unbounded"` step
-      // re-arms after every output and never self-completes. For a finite
-      // budget > 1 the count of triggers already serviced must survive a
-      // respawn, so it is seeded from the durable log -- the number of
-      // input-park `SignalAwaited`s the step has emitted equals the turns it
-      // has serviced, because the runtime's re-arm below is the ONLY minter
-      // of input parks (`StepInvokeResult` offers invokers no input arm), and
-      // it emits exactly one per completed turn. A budget of 1 never re-arms
-      // (its count is 0 by construction) and unbounded never counts, so both
-      // skip the log read -- the batch default pays nothing.
-      const triggerBudget = stepTriggerBudget(step);
-      let servicedTriggers = 0;
-      if (triggerBudget !== "unbounded" && triggerBudget > 1) {
-        const priorEvents = await env.repoStore.read(runId);
-        servicedTriggers = priorEvents.filter(
-          (e) =>
-            e.kind === "SignalAwaited" &&
-            e.stepId === step.id &&
-            e.parkKind === "input",
-        ).length;
-      }
+      // The one place an absent `replyByMail` becomes `false`.
+      const replyByMail = step.replyByMail ?? false;
       while (true) {
         const result = await env.invokeStep({
           agent: step.agent,
           input,
           ...(inference !== undefined ? { inference } : {}),
+          replyByMail,
           authzContext: {
             stepId: step.id,
             attempt,
             runId,
           },
+          place,
           signal: stepAbort.signal,
           ...(resume !== undefined ? { resume } : {}),
         });
         if ("output" in result) {
           output = result.output;
-          servicedTriggers += 1;
-          // Budget spent -> complete (the batch case: one trigger, one turn,
-          // done). Budget remaining -> re-arm: park the step on a fresh input
-          // control-plane channel awaiting its next trigger, which becomes the
-          // next turn's input. The park is snapshot-less (`kind: "input"`) and
-          // fires no host notify -- the run's owner delivers the next trigger
-          // on this channel. `env.newId` mints a unique channel per turn so
-          // deliveries never collide; the run's owner discovers the current
-          // channel from the reduced `awaitingSignal.name`.
-          const hasMoreTriggers =
-            triggerBudget === "unbounded" || servicedTriggers < triggerBudget;
-          if (!hasMoreTriggers) break;
-          const inputCorrelationId = env.newId("corr");
-          const rearmState = await reloadState(env, runId);
-          const decision = await parkOnSignal(
-            env,
-            runId,
-            {
-              stepId: step.id,
-              signalName: signalName(inputCorrelationId),
-              parkKind: "input",
-              claimsRunInputChannel: {
-                sectionInputStepIds: sectionInputStepIds(definition),
-              },
-            },
-            rearmState,
-            stepAbort.signal,
-          );
-          resume = {
-            correlationId: inputCorrelationId,
-            decision,
-            kind: "input",
-          };
-          continue;
+          break;
         }
         // The reactor parked. Park the step on the reserved signal channel
         // for this correlation. Unlike runAwaitSignal, the agent step
@@ -2057,9 +2025,8 @@ async function runStep(
           {
             stepId: step.id,
             signalName: signalName(result.suspend.correlationId),
-            // An invoker can only suspend as an approval (the input park is
-            // minted by the trigger-budget re-arm above, never by an
-            // invoker), and the approval arm carries a mandatory snapshot.
+            // An invoker can only suspend as an approval, and the approval
+            // arm carries a mandatory snapshot.
             parkKind: result.suspend.kind,
             approvalSnapshot: result.suspend.approvalSnapshot,
           },
@@ -2069,7 +2036,6 @@ async function runStep(
         resume = {
           correlationId: result.suspend.correlationId,
           decision,
-          kind: result.suspend.kind,
         };
       }
       // Wrap the success terminalization -- recording the output, pruning the
@@ -2417,8 +2383,7 @@ async function runLoop(
   primitive: LoopPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   const spawnLoopIteration = env.spawnLoopIteration;
   const loopFns = env.loopFns;
@@ -2540,7 +2505,15 @@ async function runLoop(
   // every later iteration spawns fresh.
   let occurrenceRelays = terminated
     ? []
-    : await planLoopResume(env, primitive, runId, state, log, iteration);
+    : await planLoopResume(
+        env,
+        primitive,
+        runId,
+        [...lineage.stepPathPrefix, primitive.id],
+        state,
+        log,
+        iteration,
+      );
 
   let iterations = iteration;
   for (let i = iteration; !terminated && i < primitive.maxIterations; i += 1) {
@@ -2568,8 +2541,7 @@ async function runLoop(
       input: currentInput,
       relays: occurrenceRelays,
       spawnSuspendableChild: spawnLoopIteration,
-      depth,
-      maxChildSpawnDepth,
+      lineage,
       abort,
       signalRelayAddressing: "name",
     });
@@ -2702,8 +2674,7 @@ async function driveSuspendableOccurrence(
     // A recovered body's relays, run before its queue is read.
     relays: readonly ChildRelay[];
     spawnSuspendableChild: SpawnSuspendableChild;
-    depth: number;
-    maxChildSpawnDepth: number;
+    lineage: RunLineage;
     abort: AbortSignal;
     signalRelayAddressing: SignalRelayAddressing;
   },
@@ -2714,8 +2685,7 @@ async function driveSuspendableOccurrence(
     input,
     relays,
     spawnSuspendableChild,
-    depth,
-    maxChildSpawnDepth,
+    lineage,
     abort,
     signalRelayAddressing,
   } = args;
@@ -2747,8 +2717,9 @@ async function driveSuspendableOccurrence(
     parentRunId: runId,
     parentStepId: containerStepId,
     signal: AbortSignal.any([abort, bodyTeardown.signal]),
-    depth,
-    maxChildSpawnDepth,
+    depth: lineage.depth,
+    maxChildSpawnDepth: lineage.maxChildSpawnDepth,
+    stepPathPrefix: [...lineage.stepPathPrefix, containerStepId],
     ...(bodyLog !== undefined ? { resumeFromEvents: bodyLog } : {}),
   });
   // A body whose log is gone starts over and surfaces its gates afresh, and
@@ -2780,16 +2751,10 @@ async function driveSuspendableOccurrence(
           child,
           relay,
           abort,
-          new Set(),
           signalRelayAddressing,
         );
       } catch (cause) {
-        if (
-          !(cause instanceof ChildRelayRetiredError) ||
-          cause.parkKind !== "approval"
-        ) {
-          throw cause;
-        }
+        if (!(cause instanceof ChildRelayRetiredError)) throw cause;
         // The body left this approval and goes on, so the container does too.
         await abandonRelayIfOpen(env, runId, containerStepId, cause.parkName);
         continue;
@@ -2857,26 +2822,14 @@ async function driveSuspendableOccurrence(
           containerStepId,
           child,
           bodyEvent.park.correlationId,
-          "approval",
           bodyEvent.park.approvalSnapshot,
           abort,
-          new Set(),
         );
       } catch (cause) {
         if (!(cause instanceof ChildRelayRetiredError)) throw cause;
         await abandonRelayIfOpen(env, runId, containerStepId, cause.parkName);
       }
       continue;
-    }
-    if (bodyEvent.kind === "input-park") {
-      // Unreachable. Loop and onTrigger handles are built with
-      // `surfaceInputPark: false`, so `next` aborts the body and throws
-      // before this arm. The throw here does not abort: the handle already
-      // did, and a second teardown would race the one that owns the child.
-      throw new Error(
-        `suspendable body ${childRunId} surfaced an input park; a loop or ` +
-          `onTrigger body cannot re-arm an input park`,
-      );
     }
     // A body step parked on an author `awaitSignal` gate. Proxy it up as a
     // signal-relay await on THIS container run over the SAME author name and
@@ -2966,8 +2919,7 @@ async function runOnTrigger(
   primitive: OnTriggerPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   if (!("ref" in primitive.body)) {
     throw new Error(
@@ -3006,7 +2958,13 @@ async function runOnTrigger(
     // after a crash. Reconstruct the drive position from the reduced state and
     // the log rather than re-running from event 0.
     const log = await env.repoStore.read(runId);
-    const plan = await planOnTriggerResume(env, primitive, initial, log);
+    const plan = await planOnTriggerResume(
+      env,
+      primitive,
+      [...lineage.stepPathPrefix, primitive.id],
+      initial,
+      log,
+    );
     switch (plan.kind) {
       case "fresh":
         eventIndex = 0;
@@ -3081,8 +3039,7 @@ async function runOnTrigger(
         input: currentInput,
         relays: resumeRelays,
         spawnSuspendableChild,
-        depth,
-        maxChildSpawnDepth,
+        lineage,
         abort,
         signalRelayAddressing: "correlation",
       },
@@ -3820,6 +3777,7 @@ function highestSectionEventIndex(
 async function planOnTriggerResume(
   env: WorkflowRuntimeEnv,
   primitive: OnTriggerPrimitive,
+  bodyStepPathPrefix: readonly string[],
   state: RunState,
   log: readonly WorkflowEvent[],
 ): Promise<OnTriggerResumePlan<ChildRelay>> {
@@ -3827,7 +3785,7 @@ async function planOnTriggerResume(
     primitive,
     state,
     log,
-    (childRunId) => bodyLogForRelays(env, childRunId),
+    (childRunId) => bodyLogForRelays(env, childRunId, bodyStepPathPrefix),
     env.clock().getTime(),
   );
   if (plan.kind !== "relink-body") return plan;
@@ -3837,13 +3795,14 @@ async function planOnTriggerResume(
     plan.eventIndex,
     state.children,
   );
-  const childLog = await bodyLogForRelays(env, childRunId);
+  const childLog = await bodyLogForRelays(env, childRunId, bodyStepPathPrefix);
   return {
     ...plan,
     relays: await loadPlannedRelays(
       env,
       `onTrigger ${primitive.id}`,
       childRunId,
+      bodyStepPathPrefix,
       resumeFromLog(childRunId, childLog),
       plan.relays,
     ),
@@ -3997,7 +3956,6 @@ async function finishOnTriggerResume(
     sinceSeq,
     "retire",
   );
-  refuseInputRelays(`onTrigger ${primitive.id}`, childRunId, relays);
   return { kind: "relink-body", eventIndex, relays };
 }
 
@@ -4022,16 +3980,18 @@ async function planLoopResume(
   env: WorkflowRuntimeEnv,
   primitive: LoopPrimitive,
   runId: string,
+  bodyStepPathPrefix: readonly string[],
   state: RunState,
   log: readonly WorkflowEvent[],
   iteration: number,
 ): Promise<ChildRelay[]> {
   const childRunId = loopBodyRunId(runId, primitive.id, iteration);
-  const childLog = await bodyLogForRelays(env, childRunId);
+  const childLog = await bodyLogForRelays(env, childRunId, bodyStepPathPrefix);
   return loadPlannedRelays(
     env,
     `loop ${primitive.id}`,
     childRunId,
+    bodyStepPathPrefix,
     resumeFromLog(childRunId, childLog),
     finishLoopResume(
       primitive,
@@ -4084,7 +4044,7 @@ function finishLoopResume(
       childSpawnSeq(log, childRunId),
     );
   }
-  const relays = planChildRelays(
+  return planChildRelays(
     `loop ${primitive.id}`,
     primitive.id,
     childRunId,
@@ -4096,29 +4056,27 @@ function finishLoopResume(
     childSpawnSeq(log, childRunId),
     "retire",
   );
-  refuseInputRelays(`loop ${primitive.id}`, childRunId, relays);
-  return relays;
 }
 
-// A loop or onTrigger body never parks on an input channel; the live drive
-// refuses one, so a log that holds one is not this container's.
+// Only a top-level onTrigger section parks on an input channel, and the live
+// drive of a child or body run refuses one. A child log that holds an open
+// input park comes from an older version, so its resume fails here and the
+// container does not relay the park.
 function refuseInputRelays(
   container: string,
   childRunId: string,
-  relays: readonly PlannedChildRelay[],
-): void {
-  for (const relay of relays) {
-    const input =
-      relay.kind === "input-fresh" ||
-      ((relay.kind === "control-reestablish" ||
-        relay.kind === "control-deliver") &&
-        relay.parkKind === "input");
-    if (input) {
+  parks: readonly OpenChildPark[],
+): RelayableChildPark[] {
+  const relayable: RelayableChildPark[] = [];
+  for (const park of parks) {
+    if (park.kind === "input") {
       throw new Error(
-        `${container} resume: body child ${childRunId} is parked on an input channel; a loop or onTrigger body cannot re-arm an input park`,
+        `${container} resume: child run ${childRunId} is parked on an input channel; a child or body run cannot re-arm an input park`,
       );
     }
+    relayable.push(park);
   }
+  return relayable;
 }
 
 /**
@@ -4960,6 +4918,7 @@ async function runMap(
   primitive: MapPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
+  lineage: RunLineage,
 ): Promise<unknown> {
   const over = evaluate(primitive.over, selectorCtx);
   if (!Array.isArray(over)) {
@@ -5002,6 +4961,7 @@ async function runMap(
         env,
         runId,
         scopedStep,
+        { stepPath: [...lineage.stepPathPrefix, primitive.id], mapIndex: i },
         itemCtx,
         abort,
         "buffered",
@@ -5942,16 +5902,6 @@ async function parkOnSignalResult(
      * the durable `SignalAwaited` without re-deriving the kind.
      */
     parkKind?: ControlParkKind;
-    /**
-     * Set when this park is the run's one deployment input: a trigger-budget
-     * re-arm, or a childWorkflow relay of that park. An onTrigger section's
-     * event re-arm is a separate channel, and several of those stay open
-     * together. `sectionInputStepIds` names those sections so an open
-     * section park does not hold this channel.
-     */
-    claimsRunInputChannel?: {
-      sectionInputStepIds: ReadonlySet<string>;
-    };
     /** An input the caller races with this park; its waker ends the wait too. */
     race?: { idle: IdleWait; waker: () => void };
   },
@@ -6013,21 +5963,7 @@ async function parkOnSignalResult(
       // approval one after a crash/reconnect (see parked-correlations).
       ...(opts.parkKind !== undefined ? { parkKind: opts.parkKind } : {}),
     };
-    const claim = opts.claimsRunInputChannel;
-    state = await commit(
-      env,
-      runId,
-      awaited,
-      claim !== undefined
-        ? (fresh) => {
-            assertNoOpenInputPark(
-              fresh,
-              opts.stepId,
-              claim.sectionInputStepIds,
-            );
-          }
-        : undefined,
-    );
+    state = await commit(env, runId, awaited);
     // Only a park on a reserved `signalName(correlationId)` channel (the
     // agent-step suspend arm) carries a correlation the resolver routes a
     // decision back on; a plain `awaitSignal` gate parked on an
@@ -6640,17 +6576,16 @@ async function flushParkedChildWorkflowFailure(
 }
 
 /**
- * Park the parent on a control-plane relay and race that wait against the
- * named park leaving the child. A sibling park stays queued. `next` would
- * treat it as this park ending, and the spawn step can await only one
- * signal. A child that ends while the parent is parked wins the race, and
- * the caller continues from that terminal without reading the queue. A
- * release while the child run is still going throws
- * `ChildRelayRetiredError`, since parking the next signal on a step that is
- * still awaiting this one would wait on the old name. It fails a spawn step; a
- * loop or onTrigger drive retires the approval. A failure of the park itself
- * (nothing upstream can answer it, or a second input park) is not a body event.
- * `next` is not started on that path: the child is still parked, and the
+ * Park the parent on a relay of a child's approval and race that wait against
+ * the named park leaving the child. A sibling park stays queued. `next` would
+ * treat it as this park ending, and the spawn step can await only one signal. A
+ * child that ends while the parent is parked wins the race, and the caller
+ * continues from that terminal without reading the queue. A release while the
+ * child run is still going throws `ChildRelayRetiredError`, since parking the
+ * next signal on a step that is still awaiting this one would wait on the old
+ * name. It fails a spawn step; a loop or onTrigger drive retires the approval.
+ * A failure of the park itself (nothing upstream can answer it) is not a body
+ * event. `next` is not started on that path: the child is still parked, and the
  * failure path's later `next` takes the one wake slot.
  */
 async function awaitChildPark(
@@ -6659,10 +6594,8 @@ async function awaitChildPark(
   stepId: string,
   handle: SuspendableChildHandle,
   correlationId: string,
-  parkKind: "approval" | "input",
   approvalSnapshot: ApprovalSnapshot | undefined,
   abort: AbortSignal,
-  sectionSteps: ReadonlySet<string>,
   pull: ChildRelayPull = "next",
   handDown: "at-once" | "after-rearm" = "at-once",
 ): Promise<ChildDriveResult> {
@@ -6672,7 +6605,7 @@ async function awaitChildPark(
     return { kind: "terminal", terminalStatus: before.terminalStatus };
   }
   if (before.kind === "released") {
-    throw new ChildRelayRetiredError(stepId, parkKind, name);
+    throw new ChildRelayRetiredError(stepId, name);
   }
   const parkAbort = new AbortController();
   const detachParkAbort = bridgeAbort(abort, () => {
@@ -6691,11 +6624,8 @@ async function awaitChildPark(
     {
       stepId,
       signalName: name,
-      parkKind,
+      parkKind: "approval",
       ...(approvalSnapshot !== undefined ? { approvalSnapshot } : {}),
-      ...(parkKind === "input"
-        ? { claimsRunInputChannel: { sectionInputStepIds: sectionSteps } }
-        : {}),
       race: { idle, waker: onRelease },
     },
     parkRearm,
@@ -6729,7 +6659,7 @@ async function awaitChildPark(
         terminalStatus: outcome.rel.terminalStatus,
       };
     }
-    throw new ChildRelayRetiredError(stepId, parkKind, name);
+    throw new ChildRelayRetiredError(stepId, name);
   }
   // Stop the watch before resume. The child's own receipt would otherwise
   // look like the park ending without a decision. Re-read before resume:
@@ -6742,7 +6672,7 @@ async function awaitChildPark(
     return { kind: "terminal", terminalStatus: again.terminalStatus };
   }
   if (again.kind === "released") {
-    throw new ChildRelayRetiredError(stepId, parkKind, name);
+    throw new ChildRelayRetiredError(stepId, name);
   }
   // A body still resuming acts on a park it read before this decision lands,
   // so the decision waits until the body waits on it again.
@@ -6753,7 +6683,7 @@ async function awaitChildPark(
       return { kind: "terminal", terminalStatus: rearm.terminalStatus };
     }
     if (rearm.kind === "released") {
-      throw new ChildRelayRetiredError(stepId, parkKind, name);
+      throw new ChildRelayRetiredError(stepId, name);
     }
   }
   await handle.resume(correlationId, outcome.payload);
@@ -6763,54 +6693,13 @@ async function awaitChildPark(
 class ChildRelayRetiredError extends Error {
   constructor(
     stepId: string,
-    readonly parkKind: "approval" | "input",
     readonly parkName: string,
   ) {
     super(
-      `step ${stepId} ${parkKind} relay on ${parkName} ended while the child ` +
+      `step ${stepId} approval relay on ${parkName} ended while the child ` +
         `run was still going; a control-plane relay cannot be retired`,
     );
     this.name = "ChildRelayRetiredError";
-  }
-}
-
-/**
- * Step ids whose input park is an onTrigger event channel, not the run's
- * deployment input. Several sections re-arm at once. A trigger-budget
- * re-arm and a childWorkflow relay of that park do not count those parks
- * as holding the one deployment channel.
- */
-function sectionInputStepIds(
-  definition: WorkflowDefinition,
-): ReadonlySet<string> {
-  const ids = new Set<string>();
-  for (const [id, step] of Object.entries(definition.steps)) {
-    if (step.kind === "onTrigger") ids.add(id);
-  }
-  return ids;
-}
-
-/**
- * The run has one deployment input channel. The caller is claiming it.
- * Another holder fails the commit. Section event channels are not holders.
- */
-function assertNoOpenInputPark(
-  state: RunState,
-  stepId: string,
-  sectionSteps: ReadonlySet<string>,
-): void {
-  for (const [otherId, step] of state.steps) {
-    if (otherId === stepId || sectionSteps.has(otherId)) continue;
-    if (
-      step.phase === "awaiting-signal" &&
-      step.awaitingSignal !== undefined &&
-      controlParkKindOf(step.awaitingSignal) === "input"
-    ) {
-      throw new Error(
-        `step ${stepId} input park: step ${otherId} is already awaiting ` +
-          `an input park; a run holds one input channel`,
-      );
-    }
   }
 }
 
@@ -6828,14 +6717,19 @@ type OpenChildPark =
       awaitSeq: number;
       timeoutAt?: string;
     }
-  | {
-      kind: "approval" | "input";
-      name: string;
-      correlationId: string;
-      awaitSeq: number;
-      stepId: string;
-      attempt: number;
-    };
+  | ({ kind: "approval" } & ReservedChildPark)
+  | ({ kind: "input" } & ReservedChildPark);
+
+type ReservedChildPark = {
+  name: string;
+  correlationId: string;
+  awaitSeq: number;
+  stepId: string;
+  attempt: number;
+};
+
+/** An open child park that a container can relay. */
+type RelayableChildPark = Exclude<OpenChildPark, { kind: "input" }>;
 
 /**
  * What the parent still has to do for one child park, or for a relay the
@@ -6854,18 +6748,8 @@ type ChildRelay =
       signalId: string;
     }
   | { kind: "signal-fresh"; name: string; timeout?: number }
-  | {
-      kind: "control-reestablish";
-      parkKind: "approval" | "input";
-      correlationId: string;
-    }
-  | {
-      kind: "control-deliver";
-      parkKind: "approval" | "input";
-      correlationId: string;
-      decision: unknown;
-    }
-  | { kind: "input-fresh"; correlationId: string }
+  | { kind: "control-reestablish"; correlationId: string }
+  | { kind: "control-deliver"; correlationId: string; decision: unknown }
   | {
       kind: "approval-fresh";
       correlationId: string;
@@ -7100,7 +6984,6 @@ function relayName(relay: ChildRelay | PlannedChildRelay): string {
       return relay.name;
     case "control-reestablish":
     case "control-deliver":
-    case "input-fresh":
     case "approval-fresh":
       return signalName(relay.correlationId);
     default: {
@@ -7153,7 +7036,8 @@ function parentSignalAwait(
  * which a restart can leave several. Only the container's awaits after
  * `sinceSeq`, the body's spawn, are this body's. A loop or onTrigger body can
  * leave an approval and go on, as a timed step does, so `approvalLeft` retires
- * that relay; a spawn step fails on it, with or without a restart.
+ * that relay; a spawn step fails on it, with or without a restart. An open
+ * input park in the child log fails the plan (see `refuseInputRelays`).
  */
 function planChildRelays(
   container: string,
@@ -7167,7 +7051,11 @@ function planChildRelays(
   sinceSeq: number,
   approvalLeft: "retire" | "fail",
 ): PlannedChildRelay[] {
-  const parks = openChildParks(childLog, childState);
+  const parks = refuseInputRelays(
+    container,
+    childRunId,
+    openChildParks(childLog, childState),
+  );
   const parentAwait = parentSignalAwait(parentState, stepId);
   const childTerminal = isTerminalRunPhase(childState.phase);
   const relays: PlannedChildRelay[] = [];
@@ -7196,7 +7084,6 @@ function planChildRelays(
       }
       relays.push({
         kind: "control-reestablish",
-        parkKind: park.kind,
         correlationId: park.correlationId,
       });
       continue;
@@ -7216,20 +7103,10 @@ function planChildRelays(
       } else {
         relays.push({
           kind: "control-deliver",
-          parkKind: park.kind,
           correlationId: park.correlationId,
           decision: delivered.payload,
         });
       }
-      continue;
-    }
-    if (park.kind === "approval") {
-      relays.push({
-        kind: "approval-fresh",
-        correlationId: park.correlationId,
-        stepId: park.stepId,
-        attempt: park.attempt,
-      });
       continue;
     }
     if (park.kind === "author") {
@@ -7242,8 +7119,10 @@ function planChildRelays(
       continue;
     }
     relays.push({
-      kind: "input-fresh",
+      kind: "approval-fresh",
       correlationId: park.correlationId,
+      stepId: park.stepId,
+      attempt: park.attempt,
     });
   }
   if (parentAwait !== undefined) {
@@ -7276,6 +7155,7 @@ async function loadPlannedRelays(
   env: WorkflowRuntimeEnv,
   container: string,
   childRunId: string,
+  childStepPathPrefix: readonly string[],
   childState: RunState,
   planned: readonly PlannedChildRelay[],
 ): Promise<ChildRelay[]> {
@@ -7291,9 +7171,11 @@ async function loadPlannedRelays(
         ? undefined
         : await findParkedApprovalSnapshot({
             // A relaying body's own body can hold a lost park too.
-            repoStore: { read: (id) => bodyLogForRelays(env, id) },
+            readLog: (id, stepPathPrefix) =>
+              bodyLogForRelays(env, id, stepPathPrefix),
             load,
             runId: childRunId,
+            stepPathPrefix: childStepPathPrefix,
             state: childState,
             stepId: relay.stepId,
             attempt: relay.attempt,
@@ -7329,6 +7211,7 @@ function childSpawnSeq(
 async function planChildWorkflowResume(
   env: WorkflowRuntimeEnv,
   stepId: string,
+  childStepPathPrefix: readonly string[],
   definitionRef: string,
   prior: RunState,
   parentLog: readonly WorkflowEvent[],
@@ -7363,7 +7246,11 @@ async function planChildWorkflowResume(
       terminalStatus: recorded.terminalStatus,
     };
   }
-  const childLog = await bodyLogForRelays(env, recorded.childRunId);
+  const childLog = await bodyLogForRelays(
+    env,
+    recorded.childRunId,
+    childStepPathPrefix,
+  );
   if (childLog.length === 0) {
     if (step.phase === "awaiting-signal") {
       throw new Error(
@@ -7397,6 +7284,7 @@ async function planChildWorkflowResume(
       env,
       `childWorkflow ${stepId}`,
       recorded.childRunId,
+      childStepPathPrefix,
       childState,
       planChildRelays(
         `childWorkflow ${stepId}`,
@@ -7467,7 +7355,6 @@ async function drivePlannedChildRelay(
   handle: SuspendableChildHandle,
   relay: ChildRelay,
   abort: AbortSignal,
-  sectionSteps: ReadonlySet<string>,
   addressing: SignalRelayAddressing,
 ): Promise<ChildDriveResult> {
   switch (relay.kind) {
@@ -7545,10 +7432,8 @@ async function drivePlannedChildRelay(
         stepId,
         handle,
         relay.correlationId,
-        relay.parkKind,
         undefined,
         abort,
-        sectionSteps,
         "hold",
         "after-rearm",
       );
@@ -7570,27 +7455,6 @@ async function drivePlannedChildRelay(
       await handle.resume(relay.correlationId, relay.decision);
       return { kind: "held" };
     }
-    case "input-fresh": {
-      const name = signalName(relay.correlationId);
-      const snapshot = await handle.readParkRelease(name);
-      if (snapshot.kind === "terminal") {
-        return { kind: "terminal", terminalStatus: snapshot.terminalStatus };
-      }
-      if (snapshot.kind === "released") return { kind: "held" };
-      return awaitChildPark(
-        env,
-        parentRunId,
-        stepId,
-        handle,
-        relay.correlationId,
-        "input",
-        undefined,
-        abort,
-        sectionSteps,
-        "hold",
-        "after-rearm",
-      );
-    }
     case "approval-fresh": {
       const name = signalName(relay.correlationId);
       const snapshot = await handle.readParkRelease(name);
@@ -7604,10 +7468,8 @@ async function drivePlannedChildRelay(
         stepId,
         handle,
         relay.correlationId,
-        "approval",
         relay.approvalSnapshot,
         abort,
-        sectionSteps,
         "hold",
         "after-rearm",
       );
@@ -7626,16 +7488,19 @@ async function runChildWorkflow(
   primitive: ChildWorkflowPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
-  depth: number,
-  maxChildSpawnDepth: number,
+  lineage: RunLineage,
 ): Promise<unknown> {
   // Bound the spawn chain BEFORE committing StepStarted/ChildSpawned. A
   // reject here lands a clean StepFailed on this spawn step (runPrimitiveSafe
   // synthesizes it) and never writes a phantom child-run log. The child runs
   // one rung deeper; the ceiling is tree-wide (threaded from this run).
-  const childDepth = depth + 1;
-  assertSpawnDepthWithinLimit(childDepth, primitive.id, maxChildSpawnDepth);
-  const sectionSteps = sectionInputStepIds(parent);
+  const childDepth = lineage.depth + 1;
+  const childStepPathPrefix = [...lineage.stepPathPrefix, primitive.id];
+  assertSpawnDepthWithinLimit(
+    childDepth,
+    primitive.id,
+    lineage.maxChildSpawnDepth,
+  );
   // Post-extraction the child definition is the internal `{ ref }` handle: the
   // deploy step lifts the authored inline child to a standalone definition and
   // the host resolves it from an in-memory closure map keyed by this ref. An
@@ -7657,6 +7522,7 @@ async function runChildWorkflow(
   const plan = await planChildWorkflowResume(
     env,
     primitive.id,
+    childStepPathPrefix,
     definitionRef,
     prior,
     parentLog,
@@ -7739,7 +7605,8 @@ async function runChildWorkflow(
           parentStepId: primitive.id,
           signal: childAbort.signal,
           depth: childDepth,
-          maxChildSpawnDepth,
+          maxChildSpawnDepth: lineage.maxChildSpawnDepth,
+          stepPathPrefix: childStepPathPrefix,
           ...(childEvents.length > 0 ? { resumeFromEvents: childEvents } : {}),
         });
         handle = spawnedHandle;
@@ -7753,7 +7620,6 @@ async function runChildWorkflow(
               spawnedHandle,
               relay,
               childAbort.signal,
-              sectionSteps,
               "name",
             );
             if (driven.kind === "terminal") {
@@ -7790,24 +7656,8 @@ async function runChildWorkflow(
                 primitive.id,
                 spawnedHandle,
                 bodyEvent.park.correlationId,
-                "approval",
                 bodyEvent.park.approvalSnapshot,
                 childAbort.signal,
-                sectionSteps,
-              );
-              continue;
-            }
-            if (bodyEvent.kind === "input-park") {
-              pending = await awaitChildPark(
-                env,
-                parentRunId,
-                primitive.id,
-                spawnedHandle,
-                bodyEvent.correlationId,
-                "input",
-                undefined,
-                childAbort.signal,
-                sectionSteps,
               );
               continue;
             }
@@ -7937,11 +7787,12 @@ async function lostApprovalPark(
   runId: string,
   stepId: string,
   attempt: number,
+  place: StepPlace,
   readLog: () => Promise<readonly WorkflowEvent[]>,
 ): Promise<ParkedApprovalOp | undefined> {
   const parkedOps =
     env.readParkedApprovalOps !== undefined
-      ? await env.readParkedApprovalOps({ runId, stepId, attempt })
+      ? await env.readParkedApprovalOps({ runId, stepId, attempt, place })
       : [];
   // A step-attempt parks on at most one control-plane suspension. More than
   // one durable pending approval op is a corrupt store, not a state the
@@ -7996,7 +7847,8 @@ function lostParkAwaited(
  * The plan then relays such a park as it does any other, and finds it again
  * after a crash that came after the container relayed it but before the body
  * re-committed it. Whatever re-registers a container's parks reads its bodies
- * through this too, so it finds the same parks.
+ * through this too, so it finds the same parks. `stepPathPrefix` is the body
+ * run's step path prefix.
  */
 export async function bodyLogForRelays(
   env: Pick<
@@ -8004,6 +7856,7 @@ export async function bodyLogForRelays(
     "repoStore" | "readParkedApprovalOps" | "clock"
   >,
   childRunId: string,
+  stepPathPrefix: readonly string[],
 ): Promise<WorkflowEvent[]> {
   const log = [...(await env.repoStore.read(childRunId))];
   if (log.length === 0) return log;
@@ -8013,11 +7866,16 @@ export async function bodyLogForRelays(
   let seq = state.lastSeq;
   for (const step of state.steps.values()) {
     if (step.phase !== "in-flight") continue;
+    // A loop iteration's scoped step is in flight while its body runs, and
+    // its id decodes as a map item's would. That step never invokes an agent,
+    // so no park is stored for it, and the loop records its proxy park on the
+    // loop's own id, never on the scoped id. The read finds no park for it.
     const parked = await lostApprovalPark(
       env,
       childRunId,
       step.stepId,
       step.currentAttempt,
+      parkedStepPlace(stepPathPrefix, step.stepId),
       async () => committed,
     );
     if (parked === undefined) continue;

@@ -26,6 +26,7 @@ export type {
   StepInvoker,
   SuspendableChildHandle,
   SuspendableChildPark,
+  SuspendableChildSettlement,
   WorkflowPark,
   WorkflowRun,
   WorkflowRuntimeEnv,

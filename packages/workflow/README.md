@@ -189,6 +189,50 @@ vocabulary (so the deploy-time capability walk can compute grants
 without executing user code), and parsing an opaque agent reply is host
 work that belongs at an `action`/LoopFn seam.
 
+## A step replies by mail only when it sets `replyByMail`
+
+A `step`'s final text is its output. The step sends that text as mail on
+the inbound thread only when it sets `replyByMail: true` and the turn
+answers mail. A turn answers mail when its input is a Mail, or when it is
+the approval resume of a turn whose input was a Mail. The option is absent
+by default, and `runStep` resolves an absent option to `false` on
+`StepInvokeRequest.replyByMail`. Every agent step can send the reply.
+Two steps that set the option and answer the same Mail both reply, so a
+deployment that must answer each Mail once sets the option on one step
+only. A reply goes out at most once: a crash after the send and before
+the step commits its turn fails the step without running it again.
+
+The live-to-inert projector carries the option only when the author set
+it, so a definition that does not set it keeps its definition hash.
+
+## A step runs one turn per invocation
+
+An agent step runs one inference turn each time it runs, and the workflow
+decides when its place runs again: a retry, an approval resume, a `loop`
+iteration, or an `onTrigger` event. The body steps of a `childWorkflow` step
+run again each time that step runs again. The step does not park between
+turns. Its drain default is `cancel`, and an explicit `drainBehavior` wins.
+A one-step mail deployment answers one mail, and then its run is terminal.
+An interactive mail agent is `onTrigger({ on: mail, body })` with an agent
+step in the body that sets `replyByMail: true`. Each mail is a new body run,
+and the body step continues the conversation at its place with a new
+workspace.
+
+`step()` rejects a `triggers` key with an error that names onTrigger on
+mail. A deployed bundle carries its own copy of this package, so a bundle
+built with an earlier version can still give a step the key. The
+live-to-inert projector refuses such a step with the same advice, and the
+Hub probe and the workflow child both run it. A new deploy of such a
+definition fails at the probe. An existing deployment whose definition set
+`triggers` fails when its workflow child starts. Rewrite the deployment and
+redeploy it. Its conversation can move with the step-state export and
+import, from `reply` to `section.reply`.
+
+`runStep` refuses to resume a step that a run log shows parked on an input
+channel, and the error says to redeploy. A deployed run never reaches this
+check, because the projector refuses its definition first. The check
+protects runs in memory, such as `runLocal`, that start from such a log.
+
 ## Crash and suspension behavior of a `loop` body
 
 Two facts govern what a `loop` body can and cannot survive.
@@ -226,10 +270,10 @@ ceiling exactly like any other child.
 
 A `childWorkflow` child carries no address of its own. The spawning step
 drives the child across its parks and relays each one onto the parent: an
-approval, carrying the body's snapshot, an author `awaitSignal`, and the
-input park a trigger budget takes between turns. A gate inside a loop in
-the child climbs the same way, one layer at a time, until it reaches the
-deployment's addressable run. The hub approval is registered on that run.
+approval, carrying the body's snapshot, and an author `awaitSignal`. A gate
+inside a loop in the child climbs the same way, one layer at a time, until
+it reaches the deployment's addressable run. The hub approval is registered
+on that run.
 The spawn step awaits one signal at a time. A second park that is already
 live in the child stays queued until the decision for the first is relayed
 down. A queued park whose gate has already moved on is not given a signal

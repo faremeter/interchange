@@ -398,7 +398,6 @@ async function boot(opts: { prefix: string }): Promise<
     subprocessSpawner: spawner,
     binaryPath: "/fake/bin/workflow-child",
     substrateEnv: { DATA_DIR: baseDir },
-    dynamicSpawnEnv: () => ({}),
     workflowRunRepoId,
     workflowRunRef: "refs/heads/main",
     anchorRunId: "run_deployment-x",

@@ -2,7 +2,7 @@
 //
 // The proof that a deployed onTrigger section's body runs a REAL agent step.
 // An onTrigger body is a child run spawned per section event, run through the
-// cold, tool-less, body-only invoker. This drives that path end-to-end
+// tool-less, body-only invoker. This drives that path end-to-end
 // on the real deploy stack: the workflow is deployed BY SOURCE-REF (bundle a
 // source entry module into a hub asset, probe it, approve+freeze it against a
 // real DB, deploy the source-ref frame) with a section subscribed to the

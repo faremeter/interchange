@@ -1,7 +1,11 @@
-import { describe, test, expect } from "bun:test";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  test,
+  expect,
+} from "bun:test";
 import { type } from "arktype";
 
 import { ApprovalDecision } from "@intx/types";
@@ -15,15 +19,10 @@ import {
 } from "@intx/agent";
 import { noopAuditStore } from "@intx/agent/testing";
 import { createDefaultDirectorRegistry } from "@intx/agent";
-import { generateKeyPair } from "@intx/crypto";
-import { createConnectorRouter, driveConnectorReplies } from "@intx/harness";
 import {
-  createRepoStore,
-  workflowRunKindHandler,
-  WORKFLOW_RUN_GITIGNORE_PATH,
-  type RepoId,
-  type WorkflowRunWorkflowProcessPrincipal,
-} from "@intx/hub-sessions";
+  createConnectorRouter,
+  NoActiveConnectorThreadError,
+} from "@intx/harness";
 import { createInboundTurn } from "@intx/inference";
 import {
   StepOutcomeCommitError,
@@ -45,16 +44,17 @@ import type {
   PerCallInferenceOptions,
 } from "@intx/types/runtime";
 
-import { createChangeNotifier } from "@intx/workflow-host/testing";
-
-import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
-import { createDurableConversationRegistry } from "../conversation-state";
-import { createWarmConnectorHooks } from "../child/warm-connector-hooks";
 import {
-  createWarmAgentCache,
-  type WarmReplyDrive,
-  type WarmReplySettlement,
-} from "../child/warm-agent-cache";
+  createChangeNotifier,
+  createLogCapture,
+} from "@intx/workflow-host/testing";
+
+import type { StepConversation } from "./step-conversation";
+import {
+  createWorkflowStepInvoker,
+  type StepBuild,
+  type StepEnvBase,
+} from "./step-invoker";
 
 const STUB_SOURCE: InferenceSource = {
   id: "anthropic:stub",
@@ -78,6 +78,32 @@ function stubBlobReader(): BlobReader {
   return {} as BlobReader;
 }
 
+/**
+ * A step conversation whose turn and settle members do nothing unless
+ * a test overrides them. Its turns answer no mail, and its reply has no
+ * recipient, so a reply turn sends nothing unless a test overrides
+ * `turnAnswersMail` and `composeReply`.
+ */
+function stubStepConversation(
+  overrides: Partial<StepConversation>,
+): StepConversation {
+  return {
+    beginTurn: async () => undefined,
+    seedInbound: async () => undefined,
+    parkTurn: async () => undefined,
+    turnAnswersMail: () => false,
+    composeReply: () => null,
+    onReplySent: async () => {
+      throw new Error("stub onReplySent() not used");
+    },
+    send: async () => {
+      throw new Error("stub send() not used");
+    },
+    settle: async () => undefined,
+    ...overrides,
+  };
+}
+
 function stubBuildEnv(): StepEnvBase {
   return {
     sources: [STUB_SOURCE],
@@ -87,6 +113,11 @@ function stubBuildEnv(): StepEnvBase {
     audit: noopAuditStore(),
     directors: createDefaultDirectorRegistry(),
   };
+}
+
+/** A step build with a stub env and no durable conversation. */
+function stubStepBuild(): StepBuild {
+  return { env: stubBuildEnv(), conversation: undefined };
 }
 
 function stubDef(): AgentDefinition<BaseEnv> {
@@ -277,6 +308,7 @@ function buildRequest(opts: {
   signal?: AbortSignal;
   input?: unknown;
   inference?: PerCallInferenceOptions;
+  replyByMail?: boolean;
 }): StepInvokeRequest {
   const ctrl = new AbortController();
   const authzContext: AuthorizeContext = {
@@ -288,79 +320,12 @@ function buildRequest(opts: {
     agent: stubDef(),
     input: opts.input,
     ...(opts.inference !== undefined ? { inference: opts.inference } : {}),
+    replyByMail: opts.replyByMail ?? false,
     authzContext,
+    place: { stepPath: ["step-1"] },
     signal: opts.signal ?? ctrl.signal,
   };
 }
-
-describe("workflow-host StepInvoker adapter - warm source rotation", () => {
-  test("a rotation during the first warm build reaches the built agent", async () => {
-    // Finding: a sources rotation that lands during the (async) first warm
-    // build hits the still-empty cache as a no-op applySources, while the
-    // in-flight build already captured the prior sources. After the built
-    // agent is stored, the adapter re-applies the live table so the rotation
-    // is not lost for the warm agent's life.
-    const stub = buildStreamingStubAgent([]);
-    const setSourcesCalls: {
-      sources: InferenceSource[];
-      defaultSource: string;
-    }[] = [];
-    stub.agent.setSources = (sources, defaultSource) => {
-      setSourcesCalls.push({ sources, defaultSource });
-    };
-    const workflowAuthorize: WorkflowAuthorizeFn = async () => ({
-      effect: "allow",
-      matchingGrants: [],
-      resolvedBy: null,
-    });
-    const warmCache = createWarmAgentCache();
-    const rotated: InferenceSource = { ...STUB_SOURCE, id: "rotated" };
-    const sourcesRef = {
-      current: { "step-1": [STUB_SOURCE] } as Record<string, InferenceSource[]>,
-    };
-
-    let releaseBuild!: () => void;
-    const buildGate = new Promise<void>((resolve) => {
-      releaseBuild = resolve;
-    });
-    // The factory reports its own entry, so the rotation below lands inside
-    // the build window without the test guessing when that window opens.
-    let announceBuildStarted!: () => void;
-    const buildStarted = new Promise<void>((resolve) => {
-      announceBuildStarted = resolve;
-    });
-
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize,
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => {
-        announceBuildStarted();
-        await buildGate;
-        return stub.agent;
-      },
-      warmCache,
-      sourcesRef,
-    });
-
-    const invokePromise = invoker(buildRequest({ input: { goal: "ping" } }));
-    await buildStarted;
-    // A rotation lands DURING the build: the run-loop updates the ref and
-    // calls applySources -- a no-op here because the cache is still empty.
-    sourcesRef.current = { "step-1": [rotated] };
-    warmCache.applySources([rotated], "rotated");
-    expect(setSourcesCalls).toHaveLength(0);
-
-    releaseBuild();
-    await invokePromise;
-
-    // The re-apply after store applied the ROTATED table to the built agent.
-    expect(setSourcesCalls).toEqual([
-      { sources: [rotated], defaultSource: "rotated" },
-    ]);
-
-    await warmCache.evictAll("test cleanup");
-  });
-});
 
 describe("workflow-host StepInvoker adapter - happy path", () => {
   test("delivers synthesized message, captures reply, returns output shape", async () => {
@@ -377,7 +342,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
 
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -425,7 +390,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
     const inference = { maxTokens: 2048, effort: "medium" as const };
@@ -457,7 +422,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -507,7 +472,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -524,7 +489,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
 
   test("surfaces the send error, not the teardown close error, when both fail", async () => {
     // The wrapped agent close now rejects when a plugin/LSP disposer fails.
-    // In the cold path that close runs in the adapter's teardown; a close
+    // That close runs in the adapter's teardown; a close
     // failure must not mask a step error already unwinding from the send.
     let closeCalls = 0;
     const agent: Agent = {
@@ -564,7 +529,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
 
@@ -583,7 +548,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -612,7 +577,7 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
     const req = buildRequest({ input: () => "function" });
@@ -635,7 +600,7 @@ describe("workflow-host StepInvoker adapter - abort handling", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -659,7 +624,7 @@ describe("workflow-host StepInvoker adapter - abort handling", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => {
         factoryCalls += 1;
         return buildStubAgent().agent;
@@ -681,7 +646,7 @@ describe("workflow-host StepInvoker adapter - abort handling", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -702,7 +667,7 @@ describe("workflow-host StepInvoker adapter - output shape", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -738,7 +703,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
       onEvent: () => {
         calls += 1;
@@ -761,7 +726,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
       onEvent: (event) => seen.push(event.type),
     });
@@ -787,7 +752,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => stub.agent,
     });
 
@@ -809,7 +774,7 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
   });
 });
 
-describe("workflow-host StepInvoker adapter - cold settle hook", () => {
+describe("workflow-host StepInvoker adapter - settle hook", () => {
   const replyTurn = {
     role: "assistant" as const,
     content: [{ type: "text" as const, text: "ok" }],
@@ -822,22 +787,29 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     resolvedBy: null,
   });
 
-  test("settles with the env buildEnv produced, after the agent closes, before the result returns", async () => {
+  // A step build whose conversation's `settle` runs `settle`.
+  function settlingBuild(settle: () => Promise<void>): StepBuild {
+    return {
+      env: stubBuildEnv(),
+      conversation: stubStepConversation({ settle }),
+    };
+  }
+
+  test("settles the conversation buildEnv returned, after the agent closes, before the result returns", async () => {
     const stub = buildStubAgent();
-    const built = stubBuildEnv();
-    const settledWith: StepEnvBase[] = [];
+    let settled = 0;
     const settleEntered = Promise.withResolvers<undefined>();
     const settleHeld = Promise.withResolvers<undefined>();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => built,
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          stub.events.push("settled");
+          settled += 1;
+          settleEntered.resolve(undefined);
+          await settleHeld.promise;
+        }),
       agentFactory: async () => stub.agent,
-      onColdStepSettled: async (env) => {
-        stub.events.push("settled");
-        settledWith.push(env);
-        settleEntered.resolve(undefined);
-        await settleHeld.promise;
-      },
     });
 
     let returned = false;
@@ -858,28 +830,59 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     await pending;
 
     expect(returned).toBe(true);
-    expect(settledWith).toEqual([built]);
-    expect(settledWith[0]).toBe(built);
+    expect(settled).toBe(1);
     expect(stub.events.slice(-2)).toEqual(["close", "settled"]);
   });
 
-  test("settles a step whose send rejected and still surfaces the send error", async () => {
+  test("a step whose send rejected commits nothing and surfaces the send error", async () => {
     const stub = buildStubAgent();
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          settled += 1;
+        }),
       agentFactory: async () => stub.agent,
-      onColdStepSettled: async () => {
-        settled += 1;
-        throw new Error("settle boom");
-      },
     });
 
     const pending = invoker(buildRequest({ input: "turn" }));
     await Promise.resolve();
     stub.rejectSend(new Error("send boom"));
     await expect(pending).rejects.toThrow(/send boom/);
+    expect(stub.events).toContain("close");
+    expect(settled).toBe(0);
+  });
+
+  test("a suspended turn commits its park", async () => {
+    const stub = buildStubAgent();
+    let settled = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          settled += 1;
+        }),
+      agentFactory: async () => stub.agent,
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.resolveSend({
+      type: "suspended",
+      turnId: "turn-test",
+      correlationId: "corr-1",
+      approvalSnapshot: {
+        name: "tool_a",
+        description: "needs approval",
+        inputSchema: { type: "object" },
+        arguments: {},
+      },
+    });
+    const result = await pending;
+    if (!("suspend" in result)) {
+      throw new Error("expected a suspend-shaped step result");
+    }
     expect(settled).toBe(1);
   });
 
@@ -887,11 +890,11 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     const stub = buildStubAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          throw new Error("settle boom");
+        }),
       agentFactory: async () => stub.agent,
-      onColdStepSettled: async () => {
-        throw new Error("settle boom");
-      },
     });
 
     const pending = invoker(buildRequest({ input: "turn" }));
@@ -930,11 +933,11 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          settled += 1;
+        }),
       agentFactory: async () => closeFails(stub),
-      onColdStepSettled: async () => {
-        settled += 1;
-      },
     });
 
     const pending = invoker(buildRequest({ input: "turn" }));
@@ -958,11 +961,11 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     );
   });
 
-  test("a close failure after a clean turn fails the step without a retry when no settle hook is wired", async () => {
+  test("a close failure after a clean turn fails the step without a retry when the step has no conversation", async () => {
     const stub = buildStubAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => closeFails(stub),
     });
 
@@ -978,16 +981,16 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     await expect(pending).rejects.toBeInstanceOf(StepOutcomeCommitError);
   });
 
-  test("a close failure while a send error unwinds still settles and surfaces the send error", async () => {
+  test("a close failure while a send error unwinds commits nothing and surfaces the send error", async () => {
     const stub = buildStubAgent();
     let settled = 0;
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () =>
+        settlingBuild(async () => {
+          settled += 1;
+        }),
       agentFactory: async () => closeFails(stub),
-      onColdStepSettled: async () => {
-        settled += 1;
-      },
     });
 
     const pending = invoker(buildRequest({ input: "turn" }));
@@ -995,429 +998,15 @@ describe("workflow-host StepInvoker adapter - cold settle hook", () => {
     stub.rejectSend(new Error("send boom"));
 
     await expect(pending).rejects.toThrow(/send boom/);
-    expect(settled).toBe(1);
-  });
-
-  test("the warm path never calls the cold settle hook", async () => {
-    const warmCache = createWarmAgentCache();
-    const stub = buildWarmStubAgent();
-    let settled = 0;
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => stub.agent,
-      warmCache,
-      onColdStepSettled: async () => {
-        settled += 1;
-      },
-    });
-
-    await invoker(buildRequest({ input: "first message" }));
-    await invoker(buildRequest({ input: "second message" }));
     expect(settled).toBe(0);
-    await warmCache.evictAll("test teardown");
   });
 });
 
-interface WarmStubLifecycle {
-  /** LSP-subprocess analogue: spawned on build, disposed on close. */
-  lspSpawnCount: number;
-  lspAlive: boolean;
-  closeCount: number;
-}
-
-interface WarmStubControl {
-  readonly agent: Agent;
-  readonly lifecycle: WarmStubLifecycle;
-  /** Conversation turns the warm agent retains across sends (continuity). */
-  readonly conversation: string[];
-}
-
 /**
- * Construct a warm-agent stub that models the lifecycle warm-keep
- * guards: an LSP-subprocess analogue spawned once at construction and
- * disposed on `close()`, an in-memory conversation that retains every
- * user turn across sends (so a later reply can reflect an earlier
- * message), and a `stream()` that ends only at `close()`. The reply
- * echoes the running conversation so a test proves continuity:
- * `reply(N) = "reply<N>:" + every prior user turn`.
+ * An agent stub whose `send` returns the given `SendResult` and whose
+ * `stream()` stays open until `close()`.
  */
-function buildWarmStubAgent(): WarmStubControl {
-  const lifecycle: WarmStubLifecycle = {
-    lspSpawnCount: 1,
-    lspAlive: true,
-    closeCount: 0,
-  };
-  const conversation: string[] = [];
-  let endStream: () => void = () => {
-    /* assigned below */
-  };
-  const streamEnded = new Promise<void>((resolve) => {
-    endStream = resolve;
-  });
-  const agent: Agent = {
-    async send(content): Promise<SendResult> {
-      if (!lifecycle.lspAlive) {
-        throw new Error(
-          "warm stub: send after the LSP subprocess was disposed",
-        );
-      }
-      const text = typeof content === "string" ? content : "message";
-      conversation.push(text);
-      const reply = `reply${String(conversation.length)}:${conversation.join("|")}`;
-      return {
-        type: "reply",
-        turnId: "turn-test",
-        reply,
-        turn: {
-          role: "assistant",
-          content: [{ type: "text", text: reply }],
-          model: STUB_SOURCE.model,
-          timestamp: 0,
-        },
-      };
-    },
-    async *stream() {
-      yield stubEvent("inference.start");
-      await streamEnded;
-    },
-    deliver(_message: InboundMessage) {
-      throw new Error("stub deliver() not used");
-    },
-    async close() {
-      lifecycle.closeCount += 1;
-      lifecycle.lspAlive = false;
-      endStream();
-    },
-    setSource(_source: InferenceSource) {
-      throw new Error("stub setSource() not used");
-    },
-    setSources(_sources: InferenceSource[], _defaultSource: string) {
-      throw new Error("stub setSources() not used");
-    },
-    async history() {
-      return [];
-    },
-    async checkpoints() {
-      return [];
-    },
-    async readAt() {
-      return [];
-    },
-    blobReader: stubBlobReader(),
-  };
-  return { agent, lifecycle, conversation };
-}
-
-describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
-  test("builds the agent once across two messages and keeps the LSP alive between them", async () => {
-    const warmCache = createWarmAgentCache();
-    const stub = buildWarmStubAgent();
-    let factoryCalls = 0;
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => {
-        factoryCalls += 1;
-        return stub.agent;
-      },
-      warmCache,
-    });
-
-    const first = await invoker(buildRequest({ input: "first message" }));
-    // The LSP is alive between messages (no teardown after the first
-    // send) and the agent was built exactly once so far.
-    expect(factoryCalls).toBe(1);
-    expect(stub.lifecycle.lspAlive).toBe(true);
-    expect(stub.lifecycle.closeCount).toBe(0);
-
-    const second = await invoker(buildRequest({ input: "second message" }));
-    // Still exactly one build -- the warm agent was reused, not rebuilt
-    // -- and the LSP subprocess was spawned once and never torn down
-    // between messages.
-    expect(factoryCalls).toBe(1);
-    expect(stub.lifecycle.lspSpawnCount).toBe(1);
-    expect(stub.lifecycle.lspAlive).toBe(true);
-    expect(stub.lifecycle.closeCount).toBe(0);
-
-    // Conversation continuity: the warm agent retained the first message
-    // in memory, so the second reply reflects both turns.
-    const firstReply = readReply(expectOutput(first));
-    const secondReply = readReply(expectOutput(second));
-    expect(firstReply).toBe("reply1:first message");
-    expect(secondReply).toBe("reply2:first message|second message");
-
-    // Eviction runs the wrapped close exactly once, killing the LSP.
-    await warmCache.evictAll("test teardown");
-    expect(stub.lifecycle.lspAlive).toBe(false);
-    expect(stub.lifecycle.closeCount).toBe(1);
-  });
-
-  test("a mid-turn abort cancels only the turn and leaves the warm agent usable", async () => {
-    const warmCache = createWarmAgentCache();
-    // An agent whose first send blocks until the abort signal fires, so
-    // the abort races a live turn. The second send (after the abort)
-    // must succeed against the still-warm agent.
-    const lifecycle = { lspAlive: true, closeCount: 0 };
-    const conversation: string[] = [];
-    let endStream: () => void = () => undefined;
-    const streamEnded = new Promise<void>((resolve) => {
-      endStream = resolve;
-    });
-    const agent: Agent = {
-      async send(content, opts): Promise<SendResult> {
-        const text = typeof content === "string" ? content : "message";
-        if (opts?.signal !== undefined && text === "stalls") {
-          // Model the warm agent honoring the per-send abort signal:
-          // reject this turn when the signal fires, without closing.
-          return new Promise<SendResult>((_resolve, reject) => {
-            opts.signal?.addEventListener(
-              "abort",
-              () => reject(new Error("send aborted")),
-              { once: true },
-            );
-          });
-        }
-        conversation.push(text);
-        return {
-          type: "reply",
-          turnId: "turn-test",
-          reply: `ok:${conversation.join("|")}`,
-          turn: {
-            role: "assistant",
-            content: [{ type: "text", text: "ok" }],
-            model: STUB_SOURCE.model,
-            timestamp: 0,
-          },
-        };
-      },
-      async *stream() {
-        yield stubEvent("inference.start");
-        await streamEnded;
-      },
-      deliver: () => undefined,
-      async close() {
-        lifecycle.closeCount += 1;
-        lifecycle.lspAlive = false;
-        endStream();
-      },
-      setSource: () => undefined,
-      setSources: () => undefined,
-      async history() {
-        return [];
-      },
-      async checkpoints() {
-        return [];
-      },
-      async readAt() {
-        return [];
-      },
-      blobReader: stubBlobReader(),
-    };
-    let factoryCalls = 0;
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => {
-        factoryCalls += 1;
-        return agent;
-      },
-      warmCache,
-    });
-
-    const ctrl = new AbortController();
-    const aborted = invoker(
-      buildRequest({ signal: ctrl.signal, input: "stalls" }),
-    );
-    await Promise.resolve();
-    ctrl.abort();
-    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
-
-    // The warm agent survived the turn abort: NOT closed, LSP still
-    // alive, and a subsequent message succeeds against the same build.
-    expect(lifecycle.lspAlive).toBe(true);
-    expect(lifecycle.closeCount).toBe(0);
-
-    const after = await invoker(buildRequest({ input: "next message" }));
-    expect(factoryCalls).toBe(1);
-    expect(readReply(expectOutput(after))).toBe("ok:next message");
-
-    // Teardown closes the warm agent once.
-    await warmCache.evictAll("test teardown");
-    expect(lifecycle.lspAlive).toBe(false);
-    expect(lifecycle.closeCount).toBe(1);
-  });
-
-  test("routes each message's events to that message's onEvent sink", async () => {
-    const warmCache = createWarmAgentCache();
-    const stub = buildWarmStubAgent();
-    const firstSink: string[] = [];
-    const secondSink: string[] = [];
-    const makeInvoker = (onEvent: (event: InferenceEvent) => void) =>
-      createWorkflowStepInvoker({
-        workflowAuthorize: async () => ({
-          effect: "allow",
-          matchingGrants: [],
-          resolvedBy: null,
-        }),
-        buildEnv: async () => stubBuildEnv(),
-        agentFactory: async () => stub.agent,
-        onEvent,
-        warmCache,
-      });
-
-    await makeInvoker((event) => firstSink.push(event.type))(
-      buildRequest({ input: "one" }),
-    );
-    await makeInvoker((event) => secondSink.push(event.type))(
-      buildRequest({ input: "two" }),
-    );
-
-    // The agent's single lifetime stream yields one `inference.start`,
-    // delivered to whichever message's sink was active when it fired.
-    // Each message's events reach its own sink; neither leaks to the
-    // other after its send settles.
-    expect([...firstSink, ...secondSink]).toContain("inference.start");
-    await warmCache.evictAll("test teardown");
-  });
-});
-
-interface ReplyDriveHarness {
-  driveReplies: (
-    key: string,
-    stream: ReturnType<Agent["stream"]>,
-  ) => WarmReplyDrive;
-  readonly keys: string[];
-  readonly observed: string[];
-  /** The `replySeq()` value the invoker snapshotted before each send. */
-  readonly seqSnapshots: number[];
-  driveCalls(): number;
-  drainSettled(): boolean;
-  /** Advance the settled count by one, releasing a waiter on this turn's reply. */
-  settle(outcome: WarmReplySettlement): void;
-  /**
-   * Resolve once the invoker has asked to wait on a reply at least `count`
-   * times. `waitForReplyAfter` is the last thing the invoker does before it
-   * blocks, so this is the signal that the turn has reached the barrier --
-   * everything the barrier is meant to gate has already happened.
-   */
-  awaitBarrier(count: number): Promise<void>;
-}
-
-/**
- * A controllable stand-in for the connector reply drain's per-turn barrier.
- * The `driveReplies` callback consumes the agent's lifetime stream in the
- * background (so `done` reflects stream end, foldable into eviction, and
- * `observed` records event types). Settlement is either manual (`settle`) or,
- * when `autoSettleOnReply` is set, recorded once per observed `connector.reply`
- * -- mirroring the real drain advancing its sequence after a send acks.
- */
-function buildReplyDriveHarness(opts?: {
-  autoSettleOnReply?: WarmReplySettlement;
-}): ReplyDriveHarness {
-  let settledCount = 0;
-  const settlements: WarmReplySettlement[] = [];
-  type Waiter = { target: number; resolve: (s: WarmReplySettlement) => void };
-  let waiters: Waiter[] = [];
-  const keys: string[] = [];
-  const observed: string[] = [];
-  const seqSnapshots: number[] = [];
-  let calls = 0;
-  let drainDone = false;
-  let barrierCalls = 0;
-  const barrierReached = createChangeNotifier();
-
-  function settlementAt(index: number): WarmReplySettlement {
-    const settlement = settlements[index];
-    if (settlement === undefined) {
-      throw new Error(`fake reply drive: settlement ${String(index)} missing`);
-    }
-    return settlement;
-  }
-
-  function settle(outcome: WarmReplySettlement): void {
-    settlements.push(outcome);
-    settledCount += 1;
-    const stillWaiting: Waiter[] = [];
-    for (const waiter of waiters) {
-      if (settledCount > waiter.target) {
-        waiter.resolve(settlementAt(waiter.target));
-      } else {
-        stillWaiting.push(waiter);
-      }
-    }
-    waiters = stillWaiting;
-  }
-
-  const driveReplies = (
-    key: string,
-    stream: ReturnType<Agent["stream"]>,
-  ): WarmReplyDrive => {
-    calls += 1;
-    keys.push(key);
-    const done = (async () => {
-      for await (const event of stream) {
-        observed.push(event.type);
-        if (
-          opts?.autoSettleOnReply !== undefined &&
-          event.type === "connector.reply"
-        ) {
-          settle(opts.autoSettleOnReply);
-        }
-      }
-      // Extra async gap after the stream ends so a test can prove the invoker
-      // folded `done` into the warm entry the cache awaits: `evictAll` returns
-      // only after this settles. This delay is the double's own simulated
-      // work, not a bet on how fast the machine is: a loaded machine only
-      // makes the gap longer, which makes an `evictAll` that fails to await
-      // `done` more visible rather than less.
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      drainDone = true;
-    })();
-    return {
-      done,
-      replySeq() {
-        seqSnapshots.push(settledCount);
-        return settledCount;
-      },
-      waitForReplyAfter(n: number): Promise<WarmReplySettlement> {
-        barrierCalls += 1;
-        barrierReached.notify();
-        if (settledCount > n) return Promise.resolve(settlementAt(n));
-        return new Promise<WarmReplySettlement>((resolve) => {
-          waiters.push({ target: n, resolve });
-        });
-      },
-    };
-  };
-
-  return {
-    driveReplies,
-    keys,
-    observed,
-    seqSnapshots,
-    driveCalls: () => calls,
-    drainSettled: () => drainDone,
-    settle,
-    awaitBarrier: (count) => barrierReached.until(() => barrierCalls >= count),
-  };
-}
-
-/**
- * A warm-agent stub whose `send` returns the given `SendResult` and whose
- * `stream()` stays open until `close()`. The stream emits no `connector.reply`
- * by default, so the reply barrier stays pending until a test settles it
- * manually -- letting a test observe that the warm step blocks on the barrier.
- */
-function buildBarrierStubAgent(result: SendResult): {
+function buildResultStubAgent(result: SendResult): {
   agent: Agent;
   closeCount: () => number;
 } {
@@ -1475,106 +1064,57 @@ function replySendResult(reply: string): SendResult {
   };
 }
 
-describe("workflow-host StepInvoker adapter - warm run boundary", () => {
+describe("workflow-host StepInvoker adapter - connector turn", () => {
   const allow: WorkflowAuthorizeFn = async () => ({
     effect: "allow",
     matchingGrants: [],
     resolvedBy: null,
   });
 
-  test("a run-boundary failure after a clean turn fails the step without a retry", async () => {
-    const warmCache = createWarmAgentCache();
-    const stub = buildWarmStubAgent();
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => stub.agent,
-      warmCache,
-      onRunBoundary: async () => {
-        throw new Error("mirror boom");
-      },
-    });
-
-    const failure = await invoker(buildRequest({ input: "turn" })).then(
-      () => undefined,
-      (cause: unknown) => cause,
-    );
-    expect(failure).toBeInstanceOf(StepOutcomeCommitError);
-    expect(failure).toHaveProperty(
-      "message",
-      expect.stringMatching(/mirror boom/),
-    );
-    await warmCache.evictAll("test teardown");
-  });
-
-  test("a run-boundary failure while a send error unwinds surfaces the send error", async () => {
-    const warmCache = createWarmAgentCache();
-    const stub = buildWarmStubAgent();
-    let boundaries = 0;
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => ({
-        ...stub.agent,
-        async send(): Promise<SendResult> {
-          throw new Error("send boom");
-        },
-      }),
-      warmCache,
-      onRunBoundary: async () => {
-        boundaries += 1;
-        throw new Error("mirror boom");
-      },
-    });
-
-    await expect(invoker(buildRequest({ input: "turn" }))).rejects.toThrow(
-      /send boom/,
-    );
-    expect(boundaries).toBe(1);
-    await warmCache.evictAll("test teardown");
-  });
-
-  test("every warm turn begins a connector turn, including one that seeds no mail", async () => {
-    const warmCache = createWarmAgentCache();
-    const stub = buildWarmStubAgent();
+  test("every turn begins a connector turn, including one that seeds no mail", async () => {
     const begun: string[] = [];
     const seeded: string[] = [];
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => stub.agent,
-      warmCache,
-      beginTurn: async (key) => {
-        begun.push(key);
-      },
-      seedInbound: async (key) => {
-        seeded.push(key);
-      },
+      buildEnv: async (req) => ({
+        env: stubBuildEnv(),
+        conversation: stubStepConversation({
+          beginTurn: async () => {
+            begun.push(String(req.input));
+          },
+          seedInbound: async () => {
+            seeded.push(String(req.input));
+          },
+        }),
+      }),
+      agentFactory: async () =>
+        buildResultStubAgent(replySendResult("ok")).agent,
     });
 
     await invoker(buildRequest({ input: "first" }));
     await invoker(buildRequest({ input: "second" }));
 
-    expect(begun).toEqual(["step-1", "step-1"]);
+    expect(begun).toEqual(["first", "second"]);
     expect(seeded).toEqual([]);
-    await warmCache.evictAll("test teardown");
   });
 
   test("a mail turn begins its connector turn once, before the seed", async () => {
-    const warmCache = createWarmAgentCache();
-    const stub = buildWarmStubAgent();
     const calls: string[] = [];
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => stub.agent,
-      warmCache,
-      beginTurn: async () => {
-        calls.push("begin");
-      },
-      seedInbound: async () => {
-        calls.push("seed");
-      },
+      buildEnv: async () => ({
+        env: stubBuildEnv(),
+        conversation: stubStepConversation({
+          beginTurn: async () => {
+            calls.push("begin");
+          },
+          seedInbound: async () => {
+            calls.push("seed");
+          },
+        }),
+      }),
+      agentFactory: async () =>
+        buildResultStubAgent(replySendResult("ok")).agent,
     });
 
     await invoker(
@@ -1587,7 +1127,6 @@ describe("workflow-host StepInvoker adapter - warm run boundary", () => {
     );
 
     expect(calls).toEqual(["begin", "seed"]);
-    await warmCache.evictAll("test teardown");
   });
 });
 
@@ -1619,142 +1158,246 @@ function inboundMail(opts: {
   };
 }
 
-type ScriptedTurn =
-  | { kind: "reply"; content: string; release?: Promise<void> }
-  | { kind: "suspend"; correlationId: string };
-
-/**
- * A warm agent that plays a script, one turn per `send`, against a real
- * connector router and reply drain. A reply turn pushes `connector.reply`
- * onto the lifetime stream before its send settles, as the real agent does.
- * Turns run one at a time, and a send whose signal aborts rejects at once
- * while its turn runs on, as the real agent's send queue does. A reply turn
- * with `release` emits its reply only once `release` resolves.
- */
-function buildScriptedAgent(script: ScriptedTurn[]): {
-  agent: Agent;
-  sendCount: () => number;
-  sendsChanged: ReturnType<typeof createChangeNotifier>;
-} {
-  // Every `stream()` call is its own consumer, as on the real agent: the warm
-  // path reads the stream twice, once to forward events and once to drain
-  // replies.
-  type Consumer = { queue: InferenceEvent[]; wake: (() => void) | null };
-  const consumers = new Set<Consumer>();
-  let closed = false;
-  let seq = 0;
-  let sends = 0;
-  const sendsChanged = createChangeNotifier();
-  let cycleTail: Promise<unknown> = Promise.resolve();
-
-  function wakeConsumer(consumer: Consumer): void {
-    const resume = consumer.wake;
-    consumer.wake = null;
-    resume?.();
-  }
-
-  function push(event: InferenceEvent): void {
-    for (const consumer of consumers) {
-      consumer.queue.push(event);
-      wakeConsumer(consumer);
-    }
-  }
-
-  async function* consume(consumer: Consumer): AsyncGenerator<InferenceEvent> {
-    for (;;) {
-      const next = consumer.queue.shift();
-      if (next !== undefined) {
-        yield next;
-        continue;
-      }
-      if (closed) return;
-      await new Promise<void>((resolve) => {
-        consumer.wake = resolve;
-      });
-    }
-  }
-
-  async function runTurn(turn: ScriptedTurn): Promise<SendResult> {
-    if (turn.kind === "suspend") {
-      return {
-        type: "suspended",
-        turnId: "turn-test",
-        correlationId: turn.correlationId,
-        approvalSnapshot: {
-          name: "tool_a",
-          description: "needs approval",
-          inputSchema: { type: "object" },
-          arguments: {},
-        },
-      };
-    }
-    if (turn.release !== undefined) await turn.release;
-    seq += 1;
-    push({ type: "connector.reply", seq, data: { content: turn.content } });
-    return replySendResult(turn.content);
-  }
-
-  const agent: Agent = {
-    async send(_content, opts): Promise<SendResult> {
-      sends += 1;
-      sendsChanged.notify();
-      const turn = script.shift();
-      if (turn === undefined) {
-        throw new Error("scripted agent: the script has no turn left");
-      }
-      const cycle = cycleTail.then(() => runTurn(turn));
-      cycleTail = cycle.catch(() => undefined);
-      const signal = opts?.signal;
-      if (signal === undefined) return cycle;
-      return new Promise<SendResult>((resolve, reject) => {
-        signal.addEventListener(
-          "abort",
-          () => {
-            reject(new DOMException("aborted", "AbortError"));
-          },
-          { once: true },
-        );
-        cycle.then(resolve, reject);
-      });
-    },
-    stream() {
-      const consumer: Consumer = { queue: [], wake: null };
-      consumers.add(consumer);
-      return consume(consumer);
-    },
-    deliver(_message: InboundMessage) {
-      throw new Error("stub deliver() not used");
-    },
-    async close() {
-      closed = true;
-      for (const consumer of consumers) wakeConsumer(consumer);
-    },
-    setSource(_source: InferenceSource) {
-      throw new Error("stub setSource() not used");
-    },
-    setSources(_sources: InferenceSource[], _defaultSource: string) {
-      throw new Error("stub setSources() not used");
-    },
-    async history() {
-      return [];
-    },
-    async checkpoints() {
-      return [];
-    },
-    async readAt() {
-      return [];
-    },
-    blobReader: stubBlobReader(),
-  };
-  return { agent, sendCount: () => sends, sendsChanged };
-}
-
-describe("workflow-host StepInvoker adapter - warm reply target", () => {
+describe("workflow-host StepInvoker adapter - reply send", () => {
   const allow: WorkflowAuthorizeFn = async () => ({
     effect: "allow",
     matchingGrants: [],
     resolvedBy: null,
   });
+  const PARTS = {
+    to: "alice@example.com",
+    cc: [],
+    inReplyTo: "<a@example.com>",
+    references: ["<a@example.com>"],
+  };
+  const RECEIPT = {
+    messageId: "<sent-1@agent.example.com>",
+    status: "delivered" as const,
+  };
+
+  function replyInvoker(agent: Agent, conversation: StepConversation) {
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => ({ env: stubBuildEnv(), conversation }),
+      agentFactory: async () => agent,
+    });
+    return { invoker };
+  }
+
+  async function rejectionOf(pending: Promise<unknown>): Promise<unknown> {
+    return pending.then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+  }
+
+  test("a reply turn does not return until the reply send resolves", async () => {
+    const { agent } = buildResultStubAgent(replySendResult("the reply"));
+    const sent: OutboundMessage[] = [];
+    const recorded: (readonly string[])[] = [];
+    const sendCalled = createChangeNotifier();
+    let ackSend: () => void = () => undefined;
+    const acked = new Promise<void>((resolve) => {
+      ackSend = resolve;
+    });
+    const w = replyInvoker(
+      agent,
+      stubStepConversation({
+        turnAnswersMail: () => true,
+        composeReply: () => PARTS,
+        send: async (message) => {
+          sent.push(message);
+          sendCalled.notify();
+          await acked;
+          return RECEIPT;
+        },
+        onReplySent: async (receipt, references) => {
+          expect(receipt).toEqual(RECEIPT);
+          recorded.push(references);
+        },
+      }),
+    );
+
+    let settled = false;
+    const pending = w
+      .invoker(buildRequest({ input: "hello", replyByMail: true }))
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await sendCalled.until(() => sent.length >= 1);
+    // The step has NOT returned: the reply send has not acked.
+    expect(settled).toBe(false);
+    expect(recorded).toEqual([]);
+
+    ackSend();
+    const result = await pending;
+    expect(readReply(expectOutput(result))).toBe("the reply");
+    expect(sent.map((message) => message.content)).toEqual(["the reply"]);
+    expect(recorded).toEqual([["<a@example.com>"]]);
+  });
+
+  test("a suspended turn does not compose a reply", async () => {
+    const { agent } = buildResultStubAgent({
+      type: "suspended",
+      turnId: "turn-test",
+      correlationId: "corr-1",
+      approvalSnapshot: {
+        name: "tool_a",
+        description: "needs approval",
+        inputSchema: { type: "object" },
+        arguments: {},
+      },
+    });
+    let composed = 0;
+    const w = replyInvoker(
+      agent,
+      stubStepConversation({
+        turnAnswersMail: () => true,
+        composeReply: () => {
+          composed += 1;
+          return PARTS;
+        },
+      }),
+    );
+
+    const result = await w.invoker(
+      buildRequest({ input: "needs approval", replyByMail: true }),
+    );
+    if (!("suspend" in result)) {
+      throw new Error("expected a suspend-shaped step result");
+    }
+    expect(result.suspend.correlationId).toBe("corr-1");
+    expect(composed).toBe(0);
+  });
+
+  test("a reply-send failure fails the turn rather than claiming a reply", async () => {
+    const { agent } = buildResultStubAgent(replySendResult("doomed reply"));
+    const sendCause = new Error("outbound bridge rejected the reply");
+    const w = replyInvoker(
+      agent,
+      stubStepConversation({
+        turnAnswersMail: () => true,
+        composeReply: () => PARTS,
+        send: async () => {
+          throw sendCause;
+        },
+      }),
+    );
+
+    // The step rejects rather than returning a step result that claims a reply
+    // which never went out. The run fails, and the supervisor consumes the
+    // inbound mail without a reply rather than replaying it.
+    const thrown = await rejectionOf(
+      w.invoker(buildRequest({ input: "hello", replyByMail: true })),
+    );
+    if (!(thrown instanceof Error)) {
+      throw new Error("expected the failed reply send to reject the step");
+    }
+    expect(thrown.message).toContain("auto-reply send failed");
+    expect(thrown.cause).toBe(sendCause);
+  });
+
+  test("a reply with no active connector thread names that, not a failed send", async () => {
+    // A turn in `thread` mode with no active thread makes `composeReply`
+    // throw `NoActiveConnectorThreadError`, and nothing is ever submitted.
+    // A message that names no reply address does not take this path: it
+    // routes as passthrough with no reply target, so `composeReply` returns
+    // null and the reply is dropped as ok. The turn still fails, but the
+    // operator must not be told the send failed -- there was no send to fail.
+    const { agent } = buildResultStubAgent(replySendResult("unaddressed"));
+    const composeCause = new NoActiveConnectorThreadError();
+    const w = replyInvoker(
+      agent,
+      stubStepConversation({
+        turnAnswersMail: () => true,
+        composeReply: () => {
+          throw composeCause;
+        },
+      }),
+    );
+
+    const thrown = await rejectionOf(
+      w.invoker(buildRequest({ input: "hello", replyByMail: true })),
+    );
+    if (!(thrown instanceof Error)) {
+      throw new Error("expected the unaddressable reply to reject the step");
+    }
+    expect(thrown.message).toContain("no active connector thread");
+    expect(thrown.message).not.toContain("send failed");
+    expect(thrown.cause).toBe(composeCause);
+  });
+
+  describe("a failed reply settlement", () => {
+    async function failedTurn(
+      overrides: Partial<StepConversation>,
+    ): Promise<unknown> {
+      const { agent } = buildResultStubAgent(replySendResult("the reply"));
+      const w = replyInvoker(
+        agent,
+        stubStepConversation({
+          turnAnswersMail: () => true,
+          composeReply: () => PARTS,
+          send: async () => RECEIPT,
+          onReplySent: async () => undefined,
+          ...overrides,
+        }),
+      );
+      const thrown = await rejectionOf(
+        w.invoker(buildRequest({ input: "hello", replyByMail: true })),
+      );
+      return thrown;
+    }
+
+    test("a send-phase failure fails the step with a retryable error", async () => {
+      const cause = new Error("outbound bridge rejected the reply");
+
+      const thrown = await failedTurn({
+        send: async () => {
+          throw cause;
+        },
+      });
+
+      if (!(thrown instanceof Error)) {
+        throw new Error("expected the failed reply send to reject the step");
+      }
+      expect(thrown).not.toBeInstanceOf(StepOutcomeCommitError);
+      expect(thrown.cause).toBe(cause);
+    });
+
+    test("a persist-phase failure fails the step as an uncommitted outcome", async () => {
+      const cause = new Error("connector metadata write failed");
+
+      const thrown = await failedTurn({
+        onReplySent: async () => {
+          throw cause;
+        },
+      });
+
+      if (!(thrown instanceof StepOutcomeCommitError)) {
+        throw new Error("expected a StepOutcomeCommitError");
+      }
+      expect(thrown.message).toContain("auto-reply was sent");
+      expect(thrown.message).toContain("connector metadata write failed");
+      const inner = thrown.cause;
+      if (!(inner instanceof Error)) {
+        throw new Error("expected the commit error to wrap an Error");
+      }
+      expect(inner.cause).toBe(cause);
+    });
+  });
+});
+
+describe("workflow-host StepInvoker adapter - reply", () => {
+  const allow: WorkflowAuthorizeFn = async () => ({
+    effect: "allow",
+    matchingGrants: [],
+    resolvedBy: null,
+  });
+  const logs = createLogCapture();
+  beforeAll(logs.install);
+  afterAll(logs.restore);
+  beforeEach(logs.reset);
 
   const ALICE = { from: "alice@example.com", messageId: "<a@example.com>" };
   const CAROL = {
@@ -1762,67 +1405,98 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     messageId: "<c@example.com>",
     subject: "side question",
   };
+  function suspended(correlationId: string): SendResult {
+    return {
+      type: "suspended",
+      turnId: "turn-test",
+      correlationId,
+      approvalSnapshot: {
+        name: "tool_a",
+        description: "needs approval",
+        inputSchema: { type: "object" },
+        arguments: {},
+      },
+    };
+  }
+  const SUSPENDED = suspended("c1");
 
   /**
-   * Wire a warm step invoker to a real connector router and reply drain.
-   * The hooks call the router the way the durable conversation store does.
+   * Wire a step invoker whose builds return a conversation over one
+   * real connector router, as the attempt-scoped durable store does. Each
+   * invocation builds a new agent that settles its send with the next
+   * result. `events` records the reply send, each close, and each settle.
    */
-  function wire(script: ScriptedTurn[]) {
-    const warmCache = createWarmAgentCache();
-    const scripted = buildScriptedAgent(script);
+  function wire(
+    results: SendResult[],
+    overrides: Partial<StepConversation> = {},
+  ) {
     const router = createConnectorRouter({
       ownAddress: "run@deployment.example.com",
     });
     const sent: OutboundMessage[] = [];
-    const sentChanged = createChangeNotifier();
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: allow,
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => scripted.agent,
-      warmCache,
-      beginTurn: async (_key, turn) => {
+    const events: string[] = [];
+    const conversation: StepConversation = {
+      beginTurn: async (turn) => {
         router.beginTurn(turn);
       },
-      parkTurn: async (_key, correlationId) => {
+      parkTurn: async (correlationId) => {
         router.parkTurn(correlationId);
       },
-      seedInbound: async (_key, message) => {
+      seedInbound: async (message) => {
         router.commit(router.route(message));
       },
-      driveReplies: (_key, stream) =>
-        driveConnectorReplies({
-          stream,
-          composeReply: () => router.composeReply(),
-          send: async (message) => {
-            sent.push(message);
-            sentChanged.notify();
-            return {
-              messageId: `<sent-${String(sent.length)}@agent.example.com>`,
-              status: "delivered",
-            };
+      turnAnswersMail: () => router.turnAnswersMail(),
+      composeReply: () => router.composeReply(),
+      send: async (message) => {
+        sent.push(message);
+        events.push("sent");
+        return {
+          messageId: `<sent-${String(sent.length)}@agent.example.com>`,
+          status: "delivered",
+        };
+      },
+      onReplySent: async (receipt, references) => {
+        router.onReplySent(receipt, references);
+      },
+      settle: async () => {
+        events.push("settled");
+      },
+      ...overrides,
+    };
+    const pending = [...results];
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => ({ env: stubBuildEnv(), conversation }),
+      agentFactory: async () => {
+        const result = pending.shift();
+        if (result === undefined) throw new Error("no scripted send result");
+        const { agent } = buildResultStubAgent(result);
+        return {
+          ...agent,
+          async close() {
+            events.push("close");
+            await agent.close();
           },
-          onReplySent: (receipt, references) => {
-            router.onReplySent(receipt, references);
-          },
-        }),
+        };
+      },
     });
-    return { warmCache, scripted, router, sent, sentChanged, invoker };
+    return { router, sent, events, invoker };
   }
 
-  function mailRequest(mail: Mail, signal?: AbortSignal): StepInvokeRequest {
-    return buildRequest({
-      input: mail,
-      ...(signal !== undefined ? { signal } : {}),
-    });
+  function mailRequest(replyByMail: boolean): StepInvokeRequest {
+    return buildRequest({ input: inboundMail(ALICE), replyByMail });
+  }
+
+  function replyRequest(mail: Mail): StepInvokeRequest {
+    return buildRequest({ input: mail, replyByMail: true });
   }
 
   function resumeRequest(correlationId: string): StepInvokeRequest {
     return {
-      ...buildRequest({ input: "unused" }),
+      ...buildRequest({ input: "unused", replyByMail: true }),
       resume: {
         correlationId,
         decision: { outcome: "approved" },
-        kind: "approval",
       },
     };
   }
@@ -1835,15 +1509,109 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     return message;
   }
 
-  test("an approval resume replies to the sender of the passthrough turn that parked", async () => {
+  async function rejectionOf(pending: Promise<unknown>): Promise<unknown> {
+    return pending.then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+  }
+
+  test("a mail turn with replyByMail replies on the thread before the close and the settle", async () => {
+    const w = wire([replySendResult("to alice")]);
+
+    const result = await w.invoker(mailRequest(true));
+
+    expect(readReply(expectOutput(result))).toBe("to alice");
+    expect(w.sent.map((m) => [m.content, m.to, m.inReplyTo])).toEqual([
+      ["to alice", "alice@example.com", "<a@example.com>"],
+    ]);
+    expect(w.router.snapshot()?.lastMessageId).toBe(
+      "<sent-1@agent.example.com>",
+    );
+    expect(w.events).toEqual(["sent", "close", "settled"]);
+  });
+
+  test("a mail turn without replyByMail sends no mail", async () => {
+    const w = wire([replySendResult("only output")]);
+
+    await w.invoker(mailRequest(false));
+
+    expect(w.sent).toEqual([]);
+    expect(w.router.snapshot()?.lastMessageId).toBe("<a@example.com>");
+    expect(w.events).toEqual(["close", "settled"]);
+  });
+
+  test("the approval resume of a parked mail turn replies on the thread", async () => {
+    const w = wire([SUSPENDED, replySendResult("approved, alice")]);
+
+    const parked = await w.invoker(mailRequest(true));
+    if (!("suspend" in parked)) {
+      throw new Error("expected a suspend-shaped step result");
+    }
+    expect(w.sent).toEqual([]);
+    await w.invoker({
+      ...buildRequest({ input: "unused", replyByMail: true }),
+      resume: {
+        correlationId: "c1",
+        decision: { outcome: "approved" },
+      },
+    });
+
+    expect(w.sent.map((m) => [m.content, m.to, m.inReplyTo])).toEqual([
+      ["approved, alice", "alice@example.com", "<a@example.com>"],
+    ]);
+  });
+
+  test("with replyByMail, a turn that does not answer mail between two mail turns sends no mail", async () => {
     const w = wire([
-      { kind: "reply", content: "to alice" },
-      { kind: "suspend", correlationId: "c1" },
-      { kind: "reply", content: "to carol" },
+      replySendResult("to alice"),
+      replySendResult("only output"),
+      replySendResult("to alice again"),
     ]);
 
-    await w.invoker(mailRequest(inboundMail(ALICE)));
-    await w.invoker(mailRequest(inboundMail(CAROL)));
+    await w.invoker(replyRequest(inboundMail(ALICE)));
+    const plain = await w.invoker(
+      buildRequest({ input: "next", replyByMail: true }),
+    );
+
+    expect(readReply(expectOutput(plain))).toBe("only output");
+    expect(w.sent).toHaveLength(1);
+    expect(w.router.snapshot()?.lastMessageId).toBe(
+      "<sent-1@agent.example.com>",
+    );
+
+    await w.invoker(
+      replyRequest(
+        inboundMail({
+          from: "alice@example.com",
+          messageId: "<a2@example.com>",
+          inReplyTo: "<sent-1@agent.example.com>",
+          references: ["<a@example.com>", "<sent-1@agent.example.com>"],
+        }),
+      ),
+    );
+
+    expect(w.sent).toHaveLength(2);
+    const reply = sentAt(w.sent, 1);
+    expect(reply.content).toBe("to alice again");
+    expect(reply.to).toBe("alice@example.com");
+    expect(reply.inReplyTo).toBe("<a2@example.com>");
+    expect(reply.references).toEqual([
+      "<a@example.com>",
+      "<sent-1@agent.example.com>",
+      "<a2@example.com>",
+    ]);
+  });
+
+  test("an approval resume replies to the sender of the passthrough turn that parked", async () => {
+    const w = wire([
+      replySendResult("to alice"),
+      suspended("c1"),
+      replySendResult("to carol"),
+    ]);
+
+    await w.invoker(replyRequest(inboundMail(ALICE)));
+    await w.invoker(replyRequest(inboundMail(CAROL)));
     await w.invoker(resumeRequest("c1"));
 
     expect(w.sent).toHaveLength(2);
@@ -1851,20 +1619,19 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     expect(reply.content).toBe("to carol");
     expect(reply.to).toBe("carol@example.com");
     expect(reply.inReplyTo).toBe("<c@example.com>");
-    await w.warmCache.evictAll("test teardown");
   });
 
   test("a resumed turn that parks again keeps the target under the new gate", async () => {
     const w = wire([
-      { kind: "reply", content: "to alice" },
-      { kind: "suspend", correlationId: "c1" },
-      { kind: "suspend", correlationId: "c2" },
-      { kind: "reply", content: "to carol" },
-      { kind: "reply", content: "to the owner" },
+      replySendResult("to alice"),
+      suspended("c1"),
+      suspended("c2"),
+      replySendResult("to carol"),
+      replySendResult("to the owner"),
     ]);
 
-    await w.invoker(mailRequest(inboundMail(ALICE)));
-    await w.invoker(mailRequest(inboundMail(CAROL)));
+    await w.invoker(replyRequest(inboundMail(ALICE)));
+    await w.invoker(replyRequest(inboundMail(CAROL)));
     await w.invoker(resumeRequest("c1"));
     expect(w.router.parkedReplyTargets()).toEqual({
       c2: {
@@ -1882,371 +1649,123 @@ describe("workflow-host StepInvoker adapter - warm reply target", () => {
     expect(sentAt(w.sent, 1).to).toBe("carol@example.com");
     expect(sentAt(w.sent, 1).inReplyTo).toBe("<c@example.com>");
 
-    // A later turn that is neither mail nor a resume replies on the thread,
-    // and nothing stays parked.
-    await w.invoker(buildRequest({ input: "next" }));
+    // A later turn that is neither mail nor a resume sends no mail, and
+    // nothing stays parked.
+    await w.invoker(buildRequest({ input: "next", replyByMail: true }));
 
-    expect(sentAt(w.sent, 2).content).toBe("to the owner");
-    expect(sentAt(w.sent, 2).to).toBe("alice@example.com");
+    expect(w.sent).toHaveLength(2);
     expect(w.router.parkedReplyTargets()).toEqual({});
-    await w.warmCache.evictAll("test teardown");
   });
 
-  test("a thread turn between the park and the resume does not take the parked target", async () => {
-    const w = wire([
-      { kind: "reply", content: "to alice" },
-      { kind: "suspend", correlationId: "c1" },
-      { kind: "reply", content: "to alice again" },
-      { kind: "reply", content: "to carol" },
-    ]);
+  test("a later turn that answers no mail sends no mail", async () => {
+    const w = wire([replySendResult("to alice"), replySendResult("no mail")]);
 
-    await w.invoker(mailRequest(inboundMail(ALICE)));
-    await w.invoker(mailRequest(inboundMail(CAROL)));
-    await w.invoker(
-      mailRequest(
-        inboundMail({
-          from: "alice@example.com",
-          messageId: "<a2@example.com>",
-          inReplyTo: "<sent-1@agent.example.com>",
-        }),
-      ),
-    );
-    await w.invoker(resumeRequest("c1"));
+    await w.invoker(mailRequest(true));
+    await w.invoker(buildRequest({ input: "next", replyByMail: true }));
 
-    expect(sentAt(w.sent, 1).content).toBe("to alice again");
-    expect(sentAt(w.sent, 1).to).toBe("alice@example.com");
-    expect(sentAt(w.sent, 2).content).toBe("to carol");
-    expect(sentAt(w.sent, 2).to).toBe("carol@example.com");
-    expect(sentAt(w.sent, 2).inReplyTo).toBe("<c@example.com>");
-    await w.warmCache.evictAll("test teardown");
+    expect(w.sent.map((m) => m.content)).toEqual(["to alice"]);
   });
 
-  test("the durable store's connector hooks keep each turn's reply target", async () => {
-    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "warm-hooks-"));
-    const repoId: RepoId = { kind: "workflow-run", id: "warm-hooks" };
-    const ref = "refs/heads/main";
-    const principal: WorkflowRunWorkflowProcessPrincipal = {
-      kind: "workflow-process",
-      anchorRunId: repoId.id,
-    };
-    const substrate = createRepoStore({
-      dataDir: path.join(dataDir, "substrate"),
-      signingKey: await generateKeyPair(),
-      handlers: { "workflow-run": workflowRunKindHandler },
-      authorize: () => ({ allowed: true }),
-    });
-    await substrate.writeTree({ kind: "hub" }, repoId, ref, {
-      files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
-      message: "genesis",
-    });
-    const registry = createDurableConversationRegistry({
-      dataDir,
-      workflowRunRepoId: repoId,
-      runId: "run-1",
-      workflowRunRef: ref,
-      substrate,
-      principal,
-      signer: (payload) => Promise.resolve(`sig:${String(payload.length)}`),
-      mailboxAddress: "run@deployment.example.com",
-    });
-    const sent: OutboundMessage[] = [];
-    const hooks = createWarmConnectorHooks(registry, async (message) => {
-      sent.push(message);
-      return {
-        messageId: `<sent-${String(sent.length)}@agent.example.com>`,
-        status: "delivered",
-      };
-    });
-    const warmCache = createWarmAgentCache();
-    const scripted = buildScriptedAgent([
-      { kind: "reply", content: "to alice" },
-      { kind: "suspend", correlationId: "c1" },
-      { kind: "reply", content: "to the owner" },
-      { kind: "reply", content: "to carol" },
-    ]);
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: allow,
-      buildEnv: async (req) => {
-        const stepId = req.authzContext.stepId;
-        if (stepId === undefined) throw new Error("expected a step id");
-        await registry.acquire(stepId);
-        return stubBuildEnv();
-      },
-      agentFactory: async () => scripted.agent,
-      warmCache,
-      ...hooks,
-    });
-
-    try {
-      await invoker(mailRequest(inboundMail(ALICE)));
-      await invoker(mailRequest(inboundMail(CAROL)));
-      await invoker(buildRequest({ input: "next" }));
-      await invoker(resumeRequest("c1"));
-
-      expect(sent.map((message) => [message.content, message.to])).toEqual([
-        ["to alice", "alice@example.com"],
-        ["to the owner", "alice@example.com"],
-        ["to carol", "carol@example.com"],
-      ]);
-    } finally {
-      await warmCache.evictAll("test teardown");
-      await fs.rm(dataDir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("workflow-host StepInvoker adapter - warm reply drain", () => {
-  test("drives replies once over the agent lifetime stream and drains at eviction", async () => {
-    const warmCache = createWarmAgentCache();
-
-    // A warm stub whose stream carries a `connector.reply` and ends only at
-    // close(), modeling the agent's lifetime event stream the reply drain
-    // consumes.
-    let endStream: () => void = () => undefined;
-    const streamEnded = new Promise<void>((resolve) => {
-      endStream = resolve;
-    });
-    let closeCount = 0;
-    const agent: Agent = {
-      async send(content): Promise<SendResult> {
-        const text = typeof content === "string" ? content : "message";
-        return replySendResult(`echo:${text}`);
-      },
-      async *stream() {
-        yield {
-          type: "connector.reply",
-          seq: 1,
-          data: { content: "outbound" },
-        };
-        await streamEnded;
-      },
-      deliver(_message: InboundMessage) {
-        throw new Error("stub deliver() not used");
-      },
-      async close() {
-        closeCount += 1;
-        endStream();
-      },
-      setSource(_source: InferenceSource) {
-        throw new Error("stub setSource() not used");
-      },
-      setSources(_sources: InferenceSource[], _defaultSource: string) {
-        throw new Error("stub setSources() not used");
-      },
-      async history() {
-        return [];
-      },
-      async checkpoints() {
-        return [];
-      },
-      async readAt() {
-        return [];
-      },
-      blobReader: stubBlobReader(),
-    };
-
-    // Auto-settle a success per observed `connector.reply`, so each send's
-    // barrier resolves and the invoker returns.
-    const harness = buildReplyDriveHarness({
-      autoSettleOnReply: { ok: true },
-    });
-
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => agent,
-      warmCache,
-      driveReplies: harness.driveReplies,
-    });
-
-    await invoker(buildRequest({ input: "first message" }));
-
-    // The drain is established exactly once -- at the first-message build --
-    // keyed by the step id, and reused across later messages rather than
-    // re-subscribed per send.
-    expect(harness.driveCalls()).toBe(1);
-    expect(harness.keys).toEqual(["step-1"]);
-
-    // Eviction drains the reply loop alongside the observability forwarder:
-    // the stub drain settles only after the stream ends (at close) plus a
-    // tick, and it is settled once `evictAll` returns -- proving the invoker
-    // folded the drain's promise into the warm entry the cache awaits.
-    await warmCache.evictAll("test teardown");
-    expect(closeCount).toBe(1);
-    expect(harness.drainSettled()).toBe(true);
-    // The stream handed to the drain is the agent's live stream -- it carried
-    // the `connector.reply` the drain sends.
-    expect(harness.observed).toContain("connector.reply");
-  });
-
-  test("a reply turn blocks on the barrier until the reply is durably sent", async () => {
-    const warmCache = createWarmAgentCache();
-    const { agent } = buildBarrierStubAgent(replySendResult("the reply"));
-    // No auto-settle: the barrier stays pending until the test settles it, so
-    // we can observe the step blocking on a reply that has not yet been sent.
-    const harness = buildReplyDriveHarness();
-
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => agent,
-      warmCache,
-      driveReplies: harness.driveReplies,
-    });
-
-    let settled = false;
-    const pending = invoker(buildRequest({ input: "hello" })).then((result) => {
-      settled = true;
-      return result;
-    });
-    // The barrier report fires after the send resolved and before the invoker
-    // blocks, so reaching it orders everything the `settled` check must not
-    // have observed.
-    await harness.awaitBarrier(1);
-    // The step has NOT returned: it is gated on this turn's reply being sent.
-    expect(settled).toBe(false);
-    // The invoker snapshotted the sequence before the send (0 replies settled).
-    expect(harness.seqSnapshots).toEqual([0]);
-
-    // The reply is durably sent: settle the barrier, and the step returns.
-    harness.settle({ ok: true });
-    const result = await pending;
-    expect(settled).toBe(true);
-    expect(readReply(expectOutput(result))).toBe("the reply");
-
-    await warmCache.evictAll("test teardown");
-  });
-
-  test("a suspended turn does not block on the reply barrier", async () => {
-    const warmCache = createWarmAgentCache();
-    // A gate/suspended turn produces no `connector.reply`; the step must NOT
-    // await the barrier (that reply never arrives and the wait would hang).
-    const { agent } = buildBarrierStubAgent({
-      type: "suspended",
-      turnId: "turn-test",
-      correlationId: "corr-1",
-      approvalSnapshot: {
-        name: "tool_a",
-        description: "needs approval",
-        inputSchema: { type: "object" },
-        arguments: {},
+  test("a reply-send failure fails the step with a retryable error and commits nothing", async () => {
+    const cause = new Error("outbound bridge rejected the reply");
+    const w = wire([replySendResult("doomed")], {
+      send: async () => {
+        throw cause;
       },
     });
-    const harness = buildReplyDriveHarness();
 
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => agent,
-      warmCache,
-      driveReplies: harness.driveReplies,
-    });
+    const thrown = await rejectionOf(w.invoker(mailRequest(true)));
 
-    // Never settle the barrier: a suspended turn must return regardless.
-    const result = await invoker(buildRequest({ input: "needs approval" }));
-    if (!("suspend" in result)) {
-      throw new Error("expected a suspend-shaped step result");
-    }
-    expect(result.suspend.correlationId).toBe("corr-1");
-
-    await warmCache.evictAll("test teardown");
-  });
-
-  test("a reply-send failure fails the turn rather than claiming a reply", async () => {
-    const warmCache = createWarmAgentCache();
-    const { agent } = buildBarrierStubAgent(replySendResult("doomed reply"));
-    const harness = buildReplyDriveHarness();
-
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => agent,
-      warmCache,
-      driveReplies: harness.driveReplies,
-    });
-
-    const sendCause = new Error("outbound bridge rejected the reply");
-    const pending = invoker(buildRequest({ input: "hello" }));
-    // Let the invoker reach the barrier await, then fail the reply send.
-    await harness.awaitBarrier(1);
-    harness.settle({ ok: false, cause: sendCause });
-
-    // The step rejects rather than returning a step result that claims a reply
-    // which never went out. The run fails, and the supervisor consumes the
-    // inbound mail without a reply rather than replaying it.
-    let thrown: unknown;
-    try {
-      await pending;
-    } catch (cause) {
-      thrown = cause;
-    }
     if (!(thrown instanceof Error)) {
       throw new Error("expected the failed reply send to reject the step");
     }
-    expect(thrown.message).toContain("auto-reply send failed");
-    expect(thrown.cause).toBe(sendCause);
-
-    await warmCache.evictAll("test teardown");
+    expect(thrown).not.toBeInstanceOf(StepOutcomeCommitError);
+    expect(thrown.cause).toBe(cause);
+    expect(w.events).toEqual(["close"]);
   });
 
-  test("a reply with no connector thread names that, not a failed send", async () => {
-    // The connector router passes a message that names no reply address
-    // through without opening a thread, so composing a reply on that step
-    // later throws `NoActiveConnectorThreadError` and nothing is ever
-    // submitted. The turn still fails, but the operator must not be told the
-    // send failed -- there was no send to fail.
-    const warmCache = createWarmAgentCache();
-    const { agent } = buildBarrierStubAgent(replySendResult("unaddressed"));
-    const harness = buildReplyDriveHarness();
-
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => agent,
-      warmCache,
-      driveReplies: harness.driveReplies,
+  test("a commit that fails after the send fails the step without a retry", async () => {
+    const w = wire([replySendResult("sent once")], {
+      settle: async () => {
+        w.events.push("settle failed");
+        throw new Error("substrate write failed");
+      },
     });
 
-    const composeCause = new Error("no active connector thread");
-    composeCause.name = "NoActiveConnectorThreadError";
-    const pending = invoker(buildRequest({ input: "hello" }));
-    await harness.awaitBarrier(1);
-    harness.settle({ ok: false, cause: composeCause });
+    const thrown = await rejectionOf(w.invoker(mailRequest(true)));
 
-    let thrown: unknown;
-    try {
-      await pending;
-    } catch (cause) {
-      thrown = cause;
-    }
-    if (!(thrown instanceof Error)) {
-      throw new Error("expected the unaddressable reply to reject the step");
-    }
-    expect(thrown.message).toContain("no active connector thread");
-    expect(thrown.message).not.toContain("send failed");
-    expect(thrown.cause).toBe(composeCause);
+    expect(thrown).toBeInstanceOf(StepOutcomeCommitError);
+    expect(w.sent.map((m) => m.content)).toEqual(["sent once"]);
+    expect(w.events).toEqual(["sent", "close", "settle failed"]);
+  });
 
-    await warmCache.evictAll("test teardown");
+  test("a thread that refuses the sent reply fails the step without a retry and commits its turn", async () => {
+    const w = wire([replySendResult("sent once")], {
+      onReplySent: async () => {
+        throw new Error("the connector thread refused the reply");
+      },
+    });
+
+    const thrown = await rejectionOf(w.invoker(mailRequest(true)));
+
+    expect(thrown).toBeInstanceOf(StepOutcomeCommitError);
+    expect(w.sent.map((m) => m.content)).toEqual(["sent once"]);
+    expect(w.router.snapshot()?.lastMessageId).toBe("<a@example.com>");
+    expect(w.events).toEqual(["sent", "close", "settled"]);
+  });
+
+  test("a settle that fails after the thread refused the sent reply surfaces the refusal", async () => {
+    const w = wire([replySendResult("sent once")], {
+      onReplySent: async () => {
+        throw new Error("the connector thread refused the reply");
+      },
+      settle: async () => {
+        throw new Error("substrate write failed");
+      },
+    });
+
+    const thrown = await rejectionOf(w.invoker(mailRequest(true)));
+
+    expect(thrown).toBeInstanceOf(StepOutcomeCommitError);
+    if (!(thrown instanceof Error)) throw new Error("expected an Error");
+    expect(thrown.message).toContain("the connector thread refused the reply");
+    expect(
+      logs
+        .records()
+        .filter((record) => record.message.includes("substrate write failed")),
+    ).toHaveLength(1);
+  });
+
+  test("an aborted turn closes the agent and commits nothing", async () => {
+    const stub = buildStubAgent();
+    let settled = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => ({
+        env: stubBuildEnv(),
+        conversation: stubStepConversation({
+          settle: async () => {
+            settled += 1;
+          },
+        }),
+      }),
+      agentFactory: async () => stub.agent,
+    });
+    const controller = new AbortController();
+
+    const pending = invoker(
+      buildRequest({
+        input: inboundMail(ALICE),
+        replyByMail: true,
+        signal: controller.signal,
+      }),
+    );
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/aborted/);
+    expect(stub.events).toContain("close");
+    expect(settled).toBe(0);
   });
 });
 
@@ -2277,7 +1796,7 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
 
@@ -2286,7 +1805,6 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
       resume: {
         correlationId: "corr-1",
         decision: { outcome: "approved" },
-        kind: "approval",
       },
     };
     const result = await invoker(req);
@@ -2351,7 +1869,7 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
         matchingGrants: [],
         resolvedBy: null,
       }),
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
 
@@ -2360,7 +1878,6 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
       resume: {
         correlationId: "corr-A",
         decision: { outcome: "approved" },
-        kind: "approval",
       },
     };
     const result = await invoker(req);
@@ -2386,57 +1903,6 @@ describe("workflow-host StepInvoker adapter - resume send path", () => {
       );
     }
     expect(result.suspend.correlationId).toBe("corr-B");
-  });
-
-  test("an input resume delivers a plain next turn, not a correlated gate inbound", async () => {
-    // An `"input"` resume is the step's next turn (a long-lived agent's next
-    // mail), with no gate to re-correlate. The adapter must send the decision
-    // as PLAIN synthesized content, NOT an InboundMessage stamped with the
-    // correlationId (the approval path). A plain string is the tell: nothing
-    // for the reactor to correlate, just a fresh user turn.
-    const nextTurn = {
-      role: "assistant" as const,
-      content: [{ type: "text" as const, text: "next turn reply" }],
-      model: STUB_SOURCE.model,
-      timestamp: 9,
-    };
-    let sentContent: string | InboundMessage | undefined;
-    const agent = buildResumeStubAgent((content) => {
-      sentContent = content;
-      return {
-        type: "reply",
-        turnId: "turn-test",
-        reply: "next turn reply",
-        turn: nextTurn,
-      };
-    });
-
-    const invoker = createWorkflowStepInvoker({
-      workflowAuthorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
-      buildEnv: async () => stubBuildEnv(),
-      agentFactory: async () => agent,
-    });
-
-    const req: StepInvokeRequest = {
-      ...buildRequest({ input: { goal: "start" } }),
-      resume: {
-        correlationId: "corr-input-1",
-        decision: { text: "the next mail" },
-        kind: "input",
-      },
-    };
-    const result = await invoker(req);
-
-    // Plain content, not a correlated InboundMessage.
-    expect(typeof sentContent).toBe("string");
-    expect(expectOutput(result)).toEqual({
-      reply: "next turn reply",
-      turn: nextTurn,
-    });
   });
 });
 
@@ -2588,7 +2054,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       mailPartReader: stubReader({ "mail-part:///r/m/1-photo.png": "PNGDATA" }),
     });
@@ -2627,7 +2093,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     const base = mail([
@@ -2655,7 +2121,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
 
@@ -2683,7 +2149,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     const threaded: Mail = {
@@ -2723,7 +2189,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     // Inbound mail can carry a headerless-derived (sha256) or malformed
@@ -2765,7 +2231,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       mailPartReader: stubReader({
         "mail-part:///r/m/1-notes.txt": "SECRET FILE",
@@ -2812,7 +2278,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       mailPartReader: stubReader({ "mail-part:///r/m/0-a.mp3": "AUDIOBYTES" }),
     });
@@ -2843,9 +2309,9 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
-      // no mailPartReader (mirrors a body step)
+      // no mailPartReader
     });
     await expect(
       invoker(
@@ -2866,7 +2332,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       // no reader: a text-only mail whose parts inlined their text still delivers
     });
@@ -2892,7 +2358,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
       mailPartReader: stubReader({}),
     });
@@ -2938,7 +2404,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     await invoker(buildRequest({ input }));
@@ -2968,7 +2434,7 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => stubStepBuild(),
       agentFactory: async () => agent,
     });
     await invoker(buildRequest({ input: mailFrom(undefined) }));

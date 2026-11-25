@@ -156,7 +156,9 @@ function buildRequest(input: unknown): StepInvokeRequest {
   return {
     agent: stubDef(),
     input,
+    replyByMail: false,
     authzContext,
+    place: { stepPath: ["step-1"] },
     signal: new AbortController().signal,
   };
 }
@@ -315,7 +317,7 @@ describe("createSupervisorBackedMailPartReader", () => {
     });
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize: allowAll,
-      buildEnv: async () => stubBuildEnv(),
+      buildEnv: async () => ({ env: stubBuildEnv(), conversation: undefined }),
       agentFactory: async () => agent,
       mailPartReader: reader,
     });

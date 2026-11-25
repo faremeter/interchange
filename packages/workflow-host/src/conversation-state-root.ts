@@ -1,9 +1,9 @@
 import path from "node:path";
 
 /**
- * The directory holding a deployment's local durable-conversation stores, one
- * per agent key, under the sidecar data dir. The workflow child writes them and
- * the deploy router clears them, so both derive the path here.
+ * The directory that held a deployment's local durable-conversation stores,
+ * one per agent key, under the sidecar data dir. No current code writes it;
+ * the deploy router removes the copies an earlier version wrote at undeploy.
  */
 export function conversationStateRoot(
   dataDir: string,

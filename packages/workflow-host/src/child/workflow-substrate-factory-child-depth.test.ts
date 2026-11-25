@@ -292,6 +292,7 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
         signal: new AbortController().signal,
         depth: 0,
         maxChildSpawnDepth: 2,
+        stepPathPrefix: ["s"],
       },
       noopOnEvent,
     );
@@ -383,6 +384,7 @@ describe("createSidecarRunChild root grants at depth", () => {
         signal: new AbortController().signal,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["s"],
       },
       noopOnEvent,
       {
@@ -522,6 +524,7 @@ describe("createSidecarRunChild per-rung cap", () => {
         signal: new AbortController().signal,
         depth: 0,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["s"],
       },
       noopOnEvent,
       {

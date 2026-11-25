@@ -93,7 +93,7 @@ function stateFiles(stateDir: string): Record<string, string> {
         pendingOperations: [PENDING],
         tokenUsage: USAGE,
         connectorState: THREAD,
-        attempt: 1,
+        invocation: { runId: "run_body", stepId: STEP_ID, attempt: 1 },
       },
     ),
   };

@@ -18,12 +18,14 @@
 //     string; the blob value is opaque bytes. Blobs are append-only
 //     and immutable: any blob present in the prior tree must carry
 //     byte-identical contents in the prospective tree.
-//   - `runs/<runId>/steps/<urlEncoded(stepId)>/state/` — an agent step's
+//   - `runs/<runId>/steps/<urlEncoded(key)>/state/` — an agent step's
 //     durable state (turns, pending operations, token usage, reply-thread
 //     state) as a checkpoint plus write-ahead log in the step-state format.
+//     `runId` is the deployment's top-level run, whichever run the step
+//     runs in, and `key` names the step's place (`stepPlaceKey`).
 //     Mutable, unlike the rest of the run directory; validated for shape
 //     and envelope only (see `WORKFLOW_RUN_STEPS_DIR`).
-//   - `runs/<runId>/steps/<urlEncoded(stepId)>/seed.json` — a snapshot the
+//   - `runs/<runId>/steps/<urlEncoded(key)>/seed.json` — a snapshot the
 //     Hub wrote for the step to start from until it has state of its own.
 //     Immutable once written (see `WORKFLOW_RUN_STEP_SEED_FILE`).
 //   - Every claim-check entry is filed under an identity (see
@@ -291,33 +293,39 @@ export const WORKFLOW_RUN_CONSUMED_DIR = "consumed";
 export const WORKFLOW_RUN_PARTS_DIR = "parts";
 
 /**
- * Per-run step subtree. Each agent step of the run keeps its durable state
- * (conversation turns, pending operations, token usage, reply-thread state)
- * at `runs/<runId>/steps/<urlEncoded(stepId)>/state/` in the step-state
- * format (`step-state.ts`), so the Hub's copy of the repo carries everything
- * a replacement host needs to continue the step. Unlike the rest of the run
- * directory the state is MUTABLE: each mirror boundary appends a WAL entry,
- * and compaction rewrites the checkpoint and truncates the WAL. It is therefore
- * exempt from the append-only and immutability walks; its push-time
- * constraints are shape and envelope checks (`validateRunStepsSubtree`).
+ * Per-run step subtree. Each agent step of a deployment keeps its durable
+ * state (conversation turns, pending operations, token usage, reply-thread
+ * state) under the deployment's top-level run, at
+ * `runs/<runId>/steps/<urlEncoded(key)>/state/` in the step-state format
+ * (`step-state.ts`), whichever run the step runs in. The key names the
+ * step's place: its path of step ids joined with `.`, plus `[i]` for a map
+ * item (`stepPlaceKey`), so a top-level step's key is its step id. The Hub's
+ * copy of the repo therefore carries everything a replacement host needs to
+ * continue the step. Unlike the rest of the run directory the state is
+ * MUTABLE: each mirror boundary appends a WAL entry, and compaction rewrites
+ * the checkpoint and truncates the WAL. It is therefore exempt from the
+ * append-only and immutability walks; its push-time constraints are shape
+ * and envelope checks (`validateRunStepsSubtree`).
  */
 export const WORKFLOW_RUN_STEPS_DIR = "steps";
 export const WORKFLOW_RUN_STEP_STATE_DIR = "state";
 
 /**
  * A step's seed: a `StepStateSnapshot` the Hub commits beside the step's
- * `state/` for the step to start from. The step starts from it whenever it
- * has no state of its own, which covers its first turn and a retried attempt
- * that starts over. It sits outside `state/` so a checkpoint rewrite never
- * clears it. Only a `hub` principal adds one, and it is immutable once
- * written: a push may neither change nor remove it.
+ * `state/` for the step to start from. The step starts from it while it has
+ * no committed state, which covers its first turn. It sits outside
+ * `state/` so a checkpoint rewrite never clears it. Only a `hub` principal
+ * adds one, and it is immutable once written: a push may neither change nor
+ * remove it.
  */
 export const WORKFLOW_RUN_STEP_SEED_FILE = "seed.json";
 
 /**
- * The repo-relative state directory of one step of one run, with a trailing
- * slash. The step id is URL-encoded so a scoped `map` iteration id
- * (`<base>[<index>]`) stays a single path segment.
+ * The repo-relative state directory of one step, with a trailing slash.
+ * `runId` is the deployment's top-level run and `stepId` is the key of the
+ * step's place (`stepPlaceKey`); a top-level step's key is its step id. The
+ * key is URL-encoded so a `map` item's key (`<path>[<index>]`) stays a
+ * single path segment.
  */
 export function workflowRunStepStatePrefix(
   runId: string,
@@ -375,7 +383,7 @@ export const WORKFLOW_RUN_WATERMARK_FILE = "watermark.json";
 export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Conversational-mailbox subtree for the warm single-step agent. The
+ * Conversational-mailbox subtree for a deployment's step agents. The
  * substrate mailbox backing commits the agent's durable inbox under
  * `mailbox/INBOX/` so the full message history replicates to the hub
  * alongside the run state. The layout is:
@@ -390,7 +398,7 @@ export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
  *     RETAINED `<uid>.eml` (present in both prior and prospective) is
  *     opaque and IMMUTABLE: it must reappear byte-identically, exactly
  *     like `runs/<runId>/blobs/`. A prior `<uid>.eml` may be ABSENT from
- *     the prospective tree — that is the warm agent expunging a message.
+ *     the prospective tree — that is a step agent expunging a message.
  *     The raw bytes are not lost: they stay reachable through the parent
  *     commit, and a `workflow-run` repo's objects are never GC'd, so an
  *     expunged message survives in history for the life of the run repo. The
@@ -3129,7 +3137,7 @@ async function enumerateMailboxInbox(
  * Enforces the subtree shape via `enumerateMailboxInbox`, then holds a
  * RETAINED `<uid>.eml` message blob byte-identical against the prior tree
  * by its blob OID. A prior `<uid>.eml` absent from the prospective tree is
- * a legal expunge: the warm agent physically removes a message from the
+ * a legal expunge: a step agent physically removes a message from the
  * live INBOX. The raw bytes are not lost -- they stay reachable through the parent commit, and
  * a `workflow-run` repo's objects are never GC'd, so the
  * expunged message survives in history for the life of the run repo. The

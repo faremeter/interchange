@@ -110,6 +110,7 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
         signal: ctrl.signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["step-a"],
       },
       noopOnEvent,
     );
@@ -129,6 +130,34 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
     expect(settled.definition).toBe(definition);
   });
 
+  test("hands the child's step path prefix to runChild", async () => {
+    const prefixes: (readonly string[])[] = [];
+    const spawn = createInMemorySpawnChild({
+      bodies: new Map([["wf-prefix", childDefinition("wf-prefix")]]),
+      runChild: async (input) => {
+        prefixes.push(input.stepPathPrefix);
+        return createTerminalChildHandle("completed");
+      },
+    });
+
+    await spawn(
+      {
+        definitionRef: "wf-prefix",
+        childRunId: "child-prefix",
+        input: null,
+        parentRunId: "parent-prefix",
+        parentStepId: "spawn",
+        signal: new AbortController().signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+        stepPathPrefix: ["section", "spawn"],
+      },
+      noopOnEvent,
+    );
+
+    expect(prefixes).toEqual([["section", "spawn"]]);
+  });
+
   test("fails loud when the ref is not in the map", async () => {
     const runChild: RunChildWorkflow = async () =>
       createTerminalChildHandle("completed");
@@ -146,6 +175,7 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
           signal: ctrl.signal,
           depth: 1,
           maxChildSpawnDepth: 32,
+          stepPathPrefix: ["step-a"],
         },
         noopOnEvent,
       ),
@@ -173,6 +203,7 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
         signal: ctrl.signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["step-a"],
       },
       noopOnEvent,
     );
@@ -204,6 +235,7 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
           signal: ctrl.signal,
           depth: 1,
           maxChildSpawnDepth: 32,
+          stepPathPrefix: ["step-a"],
         },
         noopOnEvent,
       ),
@@ -236,6 +268,7 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
           signal: ctrl.signal,
           depth: 1,
           maxChildSpawnDepth: 32,
+          stepPathPrefix: ["step-a"],
         },
         noopOnEvent,
       ),
@@ -277,6 +310,7 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
         signal: ctrl.signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["step-a"],
       },
       noopOnEvent,
     );
@@ -366,6 +400,7 @@ describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () 
         signal: ctrl.signal,
         depth: 1,
         maxChildSpawnDepth: 32,
+        stepPathPrefix: ["step-a"],
       },
       noopOnEvent,
     );
@@ -450,6 +485,7 @@ describe("createInMemorySpawnSuspendableChild - in-memory body resolution", () =
       signal,
       depth: 0,
       maxChildSpawnDepth: 32,
+      stepPathPrefix: ["sect"],
     };
   }
 
@@ -481,6 +517,24 @@ describe("createInMemorySpawnSuspendableChild - in-memory body resolution", () =
     await expect(
       spawn(makeInput("missing", new AbortController().signal), noopOnEvent),
     ).rejects.toThrow(/no in-memory onTrigger body/);
+  });
+
+  test("hands the body's step path prefix to the executor", async () => {
+    const prefixes: (readonly string[])[] = [];
+    const spawn = createInMemorySpawnSuspendableChild({
+      bodies: new Map([["wf__sect", bodyDef]]),
+      runSuspendableChild: async (args) => {
+        prefixes.push(args.stepPathPrefix);
+        return fakeHandle;
+      },
+    });
+
+    await spawn(
+      makeInput("wf__sect", new AbortController().signal),
+      noopOnEvent,
+    );
+
+    expect(prefixes).toEqual([["sect"]]);
   });
 
   test("short-circuits a pre-aborted signal without resolving or executing", async () => {

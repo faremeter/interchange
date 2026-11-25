@@ -84,7 +84,8 @@ import { jsonResponse } from "../openapi";
 // from which the Hub resolves the inference chain. `pin` selects the definition
 // package for the `registry` and asset-`tarball` variants (asset-`source`
 // selects by `packageName`). The `source` union is validated at this boundary.
-// `stepState` starts agent steps from exported state, keyed by step id.
+// `stepState` starts agent steps from exported state, keyed by the key of
+// each step's place.
 const SourceOfferingIds = type("string > 0")
   .array()
   .atLeastLength(1)
@@ -291,7 +292,7 @@ export function createWorkflowRoutes({
       tags: ["Workflows"],
       summary: "Deploy a workflow",
       description:
-        "Installs, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, reusing a validated probe for an unchanged source revision under the current internal probe cache version, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record. An optional `stepState` map starts agent steps from state exported off any earlier run, keyed by the ids of the workflow's top-level agent steps, each at most 255 characters; each step starts from its snapshot until it has state of its own, including when a retried attempt starts over. A snapshot continues only on the model that produced it: the Hub refuses one with an assistant turn from any model other than the one the step is pinned to, or with one that records no model, since it does not convert a conversation between models. It closes tool calls left without a result, turns safety-rating blocks into text, and drops assistant turns with no content. It refuses a snapshot whose tool results do not follow their calls, or that repeats a tool call or a tool result, and one that carries a reply thread: an imported step starts without one, so it replies only to senders that mailed its own deployment. It also refuses a snapshot with a system turn, since an imported step keeps the system prompt its deployment approved, and one with a key the snapshot format does not declare. The body is limited to 44 MiB.",
+        "Installs, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, reusing a validated probe for an unchanged source revision under the current internal probe cache version, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record. An optional `stepState` map starts agent steps from state exported off any earlier run, keyed by the ids of the workflow's top-level agent steps, or by `<section>.<step>` for an agent step in the inline body of a top-level onTrigger section, such as `section.reply`, each at most 255 characters; each step starts from its snapshot until it has committed state of its own. A snapshot continues only on the model that produced it: the Hub refuses one with an assistant turn from any model other than the one the step is pinned to, or with one that records no model, since it does not convert a conversation between models. It closes tool calls left without a result, turns safety-rating blocks into text, and drops assistant turns with no content. It refuses a snapshot whose tool results do not follow their calls, or that repeats a tool call or a tool result, and one that carries a reply thread: an imported step starts without one, so it replies only to senders that mailed its own deployment. It also refuses a snapshot with a system turn, since an imported step keeps the system prompt its deployment approved, and one with a key the snapshot format does not declare. It refuses a key that names a step in a loop body, a map item, a step more than one level down, a section that is not an onTrigger step, a step in a `{ ref }` body, or a body step that is not an agent step. A body step's snapshot must come from the model the body step is pinned to. A conversation exported from a top-level step can be imported at a body step, so a deployment rewritten as an onTrigger section keeps its conversation. The body is limited to 44 MiB.",
       responses: {
         201: jsonResponse(
           "Workflow deployment accepted for provisioning",
@@ -307,7 +308,7 @@ export function createWorkflowRoutes({
         ),
         404: jsonResponse("Definition asset not found", ErrorResponse),
         409: jsonResponse(
-          "Asset kind does not match the source's package format, workflow definition, source offering chain, or stored tenant config invalid, step state names a step that is not a top-level agent step of the workflow or cannot seed the step it names, workflow provisioning unavailable, or provisioner selection failed",
+          "Asset kind does not match the source's package format, workflow definition, source offering chain, or stored tenant config invalid, step state names a step that is not a top-level agent step of the workflow or an agent step in a top-level onTrigger section's inline body, or cannot seed the step it names, workflow provisioning unavailable, or provisioner selection failed",
           ErrorResponse,
         ),
         413: jsonResponse("Request body too large", ErrorResponse),

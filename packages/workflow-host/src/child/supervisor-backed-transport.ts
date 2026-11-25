@@ -13,10 +13,6 @@
 // miss mail that lands while the call is in flight, and `mail_wait` would
 // then wait until its timeout. A refusal unregisters the callback and
 // rejects, so nothing stays armed for a mailbox the supervisor refused.
-//
-// When the sidecar constructs the transport without `inbound`, every inbound
-// method fails with `SERVERBUG` "not wired". A spawned child has no inbox
-// surface, and that failure is the wiring error, not a mailbox policy.
 
 import { base64Decode } from "@intx/types/base64";
 import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
@@ -40,7 +36,6 @@ import type {
   Thread,
   Unsubscribe,
 } from "@intx/types/runtime-core";
-import { MessageTransportError } from "@intx/types/runtime-core";
 
 import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
 import type { MailboxCallSuccess } from "./mailbox-call-bridge";
@@ -49,10 +44,9 @@ import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 
 /**
- * The inbox surface a warm agent owns. `watchRegistry` is the same registry
+ * The inbox surface of a step agent. `watchRegistry` is the same registry
  * the control loop fires `mailbox.notify` into. `mutationBridge` carries flag
- * writes and expunge. `callBridge` carries every other mailbox method. A
- * build without this surface has no inbox.
+ * writes and expunge. `callBridge` carries every other mailbox method.
  */
 export interface SupervisorBackedTransportInbound {
   watchRegistry: MailboxWatchRegistry;
@@ -148,23 +142,14 @@ function projectFetched(
 /**
  * Construct a `MessageTransport` whose mail methods are answered by the
  * supervisor. `address` is the agent's mail address; the supervisor signs
- * outbound mail as this address. When `inbound` is omitted, inbound methods
- * throw `SERVERBUG`.
+ * outbound mail as this address.
  */
 export function createSupervisorBackedTransport(
   bridge: ChildOutboundMailBridge,
   address: string,
-  inbound?: SupervisorBackedTransportInbound,
+  inbound: SupervisorBackedTransportInbound,
 ): MessageTransport {
-  function requireInbound(method: string): SupervisorBackedTransportInbound {
-    if (inbound === undefined) {
-      throw new MessageTransportError(
-        "SERVERBUG",
-        `supervisor-backed transport: ${method} needs the inbound surface, but it is not wired for unified-host step agent ${address}`,
-      );
-    }
-    return inbound;
-  }
+  const { watchRegistry, mutationBridge, callBridge } = inbound;
 
   // The request itself is the type parameter. Inferring `op` and then
   // extracting the arm collapses ops that share a shape (`move`/`copy`,
@@ -174,7 +159,6 @@ export function createSupervisorBackedTransport(
   >(
     request: Request,
   ): Promise<Extract<MailboxCallSuccess, { op: Request["op"] }>> {
-    const { callBridge } = requireInbound(request.op);
     const response = await callBridge.submit({
       ...request,
       runId: deriveWorkflowRunId(address),
@@ -323,7 +307,6 @@ export function createSupervisorBackedTransport(
       flags: string[],
       _signal?: AbortSignal,
     ): Promise<void> {
-      const { mutationBridge } = requireInbound("setFlags");
       await mutationBridge.submit({
         runId: deriveWorkflowRunId(address),
         mailbox: ref.mailbox,
@@ -338,7 +321,6 @@ export function createSupervisorBackedTransport(
       flags: string[],
       _signal?: AbortSignal,
     ): Promise<void> {
-      const { mutationBridge } = requireInbound("clearFlags");
       await mutationBridge.submit({
         runId: deriveWorkflowRunId(address),
         mailbox: ref.mailbox,
@@ -368,7 +350,6 @@ export function createSupervisorBackedTransport(
       mailbox: string,
       _signal?: AbortSignal,
     ): Promise<{ expungedUids: number[] }> {
-      const { mutationBridge } = requireInbound("expunge");
       // The supervisor applies mutations in arrival order. A caller that
       // flags `\Deleted` and then expunges must await the two in sequence,
       // or the sweep can run before the flag and miss the message.
@@ -384,7 +365,6 @@ export function createSupervisorBackedTransport(
       mailbox: string,
       callback: (event: MailboxEvent) => void,
     ): Promise<Unsubscribe> {
-      const { watchRegistry, callBridge } = requireInbound("watch");
       // Register before the first await. A notify that arrives while the
       // acceptance is in flight is delivered only to callbacks already in
       // the registry; the supervisor does not replay it.

@@ -169,7 +169,6 @@ async function startOutboundHarness(
     },
     binaryPath: "/fake/bin/workflow-child",
     substrateEnv: {},
-    dynamicSpawnEnv: () => ({}),
     workflowRunRepoId: { kind: "workflow-run", id: "outbound-dep" },
     workflowRunRef: "refs/heads/main",
     anchorRunId: "outbound-dep",

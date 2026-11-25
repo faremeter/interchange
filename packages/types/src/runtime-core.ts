@@ -743,10 +743,11 @@ export type ApprovalSnapshot = typeof ApprovalSnapshot.infer;
  * - `"approval"` -- the step parked on a tool/authz gate and REQUIRES an
  *   {@link ApprovalSnapshot}; the runtime notifies the host (`env.onPark`) so
  *   the sidecar co-writes the approval/correlation rows the hub registers.
- * - `"input"` -- the step parked awaiting its next input (e.g. a long-lived
- *   agent run awaiting the next mail so it can take another turn). It carries
- *   NO snapshot and does NOT notify the host: the run's owner delivers the
- *   input on the same channel and the step re-arms. It is a runtime-local
+ * - `"input"` -- an onTrigger section container parked awaiting its next
+ *   event (e.g. the next mail, which starts the next body run). An agent step
+ *   never parks on it. It carries NO snapshot and does NOT notify the host:
+ *   the run's owner delivers the input on the same channel and the section
+ *   re-arms. It is a runtime-local
  *   concept -- deliberately NOT a {@link SignalKind}, so it never touches the
  *   approval-routing machinery (IPC register frames, the hub co-write, the
  *   approval columns).
@@ -2301,14 +2302,17 @@ export const ConnectorReplyParts = type({
 export type ConnectorReplyParts = typeof ConnectorReplyParts.infer;
 
 /**
- * The reply target of an agent turn that parked on an approval gate,
- * kept until the approval resumes the turn. `parts` is `null` when the
- * parked turn answered a passthrough message with no sender address: the
- * resumed turn then sends no reply, and does not reply on the thread.
+ * The mail that an agent turn parked on an approval gate answers, kept
+ * until the approval resumes the turn. `{ mode: "thread" }` is a turn that
+ * answers the connector thread. `{ parts }` is a turn that answers a
+ * passthrough message: its reply goes to `parts`. `parts` is `null` when
+ * that message had no sender address: the resumed turn then sends no
+ * reply, and does not reply on the thread.
  */
 export const ParkedReplyTarget = type({
+  "+": "reject",
   parts: ConnectorReplyParts.or("null"),
-});
+}).or({ "+": "reject", mode: "'thread'" });
 export type ParkedReplyTarget = typeof ParkedReplyTarget.infer;
 
 /** Parked reply targets, keyed by the correlation id of the parked gate. */

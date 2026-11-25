@@ -177,6 +177,7 @@ function buildEnv(
       input: args.input,
       depth: args.depth,
       maxChildSpawnDepth: args.maxChildSpawnDepth,
+      stepPathPrefix: args.stepPathPrefix,
       ...(args.resumeFromEvents !== undefined
         ? { resumeFromEvents: args.resumeFromEvents }
         : {}),

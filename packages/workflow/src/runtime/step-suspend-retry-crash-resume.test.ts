@@ -10,7 +10,7 @@
 // This test covers the case the coincidence hides: a step that FAILED
 // attempt 1 (StepFailed + AttemptScheduled{nextAttempt:2} + TimerFired) and
 // then, on attempt 2, suspended on a signal. Its durable tail reduces to
-// `awaiting-signal` with `currentAttempt === 2`. The cold-path ContextStore
+// `awaiting-signal` with `currentAttempt === 2`. The step's ContextStore
 // is rooted at `.../steps/<stepId>/attempt-<N>`, so the pending-op the
 // suspend committed lives under `attempt-2`. The crash-resume re-invoke MUST
 // carry attempt 2 so the reopened store is the same `attempt-2` store the
@@ -22,7 +22,7 @@
 // `stepStorageRoot`; the coverage this test owns is that the resume
 // re-invocation carries the recovered `authzContext.attempt` (2, not 1),
 // which is the input `stepStorageRoot`/`buildEnv` key the store on. The
-// sidecar-side keying assertion (a cold-path resume that opens a store with
+// sidecar-side keying assertion (a resume that opens a store with
 // no matching pending-op throws) is grounded on that same recovered attempt.
 
 import { describe, test, expect } from "bun:test";
@@ -243,7 +243,6 @@ describe("step suspend retry crash-resume", () => {
     expect(resumeInvocation.resume).toEqual({
       correlationId: "corr-1",
       decision: { outcome: "approved" },
-      kind: "approval",
     });
 
     // The step completes with the resume re-invocation reply.

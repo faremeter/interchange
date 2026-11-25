@@ -1781,7 +1781,6 @@ describe("loop iteration approval crash-resume", () => {
     expect(invocations2[0]?.resume).toEqual({
       correlationId: "corr-1",
       decision: { outcome: "approved" },
-      kind: "approval",
     });
     // Converged after one iteration: onExhausted (escalate) is pruned.
     expect("escalate" in result.outputs).toBe(false);
@@ -1909,7 +1908,6 @@ describe("loop iteration approval crash-resume", () => {
           resume: {
             correlationId: "corr-1",
             decision: { outcome: "approved" },
-            kind: "approval",
           },
         },
       ]);

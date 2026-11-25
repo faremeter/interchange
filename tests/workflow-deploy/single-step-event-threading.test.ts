@@ -151,7 +151,9 @@ function buildRequest(
   return {
     agent: stepAgentDefinition(tool),
     input: { goal: "record the value" },
+    replyByMail: false,
     authzContext,
+    place: { stepPath: ["step1"] },
     signal: new AbortController().signal,
   };
 }
@@ -189,17 +191,20 @@ describe("single-step event threading", () => {
 
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize,
-      buildEnv: async (): Promise<Omit<BaseEnv, "authorize">> => {
+      buildEnv: async () => {
         const storage = await createIsogitStore(storeDir);
         return {
-          sources: [SOURCE],
-          defaultSource: SOURCE.id,
-          storage,
-          workdir: stepWorkdir,
-          audit: noopAuditStore(),
-          directors: createDefaultDirectorRegistry(),
-          readCurrentMaterial: () => ({ secret: "test-secret" }),
-          deps: harness.deps,
+          env: {
+            sources: [SOURCE],
+            defaultSource: SOURCE.id,
+            storage,
+            workdir: stepWorkdir,
+            audit: noopAuditStore(),
+            directors: createDefaultDirectorRegistry(),
+            readCurrentMaterial: () => ({ secret: "test-secret" }),
+            deps: harness.deps,
+          },
+          conversation: undefined,
         };
       },
       onEvent: (event) => {
@@ -257,17 +262,20 @@ describe("single-step event threading", () => {
     // callers that never wanted observability keep the prior behaviour.
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize,
-      buildEnv: async (): Promise<Omit<BaseEnv, "authorize">> => {
+      buildEnv: async () => {
         const storage = await createIsogitStore(storeDir);
         return {
-          sources: [SOURCE],
-          defaultSource: SOURCE.id,
-          storage,
-          workdir: stepWorkdir,
-          audit: noopAuditStore(),
-          directors: createDefaultDirectorRegistry(),
-          readCurrentMaterial: () => ({ secret: "test-secret" }),
-          deps: harness.deps,
+          env: {
+            sources: [SOURCE],
+            defaultSource: SOURCE.id,
+            storage,
+            workdir: stepWorkdir,
+            audit: noopAuditStore(),
+            directors: createDefaultDirectorRegistry(),
+            readCurrentMaterial: () => ({ secret: "test-secret" }),
+            deps: harness.deps,
+          },
+          conversation: undefined,
         };
       },
     });

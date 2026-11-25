@@ -619,12 +619,17 @@ const AUTHORITY_SNAPSHOT = {
 // can verify them.
 const CHILD_KEY_PAIR = await generateKeyPair();
 
-function buildBindings(baseDir: string): RunWorkflowChildBindings {
+// `topLevelRunId` is the one run the child may discover in flight.
+function buildBindings(
+  baseDir: string,
+  topLevelRunId = "run-live",
+): RunWorkflowChildBindings {
   return {
     substrate: createStubRepoStore(baseDir),
     workflowRunRepoId: { kind: "workflow-run", id: "deployment-x" },
     workflowRunRef: REF,
     principal: { kind: "supervisor" } as Principal,
+    topLevelRunId,
     invokeStep: async () => ({ output: null }),
     actionCredentials: () => unavailableActionCredentials,
     spawnChild: async () => createTerminalChildHandle("completed"),
@@ -1262,7 +1267,7 @@ describe("source-ref run child", () => {
       approvedHash: env.definitionHash,
     });
     const bindings: RunWorkflowChildBindings = {
-      ...buildBindings(baseDir),
+      ...buildBindings(baseDir, runId),
       actionCredentials: (wiring) =>
         createSidecarActionCredentialsFactory({
           materialCell: wiring.materialRef,

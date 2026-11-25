@@ -375,7 +375,7 @@ export const PingFrame = type({ type: "'ping'" });
 export type PingFrame = typeof PingFrame.infer;
 
 /**
- * Acknowledges a request from the hub (sources.update).
+ * Acknowledges a request from the hub (credentials.update).
  */
 export const SessionAckFrame = type({
   type: "'session.ack'",
@@ -973,28 +973,9 @@ export const PongFrame = type({ type: "'pong'" });
 export type PongFrame = typeof PongFrame.infer;
 
 /**
- * Push an updated inference-source list to a running single-step
- * deployment. The sidecar routes it to the deployment's supervisor, which
- * delivers it to the warm agent and swaps its sources in place. `sources`
- * is non-empty (validated at this boundary, mirroring the deploy frame's
- * per-step source arrays). Element 0 is the active source; the producer
- * sets `defaultSource` to its id -- that equality is producer-enforced,
- * not checked here. Responds with session.ack or session.error.
- */
-export const SourcesUpdateFrame = type({
-  type: "'sources.update'",
-  requestId: "string",
-  agentAddress: "string",
-  generation: Generation,
-  sources: InferenceSource.array().atLeastLength(1),
-  defaultSource: "string",
-});
-export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
-
-/**
- * Push refreshed credential material to a running deployment. Mirrors
- * `SourcesUpdateFrame`: the sidecar routes it to the deployment's supervisor,
- * which forwards it to the child's in-memory cell. The child MERGES `delivery`
+ * Push refreshed credential material to a running deployment. The sidecar
+ * routes it to the deployment's supervisor, which forwards it to the child's
+ * in-memory cell. The child MERGES `delivery`
  * (materials upsert by credentialId, bindings by consumer-and-handle) and drops
  * each credentialId in `revoke` plus any binding referencing it. Removal is
  * explicit through `revoke` -- omitting a material does not evict it, because
@@ -1242,7 +1223,6 @@ export const HubFrame = type.or(
   AgentUndeployFrame,
   WelcomeFrame,
   PongFrame,
-  SourcesUpdateFrame,
   CredentialsUpdateFrame,
   PackPushFrame,
   PackDoneFrame,

@@ -142,8 +142,12 @@ export interface InertStepStep {
   readonly retry?: RetryPolicy;
   readonly timeout?: number;
   readonly drainBehavior?: DrainBehavior;
-  readonly triggers?: number | "unbounded";
   readonly onFailure?: string;
+  /**
+   * Present only when the author set it, so a definition that does not set
+   * it keeps the definition hash it had before the option existed.
+   */
+  readonly replyByMail?: boolean;
 }
 
 export interface InertMap {
@@ -269,7 +273,7 @@ export function projectLiveToInert(
   definition: WorkflowDefinition,
   pluginTools: PluginToolDefinitions = new Map(),
 ): InertWorkflowDefinition {
-  return projectDefinition(definition, pluginTools);
+  return projectDefinition(definition, pluginTools, "");
 }
 
 /**
@@ -286,9 +290,12 @@ export async function computeLiveDefinitionHash(
   return computeWireDefinitionHash(projectLiveToInert(definition, pluginTools));
 }
 
+// `pathPrefix` is the dotted path of the body that holds `definition`, so an
+// error can name a body step the way a step-state key does: `section.reply`.
 function projectDefinition(
   definition: WorkflowDefinition,
   pluginTools: PluginToolDefinitions,
+  pathPrefix: string,
 ): InertWorkflowDefinition {
   const steps: Record<string, InertStep> = {};
   for (const stepId of definition.stepOrder) {
@@ -299,7 +306,11 @@ function projectDefinition(
           `but the steps record has no such entry`,
       );
     }
-    steps[stepId] = projectPrimitive(primitive, pluginTools);
+    steps[stepId] = projectPrimitive(
+      primitive,
+      pluginTools,
+      `${pathPrefix}${stepId}`,
+    );
   }
   // Every step in the record must be reachable through stepOrder, else a
   // grant surface would silently drop out of the projection.
@@ -360,16 +371,17 @@ function projectDefinition(
 function projectPrimitive(
   primitive: Primitive,
   pluginTools: PluginToolDefinitions,
+  path: string,
 ): InertStep {
   switch (primitive.kind) {
     case "step":
-      return projectStepPrimitive(primitive, pluginTools);
+      return projectStepPrimitive(primitive, pluginTools, path);
     case "map":
-      return projectMap(primitive, pluginTools);
+      return projectMap(primitive, pluginTools, path);
     case "loop":
-      return projectLoop(primitive, pluginTools);
+      return projectLoop(primitive, pluginTools, path);
     case "onTrigger":
-      return projectOnTrigger(primitive, pluginTools);
+      return projectOnTrigger(primitive, pluginTools, path);
     case "action":
       return projectAction(primitive);
     case "gate":
@@ -379,7 +391,7 @@ function projectPrimitive(
     case "sleep":
       return projectSleep(primitive);
     case "childWorkflow":
-      return projectChildWorkflow(primitive, pluginTools);
+      return projectChildWorkflow(primitive, pluginTools, path);
     case "escalation":
       return projectEscalation(primitive);
     default:
@@ -401,10 +413,29 @@ function assertUnreifiableStep(primitive: never): never {
   );
 }
 
+// A deployed bundle carries its own copy of this package, so a bundle built
+// with an earlier `step()` that accepted `triggers` gets past the current
+// `step()` check. The projector is the one layer that both the Hub probe
+// and the child's verified-definition loader run, so it refuses the key here.
+// The projection does not carry `triggers`, and without this check such a
+// step would hash and run as a one-turn step with no error.
+function rejectStepTriggers(step: StepPrimitive, path: string): void {
+  if ("triggers" in step) {
+    throw new Error(
+      `live->inert projector: step ${JSON.stringify(path)} sets triggers, ` +
+        `which a step no longer accepts: a step runs one turn per ` +
+        `invocation. Put the step in onTrigger({ on: mail, body }) and set ` +
+        `replyByMail: true on it, then redeploy`,
+    );
+  }
+}
+
 function projectStepPrimitive(
   step: StepPrimitive,
   pluginTools: PluginToolDefinitions,
+  path: string,
 ): InertStepStep {
+  rejectStepTriggers(step, path);
   return {
     kind: "step",
     id: step.id,
@@ -419,20 +450,23 @@ function projectStepPrimitive(
     ...(step.drainBehavior !== undefined
       ? { drainBehavior: step.drainBehavior }
       : {}),
-    ...(step.triggers !== undefined ? { triggers: step.triggers } : {}),
     ...(step.onFailure !== undefined ? { onFailure: step.onFailure } : {}),
+    ...(step.replyByMail !== undefined
+      ? { replyByMail: step.replyByMail }
+      : {}),
   };
 }
 
 function projectMap(
   primitive: MapPrimitive,
   pluginTools: PluginToolDefinitions,
+  path: string,
 ): InertMap {
   return {
     kind: "map",
     id: primitive.id,
     over: primitive.over,
-    step: projectStepPrimitive(primitive.step, pluginTools),
+    step: projectStepPrimitive(primitive.step, pluginTools, `${path}.step`),
     ...(primitive.retry !== undefined ? { retry: primitive.retry } : {}),
     ...(primitive.after !== undefined ? { after: [...primitive.after] } : {}),
   };
@@ -441,11 +475,12 @@ function projectMap(
 function projectLoop(
   primitive: LoopPrimitive,
   pluginTools: PluginToolDefinitions,
+  path: string,
 ): InertLoop {
   return {
     kind: "loop",
     id: primitive.id,
-    body: projectDefinition(primitive.body, pluginTools),
+    body: projectDefinition(primitive.body, pluginTools, `${path}.`),
     while: primitive.while,
     carry: primitive.carry,
     ...(primitive.input !== undefined ? { input: primitive.input } : {}),
@@ -464,10 +499,17 @@ function projectLoop(
 function projectOnTrigger(
   primitive: OnTriggerPrimitive,
   pluginTools: PluginToolDefinitions,
+  path: string,
 ): InertOnTrigger {
   const body: InertOnTriggerBody =
     "inline" in primitive.body
-      ? { inline: projectDefinition(primitive.body.inline, pluginTools) }
+      ? {
+          inline: projectDefinition(
+            primitive.body.inline,
+            pluginTools,
+            `${path}.`,
+          ),
+        }
       : { ref: primitive.body.ref };
   return {
     kind: "onTrigger",
@@ -554,13 +596,20 @@ function projectSleep(primitive: SleepPrimitive): SleepPrimitive {
 function projectChildWorkflow(
   primitive: ChildWorkflowPrimitive,
   pluginTools: PluginToolDefinitions,
+  path: string,
 ): InertChildWorkflow {
   // Mirror `projectOnTrigger`: an inline child definition projects recursively
   // (its grant surface must survive the child->hub boundary just like the
   // parent's own steps), the internal `{ ref }` handle passes through.
   const definition: InertChildWorkflowBody =
     "inline" in primitive.definition
-      ? { inline: projectDefinition(primitive.definition.inline, pluginTools) }
+      ? {
+          inline: projectDefinition(
+            primitive.definition.inline,
+            pluginTools,
+            `${path}.`,
+          ),
+        }
       : { ref: primitive.definition.ref };
   return {
     kind: "childWorkflow",

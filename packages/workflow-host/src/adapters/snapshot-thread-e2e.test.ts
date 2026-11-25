@@ -53,7 +53,7 @@ import {
 
 import { waitUntil } from "@intx/types/testing";
 
-import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
+import { createWorkflowStepInvoker, type StepBuild } from "./step-invoker";
 
 const TOOL_NAME = "charge_card";
 const TOOL_DESCRIPTION = "Charge the customer's card";
@@ -158,17 +158,20 @@ async function runOnce(
       matchingGrants: [],
       resolvedBy: null,
     }),
-    buildEnv: async (): Promise<StepEnvBase> => {
+    buildEnv: async (): Promise<StepBuild> => {
       const workdir = mkdtempSync(join(tmpdir(), "e2e-approval-"));
       workdirs.push(workdir);
       const storage = await createIsogitStore(workdir);
       return {
-        sources: [SOURCE],
-        defaultSource: SOURCE.id,
-        storage,
-        workdir,
-        audit: noopAuditStore(),
-        directors: directorRegistry(),
+        env: {
+          sources: [SOURCE],
+          defaultSource: SOURCE.id,
+          storage,
+          workdir,
+          audit: noopAuditStore(),
+          directors: directorRegistry(),
+        },
+        conversation: undefined,
       };
     },
     // agentFactory defaults to the real `createAgent`.

@@ -1,46 +1,56 @@
 // Durable conversation state for agent steps (design §3c, §4 Phase D1).
 //
-// A long-lived single-step agent holds its multi-turn conversation in
-// the reactor's in-memory turn buffer, backed by a per-step isogit
-// `ContextStore`. That store is rooted per run/attempt, so it is lost
-// the moment the warm agent's child is killed and respawned: the
-// rebuilt agent loads a fresh, empty per-run store and the conversation
-// continuity is gone.
+// An agent step's agent holds its multi-turn conversation in the reactor's
+// in-memory turn buffer, backed by a per-step isogit `ContextStore` rooted
+// per run/attempt. Every agent step builds its agent for each turn and closes
+// it when the turn ends, so that local store alone does not carry the
+// conversation to the next turn, a child respawn, or a replacement host.
 //
-// This module makes the warm agent's conversation DURABLE in the
-// workflow-run substrate (the single-writer proxy `RepoStore`, written
-// through the supervisor). The durable copy lives in the state directory
-// of the step in the run it belongs to
-// (`runs/<runId>/steps/<stepId>/state/`), beside that run's event log, so
-// the Hub's copy of the repo carries it to a replacement host. After a
-// child respawn, once the warm agent is rebuilt lazily, the conversation is
-// restored from the substrate into the agent's local store BEFORE the
-// agent's reactor loads, so multi-turn continuity holds across respawn and
-// failover.
+// This module makes the step's conversation DURABLE in the workflow-run
+// substrate (the single-writer proxy `RepoStore`, written through the
+// supervisor). The durable copy lives under the deployment's top-level run,
+// in the state directory of the step's key
+// (`runs/<topLevelRunId>/steps/<key>/state/`). The key is the step's path of
+// step ids joined with `.`, plus `[i]` for a map item (`stepPlaceKey`), so a
+// top-level step's key is its step id. The Hub's copy of the repo carries
+// the state to a replacement host.
 //
-// A multi-step workflow's agent steps run cold -- a fresh agent per
-// invocation -- and use the same store for each invocation, scoped to one
-// attempt (`DurableConversationLifetime`): it restores the attempt's
-// committed conversation before the agent loads and is mirrored once the
-// turn settles, so a conversational step continues on a replacement host.
-// On the host that ran the attempt, the per-attempt local store can be one
-// turn ahead of the committed copy: a crash between the reactor's local
-// commit and the mirror leaves that turn only there. A restore there keeps
-// the local store while it still extends the committed turns
-// (`isLocalStateCurrent`), so the turn is not lost and a crash-recovered
-// approval park resumes against the gate it recorded. The lead is only
-// meaningful over the history it was built on, and that history is never
-// replaced under it: the workflow-run pack restorer refuses Hub history that
-// would move a branch the host already holds.
+// Each invocation opens the store scoped to that invocation
+// (`DurableConversationLifetime`): it restores the key's committed
+// conversation into the agent's local store BEFORE the agent's reactor loads,
+// and is mirrored once the turn settles, so a conversational step continues
+// across turns, respawns and failover. Many invocations share one key (loop
+// iterations, onTrigger events, a childWorkflow step run again, retries),
+// and each continues the conversation the last
+// one committed. A turn that fails commits nothing, so a retry continues from
+// the last committed turn. The committed state is stamped with the invocation
+// that wrote it. An invocation continues its own state as it is; any other
+// invocation drops the pending operations and parked reply targets, and rolls
+// back a turn parked on an approval to that turn's start
+// (`parkedTurnStart`), since only the invocation that parked can resume the
+// gate. An earlier version of this store wrote state with no stamp. When
+// such state is parked on a gate, an approval resume of that gate continues
+// it as its own: the gate's correlation id names the park. State with no
+// stamp records no `parkedTurnStart`, and a resume of its park that parks
+// again cannot learn it. State parked on a gate with no `parkedTurnStart`
+// cannot be rolled back, so another invocation starts the step over as if
+// nothing were committed. On the host that ran the attempt,
+// the per-attempt local store can be one turn ahead of the committed copy: a
+// crash between the reactor's local commit and the mirror leaves that turn
+// only there. A restore there keeps the local store while it still extends
+// the state the invocation continues (`isLocalStateCurrent`), so the turn is
+// not lost and a crash-recovered approval park resumes against the gate it
+// recorded. The lead is only meaningful over the history it was built on,
+// and that history is never replaced under it: the workflow-run pack
+// restorer refuses Hub history that would move a branch the host already
+// holds.
 //
 // A step can carry a seed: a snapshot the Hub commits beside its state
-// directory for the step to start from. A restore that finds no state of
-// the store's own starts from the seed instead, and the first mirror
-// commits the seeded turns as the step's own state. That covers a step's
-// first turn and a retried attempt starting over alike, so a retry starts
-// over from the seed, not from nothing. A restore that finds neither, and
-// no current attempt lead, starts the step with no conversation: the
-// committed history, not the local store, decides what the agent continues.
+// directory for the step to start from. A restore that continues no committed
+// state starts from the seed instead, and the first mirror commits the
+// seeded turns as the step's own state. A restore that finds neither, and no
+// current attempt lead, starts the step with no conversation: the committed
+// history, not the local store, decides what the agent continues.
 //
 // The conversation is committed in the step-state format that
 // `@intx/hub-sessions/substrate` defines: a compacted checkpoint plus an
@@ -79,11 +89,12 @@
 //     the same atomic commit. The truncate needs no nested read: omitting
 //     the WAL paths from the returned set IS the truncate.
 //
-// Persistence sink (the riskiest part, design §6). The connector router's
-// `snapshot()` / `restore()` surface and the harness's
-// `createWrappedStorageOverrides` are reused, but the persistence sink is
-// repointed from the agent's local isogit store to the workflow-run
-// substrate. Both the WAL append and the checkpoint write route through
+// Persistence sink (the riskiest part, design §6). The store keeps its own
+// connector router and persists the router's `snapshot()` with the
+// conversation; a restore hands the committed connector state to the
+// router's `restore()`. The harness's `createWrappedStorageOverrides` is not
+// used: the sink is the workflow-run substrate, not the agent's local
+// isogit store. Both the WAL append and the checkpoint write route through
 // the proxy `writeTreePreservingPrefix`; because the supervisor is the
 // single writer and serializes every write to the workflow-run ref under
 // a per-repo lock, and the state directory is disjoint from the run-event
@@ -94,25 +105,24 @@
 //
 // Timing (design §4 Phase D1, invariant 1). This is a STRUCTURE-only
 // change. The mirror is still `await`ed synchronously at the same run
-// boundary (`onRunBoundary` -> `mirrorToSubstrate`), so every turn is
-// still durably committed before the next message is processed. D1
-// changes WHAT the write does (O(1) append instead of O(N) whole-blob),
-// not WHEN it happens. The run log is NOT yet a durable backstop for the
-// turn (it carries a constant ref, design rev-2 FACT 1), so the
-// conversation copy here remains the sole durable copy of the agent's
-// per-turn output -- which is exactly why D1 keeps the write synchronous.
+// boundary (the step conversation's `settle` -> `mirrorToSubstrate`), so
+// every turn is still durably committed before the next message is
+// processed. D1 changes WHAT the write does (O(1) append instead of O(N)
+// whole-blob), not WHEN it happens. The run log is NOT yet a durable
+// backstop for the turn (it carries a constant ref, design rev-2 FACT 1),
+// so the conversation copy here remains the sole durable copy of the
+// agent's per-turn output -- which is exactly why D1 keeps the write
+// synchronous.
 // The async flusher, run-log enrichment, and crash reconciliation are
 // later, conditional phases (D2-D4), not done here.
 //
-// Commit granularity (greybeard's pick, design §3c open question). The
-// design calls for connector-state-change-driven commits via the router's
-// `onStateChanged` hook. The warm-agent path drives the connector router
-// through `seedInbound`: each mail-derived inbound message routes and
-// commits its thread state before the agent's send, so `onStateChanged`
-// fires and enqueues a change-driven mirror. The run-boundary mirror (per
-// message) still runs unconditionally, so the two triggers are
-// complementary -- the seed persists the connector state promptly, the
-// boundary persists the turn delta.
+// Commit granularity. The step invoker mirrors the store once per turn,
+// after the turn settles; a change of the connector state does not mirror
+// it. The seed and the park advance the connector router and the local
+// store, so the turn's mirror commits them with the turn's conversation. The
+// reply advances only the connector router: the mirror takes the connector
+// state from the router, and the local store records the sent reply after
+// the mirror commits it (see `saveSentReplyLocally`).
 //
 // Defensive: a restore that finds a checkpoint or WAL but cannot
 // parse/replay it THROWS (a lost or corrupt conversation on respawn is a
@@ -121,7 +131,6 @@
 // the next respawn to read a stale snapshot.
 
 import fs from "node:fs";
-import path from "node:path";
 
 import { getLogger } from "@intx/log";
 import { createConnectorRouter } from "@intx/harness";
@@ -134,11 +143,13 @@ import type {
   RepoId,
   RepoStore,
   StepStateContent,
+  StepStateInvocation,
   StepStateMetadata,
 } from "@intx/hub-sessions/substrate";
 import {
   buildStepStateCheckpoint,
   createCommittedStepStateReader,
+  isSameStepStateInvocation,
   readCommittedStepStateSeed,
   reconstructStepState,
   serializeStepStateWalEntry,
@@ -154,8 +165,6 @@ import type {
   SendReceipt,
 } from "@intx/types/runtime-core";
 import { emptyTokenUsage } from "@intx/types/runtime-core";
-
-import { conversationStateRoot } from "./conversation-state-root";
 
 const logger = getLogger(["sidecar", "workflow-child", "conversation-state"]);
 
@@ -179,23 +188,26 @@ const CHECKPOINT_INTERVAL = 64;
 const MAX_UNCOMPACTED_WAL = 2 * CHECKPOINT_INTERVAL;
 
 /**
- * What a store's durable state belongs to. The warm agent keeps one
- * conversation for the life of its deployment, across attempts. A cold
- * step's conversation belongs to one attempt: a retried attempt starts over,
- * so its store neither restores nor appends to an earlier attempt's state.
+ * What a store's durable state belongs to. A step's store serves one
+ * invocation, named by its run, its scoped step id and its attempt, and
+ * stamps the state with it. An approval resume also names the correlation id
+ * of the gate it resumes (`resumes`). The invocation continues the
+ * conversation its key holds; when another invocation wrote that state, the
+ * store drops that invocation's pending operations and parked reply targets
+ * and rolls back a turn it left parked on an approval.
  */
-export type DurableConversationLifetime =
-  | { readonly kind: "deployment" }
-  | { readonly kind: "attempt"; readonly attempt: number };
+export type DurableConversationLifetime = {
+  readonly invocation: StepStateInvocation;
+  readonly resumes?: string;
+};
 
 export interface DurableConversationStoreOpts {
   /**
-   * Local per-agent isogit store root. For a deployment lifetime it is
-   * stable across runs (NOT keyed by runId) so a warm agent's reactor
-   * loads the same on-disk store on every message; for an attempt
-   * lifetime it must be unique to the attempt, so a retried attempt never
-   * loads an earlier attempt's store. The substrate is the cross-respawn
-   * durable mirror of this store's conversation content.
+   * Local per-agent isogit store root. It must be unique to the
+   * invocation, so another invocation, a retried attempt included, never
+   * loads an earlier invocation's store and continues from the committed
+   * state instead. The substrate is the cross-respawn durable mirror of this
+   * store's conversation content.
    */
   localStoreDir: string;
   /** Commit signer for the local isogit store. */
@@ -208,9 +220,15 @@ export interface DurableConversationStoreOpts {
   workflowRunRef: string;
   /** Principal the substrate write is authored under. */
   principal: Principal;
-  /** The run the step belongs to; its state lives under that run. */
+  /**
+   * The deployment's top-level run; the state lives under its `steps/`
+   * directory.
+   */
   runId: string;
-  /** The step whose state this store holds. */
+  /**
+   * The step segment under the run: the key of the step's place
+   * (`stepPlaceKey`). A top-level step's key is its step id.
+   */
   stepId: string;
   lifetime: DurableConversationLifetime;
   /**
@@ -229,24 +247,24 @@ export interface DurableConversationStoreOpts {
  */
 export interface DurableConversationStore {
   /**
-   * The store the warm agent's env binds as `storage` and `audit`. It is
+   * The store the step agent's env binds as `storage` and `audit`. It is
    * both `ContextStore` (conversation + connector state) and
-   * `AuditStore` (tool-authorization records), matching the per-run
-   * isogit store the non-warm path uses.
+   * `AuditStore` (tool-authorization records).
    */
   readonly storage: ContextStore & AuditStore;
   /**
    * Pull the prior conversation from the substrate (checkpoint + WAL-tail
    * replay) into the local store so the agent's reactor `load()` sees it.
-   * An attempt-scoped store whose local store is still current keeps it
-   * instead (see `isLocalStateCurrent`). Otherwise a step with no state of
-   * its own starts from its seed, when there is one, and with no
-   * conversation when there is none, whatever its local store held. Called
-   * before the agent is built (lazy first build and respawn rebuild).
-   * Returns `false` only when the step starts with no conversation. A read
-   * that finds a checkpoint, WAL, or seed but cannot parse/replay it throws
-   * -- a corrupt durable copy is a correctness failure that must not
-   * silently start the agent fresh.
+   * The store continues the committed state, rolled back when another
+   * invocation wrote it, and keeps its local store instead while that is
+   * still current (see `isLocalStateCurrent`). A step that continues no
+   * committed state starts from its seed, when there is one, and with no
+   * conversation when there is none, whatever its local store held. A
+   * committed `parkedTurnStart` past the committed turns throws. Called
+   * before the agent is built. Returns `false` only when the step starts
+   * with no conversation. A read that finds a checkpoint, WAL, or seed but
+   * cannot parse/replay it throws -- a corrupt durable copy is a correctness
+   * failure that must not silently start the agent fresh.
    */
   restoreFromSubstrate(): Promise<boolean>;
   /**
@@ -255,47 +273,60 @@ export interface DurableConversationStore {
    * compaction interval. Called synchronously at the run boundary (after
    * the agent's send settles). A write failure surfaces, and so does a
    * mirror attempted while the local store's last checkpoint has failed.
+   * The mirror commits the connector state the router holds. After the
+   * commit, it records a sent reply's thread advance in the local store, and
+   * logs a failure of that record as a warning.
    */
   mirrorToSubstrate(): Promise<void>;
   /**
    * Advance the connector router from a received inbound message so the
-   * warm agent's reply path has thread state. Runs the router's pure
+   * step agent's reply path has thread state. Runs the router's pure
    * `route()` then `commit()`; the router owns what each decision does to
    * the thread. The advanced connector state is flushed into the local
-   * store's metadata so the run-boundary mirror persists it and a respawn
-   * restore re-seeds the router. Called before the warm agent's send so
-   * `composeReply()` can compose a threaded reply. A passthrough message
-   * leaves the thread unchanged and sets the router's turn reply target to
-   * its sender, which the router holds in memory until `parkTurn` files
-   * it. A metadata write failure surfaces.
+   * store's metadata. The run-boundary mirror commits it from the router,
+   * and a respawn restore re-seeds the router from the commit. Called before
+   * the step agent's send so `composeReply()` can compose a threaded reply.
+   * A start or continue sets the router's turn mode to `thread`. A passthrough message leaves
+   * the thread unchanged and sets the turn mode to `passthrough`, with its
+   * sender as the reply target. The router holds the turn mode in memory
+   * until `parkTurn` files it. A metadata write failure surfaces.
    */
   seedInbound(message: InboundMessage): Promise<void>;
   /**
-   * Mark the start of a warm agent turn (the router's `beginTurn`). A turn
-   * that resumes the approval gate `turn.resume` takes the reply target
+   * Mark the start of a step agent turn (the router's `beginTurn`). A turn
+   * that resumes the approval gate `turn.resume` takes the turn mode
    * `parkTurn` filed under that correlation id, and the removal of the
-   * filed target is flushed into the local store's metadata. Any other
-   * turn clears the turn reply target, so a turn that seeds no passthrough
-   * message does not reply to the sender of an earlier one. Called before
-   * `seedInbound` on every warm turn. A metadata write failure surfaces.
+   * filed mode is flushed into the local store's metadata. Any other turn
+   * sets the turn mode to `none`, so a turn that seeds no mail replies to
+   * nobody: not to an earlier passthrough sender, and not on the thread.
+   * Called before `seedInbound` on every step turn. A metadata write
+   * failure surfaces.
    */
   beginTurn(turn: { resume?: string }): Promise<void>;
   /**
    * Park the current turn on the approval gate `correlationId` (the
-   * router's `parkTurn`): file the turn reply target under that id and
-   * flush it into the local store's metadata, so the run-boundary mirror
-   * persists it and the approval resume replies to the same target, also
-   * after a child respawn. A turn with no turn reply target writes
-   * nothing. A metadata write failure surfaces.
+   * router's `parkTurn`): file the turn mode under that id and flush it
+   * into the local store's metadata. The run-boundary mirror commits it from
+   * the router, so the approval resume answers the same mail, also after a
+   * child respawn. A turn that answers no mail writes nothing. A metadata
+   * write failure surfaces.
    */
   parkTurn(correlationId: string): Promise<void>;
   /**
+   * Whether the current turn answers mail (the router's
+   * `turnAnswersMail`): its input was mail, or it resumes a parked turn
+   * whose input was mail.
+   */
+  turnAnswersMail(): boolean;
+  /**
    * Produce the threading headers for a reply (the router's
    * `composeReply`): to the turn's passthrough sender when a passthrough
-   * seed set one, otherwise on the active connector thread. Returns `null`
-   * when the passthrough sender has no address. Throws
-   * `NoActiveConnectorThreadError` when neither exists. The warm mail
-   * loop's reply drain reads this to address its outbound reply.
+   * seed set one, and on the active connector thread when a start or
+   * continue seed set the mode. Returns `null` when the passthrough sender
+   * has no address. Throws `TurnAnswersNoMailError` when the turn answers
+   * no mail, and `NoActiveConnectorThreadError` when a thread turn has no
+   * active thread. The step invoker reads this to address the reply
+   * of its turn.
    */
   composeReply(): ConnectorReplyParts | null;
   /**
@@ -304,13 +335,13 @@ export interface DurableConversationStore {
    * next one: `lastMessageId` becomes its Message-ID, so the next inbound
    * continuation matches, and `lastReferences` becomes `references`, the
    * chain it carried. A reply to a passthrough sender leaves the thread
-   * unchanged. Then flushes the advanced connector state into the local
-   * store's metadata the same way `seedInbound` does, so the parent
-   * persists across turns and across a child respawn. Called by the warm
-   * mail loop's reply drain after its outbound send settles. Throws
-   * `NoActiveConnectorThreadError` when no thread is active -- advancing
-   * outbound state has no meaning without a seeded thread. A metadata
-   * write failure surfaces.
+   * unchanged. The store writes nothing here: the turn's mirror commits
+   * the advance from the router, and only then does the local store record
+   * it. Called by the step invoker after the outbound send of its turn's
+   * reply settles. Throws `TurnAnswersNoMailError` when the turn answers no
+   * mail, and `NoActiveConnectorThreadError` when a thread turn has no active
+   * thread -- advancing outbound state has no meaning without a seeded
+   * thread. Such a throw leaves the thread as it was.
    */
   onReplySent(
     receipt: SendReceipt,
@@ -324,32 +355,32 @@ export async function createDurableConversationStore(
   await fs.promises.mkdir(opts.localStoreDir, { recursive: true });
   const baseStorage = await createIsogitStore(opts.localStoreDir, opts.signer);
 
-  // Reuse the connector router + the harness storage-override seam. The
-  // router's `onStateChanged` is the change-driven commit hook the design
-  // names. `seedInbound` drives the router (route + commit) on each inbound
-  // mail, so `onStateChanged` fires and enqueues a change-driven mirror
-  // behind the seed on the shared serialization tail; the run-boundary
-  // mirror still commits every boundary. Both triggers persist state, so a
-  // dropped change-driven mirror is recoverable at the next boundary.
+  // The turn's mirror takes the connector state from the router.
   const connectorRouter = createConnectorRouter({
     ownAddress: opts.mailboxAddress,
-    onStateChanged: () => {
-      void mirrorToSubstrate().catch((cause) => {
-        logger.error`connector-state-change conversation mirror failed for ${opts.stepId}: ${cause instanceof Error ? cause.message : String(cause)}`;
-      });
-    },
   });
 
   const statePrefix = workflowRunStepStatePrefix(opts.runId, opts.stepId);
-  const stampedAttempt =
-    opts.lifetime.kind === "attempt" ? { attempt: opts.lifetime.attempt } : {};
+  const stamped = { invocation: opts.lifetime.invocation };
   // Set when the next mirror folds the whole conversation into a fresh
-  // checkpoint instead of appending a WAL entry: the substrate holds an
-  // earlier attempt's state, which the fold drops in the same commit, or the
+  // checkpoint instead of appending a WAL entry: the substrate holds another
+  // invocation's state, which the fold drops in the same commit, or the
   // store holds turns none of its commits do yet -- a seed's, or a local
   // copy's that resumed before its first mirror -- which would otherwise sit
   // in one WAL entry that every later append to its bucket carries along.
   let foldNextMirror = false;
+
+  // The turn count at the start of the current logical turn, which a mirror
+  // records as `parkedTurnStart` when the turn parked on an approval. An
+  // approval resume continues the turn it resumes, so it keeps the start.
+  // `null` until a restore or a turn sets it, and while it is unknown (see
+  // `startOfTurn`).
+  let turnStart: number | null = null;
+
+  // Set when the store advanced the connector thread for a sent reply and
+  // its local store does not record the advance yet. The next mirror records
+  // it there after it commits.
+  let sentReplyUnsaved = false;
 
   // The number of mirror boundaries already durably committed (the
   // checkpoint's folded boundaries plus every appended WAL entry). It is
@@ -370,19 +401,18 @@ export async function createDurableConversationStore(
 
   // Serialize the shared-counter critical section. Both `mirrorToSubstrate`
   // and `restoreFromSubstrate` read and advance the three counts above, and
-  // either can re-enter the other: `connectorRouter.restore()` can fire
-  // `onStateChanged` synchronously, which enqueues a mirror. A single
-  // per-instance tail runs every such op one-at-a-time regardless of entry
-  // point, so two overlapping runs cannot read the same boundary seq and
-  // emit two WAL entries at it. The stored tail swallows rejections so one
-  // failed op does not poison the chain, while each caller still observes its own op's
-  // result (or rejection) through the returned promise.
+  // the connector ops write the local store's metadata that a mirror reads.
+  // A single per-instance tail runs every such op one-at-a-time regardless
+  // of entry point, so two overlapping runs cannot read the same boundary
+  // seq and emit two WAL entries at it. The stored tail swallows rejections
+  // so one failed op does not poison the chain, while each caller still
+  // observes its own op's result (or rejection) through the returned promise.
   //
-  // This serializes mirror-vs-mirror and mirror-vs-restore only. It does NOT
-  // address the reactor-vs-mirror peek-snapshot window documented on
-  // `runMirror` below (nothing must append to the reactor's turn array
-  // between its last writeTurns and the mirror's peekTurns) -- that is a
-  // different concurrency axis and is out of scope here.
+  // This serializes the store's own ops: mirror, restore, and the connector
+  // ops. It does NOT address the reactor-vs-mirror peek-snapshot window
+  // documented on `runMirror` below (nothing must append to the reactor's
+  // turn array between its last writeTurns and the mirror's peekTurns) --
+  // that is a different concurrency axis and is out of scope here.
   let stateOpTail: Promise<unknown> = Promise.resolve();
   function serializeStateOp<T>(op: () => Promise<T>): Promise<T> {
     const result = stateOpTail.then(op, op);
@@ -413,6 +443,10 @@ export async function createDurableConversationStore(
     return serializeStateOp(() => runParkTurn(correlationId));
   }
 
+  function turnAnswersMail(): boolean {
+    return connectorRouter.turnAnswersMail();
+  }
+
   function composeReply(): ConnectorReplyParts | null {
     return connectorRouter.composeReply();
   }
@@ -433,26 +467,84 @@ export async function createDurableConversationStore(
   }
 
   /**
-   * The committed state this store continues, or `null` to start over. An
-   * attempt continues only state stamped with its own attempt; state from an
-   * earlier attempt is replaced by this attempt's first mirror.
+   * The state this store continues from its key's committed state, or
+   * `null` when it continues none. An invocation continues its own state as
+   * it is (`isOwnStepState`); that is a resume of the invocation, such as an
+   * approval resume. Its own state is the state it stamped, or state with no
+   * stamp that is parked on the gate it resumes. Any other invocation
+   * continues the committed conversation with the pending operations and
+   * parked reply targets of the invocation that wrote it dropped, since they
+   * name gates only that invocation can resume. When that invocation's last
+   * turn parked on an approval, the conversation is rolled back to the start
+   * of that turn: the park was never answered, and a turn left on a tool
+   * call with no result cannot be continued. When that turn parked on a gate
+   * but the state records no `parkedTurnStart`, which state with no stamp,
+   * or a resume of such a park that parks again, does, the turn's start is
+   * unknown. Such state returns `null`: the invocation starts over from the
+   * seed, or with no conversation, and its first mirror folds over the
+   * committed state. A later attempt of the same run and step is never
+   * continued over.
+   *
+   * This relies on two invocations of one key never mirroring at the same
+   * time: onTrigger drives one body at a time, loop iterations and map items
+   * run in sequence, and a retry starts after the failure it retries.
    */
-  async function readOwnState(
-    reads: CommittedReads | null,
-  ): Promise<ReconstructedStepState | null> {
-    const committed = await readCommittedState(reads);
-    if (committed === null || opts.lifetime.kind === "deployment") {
-      return committed;
-    }
-    const attempt = opts.lifetime.attempt;
-    if (committed.attempt === attempt) return committed;
-    if (committed.attempt !== undefined && committed.attempt > attempt) {
+  function continuedState(
+    committed: ReconstructedStepState | null,
+  ): ContinuedState | null {
+    if (committed === null) return committed;
+    const { parkedTurnStart } = committed;
+    if (
+      parkedTurnStart !== undefined &&
+      parkedTurnStart > committed.turns.length
+    ) {
       throw new Error(
-        `sidecar conversation-state: ${statePrefix} holds attempt ${String(committed.attempt)}, later than attempt ${String(attempt)}; refusing to replace it`,
+        `sidecar conversation-state: ${statePrefix} records a parked turn starting at turn ${String(parkedTurnStart)}, past its ${String(committed.turns.length)} turns; refusing to restore corrupt step state`,
       );
     }
-    foldNextMirror = true;
-    return null;
+    const own = opts.lifetime.invocation;
+    const stamp = committed.invocation;
+    if (isOwnStepState(committed, own, opts.lifetime.resumes)) {
+      return committed;
+    }
+    if (
+      stamp !== undefined &&
+      stamp.runId === own.runId &&
+      stamp.stepId === own.stepId &&
+      stamp.attempt > own.attempt
+    ) {
+      throw new Error(
+        `sidecar conversation-state: ${statePrefix} holds attempt ${String(stamp.attempt)} of step ${stamp.stepId} in run ${stamp.runId}, later than attempt ${String(own.attempt)}; refusing to replace it`,
+      );
+    }
+    if (
+      parkedTurnStart === undefined &&
+      committed.pendingOperations.some((op) => op.suspendedCall !== undefined)
+    ) {
+      return null;
+    }
+    return rollBack(committed);
+  }
+
+  /**
+   * Adopt the key's committed state as the base of this store's next
+   * mirror: learn the committed turn and checkpoint counts, and fold the next
+   * mirror when the store continues a state other than the committed one.
+   * Returns the state the store continues and the committed boundary count,
+   * which the caller stores as `mirroredBoundaryCount`.
+   */
+  function adoptCommitted(committed: ReconstructedStepState | null): {
+    continued: ContinuedState | null;
+    boundaryCount: number;
+  } {
+    const continued = continuedState(committed);
+    mirroredTurnCount = committed?.totalTurns ?? 0;
+    checkpointBoundarySeq = committed?.checkpointBoundarySeq ?? 0;
+    // A rolled-back state, or a start over from committed state, is not a
+    // prefix the WAL can append to, so the first mirror folds it into a
+    // fresh checkpoint.
+    if (continued !== committed) foldNextMirror = true;
+    return { continued, boundaryCount: committed?.boundaryCount ?? 0 };
   }
 
   async function readCommittedState(
@@ -463,65 +555,55 @@ export async function createDurableConversationStore(
   }
 
   async function runRestore(): Promise<boolean> {
-    // Establish the committed counts BEFORE the connector state is restored
-    // into the router. `connectorRouter.restore()` can fire `onStateChanged`
-    // synchronously (when the restored state differs from current), which
-    // enqueues a mirror. Serialization already chains that mirror behind
-    // this restore, but setting the counts first keeps them correct even if
-    // that ordering guarantee is ever weakened. The counts reflect the
-    // substrate state they were read from, which is durable independent of
-    // the local-store commit.
+    // Establish the committed counts before the connector state is restored
+    // into the router. The counts reflect the substrate state they were read
+    // from, which is durable independent of the local-store commit.
     const reads = await openCommittedReads();
-    const reconstructed = await readOwnState(reads);
-    if (reconstructed !== null) {
-      mirroredBoundaryCount = reconstructed.boundaryCount;
-      mirroredTurnCount = reconstructed.totalTurns;
-      checkpointBoundarySeq = reconstructed.checkpointBoundarySeq;
-    } else {
-      // No durable state of its own yet: the next mirror starts the WAL from
-      // an empty checkpoint, so the committed counts are empty and the first
-      // mirror appends from boundary seq 0.
-      mirroredBoundaryCount = 0;
-      mirroredTurnCount = 0;
-      checkpointBoundarySeq = 0;
-    }
-    if (opts.lifetime.kind === "attempt") {
-      // Writing the local state back re-seeds the store's turn snapshot and
-      // connector buffer, which a fresh store instance starts without; the
-      // next mirror then commits the turns the committed copy lacks.
-      const local = {
-        turns: (await baseStorage.load()).turns,
-        ...(await baseStorage.loadMetadata()),
-      };
-      if (
-        isLocalStateCurrent(
-          local,
-          reconstructed === null ? null : reconstructed.turns,
-        )
-      ) {
-        await loadIntoLocalStore(
-          local,
-          `resume ${opts.stepId} from its local attempt store`,
-        );
-        if (reconstructed === null) foldNextMirror = true;
-        return true;
-      }
-    }
-    if (reconstructed !== null) {
+    const adopted = adoptCommitted(await readCommittedState(reads));
+    mirroredBoundaryCount = adopted.boundaryCount;
+    const { continued } = adopted;
+    // The seed applies only when the store continues no committed state.
+    const seed =
+      continued !== null || reads === null
+        ? null
+        : await readCommittedStepStateSeed(reads, opts.runId, opts.stepId);
+    // The seed's turns are not yet the step's own state, so the first
+    // mirror commits them along with the step's first turn.
+    const seeded: StepStateContent | null =
+      seed === null
+        ? null
+        : { ...seed, pendingOperations: [], parkedReplyTargets: {} };
+    if (seeded !== null) foldNextMirror = true;
+    const base = continued ?? seeded;
+    turnStart = startOfTurn(base);
+    // Writing the local state back re-seeds the store's turn snapshot and
+    // connector buffer, which a fresh store instance starts without; the
+    // next mirror then commits the turns the committed copy lacks. The
+    // local store is compared with the state this invocation continues, so
+    // a park recorded locally over a rolled-back state is kept.
+    const local = {
+      turns: (await baseStorage.load()).turns,
+      ...(await baseStorage.loadMetadata()),
+    };
+    if (isLocalStateCurrent(local, base === null ? null : base.turns)) {
       await loadIntoLocalStore(
-        reconstructed,
+        local,
+        `resume ${opts.stepId} from its local attempt store`,
+      );
+      if (base === null) foldNextMirror = true;
+      return true;
+    }
+    if (continued !== null) {
+      await loadIntoLocalStore(
+        continued,
         `restore conversation for ${opts.stepId} from substrate`,
       );
       return true;
     }
-    const seed =
-      reads === null
-        ? null
-        : await readCommittedStepStateSeed(reads, opts.runId, opts.stepId);
-    if (seed === null) {
-      // Only a deployment-lifetime store gets here holding turns, and they
-      // are in no commit: a crash beat the first mirror. Kept, the next
-      // mirror would commit them into the step's history.
+    if (seeded === null) {
+      // The local store holds no turns and no pending operations here, or it
+      // would be current and the restore would have returned above. The
+      // write clears any other state it holds, such as a connector state.
       await loadIntoLocalStore(
         {
           turns: [],
@@ -534,13 +616,7 @@ export async function createDurableConversationStore(
       );
       return false;
     }
-    // The seed's turns are not yet the step's own state, so the first
-    // mirror commits them along with the step's first turn.
-    await loadIntoLocalStore(
-      { ...seed, pendingOperations: [], parkedReplyTargets: {} },
-      `start ${opts.stepId} from its seed`,
-    );
-    foldNextMirror = true;
+    await loadIntoLocalStore(seeded, `start ${opts.stepId} from its seed`);
     return true;
   }
 
@@ -548,11 +624,11 @@ export async function createDurableConversationStore(
    * Write a conversation into the local store's working tree and commit, so
    * the agent's reactor `load()` reads it. `setConnectorState` and
    * `setParkedReplyTargets` buffer the connector state and the parked reply
-   * targets for the metadata write; the router takes both so a future
-   * change-driven mirror carries the right base. The
-   * metadata goes first: a crash before the turns then leaves a store
-   * `isLocalStateCurrent` refuses, where turns written alone would pass as
-   * current without their pending operations.
+   * targets for the metadata write; the router takes both so the next
+   * connector op starts from the restored state. The metadata goes first: a
+   * crash before the turns then leaves a store `isLocalStateCurrent`
+   * refuses, where turns written alone would pass as current without their
+   * pending operations.
    */
   async function loadIntoLocalStore(
     state: StepStateContent,
@@ -643,6 +719,35 @@ export async function createDurableConversationStore(
   }
 
   async function runMirror(): Promise<void> {
+    await commitMirror();
+    if (sentReplyUnsaved) await saveSentReplyLocally();
+  }
+
+  /**
+   * Record a sent reply's thread advance in the local store, after the mirror
+   * committed it. The record waits for the mirror because a failed local
+   * write marks the local store's checkpoint failed, and the mirror then
+   * refuses to commit the turn. Of the reads of the local store, only a
+   * later restore of this invocation on this host reads the record, through
+   * `isLocalStateCurrent`. When the write fails, or the process stops before
+   * it, that restore continues the thread from the mail the reply answered,
+   * and its next mirror commits that older thread over the committed
+   * advance, so the committed thread no longer names the reply. The next
+   * mail on the thread still continues it, because its References name the
+   * thread.
+   */
+  async function saveSentReplyLocally(): Promise<void> {
+    sentReplyUnsaved = false;
+    try {
+      await writeConnectorMetadata(
+        `record the sent reply on the connector thread for ${opts.stepId}`,
+      );
+    } catch (cause) {
+      logger.warn`the reply of ${opts.stepId} was sent and its turn committed, but the local copy of its thread record was not saved: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+  }
+
+  async function commitMirror(): Promise<void> {
     // After a failed local checkpoint the files lag the agent's state, and
     // mirroring them would commit that older state as this boundary's.
     if (baseStorage.hasFailedCheckpoint()) {
@@ -657,28 +762,45 @@ export async function createDurableConversationStore(
     // boundary; only the bounded metadata.json is read from disk. This
     // rests on a sequencing invariant the store cannot enforce: nothing
     // mutates the reactor's turn array between its last writeTurns and
-    // this read. The mirror runs at onRunBoundary after send() settles,
+    // this read. The mirror runs at the run boundary after send() settles,
     // and the reactor only appends inside a cycle (each ending in
     // writeTurns), so peekTurns() equals the on-disk state here.
     // Serializing the mirror entry points keeps two mirrors from
     // overlapping this read, but the reactor must still not append
     // between its writeTurns and this peek -- that axis is not serialized.
     const turns = baseStorage.peekTurns();
-    const metadata = {
-      ...(await baseStorage.loadMetadata()),
-      ...stampedAttempt,
-    };
+    const localMetadata = await baseStorage.loadMetadata();
 
     // First mirror in this store's lifetime that did not run through
     // `restoreFromSubstrate` (which sets the counts): learn the durable
     // counts from the substrate so the append starts at the right boundary
     // seq and never re-commits boundaries the substrate already holds.
     if (mirroredBoundaryCount === null) {
-      const reconstructed = await readOwnState(await openCommittedReads());
-      checkpointBoundarySeq = reconstructed?.checkpointBoundarySeq ?? 0;
-      mirroredBoundaryCount = reconstructed?.boundaryCount ?? 0;
-      mirroredTurnCount = reconstructed?.totalTurns ?? 0;
+      const adopted = adoptCommitted(
+        await readCommittedState(await openCommittedReads()),
+      );
+      mirroredBoundaryCount = adopted.boundaryCount;
+      turnStart ??= startOfTurn(adopted.continued);
     }
+
+    // A pending approval gate carries the call it re-runs
+    // (`suspendedCall`); an async-tool marker does not. Only a park on a gate
+    // records where its turn started, so another invocation can roll it back.
+    const parkedOnGate = localMetadata.pendingOperations.some(
+      (op) => op.suspendedCall !== undefined,
+    );
+    // The router owns the connector state. The local metadata does not hold
+    // a sent reply's thread advance until after the mirror (see
+    // `saveSentReplyLocally`).
+    const metadata = {
+      ...localMetadata,
+      connectorState: connectorRouter.snapshot(),
+      parkedReplyTargets: connectorRouter.parkedReplyTargets(),
+      ...stamped,
+      ...(parkedOnGate && turnStart !== null
+        ? { parkedTurnStart: turnStart }
+        : {}),
+    };
 
     const uncompactedBefore = mirroredBoundaryCount - checkpointBoundarySeq;
     if (foldNextMirror || uncompactedBefore >= MAX_UNCOMPACTED_WAL) {
@@ -704,8 +826,8 @@ export async function createDurableConversationStore(
     // new turns were added since the last mirror. The entry carries the
     // 0-or-more new turns plus the freshest metadata snapshot, so a
     // turnless-but-metadata-mutating boundary (e.g. a throwing send that
-    // still advanced tokenUsage/pendingOperations, since onRunBoundary runs
-    // in a finally) still durably commits its metadata. The payload is the
+    // still advanced tokenUsage/pendingOperations, since the run boundary
+    // runs in a finally) still durably commits its metadata. The payload is the
     // turn DELTA plus bounded metadata -- never the whole conversation, so
     // the O(N^2) growth stays gone. This is the only synchronous write per
     // boundary on the reply path, except at a compaction boundary.
@@ -757,15 +879,14 @@ export async function createDurableConversationStore(
   }
 
   // Advance the connector router from a received inbound message and flush
-  // the resulting connector state into the local store's metadata. `commit`
-  // fires the router's `onStateChanged`, which enqueues a change-driven
-  // mirror behind this op on the shared serialization tail; because that
-  // mirror reads the connector state from the local store's metadata (not
-  // from the router), the metadata write below is what makes the seeded
-  // state reach the substrate. The write preserves the reactor's staged
-  // pendingOperations / tokenUsage -- a seed advances only connectorState.
-  // A passthrough commit sets only the router's in-memory turn reply target
-  // and leaves the thread unchanged, so it writes nothing.
+  // the resulting connector state into the local store's metadata. The
+  // turn's mirror takes the connector state from the router; the write
+  // records it in the local store, which a restore of this invocation on
+  // this host continues while it is current. The write preserves the
+  // reactor's staged pendingOperations / tokenUsage -- a seed advances only
+  // connectorState.
+  // A passthrough commit sets only the router's in-memory turn mode and
+  // leaves the thread unchanged, so it writes nothing.
   async function runSeed(message: InboundMessage): Promise<void> {
     const decision = routeOrPassthrough(message);
     connectorRouter.commit(decision);
@@ -773,23 +894,28 @@ export async function createDurableConversationStore(
     await writeConnectorMetadata(`seed connector thread for ${opts.stepId}`);
   }
 
-  // An approval resume removes the reply target its parked turn filed, so
+  // An approval resume removes the turn mode its parked turn filed, so
   // the removal is flushed the same way `runSeed` flushes a thread advance.
   // It reaches the substrate at this turn's run-boundary mirror, so a child
-  // respawn before that mirror restores the target still filed.
+  // respawn before that mirror restores the mode still filed.
+  //
+  // A turn that is not an approval resume starts a new logical turn at the
+  // store's current turn count; an approval resume continues the turn that
+  // parked, so it keeps that turn's start.
   async function runBeginTurn(turn: { resume?: string }): Promise<void> {
+    if (turn.resume === undefined) {
+      turnStart = baseStorage.peekTurns().length;
+    }
     if (!connectorRouter.beginTurn(turn)) return;
-    await writeConnectorMetadata(
-      `resume parked reply target for ${opts.stepId}`,
-    );
+    await writeConnectorMetadata(`resume parked turn mode for ${opts.stepId}`);
   }
 
   async function runParkTurn(correlationId: string): Promise<void> {
     if (!connectorRouter.parkTurn(correlationId)) return;
-    await writeConnectorMetadata(`park reply target for ${opts.stepId}`);
+    await writeConnectorMetadata(`park turn mode for ${opts.stepId}`);
   }
 
-  // Flush the router's connector state and parked reply targets into the
+  // Flush the router's connector state and parked turn modes into the
   // local store's metadata and commit it. The write preserves the reactor's
   // staged pendingOperations / tokenUsage.
   async function writeConnectorMetadata(message: string): Promise<void> {
@@ -803,27 +929,20 @@ export async function createDurableConversationStore(
     await baseStorage.commit({ message });
   }
 
-  // Advance the connector thread after a reply was sent and flush the
-  // resulting connector state into the local store's metadata. `onReplySent`
-  // makes the reply the thread's parent and fires the router's
-  // `onStateChanged`, which enqueues a change-driven mirror behind this op on
-  // the shared serialization tail; because that mirror reads the connector
-  // state from the local store's metadata (not from the router), the metadata
-  // write below is what makes the advanced state reach the substrate. The
-  // write preserves the reactor's staged pendingOperations / tokenUsage -- an
-  // outbound advance touches only connectorState. A reply to a passthrough
-  // sender leaves the thread unchanged, so the flush writes the same
-  // connector state again. `onReplySent` throws when no
-  // thread is active, which surfaces to the reply drain's failure callback
-  // rather than persisting a phantom advance.
+  // Advance the connector thread after a reply was sent. `onReplySent` makes
+  // the reply the thread's parent. The store does not write: the reply went
+  // out, so its turn must commit, and a failed local write would stop the
+  // mirror. The mirror commits the advance from the router and then records
+  // it locally.
+  // `onReplySent` throws when the turn answers no mail or when no thread is
+  // active, which fails the reply's settlement in its persist phase rather
+  // than persisting a phantom advance.
   async function runReplySent(
     receipt: SendReceipt,
     references: readonly string[],
   ): Promise<void> {
     connectorRouter.onReplySent(receipt, references);
-    await writeConnectorMetadata(
-      `advance connector thread after reply for ${opts.stepId}`,
-    );
+    sentReplyUnsaved = true;
   }
 
   return {
@@ -833,114 +952,10 @@ export async function createDurableConversationStore(
     seedInbound,
     beginTurn,
     parkTurn,
+    turnAnswersMail,
     composeReply,
     onReplySent,
   };
-}
-
-export interface DurableConversationRegistryOpts {
-  /** Sidecar data dir; per-agent local stores root under it. */
-  dataDir: string;
-  /** Workflow-run repo identity for the deployment. */
-  workflowRunRepoId: RepoId;
-  /**
-   * The deployment's one addressable top-level run. A warm agent's
-   * conversation spans every message its deployment serves, so each store
-   * files its state under this run rather than the run of whichever
-   * message first built the agent.
-   */
-  runId: string;
-  /** Workflow-run repo ref. */
-  workflowRunRef: string;
-  /** Proxy workflow-run substrate (single-writer via the supervisor). */
-  substrate: RepoStore;
-  /** Principal the substrate write is authored under. */
-  principal: Principal;
-  /** Commit signer for the per-agent local isogit stores. */
-  signer: (payload: string) => Promise<string>;
-  /** The deployment mailbox address each store's agent receives mail at. */
-  mailboxAddress: string;
-}
-
-/**
- * Per-agent durable-conversation store registry (design §3c). One store
- * per warm agent, keyed by its step id, built lazily and reused across the
- * agent's messages in the same child. The first `acquire` for a step builds
- * the store and restores its prior conversation from the substrate -- the
- * path that runs on the lazy first build AND on the respawn rebuild, so the
- * warm agent resumes its conversation across child respawn. The registry is
- * empty after a respawn (it lives in the child's address space); the
- * substrate is the durable mirror that survives.
- */
-export interface DurableConversationRegistry {
-  acquire(stepId: string): Promise<DurableConversationStore>;
-  get(stepId: string): DurableConversationStore;
-}
-
-export function createDurableConversationRegistry(
-  opts: DurableConversationRegistryOpts,
-): DurableConversationRegistry {
-  const stores = new Map<string, DurableConversationStore>();
-  // De-dup concurrent first-acquires for the same step so two in-flight
-  // step invocations for one warm agent never build two stores (which
-  // would double-restore and split the durable mirror).
-  const building = new Map<string, Promise<DurableConversationStore>>();
-
-  function localStoreDir(stepId: string): string {
-    return path.join(
-      conversationStateRoot(opts.dataDir, opts.workflowRunRepoId.id),
-      encodeURIComponent(stepId),
-    );
-  }
-
-  async function acquire(stepId: string): Promise<DurableConversationStore> {
-    const existing = stores.get(stepId);
-    if (existing !== undefined) return existing;
-    const inFlight = building.get(stepId);
-    if (inFlight !== undefined) return inFlight;
-    const promise = (async () => {
-      const store = await createDurableConversationStore({
-        localStoreDir: localStoreDir(stepId),
-        signer: opts.signer,
-        substrate: opts.substrate,
-        workflowRunRepoId: opts.workflowRunRepoId,
-        workflowRunRef: opts.workflowRunRef,
-        principal: opts.principal,
-        runId: opts.runId,
-        stepId,
-        lifetime: { kind: "deployment" },
-        mailboxAddress: opts.mailboxAddress,
-      });
-      // Restore the prior conversation BEFORE the store is observable (and
-      // before the warm agent's reactor `load()` reads it). On a genuine
-      // first-ever run this is a no-op (no checkpoint/WAL yet); on a
-      // respawn rebuild it pulls the pre-respawn conversation back from the
-      // substrate (checkpoint + WAL replay). A restore failure surfaces --
-      // a lost conversation on respawn is a correctness failure, not a
-      // silently-fresh start.
-      await store.restoreFromSubstrate();
-      stores.set(stepId, store);
-      building.delete(stepId);
-      return store;
-    })().catch((cause) => {
-      building.delete(stepId);
-      throw cause;
-    });
-    building.set(stepId, promise);
-    return promise;
-  }
-
-  function get(stepId: string): DurableConversationStore {
-    const store = stores.get(stepId);
-    if (store === undefined) {
-      throw new Error(
-        `sidecar conversation-state: no durable conversation store for ${JSON.stringify(stepId)}; the run-boundary mirror ran before the warm agent's env was built`,
-      );
-    }
-    return store;
-  }
-
-  return { acquire, get };
 }
 
 type CommittedStepStateArgs = {
@@ -948,7 +963,12 @@ type CommittedStepStateArgs = {
   workflowRunRepoId: RepoId;
   workflowRunRef: string;
   principal: Principal;
+  /** The deployment's top-level run, whose `steps/` holds the state. */
   runId: string;
+  /**
+   * The step segment under the run: the key of the step's place
+   * (`stepPlaceKey`). A top-level step's key is its step id.
+   */
   stepId: string;
 };
 
@@ -997,15 +1017,91 @@ function reconstructCommitted(
 }
 
 /**
- * Whether a cold step attempt's local store holds the attempt's current
- * state, given the attempt's committed turns (`null` when the attempt has
- * committed nothing). On the host that runs an attempt the local store never
+ * Whether committed step state belongs to the invocation `own`: the state
+ * carries its stamp, or, when `resumes` names the approval gate the
+ * invocation resumes, the state carries no stamp and is parked on that gate.
+ * An earlier version of this store wrote state with no stamp. A gate's
+ * correlation id names one park, so the gate identifies the invocation that
+ * parked on it. Stamped state belongs only to
+ * the invocation it names, whatever gates it holds.
+ */
+export function isOwnStepState(
+  committed: ReconstructedStepState,
+  own: StepStateInvocation,
+  resumes: string | undefined,
+): boolean {
+  if (committed.invocation !== undefined) {
+    return isSameStepStateInvocation(committed.invocation, own);
+  }
+  return (
+    resumes !== undefined &&
+    committed.pendingOperations.some(
+      (op) => op.correlationId === resumes && op.suspendedCall !== undefined,
+    )
+  );
+}
+
+/** The state a store continues, with the start of its parked turn. */
+type ContinuedState = StepStateContent & { parkedTurnStart?: number };
+
+/**
+ * Roll a committed state back for an invocation that did not write it: drop
+ * the pending operations and parked reply targets, and, when the last turn
+ * parked on an approval, the turns from that turn's start. The connector
+ * state and token usage stay. Returns the state itself when it has nothing
+ * to drop, so continuing it appends to the committed history instead of
+ * rewriting it.
+ */
+function rollBack(committed: ReconstructedStepState): ContinuedState {
+  if (
+    committed.parkedTurnStart === undefined &&
+    committed.pendingOperations.length === 0 &&
+    Object.keys(committed.parkedReplyTargets).length === 0
+  ) {
+    return committed;
+  }
+  return {
+    turns: committed.turns.slice(
+      0,
+      committed.parkedTurnStart ?? committed.turns.length,
+    ),
+    pendingOperations: [],
+    tokenUsage: committed.tokenUsage,
+    connectorState: committed.connectorState,
+    parkedReplyTargets: {},
+  };
+}
+
+/**
+ * Where the turn a store continues starts, or `null` when it is unknown:
+ * state parked on a gate that records no `parkedTurnStart`, which state with
+ * no stamp holds. A turn start left unknown is never recorded, so a resume of
+ * such a park that parks again leaves the state without one, and another
+ * invocation starts over instead of continuing a tool call with no result.
+ */
+function startOfTurn(state: ContinuedState | null): number | null {
+  if (state === null) return 0;
+  if (state.parkedTurnStart !== undefined) return state.parkedTurnStart;
+  if (state.pendingOperations.some((op) => op.suspendedCall !== undefined)) {
+    return null;
+  }
+  return state.turns.length;
+}
+
+/**
+ * Whether a step attempt's local store holds the attempt's current
+ * state, given the turns of the state the attempt continues (`null` when
+ * there are none). On the host that runs an attempt the local store never
  * trails what that host committed: a restore fills it before the agent
  * loads, the reactor commits every cycle to it, and the settle mirror commits
  * from it. It leads by the turn in flight when a crash beat the mirror. A
- * store that holds nothing was just created on this host, and one whose
- * turns no longer extend the committed ones was left by a host the attempt
- * has since moved away from; neither is current.
+ * store that holds nothing was just created on this host, and one whose turns
+ * no longer extend the committed ones was left by a host the attempt has
+ * since moved away from; neither is current. A thrown turn can also leave a
+ * lead, such as a park recorded locally before an abort or a failed
+ * `parkTurn`. When a crash beats the step's failure record, same-host
+ * recovery adopts that park, and `persistColdRecoveredPark` commits it before
+ * the runtime records it, so a later host agrees.
  */
 export function isLocalStateCurrent(
   local: {
