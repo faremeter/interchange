@@ -37,3 +37,6 @@ export const NO_STANDBY_ROUTER = {
   putAllocationInStandby: () => Promise.reject(new Error("no standby here")),
   wakeAllocation: () => Promise.reject(new Error("no standby here")),
 };
+
+// For a lifecycle service whose test has no dispatches to settle.
+export const NO_DISPATCH_RECOVERY = { recover: async () => undefined };

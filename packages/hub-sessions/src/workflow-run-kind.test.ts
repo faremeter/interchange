@@ -3151,6 +3151,33 @@ describe("workflowRunKindHandler.validatePush — claim-check subtree shape", ()
     const r = await validate(prospective, { priorFiles: prior });
     expect(r.ok).toBe(true);
   });
+
+  test("reports as dispatch evidence only the consumed entries a push adds", async () => {
+    const kept = consumedBody("msg-1", 100, "run-1", 200);
+    const prior = {
+      [consumedPathFor(ADDRESS_SEG, "msg-1")]: kept,
+      [processingPathFor(ADDRESS_SEG, 101, "msg-2")]: inboxBody("msg-2", 101),
+    };
+    const prospective = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [consumedPathFor(ADDRESS_SEG, "msg-1")]: kept,
+      [consumedPathFor(ADDRESS_SEG, "msg-2")]: consumedBody(
+        "msg-2",
+        101,
+        "run-2",
+        201,
+      ),
+    };
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r).toEqual({
+      ok: true,
+      dispatchEvidence: {
+        consumed: [{ messageId: "msg-2", address: ADDRESS }],
+        accepted: [],
+        pruned: [],
+      },
+    });
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -5505,6 +5532,29 @@ describe("workflowRunKindHandler.validatePush — retention watermark contract",
     expect(r.reason).toMatch(/watermark regressed/);
   });
 
+  test("reports the consumed entries a push prunes as dispatch evidence", async () => {
+    const prior = {
+      [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(0),
+      [consumedPathFor(ADDRESS_SEG, "msg-old")]: consumedBody(
+        "msg-old",
+        100,
+        "run-old",
+        150,
+      ),
+    };
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [watermarkPathFor(ADDRESS_SEG)]: watermarkBody(101),
+      },
+      { priorFiles: prior },
+    );
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.dispatchEvidence?.pruned).toEqual([
+      { address: ADDRESS, identity: "msg-old" },
+    ]);
+  });
+
   // A non-suffix deletion (drop a recent consumed entry while keeping
   // an older one) is ACCEPTED when both entries sit below the
   // watermark. The suffix relation is not enforced; a retained entry
@@ -6262,6 +6312,82 @@ async function scopedBody(
   };
 }
 
+describe("workflowRunKindHandler.validatePush -- dispatch evidence", () => {
+  const eventPath = (seq: number) =>
+    `${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/${String(seq)}.json`;
+  const received = (seq: number, signalId: unknown) =>
+    eventBody(seq, "SignalReceived", { signalName: "continue", signalId });
+
+  test("reports the dispatches only of the events a push adds", async () => {
+    const prior = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [eventPath(0)]: eventBody(0, "RunStarted", {
+        consumedDeliveryKey: "dk1:old",
+      }),
+    };
+    const r = await validate(
+      { ...prior, [eventPath(1)]: received(1, "sig-1") },
+      { priorFiles: prior },
+    );
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.dispatchEvidence).toEqual({
+      consumed: [],
+      accepted: [
+        { runId: "run-a", kind: "signal", id: "sig-1", legacy: false },
+      ],
+      pruned: [],
+    });
+  });
+
+  test("reports the dispatches of a run log that arrives already sealed", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events.jsonl`]: [
+        eventBody(0, "RunStarted", { consumedDeliveryKey: "dk1:mail" }),
+        received(1, "sig-1"),
+        eventBody(2, "RunCompleted"),
+        "",
+      ].join("\n"),
+    });
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.dispatchEvidence?.accepted).toEqual([
+      { runId: "run-a", kind: "mail", id: "dk1:mail", legacy: false },
+      { runId: "run-a", kind: "signal", id: "sig-1", legacy: false },
+    ]);
+  });
+
+  test("rejects a push that adds a malformed SignalReceived", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [eventPath(0)]: eventBody(0, "RunStarted"),
+      [eventPath(1)]: received(1, 7),
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/workflow_dispatch_signal_invalid/);
+  });
+
+  test("accepts a push over a malformed SignalReceived the store already holds", async () => {
+    const prior = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [eventPath(0)]: eventBody(0, "RunStarted"),
+      [eventPath(1)]: received(1, 7),
+    };
+    const r = await validate(
+      {
+        ...prior,
+        [eventPath(2)]: eventBody(2, "SignalAwaited", {
+          stepId: "ask",
+          signalName: "continue",
+        }),
+      },
+      { priorFiles: prior },
+    );
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.dispatchEvidence?.accepted).toEqual([]);
+  });
+});
+
 describe("workflowRunKindHandler.validatePush — sender-scoped claim-check entries", () => {
   test("accepts an inbox entry filed under its delivery key", async () => {
     const { key, body } = await scopedBody(SENDER_A, "<m@x>", 100);
@@ -6269,7 +6395,10 @@ describe("workflowRunKindHandler.validatePush — sender-scoped claim-check entr
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [inboxPathFor(ADDRESS_SEG, 100, key)]: body,
     });
-    expect(r).toEqual({ ok: true });
+    expect(r).toEqual({
+      ok: true,
+      dispatchEvidence: { consumed: [], accepted: [], pruned: [] },
+    });
   });
 
   test("accepts two senders' entries that share one Message-ID", async () => {
@@ -6280,7 +6409,10 @@ describe("workflowRunKindHandler.validatePush — sender-scoped claim-check entr
       [inboxPathFor(ADDRESS_SEG, 100, a.key)]: a.body,
       [inboxPathFor(ADDRESS_SEG, 101, b.key)]: b.body,
     });
-    expect(r).toEqual({ ok: true });
+    expect(r).toEqual({
+      ok: true,
+      dispatchEvidence: { consumed: [], accepted: [], pruned: [] },
+    });
   });
 
   test("rejects a delivery key that is not the key of its sender and Message-ID", async () => {

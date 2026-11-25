@@ -4,6 +4,7 @@ import type { AgentRepoStore } from "./agent-repo";
 import type { RepoStore } from "./repo-store";
 import {
   workflowRunRepoIdForAddress,
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
   WORKFLOW_RUN_REF,
 } from "./workflow-run-kind";
 import type {
@@ -13,7 +14,7 @@ import type {
 
 export const WORKFLOW_RUN_RESTORE_REFS = [
   WORKFLOW_RUN_REF,
-  "refs/heads/events",
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
 ] as const;
 
 /**

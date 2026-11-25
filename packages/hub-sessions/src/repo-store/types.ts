@@ -2,6 +2,11 @@ import { type } from "arktype";
 import { RepoAction as RepoActionSchema } from "@intx/types/repo";
 import type { RepoKind, RepoId, RepoAction } from "@intx/types/repo";
 
+import type {
+  CommitDispatchEvidence,
+  WorkflowDispatchEvidence,
+} from "../workflow-dispatch-evidence";
+
 export type { RepoKind, RepoId, RepoAction };
 
 /**
@@ -136,6 +141,11 @@ export type ApprovalWaitChange = {
 export type PushFindings = {
   newlyTerminalRuns: NewlyTerminalRun[];
   approvalWaitChanges: ApprovalWaitChange[];
+  /**
+   * The dispatch evidence the commit added, and the consumed entries it
+   * pruned.
+   */
+  dispatchEvidence: CommitDispatchEvidence;
 };
 
 export type ValidatePushResult =
@@ -716,14 +726,14 @@ export type PackCommitResult =
   | ({
       readonly kind: "applied";
       /**
-       * Whether the ref may now also reach what commits the store held
-       * before this receive recorded, which the receive did not validate,
-       * such as commits of another ref: the findings then leave it out. A
-       * commit whose tree holds only the `.gitignore` every repository
-       * starts with records nothing.
+       * True when the ref may now also reach commits the store already
+       * held that this receive did not validate, such as commits of
+       * another ref: the findings and the prepared dispatch evidence leave
+       * those out. A commit whose tree holds only the starting
+       * `.gitignore` counts as none.
        */
       readonly findingsPartial: boolean;
-    } & Readonly<PushFindings>);
+    } & Readonly<Omit<PushFindings, "dispatchEvidence">>);
 
 /**
  * A pack that `prepareReceivePack` staged and validated. `commit()`
@@ -735,6 +745,8 @@ export type PreparedReceivePack =
   | { readonly kind: "already_applied" }
   | {
       readonly kind: "prepared";
+      /** What every commit of the pack records about dispatches. */
+      readonly dispatchEvidence: WorkflowDispatchEvidence;
       commit(): Promise<PackCommitResult>;
       discard(): Promise<void>;
     };

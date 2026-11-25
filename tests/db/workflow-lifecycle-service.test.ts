@@ -62,7 +62,10 @@ import {
   type WorkflowLifecycleServiceDeps,
   type WorkflowRunReader,
 } from "@intx/hub-sessions";
-import { NO_STANDBY_ROUTER } from "./sidecar-test-helpers";
+import {
+  NO_STANDBY_ROUTER,
+  NO_DISPATCH_RECOVERY,
+} from "./sidecar-test-helpers";
 
 const MANIFEST_DIGEST = "1".repeat(64);
 
@@ -107,6 +110,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ...options,
         standbyRouter: options.standbyRouter ?? NO_STANDBY_ROUTER,
         db: options.db ?? h.db,
+        dispatchProjection: NO_DISPATCH_RECOVERY,
         retentionRouter: {
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,

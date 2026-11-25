@@ -52,7 +52,10 @@ import {
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
-import { NO_STANDBY_ROUTER } from "./sidecar-test-helpers";
+import {
+  NO_STANDBY_ROUTER,
+  NO_DISPATCH_RECOVERY,
+} from "./sidecar-test-helpers";
 import {
   buildWorkflowRunLine,
   type WorkflowRunPackRun,
@@ -273,6 +276,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         db: h.db,
         historyReceives: createWorkflowHistoryReceiveTracker(),
+        dispatchProjection: NO_DISPATCH_RECOVERY,
         runReader: createWorkflowRunReader(repoStore.repoStore),
       });
     }

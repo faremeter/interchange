@@ -57,6 +57,11 @@ import {
   RepoRemovedDuringReceiveError,
   SAFE_REPO_ID,
 } from "./types";
+import {
+  dispatchEvidenceOfPack,
+  NO_DISPATCH_EVIDENCE,
+  type WorkflowDispatchEvidence,
+} from "../workflow-dispatch-evidence";
 
 const DEFAULT_SUBSCRIBE_BUFFER_LIMIT = 1024;
 const DEFINITION_REF_NAMESPACE = `${HUB_REF_NAMESPACE}/workflow-definitions`;
@@ -2678,6 +2683,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         return {
           newlyTerminalRuns: result.newlyTerminalRuns ?? [],
           approvalWaitChanges: result.approvalWaitChanges ?? [],
+          dispatchEvidence: result.dispatchEvidence ?? NO_DISPATCH_EVIDENCE,
         };
       };
       // A pack that brings no commit gets its tip's tree walked whole when
@@ -2860,6 +2866,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
     let findings: PushFindings[] = [];
     let heldWhole = false;
+    let dispatchEvidence: WorkflowDispatchEvidence = NO_DISPATCH_EVIDENCE;
     try {
       // On a checked ref every object the store holds is durable, or is
       // synced below, so an older commit the store holds whole needs
@@ -2872,6 +2879,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         findings = await validateStaged(s);
         heldWhole = await holdsWhole();
       }
+      dispatchEvidence = dispatchEvidenceOfPack(
+        findings.map((found) => found.dispatchEvidence),
+      );
     } catch (err) {
       // A repo removed during validation can fail its reads. That is not
       // a fault of the pack, so it gets its own error. `removeRepo`
@@ -2915,6 +2925,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     let state: "open" | "committed" | "discarded" = "open";
     return {
       kind: "prepared",
+      dispatchEvidence,
       commit: async () => {
         if (state !== "open") {
           throw new Error(

@@ -24,7 +24,10 @@ import {
 } from "@intx/types/sidecar";
 
 import type { DB, DBExecutor } from "./client";
-import { parseWorkflowRunDispatchRow } from "./parse-row";
+import {
+  parseWorkflowRunDispatchKind,
+  parseWorkflowRunDispatchRow,
+} from "./parse-row";
 import {
   liveWorkflowRunStatuses,
   sidecarAllocation,
@@ -475,8 +478,9 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
       anchorRunId: string,
       deliveryKey: string,
       now = new Date(),
+      tx?: DBExecutor,
     ): Promise<ParsedDispatch | null> {
-      const [updated] = await db
+      const [updated] = await (tx ?? db)
         .update(workflowRunDispatch)
         .set({
           status: "settled",
@@ -505,9 +509,10 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
 
     async fail(
       args: FailWorkflowRunDispatchArgs,
+      tx?: DBExecutor,
     ): Promise<ParsedDispatch | null> {
       const now = args.now ?? new Date();
-      const [updated] = await db
+      const [updated] = await (tx ?? db)
         .update(workflowRunDispatch)
         .set({
           status: "failed",
@@ -531,6 +536,76 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
       return updated === undefined
         ? null
         : parseWorkflowRunDispatchRow(updated);
+    },
+
+    /**
+     * Settle or fail many of a deployment's unresolved dispatches, without
+     * reading them back: a row another writer resolved first stays as it is.
+     */
+    async resolveMany(
+      anchorRunId: string,
+      outcomes: readonly {
+        readonly deliveryKey: string;
+        readonly failure?: { readonly code: string; readonly message: string };
+      }[],
+      now: Date,
+      tx?: DBExecutor,
+    ): Promise<void> {
+      const executor = tx ?? db;
+      const unresolvedNamed = (keys: string[]) =>
+        and(
+          eq(workflowRunDispatch.anchorRunId, anchorRunId),
+          inArray(workflowRunDispatch.deliveryKey, keys),
+          inArray(workflowRunDispatch.status, [
+            ...unresolvedWorkflowRunDispatchStatuses,
+          ]),
+        );
+      const settled: string[] = [];
+      const failed = new Map<
+        string,
+        { code: string; message: string; keys: string[] }
+      >();
+      for (const { deliveryKey, failure } of outcomes) {
+        if (failure === undefined) {
+          settled.push(deliveryKey);
+          continue;
+        }
+        const group = JSON.stringify([failure.code, failure.message]);
+        const keys = failed.get(group)?.keys;
+        if (keys !== undefined) keys.push(deliveryKey);
+        else failed.set(group, { ...failure, keys: [deliveryKey] });
+      }
+      for (const keys of chunked(settled)) {
+        await executor
+          .update(workflowRunDispatch)
+          .set({
+            status: "settled",
+            nextAttemptAt: null,
+            deliveryLeaseId: null,
+            deliveryLeaseExpiresAt: null,
+            failureCode: null,
+            failureMessage: null,
+            settledAt: now,
+            updatedAt: now,
+          })
+          .where(unresolvedNamed(keys));
+      }
+      for (const { code, message, keys: groupKeys } of failed.values()) {
+        for (const keys of chunked(groupKeys)) {
+          await executor
+            .update(workflowRunDispatch)
+            .set({
+              status: "failed",
+              nextAttemptAt: null,
+              deliveryLeaseId: null,
+              deliveryLeaseExpiresAt: null,
+              failureCode: code,
+              failureMessage: message,
+              updatedAt: now,
+            })
+            .where(unresolvedNamed(keys));
+        }
+      }
     },
 
     /**
@@ -634,7 +709,120 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
         .orderBy(asc(workflowRunDispatch.createdAt));
       return rows.map(parseWorkflowRunDispatchRow);
     },
+
+    /**
+     * The identities of a deployment's unsettled dispatches, in the order
+     * `listUnsettled` gives.
+     */
+    async listUnsettledKeys(
+      anchorRunId: string,
+      tx?: DBExecutor,
+    ): Promise<UnsettledDispatchKey[]> {
+      return selectUnsettledKeys(tx ?? db, anchorRunId, undefined);
+    },
+
+    /**
+     * The unsettled dispatches of a deployment that evidence names, as
+     * `listUnsettledKeys` gives them: the rows keyed by one of `keys`, and
+     * the mail rows whose Message-ID is one of `messageIds`. Reads only
+     * those rows, so a receive does not pay for the deployment's backlog.
+     */
+    async listUnsettledKeysNamed(
+      anchorRunId: string,
+      named: {
+        readonly keys: readonly string[];
+        readonly messageIds: readonly string[];
+      },
+      tx?: DBExecutor,
+    ): Promise<UnsettledDispatchKey[]> {
+      const keyChunks = chunked(named.keys);
+      const messageIdChunks = chunked(named.messageIds);
+      const found = new Map<string, UnsettledDispatchKey>();
+      for (
+        let i = 0;
+        i < Math.max(keyChunks.length, messageIdChunks.length);
+        i += 1
+      ) {
+        const keys = keyChunks[i];
+        const messageIds = messageIdChunks[i];
+        const match = or(
+          keys === undefined
+            ? undefined
+            : inArray(workflowRunDispatch.deliveryKey, keys),
+          messageIds === undefined
+            ? undefined
+            : and(
+                eq(workflowRunDispatch.kind, "mail"),
+                inArray(workflowRunDispatch.messageId, messageIds),
+              ),
+        );
+        for (const row of await selectUnsettledKeys(
+          tx ?? db,
+          anchorRunId,
+          match,
+        )) {
+          found.set(row.deliveryKey, row);
+        }
+      }
+      return [...found.values()].sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+      );
+    },
   };
+}
+
+// Bounds the parameters of one statement.
+const KEY_BATCH = 1000;
+
+function chunked(keys: readonly string[]): string[][] {
+  const chunks: string[][] = [];
+  for (let start = 0; start < keys.length; start += KEY_BATCH) {
+    chunks.push(keys.slice(start, start + KEY_BATCH));
+  }
+  return chunks;
+}
+
+type UnsettledDispatchKey = {
+  deliveryKey: string;
+  messageId: string;
+  kind: ParsedDispatch["kind"];
+  rawMessage: Uint8Array | null;
+  createdAt: Date;
+};
+
+// A signal carries its frame, which names the run it is for; a mail's
+// bytes are not read.
+async function selectUnsettledKeys(
+  executor: DBExecutor,
+  anchorRunId: string,
+  match: SQL | undefined,
+): Promise<UnsettledDispatchKey[]> {
+  const rows = await executor
+    .select({
+      deliveryKey: workflowRunDispatch.deliveryKey,
+      messageId: workflowRunDispatch.messageId,
+      kind: workflowRunDispatch.kind,
+      createdAt: workflowRunDispatch.createdAt,
+      rawMessage:
+        sql<Uint8Array | null>`case when ${workflowRunDispatch.kind} = 'signal' then ${workflowRunDispatch.rawMessage} end`.mapWith(
+          workflowRunDispatch.rawMessage,
+        ),
+    })
+    .from(workflowRunDispatch)
+    .where(
+      and(
+        eq(workflowRunDispatch.anchorRunId, anchorRunId),
+        inArray(workflowRunDispatch.status, [
+          ...unresolvedWorkflowRunDispatchStatuses,
+        ]),
+        match,
+      ),
+    )
+    .orderBy(asc(workflowRunDispatch.createdAt));
+  return rows.map((row) => ({
+    ...row,
+    kind: parseWorkflowRunDispatchKind(row.kind),
+  }));
 }
 
 export type WorkflowRunDispatchStore = ReturnType<

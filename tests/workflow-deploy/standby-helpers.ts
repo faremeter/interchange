@@ -94,6 +94,7 @@ export async function startStandbySweep(
     retentionRouter: env.hub.router,
     runReader: createWorkflowRunReader(env.hub.agentRepoStore.repoStore),
     historyReceives: createWorkflowHistoryReceiveTracker(),
+    dispatchProjection: { recover: async () => undefined },
     standbyRouter: env.hub.router,
     onStandbyCommandSettled: (runId) => {
       if (runId === deploymentId) commandSettled.resolve(undefined);

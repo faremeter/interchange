@@ -166,12 +166,15 @@ export {
 } from "./workflow-dispatch-service";
 export {
   listAcceptedWorkflowDispatches,
-  listConsumedWorkflowDispatches,
   listReceivedWorkflowSignals,
-  type AcceptedWorkflowDispatch,
-  type ConsumedWorkflowDispatch,
+  readConsumedWorkflowDispatches,
   type ReceivedWorkflowSignal,
 } from "./workflow-dispatch-settlement";
+export {
+  type AcceptedWorkflowDispatch,
+  type ConsumedWorkflowDispatch,
+  type WorkflowDispatchEvidence,
+} from "./workflow-dispatch-evidence";
 export {
   skillKindHandler,
   skillAuthorize,
@@ -216,6 +219,7 @@ export {
   readCommittedWorkflowRunLifecycle,
   workflowRunRepoIdForAddress,
   WORKFLOW_RUN_REF,
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
   replayProcessingToInbox,
   WORKFLOW_RUN_GITIGNORE_PATH,
   WORKFLOW_RUN_RUNS_PREFIX,

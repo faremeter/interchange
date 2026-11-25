@@ -68,6 +68,7 @@ function preparedWith(
 ): PrepareWorkflowRunPack {
   return async () => ({
     kind: "prepared",
+    dispatchEvidence: { consumed: [], accepted: [] },
     commit,
     discard: () => Promise.resolve(),
   });
@@ -323,6 +324,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           if (prepared.kind !== "prepared") return prepared;
           return {
             kind: "prepared",
+            dispatchEvidence: prepared.dispatchEvidence,
             commit: async () => {
               const result = await prepared.commit();
               commits.push(result);
@@ -854,6 +856,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             if (prepared.kind !== "prepared") return prepared;
             return {
               kind: "prepared",
+              dispatchEvidence: prepared.dispatchEvidence,
               commit: async () => {
                 await prepared.commit();
                 throw new Error("database commit failed");
@@ -920,6 +923,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             if (prepared.kind !== "prepared") return prepared;
             return {
               kind: "prepared",
+              dispatchEvidence: prepared.dispatchEvidence,
               commit: prepared.commit,
               discard: async () => {
                 discards += 1;

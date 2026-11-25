@@ -3,18 +3,13 @@ import { describe, expect, test } from "bun:test";
 import type { CommittedReads } from "./repo-store";
 import {
   listAcceptedWorkflowDispatches,
-  listConsumedWorkflowDispatches,
   listReceivedWorkflowSignals,
+  readConsumedWorkflowDispatches,
 } from "./workflow-dispatch-settlement";
 
 function committedReads(files: ReadonlyMap<string, string>): CommittedReads {
   return {
     async listDir(path) {
-      if (path === "addresses") {
-        return [
-          { name: "workflow%40tenant", oid: "tree-address", type: "tree" },
-        ];
-      }
       if (path === "addresses/workflow%40tenant/consumed") {
         return [...files.keys()].map((name, index) => ({
           name,
@@ -36,7 +31,9 @@ function committedReads(files: ReadonlyMap<string, string>): CommittedReads {
   };
 }
 
-describe("listConsumedWorkflowDispatches", () => {
+describe("readConsumedWorkflowDispatches", () => {
+  const named = (...identities: string[]) => new Set(identities);
+
   test("projects retained claim-check entries into settlement keys", async () => {
     const reads = committedReads(
       new Map([
@@ -51,7 +48,13 @@ describe("listConsumedWorkflowDispatches", () => {
       ]),
     );
 
-    await expect(listConsumedWorkflowDispatches(reads)).resolves.toEqual([
+    await expect(
+      readConsumedWorkflowDispatches(
+        reads,
+        "workflow@tenant",
+        named("message-1"),
+      ),
+    ).resolves.toEqual([
       { messageId: "message-1", address: "workflow@tenant" },
     ]);
   });
@@ -73,7 +76,13 @@ describe("listConsumedWorkflowDispatches", () => {
       ]),
     );
 
-    await expect(listConsumedWorkflowDispatches(reads)).resolves.toEqual([
+    await expect(
+      readConsumedWorkflowDispatches(
+        reads,
+        "workflow@tenant",
+        named("message-1"),
+      ),
+    ).resolves.toEqual([
       {
         messageId: "message-1",
         address: "workflow@tenant",
@@ -90,9 +99,43 @@ describe("listConsumedWorkflowDispatches", () => {
       new Map([["message-1.json", JSON.stringify({ messageId: "message-1" })]]),
     );
 
-    await expect(listConsumedWorkflowDispatches(reads)).rejects.toThrow(
-      "workflow_dispatch_consumed_invalid",
-    );
+    await expect(
+      readConsumedWorkflowDispatches(
+        reads,
+        "workflow@tenant",
+        named("message-1"),
+      ),
+    ).rejects.toThrow("workflow_dispatch_consumed_invalid");
+  });
+
+  test("reads only the blobs of the entries it names", async () => {
+    const files = new Map([
+      ["message-1.json", "not read"],
+      [
+        "message-2.json",
+        JSON.stringify({ messageId: "message-2", address: "workflow@tenant" }),
+      ],
+    ]);
+    const reads = committedReads(files);
+    const read: string[] = [];
+    const readBlobByOid = reads.readBlobByOid;
+
+    await expect(
+      readConsumedWorkflowDispatches(
+        {
+          ...reads,
+          readBlobByOid: async (oid) => {
+            read.push(oid);
+            return readBlobByOid(oid);
+          },
+        },
+        "workflow@tenant",
+        named("message-2", "message-3"),
+      ),
+    ).resolves.toEqual([
+      { messageId: "message-2", address: "workflow@tenant" },
+    ]);
+    expect(read).toEqual(["blob-1"]);
   });
 });
 

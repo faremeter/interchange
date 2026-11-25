@@ -473,18 +473,19 @@ export async function createHubServer({
       return spec?.frozenApprovalBundle.projection ?? null;
     },
   });
+  const dispatchProjection = createWorkflowDispatchProjection({
+    db,
+    repoStore: agentRepoStore.repoStore,
+  });
   const workflowLifecycleService = createWorkflowLifecycleService({
     db,
     retentionRouter: sidecarRouter,
     runReader: workflowRunReader,
     historyReceives: workflowHistoryReceives,
+    dispatchProjection,
     sendControl: (target, command, timeoutMs) =>
       sidecarRouter.sendWorkflowControl(target, command, timeoutMs),
     standbyRouter: sidecarRouter,
-  });
-  const dispatchProjection = createWorkflowDispatchProjection({
-    db,
-    repoStore: agentRepoStore.repoStore,
   });
   const workflowDispatchService = createWorkflowDispatchService({
     dispatchStore: createWorkflowRunDispatchStore(db),

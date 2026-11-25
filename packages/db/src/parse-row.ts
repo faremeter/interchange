@@ -256,6 +256,10 @@ export function parseWorkflowRunLaunchSpecRow(
   };
 }
 
+export function parseWorkflowRunDispatchKind(kind: string) {
+  return WorkflowRunDispatchKindValidator.assert(kind);
+}
+
 export function parseWorkflowRunDispatchRow(
   row: typeof workflowRunDispatch.$inferSelect,
 ) {

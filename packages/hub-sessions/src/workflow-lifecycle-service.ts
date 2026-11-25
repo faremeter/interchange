@@ -72,6 +72,7 @@ import {
   workflowRunRepoIdForAddress,
   WORKFLOW_RUN_REF,
 } from "./workflow-run-kind";
+import type { WorkflowDispatchProjection } from "./workflow-dispatch-projection";
 import { projectTerminalRun } from "./workflow-run-terminal-projection";
 import {
   createAnchorRunSweep,
@@ -149,6 +150,12 @@ export type WorkflowLifecycleServiceDeps = {
   >;
   runReader: WorkflowRunReader;
   historyReceives: WorkflowHistoryReceiveTracker;
+  /**
+   * Settles a deployment's dispatches from its accepted history, and never
+   * throws. A receive cut short after its ref moved keeps its pending row,
+   * so recovery runs this before it claims the row.
+   */
+  dispatchProjection: Pick<WorkflowDispatchProjection, "recover">;
   now?: () => Date;
   cancelGraceMs?: number;
   unreachableStopGraceMs?: number;
@@ -171,6 +178,7 @@ export function createWorkflowLifecycleService({
   retentionRouter,
   runReader,
   historyReceives,
+  dispatchProjection,
   now = () => new Date(),
   cancelGraceMs = 30_000,
   unreachableStopGraceMs = 60_000,
@@ -512,6 +520,7 @@ export function createWorkflowLifecycleService({
           recoveryBackoff.delete(backoffKey);
           return;
         }
+        await dispatchProjection.recover(runId);
         const claimed = await reconcileFromGit(
           tenantId,
           runId,

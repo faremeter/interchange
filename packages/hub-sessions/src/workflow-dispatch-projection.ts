@@ -14,6 +14,8 @@ import {
   createWorkflowPendingProjectionStore,
   createWorkflowRunDispatchStore,
   type DB,
+  type DBExecutor,
+  type WorkflowRunDispatchStore,
 } from "@intx/db";
 import {
   isLiveWorkflowRunStatus,
@@ -22,26 +24,131 @@ import {
   workflowRunDispatch,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
-import {
-  DELIVERY_KEY_PREFIX,
-  isSidecarAllocationDispatchable,
-} from "@intx/types";
-import { SignalDeliverFrame } from "@intx/types/sidecar";
+import { isSidecarAllocationDispatchable } from "@intx/types";
 
 import { createAnchorRunSweep } from "./anchor-run-sweep";
 import type { CommittedReads, RepoStore } from "./repo-store";
+import type {
+  AcceptedWorkflowDispatch,
+  WorkflowDispatchEvidence,
+} from "./workflow-dispatch-evidence";
 import {
   listAcceptedWorkflowDispatches,
-  listConsumedWorkflowDispatches,
+  readConsumedWorkflowDispatches,
+  rowsNamedByEvidence,
+  settleFromEvidence,
+  targetRunOf,
+  type DispatchOutcome,
+  type UnsettledDispatch,
 } from "./workflow-dispatch-settlement";
 import {
   readCommittedWorkflowRunLifecycle,
   workflowRunRepoIdForAddress,
+  WORKFLOW_RUN_CLAIM_CHECK_REF,
   WORKFLOW_RUN_REF,
 } from "./workflow-run-kind";
 
 const logger = getLogger(["hub", "workflow-dispatch-projection"]);
 export const DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY = 8;
+
+export type WorkflowDispatchProjection = ReturnType<
+  typeof createWorkflowDispatchProjection
+>;
+
+const terminalRunFailure = (runId: string): DispatchOutcome => ({
+  status: "failed",
+  code: "workflow_run_terminal",
+  message: `Workflow run ${runId} is terminal and cannot accept this dispatch`,
+});
+
+// Accepted history cannot be rewritten, so each update is conditional on
+// a row still unresolved, and a row another writer resolved first stays as
+// it is.
+async function writeOutcomes(
+  dispatches: WorkflowRunDispatchStore,
+  anchorRunId: string,
+  outcomes: ReadonlyMap<string, DispatchOutcome>,
+  now: Date,
+  tx?: DBExecutor,
+): Promise<void> {
+  if (outcomes.size === 0) return;
+  await dispatches.resolveMany(
+    anchorRunId,
+    [...outcomes].map(([deliveryKey, outcome]) =>
+      outcome.status === "settled"
+        ? { deliveryKey }
+        : {
+            deliveryKey,
+            failure: { code: outcome.code, message: outcome.message },
+          },
+    ),
+    now,
+    tx,
+  );
+}
+
+/**
+ * Settle a deployment's unsettled dispatches from the evidence a receive
+ * found, in `tx`.
+ */
+export async function applyWorkflowDispatchEvidence(
+  dispatches: WorkflowRunDispatchStore,
+  tx: DBExecutor,
+  anchor: { readonly id: string; readonly address: string },
+  evidence: WorkflowDispatchEvidence,
+  now: Date,
+): Promise<void> {
+  if (evidence.consumed.length === 0 && evidence.accepted.length === 0) return;
+  const unsettled = await dispatches.listUnsettledKeysNamed(
+    anchor.id,
+    rowsNamedByEvidence(anchor, evidence),
+    tx,
+  );
+  if (unsettled.length === 0) return;
+  const { outcomes } = settleFromEvidence(anchor, unsettled, evidence);
+  await writeOutcomes(dispatches, anchor.id, outcomes, now, tx);
+}
+
+/**
+ * Settle or fail the unsettled signals to runs in `endedRuns`, from each
+ * run's closed log in `reads`. Another receive can hold a signal's
+ * evidence and not have settled it yet, so the whole log decides, not only
+ * the push that ended the run.
+ */
+export async function closeSignalsToEndedRuns(
+  dispatches: WorkflowRunDispatchStore,
+  db: DBExecutor,
+  anchor: { readonly id: string; readonly address: string },
+  endedRuns: ReadonlySet<string>,
+  reads: CommittedReads,
+  now: Date,
+): Promise<void> {
+  const signalsByRun = new Map<string, UnsettledDispatch[]>();
+  for (const dispatch of await dispatches.listUnsettledKeys(anchor.id, db)) {
+    if (dispatch.kind !== "signal") continue;
+    const runId = targetRunOf(dispatch, anchor.id);
+    if (!endedRuns.has(runId)) continue;
+    const signals = signalsByRun.get(runId);
+    if (signals === undefined) signalsByRun.set(runId, [dispatch]);
+    else signals.push(dispatch);
+  }
+  const outcomes = new Map<string, DispatchOutcome>();
+  for (const [runId, signals] of signalsByRun) {
+    const accepted = await listAcceptedWorkflowDispatches(
+      reads,
+      runId,
+      new Set(signals.map((signal) => signal.deliveryKey)),
+    );
+    const fromLog = settleFromEvidence(anchor, signals, {
+      consumed: [],
+      accepted,
+    });
+    for (const [key, outcome] of fromLog.outcomes) outcomes.set(key, outcome);
+    for (const key of fromLog.remaining.keys())
+      outcomes.set(key, terminalRunFailure(runId));
+  }
+  await writeOutcomes(dispatches, anchor.id, outcomes, now, db);
+}
 
 /** Projects accepted Git evidence without depending on a live worker or allocation. */
 export function createWorkflowDispatchProjection({
@@ -64,6 +171,7 @@ export function createWorkflowDispatchProjection({
   const pendingProjections = createWorkflowPendingProjectionStore(db);
   let admitted = 0;
 
+  /** Settle a deployment's dispatches from the tips of its accepted history. */
   async function project(anchorRunId: string): Promise<void> {
     const [anchor] = await db
       .select({ address: workflowRun.address })
@@ -80,127 +188,88 @@ export function createWorkflowDispatchProjection({
     const unsettled = await dispatches.listUnsettled(anchorRunId);
     if (unsettled.length === 0) return;
     const repoId = workflowRunRepoIdForAddress(anchor.address);
-    const reads = await repoStore.openCommittedReads(
-      { kind: "hub" },
-      repoId,
-      WORKFLOW_RUN_REF,
-    );
     // Pin run history first, then consumed outcomes so an older consumed view
     // cannot hide a rejection already present when terminal state was observed.
+    // Outcomes go to SQL, so both refs are read durably.
+    let reads: CommittedReads | null = null;
+    let runHistoryFailure: { cause: unknown } | null = null;
+    try {
+      reads = await repoStore.openCommittedReads(
+        { kind: "hub" },
+        repoId,
+        WORKFLOW_RUN_REF,
+        { durable: true },
+      );
+    } catch (cause) {
+      runHistoryFailure = { cause };
+    }
     const consumedReads = await repoStore.openCommittedReads(
       { kind: "hub" },
       repoId,
-      "refs/heads/events",
+      WORKFLOW_RUN_CLAIM_CHECK_REF,
+      { durable: true },
     );
-    const remaining = new Map(
-      unsettled.map((dispatch) => [dispatch.deliveryKey, dispatch]),
-    );
-    const mailKeysByMessageId = new Map<string, string[]>();
+    const deployment = { id: anchorRunId, address: anchor.address };
+    const mailIds = new Set<string>();
     for (const dispatch of unsettled) {
       if (dispatch.kind !== "mail") continue;
-      const keys = mailKeysByMessageId.get(dispatch.messageId) ?? [];
-      keys.push(dispatch.deliveryKey);
-      mailKeysByMessageId.set(dispatch.messageId, keys);
+      mailIds.add(dispatch.deliveryKey);
+      mailIds.add(dispatch.messageId);
     }
-    // The unsettled rows a piece of evidence names. An id with the
-    // delivery-key prefix is a key and names only the row with that key: the
-    // hub refuses a relayed Message-ID with the prefix, so no legacy record
-    // holds one. Any other id names the row keyed by it, and legacy mail
-    // evidence also names every unsettled mail row of this anchor with that
-    // Message-ID: a sidecar that predates the delivery key recorded the bare
-    // Message-ID and de-duplicated by it alone, so its one record stands for
-    // every sender's mail with that Message-ID. The legacy branch can go once
-    // no run log or claim-check that such a sidecar wrote remains.
-    const rowsNamedBy = (id: string, legacy: boolean): string[] => {
-      const keys = remaining.has(id) ? [id] : [];
-      if (!legacy || id.startsWith(DELIVERY_KEY_PREFIX)) return keys;
-      for (const key of mailKeysByMessageId.get(id) ?? []) {
-        if (key !== id && remaining.has(key)) keys.push(key);
-      }
-      return keys;
-    };
-    const outcomes = new Map<
-      string,
-      | { status: "settled" }
-      | { status: "failed"; code: string; message: string }
-    >();
-    const consumedDispatches =
-      consumedReads === null
-        ? []
-        : await listConsumedWorkflowDispatches(consumedReads);
-    for (const consumed of consumedDispatches) {
-      if (consumed.address !== anchor.address) continue;
-      const keys = rowsNamedBy(
-        consumed.deliveryKey ?? consumed.messageId,
-        consumed.deliveryKey === undefined,
-      );
-      for (const key of keys) {
-        if (remaining.get(key)?.kind !== "mail") continue;
-        outcomes.set(
-          key,
-          consumed.rejection === undefined
-            ? { status: "settled" }
-            : {
-                status: "failed",
-                code: consumed.rejection.code,
-                message: consumed.rejection.message,
-              },
-        );
-        remaining.delete(key);
-      }
-    }
-    const keysByRun = new Map<string, Set<string>>();
+    // Consumed records decide mail before any run log is read, and their
+    // outcomes are written first, so a log that cannot be read does not
+    // hold back an outcome the records already give.
+    const byRecord = settleFromEvidence(deployment, unsettled, {
+      consumed:
+        consumedReads === null
+          ? []
+          : await readConsumedWorkflowDispatches(
+              consumedReads,
+              anchor.address,
+              mailIds,
+            ),
+      accepted: [],
+    });
+    await writeOutcomes(dispatches, anchorRunId, byRecord.outcomes, new Date());
+    if (runHistoryFailure !== null) throw runHistoryFailure.cause;
+    const open = [...byRecord.remaining.values()];
     const targetIdsByRun = new Map<string, Set<string>>();
-    for (const dispatch of remaining.values()) {
-      const runId =
-        dispatch.kind === "mail"
-          ? anchorRunId
-          : SignalDeliverFrame.assert(
-              JSON.parse(new TextDecoder().decode(dispatch.rawMessage)),
-            ).runId;
-      const keys = keysByRun.get(runId) ?? new Set<string>();
-      keys.add(dispatch.deliveryKey);
-      keysByRun.set(runId, keys);
+    const signalKeysByRun = new Map<string, string[]>();
+    for (const dispatch of open) {
+      const runId = targetRunOf(dispatch, anchorRunId);
       const targets = targetIdsByRun.get(runId) ?? new Set<string>();
       targets.add(dispatch.deliveryKey);
       if (dispatch.kind === "mail") targets.add(dispatch.messageId);
       targetIdsByRun.set(runId, targets);
-    }
-    for (const [runId, keys] of keysByRun) {
-      const acceptedDispatches =
-        reads === null
-          ? []
-          : await listAcceptedWorkflowDispatches(
-              reads,
-              runId,
-              targetIdsByRun.get(runId),
-            );
-      for (const accepted of acceptedDispatches) {
-        for (const key of rowsNamedBy(accepted.id, accepted.legacy)) {
-          const dispatch = remaining.get(key);
-          if (dispatch === undefined) continue;
-          // Mail resuming an input gate is also recorded as SignalReceived.
-          // The Hub's key uniqueness spans both dispatch kinds within this
-          // anchor; RunStarted alone still cannot prove a signal delivery.
-          if (accepted.kind === "mail" && dispatch.kind !== "mail") continue;
-          outcomes.set(key, { status: "settled" });
-          remaining.delete(key);
-        }
+      if (dispatch.kind === "signal") {
+        const keys = signalKeysByRun.get(runId);
+        if (keys === undefined)
+          signalKeysByRun.set(runId, [dispatch.deliveryKey]);
+        else keys.push(dispatch.deliveryKey);
       }
+    }
+    const accepted: AcceptedWorkflowDispatch[] = [];
+    if (reads !== null) {
+      for (const [runId, targets] of targetIdsByRun) {
+        accepted.push(
+          ...(await listAcceptedWorkflowDispatches(reads, runId, targets)),
+        );
+      }
+    }
+    const { outcomes, remaining } = settleFromEvidence(deployment, open, {
+      consumed: [],
+      accepted,
+    });
+    for (const runId of targetIdsByRun.keys()) {
       if (
-        (await readCommittedWorkflowRunLifecycle(reads, runId)) === "terminal"
-      ) {
-        for (const key of keys) {
-          // A mail rejection is recorded on the events ref, which can trail the
-          // run log, so mail waits for final history below.
-          if (remaining.get(key)?.kind === "mail") continue;
-          if (!remaining.delete(key)) continue;
-          outcomes.set(key, {
-            status: "failed",
-            code: "workflow_run_terminal",
-            message: `Workflow run ${runId} is terminal and cannot accept this dispatch`,
-          });
-        }
+        (await readCommittedWorkflowRunLifecycle(reads, runId)) !== "terminal"
+      )
+        continue;
+      // A mail rejection is recorded on the events ref, which can trail
+      // the run log, so mail waits for final history below.
+      for (const key of signalKeysByRun.get(runId) ?? []) {
+        if (!remaining.delete(key)) continue;
+        outcomes.set(key, terminalRunFailure(runId));
       }
     }
     const anchorTerminal =
@@ -216,7 +285,7 @@ export function createWorkflowDispatchProjection({
       (anchorTerminal || unscannedAbandoned.length > 0) &&
       (await isHistoryFinal(anchorRunId, repoId, [
         { ref: WORKFLOW_RUN_REF, reads },
-        { ref: "refs/heads/events", reads: consumedReads },
+        { ref: WORKFLOW_RUN_CLAIM_CHECK_REF, reads: consumedReads },
       ]));
     if (anchorTerminal && historyFinal) {
       for (const key of remaining.keys()) {
@@ -227,23 +296,11 @@ export function createWorkflowDispatchProjection({
         });
       }
     }
-    // Accepted history cannot be rewritten. Each conditional row update can
-    // commit independently: a failed pass leaves the remainder discoverable,
-    // and a large backlog never holds allocation or run locks during cleanup.
+    // Each conditional row update can commit independently: a failed pass
+    // leaves the remainder discoverable, and a large backlog never holds
+    // allocation or run locks during cleanup.
     const now = new Date();
-    for (const [deliveryKey, outcome] of outcomes) {
-      if (outcome.status === "settled") {
-        await dispatches.settle(anchorRunId, deliveryKey, now);
-      } else {
-        await dispatches.fail({
-          anchorRunId,
-          deliveryKey,
-          code: outcome.code,
-          message: outcome.message,
-          now,
-        });
-      }
-    }
+    await writeOutcomes(dispatches, anchorRunId, outcomes, now);
     // Final history has been read once, so later scans cannot resolve what
     // remains abandoned.
     if (historyFinal)
@@ -368,5 +425,18 @@ export function createWorkflowDispatchProjection({
     }
   }
 
-  return { project, reconcileNext };
+  /**
+   * Settle a deployment's dispatches for lifecycle recovery. A failure must
+   * not hold back the run outcomes recovery decides; the background pass
+   * visits every deployment with unresolved dispatches, so it retries.
+   */
+  async function recover(anchorRunId: string): Promise<void> {
+    try {
+      await project(anchorRunId);
+    } catch (cause) {
+      logger.error`Dispatch recovery failed for ${anchorRunId}; the projection pass retries it: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+  }
+
+  return { project, reconcileNext, recover };
 }

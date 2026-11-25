@@ -47,7 +47,11 @@ import {
 } from "@intx/types/sidecar";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
-import { createMockWs, NO_STANDBY_ROUTER } from "./sidecar-test-helpers";
+import {
+  createMockWs,
+  NO_STANDBY_ROUTER,
+  NO_DISPATCH_RECOVERY,
+} from "./sidecar-test-helpers";
 
 const NO_MANIFEST_DIGEST = await adapterManifestDigest(undefined);
 const TENANT = "tenant-lifecycle-integration";
@@ -201,6 +205,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         },
         historyReceives,
+        dispatchProjection: NO_DISPATCH_RECOVERY,
         runReader: createWorkflowRunReader(agentRepoStore.repoStore),
         now: () => now,
       });
