@@ -1,7 +1,7 @@
 import git from "isomorphic-git";
 import type { CommitSigner } from "./signer";
 import { buildSigningArgs } from "./commit-helpers";
-import { flushRuntime, type StorageRuntime } from "./runtime";
+import { flushRuntime, pathExists, type StorageRuntime } from "./runtime";
 
 const AUTHOR = {
   name: "interchange-harness",
@@ -19,10 +19,7 @@ async function isGitRepo(
   runtime: StorageRuntime,
   dir: string,
 ): Promise<boolean> {
-  return runtime.fs
-    .stat(runtime.path.join(dir, ".git"))
-    .then(() => true)
-    .catch(() => false);
+  return pathExists(runtime, runtime.path.join(dir, ".git"));
 }
 
 /**

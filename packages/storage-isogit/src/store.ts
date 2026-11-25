@@ -31,6 +31,7 @@ import { withRepoDirLock } from "./repo-lock";
 import {
   decodeUTF8,
   flushRuntime,
+  pathExists,
   type FileSystemStat,
   type StorageRuntime,
 } from "./runtime";
@@ -171,21 +172,6 @@ function sanitizeCallId(callId: string): string {
     );
   }
   return callId.replace(UNSAFE_FILENAME_CHARS, "_");
-}
-
-async function pathExists(
-  runtime: StorageRuntime,
-  fullPath: string,
-): Promise<boolean> {
-  try {
-    await runtime.fs.access(fullPath);
-    return true;
-  } catch (cause) {
-    if (hasCode(cause) && cause.code === "ENOENT") {
-      return false;
-    }
-    throw cause;
-  }
 }
 
 // A symlinked directory would put spills outside the repository, and git.add

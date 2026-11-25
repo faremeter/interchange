@@ -299,6 +299,19 @@ export function normalizeRuntime(runtime: IsogitRuntime): StorageRuntime {
   };
 }
 
+export async function pathExists(
+  runtime: StorageRuntime,
+  filepath: string,
+): Promise<boolean> {
+  try {
+    await runtime.fs.access(filepath);
+    return true;
+  } catch (cause) {
+    if (hasCode(cause) && cause.code === "ENOENT") return false;
+    throw cause;
+  }
+}
+
 export async function flushRuntime(runtime: StorageRuntime): Promise<void> {
   await runtime.flush?.();
 }

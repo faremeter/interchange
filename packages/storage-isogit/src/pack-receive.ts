@@ -1,5 +1,5 @@
 import git, { type FsClient } from "isomorphic-git";
-import { promiseFsMethods, type StorageRuntime } from "./runtime";
+import { pathExists, promiseFsMethods, type StorageRuntime } from "./runtime";
 import { hasCode } from "@intx/types/has-code";
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
@@ -33,19 +33,6 @@ function publishedPackPaths(
     finalPackPath: runtime.path.join(packDir, packName),
     finalIdxPath: runtime.path.join(packDir, idxName),
   };
-}
-
-async function pathExists(
-  runtime: StorageRuntime,
-  filepath: string,
-): Promise<boolean> {
-  try {
-    await runtime.fs.access(filepath);
-    return true;
-  } catch (cause) {
-    if (hasCode(cause) && cause.code === "ENOENT") return false;
-    throw cause;
-  }
 }
 
 /**
