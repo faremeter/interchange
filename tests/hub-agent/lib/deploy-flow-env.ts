@@ -1700,6 +1700,80 @@ export async function startDeployFlowEnv(
       ? { senderKeyResolution: opts.senderKeyResolution }
       : {}),
   });
+
+  // A throw from here on reaches a caller that holds no env and so cannot
+  // tear it down, so this layer stops whatever had started before it
+  // rethrows.
+  const started: StartedOnHub = {};
+  try {
+    return await startDeployFlowEnvOnHub({
+      opts,
+      waitMark,
+      tempDirs,
+      registerTempDir,
+      hub,
+      started,
+    });
+  } catch (cause) {
+    throw await releaseFailedSetup(cause, hub, started, tempDirs);
+  }
+}
+
+type StartedOnHub = { inference?: MockInference; sidecar?: SidecarHandle };
+
+// Stop what a failed `startDeployFlowEnv` had started, in `teardown()`'s
+// order, and return the error to throw. Every step runs even when an earlier
+// one throws, so a sidecar that will not die does not also leave the servers
+// running. A cleanup failure joins `cause` rather than replacing it.
+async function releaseFailedSetup(
+  cause: unknown,
+  hub: HubEnv,
+  started: StartedOnHub,
+  tempDirs: string[],
+): Promise<unknown> {
+  const failures: unknown[] = [];
+  const attempt = async (step: () => unknown): Promise<void> => {
+    try {
+      await step();
+    } catch (err) {
+      failures.push(err);
+    }
+  };
+  for (const handle of hub.liveHandles) {
+    await attempt(() => {
+      handle.close();
+    });
+  }
+  hub.liveHandles.clear();
+  const { sidecar, inference } = started;
+  if (sidecar !== undefined) {
+    await attempt(() => terminateSidecarSubprocess(sidecar));
+  }
+  await attempt(() => stopServerBounded(hub.server));
+  if (inference !== undefined) {
+    await attempt(() => stopServerBounded(inference.server));
+  }
+  for (const d of tempDirs.splice(0)) {
+    await attempt(() => fs.promises.rm(d, { recursive: true, force: true }));
+  }
+  if (failures.length === 0) return cause;
+  const describe = (err: unknown): string =>
+    err instanceof Error ? err.message : String(err);
+  return new AggregateError(
+    [cause, ...failures],
+    `${describe(cause)}; cleanup also failed: ${failures.map(describe).join("; ")}`,
+  );
+}
+
+async function startDeployFlowEnvOnHub(args: {
+  opts: StartDeployFlowEnvOpts;
+  waitMark: number;
+  tempDirs: string[];
+  registerTempDir: (dir: string) => void;
+  hub: HubEnv;
+  started: StartedOnHub;
+}): Promise<DeployFlowEnv> {
+  const { opts, waitMark, tempDirs, registerTempDir, hub, started } = args;
   const inference = startMockInference({
     ...(opts.inferenceToolCall !== undefined
       ? { toolCall: opts.inferenceToolCall }
@@ -1717,6 +1791,7 @@ export async function startDeployFlowEnv(
       ? { echoUserMessage: true }
       : {}),
   });
+  started.inference = inference;
 
   const hubPort = hub.server.port;
   if (hubPort === undefined) {
@@ -1730,6 +1805,7 @@ export async function startDeployFlowEnv(
     registerTempDir,
     ...(opts.sidecarEnv !== undefined ? { extraEnv: opts.sidecarEnv } : {}),
   });
+  started.sidecar = sidecar;
 
   // This layer owns the `sidecarEnv` -> `extraEnv` -> spawned-env wiring, so
   // it is the one that can check the caller's pin against what the process
@@ -1771,9 +1847,22 @@ export async function startDeployFlowEnv(
     return parts.join("\n\n");
   };
 
-  await waitFor(() => hub.router.getConnectedSidecars().length > 0, {
-    diagnostics: sidecarDiagnostics,
-  });
+  // Wait for the primary sidecar's identity, not for any connected sidecar.
+  // A sidecar that exits before it connects, for example on a bad boot
+  // config, fails setup here instead of leaving the wait to the runner's
+  // budget.
+  await waitFor(
+    () => {
+      if (hub.router.getConnectedSidecars().includes(SIDECAR_ID)) return true;
+      if (sidecar.proc.exitCode !== null || sidecar.proc.signalCode !== null) {
+        throw new Error(
+          `deploy-flow env: sidecar exited (code ${String(sidecar.proc.exitCode)}, signal ${String(sidecar.proc.signalCode)}) before it connected\n${sidecarDiagnostics()}`,
+        );
+      }
+      return false;
+    },
+    { diagnostics: sidecarDiagnostics },
+  );
 
   const deployments = new Map<string, DeploymentHandle>();
   const registerDeployment = (handle: DeploymentHandle): void => {

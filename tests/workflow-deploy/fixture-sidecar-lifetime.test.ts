@@ -6,13 +6,16 @@
 // test kills a real parent process and watches the real sidecar exit.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
 
 import {
+  listProcessSubtree,
   pidAlive,
+  startDeployFlowEnv,
   startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
@@ -79,6 +82,24 @@ async function readFirstLine(stream: ReadableStream<Uint8Array>) {
   return text.slice(0, text.indexOf("\n"));
 }
 
+// The TCP sockets this process listens on, as `lsof` names them.
+function listListeningSockets(): string[] {
+  const result = Bun.spawnSync([
+    "lsof",
+    "-a",
+    "-p",
+    String(process.pid),
+    "-iTCP",
+    "-sTCP:LISTEN",
+    "-nP",
+    "-Fn",
+  ]);
+  return new TextDecoder()
+    .decode(result.stdout)
+    .split("\n")
+    .filter((line) => line.startsWith("n"));
+}
+
 describe("deploy-flow fixture sidecar lifetime", () => {
   test("a sidecar exits when the process that spawned it is killed", async () => {
     const dialed = nextDial();
@@ -130,5 +151,52 @@ describe("deploy-flow fixture sidecar lifetime", () => {
     } finally {
       await terminateSidecarSubprocess(sidecar);
     }
+  });
+
+  test("a failed setup stops its servers and removes its temp dirs", async () => {
+    // Every temp dir the fixture makes lands under this root, so an empty
+    // root after the rejection shows the cleanup ran to its last step.
+    const tempRoot = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "failed-setup-"),
+    );
+    tempDirs.push(tempRoot);
+    const childrenBefore = new Set(listProcessSubtree(process.pid));
+    const listenersBefore = new Set(listListeningSockets());
+    // The refusing hub is already listening, so an empty listing would mean
+    // `lsof` cannot see this process and the check below proves nothing.
+    expect(
+      [...listenersBefore].some((socket) =>
+        socket.endsWith(`:${String(refusingHubPort)}`),
+      ),
+    ).toBe(true);
+    const savedTmpdir = process.env["TMPDIR"];
+    process.env["TMPDIR"] = tempRoot;
+    try {
+      // The sidecar rejects this value at boot and exits.
+      await expect(
+        startDeployFlowEnv({
+          sidecarEnv: { SIDECAR_RECONNECT_DELAY_MS: "not-a-number" },
+        }),
+      ).rejects.toThrow(/sidecar exited .* before it connected/);
+    } finally {
+      if (savedTmpdir === undefined) {
+        delete process.env["TMPDIR"];
+      } else {
+        process.env["TMPDIR"] = savedTmpdir;
+      }
+    }
+
+    // The hub and the inference server run in this process, so a listening
+    // socket the setup opened and left open is one of them.
+    expect(
+      listListeningSockets().filter((socket) => !listenersBefore.has(socket)),
+    ).toEqual([]);
+    expect(await fs.promises.readdir(tempRoot)).toEqual([]);
+    // Filtered on liveness so the `ps` the walk itself spawns, which has
+    // exited by now, does not count.
+    const leftover = listProcessSubtree(process.pid).filter(
+      (pid) => !childrenBefore.has(pid) && pidAlive(pid),
+    );
+    expect(leftover).toEqual([]);
   });
 });
