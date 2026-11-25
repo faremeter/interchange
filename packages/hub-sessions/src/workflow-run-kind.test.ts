@@ -1,4 +1,4 @@
-import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll, spyOn } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -3279,6 +3279,54 @@ describe("claim-check API — enqueueInbox", () => {
       outcome: "already-present",
       reason: "processing",
     });
+  });
+
+  // A caller acks on already-present, so the ref it read must be durable.
+  test("a retry after an enqueue whose ref did not sync syncs the ref before it reports already-present", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-enq-sync-");
+    const args = {
+      address: ADDRESS,
+      messageId: "msg-1",
+      authenticatedSender: SENDER,
+      receivedAt: 100,
+    };
+    // Create the events ref first, so the failing enqueue below syncs only
+    // its directory.
+    await enqueueInbox(store, principal, repoId, {
+      ...args,
+      messageId: "msg-0",
+    });
+    const refDir = path.join(store.getRepoDir(repoId), ".git", "refs", "heads");
+    const synced: string[] = [];
+    let failing: string | null = refDir;
+    const open = fs.promises.open;
+    const spy = spyOn(fs.promises, "open").mockImplementation(
+      async (target, flags, mode) => {
+        const handle = await open(target, flags, mode);
+        const sync = handle.sync.bind(handle);
+        spyOn(handle, "sync").mockImplementation(async () => {
+          if (String(target) === failing) throw new Error("sync failed");
+          synced.push(String(target));
+          await sync();
+        });
+        return handle;
+      },
+    );
+    try {
+      await expect(
+        enqueueInbox(store, principal, repoId, args),
+      ).rejects.toThrow("not durable");
+      failing = null;
+      synced.length = 0;
+      expect(await enqueueInbox(store, principal, repoId, args)).toEqual({
+        outcome: "already-present",
+        reason: "duplicate",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(synced).toContain(refDir);
   });
 });
 

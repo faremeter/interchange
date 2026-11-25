@@ -41,6 +41,7 @@ export const {
   collectReachableObjects,
   createAndSwitchBranch,
   createDeployPack,
+  createDurableObjectWrites,
   createNegotiatedPack,
   createObjectPresence,
   currentBranch,

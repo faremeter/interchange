@@ -9,6 +9,7 @@ import { createSSHSignature } from "@intx/crypto";
 import {
   initRepo as storageInitRepo,
   createDeployPack,
+  createDurableObjectWrites,
   createObjectPresence,
   holdSyncRecord,
   HUB_REF_NAMESPACE,
@@ -1494,6 +1495,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // an empty root tree when the whole repo empties).
   async function assembleTree(
     dir: string,
+    writeFs: FsClient,
     reads: ObjectReads,
     baseTreeOid: string | null,
     prefix: string,
@@ -1621,6 +1623,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           base !== undefined && base.type === "tree" ? base.oid : null;
         const childOid = await assembleTree(
           dir,
+          writeFs,
           reads,
           baseChildOid,
           `${full}/`,
@@ -1647,7 +1650,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       });
     }
     if (entries.length === 0) return null;
-    return await git.writeTree({ fs, dir, tree: entries });
+    return await git.writeTree({ fs: writeFs, dir, tree: entries });
   }
 
   // Prospective-side validatePush closures sourced from a root tree oid,
@@ -1722,8 +1725,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     pinnedParent?: { sha: string | null },
   ): Promise<WriteResult> {
     const dir = repoDir(repoId);
-    await storageInitRepo(dir, storageOptsFor(repoId, undefined));
-
     const handler = handlerFor(repoId);
 
     // Assemble the commit's tree directly and commit that tree oid,
@@ -1759,17 +1760,22 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // Write the put blobs, then splice them and `w.deletes` onto the
     // parent root tree. writeBlob and writeTree emit unreferenced
     // objects; nothing the ref can reach moves until the commit lands.
+    // They go through `durable`, which syncs each one, so the ref never
+    // names an object a crash could lose: a receive that builds on this
+    // commit checks only what it changes.
+    const durable = createDurableObjectWrites(dir);
     const puts = new Map<string, string>();
     for (const [relPath, contents] of Object.entries(w.files)) {
       const bytes =
         typeof contents === "string"
           ? new TextEncoder().encode(contents)
           : contents;
-      const oid = await git.writeBlob({ fs, dir, blob: bytes });
+      const oid = await git.writeBlob({ fs: durable.fs, dir, blob: bytes });
       puts.set(relPath, oid);
     }
     const assembled = await assembleTree(
       dir,
+      durable.fs,
       reads,
       baseRootTreeOid,
       "",
@@ -1777,7 +1783,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       w.deletes,
     );
     const newRootTreeOid =
-      assembled ?? (await git.writeTree({ fs, dir, tree: [] }));
+      assembled ?? (await git.writeTree({ fs: durable.fs, dir, tree: [] }));
 
     // validatePush sees the full prospective tree via closures over the
     // assembled tree oid; the prior-side closures read the parent commit
@@ -1844,7 +1850,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const oldSha = parentCommitSha;
 
     const commitSha = await git.commit({
-      fs,
+      fs: durable.fs,
       dir,
       cache: cacheFor(dir),
       tree: newRootTreeOid,
@@ -1852,6 +1858,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       author: AUTHOR,
       parent: [commitParentSha],
       ref,
+      noUpdateBranch: true,
       signingKey: "sshsig",
       onSign: async ({ payload }) => ({
         signature: await createSSHSignature(
@@ -1861,13 +1868,26 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         ),
       }),
     });
+    await durable.finish();
+    const notDurable = await moveRef(dir, ref, commitSha);
 
     const cachedExisting = existingCommitsCache.get(indexCacheKey(repoId));
     if (cachedExisting !== undefined) cachedExisting.add(commitSha);
     await handler.onRefUpdated({ repoId, ref, oldSha, newSha: commitSha });
     await emitRefUpdate(repoId, ref, oldSha, commitSha);
+    if (notDurable !== null) throw notDurable;
 
     return { commitSha, newlyTerminalRuns: validation.newlyTerminalRuns ?? [] };
+  }
+
+  // Under the repo lock, before a write reads the ref it answers from: a
+  // write here that failed, or a process that stopped, can have left that
+  // ref unsynced.
+  async function openForWrite(repoId: RepoId): Promise<string> {
+    const dir = repoDir(repoId);
+    await storageInitRepo(dir, storageOptsFor(repoId, undefined));
+    await syncObjectsAndRefs(dir);
+    return dir;
   }
 
   async function writeTree(
@@ -1887,12 +1907,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // assembly, validatePush, commit, and the onRefUpdated hook. Holding
     // the lock through onRefUpdated keeps post-update consumers
     // serialized against the same ref's next writer.
-    return withRepoLock(repoId, () =>
+    return withRepoLock(repoId, async () =>
       writeTreeUnderLock(
         principal,
         repoId,
         ref,
-        memoizedDirReads(repoDir(repoId)),
+        memoizedDirReads(await openForWrite(repoId)),
         {
           files: content.files,
           deletes: new Set<string>(),
@@ -1949,8 +1969,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       // concurrent callers targeting the same prefix observe each
       // other's commits in serial order — no lost-update window
       // between the read and the writeTree.
-      await storageInitRepo(repoDir(repoId), storageOptsFor(repoId, undefined));
-      const reads = memoizedDirReads(repoDir(repoId));
+      const reads = memoizedDirReads(await openForWrite(repoId));
       const existing = await readPrefixBlobs(
         repoId,
         reads,
@@ -1996,8 +2015,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     gateAccess(principal, repoId, ref, "writeTree");
     validateDeltaScope(args.changedPathPrefixes);
     return withRepoLock(repoId, async () => {
-      const dir = repoDir(repoId);
-      await storageInitRepo(dir, storageOptsFor(repoId, undefined));
+      const dir = await openForWrite(repoId);
       // Pin the parent tip ONCE under the lock and hand the same oid to
       // computeDelta's dedup reads and to the assembly below, so the
       // pre-image the delta is computed against is exactly the pre-image
@@ -2723,13 +2741,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           // later prune or a manual `git gc` cannot lose them. Its name is its
           // value, so retaining it is idempotent.
           const retainedRef = `${DEFINITION_REF_NAMESPACE}/${pinned.commitSha}`;
-          await git.writeRef({
-            fs,
-            dir,
-            ref: retainedRef,
-            value: pinned.commitSha,
-            force: true,
-          });
+          await writeRefDurably(dir, retainedRef, pinned.commitSha);
         }
         const packed = await createDeployPack(dir, pinned.commitSha);
         return { ...packed, ref };

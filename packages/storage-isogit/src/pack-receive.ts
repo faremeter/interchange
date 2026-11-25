@@ -375,10 +375,11 @@ export async function stagePack(
 }
 
 /**
- * Remove every staged pack under `dir`, and the temporary file of any
- * unfinished ref write. Each lives only as long as the receive or write
- * that made it, so the caller must know that none is live for `dir`, for
- * example on the first receive for `dir` after a process start.
+ * Remove every staged pack under `dir`, and the temporary files of any
+ * unfinished durable object or ref write. Each lives only as long as the
+ * receive or write that made it, so the caller must know that none is
+ * live for `dir`, for example on the first receive for `dir` after a
+ * process start.
  */
 export async function removeStagedPacks(
   runtime: StorageRuntime,

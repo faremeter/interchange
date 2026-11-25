@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import git from "isomorphic-git";
 import { RefNotDurableError, writeRefDurably } from "./commit-helpers";
+import { initRepo } from "./init";
+import { createDurableObjectWrites } from "./loose-objects";
 import { initAgentRepo } from "./node";
 import { createNodeIsogitRuntime } from "./node-runtime";
 import { normalizeRuntime } from "./runtime";
@@ -113,6 +116,39 @@ test("a ref sync syncs every ref the first time and after a failed ref write, an
   await syncObjectsAndRefs(runtime, dir);
   expect(steps).toContain(`sync ${path.join(".git", "objects", "pack")}`);
   expect(steps).not.toContain(`sync ${heads}`);
+});
+
+test("after a failed sync, or once the repository is built again, the next sync lists the object directories again", async () => {
+  const dir = await tempDir();
+  await initAgentRepo(dir);
+  const { runtime, steps } = recordingRuntime(dir);
+  await syncObjectsAndRefs(runtime, dir);
+  const packSync = `sync ${path.join(".git", "objects", "pack")}`;
+  const dropWrite = async (text: string) => {
+    const durable = createDurableObjectWrites(runtime, dir);
+    return git.writeBlob({
+      fs: durable.fs,
+      dir,
+      blob: new TextEncoder().encode(text),
+    });
+  };
+  const objects = path.join(dir, ".git", "objects");
+
+  const dropped = await dropWrite("its commit failed validation");
+  await fs.promises.rm(path.join(objects, dropped.slice(0, 2)), {
+    recursive: true,
+  });
+  await expect(syncObjectsAndRefs(runtime, dir)).rejects.toThrow(/ENOENT/);
+  steps.length = 0;
+  await syncObjectsAndRefs(runtime, dir);
+  expect(steps).toContain(packSync);
+
+  await dropWrite("dropped before the repository was removed");
+  await fs.promises.rm(path.join(dir, ".git"), { recursive: true });
+  await initRepo(runtime, dir);
+  steps.length = 0;
+  await syncObjectsAndRefs(runtime, dir);
+  expect(steps).toContain(packSync);
 });
 
 // A runtime that records the paths it syncs without syncing them, and

@@ -9,6 +9,7 @@ import type { KeyPair } from "@intx/types/runtime";
 import { waitUntil } from "@intx/types/testing";
 import { createRepoStore, type LocalRepoStore } from "./store";
 import { workflowAuthorize, workflowKindHandler } from "../workflow-kind";
+import { createWorkflowRunReader } from "../workflow-run-reader";
 import { RepoRemovedDuringReceiveError } from "./types";
 import type {
   ApprovalWaitChange,
@@ -910,6 +911,37 @@ describe("RepoStore", () => {
       hold.release();
       ac.abort();
     }
+  });
+
+  test("writeTree keeps an object it already holds instead of writing it again", async () => {
+    const dataDir = await makeTempDir("repo-store-keep-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { skill: handler },
+      authorize: allowAll,
+    });
+    const { commitSha } = await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/a.md": "same" },
+      message: "first",
+    });
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const { oid } = await git.readBlob({
+      fs,
+      dir,
+      oid: commitSha,
+      filepath: "deploy/a.md",
+    });
+    const loose = looseObjectPath(dir, oid);
+    const before = await fs.promises.stat(loose);
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/a.md": "same", "deploy/b.md": "new" },
+      message: "second",
+    });
+
+    expect((await fs.promises.stat(loose)).ino).toBe(before.ino);
   });
 
   test("writeTree on an existing ref advances from that ref", async () => {
@@ -4073,6 +4105,127 @@ describe("RepoStore", () => {
       const { synced } = await syncedDuring(async () => {
         await expect(send()).rejects.toThrow("non_fast_forward");
       });
+      expect(synced).toContain(refDir);
+    });
+
+    test("a durable ref read after a write whose ref did not sync syncs the ref first, and otherwise syncs nothing", async () => {
+      const { targetStore, refDir } = await setUp();
+      const durableTip = () =>
+        targetStore.resolveRef(principal, wfRepoId, REF, { durable: true });
+      expect((await syncedDuring(durableTip)).synced).toEqual([]);
+      await syncedDuring(
+        async () => {
+          await expect(
+            targetStore.writeTree(principal, wfRepoId, "refs/heads/other", {
+              files: { "runs/r2/events/0.json": "other" },
+              message: "other",
+            }),
+          ).rejects.toThrow("not durable");
+        },
+        { failing: refDir },
+      );
+
+      const { synced } = await syncedDuring(() =>
+        targetStore.openCommittedReads(principal, wfRepoId, REF, {
+          durable: true,
+        }),
+      );
+      expect(synced).toContain(refDir);
+      expect((await syncedDuring(durableTip)).synced).toEqual([]);
+      expect(
+        await targetStore.resolveRef(
+          principal,
+          { kind: "workflow-run", id: "absent" },
+          REF,
+          { durable: true },
+        ),
+      ).toBeNull();
+    });
+
+    test("a durable ref read waits for a ref write in flight, and syncs the ref that write could not", async () => {
+      const { targetStore, refDir } = await setUp();
+      const other = "refs/heads/other";
+      const events: string[] = [];
+      const reached = Promise.withResolvers<undefined>();
+      const release = Promise.withResolvers<undefined>();
+      let holdNext = true;
+      const open = fs.promises.open;
+      const spy = spyOn(fs.promises, "open").mockImplementation(
+        async (target, flags, mode) => {
+          const handle = await open(target, flags, mode);
+          if (String(target) !== refDir) return handle;
+          const sync = handle.sync.bind(handle);
+          spyOn(handle, "sync").mockImplementation(async () => {
+            // The write's sync of the directory it renamed its ref into.
+            if (holdNext) {
+              holdNext = false;
+              reached.resolve(undefined);
+              await release.promise;
+              events.push("write's sync failed");
+              throw new Error("sync failed");
+            }
+            events.push("ref directory synced");
+            await sync();
+          });
+          return handle;
+        },
+      );
+      try {
+        const writing = targetStore
+          .writeTree(principal, wfRepoId, other, {
+            files: { "runs/r2/events/0.json": "other" },
+            message: "other",
+          })
+          .then(
+            () => null,
+            (err: unknown) => err,
+          );
+        await reached.promise;
+        const reading = targetStore
+          .resolveRef(principal, wfRepoId, other, { durable: true })
+          .then((tip) => {
+            events.push("read");
+            return tip;
+          });
+        release.resolve(undefined);
+
+        expect(String(await writing)).toContain("not durable");
+        expect(await reading).toBe(
+          await targetStore.resolveRef(principal, wfRepoId, other),
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      expect(events).toEqual([
+        "write's sync failed",
+        "ref directory synced",
+        "read",
+      ]);
+    });
+
+    // Recovery records outcomes in SQL from what it reads.
+    test("the latest run events are read at a tip whose ref is synced", async () => {
+      const { targetStore, refDir } = await setUp();
+      await syncedDuring(
+        async () => {
+          await expect(
+            targetStore.writeTree(principal, wfRepoId, "refs/heads/other", {
+              files: { "runs/r2/events/0.json": "other" },
+              message: "other",
+            }),
+          ).rejects.toThrow("not durable");
+        },
+        { failing: refDir },
+      );
+
+      const { synced } = await syncedDuring(() =>
+        // These events are not JSON, so none is read.
+        createWorkflowRunReader(targetStore).readLatestRunEvents(
+          wfRepoId,
+          REF,
+          () => false,
+        ),
+      );
       expect(synced).toContain(refDir);
     });
 

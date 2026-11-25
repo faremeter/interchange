@@ -16,6 +16,7 @@ import { createDeployPack, createNegotiatedPack } from "./pack-send";
 import { collectReachableObjects } from "./object-walk";
 import { createObjectPresence } from "./object-presence";
 import { writeRefDurably } from "./commit-helpers";
+import { createDurableObjectWrites } from "./loose-objects";
 import { holdSyncRecord, syncObjectsAndRefs, syncRefs } from "./sync-record";
 import { writeTreeToDisk } from "./write-tree";
 import { indexPackIntoGitDir } from "./index-pack";
@@ -79,6 +80,10 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     logHistory: bindRepoDir(storageRuntime, logHistory),
     stagePack: bindRepoDir(storageRuntime, stagePack),
     writeRefDurably: bindRepoDir(storageRuntime, writeRefDurably),
+    createDurableObjectWrites: bindRepoDir(
+      storageRuntime,
+      createDurableObjectWrites,
+    ),
     syncObjectsAndRefs: bindRepoDir(storageRuntime, syncObjectsAndRefs),
     holdSyncRecord: bindRepoDir(storageRuntime, holdSyncRecord),
     syncRefs: bindRepoDir(storageRuntime, syncRefs),
