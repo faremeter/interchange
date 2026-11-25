@@ -156,6 +156,10 @@ function gate(): {
   };
 }
 
+function looseObjectPath(repoDir: string, oid: string): string {
+  return path.join(repoDir, ".git", "objects", oid.slice(0, 2), oid.slice(2));
+}
+
 describe("RepoStore", () => {
   describe("retained workflow ref namespace", () => {
     const definitionRepo: RepoId = { kind: "workflow", id: "definition" };
@@ -3841,11 +3845,18 @@ describe("RepoStore", () => {
         await collectReachableObjects(sourceDir, secondSha)
       ).filter((oid) => !held.has(oid));
       const targetDir = targetStore.getRepoDir(wfRepoId);
-      const packDir = path.join(targetDir, ".git", "objects", "pack");
-      const firstPackFiles = await fs.promises.readdir(packDir);
-      const removeFirstPack = async () => {
-        for (const file of firstPackFiles) {
-          await fs.promises.rm(path.join(packDir, file));
+      // The first push brought every object the first commit reaches.
+      const loseFirstPush = async () => {
+        for (const oid of held) {
+          await fs.promises.rm(
+            path.join(
+              targetDir,
+              ".git",
+              "objects",
+              oid.slice(0, 2),
+              oid.slice(2),
+            ),
+          );
         }
       };
       const oidAt = async (filepath: string) =>
@@ -3878,7 +3889,7 @@ describe("RepoStore", () => {
         oidAt,
         treeAt,
         packOf,
-        removeFirstPack,
+        loseFirstPush,
       };
     }
 
@@ -3981,7 +3992,7 @@ describe("RepoStore", () => {
         newObjects,
         oidAt,
         packOf,
-        removeFirstPack,
+        loseFirstPush,
       } = await setUp();
       const lostBlob = await oidAt("runs/r1/events/0.json");
       sourceStore.commitPackedTip(wfRepoId, REF, firstSha);
@@ -3989,7 +4000,7 @@ describe("RepoStore", () => {
       // the sender, which retries the same pack once the first is lost.
       const retry = await packOf(newObjects);
       await (await prepareOn(targetStore, retry, secondSha)).commit();
-      await removeFirstPack();
+      await loseFirstPush();
       const updatesBefore = targetHandler.onRefUpdatedCalls.length;
 
       await expect(prepareOn(targetStore, retry, secondSha)).rejects.toThrow(
@@ -4022,7 +4033,7 @@ describe("RepoStore", () => {
         newObjects,
         oidAt,
         packOf,
-        removeFirstPack,
+        loseFirstPush,
       } = await setUp();
       const lostBlob = await oidAt("runs/r1/events/0.json");
       const older = await sourceStore.createPack(principal, wfRepoId, REF);
@@ -4042,7 +4053,7 @@ describe("RepoStore", () => {
       await (
         await prepareOn(targetStore, await packOf(thirdObjects), thirdSha)
       ).commit();
-      await removeFirstPack();
+      await loseFirstPush();
 
       const repair = await prepareOn(targetStore, older.pack, secondSha);
       expect(await repair.commit()).toEqual({ kind: "already_applied" });
@@ -4058,11 +4069,10 @@ describe("RepoStore", () => {
     });
   });
 
-  // A receiver that acked a push and then lost the pack it stored must
-  // not accept a later commit that still names an object of that pack,
-  // even one the commit did not change: the sender would never send it
-  // again.
-  describe("receivePack after the receiver lost a pack", () => {
+  // A receiver that acked a push and then lost the objects it stored must
+  // not accept a later commit that still names one of them, even one the
+  // commit did not change: the sender would never send it again.
+  describe("receivePack after the receiver lost a push", () => {
     const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
     const permissiveWorkflowRun = (): TestHandler => ({
       ...createTestHandler(),
@@ -4070,10 +4080,10 @@ describe("RepoStore", () => {
       directoryPrefix: "workflow-runs-under-test",
     });
 
-    // The receiver acks two pushes and stores each as its own pack. The
-    // second commit replaces every tree of the first, so only the first
-    // event's blob, which the second still names, is left in the first
-    // pack alone.
+    // The receiver acks two pushes and stores their objects as loose
+    // objects. The second commit replaces every tree of the first, so only
+    // the first event's blob, which the second still names, is left from
+    // the first push alone.
     async function setUp() {
       const source = createRepoStore({
         dataDir: await makeTempDir("repo-store-lost-source-"),
@@ -4092,7 +4102,21 @@ describe("RepoStore", () => {
       const target = openTarget();
       await target.initRepo(wfRepoId);
       const targetDir = target.getRepoDir(wfRepoId);
-      const packDir = path.join(targetDir, ".git", "objects", "pack");
+      const objectsDir = path.join(targetDir, ".git", "objects");
+      const looseObjects = async () =>
+        new Set(
+          (
+            await Promise.all(
+              (await fs.promises.readdir(objectsDir))
+                .filter((name) => /^[0-9a-f]{2}$/.test(name))
+                .map(async (fanout) =>
+                  (
+                    await fs.promises.readdir(path.join(objectsDir, fanout))
+                  ).map((rest) => `${fanout}${rest}`),
+                ),
+            )
+          ).flat(),
+        );
 
       const write = async (filepath: string, body: string) =>
         (
@@ -4119,11 +4143,20 @@ describe("RepoStore", () => {
           priorSha,
         );
         source.commitPackedTip(wfRepoId, REF, commitSha);
+        return pack;
       };
 
       const firstSha = await write("runs/r1/events/0.json", "zero");
-      await ship(target, null);
-      const firstPack = await fs.promises.readdir(packDir);
+      const before = await looseObjects();
+      const firstPack = await ship(target, null);
+      const firstPushObjects = [...(await looseObjects())].filter(
+        (oid) => !before.has(oid),
+      );
+      const loseFirstPush = async () => {
+        for (const oid of firstPushObjects) {
+          await fs.promises.rm(looseObjectPath(targetDir, oid));
+        }
+      };
       const secondSha = await write("runs/r1/events/1.json", "one");
       await ship(target, firstSha);
       const thirdSha = await write("runs/r1/events/2.json", "two");
@@ -4135,11 +4168,6 @@ describe("RepoStore", () => {
           filepath: "runs/r1/events/0.json",
         })
       ).oid;
-      const firstPackFile = (suffix: string) => {
-        const name = firstPack.find((file) => file.endsWith(suffix));
-        if (name === undefined) throw new Error(`no ${suffix} file`);
-        return path.join(packDir, name);
-      };
       return {
         source,
         target,
@@ -4148,12 +4176,13 @@ describe("RepoStore", () => {
         secondSha,
         thirdSha,
         lostBlob,
-        firstPackFile,
+        firstPack,
+        loseFirstPush,
         ship,
       };
     }
 
-    test("rejects a commit that names a blob of the lost pack, and the full history restores it", async () => {
+    test("rejects a commit that names a blob of the lost push, and the full history restores it", async () => {
       const {
         source,
         target,
@@ -4161,11 +4190,10 @@ describe("RepoStore", () => {
         secondSha,
         thirdSha,
         lostBlob,
-        firstPackFile,
+        loseFirstPush,
         ship,
       } = await setUp();
-      await fs.promises.rm(firstPackFile(".pack"));
-      await fs.promises.rm(firstPackFile(".idx"));
+      await loseFirstPush();
 
       await expect(ship(target, secondSha)).rejects.toThrow(
         `missing_objects: commit ${thirdSha} names blob ${lostBlob} at runs/r1/events/0.json, which is neither in the receiver's store nor in the pack`,
@@ -4183,18 +4211,30 @@ describe("RepoStore", () => {
       expect(new TextDecoder().decode(blob)).toBe("zero");
     });
 
+    // A repository an older store wrote holds packs.
     test("a restarted receiver removes an index whose pack is gone, and the full history restores the pack's objects", async () => {
       const {
         source,
         openTarget,
+        targetDir,
         secondSha,
         thirdSha,
         lostBlob,
-        firstPackFile,
+        firstPack,
+        loseFirstPush,
         ship,
       } = await setUp();
-      const orphanIndex = firstPackFile(".idx");
-      await fs.promises.rm(firstPackFile(".pack"));
+      const packDir = path.join(targetDir, ".git", "objects", "pack");
+      const legacyPack = path.join(packDir, "pack-legacy.pack");
+      await fs.promises.writeFile(legacyPack, firstPack);
+      await git.indexPack({
+        fs,
+        dir: targetDir,
+        filepath: path.relative(targetDir, legacyPack),
+      });
+      const orphanIndex = legacyPack.replace(/\.pack$/, ".idx");
+      await fs.promises.rm(legacyPack);
+      await loseFirstPush();
       const restarted = openTarget();
 
       await expect(ship(restarted, secondSha)).rejects.toThrow(
@@ -5208,7 +5248,7 @@ describe("RepoStore pack receive reads", () => {
     return new TextDecoder().decode(await committed.readBlobByOid(payload.oid));
   }
 
-  test("one receive's validation loads each pack once although its reads pass the cache budget", async () => {
+  test("a receive whose reads pass the cache budget loads each pack once to validate and once to publish", async () => {
     const { pack, commitSha } = await sourcePack(repoId);
     // The ref update comes after the validation, which ends with the
     // charge of its reads to the budget.
@@ -5228,12 +5268,15 @@ describe("RepoStore pack receive reads", () => {
       await store.receivePack(principal, repoId, REF, pack, commitSha, null);
     });
 
+    // The validation loads each file once. It spends the budget, so the
+    // publish reads the objects through a rebuilt cache, which loads them
+    // once more.
     const loads = countLoads(loadsAtRefUpdate);
     const names = [...loads.keys()];
     expect(names.some((n) => n.endsWith(".idx"))).toBe(true);
     expect(names.some((n) => n.endsWith(".pack"))).toBe(true);
     for (const [name, count] of loads) {
-      expect({ name, count }).toEqual({ name, count: 1 });
+      expect({ name, count }).toEqual({ name, count: 2 });
     }
   });
 
@@ -5342,14 +5385,31 @@ describe("RepoStore pack receive reads", () => {
       authorize: allowAll,
     });
     await store.initRepo(repoId);
-    await store.receivePack(
-      principal,
-      repoId,
-      REF,
-      firstPack.pack,
-      first.commitSha,
-      null,
+    // A repository an older store wrote holds its objects in a pack,
+    // which the cache keeps loaded.
+    const repoDir = path.join(dataDir, "repos-under-test", repoId.id);
+    const legacyPack = path.join(
+      repoDir,
+      ".git",
+      "objects",
+      "pack",
+      "pack-legacy.pack",
     );
+    await fs.promises.mkdir(path.dirname(legacyPack), { recursive: true });
+    await fs.promises.writeFile(legacyPack, firstPack.pack);
+    await git.indexPack({
+      fs,
+      dir: repoDir,
+      filepath: path.relative(repoDir, legacyPack),
+    });
+    await git.writeRef({
+      fs,
+      dir: repoDir,
+      ref: REF,
+      value: first.commitSha,
+      force: true,
+    });
+    expect(await readPayload(store, repoId)).toBe("payload 0");
 
     reads = READS_OVER_BUDGET;
     accept = false;
@@ -5762,6 +5822,13 @@ describe("RepoStore prepared pack receive", () => {
       .sort();
   }
 
+  async function holdsLoose(repoDir: string, oid: string): Promise<boolean> {
+    return fs.promises.access(looseObjectPath(repoDir, oid)).then(
+      () => true,
+      () => false,
+    );
+  }
+
   async function stagedPacks(repoDir: string): Promise<string[]> {
     return fs.promises
       .readdir(path.join(repoDir, ".git", "objects", "pack-staging"))
@@ -5788,7 +5855,8 @@ describe("RepoStore prepared pack receive", () => {
     expect(handler.onRefUpdatedCalls).toEqual([
       { repoId, ref: REF, oldSha: null, newSha: tip },
     ]);
-    expect(await receivedPacks(repoDirOf(repoId))).toHaveLength(1);
+    expect(await receivedPacks(repoDirOf(repoId))).toEqual([]);
+    expect(await holdsLoose(repoDirOf(repoId), tip)).toBe(true);
     expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
     await expect(prepared.commit()).rejects.toThrow(/already committed/);
   });
@@ -6026,7 +6094,7 @@ describe("RepoStore prepared pack receive", () => {
       approvalWaitChanges: [waitOf("v1")],
     });
     expect(await store.resolveRef(principal, repoId, REF)).toBe(tip);
-    expect(await receivedPacks(repoDirOf(repoId))).toHaveLength(1);
+    expect(await holdsLoose(repoDirOf(repoId), tip)).toBe(true);
     expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
   });
 
@@ -6051,7 +6119,8 @@ describe("RepoStore prepared pack receive", () => {
     expect(handler.onRefUpdatedCalls).toEqual([
       { repoId, ref: REF, oldSha: null, newSha: tip },
     ]);
-    expect(await receivedPacks(repoDirOf(repoId))).toHaveLength(1);
+    expect(await receivedPacks(repoDirOf(repoId))).toEqual([]);
+    expect(await holdsLoose(repoDirOf(repoId), tip)).toBe(true);
     expect(await stagedPacks(repoDirOf(repoId))).toEqual([]);
   });
 

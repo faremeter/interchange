@@ -235,6 +235,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return entries.filter((entry) => entry.endsWith(".pack")).sort();
     }
 
+    async function holdsLoose(
+      agentRepoStore: AgentRepoStore,
+      oid: string,
+    ): Promise<boolean> {
+      return fs.promises
+        .access(
+          path.join(
+            repoDirOf(agentRepoStore),
+            ".git",
+            "objects",
+            oid.slice(0, 2),
+            oid.slice(2),
+          ),
+        )
+        .then(
+          () => true,
+          () => false,
+        );
+    }
+
     async function stagedEntries(
       agentRepoStore: AgentRepoStore,
     ): Promise<string[]> {
@@ -823,7 +843,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     }
 
-    test("a DB commit failure after the ref moved keeps the pack and the pending projection", async () => {
+    test("a DB commit failure after the ref moved keeps the pack's objects and the pending projection", async () => {
       const line = await runLine([[{ runId: "run-a" }]]);
       const tip = commitAt(line, 0);
       const agentRepoStore = await createRepoStore(
@@ -846,7 +866,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await receivePack(createLookups(agentRepoStore), await pushOf(line, 0)),
       ).toEqual({ accepted: false, reason: "corrupt" });
       expect(await refTip(agentRepoStore)).toBe(tip);
-      expect(await publishedPacks(agentRepoStore)).toHaveLength(1);
+      expect(await publishedPacks(agentRepoStore)).toEqual([]);
+      expect(await holdsLoose(agentRepoStore, tip)).toBe(true);
       expect(await stagedEntries(agentRepoStore)).toEqual([]);
       expect(await pendingRows()).toEqual([{ anchorRunId: ANCHOR_RUN_ID }]);
     });

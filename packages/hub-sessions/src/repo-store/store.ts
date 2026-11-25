@@ -187,15 +187,15 @@ export type LocalRepoStore = RepoStore & {
    * of that tip and the pack does not bring it, the receive fails as
    * `missing_objects`.
    *
-   * The returned `commit()` takes the repo lock, publishes the pack, and
-   * moves `ref` to `commitSha`, with the live tip as the old value. The
-   * ref can move while the pack validates, so there is no
-   * `expectedOldSha`: when the live tip already holds `commitSha`,
-   * `commit()` answers `already_applied`, and publishes the pack only
-   * when it brings objects the store lacks; when the live tip is a commit
-   * of this pack, it returns only the findings of the later commits. Any
-   * other live tip gets the pack tip, because the sender is authoritative
-   * for the shape of its history.
+   * The returned `commit()` takes the repo lock, publishes the pack,
+   * mostly as loose objects, and moves `ref` to `commitSha`, with the
+   * live tip as the old value. The ref can move while the pack validates,
+   * so there is no `expectedOldSha`: when the live tip already holds
+   * `commitSha`, `commit()` answers `already_applied`, and publishes the
+   * pack only when it brings objects the store lacks; when the live tip
+   * is a commit of this pack, it returns only the findings of the later
+   * commits. Any other live tip gets the pack tip, because the sender is
+   * authoritative for the shape of its history.
    *
    * `discard()` takes the repo lock and removes the staged pack. It does
    * nothing when called again or once `commit()` is called. `commit()`
@@ -253,16 +253,17 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // The cache keys a pack by its filename, so it depends on pack names
   // that never repeat with different bytes. @intx/storage-isogit names a
   // received pack `pack-recv-<transferId>`, where the receive draws a
-  // random transferId. Thus a
-  // pack receive needs no invalidation after it writes objects and moves
-  // a ref. A receive validates a pack through a view that shows the
-  // staged pack under the name it gets when published, so an entry
-  // loaded during the validation is the same entry after the publish.
-  // An entry for a rejected (discarded) pack stays until
-  // the next budget rebuild, but the directory listing does not name
-  // that pack, so no read uses the entry again. These
-  // properties also make it safe to drop a dir's cache at any instant:
-  // the next call just re-reads from disk.
+  // random transferId. Thus a pack receive needs no invalidation after it
+  // writes objects and moves a ref. A receive validates a pack through a
+  // view that shows the staged pack in objects/pack under a name of the
+  // view's own, which sorts first. Its publish either moves the pack
+  // there under its `pack-recv-` name, which the next read loads again,
+  // or writes its objects as loose objects. The entry the validation
+  // loaded, like one for a rejected pack, stays until the next budget
+  // rebuild, but the directory listing never names that pack, so no read
+  // uses it. A moved pack is cached under both names until then. These
+  // properties also make it safe to drop a dir's cache at any instant: the
+  // next call just re-reads from disk.
   //
   // Two bounds keep a long-lived store from retaining parsed packfiles
   // (and their pack bytes) without limit: a dir's cache is rebuilt once
@@ -2174,9 +2175,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const handler = handlerFor(repoId);
     return withReceiveCache(dir, async (cache) => {
       chargePrebuiltScan(dir, prebuilt);
-      // An index whose pack is gone fails each read of an object it names,
-      // the history scan below included, so no receive could reach the
-      // full resend that brings those objects back.
+      // A receive syncs a pack's rename before it renames the index, so an
+      // index without its pack comes from damage outside the store, or
+      // from a store that did not sync that rename first. An index whose
+      // pack is gone fails each read of an object it names, the history
+      // scan below included, so no receive could reach the full resend
+      // that brings those objects back.
       for (const removed of await removeOrphanPackIndexes(dir)) {
         logger.error`Removed ${removed} from ${repoId.kind}/${repoId.id}: its pack is gone, and with it every object the index named`;
       }
@@ -2442,9 +2446,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     });
   }
 
-  // The locked last step of every receive: publish the staged pack and
-  // move the ref. The caller holds the repo lock. `findings` is the result
-  // of `validateStaged`.
+  // The locked last step of every receive: write the staged pack's
+  // objects into the repo and move the ref. The caller holds the repo
+  // lock. `findings` is the result of `validateStaged`.
   async function commitStaged(
     s: StagedReceive,
     findings: readonly PushFindings[],
@@ -2484,7 +2488,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
     // The store runs on the node runtime, which defines no flush, so no
     // flush step comes between the publish and the ref write.
-    await s.staged.publish();
+    await withReceiveCache(dir, (cache) => s.staged.publish(cache()));
     await git.writeRef({ fs, dir, ref, value: commitSha, force: true });
 
     for (const sha of s.chain) s.incarnation.add(sha);

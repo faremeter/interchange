@@ -135,11 +135,17 @@ describe("AgentRepoStore", () => {
       };
     }
 
-    async function packFiles(repoDir: string): Promise<string[]> {
+    // Every file under `objects/`, so a receive that writes a loose object
+    // or a pack shows.
+    async function objectFiles(repoDir: string): Promise<string[]> {
       const entries = await fs.promises.readdir(
-        path.join(repoDir, ".git", "objects", "pack"),
+        path.join(repoDir, ".git", "objects"),
+        { recursive: true, withFileTypes: true },
       );
-      return entries.filter((e) => e.endsWith(".pack")).sort();
+      return entries
+        .filter((e) => e.isFile())
+        .map((e) => path.join(e.parentPath, e.name))
+        .sort();
     }
 
     function supervisorOf(anchorRunId: string): WorkflowRunSupervisorPrincipal {
@@ -161,7 +167,7 @@ describe("AgentRepoStore", () => {
       const newerPack = await line.packAt(last);
       await applyWorkflowRunPack(store, repoId, olderPack, wfrRef, first);
       await applyWorkflowRunPack(store, repoId, newerPack, wfrRef, last);
-      const packsBefore = await packFiles(repoDir);
+      const objectsBefore = await objectFiles(repoDir);
 
       const runs = await applyWorkflowRunPack(
         store,
@@ -175,10 +181,10 @@ describe("AgentRepoStore", () => {
       expect(await git.resolveRef({ fs, dir: repoDir, ref: wfrRef })).toBe(
         last,
       );
-      expect(await packFiles(repoDir)).toEqual(packsBefore);
+      expect(await objectFiles(repoDir)).toEqual(objectsBefore);
     });
 
-    test("a re-push of the current tip publishes no pack", async () => {
+    test("a re-push of the current tip writes no object", async () => {
       const dataDir = await makeTempDir("agent-repo-wfr-same-");
       const store = createAgentRepoStore({ dataDir, signingKey });
       const repoId = { kind: "workflow-run" as const, id: "dep-wfr-same" };
@@ -189,13 +195,13 @@ describe("AgentRepoStore", () => {
 
       const pack = await line.packAt(tip);
       await applyWorkflowRunPack(store, repoId, pack, wfrRef, tip);
-      const packsBefore = await packFiles(repoDir);
+      const objectsBefore = await objectFiles(repoDir);
 
       const runs = await applyWorkflowRunPack(store, repoId, pack, wfrRef, tip);
 
       expect(runs).toEqual([]);
       expect(await git.resolveRef({ fs, dir: repoDir, ref: wfrRef })).toBe(tip);
-      expect(await packFiles(repoDir)).toEqual(packsBefore);
+      expect(await objectFiles(repoDir)).toEqual(objectsBefore);
     });
 
     test("a known commit that the ref no longer reaches still moves the ref", async () => {
@@ -281,13 +287,13 @@ describe("AgentRepoStore", () => {
       );
       if (prepared.kind !== "prepared") throw new Error("expected prepared");
       await applyWorkflowRunPack(store, repoId, newerPack, wfrRef, last);
-      const packsBefore = await packFiles(repoDir);
+      const objectsBefore = await objectFiles(repoDir);
 
       expect(await prepared.commit()).toEqual({ kind: "already_applied" });
       expect(await git.resolveRef({ fs, dir: repoDir, ref: wfrRef })).toBe(
         last,
       );
-      expect(await packFiles(repoDir)).toEqual(packsBefore);
+      expect(await objectFiles(repoDir)).toEqual(objectsBefore);
     });
 
     test("a held tip is recognized by a store that starts on existing data", async () => {

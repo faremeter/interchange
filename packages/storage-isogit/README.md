@@ -41,13 +41,13 @@ type IsogitRuntime = {
 
 The storage layer derives its other filesystem operations from `FsClient`,
 including recursive directory creation and removal, existence checks, and
-UTF-8 text reads. `rename` remains explicit because completed packs require an
-atomic publish primitive. Persistent backends can implement `flush` to make
-completed mutations durable before the API call resolves. A backend whose
-writes reach the disk only once a file or directory is synced, such as a POSIX
+UTF-8 text reads. `rename` remains explicit because packs and loose objects are
+published by an atomic rename. Persistent backends can implement `flush` to make
+completed mutations durable before the API call resolves. A backend whose writes
+reach the disk only once a file or directory is synced, such as a POSIX
 filesystem, must implement `sync` to make one path's contents or entries
-durable: the storage syncs each file before it renames it into place and each
-directory after an entry lands in it, and a runtime without `sync` skips those
+durable. A pack publish syncs each file before it renames it into place and each
+directory after an entry lands in it. A runtime without `sync` skips those
 steps. The Node runtime from `/node` implements it with `fsync`.
 
 Audit and error record paths are append-only. Repeating a byte-identical
@@ -94,8 +94,13 @@ one, every commit is signed. Nothing verifies those signatures at runtime.
 
 `stagePack` writes and indexes a received pack outside `objects/pack/` and
 returns a handle. The handle's `fs` reads the staged objects, so a receiver
-validates the pack before it publishes it; a rejected pack is discarded and
-never enters `objects/pack/`. A crash can leave a staged pack behind, which
-no reader scans; it stays until a caller runs `removeStagedPacks`. The hub's
-repo store does this before the first receive for a repository in each
-process.
+validates the pack before it publishes it; a rejected pack is discarded.
+Publishing writes each object as a loose object rather than adding a pack,
+so a read does not slow down as a repository takes more pushes. A pack of
+100 objects or more is moved into `objects/pack/` instead while the
+repository holds fewer than 8 packs, since a synced file per object costs
+more than one more pack. Nothing repacks, so in a repository this store
+started the cap bounds what a read searches; one an older store wrote keeps
+the packs it has. A crash can leave a staged pack behind, which no reader scans; it
+stays until a caller runs `removeStagedPacks`. The hub's repo store does
+this before the first receive for a repository in each process.

@@ -521,8 +521,8 @@ The control plane exposes the agent's change history to operators through the Ag
 
 ### Repository Growth
 
-Nothing collects a repo's objects: every accepted pack advances a ref and strands the prior tip's objects, so a repo grows for its whole life. A `workflow-run` repo depends on this: an expunged mail message's bytes persist only through older commits, so collecting its history would silently destroy the mailbox audit trail.
+Nothing collects a repo's objects: every accepted pack advances a ref and strands the prior tip's objects, so a repo grows for its whole life. A `workflow-run` repo depends on this: an expunged mail message's bytes persist only through older commits, so collecting its history would silently destroy the mailbox audit trail. A receive also stores most objects loose, one file each, which takes about three times the disk of a pack; a pack of 100 objects or more stays a pack while the repo holds fewer than 8 packs, and nothing repacks.
 
 **Concurrency.** A sidecar context store is written by several drivers that share no higher-level lock — the reactor's context commits and the audit commits. The storage layer owns the serialization: a per-directory lock keyed by the resolved working-directory path is acquired by every object-store mutation.
 
-A validation-rejected pack leaves nothing behind: every receive stages the pack outside `objects/pack/`, validates it there, and discards it on rejection, so a flood of bad packs never reaches the scanned pack directory. Once ref promotion begins, failures retain the already-durable pack because the ref update may have become observable.
+A validation-rejected pack leaves nothing behind: every receive stages the pack outside `objects/pack/`, validates it there, and discards it on rejection, so a flood of bad packs never reaches the scanned pack directory. Once ref promotion begins, failures retain the already-durable objects, loose or in a pack, because the ref update may have become observable.
