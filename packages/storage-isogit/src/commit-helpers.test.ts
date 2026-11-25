@@ -8,13 +8,14 @@ import {
   RefNotDurableError,
   UncertainRefPublicationError,
   createIndexRollback,
+  syncRepositoryDurably,
   writeRefDurably,
 } from "./commit-helpers";
 import { createIsogitStore } from "./node";
 import { createNodeIsogitRuntime } from "./node-runtime";
 import { withRepoDirLock } from "./repo-lock";
 import { normalizeRuntime } from "./runtime";
-import { recordingRuntime } from "./sync.test-helpers";
+import { recordingRuntime, treeOf } from "./sync.test-helpers";
 
 const tempDirs: string[] = [];
 
@@ -540,6 +541,27 @@ test("a durable ref write syncs a ref directory a crashed write made into its pa
     "rename .git/ref-write-* -> .git/refs/hub/runs/r1",
     "sync .git/refs/hub/runs",
   ]);
+});
+
+test("a repository sync syncs every file and directory of its git dir", async () => {
+  const dir = await initGitDir();
+  await fs.promises.writeFile(path.join(dir, "file.txt"), "content");
+  await git.add({ fs, dir, filepath: "file.txt" });
+  await git.commit({
+    fs,
+    dir,
+    message: "one",
+    author: { name: "Test", email: "test@test.dev" },
+  });
+  const { runtime, steps } = recordingRuntime(dir);
+
+  await syncRepositoryDurably(runtime, dir);
+
+  expect(steps.sort()).toEqual(
+    (await treeOf(dir, path.join(dir, ".git")))
+      .map((entry) => `sync ${entry}`)
+      .sort(),
+  );
 });
 
 test("a durable ref write refuses a name outside refs/, a name git rejects, and a value that is not an object id", async () => {

@@ -75,6 +75,7 @@ function preparedWith(
 
 const appliedNothing: PackCommitResult = {
   kind: "applied",
+  findingsPartial: false,
   newlyTerminalRuns: [],
   approvalWaitChanges: [],
 };

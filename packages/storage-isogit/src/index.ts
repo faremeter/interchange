@@ -14,8 +14,7 @@ import {
 } from "./pack-receive";
 import { createDeployPack, createNegotiatedPack } from "./pack-send";
 import { collectReachableObjects } from "./object-walk";
-import { createObjectPresence } from "./object-presence";
-import { writeRefDurably } from "./commit-helpers";
+import { syncRepositoryDurably, writeRefDurably } from "./commit-helpers";
 import { createDurableObjectWrites } from "./loose-objects";
 import { holdSyncRecord, syncObjectsAndRefs, syncRefs } from "./sync-record";
 import { writeTreeToDisk } from "./write-tree";
@@ -35,7 +34,6 @@ import {
 export type { ContextStore, AuditStore, CommitSigner };
 export type { StagedPack } from "./pack-receive";
 export type { IncludeShaPredicate } from "./pack-send";
-export type { ObjectPresence } from "./object-presence";
 export type { DurableMirrorReads, ParkedReplyTargetBuffer };
 export type { InitRepoOpts } from "./init";
 export type { IsogitPath, IsogitRuntime } from "./runtime";
@@ -80,6 +78,7 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
     logHistory: bindRepoDir(storageRuntime, logHistory),
     stagePack: bindRepoDir(storageRuntime, stagePack),
     writeRefDurably: bindRepoDir(storageRuntime, writeRefDurably),
+    syncRepositoryDurably: bindRepoDir(storageRuntime, syncRepositoryDurably),
     createDurableObjectWrites: bindRepoDir(
       storageRuntime,
       createDurableObjectWrites,
@@ -98,7 +97,6 @@ export function createIsogitStorage(runtime: IsogitRuntime) {
       storageRuntime,
       collectReachableObjects,
     ),
-    createObjectPresence: bindRepoDir(storageRuntime, createObjectPresence),
     writeTreeToDisk: bindRepoDir(storageRuntime, writeTreeToDisk),
     indexPackIntoGitDir: bindRepoDir(storageRuntime, indexPackIntoGitDir),
   };

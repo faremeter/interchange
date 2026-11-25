@@ -170,7 +170,8 @@ export type InitRepoOpts = {
  * before recording in SQL what the ref names: a failed ref write or a
  * stopped process can leave a ref that a crash rolls back. The ref is then
  * read under the repo lock once what the repo's failed or earlier writes
- * left unsynced is synced, so the caller must hold no database lock.
+ * left unsynced is synced, and once its whole git dir is, for a repo an
+ * older store wrote, so the caller must hold no database lock.
  */
 export type RefReadOpts = {
   readonly durable?: boolean;
@@ -705,19 +706,30 @@ export type RepoStoreSubscribeEvent = {
 
 /**
  * The outcome of a prepared receive's `commit()`. `already_applied`
- * means the ref already held the pack's tip, so the ref did not move.
- * The pack is still published when it brings objects the store lacks.
+ * means the ref already held the pack's tip, so the ref did not move. Its
+ * pack is published only when the tip's tree was walked whole, on a ref
+ * not checked whole or for a commit older than the ref's tip that the
+ * store does not hold whole, to restore an object the store lost.
  */
 export type PackCommitResult =
   | { readonly kind: "already_applied" }
-  | ({ readonly kind: "applied" } & Readonly<PushFindings>);
+  | ({
+      readonly kind: "applied";
+      /**
+       * Whether the ref may now also reach what commits the store held
+       * before this receive recorded, which the receive did not validate,
+       * such as commits of another ref: the findings then leave it out. A
+       * commit whose tree holds only the `.gitignore` every repository
+       * starts with records nothing.
+       */
+      readonly findingsPartial: boolean;
+    } & Readonly<PushFindings>);
 
 /**
  * A pack that `prepareReceivePack` staged and validated. `commit()`
  * publishes it and moves the ref; `discard()` removes it.
  * `already_applied` means the ref already held the pack's tip when the
- * receive began, the store held every object of that tip, and the pack
- * brought no object the store lacked, so nothing is published.
+ * receive began, and needed nothing of the pack, so nothing stays staged.
  */
 export type PreparedReceivePack =
   | { readonly kind: "already_applied" }
@@ -732,6 +744,20 @@ export class NoBlobAtPathError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NoBlobAtPathError";
+  }
+}
+
+/**
+ * A receive of a commit the ref held when its pack was staged found that
+ * the ref moved to another line before the receive finished, so the ref
+ * does not move. The message starts with `path_violation`.
+ */
+export class HeldCommitMovedOffError extends Error {
+  constructor(commitSha: string, ref: string, liveTip: string | null) {
+    super(
+      `path_violation: commit ${commitSha} is no longer on ${ref}, which moved to ${String(liveTip)} while the receive was checked; a workflow-run history only grows`,
+    );
+    this.name = "HeldCommitMovedOffError";
   }
 }
 

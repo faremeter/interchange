@@ -53,7 +53,9 @@ own commits rely on `flush` alone. A runtime without `sync` skips those steps.
 The Node runtime from `/node` implements it with `fsync`. `syncObjectsAndRefs`
 and `syncRefs` sync what a repository already holds, skipping what this process
 has synced since; a caller runs one before it answers from a ref that an
-earlier process or a failed write may have left unsynced.
+earlier process or a failed write may have left unsynced. They sync directory
+entries and ref files, not object contents, so a repository that a store which
+did not sync wrote needs `syncRepositoryDurably` once first.
 
 Audit and error record paths are append-only. Repeating a byte-identical
 record is an idempotent retry, including after an uncertain persistence

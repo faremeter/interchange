@@ -35,6 +35,7 @@ import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
 import {
+  HeldCommitMovedOffError,
   RepoRemovedDuringReceiveError,
   type ApprovalWaitChange,
 } from "./repo-store";
@@ -659,16 +660,28 @@ export function createHubSessionLookups(
         const { committed } = received;
         applied = committed.kind === "applied";
         decided = received.approvalsSettled;
+        // The ref now reaches commits this receive did not validate, so
+        // their runs and approvals are left to lifecycle recovery, which
+        // projects the deployment from the tips.
+        if (committed.kind === "applied" && committed.findingsPartial) {
+          decided = false;
+          logger.warn`Workflow-run pack for ${workflowRunRepoId} moved ${ref} onto commits the store held already; its projection stays pending`;
+        }
         newlyTerminalRuns =
           committed.kind === "applied" ? committed.newlyTerminalRuns : [];
       } catch (err) {
         // A receive that reached Git keeps its pending row: the ref may have
         // advanced before the failure, so only a Git read can prove nothing was
         // lost. One that failed earlier provably left Git unchanged, and so
-        // did a commit that found its repository removed: that check runs
-        // before the publish. A row kept for a removed repository would make
-        // recovery report lost history on every pass.
-        if (!reachedGit || err instanceof RepoRemovedDuringReceiveError)
+        // did a commit that found its repository removed, or the ref moved
+        // off the commit it held: those checks run before the publish. A
+        // row kept for a removed repository would make recovery report lost
+        // history on every pass.
+        if (
+          !reachedGit ||
+          err instanceof RepoRemovedDuringReceiveError ||
+          err instanceof HeldCommitMovedOffError
+        )
           await pendingProjections.close(pendingId).catch((cause: unknown) => {
             logger.warn`Cannot clear pending projection for ${anchor.id}: ${cause instanceof Error ? cause.message : String(cause)}`;
           });
@@ -733,11 +746,10 @@ export function createHubSessionLookups(
       }
 
       // The ref already held this tip, or another receive moved it to or past
-      // this tip while this one validated, so the ref did not move here; this
-      // receive at most restored objects the store had lost. The receive that
-      // moved the ref runs the dispatch projection after its own ref write,
-      // and the periodic dispatch projection pass retries any anchor that
-      // still has unsettled dispatches.
+      // this tip while this one validated, so the ref did not move here. The
+      // receive that moved the ref runs the dispatch projection after its own
+      // ref write, and the periodic dispatch projection pass retries any
+      // anchor that still has unsettled dispatches.
       if (!applied) return { accepted: true };
 
       // Git acceptance survives projection failures. The terminal recovery pass

@@ -128,7 +128,9 @@ export function noteFanoutWrite(
  * directories renamed into since their last sync. Then `objects/`, and,
  * the first time and after a failed ref write, every file and directory
  * under `refs/`. With nothing to sync it does no I/O. The caller
- * serializes it with the repository's writes.
+ * serializes it with the repository's writes. It syncs directory entries
+ * and ref files, not object files, so a repository that a store which did
+ * not sync wrote needs `syncRepositoryDurably` once first.
  */
 export async function syncObjectsAndRefs(
   runtime: StorageRuntime,

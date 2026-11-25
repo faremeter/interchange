@@ -24,6 +24,7 @@ export type {
   WriteTreePreservingPrefixArgs,
 } from "./types";
 export {
+  HeldCommitMovedOffError,
   isPlainPathSegment,
   NoBlobAtPathError,
   RepoRemovedDuringReceiveError,

@@ -218,6 +218,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           kind: "prepared",
           commit: async () => ({
             kind: "applied",
+            findingsPartial: false,
             newlyTerminalRuns: [],
             approvalWaitChanges: [],
           }),

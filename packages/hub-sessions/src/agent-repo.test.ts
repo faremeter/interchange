@@ -65,6 +65,7 @@ describe("AgentRepoStore", () => {
     if (prepared.kind !== "prepared") throw new Error("expected prepared");
     expect(await prepared.commit()).toEqual({
       kind: "applied",
+      findingsPartial: false,
       newlyTerminalRuns: [],
       approvalWaitChanges: [],
     });

@@ -10,7 +10,10 @@ import { waitUntil } from "@intx/types/testing";
 import { createRepoStore, type LocalRepoStore } from "./store";
 import { workflowAuthorize, workflowKindHandler } from "../workflow-kind";
 import { createWorkflowRunReader } from "../workflow-run-reader";
-import { RepoRemovedDuringReceiveError } from "./types";
+import {
+  HeldCommitMovedOffError,
+  RepoRemovedDuringReceiveError,
+} from "./types";
 import type {
   ApprovalWaitChange,
   AuthorizeFn,
@@ -190,6 +193,12 @@ async function syncedDuring<T>(
 
 function looseObjectPath(repoDir: string, oid: string): string {
   return path.join(repoDir, ".git", "objects", oid.slice(0, 2), oid.slice(2));
+}
+
+async function stagedPacks(repoDir: string): Promise<string[]> {
+  return fs.promises
+    .readdir(path.join(repoDir, ".git", "objects", "pack-staging"))
+    .catch(() => []);
 }
 
 describe("RepoStore", () => {
@@ -3846,8 +3855,8 @@ describe("RepoStore", () => {
 
   // A pack may leave out the objects the receiver already holds from the
   // commit's parent. The receiver accepts it only when every object the
-  // commit names is in the pack or the store, so the ref never names a
-  // commit the receiver cannot read in full.
+  // commit adds or changes is in the pack or the store, so the ref never
+  // names a commit the receiver cannot read in full.
   describe("receivePack of a pack that leaves out objects", () => {
     const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
     const permissiveWorkflowRun = (): TestHandler => ({
@@ -3908,20 +3917,6 @@ describe("RepoStore", () => {
         await collectReachableObjects(sourceDir, secondSha)
       ).filter((oid) => !held.has(oid));
       const targetDir = targetStore.getRepoDir(wfRepoId);
-      // The first push brought every object the first commit reaches.
-      const loseFirstPush = async () => {
-        for (const oid of held) {
-          await fs.promises.rm(
-            path.join(
-              targetDir,
-              ".git",
-              "objects",
-              oid.slice(0, 2),
-              oid.slice(2),
-            ),
-          );
-        }
-      };
       const oidAt = async (filepath: string) =>
         (await git.readBlob({ fs, dir: sourceDir, oid: secondSha, filepath }))
           .oid;
@@ -3953,7 +3948,6 @@ describe("RepoStore", () => {
         oidAt,
         treeAt,
         packOf,
-        loseFirstPush,
       };
     }
 
@@ -3971,6 +3965,16 @@ describe("RepoStore", () => {
       );
       if (prepared.kind !== "prepared") throw new Error("expected prepared");
       return prepared;
+    }
+
+    // What a store that did not sync can leave: an object it acked is gone,
+    // and no receive has checked the ref whole.
+    async function loseObjectOfOlderStore(targetDir: string, oid: string) {
+      await fs.promises.rm(path.join(targetDir, ".git", "objects-checked"), {
+        recursive: true,
+        force: true,
+      });
+      await fs.promises.rm(looseObjectPath(targetDir, oid));
     }
 
     test("accepts a pack of only the objects the parent does not reach", async () => {
@@ -4142,6 +4146,66 @@ describe("RepoStore", () => {
       ).toBeNull();
     });
 
+    test("a durable ref read of a repository an older store wrote syncs its whole git dir once", async () => {
+      const { targetStore, targetDir, firstSha } = await setUp();
+      await fs.promises.rm(path.join(targetDir, ".git", "objects-checked"), {
+        recursive: true,
+        force: true,
+      });
+      const durableTip = () =>
+        targetStore.resolveRef(principal, wfRepoId, REF, { durable: true });
+
+      const first = await syncedDuring(durableTip);
+      expect(first.result).toBe(firstSha);
+      expect(first.synced).toContain(looseObjectPath(targetDir, firstSha));
+      expect((await syncedDuring(durableTip)).synced).toEqual([]);
+    });
+
+    test("a durable ref read of a repository an older store wrote syncs the directories that hold it", async () => {
+      const store = createRepoStore({
+        dataDir: await makeTempDir("repo-store-older-holders-"),
+        signingKey,
+        handlers: { "workflow-run": permissiveWorkflowRun() },
+        authorize: allowAll,
+      });
+      const dir = store.getRepoDir(wfRepoId);
+      await fs.promises.mkdir(dir, { recursive: true });
+      await git.init({ fs, dir, defaultBranch: "main" });
+      await fs.promises.writeFile(path.join(dir, "a.txt"), "a");
+      await git.add({ fs, dir, filepath: "a.txt" });
+      const sha = await git.commit({
+        fs,
+        dir,
+        message: "older",
+        author: { name: "older", email: "older@example.test" },
+      });
+      await git.writeRef({ fs, dir, ref: REF, value: sha, force: true });
+
+      const { result, synced } = await syncedDuring(() =>
+        store.resolveRef(principal, wfRepoId, REF, { durable: true }),
+      );
+      expect(result).toBe(sha);
+      expect(synced).toContain(path.dirname(dir));
+    });
+
+    test("a write to a repository an older store wrote syncs its whole git dir once", async () => {
+      const { targetStore, targetDir, firstSha } = await setUp();
+      await fs.promises.rm(path.join(targetDir, ".git", "objects-checked"), {
+        recursive: true,
+        force: true,
+      });
+      const write = (name: string) =>
+        targetStore.writeTree(principal, wfRepoId, "refs/heads/other", {
+          files: { [`runs/r2/events/${name}.json`]: name },
+          message: name,
+        });
+
+      const first = await syncedDuring(() => write("0"));
+      expect(first.synced).toContain(looseObjectPath(targetDir, firstSha));
+      const second = await syncedDuring(() => write("1"));
+      expect(second.synced).not.toContain(looseObjectPath(targetDir, firstSha));
+    });
+
     test("a durable ref read waits for a ref write in flight, and syncs the ref that write could not", async () => {
       const { targetStore, refDir } = await setUp();
       const other = "refs/heads/other";
@@ -4247,97 +4311,708 @@ describe("RepoStore", () => {
       expect(targetHandler.onRefUpdatedCalls).toHaveLength(updates);
     });
 
-    test("a retried tip the ref holds is rejected while it lacks a lost object, and the full history restores it without moving the ref", async () => {
-      const {
-        sourceStore,
-        targetStore,
-        targetDir,
-        targetHandler,
-        firstSha,
-        secondSha,
-        newObjects,
-        oidAt,
-        packOf,
-        loseFirstPush,
-      } = await setUp();
-      const lostBlob = await oidAt("runs/r1/events/0.json");
-      sourceStore.commitPackedTip(wfRepoId, REF, firstSha);
-      // The receiver applies the second commit, but the ack never reaches
-      // the sender, which retries the same pack once the first is lost.
-      const retry = await packOf(newObjects);
-      await (await prepareOn(targetStore, retry, secondSha)).commit();
-      await loseFirstPush();
-      const updatesBefore = targetHandler.onRefUpdatedCalls.length;
-
-      await expect(prepareOn(targetStore, retry, secondSha)).rejects.toThrow(
-        /^missing_objects:/,
+    test("a commit whose parent is on an unchecked ref is walked whole, so a lost object it keeps fails", async () => {
+      // Only a workflow-run ref must grow from its own tip, so a skill ref
+      // can take a commit built on another ref.
+      const skillRepo: RepoId = { kind: "skill", id: "cross-ref" };
+      const OTHER = "refs/heads/other";
+      const store = async (prefix: string) => {
+        const created = createRepoStore({
+          dataDir: await makeTempDir(prefix),
+          signingKey,
+          handlers: { skill: createTestHandler() },
+          authorize: allowAll,
+        });
+        await created.initRepo(skillRepo);
+        return created;
+      };
+      const source = await store("repo-store-cross-ref-source-");
+      const target = await store("repo-store-cross-ref-target-");
+      const sourceDir = source.getRepoDir(skillRepo);
+      const targetDir = target.getRepoDir(skillRepo);
+      const push = async (ref: string, commitSha: string, oids: string[]) => {
+        const { packfile } = await git.packObjects({
+          fs,
+          dir: sourceDir,
+          oids,
+          write: false,
+        });
+        if (packfile === undefined) throw new Error("no packfile");
+        return target.receivePack(
+          principal,
+          skillRepo,
+          ref,
+          packfile,
+          commitSha,
+          await target.resolveRef(principal, skillRepo, ref),
+        );
+      };
+      const write = async (ref: string, files: Record<string, string>) =>
+        (
+          await source.writeTree(principal, skillRepo, ref, {
+            files,
+            message: ref,
+          })
+        ).commitSha;
+      const otherSha = await write(OTHER, { "kept/blob": "kept" });
+      await push(
+        OTHER,
+        otherSha,
+        await collectReachableObjects(sourceDir, otherSha),
       );
-
-      sourceStore.forgetPackedTip(wfRepoId, REF);
-      const full = await sourceStore.createPack(principal, wfRepoId, REF);
-      const repair = await prepareOn(targetStore, full.pack, secondSha);
-      expect(await repair.commit()).toEqual({ kind: "already_applied" });
-      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
-        secondSha,
-      );
-      expect(targetHandler.onRefUpdatedCalls).toHaveLength(updatesBefore);
-      const { blob } = await git.readBlob({
-        fs,
-        dir: targetDir,
-        oid: lostBlob,
+      const lost = (
+        await git.readBlob({
+          fs,
+          dir: sourceDir,
+          oid: otherSha,
+          filepath: "kept/blob",
+        })
+      ).oid;
+      await loseObjectOfOlderStore(targetDir, lost);
+      // REF is checked: its first receive walks it whole and records it.
+      const refSha = await write(REF, { "ref/blob": "on ref" });
+      await push(REF, refSha, await collectReachableObjects(sourceDir, refSha));
+      const onOther = await write(OTHER, {
+        "kept/blob": "kept",
+        "added/blob": "new",
       });
-      expect(new TextDecoder().decode(blob)).toBe("zero");
+      const held = new Set(await collectReachableObjects(sourceDir, otherSha));
+
+      await expect(
+        push(
+          REF,
+          onOther,
+          (await collectReachableObjects(sourceDir, onOther)).filter(
+            (oid) => !held.has(oid),
+          ),
+        ),
+      ).rejects.toThrow(/missing_objects/);
+      // A pack that moves REF onto the other ref's own commit brings no
+      // commit, and that commit's tree is walked whole too.
+      await expect(push(REF, otherSha, [otherSha])).rejects.toThrow(
+        /missing_objects/,
+      );
     });
 
-    test("an older tip's history restores a lost object and leaves the ref at the newer tip", async () => {
-      const {
-        sourceStore,
-        sourceDir,
+    // A checked ref at a third commit that no longer names a blob of the
+    // first two, which the store then loses, as an older store could.
+    async function olderCommitMissingABlob() {
+      const set = await setUp();
+      const { sourceStore, sourceDir, targetStore, targetDir, newObjects } =
+        set;
+      const lost = await set.oidAt("runs/r1/blobs/b0");
+      const { commitSha: thirdSha } = await sourceStore.writeTreeDelta(
+        principal,
+        wfRepoId,
+        REF,
+        {
+          changedPathPrefixes: new Set(["runs/"]),
+          message: "v3",
+          computeDelta: async () => ({
+            puts: { "runs/r1/events/2.json": "two" },
+            deletes: ["runs/r1/blobs/b0"],
+          }),
+        },
+      );
+      const later = new Set([...newObjects]);
+      for (const oid of await collectReachableObjects(sourceDir, thirdSha)) {
+        later.add(oid);
+      }
+      expect(
+        await (
+          await prepareOn(targetStore, await set.packOf([...later]), thirdSha)
+        ).commit(),
+      ).toMatchObject({ kind: "applied" });
+      const lostPath = looseObjectPath(targetDir, lost);
+      const fanout = path.dirname(lostPath);
+      await fs.promises.rm(lostPath);
+      const resend = async (sha: string) =>
+        targetStore.prepareReceivePack(
+          principal,
+          wfRepoId,
+          REF,
+          await set.packOf(await collectReachableObjects(sourceDir, sha)),
+          sha,
+        );
+      return { ...set, lost, thirdSha, fanout, lostPath, resend };
+    }
+
+    // A sibling of the second commit, prepared while the ref is at the
+    // first, so its commit moves the ref off the line that holds the
+    // second; then the second lands.
+    async function sideLineThenSecond(set: Awaited<ReturnType<typeof setUp>>) {
+      const { sourceStore, sourceDir, targetStore, firstSha } = set;
+      await git.writeRef({
+        fs,
+        dir: sourceDir,
+        ref: "refs/heads/side",
+        value: firstSha,
+      });
+      const { commitSha: sideSha } = await sourceStore.writeTree(
+        principal,
+        wfRepoId,
+        "refs/heads/side",
+        { files: { "runs/r2/events/0.json": "side" }, message: "side" },
+      );
+      const side = await prepareOn(
         targetStore,
-        targetDir,
-        secondSha,
-        newObjects,
-        oidAt,
-        packOf,
-        loseFirstPush,
-      } = await setUp();
-      const lostBlob = await oidAt("runs/r1/events/0.json");
-      const older = await sourceStore.createPack(principal, wfRepoId, REF);
-      await (
-        await prepareOn(targetStore, await packOf(newObjects), secondSha)
-      ).commit();
+        await set.packOf(await collectReachableObjects(sourceDir, sideSha)),
+        sideSha,
+      );
+      expect(
+        await (
+          await prepareOn(
+            targetStore,
+            await set.packOf(set.newObjects),
+            set.secondSha,
+          )
+        ).commit(),
+      ).toMatchObject({ kind: "applied" });
+      return { side, sideSha };
+    }
+
+    test("an older commit a checked ref holds is walked whole, so its resend restores what an older store lost", async () => {
+      const { targetStore, targetDir, firstSha, thirdSha, lost, resend } =
+        await olderCommitMissingABlob();
+
+      const repair = await resend(firstSha);
+      if (repair.kind !== "prepared") throw new Error("expected prepared");
+      expect(await repair.commit()).toEqual({ kind: "already_applied" });
+      expect((await git.readBlob({ fs, dir: targetDir, oid: lost })).oid).toBe(
+        lost,
+      );
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        thirdSha,
+      );
+    });
+
+    test("a resend answered at prepare after a failed repair syncs the directory that repair left", async () => {
+      const { firstSha, fanout, lostPath, resend } =
+        await olderCommitMissingABlob();
+      const repair = await resend(firstSha);
+      if (repair.kind !== "prepared") throw new Error("expected prepared");
+      await syncedDuring(
+        async () => {
+          await expect(repair.commit()).rejects.toThrow("sync failed");
+        },
+        { failing: fanout },
+      );
+      // The repair put the blob in place before its sync failed.
+      expect(fs.existsSync(lostPath)).toBe(true);
+
+      const retry = await syncedDuring(() => resend(firstSha));
+      expect(retry.result).toEqual({ kind: "already_applied" });
+      expect(retry.synced).toContain(fanout);
+    });
+
+    test("a durable ref read after a repair that failed to sync syncs the directory that repair left", async () => {
+      const { targetStore, firstSha, fanout, resend } =
+        await olderCommitMissingABlob();
+      await syncedDuring(
+        async () => {
+          await expect(resend(firstSha)).rejects.toThrow("sync failed");
+        },
+        { failing: fanout },
+      );
+
+      const { synced } = await syncedDuring(() =>
+        targetStore.resolveRef(principal, wfRepoId, REF, { durable: true }),
+      );
+      expect(synced).toContain(fanout);
+    });
+
+    test("a resend whose repair another receive makes during its validation is answered at prepare", async () => {
+      const { sourceDir, firstSha, lost, lostPath, resend } =
+        await olderCommitMissingABlob();
+      const readBlob = git.readBlob.bind(git);
+      let repaired = false;
+      const spy = spyOn(git, "readBlob").mockImplementation(async (args) => {
+        try {
+          return await readBlob(args);
+        } catch (err) {
+          // The first walk finds the blob missing, and another receive's
+          // repair puts it back before the next read.
+          if (!repaired && args.oid === lost) {
+            repaired = true;
+            await fs.promises.copyFile(
+              looseObjectPath(sourceDir, lost),
+              lostPath,
+            );
+          }
+          throw err;
+        }
+      });
+      try {
+        expect(await resend(firstSha)).toEqual({ kind: "already_applied" });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(repaired).toBe(true);
+    });
+
+    test("a resend staged to repair an older commit is refused once the ref moved to another line", async () => {
+      const set = await setUp();
+      const { sourceStore, sourceDir, targetStore, targetDir } = set;
+      const { side, sideSha } = await sideLineThenSecond(set);
+      const lost = await set.oidAt("runs/r1/events/1.json");
+      // The tip no longer names the second commit's blob, so the store can
+      // lose it while the ref stays checked.
+      const { commitSha: thirdSha } = await sourceStore.writeTreeDelta(
+        principal,
+        wfRepoId,
+        REF,
+        {
+          changedPathPrefixes: new Set(["runs/"]),
+          message: "v3",
+          computeDelta: async () => ({
+            puts: { "runs/r1/events/2.json": "two" },
+            deletes: ["runs/r1/events/1.json"],
+          }),
+        },
+      );
+      expect(
+        await (
+          await prepareOn(
+            targetStore,
+            await set.packOf(
+              await collectReachableObjects(sourceDir, thirdSha),
+            ),
+            thirdSha,
+          )
+        ).commit(),
+      ).toMatchObject({ kind: "applied" });
+      await fs.promises.rm(looseObjectPath(targetDir, lost));
+      const repair = await prepareOn(
+        targetStore,
+        await set.packOf(
+          await collectReachableObjects(sourceDir, set.secondSha),
+        ),
+        set.secondSha,
+      );
+
+      expect(await side.commit()).toMatchObject({ kind: "applied" });
+      await expect(repair.commit()).rejects.toBeInstanceOf(
+        HeldCommitMovedOffError,
+      );
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        sideSha,
+      );
+    });
+
+    test("an older commit the store holds whole is refused when the ref moves off it while it is checked", async () => {
+      const set = await setUp();
+      const { sourceStore, sourceDir, targetStore, secondSha } = set;
+      const { side, sideSha } = await sideLineThenSecond(set);
       const { commitSha: thirdSha } = await sourceStore.writeTree(
         principal,
         wfRepoId,
         REF,
         { files: { "runs/r1/events/2.json": "two" }, message: "v3" },
       );
-      const held = new Set(await collectReachableObjects(sourceDir, secondSha));
-      const thirdObjects = (
-        await collectReachableObjects(sourceDir, thirdSha)
-      ).filter((oid) => !held.has(oid));
-      await (
-        await prepareOn(targetStore, await packOf(thirdObjects), thirdSha)
-      ).commit();
-      await loseFirstPush();
+      expect(
+        await (
+          await prepareOn(
+            targetStore,
+            await set.packOf(
+              await collectReachableObjects(sourceDir, thirdSha),
+            ),
+            thirdSha,
+          )
+        ).commit(),
+      ).toMatchObject({ kind: "applied" });
 
-      const repair = await prepareOn(targetStore, older.pack, secondSha);
-      expect(await repair.commit()).toEqual({ kind: "already_applied" });
-      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
-        thirdSha,
-      );
-      const { blob } = await git.readBlob({
-        fs,
-        dir: targetDir,
-        oid: lostBlob,
+      // The side line lands while the resend walks the second commit's tree.
+      const readCommit = git.readCommit.bind(git);
+      let armed = true;
+      const spy = spyOn(git, "readCommit").mockImplementation(async (args) => {
+        if (armed && args.oid === secondSha) {
+          armed = false;
+          await side.commit();
+        }
+        return readCommit(args);
       });
-      expect(new TextDecoder().decode(blob)).toBe("zero");
+      try {
+        await expect(
+          targetStore.prepareReceivePack(
+            principal,
+            wfRepoId,
+            REF,
+            await set.packOf(
+              await collectReachableObjects(sourceDir, secondSha),
+            ),
+            secondSha,
+          ),
+        ).rejects.toBeInstanceOf(HeldCommitMovedOffError);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(armed).toBe(false);
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        sideSha,
+      );
+    });
+
+    test("a push onto a tip whose tree the store lost fails as missing_objects", async () => {
+      const {
+        targetStore,
+        targetDir,
+        sourceDir,
+        firstSha,
+        secondSha,
+        newObjects,
+        packOf,
+      } = await setUp();
+      const { commit } = await git.readCommit({
+        fs,
+        dir: sourceDir,
+        oid: firstSha,
+      });
+      await fs.promises.rm(looseObjectPath(targetDir, commit.tree));
+
+      await expect(
+        targetStore.prepareReceivePack(
+          principal,
+          wfRepoId,
+          REF,
+          await packOf(newObjects),
+          secondSha,
+        ),
+      ).rejects.toThrow(/missing_objects/);
+    });
+
+    test("a held tip on an unchecked ref is not recorded as checked when its ref cannot sync", async () => {
+      const { targetStore, targetDir, refDir, sourceDir, firstSha, packOf } =
+        await setUp();
+      // The records directory stays, so the receive skips the sync of the
+      // whole git dir and reaches the ref sync.
+      const records = path.join(targetDir, ".git", "objects-checked");
+      for (const name of await fs.promises.readdir(records)) {
+        await fs.promises.rm(path.join(records, name));
+      }
+      const prepared = await prepareOn(
+        targetStore,
+        await packOf(await collectReachableObjects(sourceDir, firstSha)),
+        firstSha,
+      );
+      await syncedDuring(
+        async () => {
+          // A write whose ref cannot sync, between the prepare and the
+          // commit, leaves every ref to the commit's sync.
+          await expect(
+            targetStore.writeTree(principal, wfRepoId, "refs/heads/other", {
+              files: { "runs/r2/events/0.json": "other" },
+              message: "other",
+            }),
+          ).rejects.toThrow("not durable");
+          await expect(prepared.commit()).rejects.toThrow("sync failed");
+        },
+        { failing: refDir },
+      );
+
+      expect(await fs.promises.readdir(records)).toEqual([]);
+    });
+
+    test("a ref an older store wrote is walked whole until a resend restores a lost object", async () => {
+      const {
+        targetStore,
+        targetDir,
+        sourceDir,
+        secondSha,
+        newObjects,
+        oidAt,
+        packOf,
+      } = await setUp();
+      const lost = await oidAt("runs/r1/blobs/b0");
+      await loseObjectOfOlderStore(targetDir, lost);
+
+      await expect(
+        targetStore.prepareReceivePack(
+          principal,
+          wfRepoId,
+          REF,
+          await packOf(newObjects),
+          secondSha,
+        ),
+      ).rejects.toThrow(/missing_objects/);
+
+      const full = await packOf(
+        await collectReachableObjects(sourceDir, secondSha),
+      );
+      expect(
+        await (await prepareOn(targetStore, full, secondSha)).commit(),
+      ).toMatchObject({ kind: "applied" });
+      expect((await git.readBlob({ fs, dir: targetDir, oid: lost })).oid).toBe(
+        lost,
+      );
+    });
+
+    test("a resent tip that a ref an older store wrote holds restores a lost object", async () => {
+      const {
+        targetStore,
+        targetDir,
+        sourceDir,
+        secondSha,
+        newObjects,
+        oidAt,
+        packOf,
+      } = await setUp();
+      await (
+        await prepareOn(targetStore, await packOf(newObjects), secondSha)
+      ).commit();
+      const lost = await oidAt("runs/r1/blobs/b0");
+      await loseObjectOfOlderStore(targetDir, lost);
+
+      const full = await packOf(
+        await collectReachableObjects(sourceDir, secondSha),
+      );
+      expect(
+        await (await prepareOn(targetStore, full, secondSha)).commit(),
+      ).toEqual({ kind: "already_applied" });
+      expect((await git.readBlob({ fs, dir: targetDir, oid: lost })).oid).toBe(
+        lost,
+      );
+      expect(
+        await targetStore.prepareReceivePack(
+          principal,
+          wfRepoId,
+          REF,
+          full,
+          secondSha,
+        ),
+      ).toEqual({ kind: "already_applied" });
+    });
+
+    test("the first unchecked receive of a repository syncs what an older store wrote, and a later one does not", async () => {
+      const { targetStore, targetDir, secondSha, newObjects, oidAt, packOf } =
+        await setUp();
+      const records = path.join(targetDir, ".git", "objects-checked");
+      await fs.promises.rm(records, { recursive: true, force: true });
+      const inheritedPath = looseObjectPath(
+        targetDir,
+        await oidAt("runs/r1/blobs/b0"),
+      );
+      const thin = await packOf(newObjects);
+      const receiveThin = async () =>
+        (
+          await syncedDuring(async () =>
+            (await prepareOn(targetStore, thin, secondSha)).commit(),
+          )
+        ).synced;
+
+      expect(await receiveThin()).toContain(inheritedPath);
+
+      for (const record of await fs.promises.readdir(records)) {
+        await fs.promises.rm(path.join(records, record));
+      }
+      expect(await receiveThin()).not.toContain(inheritedPath);
+      expect(await fs.promises.readdir(records)).toHaveLength(1);
+    });
+
+    test("a receive answers nothing when what an older store wrote cannot be synced", async () => {
+      const {
+        targetStore,
+        targetDir,
+        sourceDir,
+        firstSha,
+        secondSha,
+        newObjects,
+        oidAt,
+        packOf,
+      } = await setUp();
+      const records = path.join(targetDir, ".git", "objects-checked");
+      await fs.promises.rm(records, { recursive: true, force: true });
+      const failing = looseObjectPath(
+        targetDir,
+        await oidAt("runs/r1/blobs/b0"),
+      );
+
+      await syncedDuring(
+        async () => {
+          await expect(
+            prepareOn(targetStore, await packOf(newObjects), secondSha),
+          ).rejects.toThrow("sync failed");
+        },
+        { failing },
+      );
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        firstSha,
+      );
+
+      await syncedDuring(
+        async () => {
+          await expect(
+            prepareOn(
+              targetStore,
+              await packOf(await collectReachableObjects(sourceDir, firstSha)),
+              firstSha,
+            ),
+          ).rejects.toThrow("sync failed");
+        },
+        { failing },
+      );
+      expect(fs.existsSync(records)).toBe(false);
+    });
+
+    test("an unchecked ref walks each commit of a pack whole, so a lost object a later commit drops still fails", async () => {
+      const {
+        sourceStore,
+        sourceDir,
+        targetStore,
+        targetDir,
+        secondSha,
+        oidAt,
+        packOf,
+      } = await setUp();
+      // The pack's second commit keeps the spilled blob, and its tip drops it.
+      const lost = await oidAt("runs/r1/blobs/b0");
+      const { commitSha: thirdSha } = await sourceStore.writeTreeDelta(
+        principal,
+        wfRepoId,
+        REF,
+        {
+          changedPathPrefixes: new Set(["runs/"]),
+          message: "v3",
+          computeDelta: async () => ({
+            puts: { "runs/r1/events/2.json": "two" },
+            deletes: ["runs/r1/blobs/b0"],
+          }),
+        },
+      );
+      const pack = [
+        ...new Set([
+          ...(await collectReachableObjects(sourceDir, secondSha)),
+          ...(await collectReachableObjects(sourceDir, thirdSha)),
+        ]),
+      ].filter((oid) => oid !== lost);
+      await loseObjectOfOlderStore(targetDir, lost);
+
+      await expect(
+        targetStore.prepareReceivePack(
+          principal,
+          wfRepoId,
+          REF,
+          await packOf(pack),
+          thirdSha,
+        ),
+      ).rejects.toThrow(/missing_objects/);
+    });
+
+    test("a resent ancestor checks only itself, so the live tip past it stays unchecked", async () => {
+      const {
+        targetStore,
+        targetDir,
+        sourceDir,
+        firstSha,
+        secondSha,
+        newObjects,
+        oidAt,
+        packOf,
+      } = await setUp();
+      await (
+        await prepareOn(targetStore, await packOf(newObjects), secondSha)
+      ).commit();
+      const lost = await oidAt("runs/r1/events/1.json");
+      await loseObjectOfOlderStore(targetDir, lost);
+
+      const ancestor = await packOf(
+        await collectReachableObjects(sourceDir, firstSha),
+      );
+      expect(
+        await (await prepareOn(targetStore, ancestor, firstSha)).commit(),
+      ).toEqual({ kind: "already_applied" });
+
+      await expect(
+        targetStore.prepareReceivePack(
+          principal,
+          wfRepoId,
+          REF,
+          await packOf(newObjects.filter((oid) => oid !== lost)),
+          secondSha,
+        ),
+      ).rejects.toThrow(/missing_objects/);
+    });
+
+    test("a receive whose ref cannot be recorded as checked still moves the ref and runs its hooks", async () => {
+      const {
+        targetStore,
+        targetDir,
+        targetHandler,
+        secondSha,
+        newObjects,
+        packOf,
+      } = await setUp();
+      const checked = path.join(targetDir, ".git", "objects-checked");
+      await fs.promises.rm(checked, { recursive: true, force: true });
+      await fs.promises.writeFile(checked, "not a directory");
+
+      expect(
+        await (
+          await prepareOn(targetStore, await packOf(newObjects), secondSha)
+        ).commit(),
+      ).toMatchObject({ kind: "applied" });
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        secondSha,
+      );
+      expect(targetHandler.onRefUpdatedCalls.at(-1)).toMatchObject({
+        newSha: secondSha,
+      });
+    });
+
+    test("a ref whose name is longer than a file name is recorded as checked", async () => {
+      const { targetStore, targetDir, sourceDir, secondSha, packOf } =
+        await setUp();
+      const longRef = `refs/heads/${"a".repeat(200)}/${"b".repeat(200)}`;
+      const records = path.join(targetDir, ".git", "objects-checked");
+      const recorded = (await fs.promises.readdir(records)).length;
+
+      await targetStore.receivePack(
+        principal,
+        wfRepoId,
+        longRef,
+        await packOf(await collectReachableObjects(sourceDir, secondSha)),
+        secondSha,
+        null,
+      );
+
+      expect(await targetStore.resolveRef(principal, wfRepoId, longRef)).toBe(
+        secondSha,
+      );
+      expect(await fs.promises.readdir(records)).toHaveLength(recorded + 1);
+    });
+
+    test("a retried tip the ref holds is already applied and stages nothing", async () => {
+      const {
+        targetStore,
+        targetDir,
+        targetHandler,
+        secondSha,
+        newObjects,
+        packOf,
+      } = await setUp();
+      const retry = await packOf(newObjects);
+      await (await prepareOn(targetStore, retry, secondSha)).commit();
+      const updatesBefore = targetHandler.onRefUpdatedCalls.length;
+
+      expect(
+        await targetStore.prepareReceivePack(
+          principal,
+          wfRepoId,
+          REF,
+          retry,
+          secondSha,
+        ),
+      ).toEqual({ kind: "already_applied" });
+      expect(await targetStore.resolveRef(principal, wfRepoId, REF)).toBe(
+        secondSha,
+      );
+      expect(targetHandler.onRefUpdatedCalls).toHaveLength(updatesBefore);
+      expect(await stagedPacks(targetDir)).toEqual([]);
     });
   });
 
-  // A receiver that acked a push and then lost the objects it stored must
-  // not accept a later commit that still names one of them, even one the
-  // commit did not change: the sender would never send it again.
+  // The store keeps what it accepts durably, so a receive checks only what
+  // a commit changed. A receiver that loses accepted objects anyway does
+  // not find out at the next push; a read of a lost object fails instead.
   describe("receivePack after the receiver lost a push", () => {
     const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
     const permissiveWorkflowRun = (): TestHandler => ({
@@ -4448,9 +5123,8 @@ describe("RepoStore", () => {
       };
     }
 
-    test("rejects a commit that names a blob of the lost push, and the full history restores it", async () => {
+    test("accepts a commit that keeps an unchanged entry without reading it", async () => {
       const {
-        source,
         target,
         targetDir,
         secondSha,
@@ -4461,26 +5135,17 @@ describe("RepoStore", () => {
       } = await setUp();
       await loseFirstPush();
 
-      await expect(ship(target, secondSha)).rejects.toThrow(
-        `missing_objects: commit ${thirdSha} names blob ${lostBlob} at runs/r1/events/0.json, which is neither in the receiver's store nor in the pack`,
-      );
-      expect(await target.resolveRef(principal, wfRepoId, REF)).toBe(secondSha);
-
-      source.forgetPackedTip(wfRepoId, REF);
       await ship(target, secondSha);
+
       expect(await target.resolveRef(principal, wfRepoId, REF)).toBe(thirdSha);
-      const { blob } = await git.readBlob({
-        fs,
-        dir: targetDir,
-        oid: lostBlob,
-      });
-      expect(new TextDecoder().decode(blob)).toBe("zero");
+      await expect(
+        git.readBlob({ fs, dir: targetDir, oid: lostBlob }),
+      ).rejects.toThrow(/Could not find/);
     });
 
     // A repository an older store wrote holds packs.
-    test("a restarted receiver removes an index whose pack is gone, and the full history restores the pack's objects", async () => {
+    test("a restarted receiver removes an index whose pack is gone, and its objects read as missing", async () => {
       const {
-        source,
         openTarget,
         targetDir,
         secondSha,
@@ -4503,16 +5168,15 @@ describe("RepoStore", () => {
       await loseFirstPush();
       const restarted = openTarget();
 
-      await expect(ship(restarted, secondSha)).rejects.toThrow(
-        `missing_objects: commit ${thirdSha} names blob ${lostBlob} at runs/r1/events/0.json, which is neither in the receiver's store nor in the pack`,
-      );
-      expect(fs.existsSync(orphanIndex)).toBe(false);
-
-      source.forgetPackedTip(wfRepoId, REF);
       await ship(restarted, secondSha);
+
+      expect(fs.existsSync(orphanIndex)).toBe(false);
       expect(await restarted.resolveRef(principal, wfRepoId, REF)).toBe(
         thirdSha,
       );
+      await expect(
+        git.readBlob({ fs, dir: targetDir, oid: lostBlob }),
+      ).rejects.toThrow(/Could not find/);
     });
   });
 
@@ -6095,12 +6759,6 @@ describe("RepoStore prepared pack receive", () => {
     );
   }
 
-  async function stagedPacks(repoDir: string): Promise<string[]> {
-    return fs.promises
-      .readdir(path.join(repoDir, ".git", "objects", "pack-staging"))
-      .catch(() => []);
-  }
-
   test("prepare then commit moves the ref and returns each commit's runs", async () => {
     const line = await sourceLine(["v1", "v2"]);
     const [, tip] = line.commits;
@@ -6114,6 +6772,7 @@ describe("RepoStore prepared pack receive", () => {
 
     expect(await prepared.commit()).toEqual({
       kind: "applied",
+      findingsPartial: false,
       newlyTerminalRuns: [runOf("v1"), runOf("v2")],
       approvalWaitChanges: [waitOf("v1"), waitOf("v2")],
     });
@@ -6232,6 +6891,7 @@ describe("RepoStore prepared pack receive", () => {
     if (prepared.kind !== "prepared") throw new Error("expected prepared");
     expect(await prepared.commit()).toEqual({
       kind: "applied",
+      findingsPartial: false,
       newlyTerminalRuns: [runOf("v2")],
       approvalWaitChanges: [waitOf("v2")],
     });
@@ -6258,6 +6918,7 @@ describe("RepoStore prepared pack receive", () => {
 
     expect(await prepared.commit()).toEqual({
       kind: "applied",
+      findingsPartial: false,
       newlyTerminalRuns: [runOf("v3")],
       approvalWaitChanges: [waitOf("v3")],
     });
@@ -6321,6 +6982,7 @@ describe("RepoStore prepared pack receive", () => {
 
     expect(await prepared.commit()).toEqual({
       kind: "applied",
+      findingsPartial: false,
       newlyTerminalRuns: [runOf("v1"), runOf("v2")],
       approvalWaitChanges: [waitOf("v1"), waitOf("v2")],
     });
@@ -6356,6 +7018,7 @@ describe("RepoStore prepared pack receive", () => {
 
     expect(await committing).toEqual({
       kind: "applied",
+      findingsPartial: false,
       newlyTerminalRuns: [runOf("v1")],
       approvalWaitChanges: [waitOf("v1")],
     });
@@ -6413,6 +7076,22 @@ describe("RepoStore prepared pack receive", () => {
     );
   });
 
+  test("a ref that moves onto a commit the store holds from another ref reports partial findings", async () => {
+    const line = await sourceLine(["v1"]);
+    const [tip] = line.commits;
+    if (tip === undefined) throw new Error("line");
+    const { store } = await targetStore(runsHandler());
+    const pack = await line.packAt(tip);
+    const other = "refs/heads/other";
+    expect(
+      await (await prepare(store, repoId, pack, tip, other)).commit(),
+    ).toMatchObject({ kind: "applied", findingsPartial: false });
+
+    expect(
+      await (await prepare(store, repoId, pack, tip)).commit(),
+    ).toMatchObject({ kind: "applied", findingsPartial: true });
+  });
+
   test("two prepares of one pack commit once and then answer already_applied", async () => {
     const line = await sourceLine(["v1", "v2"]);
     const [, tip] = line.commits;
@@ -6426,6 +7105,7 @@ describe("RepoStore prepared pack receive", () => {
 
     expect(await a.commit()).toEqual({
       kind: "applied",
+      findingsPartial: false,
       newlyTerminalRuns: [runOf("v1"), runOf("v2")],
       approvalWaitChanges: [waitOf("v1"), waitOf("v2")],
     });

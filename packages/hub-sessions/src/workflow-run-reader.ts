@@ -35,9 +35,11 @@ export type WorkflowRunEvent = {
  * The reader is read-only: it composes `RepoStore.getRepoDir` (a pure
  * path computation) with direct `isomorphic-git` tree/blob reads, and
  * `readLatestRunEvents` resolves its tip as the Hub through
- * `RepoStore.resolveRef`. It never writes, so it carries no authorize
- * gate of its own; callers gate access at their own boundary (the REST
- * routes use a `workflow-run:<runId>` grant check).
+ * `RepoStore.resolveRef`. It writes no Git data, so it carries no
+ * authorize gate of its own; callers gate access at their own boundary
+ * (the REST routes use a `workflow-run:<runId>` grant check). The
+ * durable tip read can sync the repository on disk, once for one an
+ * older store wrote.
  */
 export interface WorkflowRunReader {
   /**

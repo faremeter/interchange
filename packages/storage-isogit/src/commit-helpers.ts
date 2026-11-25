@@ -9,6 +9,7 @@ import {
   flushRuntime,
   pathExists,
   syncPath,
+  syncTree,
   type StorageRuntime,
 } from "./runtime";
 import { forgetRefsSynced } from "./sync-record";
@@ -171,6 +172,18 @@ export async function writeRefDurably(
     forgetRefsSynced(runtime, dir);
     throw cause;
   }
+}
+
+/**
+ * Sync every file and directory of the repository's git dir, for a
+ * repository that a store which did not sync may have written.
+ */
+export async function syncRepositoryDurably(
+  runtime: StorageRuntime,
+  dir: string,
+): Promise<void> {
+  await syncTree(runtime, runtime.path.join(dir, ".git"));
+  await flushRuntime(runtime);
 }
 
 /** Restore selected index entries to the currently visible HEAD. */

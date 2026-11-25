@@ -10,7 +10,6 @@ import {
   initRepo as storageInitRepo,
   createDeployPack,
   createDurableObjectWrites,
-  createObjectPresence,
   holdSyncRecord,
   HUB_REF_NAMESPACE,
   RefNotDurableError,
@@ -20,12 +19,13 @@ import {
   syncObjectsAndRefs,
   syncPathDurable,
   syncRemovedPathDurable,
+  syncRepositoryDurably,
   writeRefDurably,
   type CommitSigner,
-  type ObjectPresence,
   type StagedPack,
 } from "@intx/storage-isogit/node";
 import { hasCode } from "@intx/types/has-code";
+import { hexEncode } from "@intx/types/hex";
 import { getLogger } from "@intx/log";
 import type {
   AuthorizeFn,
@@ -51,6 +51,7 @@ import type {
   WriteTreePreservingPrefixArgs,
 } from "./types";
 import {
+  HeldCommitMovedOffError,
   isPlainPathSegment,
   NoBlobAtPathError,
   RepoRemovedDuringReceiveError,
@@ -146,6 +147,16 @@ function isAbsentPathError(cause: unknown): boolean {
   );
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.promises.stat(p);
+    return true;
+  } catch (cause) {
+    if (isAbsentPathError(cause)) return false;
+    throw cause;
+  }
+}
+
 export type CreateRepoStoreConfig = {
   dataDir: string;
   signingKey: SigningKey;
@@ -186,23 +197,32 @@ export type LocalRepoStore = RepoStore & {
    * Under the repo lock, stage the pack where no reader finds it and find
    * its new commits; then validate each commit with no lock held. A pack
    * whose tip the ref already holds (its tip or a first-parent ancestor)
-   * moves no ref. Prepare answers `already_applied` for it when the store
-   * holds every object of that tip and the pack brings no object the
-   * store lacks. A pack that brings objects the store lacks is published
-   * by `commit()` without moving the ref. When the store lacks an object
-   * of that tip and the pack does not bring it, the receive fails as
-   * `missing_objects`.
+   * moves no ref: a receive checks what it adds and makes it durable
+   * before it moves the ref, so for the tip of a checked ref prepare
+   * answers `already_applied` and stages nothing. A new commit that adds
+   * or changes an entry whose object neither the pack nor the store holds
+   * fails the receive as `missing_objects`. On a ref no receive has checked whole yet, such as
+   * one an older store wrote, the validation walks the whole tree of each
+   * new commit instead, and a held tip is staged so its pack can restore
+   * objects the store lost; so is an older commit a checked ref holds that
+   * the store does not hold whole, since the check vouches for the ref's
+   * tip only, and a tip the store holds from another ref has its tree
+   * walked whole before the ref moves to it. An older commit the store
+   * holds whole is answered `already_applied` by prepare, which removes
+   * the staged pack without writing it.
    *
    * The returned `commit()` takes the repo lock, publishes the pack,
    * mostly as loose objects, and moves `ref` to `commitSha`, with the
    * live tip as the old value. Both are durable before `commit()`
    * returns. The ref can move while the pack validates, so there is no
    * `expectedOldSha`: when the live tip already holds `commitSha`,
-   * `commit()` answers `already_applied`, and publishes the pack only
-   * when it brings objects the store lacks; when the live tip is a commit
+   * `commit()` answers `already_applied`, after it publishes the pack on a
+   * ref not checked whole; when the live tip is a commit
    * of this pack, it returns only the findings of the later commits. Any
    * other live tip gets the pack tip, because the sender is authoritative
-   * for the shape of its history.
+   * for the shape of its history, except under a pack staged only to
+   * restore a commit the ref held at prepare: that `commit()` fails, so a
+   * retry validates against the new tip.
    *
    * `discard()` takes the repo lock and removes the staged pack. It does
    * nothing when called again or once `commit()` is called. `commit()`
@@ -316,22 +336,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   function chargeGitCache(dir: string, cache: object, ops: number): void {
     const entry = gitCaches.get(dir);
     if (entry !== undefined && entry.cache === cache) entry.ops += ops;
-  }
-
-  // Each repo's pack-index names, kept across receives so a receive reads
-  // only the indexes published since the last one. Bounded like the git
-  // caches.
-  const objectPresences = new Map<string, ObjectPresence>();
-  function presenceFor(dir: string): ObjectPresence {
-    const presence = objectPresences.get(dir) ?? createObjectPresence(dir);
-    objectPresences.delete(dir);
-    objectPresences.set(dir, presence);
-    while (objectPresences.size > GIT_CACHE_MAX_REPOS) {
-      const lru = objectPresences.keys().next().value;
-      if (lru === undefined) break;
-      objectPresences.delete(lru);
-    }
-    return presence;
   }
 
   // A parsed tree with its entries also keyed by name, so a path
@@ -1174,26 +1178,33 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   const GIT_MODE_SYMLINK = "120000";
   const GIT_MODE_SUBMODULE = "160000";
 
-  // Walk a commit's tree and return the first entry whose mode is disallowed
-  // (a symlink or a submodule), or the first name that a tree repeats, or
-  // null when the tree is clean. This mirrors the materialization backstop in
-  // `writeTreeToDisk`, but at the PUSH boundary so a directory-escaping
-  // symlink (or a dangling gitlink) is refused at admission rather than only
-  // caught later at checkout. A repeated name is refused because readers
-  // resolve it to different entries: a name lookup keeps one entry and a
-  // scan keeps another, so validation could pass one entry while a reader
-  // serves the other. It reads trees only, never blobs; `seen` deduplicates
-  // shared subtree oids across the commits of one pack so a subtree is
-  // walked once.
+  // Walk the trees a commit changed against its parent's tree, and return
+  // the first entry whose mode is disallowed (a symlink or a submodule), the
+  // first name that a tree repeats, or null when the change is clean. This
+  // mirrors the materialization backstop in `writeTreeToDisk`, but at the
+  // PUSH boundary so a directory-escaping symlink (or a dangling gitlink) is
+  // refused at admission rather than only caught later at checkout. A
+  // repeated name is refused because readers resolve it to different
+  // entries: a name lookup keeps one entry and a scan keeps another, so
+  // validation could pass one entry while a reader serves the other. `seen`
+  // deduplicates shared subtree oids across the commits of one pack so a
+  // subtree is walked once.
   //
-  // A pack may leave out objects the receiver already holds, so the walk
-  // also returns the first blob `holds` does not find, which proves the
-  // commit complete before the ref can name it. A missing tree fails its
-  // read instead.
+  // An entry that the parent tree holds with the same oid and mode was
+  // admitted with the parent, and every commit the store moves a ref to,
+  // received or written here, has its objects synced first, so the walk
+  // skips it: a receive reads what it changed, not the whole history. A
+  // pack may still leave out a changed entry the receiver holds under
+  // another path, so the walk also returns the first changed blob `holds`
+  // does not find, which proves the commit complete before the ref can
+  // name it. A missing tree fails its read instead. A commit with no
+  // parent tree is walked whole, and so is every commit of a pack on a ref
+  // no receive has checked whole yet (see `objectsChecked`).
   async function findInadmissibleTreeEntry(
     reads: ObjectReads,
     holds: (oid: string) => Promise<boolean>,
     treeOid: string,
+    parentTreeOid: string | null,
     seen: Set<string>,
     prefix = "",
   ): Promise<
@@ -1201,8 +1212,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     | { path: string; kind: "missing blob"; oid: string }
     | null
   > {
-    if (seen.has(treeOid)) return null;
+    if (treeOid === parentTreeOid || seen.has(treeOid)) return null;
     seen.add(treeOid);
+    const parentEntries =
+      parentTreeOid === null
+        ? undefined
+        : (await reads.readTree(parentTreeOid)).byName;
     const names = new Set<string>();
     for (const entry of (await reads.readTree(treeOid)).entries) {
       const entryPath = prefix === "" ? entry.path : `${prefix}/${entry.path}`;
@@ -1210,6 +1225,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         return { path: entryPath, kind: "repeated name" };
       }
       names.add(entry.path);
+      const before = parentEntries?.get(entry.path);
+      if (before?.oid === entry.oid && before.mode === entry.mode) continue;
       if (entry.mode === GIT_MODE_SYMLINK) {
         return { path: entryPath, kind: "symlink" };
       }
@@ -1221,6 +1238,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           reads,
           holds,
           entry.oid,
+          before?.type === "tree" ? before.oid : null,
           seen,
           entryPath,
         );
@@ -1399,7 +1417,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // kinds, so a multi-parent commit in a received pack is a
   // structural defect the substrate refuses outright. Each returned
   // commit is one the substrate must validate against its predecessor
-  // before the ref advances.
+  // before the ref advances. `base` is the commit the walk stopped at
+  // because the store held it, or null when it reached a root or a
+  // missing parent.
   async function collectNewCommits(
     dir: string,
     gitFs: FsClient,
@@ -1407,12 +1427,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     tipSha: string,
     priorTip: string | null,
     existingCommits: ReadonlySet<string>,
-  ): Promise<string[]> {
+  ): Promise<{ chain: string[]; base: string | null }> {
     const chain: string[] = [];
     let current: string = tipSha;
     while (true) {
-      if (current === priorTip) break;
-      if (existingCommits.has(current)) break;
+      if (current === priorTip || existingCommits.has(current)) {
+        return { chain: chain.reverse(), base: current };
+      }
       let parsed: Awaited<ReturnType<typeof git.readCommit>>;
       try {
         parsed = await git.readCommit({
@@ -1437,7 +1458,19 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       if (next === undefined) throw new Error("unreachable");
       current = next;
     }
-    return chain.reverse();
+    return { chain: chain.reverse(), base: null };
+  }
+
+  // Whether a commit's tree holds only the `.gitignore` every repository
+  // starts with.
+  async function holdsOnlyStart(
+    reads: ObjectReads,
+    commitSha: string,
+  ): Promise<boolean> {
+    const commit = await reads.readCommit(commitSha);
+    return (await reads.readTree(commit.tree)).entries.every(
+      (entry) => entry.type === "blob" && entry.path === ".gitignore",
+    );
   }
 
   // A push that does not build on the ref's tip would drop whatever the tip
@@ -1459,10 +1492,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     ) {
       return true;
     }
-    const tip = await reads.readCommit(tipSha);
-    return (await reads.readTree(tip.tree)).entries.every(
-      (entry) => entry.type === "blob" && entry.path === ".gitignore",
-    );
+    return holdsOnlyStart(reads, tipSha);
   }
 
   // Assemble a new root tree by splicing `puts` (repo-root-relative path
@@ -1882,10 +1912,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
 
   // Under the repo lock, before a write reads the ref it answers from: a
   // write here that failed, or a process that stopped, can have left that
-  // ref unsynced.
+  // ref unsynced, and the history the write builds on can be one an older
+  // store wrote without syncing.
   async function openForWrite(repoId: RepoId): Promise<string> {
     const dir = repoDir(repoId);
     await storageInitRepo(dir, storageOptsFor(repoId, undefined));
+    await syncObjectsOfOlderStore(repoId, dir);
     await syncObjectsAndRefs(dir);
     return dir;
   }
@@ -2075,20 +2107,92 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     readonly incarnation: Set<string>;
     // The ref's tip when the pack was staged.
     readonly priorTip: string | null;
-    // Whether, in the prepared mode, `priorTip` held `commitSha`.
-    readonly held: boolean;
     // The pack's new commits, oldest first. Empty when the store already
     // held `commitSha`.
     readonly chain: readonly string[];
+    // The commit the walk for `chain` stopped at because the store held
+    // it: the oldest new commit's parent, or `commitSha` when the pack
+    // brings none. Null when the walk reached a root or a missing parent.
+    readonly base: string | null;
+    // Whether `base`'s tree holds more than the `.gitignore` every
+    // repository starts with: what commits up to `base` recorded, which
+    // a ref that moves here from a tip other than `base` comes to reach.
+    readonly baseHoldsHistory: boolean;
+    // Whether `priorTip` held `commitSha`; in the expected mode, only as
+    // the tip the caller expected.
+    readonly held: boolean;
+    // Whether `ref` has an objects-checked file, so every object the
+    // store holds is durable.
+    readonly refChecked: boolean;
+    // Whether the validation walks each commit's whole tree: on a ref with
+    // no objects-checked file, and for a held commit older than its tip.
+    readonly checkWhole: boolean;
     // Releases the hold on the repository's sync record, taken when the
     // pack was staged.
     readonly releaseSyncRecord: () => void;
   };
 
+  // A receive found every object a ref's tip names, and every write since
+  // syncs, so a receive on that ref reads only what a commit changed. A
+  // ref without the file, such as one a store that did not sync wrote,
+  // gets one whole walk, and a resent tip it holds lands to restore what
+  // the store lost. The file is named by a hash of the ref, so a ref of
+  // any length fits.
+  function objectsCheckedDir(dir: string): string {
+    return path.join(dir, ".git", "objects-checked");
+  }
+
+  async function objectsCheckedPath(dir: string, ref: string): Promise<string> {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(ref),
+    );
+    return path.join(objectsCheckedDir(dir), hexEncode(new Uint8Array(digest)));
+  }
+
+  // A walk of an unchecked ref, a durable read or a write can rely on
+  // objects that an older store wrote and the disk does not hold yet, so
+  // it syncs all of the git dir first. The records directory appears only after
+  // that sync, so a repository pays it once; a directory that cannot be
+  // made only means the next one syncs again.
+  async function syncObjectsOfOlderStore(
+    repoId: RepoId,
+    dir: string,
+  ): Promise<void> {
+    const records = objectsCheckedDir(dir);
+    if (await pathExists(records)) return;
+    await syncRepositoryDurably(dir);
+    await fs.promises.mkdir(records, { recursive: true }).catch((cause) => {
+      logger.warn`Cannot record that ${repoId.kind}/${repoId.id} is synced, so it is synced whole again next time: ${cause instanceof Error ? cause.message : String(cause)}`;
+    });
+  }
+
+  async function objectsChecked(dir: string, ref: string): Promise<boolean> {
+    return pathExists(await objectsCheckedPath(dir, ref));
+  }
+
+  // Written after the objects it vouches for are synced, so a crash can
+  // lose the file but not keep it without them. The file only saves a
+  // whole walk, so a write that fails leaves the ref to be checked again
+  // and does not fail the receive.
+  async function markObjectsChecked(
+    repoId: RepoId,
+    dir: string,
+    ref: string,
+  ): Promise<void> {
+    try {
+      const file = await objectsCheckedPath(dir, ref);
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      await fs.promises.writeFile(file, "");
+    } catch (cause) {
+      logger.warn`Cannot record ${ref} of ${repoId.kind}/${repoId.id} as checked whole, so its next receive checks it again: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+  }
+
   // Move `ref` to `commitSha`, and answer the error when the ref landed
   // but could not be synced: readers already see it, so the caller still
-  // runs the move's hooks before it fails. The failed write marked the
-  // repository's refs unsynced, so a retry syncs every ref before it is
+  // runs the move's hooks before it fails. The failed write dropped the
+  // repository's sync record, so a retry syncs every ref before it is
   // answered.
   async function moveRef(
     dir: string,
@@ -2115,18 +2219,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       // first receive for this dir in the next process removes it.
       logger.warn`Cannot remove staged pack for ${s.repoId.kind}/${s.repoId.id}: ${cause instanceof Error ? cause.message : String(cause)}`;
     });
-  }
-
-  // Whether the staged pack holds an object the store does not. A receive
-  // that moves no ref publishes only such a pack: it brings back objects
-  // the store lost after it acked them.
-  async function packBringsObjects(s: StagedReceive): Promise<boolean> {
-    const presence = presenceFor(s.dir);
-    await presence.update();
-    for (const oid of s.staged.oids) {
-      if (!(await presence.holds(oid))) return true;
-    }
-    return false;
   }
 
   // An existing-commit set built with no repo lock, the repo's token
@@ -2211,7 +2303,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // The locked first step of every receive: resolve the tip, stage the
   // pack, and find its new commits. The caller holds the repo lock.
   // `prebuilt` is the caller's scan from before it took the lock, used
-  // when the repo still has no set and was not removed since.
+  // when the repo still has no set and was not removed since. Answers
+  // null, and stages nothing, when a checked ref is already at `commitSha`
+  // and the receive counts it as held.
   async function stageReceive(
     principal: Principal,
     repoId: RepoId,
@@ -2220,137 +2314,210 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     commitSha: string,
     mode: ReceiveMode,
     prebuilt: PrebuiltExistingCommits | null,
-  ): Promise<StagedReceive> {
+  ): Promise<StagedReceive | null> {
     const dir = repoDir(repoId);
     await storageInitRepo(dir, storageOptsFor(repoId, undefined));
     const handler = handlerFor(repoId);
     // Held from before the sync below until the staged receive is
     // discarded, so no other repository's sync evicts what it recorded.
     const releaseSyncRecord = holdSyncRecord(dir);
-    return withReceiveCache(dir, async (cache) => {
-      chargePrebuiltScan(dir, prebuilt);
-      // A receive syncs a pack's rename before it renames the index, so an
-      // index without its pack comes from damage outside the store, or
-      // from a store that did not sync that rename first. An index whose
-      // pack is gone fails each read of an object it names, the history
-      // scan below included, so no receive could reach the full resend
-      // that brings those objects back.
-      for (const removed of await removeOrphanPackIndexes(dir)) {
-        logger.error`Removed ${removed} from ${repoId.kind}/${repoId.id}: its pack is gone, and with it every object the index named`;
-      }
-      const existingKey = indexCacheKey(repoId);
-      let existingCommits = existingCommitsCache.get(existingKey);
-      if (existingCommits === undefined) {
-        // Receives that shared one scan each seed with a copy, so a
-        // scan below that fails partway leaves the shared set whole for
-        // the next receive.
-        const seed =
-          prebuilt !== null &&
-          existingCommitsEpochs.get(existingKey) === prebuilt.epoch
-            ? new Set(prebuilt.commits)
-            : new Set<string>();
-        existingCommits = await snapshotExistingCommits(dir, cache, seed);
-        existingCommitsCache.set(existingKey, existingCommits);
-        existingCommitsScans.delete(existingKey);
-      }
-      if (!cleanedStagingDirs.has(dir)) {
-        await removeStagedPacks(dir);
-        cleanedStagingDirs.add(dir);
-      }
-      // Here, not in the commit step, which can run while its caller holds
-      // a database lock: the first sync of a repository in a process
-      // covers every object directory and ref. It runs before the receive
-      // answers, so no answer comes from a ref that a failed write here,
-      // or a process that stopped, left unsynced.
-      await syncObjectsAndRefs(dir);
-      // The tip is read under the lock, not taken from the caller, which
-      // read it outside the lock. A held tip still stages its pack: the
-      // store may have lost objects of that tip after it acked them, and
-      // only the pack can bring them back.
-      const priorTip = await resolveRefSha(dir, ref);
-      // A caller that expects the ref at the pack tip already, such as a
-      // restore retried after a ref that landed but was not synced, holds
-      // it too.
-      const held =
-        mode.kind === "prepared"
-          ? existingCommits.has(commitSha) &&
-            (await refHoldsCommit(dir, cache, priorTip, commitSha, new Set()))
-          : mode.expectedOldSha === commitSha && priorTip === commitSha;
+    const received = await withReceiveCache(
+      dir,
+      async (cache): Promise<StagedReceive | null> => {
+        chargePrebuiltScan(dir, prebuilt);
+        // A receive syncs a pack's rename before it renames the index, so an
+        // index without its pack comes from damage outside the store, or
+        // from a store that did not sync that rename first. Its objects are
+        // gone, and an index naming them fails every read of them, the
+        // history scan below included, as an internal error instead of a
+        // missing object.
+        for (const removed of await removeOrphanPackIndexes(dir)) {
+          logger.error`Removed ${removed} from ${repoId.kind}/${repoId.id}: its pack is gone, and with it every object the index named`;
+        }
+        const existingKey = indexCacheKey(repoId);
+        let existingCommits = existingCommitsCache.get(existingKey);
+        if (existingCommits === undefined) {
+          // Receives that shared one scan each seed with a copy, so a
+          // scan below that fails partway leaves the shared set whole for
+          // the next receive.
+          const seed =
+            prebuilt !== null &&
+            existingCommitsEpochs.get(existingKey) === prebuilt.epoch
+              ? new Set(prebuilt.commits)
+              : new Set<string>();
+          existingCommits = await snapshotExistingCommits(dir, cache, seed);
+          existingCommitsCache.set(existingKey, existingCommits);
+          existingCommitsScans.delete(existingKey);
+        }
+        if (!cleanedStagingDirs.has(dir)) {
+          await removeStagedPacks(dir);
+          cleanedStagingDirs.add(dir);
+        }
+        // Here, not in the commit step, which can run while its caller holds
+        // a database lock: the first sync of a repository in a process
+        // covers every object directory and ref. It runs before the receive
+        // answers, so no answer comes from a ref that a failed write here,
+        // or a process that stopped, left unsynced.
+        await syncObjectsAndRefs(dir);
+        // The tip is read under the lock, not taken from the caller, which
+        // read it outside the lock. A receive checks what it adds and makes
+        // it durable before it moves the ref, so on a checked ref a held tip
+        // needs nothing of the pack.
+        const priorTip = await resolveRefSha(dir, ref);
+        // A caller that expects the ref at the pack tip already, such as a
+        // restore retried after a ref that landed but was not synced, holds
+        // it too.
+        const held =
+          mode.kind === "prepared"
+            ? existingCommits.has(commitSha) &&
+              (await refHoldsCommit(dir, cache, priorTip, commitSha, new Set()))
+            : mode.expectedOldSha === commitSha && priorTip === commitSha;
+        // A checked ref vouches for its tip's tree, not for older commits it
+        // holds: one of those can name an object an older store lost, so its
+        // pack is staged and its tree walked whole, as on an unchecked ref.
+        const refChecked = await objectsChecked(dir, ref);
+        const checkWhole = !refChecked || (held && commitSha !== priorTip);
+        if (held && !checkWhole) return null;
+        // Also here, not in the commit step, for the same reason as the
+        // sync above.
+        if (checkWhole) await syncObjectsOfOlderStore(repoId, dir);
 
-      const transferId = crypto.randomUUID().replace(/-/g, "");
-      const staged = await stagePack(dir, pack, transferId);
-      try {
-        if (!staged.oids.includes(commitSha)) {
-          throw new Error(
-            `sha_mismatch: expected commit ${commitSha} not found in pack`,
-          );
-        }
-        if (mode.kind === "expected" && priorTip !== mode.expectedOldSha) {
-          const expected =
-            mode.expectedOldSha === null ? "null" : mode.expectedOldSha;
-          const observed = priorTip === null ? "null" : priorTip;
-          throw new Error(
-            `non_fast_forward: ref ${ref} expected ${expected} but found ${observed}`,
-          );
-        }
-        // A pack may carry more than one new commit (e.g. supervisor
-        // bootstrap that batches enqueue + dequeue before the hub has
-        // the workflow-run repo bootstrapped). The kind handler's
-        // prior-tree closures must point at THAT commit's parent — not
-        // the ref's tip before the pack arrived — so an intra-pack
-        // transition (inbox in commit N, processing in commit N+1) is
-        // validated against the right pre-image. We walk the parent
-        // chain from tip back to the first commit already present in
-        // the pre-pack history, then call validatePush once per new
-        // commit in topological (oldest-first) order. A single-commit
-        // pack collapses to the same behaviour as the tip-only path.
-        //
-        // The walk reads `existingCommits`, which a commit changes in
-        // place, so it runs under the lock.
-        const chain = await collectNewCommits(
-          dir,
-          staged.fs,
-          cache,
-          commitSha,
-          priorTip,
-          existingCommits,
-        );
-        // A held tip leaves the ref in place, so it drops nothing.
-        if (
-          repoId.kind === "workflow-run" &&
-          !held &&
-          !(await buildsOnTip(
-            readsWith(dir, staged.fs, cache),
+        const transferId = crypto.randomUUID().replace(/-/g, "");
+        const staged = await stagePack(dir, pack, transferId);
+        try {
+          if (!staged.oids.includes(commitSha)) {
+            throw new Error(
+              `sha_mismatch: expected commit ${commitSha} not found in pack`,
+            );
+          }
+          if (mode.kind === "expected" && priorTip !== mode.expectedOldSha) {
+            const expected =
+              mode.expectedOldSha === null ? "null" : mode.expectedOldSha;
+            const observed = priorTip === null ? "null" : priorTip;
+            throw new Error(
+              `non_fast_forward: ref ${ref} expected ${expected} but found ${observed}`,
+            );
+          }
+          // A pack may carry more than one new commit (e.g. supervisor
+          // bootstrap that batches enqueue + dequeue before the hub has
+          // the workflow-run repo bootstrapped). The kind handler's
+          // prior-tree closures must point at THAT commit's parent -- not
+          // the ref's tip before the pack arrived -- so an intra-pack
+          // transition (inbox in commit N, processing in commit N+1) is
+          // validated against the right pre-image. We walk the parent
+          // chain from tip back to the first commit already present in
+          // the pre-pack history, then call validatePush once per new
+          // commit in topological (oldest-first) order. A single-commit
+          // pack collapses to the same behaviour as the tip-only path.
+          //
+          // The walk reads `existingCommits`, which a commit changes in
+          // place, so it runs under the lock.
+          const { chain, base } = await collectNewCommits(
+            dir,
+            staged.fs,
+            cache,
             commitSha,
             priorTip,
+            existingCommits,
+          );
+          // Only a prepared receive that moves the ref reports partial
+          // findings. A base the store lost part of counts as holding
+          // history: the validation then fails it as missing_objects.
+          const baseHoldsHistory =
+            mode.kind === "prepared" &&
+            !held &&
+            base !== null &&
+            !(await holdsOnlyStart(
+              readsWith(dir, staged.fs, cache),
+              base,
+            ).catch((err: unknown) => {
+              if (hasCode(err) && err.code === "NotFoundError") return false;
+              throw err;
+            }));
+          // A held tip leaves the ref in place, so it drops nothing.
+          if (
+            repoId.kind === "workflow-run" &&
+            !held &&
+            !(await buildsOnTip(
+              readsWith(dir, staged.fs, cache),
+              commitSha,
+              priorTip,
+              chain,
+            ))
+          ) {
+            const reason = `commit ${commitSha} does not build on the tip ${String(priorTip)} of ${ref}; a workflow-run history only grows`;
+            logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${reason}`;
+            throw new Error(`path_violation: ${reason}`);
+          }
+          return {
+            principal,
+            repoId,
+            ref,
+            commitSha,
+            dir,
+            handler,
+            staged,
+            incarnation: existingCommits,
+            priorTip,
             chain,
-          ))
-        ) {
-          const reason = `commit ${commitSha} does not build on the tip ${String(priorTip)} of ${ref}; a workflow-run history only grows`;
-          logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${reason}`;
-          throw new Error(`path_violation: ${reason}`);
+            base,
+            baseHoldsHistory,
+            held,
+            refChecked,
+            checkWhole,
+            releaseSyncRecord,
+          };
+        } catch (err) {
+          await staged.discard().catch(() => undefined);
+          throw err;
         }
-        return {
-          principal,
-          repoId,
-          ref,
-          commitSha,
-          dir,
-          handler,
-          staged,
-          incarnation: existingCommits,
-          priorTip,
-          held,
-          chain,
-          releaseSyncRecord,
-        };
-      } catch (err) {
-        await staged.discard().catch(() => undefined);
-        throw err;
-      }
-    }).catch((err: unknown) => {
+      },
+    ).catch((err: unknown) => {
       releaseSyncRecord();
       throw err;
+    });
+    if (received === null) releaseSyncRecord();
+    return received;
+  }
+
+  async function readsBlob(reads: ObjectReads, oid: string): Promise<boolean> {
+    try {
+      await reads.readBlob(oid);
+      return true;
+    } catch (err) {
+      if (hasCode(err) && err.code === "NotFoundError") return false;
+      throw err;
+    }
+  }
+
+  // Whether the store, without the staged pack, holds every object of
+  // the tree of `s.commitSha`. It needs no lock, as `validateStaged` does
+  // not: no write removes an object. Like a loose writer's `keep`, it
+  // trusts a loose file in place to be whole, so only a packed blob needs
+  // a read.
+  async function storeHoldsTree(s: StagedReceive): Promise<boolean> {
+    return withReceiveCache(s.dir, async (cache) => {
+      const reads = readsWith(s.dir, fs, cache);
+      const holdsBlob = async (oid: string) =>
+        (await pathExists(
+          path.join(s.dir, ".git", "objects", oid.slice(0, 2), oid.slice(2)),
+        )) || (await readsBlob(reads, oid));
+      try {
+        const { tree } = await reads.readCommit(s.commitSha);
+        return (
+          (await findInadmissibleTreeEntry(
+            reads,
+            holdsBlob,
+            tree,
+            null,
+            new Set(),
+          )) === null
+        );
+      } catch (err) {
+        // The commit, or a tree it names, is gone.
+        if (hasCode(err) && err.code === "NotFoundError") return false;
+        throw err;
+      }
     });
   }
 
@@ -2367,10 +2534,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       // walked once by the admission gate below.
       const seenTreeOids = new Set<string>();
       const inPack = new Set(s.staged.oids);
-      const storePresence = presenceFor(dir);
-      await storePresence.update();
       const holds = async (oid: string) =>
-        inPack.has(oid) || (await storePresence.holds(oid));
+        inPack.has(oid) || (await readsBlob(reads, oid));
       // One scope for every commit of the pack, so a handler parses
       // a blob that many commits carry once per receive.
       const validationScope = {};
@@ -2382,11 +2547,16 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       // materialization as the defense-in-depth backstop. Per-commit, so
       // an intermediate commit that adds a symlink a later commit deletes
       // is still caught.
-      const admit = async (commitSha: string, treeOid: string) => {
+      const admit = async (
+        commitSha: string,
+        treeOid: string,
+        parentTreeOid: string | null,
+      ) => {
         const inadmissible = await findInadmissibleTreeEntry(
           reads,
           holds,
           treeOid,
+          parentTreeOid,
           seenTreeOids,
         );
         if (inadmissible?.kind === "missing blob") {
@@ -2419,6 +2589,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           );
         }
       };
+      // A parent whose tree a receive into this ref checked: the ref's tip
+      // at prepare on a checked ref, or a commit of this pack checked just
+      // before. Any other parent, such as a commit of another ref, can name
+      // an object an older store lost, so a commit on it is walked whole.
+      const checkedParents = new Set<string>(
+        s.checkWhole || s.priorTip === null ? [] : [s.priorTip],
+      );
       const validateCommit = async (
         newCommit: string,
       ): Promise<PushFindings> => {
@@ -2469,7 +2646,17 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           parsed.tree,
           parentTreeOid,
         );
-        await admit(newCommit, parsed.tree);
+        // On a ref no receive has checked whole, an entry a commit keeps
+        // from its parent may be one an older store lost, so each commit
+        // is walked whole.
+        await admit(
+          newCommit,
+          parsed.tree,
+          s.checkWhole || parentSha === null || !checkedParents.has(parentSha)
+            ? null
+            : parentTreeOid,
+        );
+        checkedParents.add(newCommit);
         const result = await handler.validatePush({
           repoId,
           ref,
@@ -2493,21 +2680,22 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           approvalWaitChanges: result.approvalWaitChanges ?? [],
         };
       };
+      // A pack that brings no commit gets its tip's tree walked whole when
+      // that tree is unchecked: a held commit when `checkWhole` is set, or
+      // a tip the store holds from another ref that the ref moves to. An
+      // object an older store lost then fails as missing_objects, and the
+      // sender's full resend restores it.
+      if (s.chain.length === 0 && (s.checkWhole || !s.held)) {
+        await readingObjectsOf(s.commitSha, async () =>
+          admit(s.commitSha, (await reads.readCommit(s.commitSha)).tree, null),
+        );
+      }
       const findings: PushFindings[] = [];
       for (const newCommit of s.chain) {
         // The memo window now holds this commit and its parent.
         receive.advance();
         findings.push(
           await readingObjectsOf(newCommit, () => validateCommit(newCommit)),
-        );
-      }
-      // With no new commit the tip is one the store already held. The
-      // store may have lost some of its objects since, and an ack now
-      // would tell the sender never to send them again, so the tip must
-      // be complete with what this pack brings.
-      if (s.chain.length === 0) {
-        await readingObjectsOf(s.commitSha, async () =>
-          admit(s.commitSha, (await reads.readCommit(s.commitSha)).tree),
         );
       }
       return findings;
@@ -2525,12 +2713,19 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const { repoId, ref, commitSha, dir, handler } = s;
     if (!repoStillHolds(s)) throw new RepoRemovedDuringReceiveError(repoId);
     const liveTip = await resolveRefSha(dir, ref);
-    // The validation counted this pack's objects toward the tip, so the
-    // pack lands when it brings any the store lacks.
+    // The validation counted the pack's objects toward the tip, so on an
+    // unchecked ref the pack lands to restore any the store lost. The walk
+    // covered only the pack tip, so a live tip past it stays unchecked.
+    // The objects-checked file goes after the ref sync: a crash between
+    // them must not leave it beside a ref that rolled back to a tip the
+    // walk did not see.
     const answerHeld = async (): Promise<PackCommitResult> => {
-      if (await packBringsObjects(s)) await s.staged.publish();
-      // Does nothing unless a write here failed since the stage.
+      if (s.checkWhole)
+        await withReceiveCache(dir, (cache) => s.staged.publish(cache()));
+      // Does nothing unless a write here failed since the prepare.
       await syncObjectsAndRefs(dir);
+      if (s.checkWhole && liveTip === commitSha)
+        await markObjectsChecked(repoId, dir, ref);
       return { kind: "already_applied" };
     };
     let firstNew = 0;
@@ -2552,6 +2747,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       ) {
         return answerHeld();
       }
+      // A commit the ref held at prepare was staged only to restore its
+      // objects.
+      if (s.held) throw new HeldCommitMovedOffError(commitSha, ref, liveTip);
       // A live tip inside this pack's chain already applied the commits
       // up to it, so only the later commits' findings are new. Any other
       // live tip takes the whole chain: the sender is authoritative for the
@@ -2576,9 +2774,15 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     });
     await emitRefUpdate(repoId, ref, liveTip, commitSha);
     if (notDurable !== null) throw notDurable;
+    if (s.checkWhole) await markObjectsChecked(repoId, dir, ref);
     const applied = findings.slice(firstNew);
     return {
       kind: "applied",
+      // What `base` holds was already reachable when it is the live tip.
+      // Otherwise the ref may now reach what commits up to `base` recorded,
+      // which no finding here covers.
+      findingsPartial:
+        firstNew === 0 && s.baseHoldsHistory && s.base !== liveTip,
       newlyTerminalRuns: applied.flatMap((found) => found.newlyTerminalRuns),
       approvalWaitChanges: applied.flatMap(
         (found) => found.approvalWaitChanges,
@@ -2614,6 +2818,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         mode,
         prebuilt,
       );
+      if (s === null) return [];
       try {
         const findings = await validateStaged(s);
         const result = await commitStaged(s, findings, mode);
@@ -2651,13 +2856,22 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     const s = await withRepoLock(repoId, () =>
       stageReceive(principal, repoId, ref, pack, commitSha, mode, prebuilt),
     );
+    if (s === null) return { kind: "already_applied" };
 
-    let findings: PushFindings[];
-    let needed: boolean;
+    let findings: PushFindings[] = [];
+    let heldWhole = false;
     try {
-      findings = await validateStaged(s);
-      // A held tip that is complete without the pack needs nothing of it.
-      needed = !s.held || (await packBringsObjects(s));
+      // On a checked ref every object the store holds is durable, or is
+      // synced below, so an older commit the store holds whole needs
+      // nothing of the pack. It is asked again after the validation, since
+      // another receive can restore the same commit's objects meanwhile.
+      const holdsWhole = async () =>
+        s.held && s.refChecked && (await storeHoldsTree(s));
+      heldWhole = await holdsWhole();
+      if (!heldWhole) {
+        findings = await validateStaged(s);
+        heldWhole = await holdsWhole();
+      }
     } catch (err) {
       // A repo removed during validation can fail its reads. That is not
       // a fault of the pack, so it gets its own error. `removeRepo`
@@ -2674,10 +2888,22 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       }
       throw err;
     }
-    if (!needed) {
+    if (heldWhole) {
       await withRepoLock(repoId, async () => {
         await discardStaged(s);
-        // Does nothing unless a write here failed since the stage.
+        if (!repoStillHolds(s)) throw new RepoRemovedDuringReceiveError(repoId);
+        // The ref can move while the trees are walked, as before a commit.
+        const liveTip = await resolveRefSha(s.dir, ref);
+        if (
+          liveTip !== s.priorTip &&
+          !(await withReceiveCache(s.dir, (cache) =>
+            refHoldsCommit(s.dir, cache, liveTip, commitSha, new Set()),
+          ))
+        ) {
+          throw new HeldCommitMovedOffError(commitSha, ref, liveTip);
+        }
+        // A repair that failed after it put an object in place leaves its
+        // directory unsynced, and the walk above may have read the object.
         await syncObjectsAndRefs(s.dir);
       });
       return { kind: "already_applied" };
@@ -2883,8 +3109,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
 
   // Under the repo lock, a write has either synced what it wrote or marked
-  // it unsynced, and those are synced before the read. As a write does,
-  // the read also syncs the directories that hold the repository.
+  // it unsynced, such as a repair that failed to sync its object, and those
+  // are synced before the read. The objects a ref names can be ones an
+  // older store wrote without syncing, so the read first syncs the git dir
+  // whole, once per repository, and, as a write does, the directories that
+  // hold it.
   async function resolveDurably(
     repoId: RepoId,
     ref: string,
@@ -2893,6 +3122,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return withRepoLock(repoId, async () => {
       if (!(await repoHasGitDir(dir))) return null;
       await storageInitRepo(dir, storageOptsFor(repoId, undefined));
+      await syncObjectsOfOlderStore(repoId, dir);
       await syncObjectsAndRefs(dir);
       return resolveRefSha(dir, ref);
     });
@@ -2920,13 +3150,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   }
 
   async function repoHasGitDir(dir: string): Promise<boolean> {
-    try {
-      await fs.promises.stat(path.join(dir, ".git"));
-      return true;
-    } catch (cause) {
-      if (isAbsentPathError(cause)) return false;
-      throw cause;
-    }
+    return pathExists(path.join(dir, ".git"));
   }
 
   async function openCommittedReads(
@@ -3195,7 +3419,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         existingCommitsEpochs.delete(indexCacheKey(repoId));
         existingCommitsScans.delete(indexCacheKey(repoId));
         cleanedStagingDirs.delete(dir);
-        objectPresences.delete(dir);
         const refPrefix = `${indexCacheKey(repoId)}/`;
         for (const key of [...seqCache.keys()]) {
           if (key.startsWith(refPrefix)) seqCache.delete(key);
