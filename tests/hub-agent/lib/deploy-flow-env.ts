@@ -136,6 +136,8 @@ export const PRODUCTION_RECONNECT_DELAY_MS = "3000";
 // `sidecarEnv` (see `PRODUCTION_RECONNECT_DELAY_MS`).
 const TEST_RECONNECT_DELAY_MS = "250";
 
+const SIDECAR_ENTRY = path.resolve(import.meta.dir, "sidecar-entry.ts");
+
 // Grace period for each stage of the teardown's sidecar reap (SIGTERM, then
 // SIGKILL). Bounds the wait so a sidecar that is slow to reap under contention
 // cannot wedge the afterAll hook.
@@ -1223,7 +1225,7 @@ export async function startHub(
 }
 
 export type SidecarHandle = {
-  proc: Subprocess;
+  proc: Subprocess<"pipe", "pipe", "pipe">;
   dataDir: string;
   /** Rolling stderr buffer; capped at 500 chunks. */
   stderr: readonly string[];
@@ -1300,12 +1302,15 @@ export async function startSidecarSubprocess(opts: {
   });
 
   // --conditions=intx-src resolves @intx/* to source; the spawned sidecar
-  // runs from the workspace, where the dev loop builds no dist.
+  // runs from the workspace, where the dev loop builds no dist. The entry
+  // ends the sidecar when this process dies, which it detects through the
+  // stdin pipe; see `sidecar-entry.ts`.
   const proc = Bun.spawn(
-    ["bun", "run", "--conditions=intx-src", "apps/sidecar/src/index.ts"],
+    ["bun", "run", "--conditions=intx-src", SIDECAR_ENTRY],
     {
       cwd: path.resolve(import.meta.dir, "../../.."),
       env,
+      stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -1371,7 +1376,7 @@ export function assertPinnedSidecarEnvReached(
   }
 }
 
-function pidAlive(pid: number): boolean {
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
