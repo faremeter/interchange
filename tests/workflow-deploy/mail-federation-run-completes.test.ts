@@ -91,13 +91,10 @@ import {
 import {
   SECOND_SIDECAR_ID,
   SIDECAR_ID,
-  SECOND_TOKEN,
   SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   startDeployFlowEnv,
-  startSidecarSubprocess,
-  terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
   waitForWorkflowRunComplete,
@@ -168,7 +165,6 @@ const SENDER_MAIL_GRANT: WireGrantRule = {
 let env: DeployFlowEnv;
 let h: TestDb;
 let sidecar2: SidecarHandle | undefined;
-const tempDirs: string[] = [];
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "a mail-triggered run started through the sidecar deliver path reaches RunCompleted",
@@ -217,13 +213,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     afterAll(async () => {
-      if (sidecar2) {
-        await terminateSidecarSubprocess(sidecar2);
-        sidecar2 = undefined;
-      }
       if (env !== undefined) await env.teardown();
       if (h !== undefined) await h.close();
-      tempDirs.splice(0);
     });
 
     beforeEach(async () => {
@@ -257,11 +248,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `expected exactly one connected sidecar at start, got ${startHandles.length}`,
         );
       }
-      const hubPort = env.hub.server.port;
-      if (hubPort === undefined) {
-        throw new Error("hub.server.port is undefined; expected a bound port");
-      }
-
       // Seed the receiver's and sender's tenancy + workflow asset so each
       // source-ref deploy's install/approve freeze and anchor `workflow_run`
       // insert resolve their FKs. The receiver's frozen grant snapshot -- the
@@ -349,18 +335,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       // Bring up a second sidecar and wait for it to register.
-      sidecar2 = await startSidecarSubprocess({
-        hubPort,
-        registerTempDir: (d) => tempDirs.push(d),
-        extraEnv: {
-          SIDECAR_ID: SECOND_SIDECAR_ID,
-          SIDECAR_TOKEN: SECOND_TOKEN,
-        },
-      });
-      // Register it so a wedge anywhere below reports BOTH sidecars' stderr.
-      // The sender runs here, so without this the diagnostic on a hang covers
-      // only the receiver's sidecar and the sending half is invisible.
-      env.registerSidecar(sidecar2);
+      sidecar2 = await env.startSidecar({ identity: "second" });
       await waitFor(
         () => env.hub.router.getConnectedSidecars().includes(SECOND_SIDECAR_ID),
         { diagnostics: env.sidecarDiagnostics },

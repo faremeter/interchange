@@ -30,8 +30,6 @@
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
 // workflow child, and a real process death.
 
-import fs from "node:fs";
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { actionConsumer } from "@intx/authz";
@@ -63,7 +61,6 @@ import {
   readWorkflowRunEvents,
   settleWorkflowRunPacks,
   startDeployFlowEnv,
-  terminateSidecarSubprocess,
   waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
@@ -140,9 +137,7 @@ let h: TestDb | undefined;
 let origin: ReturnType<typeof Bun.serve> | undefined;
 const originRequests: { path: string; authorization: string | null }[] = [];
 
-// Each case starts its own env, because a crash kills the env's sidecar. The
-// cleanups run in reverse order, so a restarted sidecar stops before the env
-// that registered it tears down.
+// Each case starts its own env, because a crash kills the env's sidecar.
 const cleanups: (() => Promise<void>)[] = [];
 
 beforeAll(async () => {
@@ -208,10 +203,6 @@ async function startEnv(
   const env = await startDeployFlowEnv(opts);
   cleanups.push(() => env.teardown());
   return env;
-}
-
-function registerTempDir(dir: string): void {
-  cleanups.push(() => fs.promises.rm(dir, { recursive: true, force: true }));
 }
 
 /** The run grant that lets `consumer` use the credential. */
@@ -418,12 +409,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           await waitUntilTimerDue(env, run.anchorRunId, run.runId, NAP_STEP_ID);
         }
 
-        const restarted = await restartSidecar(env, {
+        await restartSidecar(env, {
           address: run.mailAddress,
           dataDir,
-          registerTempDir,
         });
-        cleanups.push(() => terminateSidecarSubprocess(restarted));
         if (restart === "before") {
           // The restored child must find the timer not yet due.
           expect(Date.now()).toBeLessThan(
@@ -498,12 +487,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // The deployed config names the mock server's port, so the restarted
       // sidecar reaches the same mock with no extra env.
-      const restarted = await restartSidecar(env, {
+      await restartSidecar(env, {
         address: mailAddress,
         dataDir,
-        registerTempDir,
       });
-      cleanups.push(() => terminateSidecarSubprocess(restarted));
 
       const events = await expectCompleted(env, anchorRunId, runId);
       expect(stepEventsOf(events, "StepCompleted", AGENT_STEP_ID)).toHaveLength(

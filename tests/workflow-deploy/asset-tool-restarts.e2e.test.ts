@@ -61,12 +61,10 @@ import {
   seedInferenceCredentials,
   settleWorkflowRunPacks,
   startDeployFlowEnv,
-  terminateSidecarSubprocess,
   waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import { buildSyntheticNpmPackageTarball } from "../hub-agent/lib/synthetic-npm-package-tarball";
 import {
@@ -154,8 +152,6 @@ let env: DeployFlowEnv;
 let h: TestDb;
 let scratchDir: string;
 let blobs: Map<string, Uint8Array>;
-let restarted: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 
 function requireRoutable(): Promise<void> {
   return waitFor(
@@ -273,12 +269,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     afterAll(async () => {
-      if (restarted !== undefined) {
-        await terminateSidecarSubprocess(restarted);
-      }
-      for (const dir of restartTempDirs.splice(0)) {
-        await fs.rm(dir, { recursive: true, force: true });
-      }
       if (env !== undefined) await env.teardown();
       if (h !== undefined) await h.close();
       if (scratchDir !== undefined) {
@@ -446,10 +436,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await fs.rm(path.join(dataDir, "workflow-definition-closure-cache"), {
         recursive: true,
       });
-      restarted = await restartSidecar(env, {
+      await restartSidecar(env, {
         address: mailAddress,
         dataDir,
-        registerTempDir: (dir) => restartTempDirs.push(dir),
       });
       await signalUntil(runId, "afterRestart", () => hasTerminated(runId));
 

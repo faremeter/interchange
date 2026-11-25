@@ -16,8 +16,6 @@
 // Harness justification: SPAWN-REAL. Real hub REST app on a real port, real
 // sidecar subprocess, real workflow child, and a real sidecar death.
 
-import fs from "node:fs";
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 
@@ -27,9 +25,7 @@ import { harnessDbEnvAvailable } from "@intx/test-harness/db-harness";
 
 import {
   readWorkflowRunEvents,
-  terminateSidecarSubprocess,
   waitForWorkflowRunComplete,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import {
   HUB_CALLER_HANDLER,
@@ -60,8 +56,6 @@ const NAP_STEP_ID = "nap";
 const SLEEP_DURATION_MS = 12_000;
 
 let t: HubAccessEnv | undefined;
-let restarted: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
   // A file-scope beforeAll fires even when describe.skipIf skips the
@@ -76,11 +70,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (restarted !== undefined) await terminateSidecarSubprocess(restarted);
   if (t !== undefined) await t.teardown();
-  for (const dir of restartTempDirs.splice(0)) {
-    await fs.promises.rm(dir, { recursive: true, force: true });
-  }
 });
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -133,12 +123,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const dataDir = await crashSidecar(env, address);
       expect(t.received).toEqual([]);
 
-      restarted = await restartSidecar(env, {
+      await restartSidecar(env, {
         address,
         dataDir,
-        registerTempDir: (dir) => {
-          restartTempDirs.push(dir);
-        },
       });
 
       const terminal = await waitForWorkflowRunComplete(env, RUN_ID, RUN_ID, {

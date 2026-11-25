@@ -61,13 +61,11 @@ import {
   fireMailTrigger,
   seedInferenceCredentials,
   startDeployFlowEnv,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -174,8 +172,6 @@ async function bundleWorkflowEntry(scratchDir: string): Promise<string> {
 let env: DeployFlowEnv;
 let h: TestDb;
 let scratchDir: string;
-let restartedSidecar: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 let sourceCommitSha: string;
 
 const sourceRepoId: RepoId = {
@@ -267,12 +263,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     afterAll(async () => {
-      if (restartedSidecar !== undefined) {
-        await terminateSidecarSubprocess(restartedSidecar);
-      }
-      for (const dir of restartTempDirs.splice(0)) {
-        await fs.rm(dir, { recursive: true, force: true });
-      }
       if (env !== undefined) await env.teardown();
       if (h !== undefined) await h.close();
       if (scratchDir !== undefined) {
@@ -479,22 +469,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // from the durable indexed-`.git` store alone, so the deployment re-routing
       // is the load-bearing restore assertion.
       const restoredDataDir = env.sidecar.dataDir;
-      const hubPort = env.hub.server.port;
-      if (hubPort === undefined) {
-        throw new Error(
-          "monorepo e2e: hub.server.port is undefined after kill",
-        );
-      }
       await terminateSidecarSubprocess(env.sidecar);
 
-      restartedSidecar = await startSidecarSubprocess({
-        hubPort,
-        registerTempDir: (dir) => {
-          restartTempDirs.push(dir);
-        },
-        extraEnv: { SIDECAR_DATA_DIR: restoredDataDir },
-      });
-      env.registerSidecar(restartedSidecar);
+      await env.startSidecar({ dataDir: restoredDataDir });
 
       await waitFor(
         () =>

@@ -46,14 +46,12 @@ import {
   listWorkflowHostChildren,
   readWorkflowRunEvents,
   startDeployFlowEnv,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForFirstRunId,
   waitForReconnect,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import { putInStandby } from "./standby-helpers";
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
@@ -87,8 +85,6 @@ type Registration = {
 
 let env: DeployFlowEnv;
 let h: TestDb;
-let restartedSidecar: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 // Resolved by the next approval registration; the test re-arms it before the
 // registration it awaits.
 let nextRegistration = Promise.withResolvers<Registration>();
@@ -135,14 +131,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (restartedSidecar !== undefined) {
-    await terminateSidecarSubprocess(restartedSidecar);
-  }
   if (env !== undefined) await env.teardown();
   if (h !== undefined) await h.close();
-  for (const dir of restartTempDirs.splice(0)) {
-    await fs.promises.rm(dir, { recursive: true, force: true });
-  }
 });
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -271,17 +261,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       );
       try {
-        const hubPort = env.hub.server.port;
-        if (hubPort === undefined)
-          throw new Error("hub.server.port is undefined after the kill");
-        restartedSidecar = await startSidecarSubprocess({
-          hubPort,
-          registerTempDir: (dir) => {
-            restartTempDirs.push(dir);
-          },
-          extraEnv: { SIDECAR_DATA_DIR: dataDir },
-        });
-        env.registerSidecar(restartedSidecar);
+        const restartedSidecar = await env.startSidecar({ dataDir });
         await waitForReconnect(env, address);
 
         // ---- the restored standby re-sends the approval it waits on ----

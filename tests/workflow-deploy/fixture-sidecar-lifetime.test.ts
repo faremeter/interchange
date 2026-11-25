@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
 
 import {
+  hasExited,
   listProcessSubtree,
   pidAlive,
   startDeployFlowEnv,
@@ -198,5 +199,55 @@ describe("deploy-flow fixture sidecar lifetime", () => {
       (pid) => !childrenBefore.has(pid) && pidAlive(pid),
     );
     expect(leftover).toEqual([]);
+  });
+
+  test("teardown stops every sidecar the env started", async () => {
+    const env = await startDeployFlowEnv();
+    let tornDown = false;
+    try {
+      const secondDataDir = await fs.promises.mkdtemp(
+        path.join(os.tmpdir(), "second-sidecar-"),
+      );
+      tempDirs.push(secondDataDir);
+      const second = await env.startSidecar({
+        identity: "second",
+        dataDir: secondDataDir,
+      });
+      expect(second.dataDir).toBe(secondDataDir);
+      await expect(env.startSidecar({ identity: "second" })).rejects.toThrow(
+        /still running/,
+      );
+
+      // A restart: the test kills the second sidecar itself and starts a
+      // replacement on its data dir, and teardown then terminates the killed
+      // process a second time. The replacement is started twice at once, and
+      // the start that finds the other still spawning is refused.
+      await terminateSidecarSubprocess(second);
+      const starts = await Promise.allSettled([
+        env.startSidecar({ identity: "second", dataDir: secondDataDir }),
+        env.startSidecar({ identity: "second", dataDir: secondDataDir }),
+      ]);
+      const [replacement, ...extra] = starts.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      expect(extra).toEqual([]);
+      const refusals = starts.flatMap((result) =>
+        result.status === "rejected" ? [String(result.reason)] : [],
+      );
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).toMatch(/still starting/);
+      if (replacement === undefined) {
+        throw new Error("no replacement sidecar started");
+      }
+      expect(hasExited(env.sidecar)).toBe(false);
+
+      await env.teardown();
+      tornDown = true;
+      expect(hasExited(env.sidecar)).toBe(true);
+      expect(hasExited(replacement)).toBe(true);
+      await expect(env.startSidecar()).rejects.toThrow(/after teardown/);
+    } finally {
+      if (!tornDown) await env.teardown();
+    }
   });
 });

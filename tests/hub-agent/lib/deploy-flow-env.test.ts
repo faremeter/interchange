@@ -78,9 +78,9 @@ async function startSmokeEnv(): Promise<{
     sidecarDiagnostics: () => "",
     deployments,
     registerDeployment,
-    // No sidecar subprocess is spawned here, so there is nothing to register
-    // and no diagnostics for `teardown` to dump.
-    registerSidecar: () => undefined,
+    // The helpers under test never start a sidecar.
+    startSidecar: () =>
+      Promise.reject(new Error("smoke env: startSidecar is not supported")),
     retrying,
     teardown: async () => {
       await hub.server.stop(true);

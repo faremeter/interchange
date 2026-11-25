@@ -34,7 +34,6 @@ import {
   deployWorkflowSourceForTest,
   fireMailTrigger,
   startDeployFlowEnv,
-  terminateSidecarSubprocess,
   waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
@@ -50,7 +49,6 @@ const CALLER_PRINCIPAL_ID = "prn_sidecar_runs_no_code";
 let env: DeployFlowEnv;
 let h: TestDb;
 let markerDir: string;
-// Run in reverse, so a restarted sidecar stops before its env tears down.
 const cleanups: (() => Promise<void>)[] = [];
 
 // A workflow of two actions whose module appends the evaluating process's pid
@@ -286,11 +284,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const restarted = await restartSidecar(restoreEnv, {
         address,
         dataDir,
-        registerTempDir: (dir) => {
-          cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
-        },
       });
-      cleanups.push(() => terminateSidecarSubprocess(restarted));
 
       // The restored deployment's new workflow child evaluated the code before
       // its address became routable again; the restarted sidecar never did.

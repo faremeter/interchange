@@ -31,8 +31,6 @@
 // dead process's SIDECAR_DATA_DIR, so survival rides the production
 // boot-time restore path and hello/welcome reconnect.
 
-import fs from "node:fs";
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
@@ -64,13 +62,11 @@ import {
   readWorkflowRunEvents,
   settleWorkflowRunPacks,
   startDeployFlowEnv,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import { signalGateEntry } from "./fixtures/signal-gate";
 
@@ -88,8 +84,6 @@ const DEFINITION_ASSET_ID = "ast_crash_restart_resume_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
-let restartedSidecar: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
   if (!harnessDbEnvAvailable()) return;
@@ -118,14 +112,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (restartedSidecar !== undefined) {
-    await terminateSidecarSubprocess(restartedSidecar);
-  }
   if (env !== undefined) await env.teardown();
   if (h !== undefined) await h.close();
-  for (const dir of restartTempDirs.splice(0)) {
-    await fs.promises.rm(dir, { recursive: true, force: true });
-  }
 });
 
 async function readAllRunEvents(
@@ -277,18 +265,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       // ---- RESTART: a fresh sidecar against the SAME data dir ----
-      const hubPort = env.hub.server.port;
-      if (hubPort === undefined) {
-        throw new Error("hub.server.port is undefined after crash");
-      }
-      restartedSidecar = await startSidecarSubprocess({
-        hubPort,
-        registerTempDir: (dir) => {
-          restartTempDirs.push(dir);
-        },
-        extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
-      });
-      env.registerSidecar(restartedSidecar);
+      await env.startSidecar({ dataDir: crashedDataDir });
 
       // ---- wait for the restored deployment to re-establish the hub link ----
       await waitForReconnect(env, deploymentMailAddress);

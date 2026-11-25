@@ -1285,13 +1285,22 @@ export function buildSidecarSubprocessEnv(opts: {
 export async function startSidecarSubprocess(opts: {
   hubPort: number;
   registerTempDir: (dir: string) => void;
+  /**
+   * An existing data dir to run on, such as a crashed sidecar's. When
+   * absent, the sidecar gets a fresh dir registered through
+   * `registerTempDir`; a supplied dir stays the caller's to remove.
+   */
+  dataDir?: string;
   extraEnv?: Record<string, string>;
 }): Promise<SidecarHandle> {
   const { hubPort, registerTempDir } = opts;
-  const dataDir = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "sidecar-data-"),
-  );
-  registerTempDir(dataDir);
+  let dataDir = opts.dataDir;
+  if (dataDir === undefined) {
+    dataDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "sidecar-data-"),
+    );
+    registerTempDir(dataDir);
+  }
 
   const stderr: string[] = [];
 
@@ -1526,15 +1535,19 @@ export type DeployFlowEnv = {
    */
   registerDeployment(handle: DeploymentHandle): void;
   /**
-   * Register a sidecar the test spawned itself, so `sidecarDiagnostics`
-   * reports its output too. A restart test spawns a replacement sidecar
-   * against the crashed process's data dir and registers it here.
+   * Start another sidecar against this env's hub. A restart test starts a
+   * replacement on the crashed process's `dataDir`; a test that needs two
+   * sidecars on one hub starts the second as `identity: "second"`.
    *
-   * Registration covers diagnostics only. `teardown()` terminates the primary
-   * sidecar it spawned and no other, so the caller still owns the registered
-   * handle's lifetime.
+   * The env owns the process: `sidecarDiagnostics` reports its output and
+   * `teardown()` terminates it before the hub stops. It runs with the env's
+   * `sidecarEnv`. Only one sidecar per identity may run at a time, so a
+   * restart terminates the old process first.
    */
-  registerSidecar(handle: SidecarHandle): void;
+  startSidecar(opts?: {
+    dataDir?: string;
+    identity?: SidecarIdentity;
+  }): Promise<SidecarHandle>;
   /**
    * Run a retry loop that `waitFor` cannot express under the in-flight wait
    * registry, so a wedge inside it reaches this env's teardown report. See
@@ -1704,7 +1717,7 @@ export async function startDeployFlowEnv(
   // A throw from here on reaches a caller that holds no env and so cannot
   // tear it down, so this layer stops whatever had started before it
   // rethrows.
-  const started: StartedOnHub = {};
+  const started: StartedOnHub = { sidecars: [] };
   try {
     return await startDeployFlowEnvOnHub({
       opts,
@@ -1715,22 +1728,56 @@ export async function startDeployFlowEnv(
       started,
     });
   } catch (cause) {
-    throw await releaseFailedSetup(cause, hub, started, tempDirs);
+    const failures = await releaseEnv(hub, started, tempDirs);
+    if (failures.length === 0) throw cause;
+    throw new AggregateError(
+      [cause, ...failures],
+      `${describeError(cause)}; cleanup also failed: ${failures.map(describeError).join("; ")}`,
+    );
   }
 }
 
-type StartedOnHub = { inference?: MockInference; sidecar?: SidecarHandle };
+/**
+ * Which of the fixture's two sidecar credentials a spawned sidecar presents.
+ * The primary is the one the env starts; a test that needs a second sidecar
+ * on the same hub starts it as `"second"`.
+ */
+export type SidecarIdentity = "primary" | "second";
 
-// Stop what a failed `startDeployFlowEnv` had started, in `teardown()`'s
-// order, and return the error to throw. Every step runs even when an earlier
-// one throws, so a sidecar that will not die does not also leave the servers
-// running. A cleanup failure joins `cause` rather than replacing it.
-async function releaseFailedSetup(
-  cause: unknown,
+type StartedSidecar = { handle: SidecarHandle; identity: SidecarIdentity };
+
+type StartedOnHub = {
+  inference?: MockInference;
+  /** Every sidecar the env spawned, in spawn order. */
+  sidecars: StartedSidecar[];
+};
+
+export function hasExited(handle: SidecarHandle): boolean {
+  return handle.proc.exitCode !== null || handle.proc.signalCode !== null;
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// Stop what the env started and return the failures. Every step runs even
+// when an earlier one throws, so a sidecar that will not die does not also
+// leave the hub listening on a port another server can take.
+//
+// The live hub-side WebSocket handles close first, so no live link lingers.
+// The sidecars stop next, newest first, each with its process subtree
+// (`terminateSidecarSubprocess`), so none outlives the hub and redials its
+// freed port. The temp dirs go only when every sidecar stop succeeded:
+// removing `sidecar-data-*` while a subprocess still holds file handles
+// raced EBUSY/EACCES on slow hosts, so a failed stop leaves the dirs behind
+// rather than racing a live process. The server stops are bounded
+// (`stopServerBounded`) because a test that dropped the hub link leaves Bun
+// with a phantom connection its `server.stop` would wait on forever.
+async function releaseEnv(
   hub: HubEnv,
   started: StartedOnHub,
   tempDirs: string[],
-): Promise<unknown> {
+): Promise<unknown[]> {
   const failures: unknown[] = [];
   const attempt = async (step: () => unknown): Promise<void> => {
     try {
@@ -1745,24 +1792,22 @@ async function releaseFailedSetup(
     });
   }
   hub.liveHandles.clear();
-  const { sidecar, inference } = started;
-  if (sidecar !== undefined) {
-    await attempt(() => terminateSidecarSubprocess(sidecar));
+  const failuresBeforeSidecars = failures.length;
+  for (const { handle } of [...started.sidecars].reverse()) {
+    await attempt(() => terminateSidecarSubprocess(handle));
   }
+  const sidecarsStopped = failures.length === failuresBeforeSidecars;
   await attempt(() => stopServerBounded(hub.server));
+  const { inference } = started;
   if (inference !== undefined) {
     await attempt(() => stopServerBounded(inference.server));
   }
-  for (const d of tempDirs.splice(0)) {
-    await attempt(() => fs.promises.rm(d, { recursive: true, force: true }));
+  if (sidecarsStopped) {
+    for (const d of tempDirs.splice(0)) {
+      await attempt(() => fs.promises.rm(d, { recursive: true, force: true }));
+    }
   }
-  if (failures.length === 0) return cause;
-  const describe = (err: unknown): string =>
-    err instanceof Error ? err.message : String(err);
-  return new AggregateError(
-    [cause, ...failures],
-    `${describe(cause)}; cleanup also failed: ${failures.map(describe).join("; ")}`,
-  );
+  return failures;
 }
 
 async function startDeployFlowEnvOnHub(args: {
@@ -1800,36 +1845,82 @@ async function startDeployFlowEnvOnHub(args: {
     );
   }
 
-  const sidecar = await startSidecarSubprocess({
-    hubPort,
-    registerTempDir,
-    ...(opts.sidecarEnv !== undefined ? { extraEnv: opts.sidecarEnv } : {}),
-  });
-  started.sidecar = sidecar;
-
-  // This layer owns the `sidecarEnv` -> `extraEnv` -> spawned-env wiring, so
-  // it is the one that can check the caller's pin against what the process
-  // got. Checked after the spawn and against `sidecar.env` rather than before
-  // and against a rebuilt map, so a break at either hop is caught instead of
-  // being reproduced by the check.
-  if (opts.sidecarEnv !== undefined) {
-    assertPinnedSidecarEnvReached(opts.sidecarEnv, sidecar.env);
-  }
-
-  // The primary sidecar plus every handle a test registered later, in spawn
-  // order. `sidecarDiagnostics` reports all of them, so a restart test's
-  // replacement process rides every wait the primary already rode.
-  const sidecars: SidecarHandle[] = [sidecar];
-  const registerSidecar = (handle: SidecarHandle): void => {
-    if (sidecars.includes(handle)) {
-      throw new Error("deploy-flow env: sidecar handle is already registered");
+  // Set when teardown starts. A sidecar spawned after it would miss the
+  // sidecar stops and redial a hub port that is about to be freed.
+  let tornDown = false;
+  // Spawns still in flight. Teardown waits for them, so a spawn that races
+  // teardown is recorded before the sidecar stops run, and teardown stops it.
+  const spawning = new Map<Promise<unknown>, SidecarIdentity>();
+  const startSidecar: DeployFlowEnv["startSidecar"] = async (
+    sidecarOpts = {},
+  ) => {
+    const identity = sidecarOpts.identity ?? "primary";
+    if (tornDown) {
+      throw new Error("deploy-flow env: cannot start a sidecar after teardown");
     }
-    sidecars.push(handle);
+    if ([...spawning.values()].includes(identity)) {
+      throw new Error(
+        `deploy-flow env: a ${identity} sidecar is still starting; await that start before starting another`,
+      );
+    }
+    if (
+      started.sidecars.some(
+        (s) => s.identity === identity && !hasExited(s.handle),
+      )
+    ) {
+      throw new Error(
+        `deploy-flow env: a ${identity} sidecar is still running; terminate it before starting another`,
+      );
+    }
+    const credentials =
+      identity === "second"
+        ? { SIDECAR_ID: SECOND_SIDECAR_ID, SIDECAR_TOKEN: SECOND_TOKEN }
+        : {};
+    // Recorded in the same step as the spawn, before anything else can
+    // throw or wait, so teardown reaches this process even if its caller
+    // never gets the handle.
+    const spawn = (async () => {
+      const spawned = await startSidecarSubprocess({
+        hubPort,
+        registerTempDir,
+        ...(sidecarOpts.dataDir !== undefined
+          ? { dataDir: sidecarOpts.dataDir }
+          : {}),
+        extraEnv: { ...opts.sidecarEnv, ...credentials },
+      });
+      started.sidecars.push({ handle: spawned, identity });
+      return spawned;
+    })();
+    spawning.set(spawn, identity);
+    let handle: SidecarHandle;
+    try {
+      handle = await spawn;
+    } finally {
+      spawning.delete(spawn);
+    }
+    if (tornDown) {
+      throw new Error(
+        "deploy-flow env: teardown started during a sidecar spawn; teardown stops this sidecar",
+      );
+    }
+    // This layer owns the `sidecarEnv` -> `extraEnv` -> spawned-env wiring,
+    // so it is the one that can check the caller's pin against what the
+    // process got. Checked after the spawn and against `handle.env` rather
+    // than before and against a rebuilt map, so a break at either hop is
+    // caught instead of being reproduced by the check.
+    if (opts.sidecarEnv !== undefined) {
+      assertPinnedSidecarEnvReached(opts.sidecarEnv, handle.env);
+    }
+    return handle;
   };
 
+  const sidecar = await startSidecar();
+
+  // `sidecarDiagnostics` reports every sidecar the env started, so a restart
+  // test's replacement process rides every wait the primary already rode.
   const sidecarDiagnostics = (): string => {
     const parts: string[] = [];
-    for (const [index, handle] of sidecars.entries()) {
+    for (const [index, { handle }] of started.sidecars.entries()) {
       if (handle.stderr.length === 0) continue;
       const label = index === 0 ? "sidecar" : `sidecar #${String(index)}`;
       parts.push(`${label} stderr:\n${handle.stderr.slice(-300).join("")}`);
@@ -1854,7 +1945,7 @@ async function startDeployFlowEnvOnHub(args: {
   await waitFor(
     () => {
       if (hub.router.getConnectedSidecars().includes(SIDECAR_ID)) return true;
-      if (sidecar.proc.exitCode !== null || sidecar.proc.signalCode !== null) {
+      if (hasExited(sidecar)) {
         throw new Error(
           `deploy-flow env: sidecar exited (code ${String(sidecar.proc.exitCode)}, signal ${String(sidecar.proc.signalCode)}) before it connected\n${sidecarDiagnostics()}`,
         );
@@ -1875,6 +1966,11 @@ async function startDeployFlowEnvOnHub(args: {
   };
 
   const teardown = async (): Promise<void> => {
+    // No sidecar starts from here on, and a start already in flight is
+    // recorded before the sidecar stops below run.
+    tornDown = true;
+    await Promise.allSettled([...spawning.keys()]);
+
     // A wait helper renders its `diagnostics` only when its own `timeoutMs`
     // lapses, and almost every caller supplies none, so a test that hangs
     // inside a deadline-free poll loop is ended by the runner's per-test budget
@@ -1900,26 +1996,14 @@ async function startDeployFlowEnvOnHub(args: {
         `\n${outstanding}\n${diagnostics.length > 0 ? `${diagnostics}\n` : ""}`,
       );
     }
-    // Close every tracked hub-side WebSocket handle before killing the
-    // sidecar so no live link lingers. Then terminate the sidecar and reap
-    // its process subtree (`terminateSidecarSubprocess`) before removing its
-    // data directory: waiting for every process to exit before the rm keeps
-    // the earlier fix intact -- removing `sidecar-data-*` while a subprocess
-    // still holds file handles raced EBUSY/EACCES on slow hosts, so errors
-    // must surface from the rm rather than be shrouded. The server stops are
-    // bounded (`stopServerBounded`) because a test that dropped the hub link
-    // leaves Bun with a phantom connection its `server.stop` would wait on
-    // forever.
     deployments.clear();
-    for (const handle of hub.liveHandles) {
-      handle.close();
-    }
-    hub.liveHandles.clear();
-    await terminateSidecarSubprocess(sidecar);
-    await stopServerBounded(hub.server);
-    await stopServerBounded(inference.server);
-    for (const d of tempDirs.splice(0)) {
-      await fs.promises.rm(d, { recursive: true, force: true });
+    const failures = await releaseEnv(hub, started, tempDirs);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        `deploy-flow env: teardown failed: ${failures.map(describeError).join("; ")}`,
+      );
     }
   };
 
@@ -1930,7 +2014,7 @@ async function startDeployFlowEnvOnHub(args: {
     sidecarDiagnostics,
     deployments,
     registerDeployment,
-    registerSidecar,
+    startSidecar,
     retrying,
     teardown,
   };

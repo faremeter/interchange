@@ -5,7 +5,6 @@
 import {
   readWorkflowRunEvents,
   settleWorkflowRunPacks,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
@@ -98,27 +97,18 @@ export async function crashSidecar(
 }
 
 /**
- * Start a fresh sidecar on `dataDir`, register it on the env, and wait until
- * the hub routes `address` again. The caller owns the returned handle.
+ * Start a fresh sidecar on `dataDir` through the env and wait until the hub
+ * routes `address` again. The env, not the caller, owns the returned handle's
+ * lifetime.
  */
 export async function restartSidecar(
   env: DeployFlowEnv,
   opts: {
     address: string;
     dataDir: string;
-    registerTempDir: (dir: string) => void;
   },
 ): Promise<SidecarHandle> {
-  const hubPort = env.hub.server.port;
-  if (hubPort === undefined) {
-    throw new Error("hub.server.port is undefined after the crash");
-  }
-  const restarted = await startSidecarSubprocess({
-    hubPort,
-    registerTempDir: opts.registerTempDir,
-    extraEnv: { SIDECAR_DATA_DIR: opts.dataDir },
-  });
-  env.registerSidecar(restarted);
+  const restarted = await env.startSidecar({ dataDir: opts.dataDir });
   await waitForReconnect(env, opts.address);
   return restarted;
 }

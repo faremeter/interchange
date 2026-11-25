@@ -43,8 +43,6 @@
 // self-discovery + reawait-input path. This is the first deploy-level test of
 // a deployed onTrigger section.
 
-import fs from "node:fs";
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { sectionBodyRunId } from "@intx/workflow";
@@ -78,12 +76,10 @@ import {
   readWorkflowRunEvents,
   settleWorkflowRunPacks,
   startDeployFlowEnv,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
   type DeployFlowEnv,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import { onTriggerBodyEntry } from "./fixtures/on-trigger-body";
 
@@ -105,8 +101,6 @@ const DEFINITION_ASSET_ID = "ast_on_trigger_between_events_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
-let restartedSidecar: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
   if (!harnessDbEnvAvailable()) return;
@@ -137,14 +131,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (restartedSidecar !== undefined) {
-    await terminateSidecarSubprocess(restartedSidecar);
-  }
   if (env !== undefined) await env.teardown();
   if (h !== undefined) await h.close();
-  for (const dir of restartTempDirs.splice(0)) {
-    await fs.promises.rm(dir, { recursive: true, force: true });
-  }
 });
 
 /**
@@ -300,18 +288,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       // ---- RESTART: a fresh sidecar against the SAME data dir ----
-      const hubPort = env.hub.server.port;
-      if (hubPort === undefined) {
-        throw new Error("hub.server.port is undefined after crash");
-      }
-      restartedSidecar = await startSidecarSubprocess({
-        hubPort,
-        registerTempDir: (dir) => {
-          restartTempDirs.push(dir);
-        },
-        extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
-      });
-      env.registerSidecar(restartedSidecar);
+      await env.startSidecar({ dataDir: crashedDataDir });
       await waitForReconnect(env, deploymentMailAddress);
       expect(env.hub.router.getRoutableAddresses()).toContain(
         deploymentMailAddress,
