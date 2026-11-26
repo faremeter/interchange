@@ -53,7 +53,6 @@ import { deriveRunPrincipalId } from "@intx/hub-common";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   startDeployFlowEnv,
   waitFor,
@@ -237,7 +236,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         model: "mock-model",
       };
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",

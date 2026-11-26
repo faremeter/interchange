@@ -33,8 +33,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -96,7 +94,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "a workflow with no agent step deploys and runs",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("deploys under approve-probed and runs its actions", async () => {
@@ -106,7 +106,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // the definition declares it, so nothing approves it -- which is the
       // condition under test.
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [
           {

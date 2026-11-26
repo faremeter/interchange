@@ -51,7 +51,6 @@ import {
 
 import { bundleWorkflowEntry } from "../hub-agent/lib/bundle-workflow-entry";
 import {
-  SESSION_ID,
   WORKFLOW_RUN_TERMINAL_TYPES,
   fireMailTrigger,
   injectSignal,
@@ -61,12 +60,10 @@ import {
   seedInferenceCredentials,
   settleWorkflowRunPacks,
   startDeployFlowEnv,
-  terminateSidecarSubprocess,
   waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import { buildSyntheticNpmPackageTarball } from "../hub-agent/lib/synthetic-npm-package-tarball";
 import {
@@ -154,8 +151,6 @@ let env: DeployFlowEnv;
 let h: TestDb;
 let scratchDir: string;
 let blobs: Map<string, Uint8Array>;
-let restarted: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 
 function requireRoutable(): Promise<void> {
   return waitFor(
@@ -273,12 +268,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     afterAll(async () => {
-      if (restarted !== undefined) {
-        await terminateSidecarSubprocess(restarted);
-      }
-      for (const dir of restartTempDirs.splice(0)) {
-        await fs.rm(dir, { recursive: true, force: true });
-      }
       if (env !== undefined) await env.teardown();
       if (h !== undefined) await h.close();
       if (scratchDir !== undefined) {
@@ -359,7 +348,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         model: "mock-model",
       };
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: mailAddress,
         sources: [inferenceSource],
         defaultSource: inferenceSource.id,
@@ -378,10 +367,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         source,
         resolveAttachment,
         sidecarAllocationRouter: env.hub.router,
-        allocationTarget: {
-          allocationId: "allocation-integration-1",
-          generation: 1,
-        },
+        allocationTarget: env.identity.primaryAllocationTarget,
         agentAddress: mailAddress,
         config,
         sources,
@@ -446,10 +432,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await fs.rm(path.join(dataDir, "workflow-definition-closure-cache"), {
         recursive: true,
       });
-      restarted = await restartSidecar(env, {
+      await restartSidecar(env, {
         address: mailAddress,
         dataDir,
-        registerTempDir: (dir) => restartTempDirs.push(dir),
       });
       await signalUntil(runId, "afterRestart", () => hasTerminated(runId));
 

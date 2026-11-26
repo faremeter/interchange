@@ -15,8 +15,6 @@
 // workflow-process child. The crash is a kill of the sidecar subprocess, and
 // the restart rides the production boot-time restore path.
 
-import fs from "node:fs";
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { harnessDbEnvAvailable } from "@intx/test-harness/db-harness";
@@ -25,11 +23,9 @@ import {
   injectSignal,
   readWorkflowRunEvents,
   settleWorkflowRunPacks,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import {
   stepEvents,
@@ -56,8 +52,6 @@ const SIGNAL_OF: Record<MarkHandler, string> = {
 };
 
 let t: BodyActionRestartEnv | undefined;
-let restartedSidecar: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
   // A file-scope beforeAll fires even when describe.skipIf skips the
@@ -68,13 +62,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (restartedSidecar !== undefined) {
-    await terminateSidecarSubprocess(restartedSidecar);
-  }
   if (t !== undefined) await t.teardown();
-  for (const dir of restartTempDirs.splice(0)) {
-    await fs.promises.rm(dir, { recursive: true, force: true });
-  }
 });
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -121,18 +109,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      const hubPort = env.hub.server.port;
-      if (hubPort === undefined) {
-        throw new Error("hub.server.port is undefined after crash");
-      }
-      restartedSidecar = await startSidecarSubprocess({
-        hubPort,
-        registerTempDir: (dir) => {
-          restartTempDirs.push(dir);
-        },
-        extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
-      });
-      env.registerSidecar(restartedSidecar);
+      await env.startSidecar({ dataDir: crashedDataDir });
       await waitForReconnect(env, mailAddress);
 
       // A signal posted at the top-level run reaches each body through its

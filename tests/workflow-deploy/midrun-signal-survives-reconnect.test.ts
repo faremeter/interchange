@@ -47,8 +47,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
@@ -121,7 +119,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "mid-run signal survives hub-link drop -> reconnect",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("interrupted-at-signal run resumes on reconnect and applies effects exactly once", async () => {
@@ -139,7 +139,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
 
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",

@@ -62,8 +62,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   killWorkflowHostChild,
   listWorkflowHostChildren,
@@ -188,7 +186,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "crash-loop guard latches a repeatedly-crashing deployment",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("three unexpected child exits within the window latch to crash-looping and commit RunFailed", async () => {
@@ -206,7 +206,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
 
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",

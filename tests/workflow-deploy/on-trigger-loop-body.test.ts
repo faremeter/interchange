@@ -41,8 +41,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   listRunIds,
@@ -133,7 +131,7 @@ async function deployAndAssertBodyCompletes(opts: {
   });
 
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: deploymentMailAddress,
     sources: [
       {
@@ -233,7 +231,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "an onTrigger body containing a loop with an agent body runs to completion",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("a loop with an agent body pins its source and the body child completes", async () => {

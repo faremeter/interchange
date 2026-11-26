@@ -114,7 +114,6 @@ import {
 } from "@intx/workflow-deploy";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   dropHubLink,
   fireMailTrigger,
@@ -462,7 +461,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
 
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",

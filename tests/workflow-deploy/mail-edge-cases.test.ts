@@ -87,8 +87,6 @@ import {
 import type { RepoId, WorkflowRunEvent } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   dropHubLink,
   fireMailTrigger,
@@ -176,7 +174,9 @@ afterEach(async () => {
 
 describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
   test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+    expect(env.hub.router.getConnectedSidecars()).toContain(
+      env.identity.primary.sidecarId,
+    );
   });
 
   test("mail with no Message-Id header derives a sha256-of-bytes messageId; identical bytes collide", async () => {
@@ -680,7 +680,7 @@ async function deployEdgeWorkflow(
   };
 
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: deploymentMailAddress,
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",

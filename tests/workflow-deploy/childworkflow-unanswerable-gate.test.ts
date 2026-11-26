@@ -59,7 +59,6 @@ import {
 } from "@intx/workflow-deploy";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
@@ -239,7 +238,7 @@ async function deployGateWorkflow(opts: {
     model: "mock-model",
   };
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: deploymentMailAddress,
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",

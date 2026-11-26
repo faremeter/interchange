@@ -36,7 +36,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -132,7 +131,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         model: "mock-model",
       };
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: parentMailAddress,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",

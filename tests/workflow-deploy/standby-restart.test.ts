@@ -33,8 +33,6 @@ import {
 import { type SidecarEventMap } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
@@ -42,7 +40,6 @@ import {
   listWorkflowHostChildren,
   readWorkflowRunEvents,
   startDeployFlowEnv,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
@@ -61,8 +58,6 @@ const DEFINITION_ASSET_ID = "ast_standby_restart_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
-let restartedSidecar: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
   if (!harnessDbEnvAvailable()) return;
@@ -95,14 +90,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (restartedSidecar !== undefined) {
-    await terminateSidecarSubprocess(restartedSidecar);
-  }
   if (env !== undefined) await env.teardown();
   if (h !== undefined) await h.close();
-  for (const dir of restartTempDirs.splice(0)) {
-    await fs.promises.rm(dir, { recursive: true, force: true });
-  }
 });
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -121,7 +110,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         model: "mock-model",
       };
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: address,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
@@ -186,7 +175,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const target = env.hub.prepareAllocationIdentity(
         DEPLOYMENT_ID,
         address,
-        SIDECAR_ID,
+        env.identity.primary.sidecarId,
       );
       await putInStandby(env, target);
       expect(listWorkflowHostChildren(env)).toEqual([]);
@@ -222,18 +211,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           () => !env.hub.router.getRoutableAddresses().includes(address),
           { diagnostics: env.sidecarDiagnostics },
         );
-        const hubPort = env.hub.server.port;
-        if (hubPort === undefined)
-          throw new Error("hub.server.port is undefined after the kill");
-        const started = await startSidecarSubprocess({
-          hubPort,
-          registerTempDir: (dir) => {
-            restartTempDirs.push(dir);
-          },
-          extraEnv: { SIDECAR_DATA_DIR: dataDir },
-        });
-        restartedSidecar = started;
-        env.registerSidecar(started);
+        const started = await env.startSidecar({ dataDir });
         await waitForReconnect(env, address);
         return started;
       };

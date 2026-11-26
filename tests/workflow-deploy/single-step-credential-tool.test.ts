@@ -64,7 +64,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -281,7 +280,7 @@ async function deployProbeSource(opts: {
   };
 
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: mailAddress,
     sources: [source],
     defaultSource: "anthropic:mock-model",

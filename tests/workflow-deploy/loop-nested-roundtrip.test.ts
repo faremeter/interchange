@@ -31,8 +31,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -114,14 +112,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "a deployed nested loop workflow runs to completion",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("both loops converge after three iterations and the run completes", async () => {
       expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [
           {

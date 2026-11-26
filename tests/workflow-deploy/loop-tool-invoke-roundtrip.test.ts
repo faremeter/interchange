@@ -48,8 +48,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -141,7 +139,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "a loop body's agent step invokes a real tool",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     // The per-step credentials and source tables are keyed by
@@ -167,7 +167,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
 
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",

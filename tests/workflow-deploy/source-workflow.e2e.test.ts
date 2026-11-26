@@ -60,17 +60,14 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   fireMailTrigger,
   seedInferenceCredentials,
   startDeployFlowEnv,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import { bundleWorkflowEntry } from "../hub-agent/lib/bundle-workflow-entry";
 
@@ -125,8 +122,6 @@ export const workflow = defineWorkflow({
 let env: DeployFlowEnv;
 let h: TestDb;
 let scratchDir: string;
-let restartedSidecar: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 // The pinned commit the definition's source is frozen at, resolved once the
 // source repo is seeded.
 let sourceCommitSha: string;
@@ -215,12 +210,6 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
   });
 
   afterAll(async () => {
-    if (restartedSidecar !== undefined) {
-      await terminateSidecarSubprocess(restartedSidecar);
-    }
-    for (const dir of restartTempDirs.splice(0)) {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
     if (env !== undefined) await env.teardown();
     if (h !== undefined) await h.close();
     if (scratchDir !== undefined) {
@@ -330,7 +319,7 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
       model: "mock-model",
     };
     const config: HarnessConfig = {
-      sessionId: SESSION_ID,
+      sessionId: env.identity.sessionId,
       agentAddress: deploymentMailAddress,
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
@@ -348,10 +337,7 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
       source,
       resolveAttachment,
       sidecarAllocationRouter: env.hub.router,
-      allocationTarget: {
-        allocationId: "allocation-integration-1",
-        generation: 1,
-      },
+      allocationTarget: env.identity.primaryAllocationTarget,
       agentAddress: deploymentMailAddress,
       config,
       sources: { [STEP_ID]: [inferenceSource] },
@@ -433,20 +419,9 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
     // terminal from step 3, so a fresh trigger is rejected. Routability after a
     // from-disk restore is the strongest assertion the model supports.
     const restoredDataDir = env.sidecar.dataDir;
-    const hubPort = env.hub.server.port;
-    if (hubPort === undefined) {
-      throw new Error("source e2e: hub.server.port is undefined after kill");
-    }
     await terminateSidecarSubprocess(env.sidecar);
 
-    restartedSidecar = await startSidecarSubprocess({
-      hubPort,
-      registerTempDir: (dir) => {
-        restartTempDirs.push(dir);
-      },
-      extraEnv: { SIDECAR_DATA_DIR: restoredDataDir },
-    });
-    env.registerSidecar(restartedSidecar);
+    await env.startSidecar({ dataDir: restoredDataDir });
 
     await waitFor(
       () =>

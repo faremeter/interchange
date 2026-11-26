@@ -10,11 +10,7 @@ import {
 } from "@intx/hub-sessions";
 import type { TestDb } from "@intx/test-harness/db-harness";
 
-import {
-  SIDECAR_ID,
-  waitFor,
-  type DeployFlowEnv,
-} from "../hub-agent/lib/deploy-flow-env";
+import { waitFor, type DeployFlowEnv } from "../hub-agent/lib/deploy-flow-env";
 
 // Longer than any test's budget, so the worker's acknowledgement, not the
 // clock, settles a control request.
@@ -46,7 +42,7 @@ export async function putInStandby(
 
 async function seedAllocation(
   db: TestDb["db"],
-  ids: { tenantId: string; deploymentId: string },
+  ids: { tenantId: string; deploymentId: string; sidecarId: string },
   target: AllocationTarget,
 ): Promise<void> {
   const provisioner = {
@@ -56,7 +52,7 @@ async function seedAllocation(
     adapterManifestDigest: MANIFEST_DIGEST,
   };
   await db.insert(sidecarTable).values({
-    id: SIDECAR_ID,
+    id: ids.sidecarId,
     tokenHashSha256: new Uint8Array(32),
     ...provisioner,
   });
@@ -66,7 +62,7 @@ async function seedAllocation(
     anchorRunId: ids.deploymentId,
     ...provisioner,
     maxDisconnectedMs: 900_000,
-    sidecarId: SIDECAR_ID,
+    sidecarId: ids.sidecarId,
     status: "allocated",
     generation: target.generation,
     ensureAcceptedGeneration: target.generation,
@@ -85,7 +81,11 @@ export async function startStandbySweep(
   },
 ) {
   const { tenantId, deploymentId, target } = opts;
-  await seedAllocation(db, { tenantId, deploymentId }, target);
+  await seedAllocation(
+    db,
+    { tenantId, deploymentId, sidecarId: env.identity.primary.sidecarId },
+    target,
+  );
   let commandSettled = Promise.withResolvers<undefined>();
   // The sweep pauses between passes on this clock, which the sweep moves.
   let nowMs = Date.now();

@@ -33,8 +33,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
@@ -42,13 +40,11 @@ import {
   listWorkflowHostChildren,
   readWorkflowRunEvents,
   startDeployFlowEnv,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import { startStandbySweep } from "./standby-helpers";
 import { signalGateEntry } from "./fixtures/signal-gate";
@@ -61,8 +57,6 @@ const DEFINITION_ASSET_ID = "ast_standby_restart_hub_record_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
-let restartedSidecar: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
   if (!harnessDbEnvAvailable()) return;
@@ -91,14 +85,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (restartedSidecar !== undefined) {
-    await terminateSidecarSubprocess(restartedSidecar);
-  }
   if (env !== undefined) await env.teardown();
   if (h !== undefined) await h.close();
-  for (const dir of restartTempDirs.splice(0)) {
-    await fs.promises.rm(dir, { recursive: true, force: true });
-  }
 });
 
 // The allocation the fixture's router binds this deployment to, as the Hub
@@ -120,7 +108,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         model: "mock-model",
       };
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: address,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
@@ -185,7 +173,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const target = env.hub.prepareAllocationIdentity(
         DEPLOYMENT_ID,
         address,
-        SIDECAR_ID,
+        env.identity.primary.sidecarId,
       );
       const { lifecycle, standby, settled } = await startStandbySweep(
         env,
@@ -247,17 +235,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           () => !env.hub.router.getRoutableAddresses().includes(address),
           { diagnostics: env.sidecarDiagnostics },
         );
-        const hubPort = env.hub.server.port;
-        if (hubPort === undefined)
-          throw new Error("hub.server.port is undefined after the kill");
-        restartedSidecar = await startSidecarSubprocess({
-          hubPort,
-          registerTempDir: (dir) => {
-            restartTempDirs.push(dir);
-          },
-          extraEnv: { SIDECAR_DATA_DIR: dataDir },
-        });
-        env.registerSidecar(restartedSidecar);
+        const restartedSidecar = await env.startSidecar({ dataDir });
         await waitForReconnect(env, address);
 
         // The Hub emits the hello's reports as it restores the routes, so

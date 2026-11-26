@@ -25,11 +25,10 @@
 // behind, and then stops that wait so it does not poll on into the env
 // teardown is dismantling (see the in-flight wait registry below).
 //
-// Shared constants
-// ----------------
-// AGENT_ADDRESS, AGENT_ID, SESSION_ID, SIDECAR_ID, TOKEN are exported so
-// tests that exercise the same agent across multiple lifecycle steps can
-// reuse them without re-declaring.
+// Identity
+// --------
+// Each env carries its own `FixtureIdentity` (`env.identity`): the sidecar
+// credentials, session id and allocation ids its hub and sidecars use.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -115,11 +114,72 @@ import { seedWorkflowRunLaunchSpec } from "@intx/test-harness/seed";
 
 import { bundleWorkflowEntry } from "./bundle-workflow-entry";
 
-export const AGENT_ADDRESS = "run_test-agent@integration.interchange";
-export const AGENT_ID = "run_test-agent";
-export const SESSION_ID = "ses_integration-1";
-export const SIDECAR_ID = "sc-integration-1";
-export const TOKEN = "test-token";
+/** What a sidecar presents to the hub, plus the key it seals data with. */
+export type SidecarCredentials = {
+  sidecarId: string;
+  token: string;
+  credentialKey: string;
+};
+
+/**
+ * The ids and credentials one deploy-flow env uses. The env's hub accepts
+ * only these two sidecar credentials. A restart of a role presents that
+ * role's credentials again, `credentialKey` included, so the replacement can
+ * open what the crashed process sealed in its data dir.
+ */
+export type FixtureIdentity = {
+  readonly primary: Readonly<SidecarCredentials>;
+  readonly second: Readonly<SidecarCredentials>;
+  readonly sessionId: string;
+  readonly tenantId: string;
+  /**
+   * The allocation the primary sidecar is bound to, at the generation the
+   * env fences.
+   */
+  readonly primaryAllocationTarget: AllocationTargetIds;
+  readonly secondAllocationTarget: AllocationTargetIds;
+};
+
+type AllocationTargetIds = {
+  readonly allocationId: string;
+  readonly generation: number;
+};
+
+function randomHex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/**
+ * A fresh identity of random values, which another call repeats only by
+ * chance (64 random bits on every id, 128 on every token). A sidecar holding
+ * one env's credentials is therefore refused by another env's hub, in this
+ * worker, another worker, or another checkout running the suites.
+ */
+export function createFixtureIdentity(): FixtureIdentity {
+  const suffix = randomHex(8);
+  // The sidecar parses its credential key as 32 bytes of hex.
+  const credentials = (ordinal: number): SidecarCredentials => ({
+    sidecarId: `sc-integration-${String(ordinal)}-${suffix}`,
+    token: randomHex(16),
+    credentialKey: randomHex(32),
+  });
+  return {
+    primary: credentials(1),
+    second: credentials(2),
+    sessionId: `ses_integration-${suffix}`,
+    tenantId: `tenant-integration-${suffix}`,
+    primaryAllocationTarget: {
+      allocationId: `allocation-integration-1-${suffix}`,
+      generation: 1,
+    },
+    secondAllocationTarget: {
+      allocationId: `allocation-integration-2-${suffix}`,
+      generation: 1,
+    },
+  };
+}
 
 // The production hub-link reconnect backoff (see `DEFAULT_RECONNECT_DELAY_MS`
 // in `@intx/hub-agent`'s hub-link). The fixture's default sidecar env replaces
@@ -136,6 +196,8 @@ export const PRODUCTION_RECONNECT_DELAY_MS = "3000";
 // `sidecarEnv` (see `PRODUCTION_RECONNECT_DELAY_MS`).
 const TEST_RECONNECT_DELAY_MS = "250";
 
+const SIDECAR_ENTRY = path.resolve(import.meta.dir, "sidecar-entry.ts");
+
 // Grace period for each stage of the teardown's sidecar reap (SIGTERM, then
 // SIGKILL). Bounds the wait so a sidecar that is slow to reap under contention
 // cannot wedge the afterAll hook.
@@ -146,16 +208,6 @@ const SIDECAR_REAP_GRACE_MS = 10_000;
 // kernel state; failing loudly surfaces it instead of leaking a ~300MB
 // process (the full @intx module graph) into the next test file.
 const CHILD_REAP_GRACE_MS = 2_000;
-// A second sidecar identity, for tests that need two sidecars on one hub
-// (e.g. proving a cross-sidecar/federated mail deliver reaches the
-// receiver). The default fixture only spawns the first; a caller spawns the
-// second via `startSidecarSubprocess` with these in `extraEnv`.
-export const SECOND_SIDECAR_ID = "sc-integration-2";
-export const SECOND_TOKEN = "test-token-2";
-export const PRIMARY_ALLOCATION_TARGET = {
-  allocationId: "allocation-integration-1",
-  generation: 1,
-} as const;
 
 // ---- In-flight harness waits ----
 //
@@ -858,6 +910,7 @@ export type HubEnv = {
 // below explains why.
 export async function startHub(
   registerTempDir: (dir: string) => void,
+  identity: FixtureIdentity,
   opts: {
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
     settleApprovalWaits?: StartDeployFlowEnvOpts["settleApprovalWaits"];
@@ -918,36 +971,42 @@ export async function startHub(
 
   const primaryIdentity: SidecarCredentialIdentity = {
     kind: "allocated",
-    sidecarId: SIDECAR_ID,
-    allocationId: "allocation-integration-1",
-    tenantId: "tenant-integration",
+    sidecarId: identity.primary.sidecarId,
+    allocationId: identity.primaryAllocationTarget.allocationId,
+    tenantId: identity.tenantId,
     anchorRunId: "run-integration-1",
     workflowRunAddress: "workflow-integration-1@example.test",
-    generation: 1,
+    generation: identity.primaryAllocationTarget.generation,
   };
   const secondaryIdentity: SidecarCredentialIdentity = {
     kind: "allocated",
-    sidecarId: SECOND_SIDECAR_ID,
-    allocationId: "allocation-integration-2",
-    tenantId: "tenant-integration",
+    sidecarId: identity.second.sidecarId,
+    allocationId: identity.secondAllocationTarget.allocationId,
+    tenantId: identity.tenantId,
     anchorRunId: "run-integration-2",
     workflowRunAddress: "workflow-integration-2@example.test",
-    generation: 1,
+    generation: identity.secondAllocationTarget.generation,
   };
+  const primarySidecarId = identity.primary.sidecarId;
+  const secondSidecarId = identity.second.sidecarId;
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
     requestTimeoutMs: 10_000,
-    // The spawned sidecar presents TOKEN on its handshake; verify it and
-    // resolve to the fixed integration sidecar id, exercising the real
-    // token-authenticated handshake rather than accepting any token.
+    // A spawned sidecar presents one of this env's tokens on its handshake;
+    // verify it and resolve to that role's sidecar id, exercising the
+    // real token-authenticated handshake rather than accepting any token.
     authenticateSidecar: async ({ token }) => {
-      if (token === TOKEN) return { sidecarId: SIDECAR_ID };
-      if (token === SECOND_TOKEN) return { sidecarId: SECOND_SIDECAR_ID };
+      if (token === identity.primary.token) {
+        return { sidecarId: primarySidecarId };
+      }
+      if (token === identity.second.token) {
+        return { sidecarId: secondSidecarId };
+      }
       return null;
     },
     resolveSidecarBindings: async (sidecarId) => {
-      if (sidecarId === SIDECAR_ID) return [primaryIdentity];
-      if (sidecarId === SECOND_SIDECAR_ID) return [secondaryIdentity];
+      if (sidecarId === primarySidecarId) return [primaryIdentity];
+      if (sidecarId === secondSidecarId) return [secondaryIdentity];
       return [];
     },
     validateSidecarIdentity: async () => true,
@@ -1091,8 +1150,14 @@ export async function startHub(
         : {}),
     },
   });
-  router.fenceAllocation(primaryIdentity.allocationId, 1);
-  router.fenceAllocation(secondaryIdentity.allocationId, 1);
+  router.fenceAllocation(
+    primaryIdentity.allocationId,
+    identity.primaryAllocationTarget.generation,
+  );
+  router.fenceAllocation(
+    secondaryIdentity.allocationId,
+    identity.secondAllocationTarget.generation,
+  );
   // The hub stamps the hub-approved wire hash onto every source-ref workflow
   // deploy frame before it reaches the sidecar (production does this in
   // `sendMultiStepDeployFrame`), so a frame reaching the sidecar always carries
@@ -1166,7 +1231,7 @@ export async function startHub(
     router,
     probeRouter: {
       sendProbe: (args) =>
-        router.sendProbeToAllocation(PRIMARY_ALLOCATION_TARGET, args),
+        router.sendProbeToAllocation(identity.primaryAllocationTarget, args),
     },
     setPrimaryAllocationIdentity(anchorRunId, address) {
       // The fixture's manually spawned process models one provisioner-owned
@@ -1187,16 +1252,16 @@ export async function startHub(
       // transport, which makes a send between them local.
       const selected =
         sidecarId === undefined
-          ? router.getConnectedSidecars().includes(SIDECAR_ID)
+          ? router.getConnectedSidecars().includes(primarySidecarId)
             ? primaryIdentity
             : secondaryIdentity
-          : sidecarId === SIDECAR_ID
+          : sidecarId === primarySidecarId
             ? primaryIdentity
-            : sidecarId === SECOND_SIDECAR_ID
+            : sidecarId === secondSidecarId
               ? secondaryIdentity
               : (() => {
                   throw new Error(
-                    `deploy-flow env: no allocation identity for sidecar ${sidecarId}; expected ${SIDECAR_ID} or ${SECOND_SIDECAR_ID}`,
+                    `deploy-flow env: no allocation identity for sidecar ${sidecarId}; expected ${primarySidecarId} or ${secondSidecarId}`,
                   );
                 })();
       Object.assign(selected, {
@@ -1223,7 +1288,7 @@ export async function startHub(
 }
 
 export type SidecarHandle = {
-  proc: Subprocess;
+  proc: Subprocess<"pipe", "pipe", "pipe">;
   dataDir: string;
   /** Rolling stderr buffer; capped at 500 chunks. */
   stderr: readonly string[];
@@ -1250,6 +1315,7 @@ export type SidecarHandle = {
 export function buildSidecarSubprocessEnv(opts: {
   hubPort: number;
   dataDir: string;
+  credentials: SidecarCredentials;
   extraEnv?: Record<string, string>;
 }): Record<string, string | undefined> {
   return {
@@ -1257,14 +1323,13 @@ export function buildSidecarSubprocessEnv(opts: {
     HOME: process.env["HOME"],
     TMPDIR: process.env["TMPDIR"],
     HUB_WS_URL: `ws://localhost:${String(opts.hubPort)}/ws`,
-    SIDECAR_ID,
-    SIDECAR_TOKEN: TOKEN,
+    SIDECAR_ID: opts.credentials.sidecarId,
+    SIDECAR_TOKEN: opts.credentials.token,
     SIDECAR_DATA_DIR: opts.dataDir,
-    // A fixed test key so the spawned sidecar boots with a REAL cipher and
-    // every deployed e2e exercises the at-rest credential sealing, rather than
-    // a noop that would let a plaintext-sealing regression pass green.
-    SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
-      "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    // A real key so the spawned sidecar boots with a REAL cipher and every
+    // deployed e2e exercises the at-rest credential sealing, rather than a
+    // noop that would let a plaintext-sealing regression pass green.
+    SIDECAR_CREDENTIAL_ENCRYPTION_KEY: opts.credentials.credentialKey,
     // Fast reconnect backoff for tests that do not assert the delay itself
     // (recovery semantics are independent of the backoff duration); a test
     // that pins the production 3s delay passes
@@ -1282,30 +1347,44 @@ export function buildSidecarSubprocessEnv(opts: {
 // gate that opts the sidecar into emitting a shadow audit-event log).
 export async function startSidecarSubprocess(opts: {
   hubPort: number;
+  credentials: SidecarCredentials;
   registerTempDir: (dir: string) => void;
+  /**
+   * An existing data dir to run on, such as a crashed sidecar's. When
+   * absent, the sidecar gets a fresh dir registered through
+   * `registerTempDir`; a supplied dir stays the caller's to remove.
+   */
+  dataDir?: string;
   extraEnv?: Record<string, string>;
 }): Promise<SidecarHandle> {
   const { hubPort, registerTempDir } = opts;
-  const dataDir = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "sidecar-data-"),
-  );
-  registerTempDir(dataDir);
+  let dataDir = opts.dataDir;
+  if (dataDir === undefined) {
+    dataDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "sidecar-data-"),
+    );
+    registerTempDir(dataDir);
+  }
 
   const stderr: string[] = [];
 
   const env = buildSidecarSubprocessEnv({
     hubPort,
     dataDir,
+    credentials: opts.credentials,
     ...(opts.extraEnv !== undefined ? { extraEnv: opts.extraEnv } : {}),
   });
 
   // --conditions=intx-src resolves @intx/* to source; the spawned sidecar
-  // runs from the workspace, where the dev loop builds no dist.
+  // runs from the workspace, where the dev loop builds no dist. The entry
+  // ends the sidecar when this process dies, which it detects through the
+  // stdin pipe; see `sidecar-entry.ts`.
   const proc = Bun.spawn(
-    ["bun", "run", "--conditions=intx-src", "apps/sidecar/src/index.ts"],
+    ["bun", "run", "--conditions=intx-src", SIDECAR_ENTRY],
     {
       cwd: path.resolve(import.meta.dir, "../../.."),
       env,
+      stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -1371,7 +1450,7 @@ export function assertPinnedSidecarEnvReached(
   }
 }
 
-function pidAlive(pid: number): boolean {
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -1501,6 +1580,7 @@ export type DeploymentHandle = {
 };
 
 export type DeployFlowEnv = {
+  identity: FixtureIdentity;
   hub: HubEnv;
   inference: MockInference;
   sidecar: SidecarHandle;
@@ -1521,15 +1601,19 @@ export type DeployFlowEnv = {
    */
   registerDeployment(handle: DeploymentHandle): void;
   /**
-   * Register a sidecar the test spawned itself, so `sidecarDiagnostics`
-   * reports its output too. A restart test spawns a replacement sidecar
-   * against the crashed process's data dir and registers it here.
+   * Start another sidecar against this env's hub. A restart test starts a
+   * replacement on the crashed process's `dataDir`; a test that needs two
+   * sidecars on one hub starts the second as `role: "second"`.
    *
-   * Registration covers diagnostics only. `teardown()` terminates the primary
-   * sidecar it spawned and no other, so the caller still owns the registered
-   * handle's lifetime.
+   * The env owns the process: `sidecarDiagnostics` reports its output and
+   * `teardown()` terminates it before the hub stops. It runs with the env's
+   * `sidecarEnv`. Only one sidecar per role may run at a time, so a
+   * restart terminates the old process first.
    */
-  registerSidecar(handle: SidecarHandle): void;
+  startSidecar(opts?: {
+    dataDir?: string;
+    role?: SidecarRole;
+  }): Promise<SidecarHandle>;
   /**
    * Run a retry loop that `waitFor` cannot express under the in-flight wait
    * registry, so a wedge inside it reaches this env's teardown report. See
@@ -1669,7 +1753,8 @@ export async function startDeployFlowEnv(
     tempDirs.push(dir);
   };
 
-  const hub = await startHub(registerTempDir, {
+  const identity = createFixtureIdentity();
+  const hub = await startHub(registerTempDir, identity, {
     ...(opts.registerSignalCorrelation !== undefined
       ? { registerSignalCorrelation: opts.registerSignalCorrelation }
       : {}),
@@ -1695,6 +1780,115 @@ export async function startDeployFlowEnv(
       ? { senderKeyResolution: opts.senderKeyResolution }
       : {}),
   });
+
+  // A throw from here on reaches a caller that holds no env and so cannot
+  // tear it down, so this layer stops whatever had started before it
+  // rethrows.
+  const started: StartedOnHub = { sidecars: [] };
+  try {
+    return await startDeployFlowEnvOnHub({
+      opts,
+      identity,
+      waitMark,
+      tempDirs,
+      registerTempDir,
+      hub,
+      started,
+    });
+  } catch (cause) {
+    const failures = await releaseEnv(hub, started, tempDirs);
+    if (failures.length === 0) throw cause;
+    throw new AggregateError(
+      [cause, ...failures],
+      `${describeError(cause)}; cleanup also failed: ${failures.map(describeError).join("; ")}`,
+    );
+  }
+}
+
+/**
+ * Which of the env's two sidecar credentials a spawned sidecar presents.
+ * The primary is the one the env starts; a test that needs a second sidecar
+ * on the same hub starts it as `"second"`.
+ */
+export type SidecarRole = "primary" | "second";
+
+type StartedSidecar = { handle: SidecarHandle; role: SidecarRole };
+
+type StartedOnHub = {
+  inference?: MockInference;
+  /** Every sidecar the env spawned, in spawn order. */
+  sidecars: StartedSidecar[];
+};
+
+export function hasExited(handle: SidecarHandle): boolean {
+  return handle.proc.exitCode !== null || handle.proc.signalCode !== null;
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// Stop what the env started and return the failures. Every step runs even
+// when an earlier one throws, so a sidecar that will not die does not also
+// leave the hub listening on a port another server can take.
+//
+// The live hub-side WebSocket handles close first, so no live link lingers.
+// The sidecars stop next, newest first, each with its process subtree
+// (`terminateSidecarSubprocess`), so none outlives the hub and redials its
+// freed port. The temp dirs go only when every sidecar stop succeeded:
+// removing `sidecar-data-*` while a subprocess still holds file handles
+// raced EBUSY/EACCES on slow hosts, so a failed stop leaves the dirs behind
+// rather than racing a live process. The server stops are bounded
+// (`stopServerBounded`) because a test that dropped the hub link leaves Bun
+// with a phantom connection its `server.stop` would wait on forever.
+async function releaseEnv(
+  hub: HubEnv,
+  started: StartedOnHub,
+  tempDirs: string[],
+): Promise<unknown[]> {
+  const failures: unknown[] = [];
+  const attempt = async (step: () => unknown): Promise<void> => {
+    try {
+      await step();
+    } catch (err) {
+      failures.push(err);
+    }
+  };
+  for (const handle of hub.liveHandles) {
+    await attempt(() => {
+      handle.close();
+    });
+  }
+  hub.liveHandles.clear();
+  const failuresBeforeSidecars = failures.length;
+  for (const { handle } of [...started.sidecars].reverse()) {
+    await attempt(() => terminateSidecarSubprocess(handle));
+  }
+  const sidecarsStopped = failures.length === failuresBeforeSidecars;
+  await attempt(() => stopServerBounded(hub.server));
+  const { inference } = started;
+  if (inference !== undefined) {
+    await attempt(() => stopServerBounded(inference.server));
+  }
+  if (sidecarsStopped) {
+    for (const d of tempDirs.splice(0)) {
+      await attempt(() => fs.promises.rm(d, { recursive: true, force: true }));
+    }
+  }
+  return failures;
+}
+
+async function startDeployFlowEnvOnHub(args: {
+  opts: StartDeployFlowEnvOpts;
+  identity: FixtureIdentity;
+  waitMark: number;
+  tempDirs: string[];
+  registerTempDir: (dir: string) => void;
+  hub: HubEnv;
+  started: StartedOnHub;
+}): Promise<DeployFlowEnv> {
+  const { opts, identity, waitMark, tempDirs, registerTempDir, hub, started } =
+    args;
   const inference = startMockInference({
     ...(opts.inferenceToolCall !== undefined
       ? { toolCall: opts.inferenceToolCall }
@@ -1712,6 +1906,7 @@ export async function startDeployFlowEnv(
       ? { echoUserMessage: true }
       : {}),
   });
+  started.inference = inference;
 
   const hubPort = hub.server.port;
   if (hubPort === undefined) {
@@ -1720,35 +1915,75 @@ export async function startDeployFlowEnv(
     );
   }
 
-  const sidecar = await startSidecarSubprocess({
-    hubPort,
-    registerTempDir,
-    ...(opts.sidecarEnv !== undefined ? { extraEnv: opts.sidecarEnv } : {}),
-  });
-
-  // This layer owns the `sidecarEnv` -> `extraEnv` -> spawned-env wiring, so
-  // it is the one that can check the caller's pin against what the process
-  // got. Checked after the spawn and against `sidecar.env` rather than before
-  // and against a rebuilt map, so a break at either hop is caught instead of
-  // being reproduced by the check.
-  if (opts.sidecarEnv !== undefined) {
-    assertPinnedSidecarEnvReached(opts.sidecarEnv, sidecar.env);
-  }
-
-  // The primary sidecar plus every handle a test registered later, in spawn
-  // order. `sidecarDiagnostics` reports all of them, so a restart test's
-  // replacement process rides every wait the primary already rode.
-  const sidecars: SidecarHandle[] = [sidecar];
-  const registerSidecar = (handle: SidecarHandle): void => {
-    if (sidecars.includes(handle)) {
-      throw new Error("deploy-flow env: sidecar handle is already registered");
+  // Set when teardown starts. A sidecar spawned after it would miss the
+  // sidecar stops and redial a hub port that is about to be freed.
+  let tornDown = false;
+  // Spawns still in flight. Teardown waits for them, so a spawn that races
+  // teardown is recorded before the sidecar stops run, and teardown stops it.
+  const spawning = new Map<Promise<unknown>, SidecarRole>();
+  const startSidecar: DeployFlowEnv["startSidecar"] = async (
+    sidecarOpts = {},
+  ) => {
+    const role = sidecarOpts.role ?? "primary";
+    if (tornDown) {
+      throw new Error("deploy-flow env: cannot start a sidecar after teardown");
     }
-    sidecars.push(handle);
+    if ([...spawning.values()].includes(role)) {
+      throw new Error(
+        `deploy-flow env: a ${role} sidecar is still starting; await that start before starting another`,
+      );
+    }
+    if (started.sidecars.some((s) => s.role === role && !hasExited(s.handle))) {
+      throw new Error(
+        `deploy-flow env: a ${role} sidecar is still running; terminate it before starting another`,
+      );
+    }
+    // Recorded in the same step as the spawn, before anything else can
+    // throw or wait, so teardown reaches this process even if its caller
+    // never gets the handle.
+    const spawn = (async () => {
+      const spawned = await startSidecarSubprocess({
+        hubPort,
+        credentials: identity[role],
+        registerTempDir,
+        ...(sidecarOpts.dataDir !== undefined
+          ? { dataDir: sidecarOpts.dataDir }
+          : {}),
+        ...(opts.sidecarEnv !== undefined ? { extraEnv: opts.sidecarEnv } : {}),
+      });
+      started.sidecars.push({ handle: spawned, role });
+      return spawned;
+    })();
+    spawning.set(spawn, role);
+    let handle: SidecarHandle;
+    try {
+      handle = await spawn;
+    } finally {
+      spawning.delete(spawn);
+    }
+    if (tornDown) {
+      throw new Error(
+        "deploy-flow env: teardown started during a sidecar spawn; teardown stops this sidecar",
+      );
+    }
+    // This layer owns the `sidecarEnv` -> `extraEnv` -> spawned-env wiring,
+    // so it is the one that can check the caller's pin against what the
+    // process got. Checked after the spawn and against `handle.env` rather
+    // than before and against a rebuilt map, so a break at either hop is
+    // caught instead of being reproduced by the check.
+    if (opts.sidecarEnv !== undefined) {
+      assertPinnedSidecarEnvReached(opts.sidecarEnv, handle.env);
+    }
+    return handle;
   };
 
+  const sidecar = await startSidecar();
+
+  // `sidecarDiagnostics` reports every sidecar the env started, so a restart
+  // test's replacement process rides every wait the primary already rode.
   const sidecarDiagnostics = (): string => {
     const parts: string[] = [];
-    for (const [index, handle] of sidecars.entries()) {
+    for (const [index, { handle }] of started.sidecars.entries()) {
       if (handle.stderr.length === 0) continue;
       const label = index === 0 ? "sidecar" : `sidecar #${String(index)}`;
       parts.push(`${label} stderr:\n${handle.stderr.slice(-300).join("")}`);
@@ -1766,9 +2001,26 @@ export async function startDeployFlowEnv(
     return parts.join("\n\n");
   };
 
-  await waitFor(() => hub.router.getConnectedSidecars().length > 0, {
-    diagnostics: sidecarDiagnostics,
-  });
+  // Wait for the primary sidecar's identity, not for any connected sidecar.
+  // A sidecar that exits before it connects, for example on a bad boot
+  // config, fails setup here instead of leaving the wait to the runner's
+  // budget.
+  await waitFor(
+    () => {
+      if (
+        hub.router.getConnectedSidecars().includes(identity.primary.sidecarId)
+      ) {
+        return true;
+      }
+      if (hasExited(sidecar)) {
+        throw new Error(
+          `deploy-flow env: sidecar exited (code ${String(sidecar.proc.exitCode)}, signal ${String(sidecar.proc.signalCode)}) before it connected\n${sidecarDiagnostics()}`,
+        );
+      }
+      return false;
+    },
+    { diagnostics: sidecarDiagnostics },
+  );
 
   const deployments = new Map<string, DeploymentHandle>();
   const registerDeployment = (handle: DeploymentHandle): void => {
@@ -1781,6 +2033,11 @@ export async function startDeployFlowEnv(
   };
 
   const teardown = async (): Promise<void> => {
+    // No sidecar starts from here on, and a start already in flight is
+    // recorded before the sidecar stops below run.
+    tornDown = true;
+    await Promise.allSettled([...spawning.keys()]);
+
     // A wait helper renders its `diagnostics` only when its own `timeoutMs`
     // lapses, and almost every caller supplies none, so a test that hangs
     // inside a deadline-free poll loop is ended by the runner's per-test budget
@@ -1806,37 +2063,26 @@ export async function startDeployFlowEnv(
         `\n${outstanding}\n${diagnostics.length > 0 ? `${diagnostics}\n` : ""}`,
       );
     }
-    // Close every tracked hub-side WebSocket handle before killing the
-    // sidecar so no live link lingers. Then terminate the sidecar and reap
-    // its process subtree (`terminateSidecarSubprocess`) before removing its
-    // data directory: waiting for every process to exit before the rm keeps
-    // the earlier fix intact -- removing `sidecar-data-*` while a subprocess
-    // still holds file handles raced EBUSY/EACCES on slow hosts, so errors
-    // must surface from the rm rather than be shrouded. The server stops are
-    // bounded (`stopServerBounded`) because a test that dropped the hub link
-    // leaves Bun with a phantom connection its `server.stop` would wait on
-    // forever.
     deployments.clear();
-    for (const handle of hub.liveHandles) {
-      handle.close();
-    }
-    hub.liveHandles.clear();
-    await terminateSidecarSubprocess(sidecar);
-    await stopServerBounded(hub.server);
-    await stopServerBounded(inference.server);
-    for (const d of tempDirs.splice(0)) {
-      await fs.promises.rm(d, { recursive: true, force: true });
+    const failures = await releaseEnv(hub, started, tempDirs);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        `deploy-flow env: teardown failed: ${failures.map(describeError).join("; ")}`,
+      );
     }
   };
 
   return {
+    identity,
     hub,
     inference,
     sidecar,
     sidecarDiagnostics,
     deployments,
     registerDeployment,
-    registerSidecar,
+    startSidecar,
     retrying,
     teardown,
   };

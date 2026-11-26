@@ -72,8 +72,6 @@ import {
 } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   initiateDrain,
@@ -166,7 +164,9 @@ afterAll(async () => {
 
 describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
   test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+    expect(env.hub.router.getConnectedSidecars()).toContain(
+      env.identity.primary.sidecarId,
+    );
   });
 
   test("drain on a cancel-mode awaitSignal aborts the step and surfaces RunFailed", async () => {
@@ -184,7 +184,7 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
     };
 
     const config: HarnessConfig = {
-      sessionId: SESSION_ID,
+      sessionId: env.identity.sessionId,
       agentAddress: deploymentMailAddress,
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
@@ -356,7 +356,7 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
       model: "mock-model",
     };
     const config: HarnessConfig = {
-      sessionId: SESSION_ID,
+      sessionId: env.identity.sessionId,
       agentAddress: deploymentMailAddress,
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",
@@ -516,7 +516,7 @@ async function deployParkedOnSignal(args: {
       `mail.address:${address}`,
     ]),
     config: {
-      sessionId: SESSION_ID,
+      sessionId: env.identity.sessionId,
       agentAddress: address,
       sources: [source],
       defaultSource: source.id,
@@ -906,7 +906,7 @@ async function seedAllocation(
   await h.db
     .insert(sidecarTable)
     .values({
-      id: SIDECAR_ID,
+      id: env.identity.primary.sidecarId,
       tokenHashSha256: new Uint8Array(32),
       ...provisioner,
     })
@@ -917,7 +917,7 @@ async function seedAllocation(
     anchorRunId,
     ...provisioner,
     maxDisconnectedMs: 900_000,
-    sidecarId: SIDECAR_ID,
+    sidecarId: env.identity.primary.sidecarId,
     status: "allocated",
     generation: target.generation,
     ensureAcceptedGeneration: target.generation,

@@ -48,8 +48,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   initiateDrain,
@@ -139,7 +137,7 @@ async function deployDrainSection(opts: {
     model: "mock-model",
   };
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: deploymentMailAddress,
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
@@ -188,7 +186,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "onTrigger section drain teardown",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("drain on a section body parked at its awaitSignal gate settles RunFailed", async () => {

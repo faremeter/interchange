@@ -10,8 +10,6 @@
 // sidecar subprocess; the restart is a fresh sidecar against the dead process's
 // SIDECAR_DATA_DIR, so survival rides the production boot-time restore path.
 
-import fs from "node:fs";
-
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
@@ -34,8 +32,6 @@ import {
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
@@ -43,13 +39,11 @@ import {
   readWorkflowRunEvents,
   settleWorkflowRunPacks,
   startDeployFlowEnv,
-  startSidecarSubprocess,
   terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
-  type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
 import { childWorkflowUnanswerableGateEntry } from "./fixtures/childworkflow-unanswerable-gate";
 
@@ -63,8 +57,6 @@ const DEFINITION_ASSET_ID = "ast_childworkflow_restart_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
-let restartedSidecar: SidecarHandle | undefined;
-const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
   // A file-scope beforeAll fires even when describe.skipIf skips the
@@ -96,14 +88,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (restartedSidecar !== undefined) {
-    await terminateSidecarSubprocess(restartedSidecar);
-  }
   if (env !== undefined) await env.teardown();
   if (h !== undefined) await h.close();
-  for (const dir of restartTempDirs.splice(0)) {
-    await fs.promises.rm(dir, { recursive: true, force: true });
-  }
 });
 
 async function readAllRunEvents(
@@ -126,7 +112,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "sidecar crash + restart resumes a childWorkflow parked on an author gate",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("a child gate parks on the deployment run, crashes, and the restored relay completes", async () => {
@@ -144,7 +132,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
 
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [inferenceSource],
         defaultSource: "anthropic:mock-model",
@@ -238,18 +226,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      const hubPort = env.hub.server.port;
-      if (hubPort === undefined) {
-        throw new Error("hub.server.port is undefined after crash");
-      }
-      restartedSidecar = await startSidecarSubprocess({
-        hubPort,
-        registerTempDir: (dir) => {
-          restartTempDirs.push(dir);
-        },
-        extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
-      });
-      env.registerSidecar(restartedSidecar);
+      await env.startSidecar({ dataDir: crashedDataDir });
 
       await waitForReconnect(env, deploymentMailAddress);
       expect(env.hub.router.getRoutableAddresses()).toContain(

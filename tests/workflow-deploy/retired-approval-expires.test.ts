@@ -42,7 +42,6 @@ import { sectionBodyRunId } from "@intx/workflow";
 import { createApprovalSet, deriveRunAddress } from "@intx/workflow-deploy";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   killWorkflowHostChild,
   readWorkflowRunEvents,
@@ -208,7 +207,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             model: "mock-model",
           };
           const config: HarnessConfig = {
-            sessionId: SESSION_ID,
+            sessionId: env.identity.sessionId,
             agentAddress: address,
             sources: [source],
             defaultSource: "anthropic:mock-model",

@@ -30,8 +30,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -93,7 +91,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
   "a deployed loop workflow runs to completion",
   () => {
     test("sidecar registers with hub", () => {
-      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+      expect(env.hub.router.getConnectedSidecars()).toContain(
+        env.identity.primary.sidecarId,
+      );
     });
 
     test("the loop converges after three iterations and the run completes", async () => {
@@ -102,7 +102,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // A source with no agent step needs no inference; the config still carries
       // the shape, so supply one placeholder source it never resolves.
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: deploymentMailAddress,
         sources: [
           {

@@ -6,15 +6,24 @@
 // exercised in isolation. The end-to-end integration tests in the
 // Phase I commit set exercise the helpers against the full env.
 
-import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 
 import { deriveDeliveryKey } from "@intx/types/message-id";
+import { DEFAULT_SIDECAR_CAPACITY } from "@intx/types/sidecar";
 
 import {
   PRODUCTION_RECONNECT_DELAY_MS,
   WORKFLOW_RUN_TERMINAL_TYPES,
   assertPinnedSidecarEnvReached,
   buildSidecarSubprocessEnv,
+  createFixtureIdentity,
   currentWaitMark,
   injectSignal,
   readWorkflowRunEvents,
@@ -28,7 +37,9 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
   type DeploymentHandle,
+  type FixtureIdentity,
   type HubEnv,
+  type SidecarCredentials,
 } from "./deploy-flow-env";
 
 import fs from "node:fs";
@@ -49,7 +60,8 @@ async function startSmokeEnv(): Promise<{
   const registerTempDir = (dir: string): void => {
     tempDirs.push(dir);
   };
-  const hub = await startHub(registerTempDir);
+  const identity = createFixtureIdentity();
+  const hub = await startHub(registerTempDir, identity);
   const deployments = new Map<string, DeploymentHandle>();
   const registerDeployment = (handle: DeploymentHandle): void => {
     if (deployments.has(handle.anchorRunId)) {
@@ -60,6 +72,7 @@ async function startSmokeEnv(): Promise<{
     deployments.set(handle.anchorRunId, handle);
   };
   const env: DeployFlowEnv = {
+    identity,
     hub,
     // The fields below are unused by the helpers exercised here.
     // Construct narrow stand-ins so the env-shape type is satisfied
@@ -78,9 +91,9 @@ async function startSmokeEnv(): Promise<{
     sidecarDiagnostics: () => "",
     deployments,
     registerDeployment,
-    // No sidecar subprocess is spawned here, so there is nothing to register
-    // and no diagnostics for `teardown` to dump.
-    registerSidecar: () => undefined,
+    // The helpers under test never start a sidecar.
+    startSidecar: () =>
+      Promise.reject(new Error("smoke env: startSidecar is not supported")),
     retrying,
     teardown: async () => {
       await hub.server.stop(true);
@@ -113,6 +126,36 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await env.teardown();
+});
+
+describe("createFixtureIdentity", () => {
+  function leafStrings(value: unknown): string[] {
+    if (typeof value === "string") return [value];
+    if (typeof value === "object" && value !== null) {
+      return Object.values(value).flatMap(leafStrings);
+    }
+    return [];
+  }
+
+  test("two identities share no value", () => {
+    const first = leafStrings(createFixtureIdentity());
+    const second = new Set(leafStrings(createFixtureIdentity()));
+    expect(first.filter((value) => second.has(value))).toEqual([]);
+  });
+
+  test("the primary and second credentials differ", () => {
+    const { primary, second } = createFixtureIdentity();
+    expect(primary.sidecarId).not.toBe(second.sidecarId);
+    expect(primary.token).not.toBe(second.token);
+    expect(primary.credentialKey).not.toBe(second.credentialKey);
+  });
+
+  test("each credential key is 32 bytes of hex", () => {
+    const { primary, second } = createFixtureIdentity();
+    for (const key of [primary.credentialKey, second.credentialKey]) {
+      expect(key).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
 });
 
 describe("deploy-flow-env helpers smoke tests", () => {
@@ -516,7 +559,11 @@ describe("stopping in-flight waits at teardown", () => {
 // string into the option, and `hub-link.test.ts` asserts the option is the
 // delay the reconnect scheduler receives.
 describe("spawned sidecar reconnect delay", () => {
-  const baseOpts = { hubPort: 4321, dataDir: "/sidecar-data" };
+  const baseOpts = {
+    hubPort: 4321,
+    dataDir: "/sidecar-data",
+    credentials: createFixtureIdentity().primary,
+  };
 
   test("defaults to the short test backoff", () => {
     const env = buildSidecarSubprocessEnv(baseOpts);
@@ -536,7 +583,11 @@ describe("spawned sidecar reconnect delay", () => {
 // against the real env builder rather than a hand-written map, so a break in
 // the merge reaches this test the same way it would reach a survival test.
 describe("assertPinnedSidecarEnvReached", () => {
-  const baseOpts = { hubPort: 4321, dataDir: "/sidecar-data" };
+  const baseOpts = {
+    hubPort: 4321,
+    dataDir: "/sidecar-data",
+    credentials: createFixtureIdentity().primary,
+  };
   const pinProduction = {
     SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
   };
@@ -630,5 +681,94 @@ describe("assertPinnedSidecarEnvReached", () => {
         buildSidecarSubprocessEnv(baseOpts),
       ),
     ).toThrow(/SIDECAR_RECONNECT_DELAY_MS: .*; SIDECAR_ID: /);
+  });
+});
+
+// A sidecar that outlives its env keeps dialing its hub's old port, and a
+// later env's hub may hold that port. Whether it reaches the later hub is up
+// to the OS, so the test sends the stray sidecar's hello straight to the
+// later hub: the worst case, where only authentication stands in the way.
+// The hub checks a hello against its own identity alone, so the stopped
+// env's identity needs no hub of its own here.
+describe("a stopped env's sidecar credentials", () => {
+  const tempDirs: string[] = [];
+  let laterHub: HubEnv | undefined;
+  let socket: WebSocket | undefined;
+
+  afterEach(async () => {
+    socket?.close();
+    socket = undefined;
+    if (laterHub !== undefined) await laterHub.server.stop(true);
+    laterHub = undefined;
+    for (const dir of tempDirs.splice(0)) {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  async function startEnvHub(identity: FixtureIdentity): Promise<HubEnv> {
+    return startHub((dir) => tempDirs.push(dir), identity);
+  }
+
+  // Send the hello a sidecar holding `credentials` sends, and report whether
+  // the hub welcomed it or closed the socket after the hello. The hub answers
+  // a hello with one or the other; a socket that ends before the hello went
+  // out reports that instead.
+  async function sayHello(
+    hub: HubEnv,
+    credentials: SidecarCredentials,
+  ): Promise<"welcome" | "closed" | "ended before hello"> {
+    const ws = new WebSocket(`ws://localhost:${String(hub.server.port)}/ws`);
+    socket = ws;
+    let helloSent = false;
+    return new Promise((resolve) => {
+      const ended = (): void => {
+        resolve(helloSent ? "closed" : "ended before hello");
+      };
+      ws.addEventListener("open", () => {
+        helloSent = true;
+        ws.send(
+          JSON.stringify({
+            type: "hello",
+            sidecarId: credentials.sidecarId,
+            token: credentials.token,
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            incarnations: [],
+          }),
+        );
+      });
+      ws.addEventListener("message", (event) => {
+        const frame: unknown = JSON.parse(String(event.data));
+        if (
+          typeof frame === "object" &&
+          frame !== null &&
+          "type" in frame &&
+          frame.type === "welcome"
+        ) {
+          resolve("welcome");
+        }
+      });
+      ws.addEventListener("close", ended);
+      ws.addEventListener("error", ended);
+    });
+  }
+
+  test("a later env's hub refuses them", async () => {
+    const stopped = createFixtureIdentity();
+    laterHub = await startEnvHub(createFixtureIdentity());
+    expect(await sayHello(laterHub, stopped.primary)).toBe("closed");
+    expect(await sayHello(laterHub, stopped.second)).toBe("closed");
+    expect(laterHub.router.getConnectedSidecars()).toEqual([]);
+  });
+
+  // The control for the test above: the same hello with the later env's own
+  // credentials is welcomed, so a close there means the hub refused the
+  // credentials and not the frame.
+  test("a later env's hub welcomes its own", async () => {
+    const identity = createFixtureIdentity();
+    laterHub = await startEnvHub(identity);
+    expect(await sayHello(laterHub, identity.primary)).toBe("welcome");
+    expect(laterHub.router.getConnectedSidecars()).toEqual([
+      identity.primary.sidecarId,
+    ]);
   });
 });

@@ -30,7 +30,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   readWorkflowRunEvents,
   startDeployFlowEnv,
@@ -333,7 +332,7 @@ export async function startHubAccessEnv(args: {
         domain: DEPLOYMENT_DOMAIN,
       });
       const config: HarnessConfig = {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: mailAddress,
         sources: [source],
         defaultSource: MOCK_SOURCE_ID,

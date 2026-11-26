@@ -45,8 +45,6 @@ import {
 } from "@intx/test-harness/seed";
 
 import {
-  SESSION_ID,
-  SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
@@ -116,7 +114,9 @@ afterAll(async () => {
 
 describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
   test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
+    expect(env.hub.router.getConnectedSidecars()).toContain(
+      env.identity.primary.sidecarId,
+    );
   });
 
   test("suspends for approval on the ask effect derived from the tool's static mark", async () => {
@@ -134,7 +134,7 @@ describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
     };
 
     const config: HarnessConfig = {
-      sessionId: SESSION_ID,
+      sessionId: env.identity.sessionId,
       agentAddress: deploymentMailAddress,
       sources: [inferenceSource],
       defaultSource: "anthropic:mock-model",

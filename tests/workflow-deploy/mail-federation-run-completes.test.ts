@@ -89,15 +89,9 @@ import {
 } from "@intx/workflow-deploy";
 
 import {
-  SECOND_SIDECAR_ID,
-  SIDECAR_ID,
-  SECOND_TOKEN,
-  SESSION_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
   startDeployFlowEnv,
-  startSidecarSubprocess,
-  terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
   waitForWorkflowRunComplete,
@@ -168,7 +162,6 @@ const SENDER_MAIL_GRANT: WireGrantRule = {
 let env: DeployFlowEnv;
 let h: TestDb;
 let sidecar2: SidecarHandle | undefined;
-const tempDirs: string[] = [];
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "a mail-triggered run started through the sidecar deliver path reaches RunCompleted",
@@ -217,13 +210,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     afterAll(async () => {
-      if (sidecar2) {
-        await terminateSidecarSubprocess(sidecar2);
-        sidecar2 = undefined;
-      }
       if (env !== undefined) await env.teardown();
       if (h !== undefined) await h.close();
-      tempDirs.splice(0);
     });
 
     beforeEach(async () => {
@@ -257,11 +245,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `expected exactly one connected sidecar at start, got ${startHandles.length}`,
         );
       }
-      const hubPort = env.hub.server.port;
-      if (hubPort === undefined) {
-        throw new Error("hub.server.port is undefined; expected a bound port");
-      }
-
       // Seed the receiver's and sender's tenancy + workflow asset so each
       // source-ref deploy's install/approve freeze and anchor `workflow_run`
       // insert resolve their FKs. The receiver's frozen grant snapshot -- the
@@ -338,7 +321,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // sidecar happens to be connected: the receiver and the sender must
         // end up on DIFFERENT ones, and inference cannot guarantee that once
         // the primary starts reconnecting underneath the placement below.
-        sidecarId: SIDECAR_ID,
+        sidecarId: env.identity.primary.sidecarId,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: receiverAddress,
         approvals: buildApprovals(receiverAddress, [
@@ -349,20 +332,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       // Bring up a second sidecar and wait for it to register.
-      sidecar2 = await startSidecarSubprocess({
-        hubPort,
-        registerTempDir: (d) => tempDirs.push(d),
-        extraEnv: {
-          SIDECAR_ID: SECOND_SIDECAR_ID,
-          SIDECAR_TOKEN: SECOND_TOKEN,
-        },
-      });
-      // Register it so a wedge anywhere below reports BOTH sidecars' stderr.
-      // The sender runs here, so without this the diagnostic on a hang covers
-      // only the receiver's sidecar and the sending half is invisible.
-      env.registerSidecar(sidecar2);
+      sidecar2 = await env.startSidecar({ role: "second" });
       await waitFor(
-        () => env.hub.router.getConnectedSidecars().includes(SECOND_SIDECAR_ID),
+        () =>
+          env.hub.router
+            .getConnectedSidecars()
+            .includes(env.identity.second.sidecarId),
         { diagnostics: env.sidecarDiagnostics },
       );
 
@@ -373,8 +348,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // regardless of when sidecar 1 comes back.
       //
       // DO NOT "simplify" this wait away: `getConnectedSidecars()[0] ===
-      // SECOND_SIDECAR_ID` is exactly the predicate `findSidecarForNewAgent`
-      // evaluates to place a new deploy (first entry of the connections map).
+      // env.identity.second.sidecarId` is exactly the predicate
+      // `findSidecarForNewAgent` evaluates to place a new deploy (first entry
+      // of the connections map).
       // Waiting on that precise invariant -- not a sleep, not "sidecar 2 is
       // connected" -- is what makes the placement deterministic rather than
       // racy against sidecar 1's reconnect. Dropping or loosening it silently
@@ -383,7 +359,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // coupling to this internal placement rule is tracked in INTR-395.
       sidecar1Handle.close();
       await waitFor(
-        () => env.hub.router.getConnectedSidecars()[0] === SECOND_SIDECAR_ID,
+        () =>
+          env.hub.router.getConnectedSidecars()[0] ===
+          env.identity.second.sidecarId,
         { diagnostics: env.sidecarDiagnostics },
       );
 
@@ -408,7 +386,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // The second sidecar, named. This is what makes the send remote to
         // the sender's own transport and so routes it through
         // deliverMailToRecipient -- the seam under test.
-        sidecarId: SECOND_SIDECAR_ID,
+        sidecarId: env.identity.second.sidecarId,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: senderAddress,
         approvals: buildApprovals(senderAddress, [`tool:${MAIL_TOOL_NAME}`]),
@@ -505,7 +483,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     function buildConfig(address: string, credentialId: string): HarnessConfig {
       return {
-        sessionId: SESSION_ID,
+        sessionId: env.identity.sessionId,
         agentAddress: address,
         sources: [inferenceSource(credentialId)],
         defaultSource: "anthropic:mock-model",

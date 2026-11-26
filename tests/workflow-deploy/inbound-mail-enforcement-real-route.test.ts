@@ -72,7 +72,6 @@ import {
 import { deriveRunAddress } from "@intx/workflow-deploy";
 
 import {
-  SESSION_ID,
   deployWorkflowSourceForTest,
   readClaimCheckDir,
   readWorkflowRunEvents,
@@ -196,7 +195,7 @@ async function deployEnforcementWorkflow(opts: {
 }): Promise<{ workflowRunRepoId: RepoId }> {
   const inferenceSource = inferenceSourceForEnv(env);
   const config: HarnessConfig = {
-    sessionId: SESSION_ID,
+    sessionId: env.identity.sessionId,
     agentAddress: opts.mailAddress,
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
